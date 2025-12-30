@@ -1,0 +1,18 @@
+# Terraform Remote Backend Configuration - Production
+#
+# Copy this file to backend.tf (which is gitignored) and update with your bucket name
+#
+# Usage:
+#   cp backend-prod.tf.example backend.tf
+#   vim backend.tf  # Update bucket name
+#   terraform init
+
+terraform {
+  backend "gcs" {
+    bucket = "your-project-id-terraform-state"  # UPDATE THIS
+    prefix = "containarium/production"
+
+    # Optional: Enable encryption with customer-managed key
+    # encryption_key = "projects/PROJECT_ID/locations/LOCATION/keyRings/KEYRING/cryptoKeys/KEY"
+  }
+}

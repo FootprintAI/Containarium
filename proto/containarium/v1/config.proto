@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "containarium/v1/container.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;continariumv1";
+
+// Config represents the system-wide configuration for Containarium
+message Config {
+  // Incus configuration
+  IncusConfig incus = 1;
+
+  // Default resource limits for new containers
+  ResourceLimits default_resources = 2;
+
+  // Default container image
+  string default_image = 3;
+
+  // Enable Docker support by default
+  bool default_docker_enabled = 4;
+
+  // Network configuration
+  NetworkConfig network = 5;
+
+  // Storage configuration
+  StorageConfig storage = 6;
+
+  // Security configuration
+  SecurityConfig security = 7;
+}
+
+// IncusConfig contains Incus-specific configuration
+message IncusConfig {
+  // Incus socket path (default: /var/lib/incus/unix.socket)
+  string socket_path = 1;
+
+  // Project name to use (default: default)
+  string project = 2;
+
+  // Remote name (default: local)
+  string remote = 3;
+
+  // Timeout for Incus operations in seconds
+  int32 timeout_seconds = 4;
+}
+
+// NetworkConfig contains network-related configuration
+message NetworkConfig {
+  // Network bridge name (default: incusbr0)
+  string bridge_name = 1;
+
+  // Subnet for container IPs (e.g., "10.0.3.0/24")
+  string subnet = 2;
+
+  // DHCP range start
+  string dhcp_range_start = 3;
+
+  // DHCP range end
+  string dhcp_range_end = 4;
+
+  // DNS servers for containers
+  repeated string dns_servers = 5;
+
+  // Enable IPv6
+  bool enable_ipv6 = 6;
+}
+
+// StorageConfig contains storage-related configuration
+message StorageConfig {
+  // Storage pool name
+  string pool_name = 1;
+
+  // Storage driver (e.g., "dir", "zfs", "btrfs")
+  string driver = 2;
+
+  // Storage pool path
+  string pool_path = 3;
+
+  // Default disk quota for containers
+  string default_disk_quota = 4;
+}
+
+// SecurityConfig contains security-related configuration
+message SecurityConfig {
+  // Use unprivileged containers (recommended: true)
+  bool unprivileged_containers = 1;
+
+  // AppArmor profile to use (default: "default")
+  string apparmor_profile = 2;
+
+  // SELinux context (if using SELinux)
+  string selinux_context = 3;
+
+  // Enable seccomp filtering
+  bool enable_seccomp = 4;
+
+  // Require SSH keys (don't allow password auth)
+  bool require_ssh_keys = 5;
+
+  // Minimum password length if passwords are allowed
+  int32 min_password_length = 6;
+}
+
+// GetConfigRequest is the request to get current configuration
+message GetConfigRequest {}
+
+// GetConfigResponse is the response from getting configuration
+message GetConfigResponse {
+  // Current configuration
+  Config config = 1;
+}
+
+// UpdateConfigRequest is the request to update configuration
+message UpdateConfigRequest {
+  // Updated configuration
+  Config config = 1;
+
+  // Fields to update (if empty, update all)
+  repeated string update_mask = 2;
+}
+
+// UpdateConfigResponse is the response from updating configuration
+message UpdateConfigResponse {
+  // Success message
+  string message = 1;
+
+  // Updated configuration
+  Config config = 2;
+}
+
+// SystemInfo contains information about the host system
+message SystemInfo {
+  // Incus version
+  string incus_version = 1;
+
+  // Operating system
+  string os = 2;
+
+  // Kernel version
+  string kernel_version = 3;
+
+  // Total CPU cores
+  int32 total_cpus = 4;
+
+  // Total memory in bytes
+  int64 total_memory_bytes = 5;
+
+  // Available memory in bytes
+  int64 available_memory_bytes = 6;
+
+  // Total disk space in bytes
+  int64 total_disk_bytes = 7;
+
+  // Available disk space in bytes
+  int64 available_disk_bytes = 8;
+
+  // Number of containers running
+  int32 containers_running = 9;
+
+  // Number of containers stopped
+  int32 containers_stopped = 10;
+
+  // Total number of containers
+  int32 containers_total = 11;
+
+  // Hostname of the system
+  string hostname = 12;
+
+  // Uptime in seconds
+  int64 uptime_seconds = 13;
+}
+
+// GetSystemInfoRequest is the request to get system information
+message GetSystemInfoRequest {}
+
+// GetSystemInfoResponse is the response from getting system information
+message GetSystemInfoResponse {
+  // System information
+  SystemInfo info = 1;
+}

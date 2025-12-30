@@ -1,0 +1,297 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;continariumv1";
+
+// Custom option to attach string names to enum values
+extend google.protobuf.EnumValueOptions {
+  string state_name = 50001;
+}
+
+// ContainerState represents the current state of a container
+enum ContainerState {
+  // Unspecified state (should not be used)
+  CONTAINER_STATE_UNSPECIFIED = 0 [(state_name) = "Unknown"];
+
+  // Container is running
+  CONTAINER_STATE_RUNNING = 1 [(state_name) = "Running"];
+
+  // Container is stopped
+  CONTAINER_STATE_STOPPED = 2 [(state_name) = "Stopped"];
+
+  // Container is frozen (paused)
+  CONTAINER_STATE_FROZEN = 3 [(state_name) = "Frozen"];
+
+  // Container is being created
+  CONTAINER_STATE_CREATING = 4 [(state_name) = "Creating"];
+
+  // Container creation failed or is in error state
+  CONTAINER_STATE_ERROR = 5 [(state_name) = "Error"];
+}
+
+// ResourceLimits defines resource constraints for a container
+message ResourceLimits {
+  // CPU limit (e.g., "4" for 4 cores)
+  string cpu = 1;
+
+  // Memory limit (e.g., "4GB", "2048MB")
+  string memory = 2;
+
+  // Disk/storage limit (e.g., "50GB", "100GB")
+  string disk = 3;
+}
+
+// NetworkInfo contains network configuration for a container
+message NetworkInfo {
+  // Primary IP address assigned to the container
+  string ip_address = 1;
+
+  // MAC address of the container's network interface
+  string mac_address = 2;
+
+  // Network interface name (e.g., "eth0")
+  string interface = 3;
+
+  // Network bridge name
+  string bridge = 4;
+}
+
+// Container represents a complete container instance
+message Container {
+  // Unique container name (typically username-container)
+  string name = 1;
+
+  // Username who owns this container
+  string username = 2;
+
+  // Current state of the container
+  ContainerState state = 3;
+
+  // Resource limits applied to this container
+  ResourceLimits resources = 4;
+
+  // SSH public keys authorized for this container
+  repeated string ssh_keys = 5;
+
+  // Network information
+  NetworkInfo network = 6;
+
+  // Unix timestamp when container was created
+  int64 created_at = 7;
+
+  // Unix timestamp when container was last updated
+  int64 updated_at = 8;
+
+  // Custom labels for categorization and metadata
+  map<string, string> labels = 9;
+
+  // Image used to create the container (e.g., "ubuntu:24.04")
+  string image = 10;
+
+  // Whether Docker support is enabled (nesting)
+  bool docker_enabled = 11;
+}
+
+// ContainerMetrics contains runtime metrics for a container
+message ContainerMetrics {
+  // Container name
+  string name = 1;
+
+  // Current CPU usage percentage (0-100)
+  double cpu_usage_percent = 2;
+
+  // Current memory usage in bytes
+  int64 memory_usage_bytes = 3;
+
+  // Memory limit in bytes
+  int64 memory_limit_bytes = 4;
+
+  // Disk usage in bytes
+  int64 disk_usage_bytes = 5;
+
+  // Disk limit in bytes
+  int64 disk_limit_bytes = 6;
+
+  // Network bytes received
+  int64 network_rx_bytes = 7;
+
+  // Network bytes transmitted
+  int64 network_tx_bytes = 8;
+
+  // Number of running processes in container
+  int32 process_count = 9;
+}
+
+// CreateContainerRequest is the request to create a new container
+message CreateContainerRequest {
+  // Username for the container (required)
+  string username = 1;
+
+  // Resource limits (optional, uses defaults if not specified)
+  ResourceLimits resources = 2;
+
+  // SSH public keys to authorize (optional, can be added later)
+  repeated string ssh_keys = 3;
+
+  // Custom labels (optional)
+  map<string, string> labels = 4;
+
+  // Container image to use (optional, defaults to ubuntu:24.04)
+  string image = 5;
+
+  // Enable Docker support (optional, defaults to true)
+  bool enable_docker = 6;
+}
+
+// CreateContainerResponse is the response from creating a container
+message CreateContainerResponse {
+  // The created container
+  Container container = 1;
+
+  // Human-readable message about the creation
+  string message = 2;
+
+  // SSH connection string for the user
+  string ssh_command = 3;
+}
+
+// ListContainersRequest is the request to list containers
+message ListContainersRequest {
+  // Filter by state (optional, empty means all states)
+  ContainerState state = 1;
+
+  // Filter by username (optional, empty means all users)
+  string username = 2;
+
+  // Filter by labels (optional, empty means no filter)
+  map<string, string> label_filter = 3;
+}
+
+// ListContainersResponse is the response from listing containers
+message ListContainersResponse {
+  // List of containers matching the filter criteria
+  repeated Container containers = 1;
+
+  // Total count of containers
+  int32 total_count = 2;
+}
+
+// GetContainerRequest is the request to get a specific container
+message GetContainerRequest {
+  // Username of the container to get
+  string username = 1;
+}
+
+// GetContainerResponse is the response from getting a container
+message GetContainerResponse {
+  // The requested container
+  Container container = 1;
+
+  // Current metrics for the container (optional)
+  ContainerMetrics metrics = 2;
+}
+
+// DeleteContainerRequest is the request to delete a container
+message DeleteContainerRequest {
+  // Username of the container to delete
+  string username = 1;
+
+  // Force delete even if container is running
+  bool force = 2;
+}
+
+// DeleteContainerResponse is the response from deleting a container
+message DeleteContainerResponse {
+  // Success message
+  string message = 1;
+
+  // Name of the deleted container
+  string container_name = 2;
+}
+
+// StartContainerRequest is the request to start a container
+message StartContainerRequest {
+  // Username of the container to start
+  string username = 1;
+}
+
+// StartContainerResponse is the response from starting a container
+message StartContainerResponse {
+  // Success message
+  string message = 1;
+
+  // Updated container state
+  Container container = 2;
+}
+
+// StopContainerRequest is the request to stop a container
+message StopContainerRequest {
+  // Username of the container to stop
+  string username = 1;
+
+  // Force stop (kill) instead of graceful shutdown
+  bool force = 2;
+
+  // Timeout in seconds for graceful shutdown (default: 30)
+  int32 timeout = 3;
+}
+
+// StopContainerResponse is the response from stopping a container
+message StopContainerResponse {
+  // Success message
+  string message = 1;
+
+  // Updated container state
+  Container container = 2;
+}
+
+// AddSSHKeyRequest is the request to add an SSH key to a container
+message AddSSHKeyRequest {
+  // Username of the container
+  string username = 1;
+
+  // SSH public key to add
+  string ssh_public_key = 2;
+}
+
+// AddSSHKeyResponse is the response from adding an SSH key
+message AddSSHKeyResponse {
+  // Success message
+  string message = 1;
+
+  // Total number of SSH keys now authorized
+  int32 total_keys = 2;
+}
+
+// RemoveSSHKeyRequest is the request to remove an SSH key from a container
+message RemoveSSHKeyRequest {
+  // Username of the container
+  string username = 1;
+
+  // SSH public key to remove (exact match)
+  string ssh_public_key = 2;
+}
+
+// RemoveSSHKeyResponse is the response from removing an SSH key
+message RemoveSSHKeyResponse {
+  // Success message
+  string message = 1;
+
+  // Total number of SSH keys remaining
+  int32 total_keys = 2;
+}
+
+// GetMetricsRequest is the request to get container metrics
+message GetMetricsRequest {
+  // Username of the container (empty for all containers)
+  string username = 1;
+}
+
+// GetMetricsResponse is the response from getting metrics
+message GetMetricsResponse {
+  // Metrics for requested container(s)
+  repeated ContainerMetrics metrics = 1;
+}

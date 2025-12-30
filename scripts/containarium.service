@@ -1,0 +1,33 @@
+[Unit]
+Description=Containarium Container Management Daemon
+Documentation=https://github.com/footprintai/Containarium
+After=network.target incus.service
+Requires=incus.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --port 50051
+Restart=on-failure
+RestartSec=5s
+User=root
+Group=root
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/incus
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=containarium
+
+# Resource limits (optional)
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

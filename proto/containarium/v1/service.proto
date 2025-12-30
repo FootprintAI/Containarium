@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "containarium/v1/container.proto";
+import "containarium/v1/config.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;continariumv1";
+
+// ContainerService provides container management operations
+service ContainerService {
+  // CreateContainer creates a new container for a user
+  rpc CreateContainer(CreateContainerRequest) returns (CreateContainerResponse);
+
+  // ListContainers lists all containers with optional filtering
+  rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
+
+  // GetContainer gets detailed information about a specific container
+  rpc GetContainer(GetContainerRequest) returns (GetContainerResponse);
+
+  // DeleteContainer deletes a container
+  rpc DeleteContainer(DeleteContainerRequest) returns (DeleteContainerResponse);
+
+  // StartContainer starts a stopped container
+  rpc StartContainer(StartContainerRequest) returns (StartContainerResponse);
+
+  // StopContainer stops a running container
+  rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+
+  // AddSSHKey adds an SSH public key to a container
+  rpc AddSSHKey(AddSSHKeyRequest) returns (AddSSHKeyResponse);
+
+  // RemoveSSHKey removes an SSH public key from a container
+  rpc RemoveSSHKey(RemoveSSHKeyRequest) returns (RemoveSSHKeyResponse);
+
+  // GetMetrics gets runtime metrics for containers
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+
+  // GetSystemInfo gets information about the Incus host
+  rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse);
+}
