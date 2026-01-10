@@ -85,7 +85,7 @@ Containarium provides a multi-layer architecture combining cloud infrastructure,
 
 #### 3. **Management Layer** (Containarium CLI)
 - **Language**: Go with Protobuf contracts
-- **Operations**: Create, delete, list, info
+- **Operations**: Create, delete, list, info, resize, export
 - **API**: Local CLI + optional gRPC daemon
 - **Automation**: Automated container lifecycle
 
@@ -1270,6 +1270,76 @@ sudo containarium delete bob --force
 
 # Delete with data backup
 sudo containarium delete charlie --backup
+```
+
+#### Resize Container
+
+Dynamically adjust container resources (CPU, memory, disk) **without any downtime**. All changes take effect immediately without restarting the container.
+
+```bash
+# Resize CPU only
+sudo containarium resize alice --cpu 4
+
+# Resize memory only
+sudo containarium resize alice --memory 8GB
+
+# Resize disk only
+sudo containarium resize alice --disk 100GB
+
+# Resize all three at once
+sudo containarium resize alice --cpu 4 --memory 8GB --disk 100GB
+
+# With verbose output
+sudo containarium resize alice --cpu 8 --memory 16GB -v
+```
+
+**Advanced CPU Options:**
+
+```bash
+# Set specific number of cores
+sudo containarium resize alice --cpu 4
+
+# Set CPU range (flexible allocation)
+sudo containarium resize alice --cpu 2-4
+
+# Pin to specific CPU cores (performance)
+sudo containarium resize alice --cpu 0-3
+```
+
+**Memory Formats:**
+
+```bash
+# Gigabytes
+sudo containarium resize alice --memory 8GB
+
+# Megabytes
+sudo containarium resize alice --memory 4096MB
+
+# Gibibytes (binary)
+sudo containarium resize alice --memory 8GiB
+```
+
+**Important Notes:**
+
+- **CPU**: Always safe to increase or decrease. Supports over-provisioning (4-8x).
+- **Memory**: Safe to increase. Check current usage before decreasing to avoid OOM kills.
+- **Disk**: Can only increase (cannot shrink below current usage).
+- All changes are instant with no container restart required.
+
+**Verbose Output Example:**
+
+```bash
+$ sudo containarium resize alice --cpu 4 --memory 8GB -v
+Resizing container: alice-container
+  Setting CPU limit: 4
+  Setting memory limit: 8GB
+  ✓ Resources updated successfully (no restart required)
+
+✓ Container alice-container resized successfully!
+
+Updated configuration:
+  CPU:    4
+  Memory: 8GB
 ```
 
 #### Export SSH Configuration

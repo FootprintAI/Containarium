@@ -409,3 +409,66 @@ func getJumpServerSSHKey() (string, error) {
 	// No SSH key found - this is OK, just means ProxyJump won't work automatically
 	return "", nil
 }
+
+// Resize dynamically adjusts container resources (CPU, memory, disk) without downtime
+func (m *Manager) Resize(containerName, cpu, memory, disk string, verbose bool) error {
+	if verbose {
+		fmt.Printf("Resizing container: %s\n", containerName)
+	}
+
+	// Check if container exists
+	_, err := m.incus.GetContainer(containerName)
+	if err != nil {
+		return fmt.Errorf("container not found: %w", err)
+	}
+
+	changed := false
+
+	// Resize CPU
+	if cpu != "" {
+		if verbose {
+			fmt.Printf("  Setting CPU limit: %s\n", cpu)
+		}
+		if err := m.incus.SetConfig(containerName, "limits.cpu", cpu); err != nil {
+			return fmt.Errorf("failed to set CPU limit: %w", err)
+		}
+		changed = true
+	}
+
+	// Resize Memory
+	if memory != "" {
+		if verbose {
+			fmt.Printf("  Setting memory limit: %s\n", memory)
+		}
+		if err := m.incus.SetConfig(containerName, "limits.memory", memory); err != nil {
+			return fmt.Errorf("failed to set memory limit: %w", err)
+		}
+		changed = true
+	}
+
+	// Resize Disk
+	if disk != "" {
+		if verbose {
+			fmt.Printf("  Setting disk size: %s\n", disk)
+		}
+		if err := m.incus.SetDeviceSize(containerName, "root", disk); err != nil {
+			return fmt.Errorf("failed to set disk size: %w", err)
+		}
+		changed = true
+	}
+
+	if !changed {
+		return fmt.Errorf("no resources specified to resize")
+	}
+
+	if verbose {
+		fmt.Println("  ✓ Resources updated successfully (no restart required)")
+	}
+
+	return nil
+}
+
+// GetInfo returns detailed information about a container
+func (m *Manager) GetInfo(containerName string) (*incus.ContainerInfo, error) {
+	return m.incus.GetContainer(containerName)
+}

@@ -421,3 +421,62 @@ func (c *Client) GetServerInfo() (*api.Server, error) {
 	}
 	return server, nil
 }
+
+// SetConfig sets a configuration key for a container (e.g., limits.cpu, limits.memory)
+func (c *Client) SetConfig(containerName, key, value string) error {
+	// Get current container configuration
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+
+	// Update the configuration
+	inst.Config[key] = value
+
+	// Apply the changes
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container config: %w", err)
+	}
+
+	// Wait for the operation to complete
+	err = op.Wait()
+	if err != nil {
+		return fmt.Errorf("failed to wait for config update: %w", err)
+	}
+
+	return nil
+}
+
+// SetDeviceSize sets the size of a device (e.g., root disk)
+func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
+	// Get current container configuration
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+
+	// Check if device exists
+	device, exists := inst.Devices[deviceName]
+	if !exists {
+		return fmt.Errorf("device %s not found in container", deviceName)
+	}
+
+	// Update the device size
+	device["size"] = size
+	inst.Devices[deviceName] = device
+
+	// Apply the changes
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update device size: %w", err)
+	}
+
+	// Wait for the operation to complete
+	err = op.Wait()
+	if err != nil {
+		return fmt.Errorf("failed to wait for device update: %w", err)
+	}
+
+	return nil
+}
