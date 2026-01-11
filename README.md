@@ -152,6 +152,31 @@ It is intentionally simple.
 
 ⚠️ Currently optimized for Linux hosts and cloud VMs.
 
+### System Requirements
+
+**Host System:**
+- Ubuntu 24.04 LTS (Noble) or later
+- **Incus 6.19 or later** (required for Docker build support)
+  - Ubuntu 24.04 default repos ship Incus 6.0.0 which has AppArmor bug ([CVE-2025-52881](https://ubuntu.com/security/CVE-2025-52881))
+  - This bug breaks Docker builds in unprivileged containers
+  - **Solution**: Use [Zabbly Incus repository](https://pkgs.zabbly.com/) for latest stable builds
+- ZFS kernel module (for disk quotas)
+- Kernel modules: `overlay`, `br_netfilter`, `nf_nat` (for Docker in containers)
+
+**Quick Incus Installation (6.19+):**
+```bash
+# Add Zabbly repository (recommended)
+curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
+echo 'deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable noble main' | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list
+sudo apt update
+sudo apt install incus incus-tools incus-client
+
+# Verify version
+incus --version  # Should show 6.19 or later
+```
+
+### Quick Start
+
 1. Provision infrastructure with Terraform
 2. Install Containarium CLI
 3. Create LXC containers
@@ -2207,7 +2232,10 @@ A: **Yes!** Each container has Docker pre-installed and working.
 # Inside your container
 docker run hello-world
 docker-compose up -d
+docker build -t myapp .  # Docker builds work with Incus 6.19+
 ```
+
+**Important:** Requires Incus 6.19 or later on the host. Earlier versions (including Ubuntu 24.04's default Incus 6.0.0) have an AppArmor bug ([CVE-2025-52881](https://ubuntu.com/security/CVE-2025-52881)) that breaks Docker builds in unprivileged containers. Use the [Zabbly Incus repository](https://pkgs.zabbly.com/) for latest stable builds.
 
 **Q: Is my data backed up?**
 

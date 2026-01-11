@@ -72,24 +72,41 @@ echo "  - Max retries: 3 failed attempts"
 echo "  - Find time: 10 minutes"
 echo "  - Ban time: 1 hour"
 
-# Install Incus
-echo "==> Installing Incus..."
-if [ -n "$INCUS_VERSION" ]; then
-    echo "Installing Incus version: $INCUS_VERSION"
-    # Install specific version (adjust based on Incus installation method)
-    apt-get install -y incus="$INCUS_VERSION"
-else
-    echo "Installing latest stable Incus..."
-    # Add Incus repository if not already available
-    if ! command -v incus &> /dev/null; then
-        # For Ubuntu 24.04, Incus should be available in default repos
-        DEBIAN_FRONTEND=noninteractive apt-get install -y incus
-    fi
+# Install Incus 6.19+ (required for Docker build support)
+echo "==> Installing Incus 6.19+ from Zabbly repository..."
+# Ubuntu 24.04 default repos only have Incus 6.0.0, which has AppArmor bug (CVE-2025-52881)
+# that breaks Docker builds in unprivileged containers. We need 6.19+ from Zabbly.
+
+# Add Zabbly Incus stable repository
+if [ ! -f /etc/apt/sources.list.d/zabbly-incus-stable.list ]; then
+    echo "Adding Zabbly Incus repository..."
+    curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
+    echo 'deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable noble main' | tee /etc/apt/sources.list.d/zabbly-incus-stable.list
+    apt-get update
+    echo "✓ Zabbly repository added"
 fi
 
-# Verify Incus installation
-incus --version
-echo "✓ Incus installed successfully"
+# Install or upgrade Incus
+if [ -n "$INCUS_VERSION" ]; then
+    echo "Installing Incus version: $INCUS_VERSION"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y incus="$INCUS_VERSION" incus-tools incus-client
+else
+    echo "Installing latest stable Incus (6.19+)..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y incus incus-tools incus-client
+fi
+
+# Verify Incus installation and version
+INSTALLED_VERSION=$(incus --version)
+echo "✓ Incus $INSTALLED_VERSION installed successfully"
+
+# Verify minimum version requirement (6.19+)
+MAJOR=$(echo "$INSTALLED_VERSION" | cut -d. -f1)
+MINOR=$(echo "$INSTALLED_VERSION" | cut -d. -f2)
+if [ "$MAJOR" -lt 6 ] || ([ "$MAJOR" -eq 6 ] && [ "$MINOR" -lt 19 ]); then
+    echo "⚠ WARNING: Incus $INSTALLED_VERSION is below 6.19"
+    echo "  Docker builds may fail due to AppArmor bug (CVE-2025-52881)"
+    echo "  Please upgrade to Incus 6.19 or later"
+fi
 
 # Install ZFS for disk quota enforcement
 echo "==> Installing ZFS for disk quota support..."

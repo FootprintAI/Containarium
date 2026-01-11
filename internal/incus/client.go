@@ -480,3 +480,29 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 
 	return nil
 }
+
+// CheckVersion checks if the Incus version meets minimum requirements
+// Returns a warning message if version is below 6.19 (Docker build support)
+func (c *Client) CheckVersion() (string, error) {
+	server, err := c.GetServerInfo()
+	if err != nil {
+		return "", fmt.Errorf("failed to get Incus version: %w", err)
+	}
+
+	version := server.Environment.ServerVersion
+
+	// Parse version (format: "6.20" or "6.0.0")
+	var major, minor int
+	_, err = fmt.Sscanf(version, "%d.%d", &major, &minor)
+	if err != nil {
+		// Could not parse version, return warning but don't fail
+		return fmt.Sprintf("WARNING: Could not parse Incus version '%s', Docker builds may fail if running Incus < 6.19", version), nil
+	}
+
+	// Check minimum version (6.19+)
+	if major < 6 || (major == 6 && minor < 19) {
+		return fmt.Sprintf("WARNING: Incus %s detected. Docker builds require Incus 6.19+ due to AppArmor bug (CVE-2025-52881).\nInstall from Zabbly repository: https://pkgs.zabbly.com/", version), nil
+	}
+
+	return "", nil // Version is OK
+}

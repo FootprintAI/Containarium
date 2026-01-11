@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/footprintai/containarium/internal/incus"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/server"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -69,6 +70,25 @@ func init() {
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
+	// Check Incus version before starting daemon
+	incusClient, err := incus.New()
+	if err != nil {
+		return fmt.Errorf("failed to connect to Incus: %w", err)
+	}
+
+	if warning, err := incusClient.CheckVersion(); err != nil {
+		return fmt.Errorf("failed to check Incus version: %w", err)
+	} else if warning != "" {
+		// Print warning but continue - don't block daemon startup
+		log.Printf("\n%s\n", warning)
+	} else {
+		// Version is OK, log it
+		serverInfo, _ := incusClient.GetServerInfo()
+		if serverInfo != nil {
+			log.Printf("Incus version: %s (OK)", serverInfo.Environment.ServerVersion)
+		}
+	}
+
 	// Create listen address
 	listenAddr := fmt.Sprintf("%s:%d", daemonAddress, daemonPort)
 
