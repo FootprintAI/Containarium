@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-01-15
+
 ### Added
 - **Web UI Dashboard** - Modern browser-based container management interface
   - Real-time container metrics (CPU, Memory, Disk usage with progress bars)
@@ -156,8 +158,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **0.3.0** (2026-01-15) - Web UI Dashboard, Container Metrics, WebSocket Terminal
 - **0.2.0** (2025-01-12) - Resize command, mTLS support, production readiness
 - **0.1.0** (Initial release) - Basic container management, SSH jump server
 
-[Unreleased]: https://github.com/FootprintAI/Containarium/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/FootprintAI/Containarium/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/FootprintAI/Containarium/releases/tag/0.3.0
 [0.2.0]: https://github.com/FootprintAI/Containarium/releases/tag/0.2.0
