@@ -372,6 +372,46 @@ curl -X DELETE \
   http://localhost:8080/v1/containers/johndoe
 ```
 
+### MCP Integration (Claude Desktop)
+
+**NEW!** Control Containarium directly from Claude Desktop using natural language:
+
+```bash
+# Build and install MCP server
+make build-mcp
+make install-mcp
+
+# Generate JWT token for MCP
+containarium token generate \
+  --username mcp-client \
+  --roles admin \
+  --expiry 8760h \
+  --secret-file /etc/containarium/jwt.secret
+```
+
+**Configure Claude Desktop** (`~/.config/claude/claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "containarium": {
+      "command": "/usr/local/bin/mcp-server",
+      "env": {
+        "CONTAINARIUM_SERVER_URL": "http://localhost:8080",
+        "CONTAINARIUM_JWT_TOKEN": "your-jwt-token"
+      }
+    }
+  }
+}
+```
+
+**Use Claude to manage containers:**
+- "Create a container for alice with 8GB memory"
+- "List all running containers"
+- "Show metrics for bob's container"
+- "Delete charlie's container"
+
+👉 See [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md) for complete guide.
+
 ### Interactive API Documentation
 
 Swagger UI is available at: `http://localhost:8080/swagger-ui/`

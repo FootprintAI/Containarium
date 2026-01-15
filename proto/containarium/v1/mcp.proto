@@ -1,0 +1,291 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// MCP (Model Context Protocol) message definitions
+// These define the contract for MCP server communication
+
+// MCPRequest represents a JSON-RPC 2.0 request from the MCP client
+message MCPRequest {
+  // JSON-RPC version (always "2.0")
+  string jsonrpc = 1;
+
+  // Request ID (for matching response)
+  oneof id {
+    int64 id_int = 2;
+    string id_string = 3;
+  }
+
+  // Method name being called
+  string method = 4;
+
+  // Method parameters (encoded as JSON)
+  string params_json = 5;
+}
+
+// MCPResponse represents a JSON-RPC 2.0 response to the client
+message MCPResponse {
+  // JSON-RPC version (always "2.0")
+  string jsonrpc = 1;
+
+  // Request ID (matching the request)
+  oneof id {
+    int64 id_int = 2;
+    string id_string = 3;
+  }
+
+  // Either result or error, not both
+  oneof response {
+    // Successful result (encoded as JSON)
+    string result_json = 4;
+
+    // Error response
+    MCPError error = 5;
+  }
+}
+
+// MCPError represents an error in JSON-RPC format
+message MCPError {
+  // Error code (JSON-RPC standard codes)
+  int32 code = 1;
+
+  // Human-readable error message
+  string message = 2;
+
+  // Additional error data (optional)
+  string data = 3;
+}
+
+// MCPInitializeRequest represents the initialize method parameters
+message MCPInitializeRequest {
+  // Protocol version requested by client
+  string protocol_version = 1;
+
+  // Client information
+  MCPClientInfo client_info = 2;
+
+  // Client capabilities
+  MCPClientCapabilities capabilities = 3;
+}
+
+// MCPClientInfo contains information about the MCP client
+message MCPClientInfo {
+  // Client name (e.g., "Claude Desktop")
+  string name = 1;
+
+  // Client version
+  string version = 2;
+}
+
+// MCPClientCapabilities describes what the client supports
+message MCPClientCapabilities {
+  // Whether client supports experimental features
+  bool experimental = 1;
+
+  // Additional capabilities (reserved for future use)
+  map<string, bool> additional = 2;
+}
+
+// MCPInitializeResponse is the response to initialize
+message MCPInitializeResponse {
+  // Protocol version supported by server
+  string protocol_version = 1;
+
+  // Server information
+  MCPServerInfo server_info = 2;
+
+  // Server capabilities
+  MCPServerCapabilities capabilities = 3;
+}
+
+// MCPServerInfo contains information about the MCP server
+message MCPServerInfo {
+  // Server name
+  string name = 1;
+
+  // Server version
+  string version = 2;
+}
+
+// MCPServerCapabilities describes what the server supports
+message MCPServerCapabilities {
+  // Whether server supports tools
+  MCPToolsCapability tools = 1;
+
+  // Whether server supports resources
+  bool resources = 2;
+
+  // Whether server supports prompts
+  bool prompts = 3;
+
+  // Whether server supports logging
+  bool logging = 4;
+}
+
+// MCPToolsCapability describes tools capability
+message MCPToolsCapability {
+  // Whether tools are supported
+  bool enabled = 1;
+
+  // Whether tool listing is supported
+  bool list_changed = 2;
+}
+
+// MCPToolsListRequest requests the list of available tools
+message MCPToolsListRequest {
+  // No parameters for tools/list
+}
+
+// MCPToolsListResponse returns the list of available tools
+message MCPToolsListResponse {
+  // List of available tools
+  repeated MCPTool tools = 1;
+}
+
+// MCPTool represents a tool definition
+message MCPTool {
+  // Tool name (unique identifier)
+  string name = 1;
+
+  // Human-readable description
+  string description = 2;
+
+  // JSON Schema for input parameters (encoded as JSON)
+  string input_schema_json = 3;
+}
+
+// MCPToolsCallRequest requests execution of a tool
+message MCPToolsCallRequest {
+  // Name of the tool to call
+  string name = 1;
+
+  // Tool arguments (encoded as JSON)
+  string arguments_json = 2;
+}
+
+// MCPToolsCallResponse is the response from tool execution
+message MCPToolsCallResponse {
+  // Tool execution results
+  repeated MCPContent content = 1;
+
+  // Whether the tool execution is complete
+  bool is_error = 2;
+}
+
+// MCPContent represents content in various formats
+message MCPContent {
+  // Content type and data
+  oneof content {
+    MCPTextContent text = 1;
+    MCPImageContent image = 2;
+    MCPResourceContent resource = 3;
+  }
+}
+
+// MCPTextContent represents text content
+message MCPTextContent {
+  // Content type (always "text")
+  string type = 1;
+
+  // Text content
+  string text = 2;
+}
+
+// MCPImageContent represents image content
+message MCPImageContent {
+  // Content type (always "image")
+  string type = 1;
+
+  // Image data (base64 encoded)
+  string data = 2;
+
+  // MIME type (e.g., "image/png")
+  string mime_type = 3;
+}
+
+// MCPResourceContent represents a resource reference
+message MCPResourceContent {
+  // Content type (always "resource")
+  string type = 1;
+
+  // Resource URI
+  string uri = 2;
+
+  // MIME type
+  string mime_type = 3;
+}
+
+// MCPToolExecutionRequest is the internal request for tool execution
+// (converted from MCPToolsCallRequest)
+message MCPToolExecutionRequest {
+  // Tool name
+  string tool_name = 1;
+
+  // Parsed arguments
+  map<string, string> string_args = 2;
+  map<string, int64> int_args = 3;
+  map<string, double> double_args = 4;
+  map<string, bool> bool_args = 5;
+
+  // Raw JSON for complex types
+  string raw_json = 6;
+}
+
+// MCPToolExecutionResponse is the internal response from tool execution
+message MCPToolExecutionResponse {
+  // Success or error
+  bool success = 1;
+
+  // Result text
+  string result = 2;
+
+  // Error message (if success = false)
+  string error_message = 3;
+
+  // Additional metadata
+  map<string, string> metadata = 4;
+}
+
+// MCPHealthCheckRequest checks MCP server health
+message MCPHealthCheckRequest {
+  // No parameters
+}
+
+// MCPHealthCheckResponse returns health status
+message MCPHealthCheckResponse {
+  // Whether server is healthy
+  bool healthy = 1;
+
+  // Status message
+  string status = 2;
+
+  // Server uptime in seconds
+  int64 uptime_seconds = 3;
+
+  // Number of successful requests
+  int64 successful_requests = 4;
+
+  // Number of failed requests
+  int64 failed_requests = 5;
+}
+
+// Standard JSON-RPC error codes
+enum MCPErrorCode {
+  MCP_ERROR_CODE_UNSPECIFIED = 0;
+
+  // JSON-RPC standard errors
+  MCP_ERROR_CODE_PARSE_ERROR = -32700;
+  MCP_ERROR_CODE_INVALID_REQUEST = -32600;
+  MCP_ERROR_CODE_METHOD_NOT_FOUND = -32601;
+  MCP_ERROR_CODE_INVALID_PARAMS = -32602;
+  MCP_ERROR_CODE_INTERNAL_ERROR = -32603;
+
+  // MCP-specific errors
+  MCP_ERROR_CODE_TOOL_NOT_FOUND = -32001;
+  MCP_ERROR_CODE_TOOL_EXECUTION_FAILED = -32002;
+  MCP_ERROR_CODE_AUTHENTICATION_FAILED = -32003;
+  MCP_ERROR_CODE_RATE_LIMIT_EXCEEDED = -32004;
+  MCP_ERROR_CODE_RESOURCE_NOT_FOUND = -32005;
+}
