@@ -1,7 +1,8 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local webui swagger-ui
+.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local webui swagger-ui build-mcp build-mcp-linux install-mcp
 
 # Variables
 BINARY_NAME=containarium
+MCP_BINARY_NAME=mcp-server
 GIT_COMMIT?=$(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 BUILD_DIR=bin
@@ -86,6 +87,31 @@ build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger 
 	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/containarium/main.go
 	@echo "==> Binaries built in $(BUILD_DIR)/"
 
+build-mcp: ## Build the MCP server binary
+	@echo "==> Building MCP server..."
+	@mkdir -p $(BUILD_DIR)
+	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME) cmd/mcp-server/main.go
+	@echo "==> MCP server built: $(BUILD_DIR)/$(MCP_BINARY_NAME)"
+
+build-mcp-linux: ## Build MCP server for Linux (for deployment)
+	@echo "==> Building MCP server for Linux..."
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64 cmd/mcp-server/main.go
+	@echo "==> MCP server built: $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64"
+
+build-mcp-all: ## Build MCP server for all platforms
+	@echo "==> Building MCP server for all platforms..."
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64 cmd/mcp-server/main.go
+	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-darwin-amd64 cmd/mcp-server/main.go
+	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-darwin-arm64 cmd/mcp-server/main.go
+	@echo "==> MCP server binaries built in $(BUILD_DIR)/"
+
+install-mcp: build-mcp ## Install the MCP server binary to /usr/local/bin (requires sudo)
+	@echo "==> Installing $(MCP_BINARY_NAME) to /usr/local/bin..."
+	@sudo cp $(BUILD_DIR)/$(MCP_BINARY_NAME) /usr/local/bin/
+	@echo "==> Installed successfully. Configure in Claude Desktop to use it"
+
 install: build ## Install the binary to /usr/local/bin (requires sudo)
 	@echo "==> Installing $(BINARY_NAME) to /usr/local/bin..."
 	@sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
@@ -111,6 +137,20 @@ clean-all: clean clean-ui ## Clean all artifacts including UI files
 test: ## Run unit tests
 	@echo "==> Running unit tests..."
 	@go test -v -race -coverprofile=coverage.out ./...
+
+test-mcp: ## Run MCP server tests
+	@echo "==> Running MCP server tests..."
+	@go test -v -race -coverprofile=mcp-coverage.out ./internal/mcp
+
+test-mcp-verbose: ## Run MCP tests with verbose output
+	@echo "==> Running MCP tests (verbose)..."
+	@go test -v -count=1 ./internal/mcp
+
+test-mcp-coverage: ## Run MCP tests and show coverage
+	@echo "==> Running MCP tests with coverage..."
+	@go test -v -coverprofile=mcp-coverage.out ./internal/mcp
+	@go tool cover -html=mcp-coverage.out -o mcp-coverage.html
+	@echo "==> Coverage report: mcp-coverage.html"
 
 test-short: ## Run tests in short mode (skip integration tests)
 	@echo "==> Running unit tests (short mode)..."
