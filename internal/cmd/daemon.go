@@ -18,17 +18,21 @@ import (
 )
 
 var (
-	daemonAddress   string
-	daemonPort      int
-	daemonHTTPPort  int
-	enableMTLS      bool
-	enableREST      bool
-	daemonCertsDir  string
-	jwtSecret       string
-	jwtSecretFile   string
-	swaggerDir      string
-	networkSubnet   string
-	skipInfraInit   bool
+	daemonAddress      string
+	daemonPort         int
+	daemonHTTPPort     int
+	enableMTLS         bool
+	enableREST         bool
+	daemonCertsDir     string
+	jwtSecret          string
+	jwtSecretFile      string
+	swaggerDir         string
+	networkSubnet      string
+	skipInfraInit      bool
+	enableAppHosting   bool
+	postgresConnString string
+	baseDomain         string
+	caddyAdminURL      string
 )
 
 var daemonCmd = &cobra.Command{
@@ -91,6 +95,12 @@ func init() {
 	// Infrastructure settings
 	daemonCmd.Flags().StringVar(&networkSubnet, "network-subnet", "10.100.0.1/24", "IPv4 subnet for container network (CIDR format, e.g., 10.100.0.1/24)")
 	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
+
+	// App hosting settings
+	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
+	daemonCmd.Flags().StringVar(&postgresConnString, "postgres", "", "PostgreSQL connection string for app hosting (e.g., postgres://user:pass@host:5432/db)")
+	daemonCmd.Flags().StringVar(&baseDomain, "base-domain", "containarium.dev", "Base domain for app subdomains (e.g., containarium.dev)")
+	daemonCmd.Flags().StringVar(&caddyAdminURL, "caddy-admin-url", "http://localhost:2019", "Caddy admin API URL for reverse proxy configuration")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -158,14 +168,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create dual server config
 	config := &server.DualServerConfig{
-		GRPCAddress: daemonAddress,
-		GRPCPort:    daemonPort,
-		EnableMTLS:  enableMTLS,
-		CertsDir:    daemonCertsDir,
-		HTTPPort:    daemonHTTPPort,
-		EnableREST:  enableREST,
-		JWTSecret:   finalJWTSecret,
-		SwaggerDir:  swaggerDir,
+		GRPCAddress:        daemonAddress,
+		GRPCPort:           daemonPort,
+		EnableMTLS:         enableMTLS,
+		CertsDir:           daemonCertsDir,
+		HTTPPort:           daemonHTTPPort,
+		EnableREST:         enableREST,
+		JWTSecret:          finalJWTSecret,
+		SwaggerDir:         swaggerDir,
+		EnableAppHosting:   enableAppHosting,
+		PostgresConnString: postgresConnString,
+		BaseDomain:         baseDomain,
+		CaddyAdminURL:      caddyAdminURL,
 	}
 
 	// Create dual server

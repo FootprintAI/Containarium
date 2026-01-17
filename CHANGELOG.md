@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **App Hosting Feature** - Deploy web applications with automatic HTTPS
+  - `containarium app deploy` - Deploy apps from source directory
+  - `containarium app list` - List deployed applications
+  - `containarium app logs` - View application logs
+  - `containarium app stop/start/restart` - Lifecycle management
+  - `containarium app delete` - Remove applications
+  - Auto-detection for 7 languages: Node.js, Python, Go, Rust, Ruby, PHP, Static
+  - Buildpack system generates Dockerfiles automatically
+  - PostgreSQL storage for app metadata
+  - Subdomain-based routing (e.g., `username-appname.containarium.dev`)
+- **Caddy Reverse Proxy Integration** - Automatic TLS with DNS-01 challenge
+  - Wildcard certificate support for `*.containarium.dev`
+  - Dynamic route configuration via Caddy Admin API
+  - Setup script: `scripts/setup-caddy.sh`
+  - Supports 8 DNS providers: Cloudflare, Route53, Google Cloud DNS, DigitalOcean, Azure, Vultr, DuckDNS, Namecheap
+  - Documentation: `docs/CADDY-SETUP.md`
+- **Docker-in-Docker Privileged Mode** - Full Docker support inside containers
+  - `EnableDockerPrivileged` option for container creation
+  - Automatically sets `security.privileged=true` and `raw.lxc=lxc.apparmor.profile=unconfined`
+  - Required for Docker builds to work inside Incus containers
+- **New daemon flags for App Hosting**:
+  - `--app-hosting` - Enable app hosting feature
+  - `--postgres` - PostgreSQL connection string
+  - `--base-domain` - Base domain for app subdomains (default: `containarium.dev`)
+  - `--caddy-admin-url` - Caddy admin API URL (default: `http://localhost:2019`)
+- **ProxyManager unit tests** - 9 test cases for Caddy API integration
 - **Auto-initialization of Incus infrastructure** on daemon startup
   - Automatically creates storage pool (`default` with `dir` driver)
   - Automatically creates network bridge (`incusbr0`)
@@ -46,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server address flag help text updated to reflect dual-protocol support
 
 ### Fixed
+- **Node.js buildpack `npm ci` failure** - Fixed Dockerfile generation to use `npm install --omit=dev` when `package-lock.json` is missing, falls back to `npm ci --omit=dev` when lock file exists
+- **PostgreSQL timestamp encoding** - Fixed `deployedAt` field type from `*interface{}` to `*time.Time` for proper database encoding
+- **Caddy server name mismatch** - Fixed ProxyManager to use `srv0` (Caddyfile default) instead of hardcoded `main`, now configurable via `SetServerName()`
+- **Docker AppArmor permission denied** - Added privileged mode and AppArmor unconfined profile for Docker-in-Docker support
 - **Network subnet conflicts** - Previously manual network setup could conflict with host network
   - Auto-initialization uses safe default `10.100.0.1/24` instead of common `10.0.3.0/24`
   - Prevents loss of connectivity when running Containarium inside LXC containers

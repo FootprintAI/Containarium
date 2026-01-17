@@ -8,8 +8,10 @@ import (
 	"log"
 	"net"
 
+	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/gateway"
+	"github.com/footprintai/containarium/internal/incus"
 	"github.com/footprintai/containarium/internal/mtls"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
@@ -33,6 +35,12 @@ type DualServerConfig struct {
 
 	// Swagger settings
 	SwaggerDir string
+
+	// App hosting settings (optional)
+	EnableAppHosting     bool
+	PostgresConnString   string
+	BaseDomain           string
+	CaddyAdminURL        string
 }
 
 // DualServer runs both gRPC and HTTP/REST servers
@@ -40,6 +48,7 @@ type DualServer struct {
 	config          *DualServerConfig
 	grpcServer      *grpc.Server
 	containerServer *ContainerServer
+	appServer       *AppServer
 	gatewayServer   *gateway.GatewayServer
 	tokenManager    *auth.TokenManager
 	authMiddleware  *auth.AuthMiddleware
@@ -86,8 +95,31 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		log.Printf("WARNING: gRPC server running in INSECURE mode")
 	}
 
-	// Register services
+	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
+
+	// Create and register AppServer if app hosting is enabled
+	var appServer *AppServer
+	if config.EnableAppHosting && config.PostgresConnString != "" {
+		appStore, err := app.NewStore(context.Background(), config.PostgresConnString)
+		if err != nil {
+			log.Printf("Warning: Failed to connect to app store: %v. App hosting disabled.", err)
+		} else {
+			incusClient, err := incus.New()
+			if err != nil {
+				log.Printf("Warning: Failed to create incus client for app hosting: %v", err)
+			} else {
+				appManager := app.NewManager(appStore, incusClient, app.ManagerConfig{
+					BaseDomain:    config.BaseDomain,
+					CaddyAdminURL: config.CaddyAdminURL,
+				})
+				appServer = NewAppServer(appManager, appStore)
+				pb.RegisterAppServiceServer(grpcServer, appServer)
+				log.Printf("App hosting service enabled")
+			}
+		}
+	}
+
 	reflection.Register(grpcServer)
 
 	// Create gateway server if REST is enabled
@@ -120,6 +152,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		config:          config,
 		grpcServer:      grpcServer,
 		containerServer: containerServer,
+		appServer:       appServer,
 		gatewayServer:   gatewayServer,
 		tokenManager:    tokenManager,
 		authMiddleware:  authMiddleware,

@@ -16,15 +16,16 @@ type Manager struct {
 
 // CreateOptions holds options for creating a container
 type CreateOptions struct {
-	Username     string
-	Image        string
-	CPU          string
-	Memory       string
-	Disk         string
-	SSHKeys      []string
-	EnableDocker bool
-	AutoStart    bool
-	Verbose      bool
+	Username               string
+	Image                  string
+	CPU                    string
+	Memory                 string
+	Disk                   string
+	SSHKeys                []string
+	EnableDocker           bool
+	EnableDockerPrivileged bool // Full Docker support (privileged + AppArmor disabled)
+	AutoStart              bool
+	Verbose                bool
 }
 
 // New creates a new container manager
@@ -51,13 +52,14 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}
 
 	config := incus.ContainerConfig{
-		Name:          containerName,
-		Image:         opts.Image,
-		CPU:           opts.CPU,
-		Memory:        opts.Memory,
-		Disk:          opts.Disk,
-		EnableNesting: opts.EnableDocker,
-		AutoStart:     opts.AutoStart,
+		Name:                   containerName,
+		Image:                  opts.Image,
+		CPU:                    opts.CPU,
+		Memory:                 opts.Memory,
+		Disk:                   opts.Disk,
+		EnableNesting:          opts.EnableDocker,
+		EnableDockerPrivileged: opts.EnableDockerPrivileged,
+		AutoStart:              opts.AutoStart,
 	}
 
 	if err := m.incus.CreateContainer(config); err != nil {

@@ -277,15 +277,16 @@ func createLocal(username, image, cpu, memory, disk string, sshKeys []string, en
 	}
 
 	opts := container.CreateOptions{
-		Username:     username,
-		Image:        image,
-		CPU:          cpu,
-		Memory:       memory,
-		Disk:         disk,
-		SSHKeys:      sshKeys,
-		EnableDocker: enableDocker,
-		AutoStart:    true,
-		Verbose:      verbose,
+		Username:               username,
+		Image:                  image,
+		CPU:                    cpu,
+		Memory:                 memory,
+		Disk:                   disk,
+		SSHKeys:                sshKeys,
+		EnableDocker:           enableDocker,
+		EnableDockerPrivileged: enableDocker, // Enable privileged mode for proper Docker-in-Docker
+		AutoStart:              true,
+		Verbose:                verbose,
 	}
 
 	return mgr.Create(opts)

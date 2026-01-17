@@ -1,0 +1,380 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// AppState represents the lifecycle state of an application
+enum AppState {
+  // Unspecified state (should not be used)
+  APP_STATE_UNSPECIFIED = 0;
+
+  // Source code is being uploaded
+  APP_STATE_UPLOADING = 1;
+
+  // Docker image is being built
+  APP_STATE_BUILDING = 2;
+
+  // App is running and healthy
+  APP_STATE_RUNNING = 3;
+
+  // App is stopped by user
+  APP_STATE_STOPPED = 4;
+
+  // Build or runtime failure
+  APP_STATE_FAILED = 5;
+
+  // App is restarting
+  APP_STATE_RESTARTING = 6;
+}
+
+// App represents a deployed application
+message App {
+  // Unique app ID (UUID) - immutable primary key
+  string id = 1;
+
+  // App name (user-defined, e.g., "myapp")
+  string name = 2;
+
+  // Owner username
+  string username = 3;
+
+  // LXC container name where app runs
+  string container_name = 4;
+
+  // Subdomain (e.g., "myapp")
+  string subdomain = 5;
+
+  // Full domain (e.g., "myapp.containarium.dev")
+  string full_domain = 6;
+
+  // App port inside container
+  int32 port = 7;
+
+  // Current state
+  AppState state = 8;
+
+  // Built Docker image tag
+  string docker_image = 9;
+
+  // Path to Dockerfile in source
+  string dockerfile_path = 10;
+
+  // Environment variables
+  map<string, string> env_vars = 11;
+
+  // When app was created
+  google.protobuf.Timestamp created_at = 12;
+
+  // When app was last updated
+  google.protobuf.Timestamp updated_at = 13;
+
+  // Last successful deployment time
+  google.protobuf.Timestamp deployed_at = 14;
+
+  // Error message if state is FAILED
+  string error_message = 15;
+
+  // Number of restarts
+  int32 restart_count = 16;
+}
+
+// BuildpackOptions for auto-generating Dockerfiles
+message BuildpackOptions {
+  // Node.js version (e.g., "18", "20")
+  string node_version = 1;
+
+  // Python version (e.g., "3.11", "3.12")
+  string python_version = 2;
+
+  // Go version (e.g., "1.21", "1.22")
+  string go_version = 3;
+
+  // Rust version (e.g., "1.75")
+  string rust_version = 4;
+
+  // Enable/disable auto-detection (default: true)
+  bool auto_detect = 5;
+}
+
+// DetectedLanguage information
+message DetectedLanguage {
+  // Language name (e.g., "Node.js", "Python", "Go")
+  string name = 1;
+
+  // Detected version
+  string version = 2;
+
+  // true if user provided Dockerfile
+  bool dockerfile_provided = 3;
+}
+
+// DeployAppRequest deploys a new app or updates existing
+message DeployAppRequest {
+  // Username (from JWT)
+  string username = 1;
+
+  // App name (alphanumeric + hyphens)
+  string app_name = 2;
+
+  // Gzipped tarball of source code
+  bytes source_tarball = 3;
+
+  // Path to Dockerfile (default: "./Dockerfile")
+  string dockerfile_path = 4;
+
+  // App port (default: 3000)
+  int32 port = 5;
+
+  // Environment variables
+  map<string, string> env_vars = 6;
+
+  // Custom subdomain (optional, defaults to app_name)
+  string subdomain = 7;
+
+  // Buildpack options for auto-generated Dockerfiles
+  BuildpackOptions buildpack = 8;
+}
+
+message DeployAppResponse {
+  // Deployed app
+  App app = 1;
+
+  // Status message
+  string message = 2;
+
+  // URL to stream build logs
+  string build_log_url = 3;
+
+  // Detected language information
+  DetectedLanguage detected_language = 4;
+}
+
+// ListAppsRequest lists apps for a user
+message ListAppsRequest {
+  // Username (empty for all - admin only)
+  string username = 1;
+
+  // Filter by state
+  AppState state_filter = 2;
+}
+
+message ListAppsResponse {
+  // List of apps
+  repeated App apps = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// GetAppRequest gets details for a specific app
+message GetAppRequest {
+  // Username
+  string username = 1;
+
+  // App name
+  string app_name = 2;
+}
+
+message GetAppResponse {
+  // App details
+  App app = 1;
+}
+
+// StopAppRequest stops a running app
+message StopAppRequest {
+  // Username
+  string username = 1;
+
+  // App name
+  string app_name = 2;
+}
+
+message StopAppResponse {
+  // Updated app
+  App app = 1;
+
+  // Status message
+  string message = 2;
+}
+
+// StartAppRequest starts a stopped app
+message StartAppRequest {
+  // Username
+  string username = 1;
+
+  // App name
+  string app_name = 2;
+}
+
+message StartAppResponse {
+  // Updated app
+  App app = 1;
+
+  // Status message
+  string message = 2;
+}
+
+// RestartAppRequest restarts an app
+message RestartAppRequest {
+  // Username
+  string username = 1;
+
+  // App name
+  string app_name = 2;
+}
+
+message RestartAppResponse {
+  // Updated app
+  App app = 1;
+
+  // Status message
+  string message = 2;
+}
+
+// DeleteAppRequest deletes an app
+message DeleteAppRequest {
+  // Username
+  string username = 1;
+
+  // App name
+  string app_name = 2;
+
+  // Remove persistent data volumes
+  bool remove_data = 3;
+}
+
+message DeleteAppResponse {
+  // Status message
+  string message = 1;
+}
+
+// GetAppLogsRequest gets logs for an app
+message GetAppLogsRequest {
+  // Username
+  string username = 1;
+
+  // App name
+  string app_name = 2;
+
+  // Number of lines from end (default: 100)
+  int32 tail_lines = 3;
+
+  // Stream logs (Server-Sent Events)
+  bool follow = 4;
+}
+
+message GetAppLogsResponse {
+  // Log lines
+  repeated string log_lines = 1;
+
+  // Timestamp of logs
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+// AppService provides application deployment and management
+service AppService {
+  // DeployApp deploys a new app or updates existing
+  rpc DeployApp(DeployAppRequest) returns (DeployAppResponse) {
+    option (google.api.http) = {
+      post: "/v1/apps"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Deploy an application";
+      description: "Deploys a new application or updates an existing one. Accepts source code + Dockerfile or auto-detects language and generates Dockerfile.";
+      tags: "Applications";
+    };
+  }
+
+  // ListApps lists all apps for a user
+  rpc ListApps(ListAppsRequest) returns (ListAppsResponse) {
+    option (google.api.http) = {
+      get: "/v1/apps"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List applications";
+      description: "Returns a list of deployed applications with optional filtering by state or username.";
+      tags: "Applications";
+    };
+  }
+
+  // GetApp gets app details
+  rpc GetApp(GetAppRequest) returns (GetAppResponse) {
+    option (google.api.http) = {
+      get: "/v1/apps/{username}/{app_name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get application details";
+      description: "Returns detailed information about a specific application including state, domain, and configuration.";
+      tags: "Applications";
+    };
+  }
+
+  // StopApp stops a running app
+  rpc StopApp(StopAppRequest) returns (StopAppResponse) {
+    option (google.api.http) = {
+      post: "/v1/apps/{username}/{app_name}/stop"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Stop an application";
+      description: "Stops a running application. The application can be started again later.";
+      tags: "Application Operations";
+    };
+  }
+
+  // StartApp starts a stopped app
+  rpc StartApp(StartAppRequest) returns (StartAppResponse) {
+    option (google.api.http) = {
+      post: "/v1/apps/{username}/{app_name}/start"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Start an application";
+      description: "Starts a stopped application.";
+      tags: "Application Operations";
+    };
+  }
+
+  // RestartApp restarts an app
+  rpc RestartApp(RestartAppRequest) returns (RestartAppResponse) {
+    option (google.api.http) = {
+      post: "/v1/apps/{username}/{app_name}/restart"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Restart an application";
+      description: "Restarts an application by stopping and starting it.";
+      tags: "Application Operations";
+    };
+  }
+
+  // DeleteApp deletes an app
+  rpc DeleteApp(DeleteAppRequest) returns (DeleteAppResponse) {
+    option (google.api.http) = {
+      delete: "/v1/apps/{username}/{app_name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete an application";
+      description: "Permanently deletes an application and optionally removes associated data volumes.";
+      tags: "Applications";
+    };
+  }
+
+  // GetAppLogs gets application logs
+  rpc GetAppLogs(GetAppLogsRequest) returns (stream GetAppLogsResponse) {
+    option (google.api.http) = {
+      get: "/v1/apps/{username}/{app_name}/logs"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get application logs";
+      description: "Returns application logs with optional streaming. Use follow=true for real-time log streaming.";
+      tags: "Application Operations";
+    };
+  }
+}

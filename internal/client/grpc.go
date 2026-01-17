@@ -16,8 +16,9 @@ import (
 
 // GRPCClient wraps a gRPC connection to the containarium daemon
 type GRPCClient struct {
-	conn   *grpc.ClientConn
-	client pb.ContainerServiceClient
+	conn            *grpc.ClientConn
+	client          pb.ContainerServiceClient
+	appClient       pb.AppServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -65,12 +66,14 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		return nil, fmt.Errorf("failed to dial server: %w", err)
 	}
 
-	// Create client
+	// Create clients
 	client := pb.NewContainerServiceClient(conn)
+	appClient := pb.NewAppServiceClient(conn)
 
 	return &GRPCClient{
-		conn:   conn,
-		client: client,
+		conn:      conn,
+		client:    client,
+		appClient: appClient,
 	}, nil
 }
 
@@ -236,4 +239,168 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	}
 
 	return info, nil
+}
+
+// ============================================
+// App Service Methods
+// ============================================
+
+// DeployApp deploys an application via gRPC
+func (c *GRPCClient) DeployApp(username, appName string, sourceTarball []byte, port int32, envVars map[string]string, subdomain string) (*pb.App, *pb.DetectedLanguage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute) // Build can take time
+	defer cancel()
+
+	req := &pb.DeployAppRequest{
+		Username:      username,
+		AppName:       appName,
+		SourceTarball: sourceTarball,
+		Port:          port,
+		EnvVars:       envVars,
+		Subdomain:     subdomain,
+	}
+
+	resp, err := c.appClient.DeployApp(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to deploy app: %w", err)
+	}
+
+	return resp.App, resp.DetectedLanguage, nil
+}
+
+// ListApps lists all applications via gRPC
+func (c *GRPCClient) ListApps(username string, stateFilter pb.AppState) ([]*pb.App, int32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req := &pb.ListAppsRequest{
+		Username:    username,
+		StateFilter: stateFilter,
+	}
+
+	resp, err := c.appClient.ListApps(ctx, req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list apps: %w", err)
+	}
+
+	return resp.Apps, resp.TotalCount, nil
+}
+
+// GetApp gets information about a specific application via gRPC
+func (c *GRPCClient) GetApp(username, appName string) (*pb.App, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req := &pb.GetAppRequest{
+		Username: username,
+		AppName:  appName,
+	}
+
+	resp, err := c.appClient.GetApp(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get app: %w", err)
+	}
+
+	return resp.App, nil
+}
+
+// StopApp stops an application via gRPC
+func (c *GRPCClient) StopApp(username, appName string) (*pb.App, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := &pb.StopAppRequest{
+		Username: username,
+		AppName:  appName,
+	}
+
+	resp, err := c.appClient.StopApp(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stop app: %w", err)
+	}
+
+	return resp.App, nil
+}
+
+// StartApp starts an application via gRPC
+func (c *GRPCClient) StartApp(username, appName string) (*pb.App, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := &pb.StartAppRequest{
+		Username: username,
+		AppName:  appName,
+	}
+
+	resp, err := c.appClient.StartApp(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start app: %w", err)
+	}
+
+	return resp.App, nil
+}
+
+// RestartApp restarts an application via gRPC
+func (c *GRPCClient) RestartApp(username, appName string) (*pb.App, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req := &pb.RestartAppRequest{
+		Username: username,
+		AppName:  appName,
+	}
+
+	resp, err := c.appClient.RestartApp(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to restart app: %w", err)
+	}
+
+	return resp.App, nil
+}
+
+// DeleteApp deletes an application via gRPC
+func (c *GRPCClient) DeleteApp(username, appName string, removeData bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := &pb.DeleteAppRequest{
+		Username:   username,
+		AppName:    appName,
+		RemoveData: removeData,
+	}
+
+	_, err := c.appClient.DeleteApp(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to delete app: %w", err)
+	}
+
+	return nil
+}
+
+// GetAppLogs gets application logs via gRPC
+func (c *GRPCClient) GetAppLogs(username, appName string, tailLines int32) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := &pb.GetAppLogsRequest{
+		Username:  username,
+		AppName:   appName,
+		TailLines: tailLines,
+		Follow:    false,
+	}
+
+	stream, err := c.appClient.GetAppLogs(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get app logs: %w", err)
+	}
+
+	var logs []string
+	for {
+		resp, err := stream.Recv()
+		if err != nil {
+			break // End of stream or error
+		}
+		logs = append(logs, resp.LogLines...)
+	}
+
+	return logs, nil
 }

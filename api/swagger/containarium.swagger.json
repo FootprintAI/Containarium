@@ -16,6 +16,9 @@
   "tags": [
     {
       "name": "ContainerService"
+    },
+    {
+      "name": "AppService"
     }
   ],
   "schemes": [
@@ -29,6 +32,381 @@
     "application/json"
   ],
   "paths": {
+    "/v1/apps": {
+      "get": {
+        "summary": "List applications",
+        "description": "Returns a list of deployed applications with optional filtering by state or username.",
+        "operationId": "AppService_ListApps",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAppsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username (empty for all - admin only)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "stateFilter",
+            "description": "Filter by state\n\n - APP_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - APP_STATE_UPLOADING: Source code is being uploaded\n - APP_STATE_BUILDING: Docker image is being built\n - APP_STATE_RUNNING: App is running and healthy\n - APP_STATE_STOPPED: App is stopped by user\n - APP_STATE_FAILED: Build or runtime failure\n - APP_STATE_RESTARTING: App is restarting",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "APP_STATE_UNSPECIFIED",
+              "APP_STATE_UPLOADING",
+              "APP_STATE_BUILDING",
+              "APP_STATE_RUNNING",
+              "APP_STATE_STOPPED",
+              "APP_STATE_FAILED",
+              "APP_STATE_RESTARTING"
+            ],
+            "default": "APP_STATE_UNSPECIFIED"
+          }
+        ],
+        "tags": [
+          "Applications"
+        ]
+      },
+      "post": {
+        "summary": "Deploy an application",
+        "description": "Deploys a new application or updates an existing one. Accepts source code + Dockerfile or auto-detects language and generates Dockerfile.",
+        "operationId": "AppService_DeployApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeployAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/DeployAppRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Applications"
+        ]
+      }
+    },
+    "/v1/apps/{username}/{appName}": {
+      "get": {
+        "summary": "Get application details",
+        "description": "Returns detailed information about a specific application including state, domain, and configuration.",
+        "operationId": "AppService_GetApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "appName",
+            "description": "App name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Applications"
+        ]
+      },
+      "delete": {
+        "summary": "Delete an application",
+        "description": "Permanently deletes an application and optionally removes associated data volumes.",
+        "operationId": "AppService_DeleteApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "appName",
+            "description": "App name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "removeData",
+            "description": "Remove persistent data volumes",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Applications"
+        ]
+      }
+    },
+    "/v1/apps/{username}/{appName}/logs": {
+      "get": {
+        "summary": "Get application logs",
+        "description": "Returns application logs with optional streaming. Use follow=true for real-time log streaming.",
+        "operationId": "AppService_GetAppLogs",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/GetAppLogsResponse"
+                },
+                "error": {
+                  "$ref": "#/definitions/Status"
+                }
+              },
+              "title": "Stream result of GetAppLogsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "appName",
+            "description": "App name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "tailLines",
+            "description": "Number of lines from end (default: 100)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "follow",
+            "description": "Stream logs (Server-Sent Events)",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Application Operations"
+        ]
+      }
+    },
+    "/v1/apps/{username}/{appName}/restart": {
+      "post": {
+        "summary": "Restart an application",
+        "description": "Restarts an application by stopping and starting it.",
+        "operationId": "AppService_RestartApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RestartAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "appName",
+            "description": "App name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RestartAppBody"
+            }
+          }
+        ],
+        "tags": [
+          "Application Operations"
+        ]
+      }
+    },
+    "/v1/apps/{username}/{appName}/start": {
+      "post": {
+        "summary": "Start an application",
+        "description": "Starts a stopped application.",
+        "operationId": "AppService_StartApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StartAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "appName",
+            "description": "App name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StartAppBody"
+            }
+          }
+        ],
+        "tags": [
+          "Application Operations"
+        ]
+      }
+    },
+    "/v1/apps/{username}/{appName}/stop": {
+      "post": {
+        "summary": "Stop an application",
+        "description": "Stops a running application. The application can be started again later.",
+        "operationId": "AppService_StopApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StopAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "appName",
+            "description": "App name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StopAppBody"
+            }
+          }
+        ],
+        "tags": [
+          "Application Operations"
+        ]
+      }
+    },
     "/v1/containers": {
       "get": {
         "summary": "List all containers",
@@ -477,6 +855,125 @@
       },
       "additionalProperties": {}
     },
+    "App": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Unique app ID (UUID) - immutable primary key"
+        },
+        "name": {
+          "type": "string",
+          "title": "App name (user-defined, e.g., \"myapp\")"
+        },
+        "username": {
+          "type": "string",
+          "title": "Owner username"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "LXC container name where app runs"
+        },
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain (e.g., \"myapp\")"
+        },
+        "fullDomain": {
+          "type": "string",
+          "title": "Full domain (e.g., \"myapp.containarium.dev\")"
+        },
+        "port": {
+          "type": "integer",
+          "format": "int32",
+          "title": "App port inside container"
+        },
+        "state": {
+          "$ref": "#/definitions/AppState",
+          "title": "Current state"
+        },
+        "dockerImage": {
+          "type": "string",
+          "title": "Built Docker image tag"
+        },
+        "dockerfilePath": {
+          "type": "string",
+          "title": "Path to Dockerfile in source"
+        },
+        "envVars": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Environment variables"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "When app was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "When app was last updated"
+        },
+        "deployedAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Last successful deployment time"
+        },
+        "errorMessage": {
+          "type": "string",
+          "title": "Error message if state is FAILED"
+        },
+        "restartCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of restarts"
+        }
+      },
+      "title": "App represents a deployed application"
+    },
+    "AppState": {
+      "type": "string",
+      "enum": [
+        "APP_STATE_UNSPECIFIED",
+        "APP_STATE_UPLOADING",
+        "APP_STATE_BUILDING",
+        "APP_STATE_RUNNING",
+        "APP_STATE_STOPPED",
+        "APP_STATE_FAILED",
+        "APP_STATE_RESTARTING"
+      ],
+      "default": "APP_STATE_UNSPECIFIED",
+      "description": "- APP_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - APP_STATE_UPLOADING: Source code is being uploaded\n - APP_STATE_BUILDING: Docker image is being built\n - APP_STATE_RUNNING: App is running and healthy\n - APP_STATE_STOPPED: App is stopped by user\n - APP_STATE_FAILED: Build or runtime failure\n - APP_STATE_RESTARTING: App is restarting",
+      "title": "AppState represents the lifecycle state of an application"
+    },
+    "BuildpackOptions": {
+      "type": "object",
+      "properties": {
+        "nodeVersion": {
+          "type": "string",
+          "title": "Node.js version (e.g., \"18\", \"20\")"
+        },
+        "pythonVersion": {
+          "type": "string",
+          "title": "Python version (e.g., \"3.11\", \"3.12\")"
+        },
+        "goVersion": {
+          "type": "string",
+          "title": "Go version (e.g., \"1.21\", \"1.22\")"
+        },
+        "rustVersion": {
+          "type": "string",
+          "title": "Rust version (e.g., \"1.75\")"
+        },
+        "autoDetect": {
+          "type": "boolean",
+          "title": "Enable/disable auto-detection (default: true)"
+        }
+      },
+      "title": "BuildpackOptions for auto-generating Dockerfiles"
+    },
     "Container": {
       "type": "object",
       "properties": {
@@ -652,6 +1149,15 @@
       },
       "title": "CreateContainerResponse is the response from creating a container"
     },
+    "DeleteAppResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        }
+      }
+    },
     "DeleteContainerResponse": {
       "type": "object",
       "properties": {
@@ -665,6 +1171,114 @@
         }
       },
       "title": "DeleteContainerResponse is the response from deleting a container"
+    },
+    "DeployAppRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "title": "Username (from JWT)"
+        },
+        "appName": {
+          "type": "string",
+          "title": "App name (alphanumeric + hyphens)"
+        },
+        "sourceTarball": {
+          "type": "string",
+          "format": "byte",
+          "title": "Gzipped tarball of source code"
+        },
+        "dockerfilePath": {
+          "type": "string",
+          "title": "Path to Dockerfile (default: \"./Dockerfile\")"
+        },
+        "port": {
+          "type": "integer",
+          "format": "int32",
+          "title": "App port (default: 3000)"
+        },
+        "envVars": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Environment variables"
+        },
+        "subdomain": {
+          "type": "string",
+          "title": "Custom subdomain (optional, defaults to app_name)"
+        },
+        "buildpack": {
+          "$ref": "#/definitions/BuildpackOptions",
+          "title": "Buildpack options for auto-generated Dockerfiles"
+        }
+      },
+      "title": "DeployAppRequest deploys a new app or updates existing"
+    },
+    "DeployAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/App",
+          "title": "Deployed app"
+        },
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        },
+        "buildLogUrl": {
+          "type": "string",
+          "title": "URL to stream build logs"
+        },
+        "detectedLanguage": {
+          "$ref": "#/definitions/DetectedLanguage",
+          "title": "Detected language information"
+        }
+      }
+    },
+    "DetectedLanguage": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "Language name (e.g., \"Node.js\", \"Python\", \"Go\")"
+        },
+        "version": {
+          "type": "string",
+          "title": "Detected version"
+        },
+        "dockerfileProvided": {
+          "type": "boolean",
+          "title": "true if user provided Dockerfile"
+        }
+      },
+      "title": "DetectedLanguage information"
+    },
+    "GetAppLogsResponse": {
+      "type": "object",
+      "properties": {
+        "logLines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Log lines"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Timestamp of logs"
+        }
+      }
+    },
+    "GetAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/App",
+          "title": "App details"
+        }
+      }
     },
     "GetContainerResponse": {
       "type": "object",
@@ -703,6 +1317,24 @@
         }
       },
       "title": "GetSystemInfoResponse is the response from getting system information"
+    },
+    "ListAppsResponse": {
+      "type": "object",
+      "properties": {
+        "apps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/App"
+          },
+          "title": "List of apps"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count"
+        }
+      }
     },
     "ListContainersResponse": {
       "type": "object",
@@ -778,6 +1410,40 @@
       },
       "title": "ResourceLimits defines resource constraints for a container"
     },
+    "RestartAppBody": {
+      "type": "object",
+      "title": "RestartAppRequest restarts an app"
+    },
+    "RestartAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/App",
+          "title": "Updated app"
+        },
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        }
+      }
+    },
+    "StartAppBody": {
+      "type": "object",
+      "title": "StartAppRequest starts a stopped app"
+    },
+    "StartAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/App",
+          "title": "Updated app"
+        },
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        }
+      }
+    },
     "StartContainerBody": {
       "type": "object",
       "title": "StartContainerRequest is the request to start a container"
@@ -812,6 +1478,23 @@
             "type": "object",
             "$ref": "#/definitions/Any"
           }
+        }
+      }
+    },
+    "StopAppBody": {
+      "type": "object",
+      "title": "StopAppRequest stops a running app"
+    },
+    "StopAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/App",
+          "title": "Updated app"
+        },
+        "message": {
+          "type": "string",
+          "title": "Status message"
         }
       }
     },

@@ -48,11 +48,12 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 	// Build create options
 	opts := container.CreateOptions{
-		Username:     req.Username,
-		Image:        req.Image,
-		SSHKeys:      req.SshKeys,
-		EnableDocker: req.EnableDocker,
-		AutoStart:    true,
+		Username:               req.Username,
+		Image:                  req.Image,
+		SSHKeys:                req.SshKeys,
+		EnableDocker:           req.EnableDocker,
+		EnableDockerPrivileged: req.EnableDocker, // Enable privileged mode for proper Docker-in-Docker support
+		AutoStart:              true,
 	}
 
 	// Set resource limits

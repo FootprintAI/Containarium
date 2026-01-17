@@ -1,7 +1,9 @@
 package incus
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -16,13 +18,14 @@ type Client struct {
 
 // ContainerConfig holds configuration for creating a container
 type ContainerConfig struct {
-	Name         string
-	Image        string
-	CPU          string
-	Memory       string
-	Disk         string
-	EnableNesting bool
-	AutoStart    bool
+	Name                   string
+	Image                  string
+	CPU                    string
+	Memory                 string
+	Disk                   string
+	EnableNesting          bool
+	EnableDockerPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
+	AutoStart              bool
 }
 
 // ContainerInfo holds information about a container
@@ -154,6 +157,13 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 		req.Config["security.nesting"] = "true"
 		req.Config["security.syscalls.intercept.mknod"] = "true"
 		req.Config["security.syscalls.intercept.setxattr"] = "true"
+	}
+
+	// Full Docker-in-Docker support (privileged mode with AppArmor disabled)
+	// This is required for Docker to run properly inside the container
+	if config.EnableDockerPrivileged {
+		req.Config["security.privileged"] = "true"
+		req.Config["raw.lxc"] = "lxc.apparmor.profile=unconfined"
 	}
 
 	// Auto-start on boot
@@ -797,4 +807,86 @@ func (c *Client) GetNetworkSubnet(networkName string) (string, error) {
 	}
 
 	return "", fmt.Errorf("network %s has no IPv4 address configured", networkName)
+}
+
+// WriteFile writes content to a file inside a container
+func (c *Client) WriteFile(containerName, path string, content []byte, mode string) error {
+	// Use incus file push functionality via the API
+	args := incus.InstanceFileArgs{
+		Content:   bytes.NewReader(content),
+		WriteMode: "overwrite",
+	}
+
+	// Set file mode if provided
+	if mode != "" {
+		// Parse mode string to int
+		var modeInt int64
+		if _, err := fmt.Sscanf(mode, "%o", &modeInt); err == nil {
+			modeVal := int(modeInt)
+			args.Mode = modeVal
+		}
+	}
+
+	err := c.server.CreateInstanceFile(containerName, path, args)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+// ReadFile reads content from a file inside a container
+func (c *Client) ReadFile(containerName, path string) ([]byte, error) {
+	reader, _, err := c.server.GetInstanceFile(containerName, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	defer reader.Close()
+
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file content: %w", err)
+	}
+
+	return content, nil
+}
+
+// ExecWithOutput executes a command inside a container and returns stdout/stderr
+func (c *Client) ExecWithOutput(containerName string, command []string) (string, string, error) {
+	var stdout, stderr bytes.Buffer
+
+	req := api.InstanceExecPost{
+		Command:     command,
+		WaitForWS:   true,
+		Interactive: false,
+		// Note: RecordOutput cannot be used with WaitForWS
+		// We capture output via the args.Stdout/Stderr instead
+	}
+
+	// Create exec args with stdio handlers to capture output
+	args := &incus.InstanceExecArgs{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}
+
+	op, err := c.server.ExecInstance(containerName, req, args)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to execute command: %w", err)
+	}
+
+	// Wait for the operation to complete
+	err = op.Wait()
+	if err != nil {
+		return stdout.String(), stderr.String(), fmt.Errorf("command execution failed: %w", err)
+	}
+
+	// Check exit code
+	opMeta := op.Get()
+	if opMeta.Metadata != nil {
+		if returnVal, ok := opMeta.Metadata["return"].(float64); ok && returnVal != 0 {
+			return stdout.String(), stderr.String(), fmt.Errorf("command exited with code %d", int(returnVal))
+		}
+	}
+
+	return stdout.String(), stderr.String(), nil
 }

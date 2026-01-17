@@ -87,7 +87,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 
 	// Register gateway handlers
 	if err := pb.RegisterContainerServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
-		return fmt.Errorf("failed to register gateway: %w", err)
+		return fmt.Errorf("failed to register container service gateway: %w", err)
+	}
+
+	// Register AppService gateway handler
+	if err := pb.RegisterAppServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register app service gateway: %w", err)
 	}
 
 	// Create HTTP handler with authentication middleware
