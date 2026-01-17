@@ -18,15 +18,17 @@ import (
 )
 
 var (
-	daemonAddress  string
-	daemonPort     int
-	daemonHTTPPort int
-	enableMTLS     bool
-	enableREST     bool
-	daemonCertsDir string
-	jwtSecret      string
-	jwtSecretFile  string
-	swaggerDir     string
+	daemonAddress   string
+	daemonPort      int
+	daemonHTTPPort  int
+	enableMTLS      bool
+	enableREST      bool
+	daemonCertsDir  string
+	jwtSecret       string
+	jwtSecretFile   string
+	swaggerDir      string
+	networkSubnet   string
+	skipInfraInit   bool
 )
 
 var daemonCmd = &cobra.Command{
@@ -85,6 +87,10 @@ func init() {
 
 	// Swagger/OpenAPI settings
 	daemonCmd.Flags().StringVar(&swaggerDir, "swagger-dir", "api/swagger", "Directory containing Swagger/OpenAPI files")
+
+	// Infrastructure settings
+	daemonCmd.Flags().StringVar(&networkSubnet, "network-subnet", "10.100.0.1/24", "IPv4 subnet for container network (CIDR format, e.g., 10.100.0.1/24)")
+	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -105,6 +111,22 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		if serverInfo != nil {
 			log.Printf("Incus version: %s (OK)", serverInfo.Environment.ServerVersion)
 		}
+	}
+
+	// Initialize infrastructure (storage, network, profile) unless skipped
+	if !skipInfraInit {
+		log.Printf("Initializing infrastructure...")
+		networkConfig := incus.NetworkConfig{
+			Name:        "incusbr0",
+			IPv4Address: networkSubnet,
+			IPv4NAT:     true,
+		}
+		if err := incusClient.InitializeInfrastructure(networkConfig); err != nil {
+			return fmt.Errorf("failed to initialize infrastructure: %w", err)
+		}
+		log.Printf("  Network: incusbr0 (%s)", networkSubnet)
+		log.Printf("  Storage: default (dir)")
+		log.Printf("  Profile: default (configured)")
 	}
 
 	// Load or generate JWT secret if REST is enabled

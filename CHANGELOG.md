@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Auto-initialization of Incus infrastructure** on daemon startup
+  - Automatically creates storage pool (`default` with `dir` driver)
+  - Automatically creates network bridge (`incusbr0`)
+  - Automatically configures default profile with network and storage devices
+  - Safe default subnet: `10.100.0.1/24` (avoids conflicts with common networks like 10.0.0.0/8)
+- **Network subnet configuration** via `--network-subnet` flag
+  - Customize container network subnet (default: `10.100.0.1/24`)
+  - Example: `containarium daemon --network-subnet 192.168.50.1/24`
+- **Skip infrastructure initialization** via `--skip-infra-init` flag
+  - Useful when infrastructure is already configured manually
+  - Example: `containarium daemon --skip-infra-init`
+- **New Incus client methods** for infrastructure management:
+  - `EnsureNetwork()` - Create network if not exists
+  - `EnsureStorage()` - Create storage pool if not exists
+  - `EnsureDefaultProfile()` - Configure default profile
+  - `InitializeInfrastructure()` - One-call setup for all infrastructure
+  - `GetNetworkSubnet()` - Get configured subnet for a network
 - **HTTP/REST client for CLI** - Alternative to gRPC for remote server communication
   - `--http` flag to use HTTP/REST API instead of gRPC
   - `--token` flag for JWT authentication token
@@ -27,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - CLI now supports both gRPC and HTTP protocols equally (neither marked as deprecated)
 - Server address flag help text updated to reflect dual-protocol support
+
+### Fixed
+- **Network subnet conflicts** - Previously manual network setup could conflict with host network
+  - Auto-initialization uses safe default `10.100.0.1/24` instead of common `10.0.3.0/24`
+  - Prevents loss of connectivity when running Containarium inside LXC containers
 
 ## [0.3.0] - 2026-01-15
 

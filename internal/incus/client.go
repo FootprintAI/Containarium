@@ -625,3 +625,176 @@ func (c *Client) CheckVersion() (string, error) {
 
 	return "", nil // Version is OK
 }
+
+// NetworkConfig holds configuration for creating a network
+type NetworkConfig struct {
+	Name        string // Network name (default: "incusbr0")
+	IPv4Address string // IPv4 address with CIDR (default: "10.100.0.1/24")
+	IPv4NAT     bool   // Enable NAT (default: true)
+}
+
+// DefaultNetworkConfig returns a safe default network configuration
+// Uses 10.100.0.0/24 to avoid conflicts with common subnets like 10.0.0.0/8
+func DefaultNetworkConfig() NetworkConfig {
+	return NetworkConfig{
+		Name:        "incusbr0",
+		IPv4Address: "10.100.0.1/24",
+		IPv4NAT:     true,
+	}
+}
+
+// EnsureNetwork creates a network if it doesn't exist
+// Returns the network name
+func (c *Client) EnsureNetwork(config NetworkConfig) (string, error) {
+	if config.Name == "" {
+		config.Name = "incusbr0"
+	}
+	if config.IPv4Address == "" {
+		config.IPv4Address = "10.100.0.1/24"
+	}
+
+	// Check if network already exists
+	networks, err := c.server.GetNetworkNames()
+	if err != nil {
+		return "", fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	for _, n := range networks {
+		if n == config.Name {
+			// Network exists, return it
+			return config.Name, nil
+		}
+	}
+
+	// Create network
+	networkReq := api.NetworksPost{
+		Name: config.Name,
+		Type: "bridge",
+		NetworkPut: api.NetworkPut{
+			Config: map[string]string{
+				"ipv4.address": config.IPv4Address,
+				"ipv4.nat":     fmt.Sprintf("%t", config.IPv4NAT),
+			},
+		},
+	}
+
+	if err := c.server.CreateNetwork(networkReq); err != nil {
+		return "", fmt.Errorf("failed to create network %s: %w", config.Name, err)
+	}
+
+	return config.Name, nil
+}
+
+// EnsureStorage creates a storage pool if it doesn't exist
+// Returns the storage pool name
+func (c *Client) EnsureStorage(name string) (string, error) {
+	if name == "" {
+		name = "default"
+	}
+
+	// Check if storage pool already exists
+	pools, err := c.server.GetStoragePoolNames()
+	if err != nil {
+		return "", fmt.Errorf("failed to list storage pools: %w", err)
+	}
+
+	for _, p := range pools {
+		if p == name {
+			// Pool exists, return it
+			return name, nil
+		}
+	}
+
+	// Create storage pool (using dir driver for simplicity)
+	poolReq := api.StoragePoolsPost{
+		Name:   name,
+		Driver: "dir",
+	}
+
+	if err := c.server.CreateStoragePool(poolReq); err != nil {
+		return "", fmt.Errorf("failed to create storage pool %s: %w", name, err)
+	}
+
+	return name, nil
+}
+
+// EnsureDefaultProfile configures the default profile with network and storage
+func (c *Client) EnsureDefaultProfile(networkName, storageName string) error {
+	// Get current default profile
+	profile, _, err := c.server.GetProfile("default")
+	if err != nil {
+		return fmt.Errorf("failed to get default profile: %w", err)
+	}
+
+	// Ensure devices map exists
+	if profile.Devices == nil {
+		profile.Devices = make(map[string]map[string]string)
+	}
+
+	needsUpdate := false
+
+	// Add root disk device if not present
+	if _, ok := profile.Devices["root"]; !ok {
+		profile.Devices["root"] = map[string]string{
+			"type": "disk",
+			"path": "/",
+			"pool": storageName,
+		}
+		needsUpdate = true
+	}
+
+	// Add eth0 network device if not present
+	if _, ok := profile.Devices["eth0"]; !ok {
+		profile.Devices["eth0"] = map[string]string{
+			"type":    "nic",
+			"name":    "eth0",
+			"network": networkName,
+		}
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := c.server.UpdateProfile("default", profile.ProfilePut, ""); err != nil {
+			return fmt.Errorf("failed to update default profile: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// InitializeInfrastructure ensures network, storage, and default profile are configured
+// This should be called once during daemon startup
+func (c *Client) InitializeInfrastructure(networkConfig NetworkConfig) error {
+	// 1. Ensure storage pool exists
+	storageName, err := c.EnsureStorage("default")
+	if err != nil {
+		return fmt.Errorf("failed to ensure storage: %w", err)
+	}
+
+	// 2. Ensure network exists
+	networkName, err := c.EnsureNetwork(networkConfig)
+	if err != nil {
+		return fmt.Errorf("failed to ensure network: %w", err)
+	}
+
+	// 3. Configure default profile
+	if err := c.EnsureDefaultProfile(networkName, storageName); err != nil {
+		return fmt.Errorf("failed to configure default profile: %w", err)
+	}
+
+	return nil
+}
+
+// GetNetworkSubnet returns the IPv4 subnet of a network
+func (c *Client) GetNetworkSubnet(networkName string) (string, error) {
+	network, _, err := c.server.GetNetwork(networkName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get network %s: %w", networkName, err)
+	}
+
+	if addr, ok := network.Config["ipv4.address"]; ok {
+		return addr, nil
+	}
+
+	return "", fmt.Errorf("network %s has no IPv4 address configured", networkName)
+}
