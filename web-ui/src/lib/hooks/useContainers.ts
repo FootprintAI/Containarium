@@ -1,7 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
-import { Container, CreateContainerRequest } from '@/src/types/container';
+import { Container, CreateContainerRequest, SystemInfo } from '@/src/types/container';
 import { Server } from '@/src/types/server';
 import { getClient } from '@/src/lib/api/client';
 
@@ -31,6 +31,28 @@ export function useContainers(server: Server | null) {
       refreshInterval: 10000, // Poll every 10 seconds
       revalidateOnFocus: true,
       dedupingInterval: 5000,
+    }
+  );
+
+  // Fetch system info (including network CIDR)
+  const systemInfoFetcher = async (): Promise<SystemInfo | null> => {
+    if (!server) return null;
+    const client = getClient(server);
+    try {
+      return await client.getSystemInfo();
+    } catch {
+      return null;
+    }
+  };
+
+  const systemInfoKey = server ? 'systeminfo-' + server.id : null;
+  const { data: systemInfo } = useSWR<SystemInfo | null>(
+    systemInfoKey,
+    systemInfoFetcher,
+    {
+      refreshInterval: 60000, // Refresh every minute
+      revalidateOnFocus: false,
+      dedupingInterval: 30000,
     }
   );
 
@@ -123,6 +145,7 @@ export function useContainers(server: Server | null) {
 
   return {
     containers: data || [],
+    systemInfo: systemInfo || null,
     isLoading,
     error,
     createContainer,

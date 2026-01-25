@@ -17,6 +17,7 @@ import TerminalIcon from '@mui/icons-material/Terminal';
 import MemoryIcon from '@mui/icons-material/Memory';
 import StorageIcon from '@mui/icons-material/Storage';
 import DnsIcon from '@mui/icons-material/Dns';
+import SecurityIcon from '@mui/icons-material/Security';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
 
 interface ContainerNodeProps {
@@ -26,6 +27,7 @@ interface ContainerNodeProps {
   onStart?: (username: string) => void;
   onStop?: (username: string) => void;
   onTerminal?: (username: string) => void;
+  onEditFirewall?: (username: string) => void;
 }
 
 /**
@@ -85,7 +87,7 @@ function getStateColor(state: ContainerState): 'success' | 'error' | 'warning' |
   }
 }
 
-export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal }: ContainerNodeProps) {
+export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall }: ContainerNodeProps) {
   const isRunning = container.state === 'Running';
 
   // Calculate CPU, memory and disk utilization
@@ -203,29 +205,45 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
         )}
 
         {/* Disk usage progress bar */}
-        {isRunning && container.disk && (
+        {isRunning && (diskUsed > 0 || container.disk) && (
           <Box sx={{ mb: 1.5 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
               <Typography variant="caption" color="text.secondary">
                 Disk
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                {formatBytes(diskUsed)} / {container.disk}
+                {formatBytes(diskUsed)}{container.disk ? ` / ${container.disk}` : ' used'}
               </Typography>
             </Box>
-            <LinearProgress
-              variant="determinate"
-              value={diskPercent}
-              sx={{
-                height: 8,
-                borderRadius: 4,
-                bgcolor: 'grey.200',
-                '& .MuiLinearProgress-bar': {
-                  bgcolor: diskPercent > 80 ? 'error.main' : diskPercent > 60 ? 'warning.main' : 'info.main',
+            {container.disk ? (
+              <LinearProgress
+                variant="determinate"
+                value={diskPercent}
+                sx={{
+                  height: 8,
                   borderRadius: 4,
-                },
-              }}
-            />
+                  bgcolor: 'grey.200',
+                  '& .MuiLinearProgress-bar': {
+                    bgcolor: diskPercent > 80 ? 'error.main' : diskPercent > 60 ? 'warning.main' : 'info.main',
+                    borderRadius: 4,
+                  },
+                }}
+              />
+            ) : (
+              <LinearProgress
+                variant="determinate"
+                value={100}
+                sx={{
+                  height: 8,
+                  borderRadius: 4,
+                  bgcolor: 'grey.200',
+                  '& .MuiLinearProgress-bar': {
+                    bgcolor: 'info.main',
+                    borderRadius: 4,
+                  },
+                }}
+              />
+            )}
           </Box>
         )}
 
@@ -260,6 +278,17 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
                 onClick={() => onTerminal(container.username || container.name)}
               >
                 <TerminalIcon />
+              </IconButton>
+            </Tooltip>
+          )}
+          {onEditFirewall && (
+            <Tooltip title="Firewall Settings">
+              <IconButton
+                size="small"
+                color="warning"
+                onClick={() => onEditFirewall(container.username || container.name)}
+              >
+                <SecurityIcon />
               </IconButton>
             </Tooltip>
           )}

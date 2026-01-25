@@ -671,6 +671,8 @@ type SystemInfo struct {
 	Hostname string `protobuf:"bytes,12,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	// Uptime in seconds
 	UptimeSeconds int64 `protobuf:"varint,13,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
+	// Container network CIDR (e.g., "10.100.0.0/24")
+	NetworkCidr   string `protobuf:"bytes,14,opt,name=network_cidr,json=networkCidr,proto3" json:"network_cidr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -794,6 +796,13 @@ func (x *SystemInfo) GetUptimeSeconds() int64 {
 		return x.UptimeSeconds
 	}
 	return 0
+}
+
+func (x *SystemInfo) GetNetworkCidr() string {
+	if x != nil {
+		return x.NetworkCidr
+	}
+	return ""
 }
 
 // GetSystemInfoRequest is the request to get system information
@@ -929,7 +938,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\x93\x04\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xb6\x04\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -946,7 +955,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	" \x01(\x05R\x11containersStopped\x12)\n" +
 	"\x10containers_total\x18\v \x01(\x05R\x0fcontainersTotal\x12\x1a\n" +
 	"\bhostname\x18\f \x01(\tR\bhostname\x12%\n" +
-	"\x0euptime_seconds\x18\r \x01(\x03R\ruptimeSeconds\"\x16\n" +
+	"\x0euptime_seconds\x18\r \x01(\x03R\ruptimeSeconds\x12!\n" +
+	"\fnetwork_cidr\x18\x0e \x01(\tR\vnetworkCidr\"\x16\n" +
 	"\x14GetSystemInfoRequest\"H\n" +
 	"\x15GetSystemInfoResponse\x12/\n" +
 	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04infoBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"

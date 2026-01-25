@@ -2,18 +2,27 @@
 
 import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box, Typography, CircularProgress, Tabs, Tab } from '@mui/material';
+import DnsIcon from '@mui/icons-material/Dns';
+import AppsIcon from '@mui/icons-material/Apps';
+import HubIcon from '@mui/icons-material/Hub';
 import AppBar from '@/src/components/layout/AppBar';
 import ServerTabs from '@/src/components/layout/ServerTabs';
 import AddServerDialog from '@/src/components/servers/AddServerDialog';
 import ContainerTopology from '@/src/components/containers/ContainerTopology';
 import CreateContainerDialog from '@/src/components/containers/CreateContainerDialog';
 import DeleteConfirmDialog from '@/src/components/containers/DeleteConfirmDialog';
+import AppsView from '@/src/components/apps/AppsView';
+import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
+import FirewallEditor from '@/src/components/network/FirewallEditor';
 import { useServers } from '@/src/lib/hooks/useServers';
 import { useContainers, CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 import { useMetrics } from '@/src/lib/hooks/useMetrics';
+import { useApps } from '@/src/lib/hooks/useApps';
+import { useRoutes, useNetworkTopology, useContainerACL, useACLPresets } from '@/src/lib/hooks/useNetwork';
 import { CreateContainerRequest, ContainerMetricsWithRate } from '@/src/types/container';
 import { Server } from '@/src/types/server';
+import { ACLPreset } from '@/src/types/app';
 
 // Dynamic import for TerminalDialog to avoid SSR issues with xterm
 const TerminalDialog = dynamic(
@@ -33,20 +42,51 @@ export default function Home() {
     isLoading: serversLoading,
   } = useServers();
 
+  // View tab state
+  const [viewTab, setViewTab] = useState(0);
+
+  // Container hooks
   const {
     containers,
+    systemInfo,
     isLoading: containersLoading,
     error: containersError,
     createContainer,
     deleteContainer,
     startContainer,
     stopContainer,
-    refresh,
+    refresh: refreshContainers,
   } = useContainers(activeServer);
 
-  // Fetch metrics for all containers (only when there's an active server with running containers)
+  // Metrics hook
   const hasRunningContainers = containers.some(c => c.state === 'Running');
   const { metrics } = useMetrics(activeServer, hasRunningContainers);
+
+  // Apps hooks
+  const {
+    apps,
+    isLoading: appsLoading,
+    error: appsError,
+    stopApp,
+    startApp,
+    restartApp,
+    deleteApp,
+    refresh: refreshApps,
+  } = useApps(activeServer);
+
+  // Network hooks
+  const [includeStopped, setIncludeStopped] = useState(false);
+  const { routes, isLoading: routesLoading, error: routesError, refresh: refreshRoutes } = useRoutes(activeServer);
+  const { topology, isLoading: topologyLoading, error: topologyError, refresh: refreshTopology } = useNetworkTopology(activeServer, includeStopped);
+  const { presets, isLoading: presetsLoading } = useACLPresets(activeServer);
+
+  // Firewall editor state - now per container (DevBox), not per app
+  const [firewallEditorOpen, setFirewallEditorOpen] = useState(false);
+  const [selectedContainer, setSelectedContainer] = useState<string | null>(null);
+  const { acl, isLoading: aclLoading, updateACL } = useContainerACL(
+    activeServer,
+    selectedContainer || ''
+  );
 
   // Convert metrics array to a map by container name for easy lookup
   const metricsMap = useMemo(() => {
@@ -57,6 +97,7 @@ export default function Home() {
     return map;
   }, [metrics]);
 
+  // Dialog states
   const [serverDialogOpen, setServerDialogOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<Server | null>(null);
   const [createContainerOpen, setCreateContainerOpen] = useState(false);
@@ -67,6 +108,7 @@ export default function Home() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalUsername, setTerminalUsername] = useState('');
 
+  // Server handlers
   const handleAddServer = async (name: string, endpoint: string, token: string) => {
     await addServer(name, endpoint, token);
   };
@@ -88,6 +130,7 @@ export default function Home() {
     setEditingServer(null);
   };
 
+  // Container handlers
   const handleCreateContainer = async (
     request: CreateContainerRequest,
     onProgress?: (progress: CreateContainerProgress) => void
@@ -104,8 +147,6 @@ export default function Home() {
   };
 
   const handleOpenTerminal = (username: string) => {
-    console.log('handleOpenTerminal called:', username);
-    console.log('activeServer:', activeServer?.endpoint);
     setTerminalUsername(username);
     setTerminalOpen(true);
   };
@@ -113,6 +154,41 @@ export default function Home() {
   const handleCloseTerminal = () => {
     setTerminalOpen(false);
     setTerminalUsername('');
+  };
+
+  // App handlers
+  const handleStopApp = async (username: string, appName: string) => {
+    await stopApp(username, appName);
+  };
+
+  const handleStartApp = async (username: string, appName: string) => {
+    await startApp(username, appName);
+  };
+
+  const handleRestartApp = async (username: string, appName: string) => {
+    await restartApp(username, appName);
+  };
+
+  const handleDeleteApp = async (username: string, appName: string) => {
+    await deleteApp(username, appName, false);
+  };
+
+  // Firewall handlers - now per container (DevBox), not per app
+  const handleEditContainerFirewall = (username: string) => {
+    setSelectedContainer(username);
+    setFirewallEditorOpen(true);
+  };
+
+  const handleSaveFirewall = async (preset: ACLPreset) => {
+    if (selectedContainer) {
+      await updateACL(preset);
+    }
+  };
+
+  // Network refresh handler
+  const handleRefreshNetwork = () => {
+    refreshRoutes();
+    refreshTopology();
   };
 
   if (serversLoading) {
@@ -145,18 +221,65 @@ export default function Home() {
           </Typography>
         </Box>
       ) : activeServer ? (
-        <ContainerTopology
-          containers={containers}
-          metricsMap={metricsMap}
-          isLoading={containersLoading}
-          error={containersError as Error | null}
-          onCreateContainer={() => setCreateContainerOpen(true)}
-          onDeleteContainer={handleDeleteContainer}
-          onStartContainer={startContainer}
-          onStopContainer={stopContainer}
-          onTerminalContainer={handleOpenTerminal}
-          onRefresh={refresh}
-        />
+        <>
+          {/* View Tabs */}
+          <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
+            <Tabs
+              value={viewTab}
+              onChange={(_, newValue) => setViewTab(newValue)}
+              sx={{ px: 2 }}
+            >
+              <Tab icon={<DnsIcon />} iconPosition="start" label="Containers" />
+              <Tab icon={<AppsIcon />} iconPosition="start" label="Apps" />
+              <Tab icon={<HubIcon />} iconPosition="start" label="Network" />
+            </Tabs>
+          </Box>
+
+          {/* Tab Content */}
+          <Box sx={{ flex: 1, overflow: 'auto' }}>
+            {viewTab === 0 && (
+              <ContainerTopology
+                containers={containers}
+                metricsMap={metricsMap}
+                systemInfo={systemInfo}
+                isLoading={containersLoading}
+                error={containersError as Error | null}
+                onCreateContainer={() => setCreateContainerOpen(true)}
+                onDeleteContainer={handleDeleteContainer}
+                onStartContainer={startContainer}
+                onStopContainer={stopContainer}
+                onTerminalContainer={handleOpenTerminal}
+                onEditFirewall={handleEditContainerFirewall}
+                onRefresh={refreshContainers}
+              />
+            )}
+
+            {viewTab === 1 && (
+              <AppsView
+                apps={apps}
+                isLoading={appsLoading}
+                error={appsError as Error | null}
+                onStopApp={handleStopApp}
+                onStartApp={handleStartApp}
+                onRestartApp={handleRestartApp}
+                onDeleteApp={handleDeleteApp}
+                onRefresh={refreshApps}
+              />
+            )}
+
+            {viewTab === 2 && (
+              <NetworkTopologyView
+                topology={topology}
+                routes={routes}
+                isLoading={topologyLoading || routesLoading}
+                error={(topologyError || routesError) as Error | null}
+                includeStopped={includeStopped}
+                onIncludeStoppedChange={setIncludeStopped}
+                onRefresh={handleRefreshNetwork}
+              />
+            )}
+          </Box>
+        </>
       ) : (
         <Box sx={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <Typography color="text.secondary">
@@ -165,6 +288,7 @@ export default function Home() {
         </Box>
       )}
 
+      {/* Dialogs */}
       <AddServerDialog
         open={serverDialogOpen}
         onClose={handleCloseServerDialog}
@@ -177,6 +301,7 @@ export default function Home() {
         open={createContainerOpen}
         onClose={() => setCreateContainerOpen(false)}
         onSubmit={handleCreateContainer}
+        networkCidr={systemInfo?.networkCidr}
       />
 
       <DeleteConfirmDialog
@@ -196,6 +321,21 @@ export default function Home() {
           token={activeServer.token}
         />
       )}
+
+      {/* Firewall Editor - per container (DevBox) */}
+      <FirewallEditor
+        open={firewallEditorOpen}
+        onClose={() => {
+          setFirewallEditorOpen(false);
+          setSelectedContainer(null);
+        }}
+        acl={acl || null}
+        presets={presets}
+        isLoading={aclLoading || presetsLoading}
+        appName={selectedContainer ? `${selectedContainer}-container` : ''}
+        username={selectedContainer || ''}
+        onSave={handleSaveFirewall}
+      />
     </Box>
   );
 }

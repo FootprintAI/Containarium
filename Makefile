@@ -61,7 +61,7 @@ proto-breaking: ## Check for breaking changes in protobuf definitions
 	@echo "==> Checking for breaking changes..."
 	@buf breaking --against '.git#branch=main'
 
-build: proto swagger-ui ## Build the containarium binary (includes Swagger UI)
+build: proto webui swagger-ui ## Build the containarium binary (includes Swagger UI)
 	@echo "==> Building containarium..."
 	@mkdir -p $(BUILD_DIR)
 	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go

@@ -20,7 +20,8 @@ type CreateOptions struct {
 	Image                  string
 	CPU                    string
 	Memory                 string
-	Disk                   string
+	Disk                   string // Disk size (e.g., "20GB")
+	StaticIP               string // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 	SSHKeys                []string
 	EnableDocker           bool
 	EnableDockerPrivileged bool // Full Docker support (privileged + AppArmor disabled)
@@ -56,10 +57,27 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		Image:                  opts.Image,
 		CPU:                    opts.CPU,
 		Memory:                 opts.Memory,
-		Disk:                   opts.Disk,
 		EnableNesting:          opts.EnableDocker,
 		EnableDockerPrivileged: opts.EnableDockerPrivileged,
 		AutoStart:              opts.AutoStart,
+	}
+
+	// Configure root disk device if disk size is specified
+	if opts.Disk != "" {
+		config.Disk = &incus.DiskDevice{
+			Path: "/",
+			Pool: "default",
+			Size: opts.Disk,
+		}
+	}
+
+	// Configure network interface with optional static IP
+	if opts.StaticIP != "" {
+		config.NIC = &incus.NICDevice{
+			Name:        "eth0",
+			Network:     "incusbr0",
+			IPv4Address: opts.StaticIP,
+		}
 	}
 
 	if err := m.incus.CreateContainer(config); err != nil {

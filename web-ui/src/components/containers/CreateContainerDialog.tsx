@@ -29,6 +29,7 @@ interface CreateContainerDialogProps {
   open: boolean;
   onClose: () => void;
   onSubmit: (request: CreateContainerRequest, onProgress?: (progress: CreateContainerProgress) => void) => Promise<unknown>;
+  networkCidr?: string; // Network CIDR from server (e.g., "10.100.0.0/24")
 }
 
 const IMAGES = [
@@ -38,12 +39,95 @@ const IMAGES = [
   { value: 'images:alpine/3.19', label: 'Alpine 3.19' },
 ];
 
-export default function CreateContainerDialog({ open, onClose, onSubmit }: CreateContainerDialogProps) {
+// Default network CIDR (used when server doesn't provide one)
+const DEFAULT_NETWORK_CIDR = '10.100.0.0/24';
+
+/**
+ * Parse IPv4 address to numeric value
+ */
+function ipToNumber(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+
+  let result = 0;
+  for (const part of parts) {
+    const num = parseInt(part, 10);
+    if (isNaN(num) || num < 0 || num > 255) return null;
+    result = result * 256 + num;
+  }
+  return result;
+}
+
+/**
+ * Validate if an IP address is within a CIDR range
+ */
+function isIPInCIDR(ip: string, cidr: string): boolean {
+  const [networkAddr, prefix] = cidr.split('/');
+  const prefixLen = parseInt(prefix, 10);
+
+  if (isNaN(prefixLen) || prefixLen < 0 || prefixLen > 32) return false;
+
+  const ipNum = ipToNumber(ip);
+  const networkNum = ipToNumber(networkAddr);
+
+  if (ipNum === null || networkNum === null) return false;
+
+  const mask = ~((1 << (32 - prefixLen)) - 1) >>> 0;
+  return (ipNum & mask) === (networkNum & mask);
+}
+
+/**
+ * Validate a static IP address format and range
+ */
+function validateStaticIP(ip: string, cidr: string): { valid: boolean; error?: string } {
+  if (!ip) return { valid: true }; // Empty is valid (DHCP)
+
+  // Check basic format
+  const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (!ipRegex.test(ip)) {
+    return { valid: false, error: 'Invalid IP address format' };
+  }
+
+  // Check each octet is valid
+  const parts = ip.split('.');
+  for (const part of parts) {
+    const num = parseInt(part, 10);
+    if (num < 0 || num > 255) {
+      return { valid: false, error: 'Invalid IP address: octets must be 0-255' };
+    }
+  }
+
+  // Check if IP is within the network CIDR
+  if (!isIPInCIDR(ip, cidr)) {
+    return { valid: false, error: `IP must be within network ${cidr}` };
+  }
+
+  // Check if it's not the gateway or broadcast address
+  const networkParts = cidr.split('/')[0].split('.');
+  const gatewayIP = [...networkParts.slice(0, 3), '1'].join('.');
+  const broadcastIP = [...networkParts.slice(0, 3), '255'].join('.');
+
+  if (ip === gatewayIP) {
+    return { valid: false, error: 'Cannot use gateway IP address' };
+  }
+  if (ip === broadcastIP) {
+    return { valid: false, error: 'Cannot use broadcast IP address' };
+  }
+
+  return { valid: true };
+}
+
+export default function CreateContainerDialog({ open, onClose, onSubmit, networkCidr }: CreateContainerDialogProps) {
+  // Use provided network CIDR or default
+  const effectiveCidr = networkCidr || DEFAULT_NETWORK_CIDR;
+
   const [username, setUsername] = useState('');
   const [image, setImage] = useState('images:ubuntu/24.04');
   const [cpu, setCpu] = useState('4');
   const [memory, setMemory] = useState('4GB');
   const [disk, setDisk] = useState('50GB');
+  const [staticIp, setStaticIp] = useState('');
+  const [staticIpError, setStaticIpError] = useState<string | null>(null);
   const [autoGenerateKey, setAutoGenerateKey] = useState(true);
   const [sshPublicKey, setSshPublicKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -58,6 +142,8 @@ export default function CreateContainerDialog({ open, onClose, onSubmit }: Creat
     setCpu('4');
     setMemory('4GB');
     setDisk('50GB');
+    setStaticIp('');
+    setStaticIpError(null);
     setAutoGenerateKey(true);
     setSshPublicKey('');
     setSubmitting(false);
@@ -90,6 +176,15 @@ export default function CreateContainerDialog({ open, onClose, onSubmit }: Creat
       return;
     }
 
+    // Validate static IP if provided
+    if (staticIp) {
+      const validation = validateStaticIP(staticIp, effectiveCidr);
+      if (!validation.valid) {
+        setError(validation.error || 'Invalid static IP address');
+        return;
+      }
+    }
+
     setSubmitting(true);
     setError(null);
     setProgress({ state: 'Creating', message: 'Preparing...' });
@@ -115,11 +210,22 @@ export default function CreateContainerDialog({ open, onClose, onSubmit }: Creat
         },
         sshKeys: [publicKey],
         enableDocker: true,
+        staticIp: staticIp || undefined,
       };
 
-      await onSubmit(request, (prog) => {
+      const container = await onSubmit(request, (prog) => {
         setProgress(prog);
       });
+
+      // Check if the container ended up in an error state
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const containerState = (container as any)?.state;
+      if (containerState === 'Error') {
+        setError('Container creation failed. Check server logs for details.');
+        setGeneratedKeyPair(null);
+        setProgress(null);
+        return;
+      }
 
       setSuccess(true);
       setProgress({ state: 'Running', message: 'Container is ready!' });
@@ -232,6 +338,26 @@ export default function CreateContainerDialog({ open, onClose, onSubmit }: Creat
             />
           </Box>
 
+          <TextField
+            label="Static IP (Optional)"
+            value={staticIp}
+            onChange={(e) => {
+              const value = e.target.value.replace(/[^0-9.]/g, '');
+              setStaticIp(value);
+              if (value) {
+                const validation = validateStaticIP(value, effectiveCidr);
+                setStaticIpError(validation.error || null);
+              } else {
+                setStaticIpError(null);
+              }
+            }}
+            placeholder="Leave empty for DHCP"
+            fullWidth
+            disabled={success || submitting}
+            error={!!staticIpError}
+            helperText={staticIpError || `e.g., 10.100.0.100 - must be within ${effectiveCidr}`}
+          />
+
           <FormControlLabel
             control={
               <Checkbox
@@ -265,7 +391,7 @@ export default function CreateContainerDialog({ open, onClose, onSubmit }: Creat
           <Button
             variant="contained"
             onClick={handleSubmit}
-            disabled={submitting || !username}
+            disabled={submitting || !username || !!staticIpError}
           >
             {submitting ? 'Creating...' : 'Create'}
           </Button>

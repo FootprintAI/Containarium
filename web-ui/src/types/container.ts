@@ -37,6 +37,7 @@ export interface CreateContainerRequest {
   labels?: Record<string, string>;
   image?: string;
   enableDocker?: boolean;
+  staticIp?: string; // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 }
 
 /**
@@ -67,6 +68,13 @@ export interface SystemInfo {
   kernel: string;
   containerCount: number;
   runningCount: number;
+  networkCidr: string; // Container network CIDR (e.g., "10.100.0.0/24")
+  // System resource info
+  totalCpus: number;
+  totalMemoryBytes: number;
+  availableMemoryBytes: number;
+  totalDiskBytes: number;
+  availableDiskBytes: number;
 }
 
 /**

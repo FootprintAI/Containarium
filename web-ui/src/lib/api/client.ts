@@ -1,6 +1,7 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerResponse, ListContainersResponse, MetricsResponse, SystemInfo } from '@/src/types/container';
 import { Server } from '@/src/types/server';
+import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo } from '@/src/types/app';
 
 /**
  * API error response
@@ -162,6 +163,7 @@ export class ContaineriumClient {
       labels: request.labels,
       image: request.image,
       enable_docker: request.enableDocker ?? true,
+      static_ip: request.staticIp || '',
       async: async,
     }, {
       timeout: async ? 30000 : 300000, // 30s for async, 5min for sync
@@ -171,6 +173,7 @@ export class ContaineriumClient {
 
   /**
    * Poll container until it reaches a final state (Running, Stopped, or Error)
+   * Throws an error if the container ends up in Error state
    */
   async waitForContainer(
     username: string,
@@ -189,12 +192,20 @@ export class ContaineriumClient {
         }
 
         if (finalStates.includes(container.state)) {
+          // Throw an error if container ended up in Error state
+          if (container.state === 'Error') {
+            throw new Error('Container creation failed. Check server logs for details.');
+          }
           return container;
         }
 
         // Wait before next poll
         await new Promise(resolve => setTimeout(resolve, intervalMs));
       } catch (err) {
+        // If it's our own error about container failure, re-throw it
+        if (err instanceof Error && err.message.includes('Container creation failed')) {
+          throw err;
+        }
         // Container might not exist yet, keep polling
         if (onProgress) {
           onProgress('Creating', 'Waiting for container to be created...');
@@ -252,6 +263,128 @@ export class ContaineriumClient {
       networkTxBytes: Number(m.networkTxBytes) || 0,
       processCount: Number(m.processCount) || 0,
     }));
+  }
+
+  // ============================================
+  // App Management Methods
+  // ============================================
+
+  /**
+   * List all apps for a user
+   */
+  async listApps(username?: string): Promise<App[]> {
+    const params = username ? { username } : {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const response = await this.client.get<{ apps?: any[] }>('/apps', { params });
+    return response.data.apps || [];
+  }
+
+  /**
+   * Get a specific app
+   */
+  async getApp(username: string, appName: string): Promise<App> {
+    const response = await this.client.get(`/apps/${username}/${appName}`);
+    return response.data.app || response.data;
+  }
+
+  /**
+   * Stop an app
+   */
+  async stopApp(username: string, appName: string): Promise<App> {
+    const response = await this.client.post(`/apps/${username}/${appName}/stop`, {});
+    return response.data.app || response.data;
+  }
+
+  /**
+   * Start an app
+   */
+  async startApp(username: string, appName: string): Promise<App> {
+    const response = await this.client.post(`/apps/${username}/${appName}/start`, {});
+    return response.data.app || response.data;
+  }
+
+  /**
+   * Restart an app
+   */
+  async restartApp(username: string, appName: string): Promise<App> {
+    const response = await this.client.post(`/apps/${username}/${appName}/restart`, {});
+    return response.data.app || response.data;
+  }
+
+  /**
+   * Delete an app
+   */
+  async deleteApp(username: string, appName: string, removeData: boolean = false): Promise<void> {
+    await this.client.delete(`/apps/${username}/${appName}`, {
+      params: { removeData },
+    });
+  }
+
+  /**
+   * Get app logs
+   */
+  async getAppLogs(username: string, appName: string, tailLines: number = 100): Promise<string[]> {
+    const response = await this.client.get(`/apps/${username}/${appName}/logs`, {
+      params: { tailLines },
+    });
+    return response.data.logLines || [];
+  }
+
+  // ============================================
+  // Network Management Methods
+  // ============================================
+
+  /**
+   * Get all proxy routes
+   */
+  async getRoutes(username?: string): Promise<ProxyRoute[]> {
+    const params = username ? { username } : {};
+    const response = await this.client.get<{ routes?: ProxyRoute[] }>('/network/routes', { params });
+    return response.data.routes || [];
+  }
+
+  /**
+   * Get ACL for a container (DevBox)
+   */
+  async getContainerACL(username: string): Promise<NetworkACL> {
+    const response = await this.client.get(`/v1/containers/${username}/acl`);
+    return response.data.acl || response.data;
+  }
+
+  /**
+   * Update ACL for a container (DevBox)
+   */
+  async updateContainerACL(
+    username: string,
+    preset: string,
+    ingressRules?: unknown[],
+    egressRules?: unknown[]
+  ): Promise<NetworkACL> {
+    const response = await this.client.put(`/v1/containers/${username}/acl`, {
+      username,
+      preset,
+      ingressRules,
+      egressRules,
+    });
+    return response.data.acl || response.data;
+  }
+
+  /**
+   * Get network topology
+   */
+  async getNetworkTopology(includeStopped: boolean = false): Promise<NetworkTopology> {
+    const response = await this.client.get<{ topology?: NetworkTopology }>('/network/topology', {
+      params: { includeStopped },
+    });
+    return response.data.topology || { nodes: [], edges: [], networkCidr: '', gatewayIp: '' };
+  }
+
+  /**
+   * Get available ACL presets
+   */
+  async getACLPresets(): Promise<ACLPresetInfo[]> {
+    const response = await this.client.get<{ presets?: ACLPresetInfo[] }>('/network/acl-presets');
+    return response.data.presets || [];
   }
 }
 

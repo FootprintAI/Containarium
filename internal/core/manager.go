@@ -169,9 +169,17 @@ func (m *Manager) createCoreContainer(ctx context.Context, config Config) error 
 		Image:         CoreContainerImage,
 		CPU:           cpu,
 		Memory:        memory,
-		Disk:          disk,
 		EnableNesting: true, // Required for Docker
 		AutoStart:     true,
+	}
+
+	// Configure root disk device
+	if disk != "" {
+		containerConfig.Disk = &incus.DiskDevice{
+			Path: "/",
+			Pool: "default",
+			Size: disk,
+		}
 	}
 
 	if err := m.incusClient.CreateContainer(containerConfig); err != nil {

@@ -12,14 +12,15 @@ import (
 )
 
 var (
-	sshKeyPath    string
-	cpuLimit      string
-	memoryLimit   string
-	diskLimit     string
+	sshKeyPath     string
+	cpuLimit       string
+	memoryLimit    string
+	diskLimit      string
+	staticIP       string
 	containerImage string
-	enableDocker  bool
-	labels        []string
-	forceRecreate bool
+	enableDocker   bool
+	labels         []string
+	forceRecreate  bool
 )
 
 var createCmd = &cobra.Command{
@@ -58,6 +59,7 @@ func init() {
 	createCmd.Flags().StringVar(&cpuLimit, "cpu", "4", "CPU limit (number of cores)")
 	createCmd.Flags().StringVar(&memoryLimit, "memory", "4GB", "Memory limit (e.g., 4GB, 2048MB)")
 	createCmd.Flags().StringVar(&diskLimit, "disk", "50GB", "Disk limit (e.g., 50GB, 100GB)")
+	createCmd.Flags().StringVar(&staticIP, "static-ip", "", "Static IP address (e.g., 10.100.0.100) - empty for DHCP")
 	createCmd.Flags().StringVar(&containerImage, "image", "images:ubuntu/24.04", "Container image to use")
 	createCmd.Flags().BoolVar(&enableDocker, "docker", true, "Enable Docker support (nesting)")
 	createCmd.Flags().StringSliceVar(&labels, "labels", []string{}, "Labels in key=value format (can be specified multiple times)")
@@ -72,6 +74,11 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  CPU: %s\n", cpuLimit)
 		fmt.Printf("  Memory: %s\n", memoryLimit)
 		fmt.Printf("  Disk: %s\n", diskLimit)
+		if staticIP != "" {
+			fmt.Printf("  Static IP: %s\n", staticIP)
+		} else {
+			fmt.Printf("  IP: DHCP\n")
+		}
 		fmt.Printf("  Image: %s\n", containerImage)
 		fmt.Printf("  Docker enabled: %v\n", enableDocker)
 	}
@@ -217,7 +224,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if verbose {
 			fmt.Println("Creating container...")
 		}
-		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enableDocker)
+		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, enableDocker)
 		if err != nil {
 			// Cleanup jump server account on failure
 			_ = container.DeleteJumpServerAccount(username, false)
@@ -270,7 +277,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 }
 
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk string, sshKeys []string, enableDocker bool) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, enableDocker bool) (*incus.ContainerInfo, error) {
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -282,6 +289,7 @@ func createLocal(username, image, cpu, memory, disk string, sshKeys []string, en
 		CPU:                    cpu,
 		Memory:                 memory,
 		Disk:                   disk,
+		StaticIP:               staticIP,
 		SSHKeys:                sshKeys,
 		EnableDocker:           enableDocker,
 		EnableDockerPrivileged: enableDocker, // Enable privileged mode for proper Docker-in-Docker

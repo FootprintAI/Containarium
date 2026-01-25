@@ -95,6 +95,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register app service gateway: %w", err)
 	}
 
+	// Register NetworkService gateway handler
+	if err := pb.RegisterNetworkServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register network service gateway: %w", err)
+	}
+
 	// Create HTTP handler with authentication middleware
 	handler := gs.authMiddleware.HTTPMiddleware(mux)
 

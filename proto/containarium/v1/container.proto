@@ -145,6 +145,11 @@ message CreateContainerRequest {
   // Async mode - if true, returns immediately with CREATING state
   // Client should poll GetContainer to check completion
   bool async = 7;
+
+  // Static IP address to assign (optional, e.g., "10.0.3.100")
+  // Must be within the container network CIDR (e.g., 10.0.3.0/24)
+  // If empty, DHCP will assign an IP automatically
+  string static_ip = 8;
 }
 
 // CreateContainerResponse is the response from creating a container

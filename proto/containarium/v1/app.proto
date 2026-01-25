@@ -5,6 +5,7 @@ package containarium.v1;
 import "google/protobuf/timestamp.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
+import "containarium/v1/network.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -81,6 +82,30 @@ message App {
 
   // Number of restarts
   int32 restart_count = 16;
+
+  // Container IP address (e.g., "10.100.0.20")
+  string container_ip = 17;
+
+  // Firewall ACL preset applied to this app
+  ACLPreset acl_preset = 18;
+
+  // Proxy route configuration
+  ProxyRoute route = 19;
+
+  // Resource limits
+  AppResources resources = 20;
+}
+
+// AppResources defines resource limits for an app container
+message AppResources {
+  // CPU limit (e.g., "1", "0.5", "2")
+  string cpu = 1;
+
+  // Memory limit (e.g., "256MB", "1GB")
+  string memory = 2;
+
+  // Disk limit (e.g., "1GB", "10GB")
+  string disk = 3;
 }
 
 // BuildpackOptions for auto-generating Dockerfiles

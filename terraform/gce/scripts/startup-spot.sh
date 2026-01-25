@@ -444,8 +444,11 @@ Group=root
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/incus /etc/containarium
+ProtectHome=false
+# /etc - for creating jump server users (useradd)
+# /home - for creating user home directories and SSH keys
+# /var/lib/incus - for container management
+ReadWritePaths=/var/lib/incus /etc /home
 
 # Logging
 StandardOutput=journal

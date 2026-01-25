@@ -18,6 +18,9 @@
       "name": "ContainerService"
     },
     {
+      "name": "NetworkService"
+    },
+    {
       "name": "AppService"
     }
   ],
@@ -566,6 +569,78 @@
         ]
       }
     },
+    "/v1/containers/{username}/acl": {
+      "get": {
+        "summary": "Get container firewall rules",
+        "description": "Returns the network ACL (firewall rules) configured for a user's DevBox container.",
+        "operationId": "NetworkService_GetContainerACL",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetContainerACLResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username (container owner)",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      },
+      "put": {
+        "summary": "Update container firewall rules",
+        "description": "Updates the network ACL for a DevBox container. Use a preset for common configurations or specify custom rules.",
+        "operationId": "NetworkService_UpdateContainerACL",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/UpdateContainerACLResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username (container owner)",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/UpdateContainerACLBody"
+            }
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
     "/v1/containers/{username}/ssh-keys": {
       "post": {
         "summary": "Add SSH key",
@@ -795,6 +870,103 @@
         ]
       }
     },
+    "/v1/network/acl-presets": {
+      "get": {
+        "summary": "List ACL presets",
+        "description": "Returns available firewall rule presets with their default configurations.",
+        "operationId": "NetworkService_ListACLPresets",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListACLPresetsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/v1/network/routes": {
+      "get": {
+        "summary": "List proxy routes",
+        "description": "Returns all DNS/domain to container mappings configured in the reverse proxy.",
+        "operationId": "NetworkService_GetRoutes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetRoutesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Filter by username (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "activeOnly",
+            "description": "Filter by active status (optional)",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/v1/network/topology": {
+      "get": {
+        "summary": "Get network topology",
+        "description": "Returns the network topology including all containers, apps, proxy routes, and their connections for visualization.",
+        "operationId": "NetworkService_GetNetworkTopology",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetNetworkTopologyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "includeStopped",
+            "description": "Include stopped containers/apps",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
     "/v1/system/info": {
       "get": {
         "summary": "Get system information",
@@ -821,6 +993,99 @@
     }
   },
   "definitions": {
+    "ACLAction": {
+      "type": "string",
+      "enum": [
+        "ACL_ACTION_UNSPECIFIED",
+        "ACL_ACTION_ALLOW",
+        "ACL_ACTION_DROP",
+        "ACL_ACTION_REJECT"
+      ],
+      "default": "ACL_ACTION_UNSPECIFIED",
+      "description": "- ACL_ACTION_UNSPECIFIED: Unspecified action (should not be used)\n - ACL_ACTION_ALLOW: Allow the traffic\n - ACL_ACTION_DROP: Drop the traffic silently\n - ACL_ACTION_REJECT: Reject the traffic with ICMP response",
+      "title": "ACLAction represents the action to take when a rule matches"
+    },
+    "ACLPreset": {
+      "type": "string",
+      "enum": [
+        "ACL_PRESET_UNSPECIFIED",
+        "ACL_PRESET_FULL_ISOLATION",
+        "ACL_PRESET_HTTP_ONLY",
+        "ACL_PRESET_PERMISSIVE",
+        "ACL_PRESET_CUSTOM"
+      ],
+      "default": "ACL_PRESET_UNSPECIFIED",
+      "description": "- ACL_PRESET_UNSPECIFIED: Unspecified preset\n - ACL_PRESET_FULL_ISOLATION: Full isolation: only allow HTTP from proxy, block inter-container traffic\n - ACL_PRESET_HTTP_ONLY: HTTP only: allow HTTP/HTTPS inbound, standard egress\n - ACL_PRESET_PERMISSIVE: Permissive: allow all traffic (for development)\n - ACL_PRESET_CUSTOM: Custom: user-defined rules",
+      "title": "ACLPreset represents predefined firewall rule sets"
+    },
+    "ACLPresetInfo": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "$ref": "#/definitions/ACLPreset",
+          "title": "Preset type"
+        },
+        "name": {
+          "type": "string",
+          "title": "Display name"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description"
+        },
+        "defaultIngressRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ACLRule"
+          },
+          "title": "Default ingress rules for this preset"
+        },
+        "defaultEgressRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ACLRule"
+          },
+          "title": "Default egress rules for this preset"
+        }
+      }
+    },
+    "ACLRule": {
+      "type": "object",
+      "properties": {
+        "priority": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Rule priority (lower number = higher priority)"
+        },
+        "action": {
+          "$ref": "#/definitions/ACLAction",
+          "title": "Action to take when rule matches"
+        },
+        "source": {
+          "type": "string",
+          "title": "Source address (CIDR notation, \"@internal\", \"@external\", or \"*\")"
+        },
+        "destination": {
+          "type": "string",
+          "title": "Destination address (CIDR notation, \"@internal\", \"@external\", or \"*\")"
+        },
+        "destinationPort": {
+          "type": "string",
+          "title": "Destination port(s): \"80\", \"80,443\", \"1000-2000\", or \"*\""
+        },
+        "protocol": {
+          "type": "string",
+          "title": "Protocol: \"tcp\", \"udp\", \"icmp\", or \"*\""
+        },
+        "description": {
+          "type": "string",
+          "title": "Human-readable description"
+        }
+      },
+      "title": "ACLRule represents a single firewall rule"
+    },
     "AddSSHKeyBody": {
       "type": "object",
       "properties": {
@@ -929,9 +1194,43 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of restarts"
+        },
+        "containerIp": {
+          "type": "string",
+          "title": "Container IP address (e.g., \"10.100.0.20\")"
+        },
+        "aclPreset": {
+          "$ref": "#/definitions/ACLPreset",
+          "title": "Firewall ACL preset applied to this app"
+        },
+        "route": {
+          "$ref": "#/definitions/ProxyRoute",
+          "title": "Proxy route configuration"
+        },
+        "resources": {
+          "$ref": "#/definitions/AppResources",
+          "title": "Resource limits"
         }
       },
       "title": "App represents a deployed application"
+    },
+    "AppResources": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "title": "CPU limit (e.g., \"1\", \"0.5\", \"2\")"
+        },
+        "memory": {
+          "type": "string",
+          "title": "Memory limit (e.g., \"256MB\", \"1GB\")"
+        },
+        "disk": {
+          "type": "string",
+          "title": "Disk limit (e.g., \"1GB\", \"10GB\")"
+        }
+      },
+      "title": "AppResources defines resource limits for an app container"
     },
     "AppState": {
       "type": "string",
@@ -1127,6 +1426,10 @@
         "async": {
           "type": "boolean",
           "title": "Async mode - if true, returns immediately with CREATING state\nClient should poll GetContainer to check completion"
+        },
+        "staticIp": {
+          "type": "string",
+          "title": "Static IP address to assign (optional, e.g., \"10.0.3.100\")\nMust be within the container network CIDR (e.g., 10.0.3.0/24)\nIf empty, DHCP will assign an IP automatically"
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -1280,6 +1583,15 @@
         }
       }
     },
+    "GetContainerACLResponse": {
+      "type": "object",
+      "properties": {
+        "acl": {
+          "$ref": "#/definitions/NetworkACL",
+          "title": "Firewall rules"
+        }
+      }
+    },
     "GetContainerResponse": {
       "type": "object",
       "properties": {
@@ -1308,6 +1620,33 @@
       },
       "title": "GetMetricsResponse is the response from getting metrics"
     },
+    "GetNetworkTopologyResponse": {
+      "type": "object",
+      "properties": {
+        "topology": {
+          "$ref": "#/definitions/NetworkTopology",
+          "title": "Network topology data"
+        }
+      }
+    },
+    "GetRoutesResponse": {
+      "type": "object",
+      "properties": {
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ProxyRoute"
+          },
+          "title": "List of routes"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count"
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -1317,6 +1656,19 @@
         }
       },
       "title": "GetSystemInfoResponse is the response from getting system information"
+    },
+    "ListACLPresetsResponse": {
+      "type": "object",
+      "properties": {
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ACLPresetInfo"
+          },
+          "title": "Available presets"
+        }
+      }
     },
     "ListAppsResponse": {
       "type": "object",
@@ -1355,6 +1707,78 @@
       },
       "title": "ListContainersResponse is the response from listing containers"
     },
+    "NetworkACL": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Unique ACL ID"
+        },
+        "name": {
+          "type": "string",
+          "title": "ACL name (e.g., \"acl-alice-web\")"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description"
+        },
+        "preset": {
+          "$ref": "#/definitions/ACLPreset",
+          "title": "Preset type (if using a predefined rule set)"
+        },
+        "ingressRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ACLRule"
+          },
+          "title": "Ingress (inbound) rules"
+        },
+        "egressRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ACLRule"
+          },
+          "title": "Egress (outbound) rules"
+        },
+        "appId": {
+          "type": "string",
+          "title": "Associated app ID (if app-specific)"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Associated container name"
+        }
+      },
+      "title": "NetworkACL represents firewall rules for a container/app"
+    },
+    "NetworkEdge": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "title": "Source node ID"
+        },
+        "target": {
+          "type": "string",
+          "title": "Target node ID"
+        },
+        "type": {
+          "type": "string",
+          "title": "Edge type: \"route\", \"blocked\", \"allowed\""
+        },
+        "ports": {
+          "type": "string",
+          "title": "Port(s) on this edge"
+        },
+        "protocol": {
+          "type": "string",
+          "title": "Protocol"
+        }
+      },
+      "title": "NetworkEdge represents a connection between nodes"
+    },
     "NetworkInfo": {
       "type": "object",
       "properties": {
@@ -1376,6 +1800,105 @@
         }
       },
       "title": "NetworkInfo contains network configuration for a container"
+    },
+    "NetworkNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Node ID"
+        },
+        "type": {
+          "type": "string",
+          "title": "Node type: \"proxy\", \"container\", \"app\""
+        },
+        "name": {
+          "type": "string",
+          "title": "Display name"
+        },
+        "ipAddress": {
+          "type": "string",
+          "title": "IP address (if applicable)"
+        },
+        "state": {
+          "type": "string",
+          "title": "Node state: \"running\", \"stopped\", \"error\""
+        },
+        "aclName": {
+          "type": "string",
+          "title": "Associated ACL name"
+        }
+      },
+      "title": "NetworkNode represents a node in the network topology"
+    },
+    "NetworkTopology": {
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NetworkNode"
+          },
+          "title": "All nodes in the network"
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NetworkEdge"
+          },
+          "title": "All edges (connections) between nodes"
+        },
+        "networkCidr": {
+          "type": "string",
+          "title": "Network CIDR (e.g., \"10.100.0.0/24\")"
+        },
+        "gatewayIp": {
+          "type": "string",
+          "title": "Gateway IP"
+        }
+      },
+      "title": "NetworkTopology represents the complete network visualization"
+    },
+    "ProxyRoute": {
+      "type": "object",
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain (e.g., \"alice-web\")"
+        },
+        "fullDomain": {
+          "type": "string",
+          "title": "Full domain (e.g., \"alice-web.containarium.dev\")"
+        },
+        "containerIp": {
+          "type": "string",
+          "title": "Container IP address"
+        },
+        "port": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Container port"
+        },
+        "active": {
+          "type": "boolean",
+          "title": "Whether the route is active"
+        },
+        "appId": {
+          "type": "string",
+          "title": "Associated app ID"
+        },
+        "appName": {
+          "type": "string",
+          "title": "Associated app name"
+        },
+        "username": {
+          "type": "string",
+          "title": "Owner username"
+        }
+      },
+      "title": "ProxyRoute represents a DNS/domain to container mapping"
     },
     "RemoveSSHKeyResponse": {
       "type": "object",
@@ -1590,9 +2113,52 @@
           "type": "string",
           "format": "int64",
           "title": "Uptime in seconds"
+        },
+        "networkCidr": {
+          "type": "string",
+          "title": "Container network CIDR (e.g., \"10.100.0.0/24\")"
         }
       },
       "title": "SystemInfo contains information about the host system"
+    },
+    "UpdateContainerACLBody": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "$ref": "#/definitions/ACLPreset",
+          "title": "Use a preset (mutually exclusive with custom rules)"
+        },
+        "ingressRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ACLRule"
+          },
+          "title": "Custom ingress rules (only if preset is CUSTOM)"
+        },
+        "egressRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ACLRule"
+          },
+          "title": "Custom egress rules (only if preset is CUSTOM)"
+        }
+      },
+      "title": "UpdateContainerACLRequest updates firewall rules for a DevBox container"
+    },
+    "UpdateContainerACLResponse": {
+      "type": "object",
+      "properties": {
+        "acl": {
+          "$ref": "#/definitions/NetworkACL",
+          "title": "Updated ACL"
+        },
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        }
+      }
     }
   },
   "securityDefinitions": {

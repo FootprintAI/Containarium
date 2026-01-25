@@ -63,6 +63,11 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		opts.Disk = req.Resources.Disk
 	}
 
+	// Set static IP if specified
+	if req.StaticIp != "" {
+		opts.StaticIP = req.StaticIp
+	}
+
 	// Use defaults if not specified
 	if opts.Image == "" {
 		opts.Image = "images:ubuntu/24.04"
@@ -353,16 +358,35 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		return nil, fmt.Errorf("failed to get server info: %w", err)
 	}
 
+	// Get network CIDR
+	networkCIDR, err := client.GetNetworkSubnet("incusbr0")
+	if err != nil {
+		// Fallback to default if network info not available
+		networkCIDR = "10.100.0.0/24"
+	}
+
+	// Get system resources (CPU, memory, disk)
+	sysResources, err := client.GetSystemResources()
+	if err != nil {
+		// Log warning but continue - resource info is optional
+		sysResources = &incus.SystemResources{}
+	}
+
 	// Build response
 	info := &pb.SystemInfo{
-		IncusVersion:       serverInfo.Environment.ServerVersion,
-		Os:                 serverInfo.Environment.OSName,
-		KernelVersion:      serverInfo.Environment.KernelVersion,
-		ContainersRunning:  running,
-		ContainersStopped:  stopped,
-		ContainersTotal:    int32(len(containers)),
-		Hostname:           serverInfo.Environment.ServerName,
-		// TODO: Add more system info (CPU count, memory, disk, uptime)
+		IncusVersion:          serverInfo.Environment.ServerVersion,
+		Os:                    serverInfo.Environment.OSName,
+		KernelVersion:         serverInfo.Environment.KernelVersion,
+		ContainersRunning:     running,
+		ContainersStopped:     stopped,
+		ContainersTotal:       int32(len(containers)),
+		Hostname:              serverInfo.Environment.ServerName,
+		NetworkCidr:           networkCIDR,
+		TotalCpus:             sysResources.TotalCPUs,
+		TotalMemoryBytes:      sysResources.TotalMemoryBytes,
+		AvailableMemoryBytes:  sysResources.TotalMemoryBytes - sysResources.UsedMemoryBytes,
+		TotalDiskBytes:        sysResources.TotalDiskBytes,
+		AvailableDiskBytes:    sysResources.TotalDiskBytes - sysResources.UsedDiskBytes,
 	}
 
 	return &pb.GetSystemInfoResponse{
@@ -412,6 +436,7 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		Resources: &pb.ResourceLimits{
 			Cpu:    info.CPU,
 			Memory: info.Memory,
+			Disk:   info.Disk,
 		},
 		Network: &pb.NetworkInfo{
 			IpAddress: info.IPAddress,

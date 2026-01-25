@@ -10,6 +10,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.4
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/lxc/incus v0.6.0
+	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/rs/cors v1.11.0
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Web UI Enhancements** - Improved container management dashboard
+  - Grid/List view toggle for containers (switch between card grid and table views)
+  - System Resources Card showing overall CPU cores, memory usage, and storage usage
+  - Per-container disk quota display (current usage / total quota with progress bars)
+  - Demo page with mock data at `/webui/demo` for UI preview
 - **App Hosting Feature** - Deploy web applications with automatic HTTPS
   - `containarium app deploy` - Deploy apps from source directory
   - `containarium app list` - List deployed applications
@@ -72,6 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server address flag help text updated to reflect dual-protocol support
 
 ### Fixed
+- **Disk quota not showing in API response** - Fixed `toProtoContainer()` to include disk size in `ResourceLimits` struct, previously only CPU and memory were being returned
+- **Network/Routes 500 errors** - Fixed nil pointer issues when Caddy proxy is not configured
 - **Node.js buildpack `npm ci` failure** - Fixed Dockerfile generation to use `npm install --omit=dev` when `package-lock.json` is missing, falls back to `npm ci --omit=dev` when lock file exists
 - **PostgreSQL timestamp encoding** - Fixed `deployedAt` field type from `*interface{}` to `*time.Time` for proper database encoding
 - **Caddy server name mismatch** - Fixed ProxyManager to use `srv0` (Caddyfile default) instead of hardcoded `main`, now configurable via `SetServerName()`

@@ -7,7 +7,14 @@ Built with LXC, SSH jump hosts, and cloud-native automation.
 🚫 No VM-per-user
 ✅ Just fast, cheap, isolated Linux environments
 
-![Containarium Dashboard](docs/screenshots/dashboard.png)
+### Container Management
+![Container Dashboard](docs/screenshots/dashboard-1.png)
+
+### App Hosting
+![Apps Dashboard](docs/screenshots/dashboard-2.png)
+
+### Network Topology
+![Network Topology](docs/screenshots/dashboard-3.png)
 
 ## Quick Start
 

@@ -1,0 +1,324 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// ACLAction represents the action to take when a rule matches
+enum ACLAction {
+  // Unspecified action (should not be used)
+  ACL_ACTION_UNSPECIFIED = 0;
+
+  // Allow the traffic
+  ACL_ACTION_ALLOW = 1;
+
+  // Drop the traffic silently
+  ACL_ACTION_DROP = 2;
+
+  // Reject the traffic with ICMP response
+  ACL_ACTION_REJECT = 3;
+}
+
+// ACLPreset represents predefined firewall rule sets
+enum ACLPreset {
+  // Unspecified preset
+  ACL_PRESET_UNSPECIFIED = 0;
+
+  // Full isolation: only allow HTTP from proxy, block inter-container traffic
+  ACL_PRESET_FULL_ISOLATION = 1;
+
+  // HTTP only: allow HTTP/HTTPS inbound, standard egress
+  ACL_PRESET_HTTP_ONLY = 2;
+
+  // Permissive: allow all traffic (for development)
+  ACL_PRESET_PERMISSIVE = 3;
+
+  // Custom: user-defined rules
+  ACL_PRESET_CUSTOM = 4;
+}
+
+// ACLRule represents a single firewall rule
+message ACLRule {
+  // Rule priority (lower number = higher priority)
+  int32 priority = 1;
+
+  // Action to take when rule matches
+  ACLAction action = 2;
+
+  // Source address (CIDR notation, "@internal", "@external", or "*")
+  string source = 3;
+
+  // Destination address (CIDR notation, "@internal", "@external", or "*")
+  string destination = 4;
+
+  // Destination port(s): "80", "80,443", "1000-2000", or "*"
+  string destination_port = 5;
+
+  // Protocol: "tcp", "udp", "icmp", or "*"
+  string protocol = 6;
+
+  // Human-readable description
+  string description = 7;
+}
+
+// NetworkACL represents firewall rules for a container/app
+message NetworkACL {
+  // Unique ACL ID
+  string id = 1;
+
+  // ACL name (e.g., "acl-alice-web")
+  string name = 2;
+
+  // Description
+  string description = 3;
+
+  // Preset type (if using a predefined rule set)
+  ACLPreset preset = 4;
+
+  // Ingress (inbound) rules
+  repeated ACLRule ingress_rules = 5;
+
+  // Egress (outbound) rules
+  repeated ACLRule egress_rules = 6;
+
+  // Associated app ID (if app-specific)
+  string app_id = 7;
+
+  // Associated container name
+  string container_name = 8;
+}
+
+// ProxyRoute represents a DNS/domain to container mapping
+message ProxyRoute {
+  // Subdomain (e.g., "alice-web")
+  string subdomain = 1;
+
+  // Full domain (e.g., "alice-web.containarium.dev")
+  string full_domain = 2;
+
+  // Container IP address
+  string container_ip = 3;
+
+  // Container port
+  int32 port = 4;
+
+  // Whether the route is active
+  bool active = 5;
+
+  // Associated app ID
+  string app_id = 6;
+
+  // Associated app name
+  string app_name = 7;
+
+  // Owner username
+  string username = 8;
+}
+
+// NetworkNode represents a node in the network topology
+message NetworkNode {
+  // Node ID
+  string id = 1;
+
+  // Node type: "proxy", "container", "app"
+  string type = 2;
+
+  // Display name
+  string name = 3;
+
+  // IP address (if applicable)
+  string ip_address = 4;
+
+  // Node state: "running", "stopped", "error"
+  string state = 5;
+
+  // Associated ACL name
+  string acl_name = 6;
+}
+
+// NetworkEdge represents a connection between nodes
+message NetworkEdge {
+  // Source node ID
+  string source = 1;
+
+  // Target node ID
+  string target = 2;
+
+  // Edge type: "route", "blocked", "allowed"
+  string type = 3;
+
+  // Port(s) on this edge
+  string ports = 4;
+
+  // Protocol
+  string protocol = 5;
+}
+
+// NetworkTopology represents the complete network visualization
+message NetworkTopology {
+  // All nodes in the network
+  repeated NetworkNode nodes = 1;
+
+  // All edges (connections) between nodes
+  repeated NetworkEdge edges = 2;
+
+  // Network CIDR (e.g., "10.100.0.0/24")
+  string network_cidr = 3;
+
+  // Gateway IP
+  string gateway_ip = 4;
+}
+
+// GetRoutesRequest lists all proxy routes
+message GetRoutesRequest {
+  // Filter by username (optional)
+  string username = 1;
+
+  // Filter by active status (optional)
+  bool active_only = 2;
+}
+
+message GetRoutesResponse {
+  // List of routes
+  repeated ProxyRoute routes = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// GetContainerACLRequest gets firewall rules for a DevBox container
+message GetContainerACLRequest {
+  // Username (container owner)
+  string username = 1;
+}
+
+message GetContainerACLResponse {
+  // Firewall rules
+  NetworkACL acl = 1;
+}
+
+// UpdateContainerACLRequest updates firewall rules for a DevBox container
+message UpdateContainerACLRequest {
+  // Username (container owner)
+  string username = 1;
+
+  // Use a preset (mutually exclusive with custom rules)
+  ACLPreset preset = 2;
+
+  // Custom ingress rules (only if preset is CUSTOM)
+  repeated ACLRule ingress_rules = 3;
+
+  // Custom egress rules (only if preset is CUSTOM)
+  repeated ACLRule egress_rules = 4;
+}
+
+message UpdateContainerACLResponse {
+  // Updated ACL
+  NetworkACL acl = 1;
+
+  // Status message
+  string message = 2;
+}
+
+// GetNetworkTopologyRequest gets network visualization data
+message GetNetworkTopologyRequest {
+  // Include stopped containers/apps
+  bool include_stopped = 1;
+}
+
+message GetNetworkTopologyResponse {
+  // Network topology data
+  NetworkTopology topology = 1;
+}
+
+// ListACLPresetsRequest lists available ACL presets
+message ListACLPresetsRequest {}
+
+message ACLPresetInfo {
+  // Preset type
+  ACLPreset preset = 1;
+
+  // Display name
+  string name = 2;
+
+  // Description
+  string description = 3;
+
+  // Default ingress rules for this preset
+  repeated ACLRule default_ingress_rules = 4;
+
+  // Default egress rules for this preset
+  repeated ACLRule default_egress_rules = 5;
+}
+
+message ListACLPresetsResponse {
+  // Available presets
+  repeated ACLPresetInfo presets = 1;
+}
+
+// NetworkService provides network and firewall management
+service NetworkService {
+  // GetRoutes lists all proxy routes (DNS to container mappings)
+  rpc GetRoutes(GetRoutesRequest) returns (GetRoutesResponse) {
+    option (google.api.http) = {
+      get: "/v1/network/routes"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List proxy routes";
+      description: "Returns all DNS/domain to container mappings configured in the reverse proxy.";
+      tags: "Network";
+    };
+  }
+
+  // GetContainerACL gets firewall rules for a DevBox container
+  rpc GetContainerACL(GetContainerACLRequest) returns (GetContainerACLResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/acl"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get container firewall rules";
+      description: "Returns the network ACL (firewall rules) configured for a user's DevBox container.";
+      tags: "Network";
+    };
+  }
+
+  // UpdateContainerACL updates firewall rules for a DevBox container
+  rpc UpdateContainerACL(UpdateContainerACLRequest) returns (UpdateContainerACLResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/acl"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Update container firewall rules";
+      description: "Updates the network ACL for a DevBox container. Use a preset for common configurations or specify custom rules.";
+      tags: "Network";
+    };
+  }
+
+  // GetNetworkTopology returns network visualization data
+  rpc GetNetworkTopology(GetNetworkTopologyRequest) returns (GetNetworkTopologyResponse) {
+    option (google.api.http) = {
+      get: "/v1/network/topology"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get network topology";
+      description: "Returns the network topology including all containers, apps, proxy routes, and their connections for visualization.";
+      tags: "Network";
+    };
+  }
+
+  // ListACLPresets lists available firewall presets
+  rpc ListACLPresets(ListACLPresetsRequest) returns (ListACLPresetsResponse) {
+    option (google.api.http) = {
+      get: "/v1/network/acl-presets"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List ACL presets";
+      description: "Returns available firewall rule presets with their default configurations.";
+      tags: "Network";
+    };
+  }
+}

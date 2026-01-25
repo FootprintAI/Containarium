@@ -5,6 +5,7 @@ package containarium.v1;
 import "containarium/v1/container.proto";
 import "containarium/v1/config.proto";
 import "containarium/v1/app.proto";
+import "containarium/v1/network.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 

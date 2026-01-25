@@ -16,13 +16,54 @@ type Client struct {
 	server incus.InstanceServer
 }
 
+// DiskDevice represents a disk device configuration
+type DiskDevice struct {
+	Path string // Mount path (e.g., "/")
+	Pool string // Storage pool name (e.g., "default")
+	Size string // Disk size (e.g., "20GB")
+}
+
+// ToMap converts DiskDevice to the map format required by Incus API
+func (d DiskDevice) ToMap() map[string]string {
+	m := map[string]string{
+		"type": "disk",
+		"path": d.Path,
+		"pool": d.Pool,
+	}
+	if d.Size != "" {
+		m["size"] = d.Size
+	}
+	return m
+}
+
+// NICDevice represents a network interface device configuration
+type NICDevice struct {
+	Name        string // Interface name (e.g., "eth0")
+	Network     string // Network name (e.g., "incusbr0")
+	IPv4Address string // Static IPv4 address (empty for DHCP)
+}
+
+// ToMap converts NICDevice to the map format required by Incus API
+func (n NICDevice) ToMap() map[string]string {
+	m := map[string]string{
+		"type":    "nic",
+		"name":    n.Name,
+		"network": n.Network,
+	}
+	if n.IPv4Address != "" {
+		m["ipv4.address"] = n.IPv4Address
+	}
+	return m
+}
+
 // ContainerConfig holds configuration for creating a container
 type ContainerConfig struct {
 	Name                   string
 	Image                  string
 	CPU                    string
 	Memory                 string
-	Disk                   string
+	Disk                   *DiskDevice // Root disk configuration
+	NIC                    *NICDevice  // Network interface configuration
 	EnableNesting          bool
 	EnableDockerPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
 	AutoStart              bool
@@ -171,15 +212,22 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 		req.Config["boot.autostart"] = "true"
 	}
 
-	// Disk size (via device config)
-	if config.Disk != "" {
-		req.Devices = map[string]map[string]string{
-			"root": {
-				"type": "disk",
-				"path": "/",
-				"pool": "default",
-				"size": config.Disk,
-			},
+	// Device configuration
+	req.Devices = make(map[string]map[string]string)
+
+	// Root disk device
+	if config.Disk != nil {
+		req.Devices["root"] = config.Disk.ToMap()
+		fmt.Printf("[DEBUG] CreateContainer - Disk: path=%s, pool=%s, size=%s\n",
+			config.Disk.Path, config.Disk.Pool, config.Disk.Size)
+	}
+
+	// Network interface device
+	if config.NIC != nil {
+		req.Devices[config.NIC.Name] = config.NIC.ToMap()
+		if config.NIC.IPv4Address != "" {
+			fmt.Printf("[DEBUG] CreateContainer - NIC: name=%s, network=%s, static_ip=%s\n",
+				config.NIC.Name, config.NIC.Network, config.NIC.IPv4Address)
 		}
 	}
 
@@ -252,13 +300,20 @@ func (c *Client) DeleteContainer(name string) error {
 
 // ListContainers lists all containers
 func (c *Client) ListContainers() ([]ContainerInfo, error) {
-	instances, err := c.server.GetInstances(api.InstanceTypeContainer)
+	// Get list of instance names first
+	names, err := c.server.GetInstanceNames(api.InstanceTypeContainer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
 	var containers []ContainerInfo
-	for _, inst := range instances {
+	for _, name := range names {
+		// Get full instance details for each container
+		inst, _, err := c.server.GetInstance(name)
+		if err != nil {
+			continue // Skip containers we can't get details for
+		}
+
 		info := ContainerInfo{
 			Name:      inst.Name,
 			State:     inst.Status,
@@ -296,6 +351,21 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 					info.GPU = pci
 				} else {
 					info.GPU = "GPU" // Generic GPU indicator
+				}
+			}
+		}
+
+		// If no disk size found, check expanded devices (includes profile devices)
+		if info.Disk == "" {
+			for deviceName, device := range inst.ExpandedDevices {
+				deviceType, ok := device["type"]
+				if !ok {
+					continue
+				}
+				if deviceType == "disk" && deviceName == "root" {
+					if size, ok := device["size"]; ok {
+						info.Disk = size
+					}
 				}
 			}
 		}
@@ -380,6 +450,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 	}
 
 	// Parse devices for disk and GPU information
+	// First check instance-specific devices
 	for deviceName, device := range inst.Devices {
 		deviceType, ok := device["type"]
 		if !ok {
@@ -402,6 +473,21 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 				info.GPU = pci
 			} else {
 				info.GPU = "GPU" // Generic GPU indicator
+			}
+		}
+	}
+
+	// If no disk size found, check expanded devices (includes profile devices)
+	if info.Disk == "" {
+		for deviceName, device := range inst.ExpandedDevices {
+			deviceType, ok := device["type"]
+			if !ok {
+				continue
+			}
+			if deviceType == "disk" && deviceName == "root" {
+				if size, ok := device["size"]; ok {
+					info.Disk = size
+				}
 			}
 		}
 	}
@@ -508,6 +594,50 @@ func (c *Client) GetServerInfo() (*api.Server, error) {
 		return nil, fmt.Errorf("failed to get server info: %w", err)
 	}
 	return server, nil
+}
+
+// SystemResources holds system resource information
+type SystemResources struct {
+	TotalCPUs          int32
+	TotalMemoryBytes   int64
+	UsedMemoryBytes    int64
+	TotalDiskBytes     int64
+	UsedDiskBytes      int64
+	UptimeSeconds      int64
+}
+
+// GetSystemResources gets system resource information from Incus
+func (c *Client) GetSystemResources() (*SystemResources, error) {
+	resources, err := c.server.GetServerResources()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get server resources: %w", err)
+	}
+
+	res := &SystemResources{
+		TotalMemoryBytes: int64(resources.Memory.Total),
+		UsedMemoryBytes:  int64(resources.Memory.Used),
+	}
+
+	// Count total CPU cores
+	for _, socket := range resources.CPU.Sockets {
+		for _, core := range socket.Cores {
+			res.TotalCPUs += int32(len(core.Threads))
+		}
+	}
+
+	// Get storage pool info for disk usage
+	pools, err := c.server.GetStoragePools()
+	if err == nil {
+		for _, pool := range pools {
+			poolResources, err := c.server.GetStoragePoolResources(pool.Name)
+			if err == nil {
+				res.TotalDiskBytes += int64(poolResources.Space.Total)
+				res.UsedDiskBytes += int64(poolResources.Space.Used)
+			}
+		}
+	}
+
+	return res, nil
 }
 
 // SetConfig sets a configuration key for a container (e.g., limits.cpu, limits.memory)

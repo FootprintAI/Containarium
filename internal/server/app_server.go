@@ -16,11 +16,11 @@ import (
 type AppServer struct {
 	pb.UnimplementedAppServiceServer
 	manager *app.Manager
-	store   *app.Store
+	store   app.AppStore
 }
 
 // NewAppServer creates a new app server
-func NewAppServer(manager *app.Manager, store *app.Store) *AppServer {
+func NewAppServer(manager *app.Manager, store app.AppStore) *AppServer {
 	return &AppServer{
 		manager: manager,
 		store:   store,

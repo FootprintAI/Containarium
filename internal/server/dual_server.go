@@ -49,6 +49,7 @@ type DualServer struct {
 	grpcServer      *grpc.Server
 	containerServer *ContainerServer
 	appServer       *AppServer
+	networkServer   *NetworkServer
 	gatewayServer   *gateway.GatewayServer
 	tokenManager    *auth.TokenManager
 	authMiddleware  *auth.AuthMiddleware
@@ -98,27 +99,90 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
 
-	// Create and register AppServer if app hosting is enabled
+	// Create and register AppServer and NetworkServer if app hosting is enabled
 	var appServer *AppServer
-	if config.EnableAppHosting && config.PostgresConnString != "" {
-		appStore, err := app.NewStore(context.Background(), config.PostgresConnString)
+	var networkServer *NetworkServer
+	if config.EnableAppHosting {
+		incusClient, err := incus.New()
 		if err != nil {
-			log.Printf("Warning: Failed to connect to app store: %v. App hosting disabled.", err)
+			log.Printf("Warning: Failed to create incus client for app hosting: %v. App hosting disabled.", err)
 		} else {
-			incusClient, err := incus.New()
+			// Determine PostgreSQL connection string and Caddy admin URL
+			postgresConnString := config.PostgresConnString
+			caddyAdminURL := config.CaddyAdminURL
+			networkCIDR := "10.100.0.0/24"
+
+			// Get actual network CIDR from incus
+			if subnet, err := incusClient.GetNetworkSubnet("incusbr0"); err == nil {
+				// Convert "10.100.0.1/24" to "10.100.0.0/24"
+				parts := subnet
+				if len(parts) > 0 {
+					networkCIDR = subnet
+				}
+			}
+
+			// If no external PostgreSQL/Caddy provided, set up core services
+			if postgresConnString == "" || caddyAdminURL == "" {
+				log.Printf("Setting up core services (PostgreSQL, Caddy) in containers...")
+
+				coreServices := NewCoreServices(incusClient, CoreServicesConfig{
+					NetworkCIDR: networkCIDR,
+				})
+
+				// Setup PostgreSQL if not provided
+				if postgresConnString == "" {
+					connString, err := coreServices.EnsurePostgres(context.Background())
+					if err != nil {
+						log.Printf("Warning: Failed to setup PostgreSQL: %v. App hosting disabled.", err)
+						goto skipAppHosting
+					}
+					postgresConnString = connString
+					log.Printf("PostgreSQL ready: %s", coreServices.GetPostgresIP())
+				}
+
+				// Setup Caddy if not provided
+				if caddyAdminURL == "" && config.BaseDomain != "" {
+					adminURL, err := coreServices.EnsureCaddy(context.Background(), config.BaseDomain)
+					if err != nil {
+						log.Printf("Warning: Failed to setup Caddy: %v. Proxy features disabled.", err)
+					} else {
+						caddyAdminURL = adminURL
+						log.Printf("Caddy ready: %s", coreServices.GetCaddyIP())
+					}
+				}
+			}
+
+			// Connect to app store
+			appStore, err := app.NewStore(context.Background(), postgresConnString)
 			if err != nil {
-				log.Printf("Warning: Failed to create incus client for app hosting: %v", err)
+				log.Printf("Warning: Failed to connect to app store: %v. App hosting disabled.", err)
 			} else {
 				appManager := app.NewManager(appStore, incusClient, app.ManagerConfig{
 					BaseDomain:    config.BaseDomain,
-					CaddyAdminURL: config.CaddyAdminURL,
+					CaddyAdminURL: caddyAdminURL,
 				})
 				appServer = NewAppServer(appManager, appStore)
 				pb.RegisterAppServiceServer(grpcServer, appServer)
 				log.Printf("App hosting service enabled")
+
+				// Create and register NetworkServer
+				var proxyManager *app.ProxyManager
+				if caddyAdminURL != "" {
+					proxyManager = app.NewProxyManager(caddyAdminURL, config.BaseDomain)
+				}
+				networkServer = NewNetworkServer(
+					incusClient,
+					proxyManager,
+					appStore,
+					networkCIDR,
+					"", // Proxy IP determined dynamically
+				)
+				pb.RegisterNetworkServiceServer(grpcServer, networkServer)
+				log.Printf("Network service enabled")
 			}
 		}
 	}
+skipAppHosting:
 
 	reflection.Register(grpcServer)
 
@@ -153,6 +217,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		grpcServer:      grpcServer,
 		containerServer: containerServer,
 		appServer:       appServer,
+		networkServer:   networkServer,
 		gatewayServer:   gatewayServer,
 		tokenManager:    tokenManager,
 		authMiddleware:  authMiddleware,

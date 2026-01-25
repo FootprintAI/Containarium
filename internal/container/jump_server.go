@@ -490,8 +490,8 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 	}()
 
 	// Wait a moment for the agent to fully stop
-	fmt.Printf("       Waiting 2 seconds for agent to stop...\n")
-	time.Sleep(2 * time.Second)
+	fmt.Printf("       Waiting 3 seconds for agent to stop...\n")
+	time.Sleep(3 * time.Second)
 
 	// Check if agent actually stopped
 	checkCmd := exec.Command("systemctl", "is-active", "google-guest-agent")

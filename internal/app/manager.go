@@ -32,7 +32,7 @@ type IncusClient interface {
 
 // Manager orchestrates app deployment workflow
 type Manager struct {
-	store       *Store
+	store       AppStore
 	builder     *Builder
 	proxy       *ProxyManager
 	incusClient IncusClient
@@ -49,7 +49,7 @@ type ManagerConfig struct {
 }
 
 // NewManager creates a new app manager
-func NewManager(store *Store, incusClient IncusClient, config ManagerConfig) *Manager {
+func NewManager(store AppStore, incusClient IncusClient, config ManagerConfig) *Manager {
 	detector := buildpack.NewDetector()
 	builder := NewBuilder(incusClient, detector)
 	proxy := NewProxyManager(config.CaddyAdminURL, config.BaseDomain)

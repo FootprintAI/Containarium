@@ -149,6 +149,11 @@ func (p *ProxyManager) ListRoutes() ([]Route, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		// Handle case when no routes are configured (path doesn't exist in Caddy config)
+		// Caddy returns 400 with "invalid traversal path" when the http app or server doesn't exist
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
+			return []Route{}, nil
+		}
 		return nil, fmt.Errorf("caddy returned error (status %d): %s", resp.StatusCode, string(body))
 	}
 

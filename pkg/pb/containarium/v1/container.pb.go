@@ -486,7 +486,11 @@ type CreateContainerRequest struct {
 	EnableDocker bool `protobuf:"varint,6,opt,name=enable_docker,json=enableDocker,proto3" json:"enable_docker,omitempty"`
 	// Async mode - if true, returns immediately with CREATING state
 	// Client should poll GetContainer to check completion
-	Async         bool `protobuf:"varint,7,opt,name=async,proto3" json:"async,omitempty"`
+	Async bool `protobuf:"varint,7,opt,name=async,proto3" json:"async,omitempty"`
+	// Static IP address to assign (optional, e.g., "10.0.3.100")
+	// Must be within the container network CIDR (e.g., 10.0.3.0/24)
+	// If empty, DHCP will assign an IP automatically
+	StaticIp      string `protobuf:"bytes,8,opt,name=static_ip,json=staticIp,proto3" json:"static_ip,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -568,6 +572,13 @@ func (x *CreateContainerRequest) GetAsync() bool {
 		return x.Async
 	}
 	return false
+}
+
+func (x *CreateContainerRequest) GetStaticIp() string {
+	if x != nil {
+		return x.StaticIp
+	}
+	return ""
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -1555,7 +1566,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xe7\x02\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\x84\x03\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -1563,7 +1574,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x06labels\x18\x04 \x03(\v23.containarium.v1.CreateContainerRequest.LabelsEntryR\x06labels\x12\x14\n" +
 	"\x05image\x18\x05 \x01(\tR\x05image\x12#\n" +
 	"\renable_docker\x18\x06 \x01(\bR\fenableDocker\x12\x14\n" +
-	"\x05async\x18\a \x01(\bR\x05async\x1a9\n" +
+	"\x05async\x18\a \x01(\bR\x05async\x12\x1b\n" +
+	"\tstatic_ip\x18\b \x01(\tR\bstaticIp\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8e\x01\n" +
