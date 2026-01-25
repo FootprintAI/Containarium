@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Buildpack system generates Dockerfiles automatically
   - PostgreSQL storage for app metadata
   - Subdomain-based routing (e.g., `username-appname.containarium.dev`)
+- **Auto-Provisioned Core Services** - Infrastructure containers managed by Containarium
+  - `containarium-core-postgres` - PostgreSQL container for app metadata storage (2 CPU, 2GB RAM, 10GB disk)
+  - `containarium-core-caddy` - Caddy reverse proxy container for TLS termination (1 CPU, 512MB RAM, 5GB disk)
+  - Automatically created on daemon startup with `--app-hosting` flag
+  - Core containers use static IPs and are excluded from user container listings
+  - Self-healing: containers are recreated if missing or stopped
 - **Caddy Reverse Proxy Integration** - Automatic TLS with DNS-01 challenge
   - Wildcard certificate support for `*.containarium.dev`
   - Dynamic route configuration via Caddy Admin API
