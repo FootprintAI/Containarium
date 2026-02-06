@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/footprintai/containarium/internal/incus"
 )
 
 func init() {
@@ -131,6 +133,92 @@ func isValidUsername(username string) bool {
 func userExists(username string) bool {
 	cmd := exec.Command("id", username)
 	return cmd.Run() == nil
+}
+
+// UserExists is the exported version of userExists for use by CLI commands
+func UserExists(username string) bool {
+	return userExists(username)
+}
+
+// ExtractSSHKeyFromContainer extracts the SSH public key from inside a container
+// The key is read from /home/{username}/.ssh/authorized_keys inside the container
+func ExtractSSHKeyFromContainer(containerName, username string, verbose bool) (string, error) {
+	// Create Incus client
+	client, err := incus.New()
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to Incus: %w", err)
+	}
+
+	// Check if container is running
+	info, err := client.GetContainer(containerName)
+	if err != nil {
+		return "", fmt.Errorf("container not found: %w", err)
+	}
+
+	// If container is stopped, try to start it temporarily
+	wasStarted := false
+	if info.State != "Running" {
+		if verbose {
+			fmt.Printf("       Starting container %s to extract SSH key...\n", containerName)
+		}
+		if err := client.StartContainer(containerName); err != nil {
+			return "", fmt.Errorf("failed to start container: %w", err)
+		}
+		wasStarted = true
+		// Wait for container to be ready
+		time.Sleep(3 * time.Second)
+	}
+
+	// Try to read the SSH key from the container
+	authorizedKeysPath := fmt.Sprintf("/home/%s/.ssh/authorized_keys", username)
+
+	if verbose {
+		fmt.Printf("       Reading SSH key from %s:%s\n", containerName, authorizedKeysPath)
+	}
+
+	keyContent, err := client.ReadFile(containerName, authorizedKeysPath)
+	if err != nil {
+		// Try root's authorized_keys as fallback
+		if verbose {
+			fmt.Printf("       Primary path failed, trying /root/.ssh/authorized_keys...\n")
+		}
+		keyContent, err = client.ReadFile(containerName, "/root/.ssh/authorized_keys")
+		if err != nil {
+			// Stop container if we started it
+			if wasStarted {
+				_ = client.StopContainer(containerName, false)
+			}
+			return "", fmt.Errorf("could not read SSH key from container: %w", err)
+		}
+	}
+
+	// Stop container if we started it
+	if wasStarted {
+		if verbose {
+			fmt.Printf("       Stopping container %s...\n", containerName)
+		}
+		_ = client.StopContainer(containerName, false)
+	}
+
+	// Parse the authorized_keys file - get the first valid SSH key
+	lines := strings.Split(string(keyContent), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Validate it looks like an SSH key
+		if strings.HasPrefix(line, "ssh-rsa ") ||
+			strings.HasPrefix(line, "ssh-ed25519 ") ||
+			strings.HasPrefix(line, "ssh-ecdsa ") ||
+			strings.HasPrefix(line, "ecdsa-sha2-") ||
+			strings.HasPrefix(line, "ssh-dss ") {
+			return line, nil
+		}
+	}
+
+	return "", fmt.Errorf("no valid SSH key found in authorized_keys")
 }
 
 // setupUserSSHKey sets up SSH key for a user
@@ -362,15 +450,14 @@ func retryUserCommand(cmdFunc func() error, verbose bool) error {
 	}
 
 	// All retries exhausted - provide helpful guidance
-	errorMsg := fmt.Sprintf("failed after %d retries: %w\n\n", maxRetries, lastErr)
-	errorMsg += "The google_guest_agent is persistently locking /etc/passwd.\n"
-	errorMsg += "Suggestions:\n"
-	errorMsg += "  1. Check guest agent activity: sudo journalctl -u google-guest-agent -n 50\n"
-	errorMsg += "  2. Wait a few minutes for the guest agent to complete its tasks\n"
-	errorMsg += "  3. Temporarily disable OS Login if not needed: sudo systemctl stop google-guest-agent\n"
-	errorMsg += "  4. Try again - the lock may clear in a few minutes\n"
-
-	return fmt.Errorf(errorMsg)
+	return fmt.Errorf("failed after %d retries: %w\n\n"+
+		"The google_guest_agent is persistently locking /etc/passwd.\n"+
+		"Suggestions:\n"+
+		"  1. Check guest agent activity: sudo journalctl -u google-guest-agent -n 50\n"+
+		"  2. Wait a few minutes for the guest agent to complete its tasks\n"+
+		"  3. Temporarily disable OS Login if not needed: sudo systemctl stop google-guest-agent\n"+
+		"  4. Try again - the lock may clear in a few minutes",
+		maxRetries, lastErr)
 }
 
 // waitForLockFilesClear waits for common lock files to be released

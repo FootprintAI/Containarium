@@ -239,7 +239,7 @@ func showContainerInfo(username string) error {
 
 	if showMetrics {
 		fmt.Println("Note: Detailed metrics are not yet implemented.")
-		fmt.Println("Use 'incus info %s' for detailed resource usage.\n", containerName)
+		fmt.Printf("Use 'incus info %s' for detailed resource usage.\n", containerName)
 	}
 
 	return nil

@@ -562,6 +562,50 @@ for user_dir in /home/*; do
     fi
 done
 
+# =============================================================================
+# CRITICAL: Restore jump server accounts from persisted containers
+# =============================================================================
+# When the jump server is recreated (e.g., spot instance termination), the boot
+# disk is lost but containers persist on the ZFS pool. This section restores
+# SSH access by syncing jump server accounts from the persisted containers.
+# =============================================================================
+if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -f /usr/local/bin/containarium ]; then
+    echo "==> Checking for persisted containers to restore jump server accounts..."
+
+    # Wait for Incus to be fully ready
+    for i in {1..30}; do
+        if incus list --format=csv 2>/dev/null | head -1 >/dev/null; then
+            break
+        fi
+        echo "Waiting for Incus to be ready... ($i/30)"
+        sleep 2
+    done
+
+    # Check if there are existing containers (indicating this is a restart)
+    if incus list --format=csv --columns=n 2>/dev/null | grep -q .; then
+        echo "  Found persisted containers, syncing jump server accounts..."
+
+        # Temporarily stop google-guest-agent to avoid lock conflicts
+        systemctl stop google-guest-agent 2>/dev/null || true
+        sleep 2
+
+        # Run the sync-accounts command
+        if /usr/local/bin/containarium sync-accounts --verbose; then
+            echo "✓ Jump server accounts restored successfully"
+        else
+            echo "⚠ Some accounts may have failed to restore"
+            echo "  You can manually run: containarium sync-accounts"
+        fi
+
+        # Restart google-guest-agent
+        systemctl start google-guest-agent 2>/dev/null || true
+    else
+        echo "  No persisted containers found, skipping account restoration"
+    fi
+else
+    echo "==> Skipping account restoration (persistent disk not enabled or containarium not installed)"
+fi
+
 # Mark setup as complete
 touch /opt/containarium/.setup_complete
 date > /opt/containarium/.setup_timestamp
