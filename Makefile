@@ -1,4 +1,4 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local webui swagger-ui build-mcp build-mcp-linux install-mcp
+.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp
 
 # Variables
 BINARY_NAME=containarium
@@ -48,7 +48,7 @@ swagger-ui: ## Download and install Swagger UI static files
 	@chmod +x scripts/download-swagger-ui.sh
 	@./scripts/download-swagger-ui.sh
 
-webui: ## Build Web UI static files for embedding
+web-ui: ## Build Web UI static files for embedding
 	@echo "==> Building Web UI..."
 	@chmod +x scripts/build-webui.sh
 	@./scripts/build-webui.sh
@@ -61,7 +61,7 @@ proto-breaking: ## Check for breaking changes in protobuf definitions
 	@echo "==> Checking for breaking changes..."
 	@buf breaking --against '.git#branch=main'
 
-build: proto webui swagger-ui ## Build the containarium binary (includes Swagger UI)
+build: proto web-ui swagger-ui ## Build the containarium binary (includes Swagger UI)
 	@echo "==> Building containarium..."
 	@mkdir -p $(BUILD_DIR)
 	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
