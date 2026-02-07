@@ -576,28 +576,42 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 		}
 	}()
 
-	// Wait a moment for the agent to fully stop
-	fmt.Printf("       Waiting 3 seconds for agent to stop...\n")
+	// Wait for the agent to fully stop and release locks
+	fmt.Printf("       Waiting for agent to stop and release locks...\n")
 	time.Sleep(3 * time.Second)
 
 	// Check if agent actually stopped
 	checkCmd := exec.Command("systemctl", "is-active", "google-guest-agent")
 	if statusOutput, _ := checkCmd.CombinedOutput(); len(statusOutput) > 0 {
-		fmt.Printf("       Agent status after stop: %s\n", string(statusOutput))
+		fmt.Printf("       Agent status after stop: %s\n", strings.TrimSpace(string(statusOutput)))
 	}
 
-	// Check for and remove any stale lock files (using rm command to bypass systemd restrictions)
+	// Wait for lock files to clear (up to 10 seconds)
+	// Note: We don't try to remove them as that fails under systemd's ProtectSystem=strict
 	lockFiles := []string{"/etc/passwd.lock", "/etc/shadow.lock", "/etc/.pwd.lock", "/etc/group.lock"}
-	for _, lockFile := range lockFiles {
-		if _, err := os.Stat(lockFile); err == nil {
-			fmt.Printf("       WARNING: Stale lock file exists: %s, removing it...\n", lockFile)
-			rmCmd := exec.Command("rm", "-f", lockFile)
-			if rmOutput, rmErr := rmCmd.CombinedOutput(); rmErr != nil {
-				fmt.Printf("       Warning: Failed to remove %s: %v\n%s\n", lockFile, rmErr, string(rmOutput))
-			} else {
-				fmt.Printf("       ✓ Removed stale lock file: %s\n", lockFile)
+	locksClear := false
+	for attempt := 0; attempt < 10; attempt++ {
+		allClear := true
+		for _, lockFile := range lockFiles {
+			if _, err := os.Stat(lockFile); err == nil {
+				allClear = false
+				if attempt == 0 {
+					fmt.Printf("       Waiting for lock file to clear: %s\n", lockFile)
+				}
+				break
 			}
 		}
+		if allClear {
+			locksClear = true
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	if !locksClear {
+		fmt.Printf("       Warning: Lock files still present after waiting, proceeding anyway...\n")
+	} else {
+		fmt.Printf("       ✓ All lock files cleared\n")
 	}
 
 	// Create user

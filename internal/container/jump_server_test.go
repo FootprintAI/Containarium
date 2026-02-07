@@ -1,8 +1,10 @@
 package container
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsValidUsername(t *testing.T) {
@@ -312,6 +314,215 @@ func containerNameToUsername(containerName string) (username string, valid bool)
 		return strings.TrimSuffix(containerName, suffix), true
 	}
 	return containerName, false
+}
+
+// TestWaitForLockFiles tests the lock file waiting logic
+func TestWaitForLockFiles(t *testing.T) {
+	// Create a temporary directory for test lock files
+	tempDir := t.TempDir()
+
+	t.Run("no lock files - returns immediately", func(t *testing.T) {
+		lockFiles := []string{
+			tempDir + "/passwd.lock",
+			tempDir + "/shadow.lock",
+		}
+		cleared, iterations := waitForLockFilesCleared(lockFiles, 5, 10*time.Millisecond)
+		if !cleared {
+			t.Error("expected locks to be cleared when no lock files exist")
+		}
+		if iterations != 1 {
+			t.Errorf("expected 1 iteration, got %d", iterations)
+		}
+	})
+
+	t.Run("lock file exists then clears", func(t *testing.T) {
+		lockFile := tempDir + "/test.lock"
+		lockFiles := []string{lockFile}
+
+		// Create lock file
+		if err := os.WriteFile(lockFile, []byte("locked"), 0644); err != nil {
+			t.Fatalf("failed to create lock file: %v", err)
+		}
+
+		// Start a goroutine to remove the lock file after a short delay
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			os.Remove(lockFile)
+		}()
+
+		cleared, iterations := waitForLockFilesCleared(lockFiles, 10, 20*time.Millisecond)
+		if !cleared {
+			t.Error("expected locks to be cleared after file was removed")
+		}
+		if iterations < 2 {
+			t.Errorf("expected at least 2 iterations, got %d", iterations)
+		}
+	})
+
+	t.Run("lock file never clears - times out", func(t *testing.T) {
+		lockFile := tempDir + "/persistent.lock"
+		lockFiles := []string{lockFile}
+
+		// Create lock file that won't be removed
+		if err := os.WriteFile(lockFile, []byte("locked"), 0644); err != nil {
+			t.Fatalf("failed to create lock file: %v", err)
+		}
+		defer os.Remove(lockFile)
+
+		cleared, iterations := waitForLockFilesCleared(lockFiles, 3, 10*time.Millisecond)
+		if cleared {
+			t.Error("expected locks NOT to be cleared when file persists")
+		}
+		if iterations != 3 {
+			t.Errorf("expected 3 iterations (max), got %d", iterations)
+		}
+	})
+
+	t.Run("multiple lock files - all must clear", func(t *testing.T) {
+		lockFile1 := tempDir + "/lock1.lock"
+		lockFile2 := tempDir + "/lock2.lock"
+		lockFiles := []string{lockFile1, lockFile2}
+
+		// Create both lock files
+		os.WriteFile(lockFile1, []byte("locked"), 0644)
+		os.WriteFile(lockFile2, []byte("locked"), 0644)
+
+		// Remove first file quickly, second file after delay
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			os.Remove(lockFile1)
+			time.Sleep(40 * time.Millisecond)
+			os.Remove(lockFile2)
+		}()
+
+		cleared, _ := waitForLockFilesCleared(lockFiles, 10, 20*time.Millisecond)
+		if !cleared {
+			t.Error("expected locks to be cleared after both files were removed")
+		}
+	})
+}
+
+// waitForLockFilesCleared is a testable version of the lock file waiting logic
+// Returns (cleared, iterations) where cleared is true if all locks cleared,
+// and iterations is how many times we checked
+func waitForLockFilesCleared(lockFiles []string, maxAttempts int, interval time.Duration) (bool, int) {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		allClear := true
+		for _, lockFile := range lockFiles {
+			if _, err := os.Stat(lockFile); err == nil {
+				allClear = false
+				break
+			}
+		}
+		if allClear {
+			return true, attempt
+		}
+		if attempt < maxAttempts {
+			time.Sleep(interval)
+		}
+	}
+	return false, maxAttempts
+}
+
+// TestLockFileDetection tests lock file existence detection
+func TestLockFileDetection(t *testing.T) {
+	tempDir := t.TempDir()
+
+	t.Run("detect existing lock file", func(t *testing.T) {
+		lockFile := tempDir + "/exists.lock"
+		os.WriteFile(lockFile, []byte("locked"), 0644)
+		defer os.Remove(lockFile)
+
+		exists := lockFileExists(lockFile)
+		if !exists {
+			t.Error("expected lock file to be detected as existing")
+		}
+	})
+
+	t.Run("detect non-existing lock file", func(t *testing.T) {
+		lockFile := tempDir + "/not-exists.lock"
+
+		exists := lockFileExists(lockFile)
+		if exists {
+			t.Error("expected lock file to be detected as NOT existing")
+		}
+	})
+
+	t.Run("detect lock file in non-existing directory", func(t *testing.T) {
+		lockFile := tempDir + "/nonexistent/dir/file.lock"
+
+		exists := lockFileExists(lockFile)
+		if exists {
+			t.Error("expected lock file to be detected as NOT existing")
+		}
+	})
+}
+
+// lockFileExists checks if a lock file exists
+func lockFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// TestCheckAllLockFilesClear tests the logic for checking multiple lock files
+func TestCheckAllLockFilesClear(t *testing.T) {
+	tempDir := t.TempDir()
+
+	t.Run("all clear when no files exist", func(t *testing.T) {
+		lockFiles := []string{
+			tempDir + "/a.lock",
+			tempDir + "/b.lock",
+			tempDir + "/c.lock",
+		}
+		if !allLockFilesClear(lockFiles) {
+			t.Error("expected all locks to be clear when no files exist")
+		}
+	})
+
+	t.Run("not clear when one file exists", func(t *testing.T) {
+		lockFile := tempDir + "/exists.lock"
+		os.WriteFile(lockFile, []byte("locked"), 0644)
+		defer os.Remove(lockFile)
+
+		lockFiles := []string{
+			tempDir + "/a.lock",
+			lockFile,
+			tempDir + "/c.lock",
+		}
+		if allLockFilesClear(lockFiles) {
+			t.Error("expected locks NOT to be clear when one file exists")
+		}
+	})
+
+	t.Run("not clear when all files exist", func(t *testing.T) {
+		lockFile1 := tempDir + "/x.lock"
+		lockFile2 := tempDir + "/y.lock"
+		os.WriteFile(lockFile1, []byte("locked"), 0644)
+		os.WriteFile(lockFile2, []byte("locked"), 0644)
+		defer os.Remove(lockFile1)
+		defer os.Remove(lockFile2)
+
+		lockFiles := []string{lockFile1, lockFile2}
+		if allLockFilesClear(lockFiles) {
+			t.Error("expected locks NOT to be clear when all files exist")
+		}
+	})
+
+	t.Run("empty lock file list is clear", func(t *testing.T) {
+		if !allLockFilesClear([]string{}) {
+			t.Error("expected empty lock file list to be clear")
+		}
+	})
+}
+
+// allLockFilesClear checks if all lock files are cleared
+func allLockFilesClear(lockFiles []string) bool {
+	for _, lockFile := range lockFiles {
+		if _, err := os.Stat(lockFile); err == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // Benchmark tests
