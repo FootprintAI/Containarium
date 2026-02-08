@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Container Label Management** - Kubernetes-style labels for organizing containers
+  - CLI commands for label operations:
+    - `containarium label set <username> key=value [key2=value2...]` - Set labels on a container
+    - `containarium label remove <username> <key> [key2...]` - Remove labels from a container
+    - `containarium label list <username>` - List all labels on a container
+  - List command enhancements:
+    - `--show-labels` flag to display labels in container list
+    - `--label key=value` flag to filter containers by label
+    - `--group-by <label-key>` flag to group containers by label value
+  - REST API endpoints:
+    - `GET /v1/containers/{username}/labels` - Get container labels
+    - `PUT /v1/containers/{username}/labels` - Set container labels
+    - `DELETE /v1/containers/{username}/labels/{key}` - Remove a label
+  - Labels stored in Incus config with `user.containarium.label.` prefix
+- **Web UI Label Features**
+  - Label editor dialog for adding/removing labels on containers
+  - Label edit button (tag icon) in both Grid View and List View
+  - Labels displayed as chips in List View
+  - "Group by" dropdown to organize containers by label key
+  - Grouped view shows containers in sections with label value headers
+
 ## [0.4.0] - 2026-01-25
 
 ### Added

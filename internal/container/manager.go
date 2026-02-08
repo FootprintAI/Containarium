@@ -23,6 +23,7 @@ type CreateOptions struct {
 	Disk                   string // Disk size (e.g., "20GB")
 	StaticIP               string // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 	SSHKeys                []string
+	Labels                 map[string]string // Kubernetes-style labels
 	EnableDocker           bool
 	EnableDockerPrivileged bool // Full Docker support (privileged + AppArmor disabled)
 	AutoStart              bool
@@ -93,6 +94,17 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		// Clean up on failure
 		_ = m.incus.DeleteContainer(containerName)
 		return nil, fmt.Errorf("failed to start container: %w", err)
+	}
+
+	// Set labels if provided
+	if len(opts.Labels) > 0 {
+		if opts.Verbose {
+			fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
+		}
+		if err := m.incus.SetLabels(containerName, opts.Labels); err != nil {
+			_ = m.cleanup(containerName)
+			return nil, fmt.Errorf("failed to set labels: %w", err)
+		}
 	}
 
 	// Step 3: Create jump server account (proxy-only, no shell access)
@@ -522,4 +534,50 @@ func (m *Manager) GetAllMetrics() ([]*incus.ContainerMetrics, error) {
 	}
 
 	return metrics, nil
+}
+
+// SetLabels sets labels on a container, replacing all existing labels
+func (m *Manager) SetLabels(username string, labels map[string]string) error {
+	containerName := username + "-container"
+	return m.incus.SetLabels(containerName, labels)
+}
+
+// GetLabels retrieves labels from a container
+func (m *Manager) GetLabels(username string) (map[string]string, error) {
+	containerName := username + "-container"
+	return m.incus.GetLabels(containerName)
+}
+
+// AddLabel adds or updates a single label on a container
+func (m *Manager) AddLabel(username, key, value string) error {
+	containerName := username + "-container"
+	return m.incus.AddLabel(containerName, key, value)
+}
+
+// RemoveLabel removes a single label from a container
+func (m *Manager) RemoveLabel(username, key string) error {
+	containerName := username + "-container"
+	return m.incus.RemoveLabel(containerName, key)
+}
+
+// ListWithLabels lists containers filtered by labels
+func (m *Manager) ListWithLabels(labelFilter map[string]string) ([]incus.ContainerInfo, error) {
+	containers, err := m.incus.ListContainers()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(labelFilter) == 0 {
+		return containers, nil
+	}
+
+	// Filter by labels
+	var filtered []incus.ContainerInfo
+	for _, c := range containers {
+		if incus.MatchLabels(c.Labels, labelFilter) {
+			filtered = append(filtered, c)
+		}
+	}
+
+	return filtered, nil
 }

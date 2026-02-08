@@ -51,6 +51,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		Username:               req.Username,
 		Image:                  req.Image,
 		SSHKeys:                req.SshKeys,
+		Labels:                 req.Labels,
 		EnableDocker:           req.EnableDocker,
 		EnableDockerPrivileged: req.EnableDocker, // Enable privileged mode for proper Docker-in-Docker support
 		AutoStart:              true,
@@ -164,7 +165,30 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 			}
 		}
 
-		// TODO: Filter by state and labels
+		// Filter by state if specified
+		if req.State != pb.ContainerState_CONTAINER_STATE_UNSPECIFIED {
+			var containerState pb.ContainerState
+			switch c.State {
+			case "Running":
+				containerState = pb.ContainerState_CONTAINER_STATE_RUNNING
+			case "Stopped":
+				containerState = pb.ContainerState_CONTAINER_STATE_STOPPED
+			case "Frozen":
+				containerState = pb.ContainerState_CONTAINER_STATE_FROZEN
+			default:
+				containerState = pb.ContainerState_CONTAINER_STATE_UNSPECIFIED
+			}
+			if containerState != req.State {
+				continue
+			}
+		}
+
+		// Filter by labels if specified
+		if len(req.LabelFilter) > 0 {
+			if !incus.MatchLabels(c.Labels, req.LabelFilter) {
+				continue
+			}
+		}
 
 		filtered = append(filtered, c)
 	}
@@ -441,6 +465,7 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		Network: &pb.NetworkInfo{
 			IpAddress: info.IPAddress,
 		},
+		Labels:        info.Labels,
 		CreatedAt:     info.CreatedAt.Unix(),
 		DockerEnabled: true, // TODO: Get from container config
 	}

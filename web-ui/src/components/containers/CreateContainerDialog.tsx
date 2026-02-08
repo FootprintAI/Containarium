@@ -128,6 +128,7 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
   const [disk, setDisk] = useState('50GB');
   const [staticIp, setStaticIp] = useState('');
   const [staticIpError, setStaticIpError] = useState<string | null>(null);
+  const [labelsText, setLabelsText] = useState('');
   const [autoGenerateKey, setAutoGenerateKey] = useState(true);
   const [sshPublicKey, setSshPublicKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -135,6 +136,23 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
   const [success, setSuccess] = useState(false);
   const [generatedKeyPair, setGeneratedKeyPair] = useState<SSHKeyPair | null>(null);
   const [progress, setProgress] = useState<CreateContainerProgress | null>(null);
+
+  // Parse labels from text format (key=value,key2=value2)
+  const parseLabels = (text: string): Record<string, string> => {
+    const labels: Record<string, string> = {};
+    if (!text.trim()) return labels;
+
+    const pairs = text.split(',');
+    for (const pair of pairs) {
+      const [key, ...valueParts] = pair.split('=');
+      const trimmedKey = key?.trim();
+      const value = valueParts.join('=').trim();
+      if (trimmedKey && value) {
+        labels[trimmedKey] = value;
+      }
+    }
+    return labels;
+  };
 
   const resetForm = () => {
     setUsername('');
@@ -144,6 +162,7 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
     setDisk('50GB');
     setStaticIp('');
     setStaticIpError(null);
+    setLabelsText('');
     setAutoGenerateKey(true);
     setSshPublicKey('');
     setSubmitting(false);
@@ -200,6 +219,7 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
         setGeneratedKeyPair(keyPair);
       }
 
+      const labels = parseLabels(labelsText);
       const request: CreateContainerRequest = {
         username,
         image,
@@ -209,6 +229,7 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
           disk,
         },
         sshKeys: [publicKey],
+        labels: Object.keys(labels).length > 0 ? labels : undefined,
         enableDocker: true,
         staticIp: staticIp || undefined,
       };
@@ -356,6 +377,16 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
             disabled={success || submitting}
             error={!!staticIpError}
             helperText={staticIpError || `e.g., 10.100.0.100 - must be within ${effectiveCidr}`}
+          />
+
+          <TextField
+            label="Labels (Optional)"
+            value={labelsText}
+            onChange={(e) => setLabelsText(e.target.value)}
+            placeholder="team=dev,project=web,env=prod"
+            fullWidth
+            disabled={success || submitting}
+            helperText="Comma-separated key=value pairs for organizing containers"
           />
 
           <FormControlLabel

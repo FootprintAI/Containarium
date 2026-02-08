@@ -18,6 +18,7 @@ import MemoryIcon from '@mui/icons-material/Memory';
 import StorageIcon from '@mui/icons-material/Storage';
 import DnsIcon from '@mui/icons-material/Dns';
 import SecurityIcon from '@mui/icons-material/Security';
+import LabelIcon from '@mui/icons-material/Label';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
 
 interface ContainerNodeProps {
@@ -28,6 +29,7 @@ interface ContainerNodeProps {
   onStop?: (username: string) => void;
   onTerminal?: (username: string) => void;
   onEditFirewall?: (username: string) => void;
+  onEditLabels?: (username: string) => void;
 }
 
 /**
@@ -87,7 +89,7 @@ function getStateColor(state: ContainerState): 'success' | 'error' | 'warning' |
   }
 }
 
-export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall }: ContainerNodeProps) {
+export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall, onEditLabels }: ContainerNodeProps) {
   const isRunning = container.state === 'Running';
 
   // Calculate CPU, memory and disk utilization
@@ -289,6 +291,17 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
                 onClick={() => onEditFirewall(container.username || container.name)}
               >
                 <SecurityIcon />
+              </IconButton>
+            </Tooltip>
+          )}
+          {onEditLabels && (
+            <Tooltip title="Edit Labels">
+              <IconButton
+                size="small"
+                color="info"
+                onClick={() => onEditLabels(container.username || container.name)}
+              >
+                <LabelIcon />
               </IconButton>
             </Tooltip>
           )}

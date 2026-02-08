@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { Box, Typography, Button, CircularProgress, ToggleButton, ToggleButtonGroup } from '@mui/material';
+import { useState, useMemo } from 'react';
+import { Box, Typography, Button, CircularProgress, ToggleButton, ToggleButtonGroup, FormControl, InputLabel, Select, MenuItem, Chip } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import GridViewIcon from '@mui/icons-material/GridView';
@@ -25,6 +25,7 @@ interface ContainerTopologyProps {
   onStopContainer: (username: string) => void;
   onTerminalContainer?: (username: string) => void;
   onEditFirewall?: (username: string) => void;
+  onEditLabels?: (username: string, labels: Record<string, string>) => void;
   onRefresh: () => void;
 }
 
@@ -40,15 +41,49 @@ export default function ContainerTopology({
   onStopContainer,
   onTerminalContainer,
   onEditFirewall,
+  onEditLabels,
   onRefresh,
 }: ContainerTopologyProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [groupByLabel, setGroupByLabel] = useState<string>('');
 
   const handleViewModeChange = (_: React.MouseEvent<HTMLElement>, newMode: ViewMode | null) => {
     if (newMode !== null) {
       setViewMode(newMode);
     }
   };
+
+  // Extract all unique label keys from containers
+  const availableLabelKeys = useMemo(() => {
+    const keys = new Set<string>();
+    containers.forEach(c => {
+      if (c.labels) {
+        Object.keys(c.labels).forEach(k => keys.add(k));
+      }
+    });
+    return Array.from(keys).sort();
+  }, [containers]);
+
+  // Group containers by selected label
+  const groupedContainers = useMemo(() => {
+    if (!groupByLabel) {
+      return { '': containers };
+    }
+    const groups: Record<string, Container[]> = {};
+    containers.forEach(c => {
+      const labelValue = c.labels?.[groupByLabel] || '(no label)';
+      if (!groups[labelValue]) {
+        groups[labelValue] = [];
+      }
+      groups[labelValue].push(c);
+    });
+    // Sort group keys
+    const sortedGroups: Record<string, Container[]> = {};
+    Object.keys(groups).sort().forEach(key => {
+      sortedGroups[key] = groups[key];
+    });
+    return sortedGroups;
+  }, [containers, groupByLabel]);
 
   if (isLoading && containers.length === 0) {
     return (
@@ -81,6 +116,24 @@ export default function ContainerTopology({
           Containers ({containers.length})
         </Typography>
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          {availableLabelKeys.length > 0 && (
+            <FormControl size="small" sx={{ minWidth: 140 }}>
+              <InputLabel id="group-by-label">Group by</InputLabel>
+              <Select
+                labelId="group-by-label"
+                value={groupByLabel}
+                label="Group by"
+                onChange={(e) => setGroupByLabel(e.target.value)}
+              >
+                <MenuItem value="">
+                  <em>None</em>
+                </MenuItem>
+                {availableLabelKeys.map(key => (
+                  <MenuItem key={key} value={key}>{key}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
           <ToggleButtonGroup
             value={viewMode}
             exclusive
@@ -129,37 +182,59 @@ export default function ContainerTopology({
             Create your first container
           </Button>
         </Box>
-      ) : viewMode === 'list' ? (
-        <ContainerListView
-          containers={containers}
-          metricsMap={metricsMap}
-          onDelete={onDeleteContainer}
-          onStart={onStartContainer}
-          onStop={onStopContainer}
-          onTerminal={onTerminalContainer}
-          onEditFirewall={onEditFirewall}
-        />
       ) : (
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-            gap: 2,
-          }}
-        >
-          {containers.map((container) => (
-            <ContainerNode
-              key={container.name}
-              container={container}
-              metrics={metricsMap[container.name]}
-              onDelete={onDeleteContainer}
-              onStart={onStartContainer}
-              onStop={onStopContainer}
-              onTerminal={onTerminalContainer}
-              onEditFirewall={onEditFirewall}
-            />
+        <>
+          {Object.entries(groupedContainers).map(([groupName, groupContainers]) => (
+            <Box key={groupName} sx={{ mb: groupByLabel ? 4 : 0 }}>
+              {groupByLabel && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, mt: 2 }}>
+                  <Chip
+                    label={`${groupByLabel}: ${groupName}`}
+                    color={groupName === '(no label)' ? 'default' : 'primary'}
+                    variant="outlined"
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    ({groupContainers.length} container{groupContainers.length !== 1 ? 's' : ''})
+                  </Typography>
+                </Box>
+              )}
+              {viewMode === 'list' ? (
+                <ContainerListView
+                  containers={groupContainers}
+                  metricsMap={metricsMap}
+                  onDelete={onDeleteContainer}
+                  onStart={onStartContainer}
+                  onStop={onStopContainer}
+                  onTerminal={onTerminalContainer}
+                  onEditFirewall={onEditFirewall}
+                  onEditLabels={onEditLabels}
+                />
+              ) : (
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+                    gap: 2,
+                  }}
+                >
+                  {groupContainers.map((container) => (
+                    <ContainerNode
+                      key={container.name}
+                      container={container}
+                      metrics={metricsMap[container.name]}
+                      onDelete={onDeleteContainer}
+                      onStart={onStartContainer}
+                      onStop={onStopContainer}
+                      onTerminal={onTerminalContainer}
+                      onEditFirewall={onEditFirewall}
+                      onEditLabels={onEditLabels ? (username: string) => onEditLabels(username, container.labels || {}) : undefined}
+                    />
+                  ))}
+                </Box>
+              )}
+            </Box>
           ))}
-        </Box>
+        </>
       )}
     </Box>
   );

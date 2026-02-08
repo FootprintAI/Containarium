@@ -154,8 +154,9 @@ type systemInfo struct {
 // containerToIncusInfo converts API response to incus.ContainerInfo
 func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
-		Name:  c.Name,
-		State: c.State,
+		Name:   c.Name,
+		State:  c.State,
+		Labels: c.Labels,
 	}
 
 	if c.Network != nil {
@@ -315,4 +316,87 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	}
 
 	return info, nil
+}
+
+// labelResponse is the response from label operations
+type labelResponse struct {
+	Container string            `json:"container"`
+	Labels    map[string]string `json:"labels"`
+	Message   string            `json:"message,omitempty"`
+}
+
+// SetLabels sets labels on a container via HTTP
+func (c *HTTPClient) SetLabels(username string, labels map[string]string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/labels", url.PathEscape(username))
+	reqBody := map[string]interface{}{
+		"labels": labels,
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPut, path, reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to set labels: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return fmt.Errorf("%s", errResp.Error)
+		}
+		return fmt.Errorf("failed to set labels: status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// RemoveLabel removes a label from a container via HTTP
+func (c *HTTPClient) RemoveLabel(username string, key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/labels/%s", url.PathEscape(username), url.PathEscape(key))
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return fmt.Errorf("failed to remove label: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return fmt.Errorf("%s", errResp.Error)
+		}
+		return fmt.Errorf("failed to remove label: status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// GetLabels gets labels for a container via HTTP
+func (c *HTTPClient) GetLabels(username string) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/labels", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get labels: %w", err)
+	}
+
+	result, err := parseResponse[labelResponse](resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get labels: %w", err)
+	}
+
+	return result.Labels, nil
 }

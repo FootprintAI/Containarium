@@ -12,6 +12,7 @@ import AddServerDialog from '@/src/components/servers/AddServerDialog';
 import ContainerTopology from '@/src/components/containers/ContainerTopology';
 import CreateContainerDialog from '@/src/components/containers/CreateContainerDialog';
 import DeleteConfirmDialog from '@/src/components/containers/DeleteConfirmDialog';
+import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
 import AppsView from '@/src/components/apps/AppsView';
 import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import FirewallEditor from '@/src/components/network/FirewallEditor';
@@ -55,6 +56,8 @@ export default function Home() {
     deleteContainer,
     startContainer,
     stopContainer,
+    setLabels,
+    removeLabel,
     refresh: refreshContainers,
   } = useContainers(activeServer);
 
@@ -107,6 +110,8 @@ export default function Home() {
   });
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalUsername, setTerminalUsername] = useState('');
+  const [labelEditorOpen, setLabelEditorOpen] = useState(false);
+  const [labelEditorContainer, setLabelEditorContainer] = useState<{username: string, labels: Record<string, string>} | null>(null);
 
   // Server handlers
   const handleAddServer = async (name: string, endpoint: string, token: string) => {
@@ -154,6 +159,17 @@ export default function Home() {
   const handleCloseTerminal = () => {
     setTerminalOpen(false);
     setTerminalUsername('');
+  };
+
+  // Label editor handlers
+  const handleEditLabels = (username: string, labels: Record<string, string>) => {
+    setLabelEditorContainer({ username, labels });
+    setLabelEditorOpen(true);
+  };
+
+  const handleCloseLabelEditor = () => {
+    setLabelEditorOpen(false);
+    setLabelEditorContainer(null);
   };
 
   // App handlers
@@ -250,6 +266,7 @@ export default function Home() {
                 onStopContainer={stopContainer}
                 onTerminalContainer={handleOpenTerminal}
                 onEditFirewall={handleEditContainerFirewall}
+                onEditLabels={handleEditLabels}
                 onRefresh={refreshContainers}
               />
             )}
@@ -336,6 +353,23 @@ export default function Home() {
         username={selectedContainer || ''}
         onSave={handleSaveFirewall}
       />
+
+      {/* Label Editor Dialog */}
+      {labelEditorContainer && (
+        <LabelEditorDialog
+          open={labelEditorOpen}
+          onClose={handleCloseLabelEditor}
+          containerName={`${labelEditorContainer.username}-container`}
+          username={labelEditorContainer.username}
+          currentLabels={labelEditorContainer.labels}
+          onSave={async (labels) => {
+            await setLabels(labelEditorContainer.username, labels);
+          }}
+          onRemove={async (key) => {
+            await removeLabel(labelEditorContainer.username, key);
+          }}
+        />
+      )}
     </Box>
   );
 }

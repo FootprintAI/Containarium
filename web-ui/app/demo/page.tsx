@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Box, Typography, Tabs, Tab } from '@mui/material';
 import AppBar from '@/src/components/layout/AppBar';
 import ContainerTopology from '@/src/components/containers/ContainerTopology';
+import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
 import AppsView from '@/src/components/apps/AppsView';
 import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import { Container, ContainerMetricsWithRate, SystemInfo } from '@/src/types/container';
@@ -397,6 +398,13 @@ function TabPanel(props: TabPanelProps) {
 export default function DemoPage() {
   const [tabIndex, setTabIndex] = useState(0);
   const [includeStopped, setIncludeStopped] = useState(true);
+  const [labelEditorOpen, setLabelEditorOpen] = useState(false);
+  const [selectedContainer, setSelectedContainer] = useState<{username: string, labels: Record<string, string>} | null>(null);
+
+  const handleEditLabels = (username: string, labels: Record<string, string>) => {
+    setSelectedContainer({ username, labels });
+    setLabelEditorOpen(true);
+  };
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -437,6 +445,7 @@ export default function DemoPage() {
           onStopContainer={() => {}}
           onTerminalContainer={() => {}}
           onEditFirewall={() => {}}
+          onEditLabels={handleEditLabels}
           onRefresh={() => {}}
         />
       </TabPanel>
@@ -468,6 +477,26 @@ export default function DemoPage() {
           onRefresh={() => {}}
         />
       </TabPanel>
+
+      {/* Label Editor Dialog */}
+      {selectedContainer && (
+        <LabelEditorDialog
+          open={labelEditorOpen}
+          onClose={() => {
+            setLabelEditorOpen(false);
+            setSelectedContainer(null);
+          }}
+          containerName={`${selectedContainer.username}-container`}
+          username={selectedContainer.username}
+          currentLabels={selectedContainer.labels}
+          onSave={async (labels) => {
+            console.log('Demo: Would save labels:', labels);
+          }}
+          onRemove={async (key) => {
+            console.log('Demo: Would remove label:', key);
+          }}
+        />
+      )}
     </Box>
   );
 }

@@ -386,6 +386,36 @@ export class ContaineriumClient {
     const response = await this.client.get<{ presets?: ACLPresetInfo[] }>('/network/acl-presets');
     return response.data.presets || [];
   }
+
+  // ============================================
+  // Label Management Methods
+  // ============================================
+
+  /**
+   * Get labels for a container
+   */
+  async getLabels(username: string): Promise<Record<string, string>> {
+    const response = await this.client.get<{ labels?: Record<string, string> }>(`/containers/${username}/labels`);
+    return response.data.labels || {};
+  }
+
+  /**
+   * Set labels on a container (overwrites existing labels with same keys)
+   */
+  async setLabels(username: string, labels: Record<string, string>): Promise<Record<string, string>> {
+    const response = await this.client.put<{ labels?: Record<string, string> }>(`/containers/${username}/labels`, {
+      labels,
+    });
+    return response.data.labels || {};
+  }
+
+  /**
+   * Remove a label from a container
+   */
+  async removeLabel(username: string, key: string): Promise<Record<string, string>> {
+    const response = await this.client.delete<{ labels?: Record<string, string> }>(`/containers/${username}/labels/${key}`);
+    return response.data.labels || {};
+  }
 }
 
 /**

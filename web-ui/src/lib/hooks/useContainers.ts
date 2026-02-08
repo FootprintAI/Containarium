@@ -143,6 +143,39 @@ export function useContainers(server: Server | null) {
    */
   const refresh = () => mutate();
 
+  /**
+   * Get labels for a container
+   */
+  const getLabels = async (username: string): Promise<Record<string, string>> => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    return client.getLabels(username);
+  };
+
+  /**
+   * Set labels on a container
+   */
+  const setLabels = async (username: string, labels: Record<string, string>): Promise<Record<string, string>> => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    const result = await client.setLabels(username, labels);
+    // Revalidate container list to show updated labels
+    await mutate();
+    return result;
+  };
+
+  /**
+   * Remove a label from a container
+   */
+  const removeLabel = async (username: string, key: string): Promise<Record<string, string>> => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    const result = await client.removeLabel(username, key);
+    // Revalidate container list to show updated labels
+    await mutate();
+    return result;
+  };
+
   return {
     containers: data || [],
     systemInfo: systemInfo || null,
@@ -152,6 +185,9 @@ export function useContainers(server: Server | null) {
     deleteContainer,
     startContainer,
     stopContainer,
+    getLabels,
+    setLabels,
+    removeLabel,
     refresh,
   };
 }

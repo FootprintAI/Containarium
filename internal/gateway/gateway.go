@@ -27,6 +27,7 @@ type GatewayServer struct {
 	swaggerDir      string
 	certsDir        string // Optional: for mTLS connection to gRPC server
 	terminalHandler *TerminalHandler
+	labelHandler    *LabelHandler
 }
 
 // NewGatewayServer creates a new gateway server
@@ -37,6 +38,12 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		log.Printf("Warning: Terminal handler not available: %v", err)
 	}
 
+	// Try to create label handler (may fail if Incus not available)
+	labelHandler, err := NewLabelHandler()
+	if err != nil {
+		log.Printf("Warning: Label handler not available: %v", err)
+	}
+
 	return &GatewayServer{
 		grpcAddress:     grpcAddress,
 		httpPort:        httpPort,
@@ -44,6 +51,7 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		swaggerDir:      swaggerDir,
 		certsDir:        certsDir,
 		terminalHandler: terminalHandler,
+		labelHandler:    labelHandler,
 	}
 }
 
@@ -156,7 +164,21 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				terminalWithCORS.ServeHTTP(w, r)
 				return
 			}
-			// Not a terminal request, pass to gRPC gateway with CORS
+			// Check if this is a labels request
+			if strings.Contains(r.URL.Path, "/labels") && gs.labelHandler != nil {
+				switch r.Method {
+				case http.MethodGet:
+					gs.labelHandler.HandleGetLabels(w, r)
+					return
+				case http.MethodPut, http.MethodPost:
+					gs.labelHandler.HandleSetLabels(w, r)
+					return
+				case http.MethodDelete:
+					gs.labelHandler.HandleRemoveLabel(w, r)
+					return
+				}
+			}
+			// Not a terminal or labels request, pass to gRPC gateway with CORS
 			corsHandler.ServeHTTP(w, r)
 		}
 

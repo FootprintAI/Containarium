@@ -20,6 +20,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import SecurityIcon from '@mui/icons-material/Security';
+import LabelIcon from '@mui/icons-material/Label';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
 
 interface ContainerListViewProps {
@@ -30,6 +31,7 @@ interface ContainerListViewProps {
   onStop?: (username: string) => void;
   onTerminal?: (username: string) => void;
   onEditFirewall?: (username: string) => void;
+  onEditLabels?: (username: string, labels: Record<string, string>) => void;
 }
 
 /**
@@ -121,6 +123,7 @@ export default function ContainerListView({
   onStop,
   onTerminal,
   onEditFirewall,
+  onEditLabels,
 }: ContainerListViewProps) {
   return (
     <TableContainer component={Paper} variant="outlined">
@@ -133,6 +136,7 @@ export default function ContainerListView({
             <TableCell><strong>CPU</strong></TableCell>
             <TableCell><strong>Memory</strong></TableCell>
             <TableCell><strong>Disk</strong></TableCell>
+            <TableCell><strong>Labels</strong></TableCell>
             <TableCell align="right"><strong>Actions</strong></TableCell>
           </TableRow>
         </TableHead>
@@ -220,6 +224,44 @@ export default function ContainerListView({
                       {container.disk || '-'}
                     </Typography>
                   )}
+                </TableCell>
+
+                <TableCell>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, maxWidth: 180, flex: 1 }}>
+                      {container.labels && Object.keys(container.labels).length > 0 ? (
+                        Object.entries(container.labels).map(([key, value]) => (
+                          <Tooltip key={key} title={`${key}=${value}`}>
+                            <Chip
+                              label={`${key}=${value}`}
+                              size="small"
+                              variant="outlined"
+                              sx={{
+                                maxWidth: 150,
+                                '& .MuiChip-label': {
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis'
+                                }
+                              }}
+                            />
+                          </Tooltip>
+                        ))
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">-</Typography>
+                      )}
+                    </Box>
+                    {onEditLabels && (
+                      <Tooltip title="Edit Labels">
+                        <IconButton
+                          size="small"
+                          onClick={() => onEditLabels(username, container.labels || {})}
+                          sx={{ opacity: 0.6, '&:hover': { opacity: 1 } }}
+                        >
+                          <LabelIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </Box>
                 </TableCell>
 
                 <TableCell align="right">

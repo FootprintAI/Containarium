@@ -69,6 +69,10 @@ type ContainerConfig struct {
 	AutoStart              bool
 }
 
+// LabelPrefix is the prefix used for storing labels in Incus container config
+// Note: Incus requires user-defined config keys to use the "user." prefix
+const LabelPrefix = "user.containarium.label."
+
 // ContainerInfo holds information about a container
 type ContainerInfo struct {
 	Name      string
@@ -78,6 +82,7 @@ type ContainerInfo struct {
 	Memory    string
 	Disk      string
 	GPU       string // GPU device info (e.g., "nvidia.com/gpu" or GPU ID)
+	Labels    map[string]string
 	CreatedAt time.Time
 }
 
@@ -318,6 +323,7 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 			Name:      inst.Name,
 			State:     inst.Status,
 			CreatedAt: inst.CreatedAt,
+			Labels:    extractLabelsFromConfig(inst.Config),
 		}
 
 		// Get CPU and memory limits from config
@@ -439,6 +445,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		Name:      inst.Name,
 		State:     inst.Status,
 		CreatedAt: inst.CreatedAt,
+		Labels:    extractLabelsFromConfig(inst.Config),
 	}
 
 	// Get resource limits
@@ -1019,4 +1026,98 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 	}
 
 	return stdout.String(), stderr.String(), nil
+}
+
+// extractLabelsFromConfig extracts labels from container config
+// Labels are stored with prefix "containarium.label.<key>=<value>"
+func extractLabelsFromConfig(config map[string]string) map[string]string {
+	labels := make(map[string]string)
+	for key, value := range config {
+		if strings.HasPrefix(key, LabelPrefix) {
+			labelKey := key[len(LabelPrefix):]
+			labels[labelKey] = value
+		}
+	}
+	return labels
+}
+
+// GetLabels retrieves labels from a container
+func (c *Client) GetLabels(containerName string) (map[string]string, error) {
+	inst, _, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container: %w", err)
+	}
+	return extractLabelsFromConfig(inst.Config), nil
+}
+
+// SetLabels sets labels on a container, replacing all existing labels
+func (c *Client) SetLabels(containerName string, labels map[string]string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+
+	// Clear existing labels
+	for key := range inst.Config {
+		if strings.HasPrefix(key, LabelPrefix) {
+			delete(inst.Config, key)
+		}
+	}
+
+	// Set new labels
+	for key, value := range labels {
+		inst.Config[LabelPrefix+key] = value
+	}
+
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container labels: %w", err)
+	}
+
+	return op.Wait()
+}
+
+// AddLabel adds or updates a single label on a container
+func (c *Client) AddLabel(containerName, key, value string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+
+	inst.Config[LabelPrefix+key] = value
+
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to add label: %w", err)
+	}
+
+	return op.Wait()
+}
+
+// RemoveLabel removes a single label from a container
+func (c *Client) RemoveLabel(containerName, key string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+
+	delete(inst.Config, LabelPrefix+key)
+
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to remove label: %w", err)
+	}
+
+	return op.Wait()
+}
+
+// MatchLabels checks if a container's labels match the given filter
+// All filter labels must be present and have matching values
+func MatchLabels(containerLabels, filter map[string]string) bool {
+	for key, value := range filter {
+		if containerLabels[key] != value {
+			return false
+		}
+	}
+	return true
 }

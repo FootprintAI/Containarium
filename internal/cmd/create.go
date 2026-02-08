@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/container"
@@ -69,6 +70,9 @@ func init() {
 func runCreate(cmd *cobra.Command, args []string) error {
 	username := args[0]
 
+	// Parse labels from key=value format
+	parsedLabels := parseLabels(labels)
+
 	fmt.Printf("Creating container for user: %s\n", username)
 	if verbose {
 		fmt.Printf("  CPU: %s\n", cpuLimit)
@@ -81,6 +85,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("  Image: %s\n", containerImage)
 		fmt.Printf("  Docker enabled: %v\n", enableDocker)
+		if len(parsedLabels) > 0 {
+			fmt.Printf("  Labels:\n")
+			for k, v := range parsedLabels {
+				fmt.Printf("    %s=%s\n", k, v)
+			}
+		}
 	}
 
 	// Read SSH key (now required)
@@ -224,7 +234,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if verbose {
 			fmt.Println("Creating container...")
 		}
-		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, enableDocker)
+		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enableDocker)
 		if err != nil {
 			// Cleanup jump server account on failure
 			_ = container.DeleteJumpServerAccount(username, false)
@@ -248,6 +258,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Memory:       %s\n", info.Memory)
 	fmt.Printf("  Docker:       %v\n", enableDocker)
 	fmt.Printf("  Auto-start:   enabled\n")
+	if len(info.Labels) > 0 {
+		fmt.Printf("  Labels:\n")
+		for k, v := range info.Labels {
+			fmt.Printf("    %s=%s\n", k, v)
+		}
+	}
 	fmt.Println()
 
 	if info.IPAddress != "" {
@@ -277,7 +293,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 }
 
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, enableDocker bool) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enableDocker bool) (*incus.ContainerInfo, error) {
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -291,6 +307,7 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 		Disk:                   disk,
 		StaticIP:               staticIP,
 		SSHKeys:                sshKeys,
+		Labels:                 labelMap,
 		EnableDocker:           enableDocker,
 		EnableDockerPrivileged: enableDocker, // Enable privileged mode for proper Docker-in-Docker
 		AutoStart:              true,
@@ -298,6 +315,22 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 	}
 
 	return mgr.Create(opts)
+}
+
+// parseLabels parses labels from key=value format
+func parseLabels(labelSlice []string) map[string]string {
+	result := make(map[string]string)
+	for _, label := range labelSlice {
+		parts := strings.SplitN(label, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			if key != "" {
+				result[key] = value
+			}
+		}
+	}
+	return result
 }
 
 // createRemote creates a container using remote gRPC server 
