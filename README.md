@@ -2467,6 +2467,72 @@ sudo incus exec alice-container -- bash -c \
   "echo 'ssh-ed25519 AAAAC3... alice@home-laptop' >> /home/alice/.ssh/authorized_keys"
 ```
 
+### How is Containarium different from...
+
+**Q: Why not just use Docker or Podman?**
+
+A: Docker and Podman are **application containers** — they package and run a single process or service. Containarium uses LXC **system containers**, which behave like lightweight VMs:
+
+| | Docker / Podman | Containarium (LXC) |
+|---|---|---|
+| Designed for | Running apps / microservices | Running full Linux environments |
+| Init system | No (single process) | Yes (`systemd`) |
+| SSH access | Possible but hacky | Native, first-class |
+| Run Docker inside | Docker-in-Docker (fragile) | Works natively |
+| Persistent state | Volumes, ephemeral by default | Full persistent filesystem |
+| User accounts | Not really | Real Linux users with `sudo` |
+| Multi-tenant SSH | Not a use case | Built-in with jump server isolation |
+
+If your developers need "a Linux box with SSH, Docker, and their own home directory," that's exactly what Containarium provides — and Docker/Podman don't.
+
+**Q: Why not Dev Containers / VS Code Remote Containers?**
+
+A: Dev Containers are great for single-developer, project-scoped environments tied to VS Code. Containarium solves a different problem:
+
+- **Dev Containers**: One container per project, developer runs it locally or in Codespaces, tightly coupled to VS Code
+- **Containarium**: One persistent environment per developer on shared infrastructure, editor-agnostic (SSH into it with anything)
+
+Use Dev Containers when each developer has their own machine and wants reproducible project setups. Use Containarium when you need to host many developers on shared infrastructure at low cost.
+
+**Q: Why not GitHub Codespaces or Gitpod?**
+
+A: Codespaces and Gitpod are cloud-hosted, browser-based IDEs. They're excellent but:
+
+- **Cost**: $0.18-0.36/hour per environment. A developer working 8h/day costs $30-60/month. Containarium costs ~$2/user/month.
+- **Vendor lock-in**: Tied to GitHub (Codespaces) or Gitpod's platform
+- **IDE choice**: Primarily browser-based or VS Code. Containarium is SSH-based — use any editor (Vim, Emacs, Neovim, JetBrains via remote, VS Code via SSH, etc.)
+- **Persistence**: Codespaces auto-delete after inactivity. Containarium environments persist indefinitely.
+- **Docker/systemd**: Limited in Codespaces. Full support in Containarium.
+
+Containarium is for teams that want self-hosted, persistent, SSH-based environments without per-hour billing.
+
+**Q: Why not Jetify Devbox?**
+
+A: [Devbox](https://github.com/jetify-com/devbox) creates isolated, reproducible dev environments using Nix packages. It's a local tool that runs on the developer's own machine.
+
+- **Devbox**: Local package isolation (like a better virtualenv for everything). No VMs, no containers, no SSH. Developer needs their own machine.
+- **Containarium**: Remote, multi-tenant Linux environments on shared infrastructure. Developer only needs an SSH client.
+
+They solve different problems. Devbox is great for "I want reproducible local toolchains." Containarium is for "I need to give 50 developers each their own Linux box without buying 50 machines."
+
+**Q: Why not Vagrant?**
+
+A: Vagrant provisions full VMs (via VirtualBox, VMware, etc.). Compared to Containarium:
+
+- **Density**: Vagrant runs 2-4 VMs per host. Containarium runs 50+ containers per host.
+- **Startup**: Vagrant VMs take 30-60 seconds. LXC containers start in 2-5 seconds.
+- **Resources**: Each Vagrant VM needs 1-4GB RAM. Each LXC container uses 100-500MB.
+- **Use case**: Vagrant is for local development. Containarium is for centralized, multi-tenant hosting.
+
+**Q: Why not Proxmox?**
+
+A: Proxmox is a full virtualization platform (KVM VMs + LXC containers). It's powerful but general-purpose. Containarium is opinionated:
+
+- **Proxmox**: General-purpose hypervisor with a web UI. You manage everything yourself — networking, storage, user access, SSH.
+- **Containarium**: Purpose-built for developer environments. Handles SSH jump server setup, per-user isolation, Docker-in-container, ZFS quotas, and spot instance recovery out of the box.
+
+If you need general virtualization, use Proxmox. If you specifically need cheap, fast, SSH-based dev environments with multi-tenant isolation, Containarium does it with less setup.
+
 ### General Questions
 
 **Q: What happens when a spot instance is terminated?**
