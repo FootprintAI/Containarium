@@ -275,26 +275,23 @@ func (m *Manager) createUser(containerName, username string) error {
 	_ = m.incus.Exec(containerName, []string{"usermod", "-aG", "docker", username})
 
 	// Allow passwordless sudo
-	sudoersLine := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL", username)
-	if err := m.incus.Exec(containerName, []string{
-		"bash", "-c",
-		fmt.Sprintf("echo '%s' > /etc/sudoers.d/%s", sudoersLine, username),
-	}); err != nil {
-		return fmt.Errorf("failed to configure sudo: %w", err)
-	}
+	// SECURITY FIX: Use Incus file push API instead of shell echo
+	// This prevents potential shell injection if username validation is ever relaxed
+	sudoersLine := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL\n", username)
+	sudoersPath := fmt.Sprintf("/etc/sudoers.d/%s", username)
 
-	if err := m.incus.Exec(containerName, []string{
-		"chmod", "0440", fmt.Sprintf("/etc/sudoers.d/%s", username),
-	}); err != nil {
-		return fmt.Errorf("failed to set sudoers permissions: %w", err)
+	if err := m.incus.WriteFile(containerName, sudoersPath, []byte(sudoersLine), "0440"); err != nil {
+		return fmt.Errorf("failed to configure sudo: %w", err)
 	}
 
 	return nil
 }
 
 // addSSHKeys adds SSH public keys to a user's authorized_keys
+// SECURITY: Uses Incus file push API to avoid shell injection vulnerabilities
 func (m *Manager) addSSHKeys(containerName, username string, sshKeys []string) error {
 	sshDir := fmt.Sprintf("/home/%s/.ssh", username)
+	authorizedKeysPath := fmt.Sprintf("%s/authorized_keys", sshDir)
 
 	// Create .ssh directory
 	if err := m.incus.Exec(containerName, []string{"mkdir", "-p", sshDir}); err != nil {
@@ -306,28 +303,21 @@ func (m *Manager) addSSHKeys(containerName, username string, sshKeys []string) e
 		return fmt.Errorf("failed to set .ssh permissions: %w", err)
 	}
 
-	// Create authorized_keys file
-	authorizedKeysPath := fmt.Sprintf("%s/authorized_keys", sshDir)
-	if err := m.incus.Exec(containerName, []string{"touch", authorizedKeysPath}); err != nil {
-		return fmt.Errorf("failed to create authorized_keys: %w", err)
-	}
-
-	// Add each SSH key
+	// Build authorized_keys content safely (no shell involved)
+	var keysContent strings.Builder
 	for _, key := range sshKeys {
 		key = strings.TrimSpace(key)
 		if key == "" {
 			continue
 		}
-
-		cmd := fmt.Sprintf("echo '%s' >> %s", key, authorizedKeysPath)
-		if err := m.incus.Exec(containerName, []string{"bash", "-c", cmd}); err != nil {
-			return fmt.Errorf("failed to add SSH key: %w", err)
-		}
+		keysContent.WriteString(key)
+		keysContent.WriteString("\n")
 	}
 
-	// Set permissions on authorized_keys
-	if err := m.incus.Exec(containerName, []string{"chmod", "600", authorizedKeysPath}); err != nil {
-		return fmt.Errorf("failed to set authorized_keys permissions: %w", err)
+	// SECURITY FIX: Use Incus file push API instead of shell echo
+	// This prevents shell injection attacks via malicious SSH key content
+	if err := m.incus.WriteFile(containerName, authorizedKeysPath, []byte(keysContent.String()), "0600"); err != nil {
+		return fmt.Errorf("failed to write authorized_keys: %w", err)
 	}
 
 	// Set ownership
@@ -413,12 +403,12 @@ func getJumpServerSSHKey() (string, error) {
 
 	// Fallback: Try common SSH public key locations
 	// Note: This won't work if ProtectHome=true in systemd service
+	// SECURITY FIX: Removed hardcoded developer username path
 	homeDirectories := []string{
 		os.Getenv("HOME"),
-		"/home/hsinhoyeh", // Common user on GCE
-		"/home/ubuntu",    // Common on Ubuntu systems
-		"/home/admin",     // Common admin user
-		"/root",           // Fallback to root
+		"/home/ubuntu", // Common on Ubuntu systems
+		"/home/admin",  // Common admin user
+		"/root",        // Fallback to root
 	}
 
 	keyTypes := []string{"id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"}

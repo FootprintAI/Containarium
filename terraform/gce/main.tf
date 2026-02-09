@@ -134,8 +134,10 @@ resource "google_compute_instance" "jump_server" {
 }
 
 # Copy containarium binary to server (if binary_url is empty)
+# SECURITY FIX: Uses configurable ssh_private_key_path instead of hardcoded path
 resource "null_resource" "copy_containarium_binary" {
-  count = var.enable_containarium_daemon && var.containarium_binary_url == "" ? 1 : 0
+  # Only run if: daemon enabled, no binary URL provided, and SSH key path is configured
+  count = var.enable_containarium_daemon && var.containarium_binary_url == "" && var.ssh_private_key_path != "" ? 1 : 0
 
   depends_on = [
     google_compute_instance.jump_server_spot,
@@ -146,7 +148,7 @@ resource "null_resource" "copy_containarium_binary" {
     type        = "ssh"
     user        = keys(var.admin_ssh_keys)[0]
     host        = google_compute_address.jump_server_ip.address
-    private_key = file("/Users/hsinhoyeh/.ssh/containerium_ed25519")
+    private_key = file(var.ssh_private_key_path)
   }
 
   provisioner "file" {

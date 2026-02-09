@@ -220,3 +220,16 @@ variable "enable_containarium_daemon" {
   type        = bool
   default     = true
 }
+
+variable "ssh_private_key_path" {
+  description = "Path to SSH private key for provisioner connections (required if containarium_binary_url is empty)"
+  type        = string
+  default     = ""
+
+  # Example:
+  # ssh_private_key_path = "~/.ssh/id_ed25519"
+  #
+  # SECURITY NOTE: Never commit private keys to version control.
+  # Set this via terraform.tfvars or environment variable:
+  # export TF_VAR_ssh_private_key_path="~/.ssh/id_ed25519"
+}

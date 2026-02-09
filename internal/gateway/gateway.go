@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -111,14 +112,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Create HTTP handler with authentication middleware
 	handler := gs.authMiddleware.HTTPMiddleware(mux)
 
-	// Add CORS support
-	// TODO: Make this configurable via environment variable for production
+	// Add CORS support with configurable origins (secure by default)
+	// Set CONTAINARIUM_ALLOWED_ORIGINS env var to configure allowed origins
 	corsHandler := cors.New(cors.Options{
-		AllowedOrigins: []string{
-			"http://localhost:3000",  // Development (Next.js dev server)
-			"http://localhost",       // Production (same host /webui path)
-			"*",                      // Allow all for now - should be restricted in production
-		},
+		AllowedOrigins:   getAllowedOrigins(),
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Content-Length"},
@@ -131,9 +128,9 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 
 	// Terminal WebSocket route (with authentication via query param)
 	if gs.terminalHandler != nil {
-		// Wrap terminal handler with CORS
+		// Wrap terminal handler with CORS (using configurable origins)
 		terminalWithCORS := cors.New(cors.Options{
-			AllowedOrigins:   []string{"*"},
+			AllowedOrigins:   getAllowedOrigins(),
 			AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
 			AllowedHeaders:   []string{"Authorization", "Content-Type", "Upgrade", "Connection"},
 			AllowCredentials: true,
@@ -147,13 +144,19 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 					token = strings.TrimPrefix(authHeader, "Bearer ")
 				}
 			}
-			if token != "" {
-				_, err := gs.authMiddleware.ValidateToken(token)
-				if err != nil {
-					http.Error(w, "Unauthorized", http.StatusUnauthorized)
-					return
-				}
+
+			// SECURITY FIX: Authentication is MANDATORY for terminal access
+			if token == "" {
+				http.Error(w, `{"error": "unauthorized: token required for terminal access", "code": 401}`, http.StatusUnauthorized)
+				return
 			}
+
+			_, err := gs.authMiddleware.ValidateToken(token)
+			if err != nil {
+				http.Error(w, `{"error": "unauthorized: invalid token", "code": 401}`, http.StatusUnauthorized)
+				return
+			}
+
 			gs.terminalHandler.HandleTerminal(w, r)
 		}))
 
@@ -240,4 +243,25 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 		"x-forwarded-method", req.Method,
 		"x-forwarded-path", req.URL.Path,
 	)
+}
+
+// getAllowedOrigins returns the list of allowed CORS origins.
+// Configurable via CONTAINARIUM_ALLOWED_ORIGINS environment variable (comma-separated).
+// Defaults to localhost origins only for security.
+func getAllowedOrigins() []string {
+	envOrigins := os.Getenv("CONTAINARIUM_ALLOWED_ORIGINS")
+	if envOrigins != "" {
+		origins := strings.Split(envOrigins, ",")
+		// Trim whitespace from each origin
+		for i, origin := range origins {
+			origins[i] = strings.TrimSpace(origin)
+		}
+		return origins
+	}
+	// Default to localhost only - secure by default
+	return []string{
+		"http://localhost:3000",
+		"http://localhost:8080",
+		"http://localhost",
+	}
 }

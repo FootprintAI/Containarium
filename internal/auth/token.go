@@ -3,10 +3,15 @@ package auth
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// DefaultMaxTokenExpiry is the default maximum token expiry (30 days)
+const DefaultMaxTokenExpiry = 30 * 24 * time.Hour
 
 // Claims represents the JWT claims for authentication
 type Claims struct {
@@ -17,20 +22,38 @@ type Claims struct {
 
 // TokenManager handles JWT token generation and validation
 type TokenManager struct {
-	secretKey []byte
-	issuer    string
+	secretKey      []byte
+	issuer         string
+	maxTokenExpiry time.Duration
 }
 
 // NewTokenManager creates a new token manager
 func NewTokenManager(secretKey string, issuer string) *TokenManager {
+	maxExpiry := DefaultMaxTokenExpiry
+
+	// Allow override via environment variable (in hours)
+	if envMaxExpiry := os.Getenv("CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS"); envMaxExpiry != "" {
+		if hours, err := strconv.ParseInt(envMaxExpiry, 10, 64); err == nil && hours > 0 {
+			maxExpiry = time.Duration(hours) * time.Hour
+		}
+	}
+
 	return &TokenManager{
-		secretKey: []byte(secretKey),
-		issuer:    issuer,
+		secretKey:      []byte(secretKey),
+		issuer:         issuer,
+		maxTokenExpiry: maxExpiry,
 	}
 }
 
 // GenerateToken creates a JWT token for a user
+// SECURITY FIX: Non-expiring tokens are no longer allowed.
+// Maximum expiry is enforced (default: 30 days, configurable via CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS)
 func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn time.Duration) (string, error) {
+	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
+	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
+		expiresIn = tm.maxTokenExpiry
+	}
+
 	claims := Claims{
 		Username: username,
 		Roles:    roles,
@@ -40,11 +63,6 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    tm.issuer,
 		},
-	}
-
-	// Handle non-expiring tokens
-	if expiresIn == 0 {
-		claims.ExpiresAt = nil
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -31,14 +32,52 @@ func NewTerminalHandler() (*TerminalHandler, error) {
 	return &TerminalHandler{
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				// Allow all origins for now - should be restricted in production
-				return true
+				// SECURITY FIX: Validate WebSocket origin against allowed origins
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					// No origin header - reject for security
+					// (browsers always send Origin for cross-origin WebSocket)
+					log.Printf("WebSocket connection rejected: no Origin header")
+					return false
+				}
+
+				// Check against allowed origins
+				allowedOrigins := getTerminalAllowedOrigins()
+				for _, allowed := range allowedOrigins {
+					if origin == allowed {
+						return true
+					}
+				}
+
+				log.Printf("WebSocket connection rejected: origin %s not in allowed list", origin)
+				return false
 			},
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 		},
 		incusClient: client,
 	}, nil
+}
+
+// getTerminalAllowedOrigins returns the list of allowed origins for WebSocket connections.
+// Configurable via CONTAINARIUM_ALLOWED_ORIGINS environment variable (comma-separated).
+// Defaults to localhost origins only for security.
+func getTerminalAllowedOrigins() []string {
+	envOrigins := os.Getenv("CONTAINARIUM_ALLOWED_ORIGINS")
+	if envOrigins != "" {
+		origins := strings.Split(envOrigins, ",")
+		// Trim whitespace from each origin
+		for i, origin := range origins {
+			origins[i] = strings.TrimSpace(origin)
+		}
+		return origins
+	}
+	// Default to localhost only - secure by default
+	return []string{
+		"http://localhost:3000",
+		"http://localhost:8080",
+		"http://localhost",
+	}
 }
 
 // TerminalMessage represents a message sent over WebSocket
