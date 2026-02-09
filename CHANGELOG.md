@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-10
+
 ### Security
 - **CRITICAL: Fixed shell injection via SSH key content** (`internal/container/manager.go`)
   - Malicious SSH keys could execute arbitrary commands inside containers
@@ -304,12 +306,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **0.5.0** (2026-02-10) - Security Hardening Release (5 critical fixes)
 - **0.4.0** (2026-01-25) - App Hosting, Auto-Provisioned Core Services, Network Topology
 - **0.3.0** (2026-01-15) - Web UI Dashboard, Container Metrics, WebSocket Terminal
 - **0.2.0** (2025-01-12) - Resize command, mTLS support, production readiness
 - **0.1.0** (Initial release) - Basic container management, SSH jump server
 
-[Unreleased]: https://github.com/FootprintAI/Containarium/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/FootprintAI/Containarium/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/FootprintAI/Containarium/releases/tag/0.5.0
 [0.4.0]: https://github.com/FootprintAI/Containarium/releases/tag/0.4.0
 [0.3.0]: https://github.com/FootprintAI/Containarium/releases/tag/0.3.0
 [0.2.0]: https://github.com/FootprintAI/Containarium/releases/tag/0.2.0
