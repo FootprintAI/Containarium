@@ -88,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed route deletion when full domain is passed instead of subdomain
 - Fixed routes created via Caddyfile not being deletable (missing @id)
 - Fixed WebUI static files not being embedded correctly after build
-- **Fixed port forwarding blocking Caddy's outbound HTTPS**: iptables PREROUTING rules now exclude Caddy's own IP (`! -s <caddy-ip>`) to allow outbound connections to Let's Encrypt servers for certificate provisioning
+- **Fixed port forwarding blocking container outbound HTTPS**: iptables PREROUTING rules now exclude the entire container network CIDR (`! -s 10.x.x.0/24`) instead of just Caddy's IP. This allows all containers to access external HTTPS services (Docker Hub, Let's Encrypt, etc.)
 - Fixed route display showing `ip:port:0` format by properly parsing Caddy's `Dial` field into separate IP and port fields
 
 ## [0.5.0] - 2026-02-10

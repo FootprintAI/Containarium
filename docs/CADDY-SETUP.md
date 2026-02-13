@@ -346,10 +346,11 @@ sudo sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
 
 # Add port forwarding rules for 80 and 443 to Caddy
-# IMPORTANT: Exclude Caddy's own IP (! -s $CADDY_IP) to allow outbound HTTPS
-# Without this, Caddy can't reach Let's Encrypt servers for certificate provisioning
-sudo iptables -t nat -A PREROUTING -p tcp ! -s $CADDY_IP --dport 80 -j DNAT --to-destination $CADDY_IP:80
-sudo iptables -t nat -A PREROUTING -p tcp ! -s $CADDY_IP --dport 443 -j DNAT --to-destination $CADDY_IP:443
+# IMPORTANT: Exclude the ENTIRE container network to allow containers to access
+# external HTTPS services (Docker Hub, Let's Encrypt, etc.)
+NETWORK_CIDR="10.0.3.0/24"  # Adjust to match your container network
+sudo iptables -t nat -A PREROUTING -p tcp ! -s $NETWORK_CIDR --dport 80 -j DNAT --to-destination $CADDY_IP:80
+sudo iptables -t nat -A PREROUTING -p tcp ! -s $NETWORK_CIDR --dport 443 -j DNAT --to-destination $CADDY_IP:443
 
 # Add MASQUERADE for return traffic
 sudo iptables -t nat -A POSTROUTING -d $CADDY_IP -j MASQUERADE
