@@ -194,6 +194,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					var proxyManager *app.ProxyManager
 					if caddyAdminURL != "" {
 						proxyManager = app.NewProxyManager(caddyAdminURL, config.BaseDomain)
+						// Ensure Caddy has basic server config for routes
+						if err := proxyManager.EnsureServerConfig(); err != nil {
+							log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
+						}
 					}
 					networkServer.proxyManager = proxyManager
 					networkServer.appStore = appStore

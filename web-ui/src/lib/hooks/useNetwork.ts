@@ -1,9 +1,12 @@
 'use client';
 
+import { useCallback } from 'react';
 import useSWR from 'swr';
 import { NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord } from '@/src/types/app';
 import { Server } from '@/src/types/server';
 import { getClient } from '@/src/lib/api/client';
+import { useEventStream } from '@/src/lib/events/useEventStream';
+import { ServerEvent, isRouteEvent } from '@/src/types/events';
 
 /**
  * Hook for managing network routes
@@ -21,11 +24,29 @@ export function useRoutes(server: Server | null, username?: string) {
     swrKey,
     fetcher,
     {
-      refreshInterval: 15000,
+      // No polling - rely on SSE for real-time updates
+      refreshInterval: 0,
       revalidateOnFocus: true,
       dedupingInterval: 5000,
     }
   );
+
+  // Handle route events from SSE
+  const handleEvent = useCallback(
+    (event: ServerEvent) => {
+      if (!isRouteEvent(event)) return;
+
+      // Revalidate route list on any route event
+      mutate();
+    },
+    [mutate]
+  );
+
+  // Subscribe to route events via SSE
+  const { status: eventStatus, reconnect } = useEventStream(server, {
+    resourceTypes: ['RESOURCE_TYPE_ROUTE'],
+    onEvent: handleEvent,
+  });
 
   const addRoute = async (domain: string, targetIp: string, targetPort: number) => {
     if (!server) throw new Error('No server selected');
@@ -49,6 +70,9 @@ export function useRoutes(server: Server | null, username?: string) {
     addRoute,
     deleteRoute,
     refresh: () => mutate(),
+    // Event stream status
+    eventStatus,
+    reconnectEvents: reconnect,
   };
 }
 
@@ -68,17 +92,36 @@ export function useNetworkTopology(server: Server | null, includeStopped: boolea
     swrKey,
     fetcher,
     {
-      refreshInterval: 15000,
+      // No polling - rely on SSE for real-time updates
+      refreshInterval: 0,
       revalidateOnFocus: true,
       dedupingInterval: 5000,
     }
   );
+
+  // Handle events that affect topology (containers and routes)
+  const handleEvent = useCallback(
+    () => {
+      // Revalidate topology on any container or route event
+      mutate();
+    },
+    [mutate]
+  );
+
+  // Subscribe to container and route events via SSE
+  const { status: eventStatus, reconnect } = useEventStream(server, {
+    resourceTypes: ['RESOURCE_TYPE_CONTAINER', 'RESOURCE_TYPE_ROUTE'],
+    onEvent: handleEvent,
+  });
 
   return {
     topology: data || { nodes: [], edges: [], networkCidr: '', gatewayIp: '' },
     isLoading,
     error,
     refresh: () => mutate(),
+    // Event stream status
+    eventStatus,
+    reconnectEvents: reconnect,
   };
 }
 

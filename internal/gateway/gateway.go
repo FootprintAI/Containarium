@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/mtls"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -29,6 +30,7 @@ type GatewayServer struct {
 	certsDir        string // Optional: for mTLS connection to gRPC server
 	terminalHandler *TerminalHandler
 	labelHandler    *LabelHandler
+	eventHandler    *EventHandler
 }
 
 // NewGatewayServer creates a new gateway server
@@ -45,6 +47,9 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		log.Printf("Warning: Label handler not available: %v", err)
 	}
 
+	// Create event handler with global event bus
+	eventHandler := NewEventHandler(events.GetBus())
+
 	return &GatewayServer{
 		grpcAddress:     grpcAddress,
 		httpPort:        httpPort,
@@ -53,6 +58,7 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		certsDir:        certsDir,
 		terminalHandler: terminalHandler,
 		labelHandler:    labelHandler,
+		eventHandler:    eventHandler,
 	}
 }
 
@@ -195,6 +201,37 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		// No terminal handler, just use CORS handler for all /v1/ routes
 		httpMux.Handle("/v1/", corsHandler)
 	}
+
+	// Events SSE endpoint (with authentication)
+	eventsWithCORS := cors.New(cors.Options{
+		AllowedOrigins:   getAllowedOrigins(),
+		AllowedMethods:   []string{"GET", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "Cache-Control"},
+		AllowCredentials: true,
+	}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Validate auth token from query param or header
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+		}
+
+		if token == "" {
+			http.Error(w, `{"error": "unauthorized: token required for events", "code": 401}`, http.StatusUnauthorized)
+			return
+		}
+
+		_, err := gs.authMiddleware.ValidateToken(token)
+		if err != nil {
+			http.Error(w, `{"error": "unauthorized: invalid token", "code": 401}`, http.StatusUnauthorized)
+			return
+		}
+
+		gs.eventHandler.HandleSSE(w, r)
+	}))
+	httpMux.Handle("/v1/events/subscribe", eventsWithCORS)
 
 	// Swagger UI routes (no authentication required)
 	httpMux.Handle("/swagger-ui/", http.StripPrefix("/swagger-ui", http.HandlerFunc(ServeSwaggerUI(gs.swaggerDir))))

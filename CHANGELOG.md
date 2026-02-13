@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Port Forwarding CLI Commands
+- New `containarium portforward` command group for managing iptables port forwarding rules
+- `containarium portforward show` - Display current PREROUTING/POSTROUTING rules and IP forwarding status
+- `containarium portforward setup --caddy-ip <IP>` - Setup port forwarding rules for Caddy
+- `containarium portforward setup --auto` - Auto-detect Caddy container IP from Incus
+- `containarium portforward remove --caddy-ip <IP>` - Remove port forwarding rules
+- Automatic port forwarding setup when daemon starts with `--app-hosting` enabled
+
+#### Event-Driven Architecture (SSE)
+- New Server-Sent Events (SSE) endpoint at `/v1/events/subscribe` for real-time updates
+- Event types for containers: created, deleted, started, stopped, state changed
+- Event types for apps: deployed, deleted, started, stopped, state changed
+- Event types for routes: added, deleted
+- Central event bus (`internal/events/bus.go`) with pub/sub pattern
+- Type-safe event emission via `Emitter` interface
+- Frontend `useEventStream` hook with automatic reconnection and heartbeat handling
+- 15-second SSE heartbeat to prevent proxy timeouts
+- Removes need for polling in Web UI - instant updates on state changes
+
 #### Dashboard CPU Load Metrics
 - Added real-time CPU load display to the System Resources dashboard
 - Shows 1-minute load average with progress bar visualization
@@ -69,6 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed route deletion when full domain is passed instead of subdomain
 - Fixed routes created via Caddyfile not being deletable (missing @id)
 - Fixed WebUI static files not being embedded correctly after build
+- **Fixed port forwarding blocking Caddy's outbound HTTPS**: iptables PREROUTING rules now exclude Caddy's own IP (`! -s <caddy-ip>`) to allow outbound connections to Let's Encrypt servers for certificate provisioning
+- Fixed route display showing `ip:port:0` format by properly parsing Caddy's `Dial` field into separate IP and port fields
 
 ## [0.5.0] - 2026-02-10
 

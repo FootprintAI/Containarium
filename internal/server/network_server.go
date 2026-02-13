@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -18,6 +19,7 @@ type NetworkServer struct {
 	containerNetwork string // e.g., "10.100.0.0/24"
 	proxyIP          string // e.g., "10.100.0.1"
 	baseDomain       string // e.g., "kafeido.app"
+	emitter          *events.Emitter
 }
 
 // NewNetworkServer creates a new network server
@@ -28,6 +30,7 @@ func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager,
 		appStore:         appStore,
 		containerNetwork: containerNetwork,
 		proxyIP:          proxyIP,
+		emitter:          events.NewEmitter(events.GetBus()),
 	}
 }
 
@@ -109,14 +112,19 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 		return nil, fmt.Errorf("failed to add route: %w", err)
 	}
 
+	route := &pb.ProxyRoute{
+		Subdomain:   req.Domain,
+		FullDomain:  req.Domain,
+		ContainerIp: req.TargetIp,
+		Port:        req.TargetPort,
+		Active:      true,
+	}
+
+	// Emit route added event
+	s.emitter.EmitRouteAdded(route)
+
 	return &pb.AddRouteResponse{
-		Route: &pb.ProxyRoute{
-			Subdomain:   req.Domain,
-			FullDomain:  req.Domain,
-			ContainerIp: req.TargetIp,
-			Port:        req.TargetPort,
-			Active:      true,
-		},
+		Route:   route,
 		Message: fmt.Sprintf("Route added: %s -> %s:%d", req.Domain, req.TargetIp, req.TargetPort),
 	}, nil
 }
@@ -172,6 +180,9 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 	if err := s.proxyManager.RemoveRoute(req.Domain); err != nil {
 		return nil, fmt.Errorf("failed to delete route: %w", err)
 	}
+
+	// Emit route deleted event
+	s.emitter.EmitRouteDeleted(req.Domain)
 
 	return &pb.DeleteRouteResponse{
 		Message: fmt.Sprintf("Route deleted: %s", req.Domain),

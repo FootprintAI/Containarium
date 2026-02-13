@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/events"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -17,6 +18,7 @@ type AppServer struct {
 	pb.UnimplementedAppServiceServer
 	manager *app.Manager
 	store   app.AppStore
+	emitter *events.Emitter
 }
 
 // NewAppServer creates a new app server
@@ -24,6 +26,7 @@ func NewAppServer(manager *app.Manager, store app.AppStore) *AppServer {
 	return &AppServer{
 		manager: manager,
 		store:   store,
+		emitter: events.NewEmitter(events.GetBus()),
 	}
 }
 
@@ -45,6 +48,9 @@ func (s *AppServer) DeployApp(ctx context.Context, req *pb.DeployAppRequest) (*p
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "deployment failed: %v", err)
 	}
+
+	// Emit app deployed event
+	s.emitter.EmitAppDeployed(deployedApp)
 
 	return &pb.DeployAppResponse{
 		App:              deployedApp,
@@ -107,6 +113,9 @@ func (s *AppServer) StopApp(ctx context.Context, req *pb.StopAppRequest) (*pb.St
 		return nil, status.Errorf(codes.Internal, "failed to stop app: %v", err)
 	}
 
+	// Emit app stopped event
+	s.emitter.EmitAppStopped(stoppedApp)
+
 	return &pb.StopAppResponse{
 		App:     stoppedApp,
 		Message: fmt.Sprintf("Application %s stopped", req.AppName),
@@ -126,6 +135,9 @@ func (s *AppServer) StartApp(ctx context.Context, req *pb.StartAppRequest) (*pb.
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to start app: %v", err)
 	}
+
+	// Emit app started event
+	s.emitter.EmitAppStarted(startedApp)
 
 	return &pb.StartAppResponse{
 		App:     startedApp,
@@ -162,9 +174,21 @@ func (s *AppServer) DeleteApp(ctx context.Context, req *pb.DeleteAppRequest) (*p
 		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
 	}
 
+	// Get app ID before deletion for event
+	appInfo, _ := s.store.GetByName(ctx, req.Username, req.AppName)
+	appID := ""
+	if appInfo != nil {
+		appID = appInfo.Id
+	}
+
 	err := s.manager.DeleteApp(ctx, req.Username, req.AppName, req.RemoveData)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete app: %v", err)
+	}
+
+	// Emit app deleted event
+	if appID != "" {
+		s.emitter.EmitAppDeleted(appID)
 	}
 
 	return &pb.DeleteAppResponse{

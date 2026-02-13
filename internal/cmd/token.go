@@ -16,6 +16,7 @@ var (
 	tokenExpiry     string
 	tokenSecretFlag string
 	tokenSecretFile string
+	tokenRaw        bool
 )
 
 var tokenCmd = &cobra.Command{
@@ -82,6 +83,7 @@ func init() {
 	// Optional flags
 	tokenGenerateCmd.Flags().StringSliceVar(&tokenRoles, "roles", []string{"user"}, "Roles for the token (comma-separated)")
 	tokenGenerateCmd.Flags().StringVar(&tokenExpiry, "expiry", "24h", "Token expiry duration (e.g., 24h, 168h, 720h, 0 for no expiry)")
+	tokenGenerateCmd.Flags().BoolVar(&tokenRaw, "raw", false, "Output only the raw token (for scripting)")
 }
 
 func runTokenGenerate(cmd *cobra.Command, args []string) error {
@@ -116,6 +118,12 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 	token, err := tm.GenerateToken(tokenUsername, tokenRoles, expiresIn)
 	if err != nil {
 		return fmt.Errorf("failed to generate token: %w", err)
+	}
+
+	// Raw output mode for scripting
+	if tokenRaw {
+		fmt.Print(token)
+		return nil
 	}
 
 	// Output token information

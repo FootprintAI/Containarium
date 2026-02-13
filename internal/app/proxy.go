@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -351,7 +352,16 @@ func (p *ProxyManager) ListRoutes() ([]Route, error) {
 				var handler CaddyReverseProxyHandler
 				if err := json.Unmarshal(cr.Handle[0], &handler); err == nil {
 					if len(handler.Upstreams) > 0 {
-						route.UpstreamIP = handler.Upstreams[0].Dial
+						dial := handler.Upstreams[0].Dial
+						// Parse ip:port from Dial field
+						if lastColon := strings.LastIndex(dial, ":"); lastColon != -1 {
+							route.UpstreamIP = dial[:lastColon]
+							if port, err := strconv.Atoi(dial[lastColon+1:]); err == nil {
+								route.UpstreamPort = port
+							}
+						} else {
+							route.UpstreamIP = dial
+						}
 					}
 				}
 			}
@@ -375,6 +385,11 @@ func (p *ProxyManager) UpdateRoute(subdomain, containerIP string, port int) erro
 // EnsureServerConfig ensures the Caddy server has basic configuration
 // This should be called once during initialization
 func (p *ProxyManager) EnsureServerConfig() error {
+	// First, ensure the HTTP app exists
+	if err := p.ensureHTTPApp(); err != nil {
+		return fmt.Errorf("failed to ensure HTTP app: %w", err)
+	}
+
 	// Check if server config exists
 	url := fmt.Sprintf("%s/config/apps/http/servers/%s", p.caddyAdminURL, p.serverName)
 	req, err := http.NewRequest("GET", url, nil)
@@ -389,8 +404,87 @@ func (p *ProxyManager) EnsureServerConfig() error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
 		return p.createServerConfig()
+	}
+
+	return nil
+}
+
+// ensureHTTPApp ensures the HTTP app and server exist in Caddy config
+func (p *ProxyManager) ensureHTTPApp() error {
+	// Check if HTTP app exists
+	url := fmt.Sprintf("%s/config/apps/http", p.caddyAdminURL)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		// HTTP app doesn't exist, create it with server
+		return p.createHTTPApp()
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
+		return p.createHTTPApp()
+	}
+
+	// HTTP app exists, check if it has the server configured
+	var httpApp CaddyHTTPApp
+	if err := json.NewDecoder(resp.Body).Decode(&httpApp); err != nil {
+		// Invalid config, recreate
+		return p.createHTTPApp()
+	}
+
+	// Check if servers map exists and has our server
+	if httpApp.Servers == nil {
+		// No servers map, recreate
+		return p.createHTTPApp()
+	}
+
+	if _, exists := httpApp.Servers[p.serverName]; !exists {
+		// Server doesn't exist, add it
+		return p.createServerConfig()
+	}
+
+	return nil
+}
+
+// createHTTPApp creates the HTTP app with the server already configured
+func (p *ProxyManager) createHTTPApp() error {
+	// Create HTTP app with the server configured (avoid separate creation)
+	httpApp := CaddyHTTPApp{
+		Servers: map[string]*CaddyServerConfig{
+			p.serverName: {
+				Listen: []string{":80", ":443"},
+				Routes: []CaddyRouteTyped{},
+			},
+		},
+	}
+
+	configJSON, err := json.Marshal(httpApp)
+	if err != nil {
+		return fmt.Errorf("failed to marshal HTTP app config: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/config/apps/http", p.caddyAdminURL)
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(configJSON))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP app: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy returned error creating HTTP app (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	return nil

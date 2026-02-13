@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+import "containarium/v1/container.proto";
+import "containarium/v1/app.proto";
+import "containarium/v1/network.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// EventType represents the type of resource change event
+enum EventType {
+  // Unspecified event type (should not be used)
+  EVENT_TYPE_UNSPECIFIED = 0;
+
+  // Container events (1-9)
+  // Container was created
+  EVENT_TYPE_CONTAINER_CREATED = 1;
+  // Container was deleted
+  EVENT_TYPE_CONTAINER_DELETED = 2;
+  // Container was started
+  EVENT_TYPE_CONTAINER_STARTED = 3;
+  // Container was stopped
+  EVENT_TYPE_CONTAINER_STOPPED = 4;
+  // Container state changed
+  EVENT_TYPE_CONTAINER_STATE_CHANGED = 5;
+
+  // App events (10-19)
+  // App was deployed
+  EVENT_TYPE_APP_DEPLOYED = 10;
+  // App was deleted
+  EVENT_TYPE_APP_DELETED = 11;
+  // App was started
+  EVENT_TYPE_APP_STARTED = 12;
+  // App was stopped
+  EVENT_TYPE_APP_STOPPED = 13;
+  // App state changed
+  EVENT_TYPE_APP_STATE_CHANGED = 14;
+
+  // Network events (20-29)
+  // Route was added
+  EVENT_TYPE_ROUTE_ADDED = 20;
+  // Route was deleted
+  EVENT_TYPE_ROUTE_DELETED = 21;
+
+  // System events (30-39)
+  // Metrics update
+  EVENT_TYPE_METRICS_UPDATE = 30;
+}
+
+// ResourceType identifies which resource type an event pertains to
+enum ResourceType {
+  // Unspecified resource type
+  RESOURCE_TYPE_UNSPECIFIED = 0;
+  // Container resource
+  RESOURCE_TYPE_CONTAINER = 1;
+  // App resource
+  RESOURCE_TYPE_APP = 2;
+  // Route resource
+  RESOURCE_TYPE_ROUTE = 3;
+  // Metrics resource
+  RESOURCE_TYPE_METRICS = 4;
+}
+
+// ContainerEvent contains container-specific event data
+message ContainerEvent {
+  // The container that was affected
+  Container container = 1;
+
+  // Previous state (for state change events)
+  ContainerState previous_state = 2;
+}
+
+// AppEvent contains app-specific event data
+message AppEvent {
+  // The app that was affected
+  App app = 1;
+
+  // Previous state (for state change events)
+  AppState previous_state = 2;
+}
+
+// RouteEvent contains route-specific event data
+message RouteEvent {
+  // The route that was affected
+  ProxyRoute route = 1;
+}
+
+// MetricsEvent contains metrics update data
+message MetricsEvent {
+  // Metrics for all containers
+  repeated ContainerMetrics metrics = 1;
+}
+
+// Event is the top-level event message sent to clients
+message Event {
+  // Unique event ID for deduplication
+  string id = 1;
+
+  // Type of event
+  EventType type = 2;
+
+  // Resource type affected
+  ResourceType resource_type = 3;
+
+  // Resource identifier (container name, app ID, route domain)
+  string resource_id = 4;
+
+  // When the event occurred
+  google.protobuf.Timestamp timestamp = 5;
+
+  // Event-specific payload (exactly one should be set)
+  oneof payload {
+    ContainerEvent container_event = 10;
+    AppEvent app_event = 11;
+    RouteEvent route_event = 12;
+    MetricsEvent metrics_event = 13;
+  }
+}
+
+// SubscribeEventsRequest configures the event subscription
+message SubscribeEventsRequest {
+  // Filter by resource types (empty = all types)
+  repeated ResourceType resource_types = 1;
+
+  // Include metrics events (can be noisy, default false)
+  bool include_metrics = 2;
+
+  // Metrics interval in seconds (default: 5, min: 1, max: 60)
+  int32 metrics_interval_seconds = 3;
+}
+
+// EventService provides real-time event streaming
+service EventService {
+  // SubscribeEvents opens a streaming connection for real-time events
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event) {
+    option (google.api.http) = {
+      get: "/v1/events/subscribe"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Subscribe to real-time events";
+      description: "Opens a Server-Sent Events stream for real-time resource updates. Filter by resource types using query parameters.";
+      tags: "Events";
+    };
+  }
+}

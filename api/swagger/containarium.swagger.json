@@ -22,6 +22,9 @@
     },
     {
       "name": "AppService"
+    },
+    {
+      "name": "EventService"
     }
   ],
   "schemes": [
@@ -804,6 +807,74 @@
         ]
       }
     },
+    "/v1/events/subscribe": {
+      "get": {
+        "summary": "Subscribe to real-time events",
+        "description": "Opens a Server-Sent Events stream for real-time resource updates. Filter by resource types using query parameters.",
+        "operationId": "EventService_SubscribeEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/Event"
+                },
+                "error": {
+                  "$ref": "#/definitions/Status"
+                }
+              },
+              "title": "Stream result of Event"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "resourceTypes",
+            "description": "Filter by resource types (empty = all types)\n\n - RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "RESOURCE_TYPE_UNSPECIFIED",
+                "RESOURCE_TYPE_CONTAINER",
+                "RESOURCE_TYPE_APP",
+                "RESOURCE_TYPE_ROUTE",
+                "RESOURCE_TYPE_METRICS"
+              ]
+            },
+            "collectionFormat": "multi"
+          },
+          {
+            "name": "includeMetrics",
+            "description": "Include metrics events (can be noisy, default false)",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "metricsIntervalSeconds",
+            "description": "Metrics interval in seconds (default: 5, min: 1, max: 60)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Events"
+        ]
+      }
+    },
     "/v1/metrics": {
       "get": {
         "summary": "Get container metrics",
@@ -1391,6 +1462,20 @@
       },
       "title": "App represents a deployed application"
     },
+    "AppEvent": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/App",
+          "title": "The app that was affected"
+        },
+        "previousState": {
+          "$ref": "#/definitions/AppState",
+          "title": "Previous state (for state change events)"
+        }
+      },
+      "title": "AppEvent contains app-specific event data"
+    },
     "AppResources": {
       "type": "object",
       "properties": {
@@ -1507,6 +1592,20 @@
         }
       },
       "title": "Container represents a complete container instance"
+    },
+    "ContainerEvent": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container",
+          "title": "The container that was affected"
+        },
+        "previousState": {
+          "$ref": "#/definitions/ContainerState",
+          "title": "Previous state (for state change events)"
+        }
+      },
+      "title": "ContainerEvent contains container-specific event data"
     },
     "ContainerMetrics": {
       "type": "object",
@@ -1766,6 +1865,67 @@
       },
       "title": "DetectedLanguage information"
     },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Unique event ID for deduplication"
+        },
+        "type": {
+          "$ref": "#/definitions/EventType",
+          "title": "Type of event"
+        },
+        "resourceType": {
+          "$ref": "#/definitions/ResourceType",
+          "title": "Resource type affected"
+        },
+        "resourceId": {
+          "type": "string",
+          "title": "Resource identifier (container name, app ID, route domain)"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "title": "When the event occurred"
+        },
+        "containerEvent": {
+          "$ref": "#/definitions/ContainerEvent"
+        },
+        "appEvent": {
+          "$ref": "#/definitions/AppEvent"
+        },
+        "routeEvent": {
+          "$ref": "#/definitions/RouteEvent"
+        },
+        "metricsEvent": {
+          "$ref": "#/definitions/MetricsEvent"
+        }
+      },
+      "title": "Event is the top-level event message sent to clients"
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "EVENT_TYPE_UNSPECIFIED",
+        "EVENT_TYPE_CONTAINER_CREATED",
+        "EVENT_TYPE_CONTAINER_DELETED",
+        "EVENT_TYPE_CONTAINER_STARTED",
+        "EVENT_TYPE_CONTAINER_STOPPED",
+        "EVENT_TYPE_CONTAINER_STATE_CHANGED",
+        "EVENT_TYPE_APP_DEPLOYED",
+        "EVENT_TYPE_APP_DELETED",
+        "EVENT_TYPE_APP_STARTED",
+        "EVENT_TYPE_APP_STOPPED",
+        "EVENT_TYPE_APP_STATE_CHANGED",
+        "EVENT_TYPE_ROUTE_ADDED",
+        "EVENT_TYPE_ROUTE_DELETED",
+        "EVENT_TYPE_METRICS_UPDATE"
+      ],
+      "default": "EVENT_TYPE_UNSPECIFIED",
+      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update",
+      "title": "EventType represents the type of resource change event"
+    },
     "GetAppLogsResponse": {
       "type": "object",
       "properties": {
@@ -1937,6 +2097,20 @@
           "title": "Total count"
         }
       }
+    },
+    "MetricsEvent": {
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ContainerMetrics"
+          },
+          "title": "Metrics for all containers"
+        }
+      },
+      "title": "MetricsEvent contains metrics update data"
     },
     "NetworkACL": {
       "type": "object",
@@ -2164,6 +2338,19 @@
       },
       "title": "ResourceLimits defines resource constraints for a container"
     },
+    "ResourceType": {
+      "type": "string",
+      "enum": [
+        "RESOURCE_TYPE_UNSPECIFIED",
+        "RESOURCE_TYPE_CONTAINER",
+        "RESOURCE_TYPE_APP",
+        "RESOURCE_TYPE_ROUTE",
+        "RESOURCE_TYPE_METRICS"
+      ],
+      "default": "RESOURCE_TYPE_UNSPECIFIED",
+      "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource",
+      "title": "ResourceType identifies which resource type an event pertains to"
+    },
     "RestartAppBody": {
       "type": "object",
       "title": "RestartAppRequest restarts an app"
@@ -2180,6 +2367,16 @@
           "title": "Status message"
         }
       }
+    },
+    "RouteEvent": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "$ref": "#/definitions/ProxyRoute",
+          "title": "The route that was affected"
+        }
+      },
+      "title": "RouteEvent contains route-specific event data"
     },
     "StartAppBody": {
       "type": "object",

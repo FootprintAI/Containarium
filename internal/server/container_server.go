@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/container"
+	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -23,6 +24,7 @@ type PendingCreation struct {
 type ContainerServer struct {
 	pb.UnimplementedContainerServiceServer
 	manager          *container.Manager
+	emitter          *events.Emitter
 	pendingCreations map[string]*PendingCreation
 	pendingMu        sync.RWMutex
 }
@@ -35,6 +37,7 @@ func NewContainerServer() (*ContainerServer, error) {
 	}
 	return &ContainerServer{
 		manager:          mgr,
+		emitter:          events.NewEmitter(events.GetBus()),
 		pendingCreations: make(map[string]*PendingCreation),
 	}, nil
 }
@@ -101,7 +104,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 		// Start async creation
 		go func() {
-			_, err := s.manager.Create(opts)
+			info, err := s.manager.Create(opts)
 
 			s.pendingMu.Lock()
 			if pending, exists := s.pendingCreations[req.Username]; exists {
@@ -109,6 +112,11 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				pending.Error = err
 			}
 			s.pendingMu.Unlock()
+
+			// Emit event on success
+			if err == nil && info != nil {
+				s.emitter.EmitContainerCreated(toProtoContainer(info))
+			}
 		}()
 
 		// Return immediately with CREATING state
@@ -135,6 +143,9 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 	// Convert to protobuf
 	protoContainer := toProtoContainer(info)
+
+	// Emit container created event
+	s.emitter.EmitContainerCreated(protoContainer)
 
 	return &pb.CreateContainerResponse{
 		Container:  protoContainer,
@@ -269,14 +280,19 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 		return nil, fmt.Errorf("username is required")
 	}
 
+	containerName := fmt.Sprintf("%s-container", req.Username)
+
 	err := s.manager.Delete(req.Username, req.Force)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete container: %w", err)
 	}
 
+	// Emit container deleted event
+	s.emitter.EmitContainerDeleted(containerName)
+
 	return &pb.DeleteContainerResponse{
 		Message:       fmt.Sprintf("Container for user %s deleted successfully", req.Username),
-		ContainerName: fmt.Sprintf("%s-container", req.Username),
+		ContainerName: containerName,
 	}, nil
 }
 

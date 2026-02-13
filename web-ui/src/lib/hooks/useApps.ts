@@ -1,9 +1,12 @@
 'use client';
 
+import { useCallback } from 'react';
 import useSWR from 'swr';
 import { App } from '@/src/types/app';
 import { Server } from '@/src/types/server';
 import { getClient } from '@/src/lib/api/client';
+import { useEventStream } from '@/src/lib/events/useEventStream';
+import { ServerEvent, isAppEvent } from '@/src/types/events';
 
 /**
  * Hook for managing apps for a specific server
@@ -23,11 +26,29 @@ export function useApps(server: Server | null, username?: string) {
     swrKey,
     fetcher,
     {
-      refreshInterval: 10000, // Poll every 10 seconds
+      // No polling - rely on SSE for real-time updates
+      refreshInterval: 0,
       revalidateOnFocus: true,
       dedupingInterval: 5000,
     }
   );
+
+  // Handle app events from SSE
+  const handleEvent = useCallback(
+    (event: ServerEvent) => {
+      if (!isAppEvent(event)) return;
+
+      // Revalidate app list on any app event
+      mutate();
+    },
+    [mutate]
+  );
+
+  // Subscribe to app events via SSE
+  const { status: eventStatus, reconnect } = useEventStream(server, {
+    resourceTypes: ['RESOURCE_TYPE_APP'],
+    onEvent: handleEvent,
+  });
 
   /**
    * Stop an app
@@ -112,5 +133,8 @@ export function useApps(server: Server | null, username?: string) {
     deleteApp,
     getAppLogs,
     refresh,
+    // Event stream status
+    eventStatus,
+    reconnectEvents: reconnect,
   };
 }

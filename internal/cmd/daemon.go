@@ -14,6 +14,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/incus"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/network"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -151,6 +152,19 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		} else {
 			caddyAdminURL = fmt.Sprintf("http://%s:2019", caddyIP)
 			log.Printf("  Detected Caddy at: %s", caddyAdminURL)
+
+			// Set up port forwarding from host to Caddy for Let's Encrypt and HTTPS
+			if network.CheckIPTablesAvailable() {
+				portForwarder := network.NewPortForwarder(caddyIP)
+				if err := portForwarder.SetupPortForwarding(); err != nil {
+					log.Printf("Warning: Failed to setup port forwarding: %v", err)
+					log.Printf("  External HTTPS for app domains may not work")
+					log.Printf("  You may need to manually configure iptables - see docs/CADDY-SETUP.md")
+				}
+			} else {
+				log.Printf("Warning: iptables not available, skipping port forwarding setup")
+				log.Printf("  External HTTPS for app domains may not work without manual configuration")
+			}
 		}
 	}
 
