@@ -23,6 +23,120 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// RouteType represents whether the route is a proxy or passthrough
+type RouteType int32
+
+const (
+	// Unspecified type
+	RouteType_ROUTE_TYPE_UNSPECIFIED RouteType = 0
+	// Proxy route: TLS terminated at Caddy, HTTP/gRPC reverse proxy
+	RouteType_ROUTE_TYPE_PROXY RouteType = 1
+	// Passthrough route: Direct TCP/UDP forwarding via iptables, end-to-end TLS
+	RouteType_ROUTE_TYPE_PASSTHROUGH RouteType = 2
+)
+
+// Enum value maps for RouteType.
+var (
+	RouteType_name = map[int32]string{
+		0: "ROUTE_TYPE_UNSPECIFIED",
+		1: "ROUTE_TYPE_PROXY",
+		2: "ROUTE_TYPE_PASSTHROUGH",
+	}
+	RouteType_value = map[string]int32{
+		"ROUTE_TYPE_UNSPECIFIED": 0,
+		"ROUTE_TYPE_PROXY":       1,
+		"ROUTE_TYPE_PASSTHROUGH": 2,
+	}
+)
+
+func (x RouteType) Enum() *RouteType {
+	p := new(RouteType)
+	*p = x
+	return p
+}
+
+func (x RouteType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RouteType) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_network_proto_enumTypes[0].Descriptor()
+}
+
+func (RouteType) Type() protoreflect.EnumType {
+	return &file_containarium_v1_network_proto_enumTypes[0]
+}
+
+func (x RouteType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RouteType.Descriptor instead.
+func (RouteType) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{0}
+}
+
+// RouteProtocol represents the protocol type for a route
+type RouteProtocol int32
+
+const (
+	// Unspecified protocol (defaults to HTTP)
+	RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED RouteProtocol = 0
+	// HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes
+	RouteProtocol_ROUTE_PROTOCOL_HTTP RouteProtocol = 1
+	// gRPC (requires HTTP/2 transport) - for proxy routes
+	RouteProtocol_ROUTE_PROTOCOL_GRPC RouteProtocol = 2
+	// TCP passthrough - for passthrough routes
+	RouteProtocol_ROUTE_PROTOCOL_TCP RouteProtocol = 3
+	// UDP passthrough - for passthrough routes
+	RouteProtocol_ROUTE_PROTOCOL_UDP RouteProtocol = 4
+)
+
+// Enum value maps for RouteProtocol.
+var (
+	RouteProtocol_name = map[int32]string{
+		0: "ROUTE_PROTOCOL_UNSPECIFIED",
+		1: "ROUTE_PROTOCOL_HTTP",
+		2: "ROUTE_PROTOCOL_GRPC",
+		3: "ROUTE_PROTOCOL_TCP",
+		4: "ROUTE_PROTOCOL_UDP",
+	}
+	RouteProtocol_value = map[string]int32{
+		"ROUTE_PROTOCOL_UNSPECIFIED": 0,
+		"ROUTE_PROTOCOL_HTTP":        1,
+		"ROUTE_PROTOCOL_GRPC":        2,
+		"ROUTE_PROTOCOL_TCP":         3,
+		"ROUTE_PROTOCOL_UDP":         4,
+	}
+)
+
+func (x RouteProtocol) Enum() *RouteProtocol {
+	p := new(RouteProtocol)
+	*p = x
+	return p
+}
+
+func (x RouteProtocol) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RouteProtocol) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_network_proto_enumTypes[1].Descriptor()
+}
+
+func (RouteProtocol) Type() protoreflect.EnumType {
+	return &file_containarium_v1_network_proto_enumTypes[1]
+}
+
+func (x RouteProtocol) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RouteProtocol.Descriptor instead.
+func (RouteProtocol) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{1}
+}
+
 // ACLAction represents the action to take when a rule matches
 type ACLAction int32
 
@@ -64,11 +178,11 @@ func (x ACLAction) String() string {
 }
 
 func (ACLAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_network_proto_enumTypes[0].Descriptor()
+	return file_containarium_v1_network_proto_enumTypes[2].Descriptor()
 }
 
 func (ACLAction) Type() protoreflect.EnumType {
-	return &file_containarium_v1_network_proto_enumTypes[0]
+	return &file_containarium_v1_network_proto_enumTypes[2]
 }
 
 func (x ACLAction) Number() protoreflect.EnumNumber {
@@ -77,7 +191,7 @@ func (x ACLAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ACLAction.Descriptor instead.
 func (ACLAction) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{0}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{2}
 }
 
 // ACLPreset represents predefined firewall rule sets
@@ -125,11 +239,11 @@ func (x ACLPreset) String() string {
 }
 
 func (ACLPreset) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_network_proto_enumTypes[1].Descriptor()
+	return file_containarium_v1_network_proto_enumTypes[3].Descriptor()
 }
 
 func (ACLPreset) Type() protoreflect.EnumType {
-	return &file_containarium_v1_network_proto_enumTypes[1]
+	return &file_containarium_v1_network_proto_enumTypes[3]
 }
 
 func (x ACLPreset) Number() protoreflect.EnumNumber {
@@ -138,7 +252,7 @@ func (x ACLPreset) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ACLPreset.Descriptor instead.
 func (ACLPreset) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{3}
 }
 
 // ACLRule represents a single firewall rule
@@ -368,7 +482,9 @@ type ProxyRoute struct {
 	// Associated app name
 	AppName string `protobuf:"bytes,7,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
 	// Owner username
-	Username      string `protobuf:"bytes,8,opt,name=username,proto3" json:"username,omitempty"`
+	Username string `protobuf:"bytes,8,opt,name=username,proto3" json:"username,omitempty"`
+	// Protocol type (HTTP or gRPC)
+	Protocol      RouteProtocol `protobuf:"varint,9,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -459,6 +575,113 @@ func (x *ProxyRoute) GetUsername() string {
 	return ""
 }
 
+func (x *ProxyRoute) GetProtocol() RouteProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
+// PassthroughRoute represents a direct TCP/UDP port forwarding rule
+type PassthroughRoute struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// External port on the host
+	ExternalPort int32 `protobuf:"varint,1,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
+	// Target container IP address
+	TargetIp string `protobuf:"bytes,2,opt,name=target_ip,json=targetIp,proto3" json:"target_ip,omitempty"`
+	// Target port on the container
+	TargetPort int32 `protobuf:"varint,3,opt,name=target_port,json=targetPort,proto3" json:"target_port,omitempty"`
+	// Protocol: TCP or UDP
+	Protocol RouteProtocol `protobuf:"varint,4,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
+	// Whether the route is active
+	Active bool `protobuf:"varint,5,opt,name=active,proto3" json:"active,omitempty"`
+	// Associated container name (for display)
+	ContainerName string `protobuf:"bytes,6,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
+	// Description
+	Description   string `protobuf:"bytes,7,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PassthroughRoute) Reset() {
+	*x = PassthroughRoute{}
+	mi := &file_containarium_v1_network_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PassthroughRoute) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PassthroughRoute) ProtoMessage() {}
+
+func (x *PassthroughRoute) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PassthroughRoute.ProtoReflect.Descriptor instead.
+func (*PassthroughRoute) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *PassthroughRoute) GetExternalPort() int32 {
+	if x != nil {
+		return x.ExternalPort
+	}
+	return 0
+}
+
+func (x *PassthroughRoute) GetTargetIp() string {
+	if x != nil {
+		return x.TargetIp
+	}
+	return ""
+}
+
+func (x *PassthroughRoute) GetTargetPort() int32 {
+	if x != nil {
+		return x.TargetPort
+	}
+	return 0
+}
+
+func (x *PassthroughRoute) GetProtocol() RouteProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
+func (x *PassthroughRoute) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+func (x *PassthroughRoute) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
+}
+
+func (x *PassthroughRoute) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
 // NetworkNode represents a node in the network topology
 type NetworkNode struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -480,7 +703,7 @@ type NetworkNode struct {
 
 func (x *NetworkNode) Reset() {
 	*x = NetworkNode{}
-	mi := &file_containarium_v1_network_proto_msgTypes[3]
+	mi := &file_containarium_v1_network_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -492,7 +715,7 @@ func (x *NetworkNode) String() string {
 func (*NetworkNode) ProtoMessage() {}
 
 func (x *NetworkNode) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[3]
+	mi := &file_containarium_v1_network_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -505,7 +728,7 @@ func (x *NetworkNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkNode.ProtoReflect.Descriptor instead.
 func (*NetworkNode) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{3}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *NetworkNode) GetId() string {
@@ -569,7 +792,7 @@ type NetworkEdge struct {
 
 func (x *NetworkEdge) Reset() {
 	*x = NetworkEdge{}
-	mi := &file_containarium_v1_network_proto_msgTypes[4]
+	mi := &file_containarium_v1_network_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -581,7 +804,7 @@ func (x *NetworkEdge) String() string {
 func (*NetworkEdge) ProtoMessage() {}
 
 func (x *NetworkEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[4]
+	mi := &file_containarium_v1_network_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -594,7 +817,7 @@ func (x *NetworkEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkEdge.ProtoReflect.Descriptor instead.
 func (*NetworkEdge) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{4}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *NetworkEdge) GetSource() string {
@@ -649,7 +872,7 @@ type NetworkTopology struct {
 
 func (x *NetworkTopology) Reset() {
 	*x = NetworkTopology{}
-	mi := &file_containarium_v1_network_proto_msgTypes[5]
+	mi := &file_containarium_v1_network_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -661,7 +884,7 @@ func (x *NetworkTopology) String() string {
 func (*NetworkTopology) ProtoMessage() {}
 
 func (x *NetworkTopology) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[5]
+	mi := &file_containarium_v1_network_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -674,7 +897,7 @@ func (x *NetworkTopology) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkTopology.ProtoReflect.Descriptor instead.
 func (*NetworkTopology) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{5}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *NetworkTopology) GetNodes() []*NetworkNode {
@@ -718,7 +941,7 @@ type GetRoutesRequest struct {
 
 func (x *GetRoutesRequest) Reset() {
 	*x = GetRoutesRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[6]
+	mi := &file_containarium_v1_network_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -730,7 +953,7 @@ func (x *GetRoutesRequest) String() string {
 func (*GetRoutesRequest) ProtoMessage() {}
 
 func (x *GetRoutesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[6]
+	mi := &file_containarium_v1_network_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -743,7 +966,7 @@ func (x *GetRoutesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoutesRequest.ProtoReflect.Descriptor instead.
 func (*GetRoutesRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{6}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetRoutesRequest) GetUsername() string {
@@ -772,7 +995,7 @@ type GetRoutesResponse struct {
 
 func (x *GetRoutesResponse) Reset() {
 	*x = GetRoutesResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[7]
+	mi := &file_containarium_v1_network_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -784,7 +1007,7 @@ func (x *GetRoutesResponse) String() string {
 func (*GetRoutesResponse) ProtoMessage() {}
 
 func (x *GetRoutesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[7]
+	mi := &file_containarium_v1_network_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -797,7 +1020,7 @@ func (x *GetRoutesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoutesResponse.ProtoReflect.Descriptor instead.
 func (*GetRoutesResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{7}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetRoutesResponse) GetRoutes() []*ProxyRoute {
@@ -826,14 +1049,16 @@ type AddRouteRequest struct {
 	// Optional: Associated container name (for display purposes)
 	ContainerName string `protobuf:"bytes,4,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	// Optional: Description
-	Description   string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	Description string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	// Protocol type (HTTP or gRPC, defaults to HTTP)
+	Protocol      RouteProtocol `protobuf:"varint,6,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AddRouteRequest) Reset() {
 	*x = AddRouteRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[8]
+	mi := &file_containarium_v1_network_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -845,7 +1070,7 @@ func (x *AddRouteRequest) String() string {
 func (*AddRouteRequest) ProtoMessage() {}
 
 func (x *AddRouteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[8]
+	mi := &file_containarium_v1_network_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -858,7 +1083,7 @@ func (x *AddRouteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddRouteRequest.ProtoReflect.Descriptor instead.
 func (*AddRouteRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{8}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *AddRouteRequest) GetDomain() string {
@@ -896,6 +1121,13 @@ func (x *AddRouteRequest) GetDescription() string {
 	return ""
 }
 
+func (x *AddRouteRequest) GetProtocol() RouteProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
 type AddRouteResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The created route
@@ -908,7 +1140,7 @@ type AddRouteResponse struct {
 
 func (x *AddRouteResponse) Reset() {
 	*x = AddRouteResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[9]
+	mi := &file_containarium_v1_network_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -920,7 +1152,7 @@ func (x *AddRouteResponse) String() string {
 func (*AddRouteResponse) ProtoMessage() {}
 
 func (x *AddRouteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[9]
+	mi := &file_containarium_v1_network_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -933,7 +1165,7 @@ func (x *AddRouteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddRouteResponse.ProtoReflect.Descriptor instead.
 func (*AddRouteResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{9}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AddRouteResponse) GetRoute() *ProxyRoute {
@@ -962,14 +1194,16 @@ type UpdateRouteRequest struct {
 	// Optional: Associated container name
 	ContainerName string `protobuf:"bytes,4,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	// Optional: Description
-	Description   string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	Description string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	// Protocol type (HTTP or gRPC, defaults to HTTP)
+	Protocol      RouteProtocol `protobuf:"varint,6,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateRouteRequest) Reset() {
 	*x = UpdateRouteRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[10]
+	mi := &file_containarium_v1_network_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -981,7 +1215,7 @@ func (x *UpdateRouteRequest) String() string {
 func (*UpdateRouteRequest) ProtoMessage() {}
 
 func (x *UpdateRouteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[10]
+	mi := &file_containarium_v1_network_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -994,7 +1228,7 @@ func (x *UpdateRouteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateRouteRequest.ProtoReflect.Descriptor instead.
 func (*UpdateRouteRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{10}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *UpdateRouteRequest) GetDomain() string {
@@ -1032,6 +1266,13 @@ func (x *UpdateRouteRequest) GetDescription() string {
 	return ""
 }
 
+func (x *UpdateRouteRequest) GetProtocol() RouteProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
 type UpdateRouteResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The updated route
@@ -1044,7 +1285,7 @@ type UpdateRouteResponse struct {
 
 func (x *UpdateRouteResponse) Reset() {
 	*x = UpdateRouteResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[11]
+	mi := &file_containarium_v1_network_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1056,7 +1297,7 @@ func (x *UpdateRouteResponse) String() string {
 func (*UpdateRouteResponse) ProtoMessage() {}
 
 func (x *UpdateRouteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[11]
+	mi := &file_containarium_v1_network_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1069,7 +1310,7 @@ func (x *UpdateRouteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateRouteResponse.ProtoReflect.Descriptor instead.
 func (*UpdateRouteResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *UpdateRouteResponse) GetRoute() *ProxyRoute {
@@ -1097,7 +1338,7 @@ type DeleteRouteRequest struct {
 
 func (x *DeleteRouteRequest) Reset() {
 	*x = DeleteRouteRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[12]
+	mi := &file_containarium_v1_network_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1109,7 +1350,7 @@ func (x *DeleteRouteRequest) String() string {
 func (*DeleteRouteRequest) ProtoMessage() {}
 
 func (x *DeleteRouteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[12]
+	mi := &file_containarium_v1_network_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1122,7 +1363,7 @@ func (x *DeleteRouteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRouteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRouteRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{12}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DeleteRouteRequest) GetDomain() string {
@@ -1142,7 +1383,7 @@ type DeleteRouteResponse struct {
 
 func (x *DeleteRouteResponse) Reset() {
 	*x = DeleteRouteResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[13]
+	mi := &file_containarium_v1_network_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1154,7 +1395,7 @@ func (x *DeleteRouteResponse) String() string {
 func (*DeleteRouteResponse) ProtoMessage() {}
 
 func (x *DeleteRouteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[13]
+	mi := &file_containarium_v1_network_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1167,10 +1408,346 @@ func (x *DeleteRouteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRouteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteRouteResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{13}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeleteRouteResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// ListPassthroughRoutesRequest lists all passthrough routes
+type ListPassthroughRoutesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPassthroughRoutesRequest) Reset() {
+	*x = ListPassthroughRoutesRequest{}
+	mi := &file_containarium_v1_network_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPassthroughRoutesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPassthroughRoutesRequest) ProtoMessage() {}
+
+func (x *ListPassthroughRoutesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPassthroughRoutesRequest.ProtoReflect.Descriptor instead.
+func (*ListPassthroughRoutesRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{15}
+}
+
+type ListPassthroughRoutesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// List of passthrough routes
+	Routes []*PassthroughRoute `protobuf:"bytes,1,rep,name=routes,proto3" json:"routes,omitempty"`
+	// Total count
+	TotalCount    int32 `protobuf:"varint,2,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPassthroughRoutesResponse) Reset() {
+	*x = ListPassthroughRoutesResponse{}
+	mi := &file_containarium_v1_network_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPassthroughRoutesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPassthroughRoutesResponse) ProtoMessage() {}
+
+func (x *ListPassthroughRoutesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPassthroughRoutesResponse.ProtoReflect.Descriptor instead.
+func (*ListPassthroughRoutesResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ListPassthroughRoutesResponse) GetRoutes() []*PassthroughRoute {
+	if x != nil {
+		return x.Routes
+	}
+	return nil
+}
+
+func (x *ListPassthroughRoutesResponse) GetTotalCount() int32 {
+	if x != nil {
+		return x.TotalCount
+	}
+	return 0
+}
+
+// AddPassthroughRouteRequest adds a new passthrough route
+type AddPassthroughRouteRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// External port on the host
+	ExternalPort int32 `protobuf:"varint,1,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
+	// Target container IP address
+	TargetIp string `protobuf:"bytes,2,opt,name=target_ip,json=targetIp,proto3" json:"target_ip,omitempty"`
+	// Target port on the container
+	TargetPort int32 `protobuf:"varint,3,opt,name=target_port,json=targetPort,proto3" json:"target_port,omitempty"`
+	// Protocol: TCP or UDP (defaults to TCP)
+	Protocol RouteProtocol `protobuf:"varint,4,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
+	// Optional: Associated container name (for display)
+	ContainerName string `protobuf:"bytes,5,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
+	// Optional: Description
+	Description   string `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddPassthroughRouteRequest) Reset() {
+	*x = AddPassthroughRouteRequest{}
+	mi := &file_containarium_v1_network_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddPassthroughRouteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddPassthroughRouteRequest) ProtoMessage() {}
+
+func (x *AddPassthroughRouteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddPassthroughRouteRequest.ProtoReflect.Descriptor instead.
+func (*AddPassthroughRouteRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *AddPassthroughRouteRequest) GetExternalPort() int32 {
+	if x != nil {
+		return x.ExternalPort
+	}
+	return 0
+}
+
+func (x *AddPassthroughRouteRequest) GetTargetIp() string {
+	if x != nil {
+		return x.TargetIp
+	}
+	return ""
+}
+
+func (x *AddPassthroughRouteRequest) GetTargetPort() int32 {
+	if x != nil {
+		return x.TargetPort
+	}
+	return 0
+}
+
+func (x *AddPassthroughRouteRequest) GetProtocol() RouteProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
+func (x *AddPassthroughRouteRequest) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
+}
+
+func (x *AddPassthroughRouteRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+type AddPassthroughRouteResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The created route
+	Route *PassthroughRoute `protobuf:"bytes,1,opt,name=route,proto3" json:"route,omitempty"`
+	// Status message
+	Message       string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddPassthroughRouteResponse) Reset() {
+	*x = AddPassthroughRouteResponse{}
+	mi := &file_containarium_v1_network_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddPassthroughRouteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddPassthroughRouteResponse) ProtoMessage() {}
+
+func (x *AddPassthroughRouteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddPassthroughRouteResponse.ProtoReflect.Descriptor instead.
+func (*AddPassthroughRouteResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *AddPassthroughRouteResponse) GetRoute() *PassthroughRoute {
+	if x != nil {
+		return x.Route
+	}
+	return nil
+}
+
+func (x *AddPassthroughRouteResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// DeletePassthroughRouteRequest removes a passthrough route
+type DeletePassthroughRouteRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// External port to remove
+	ExternalPort int32 `protobuf:"varint,1,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
+	// Protocol: TCP or UDP
+	Protocol      RouteProtocol `protobuf:"varint,2,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeletePassthroughRouteRequest) Reset() {
+	*x = DeletePassthroughRouteRequest{}
+	mi := &file_containarium_v1_network_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeletePassthroughRouteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeletePassthroughRouteRequest) ProtoMessage() {}
+
+func (x *DeletePassthroughRouteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeletePassthroughRouteRequest.ProtoReflect.Descriptor instead.
+func (*DeletePassthroughRouteRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DeletePassthroughRouteRequest) GetExternalPort() int32 {
+	if x != nil {
+		return x.ExternalPort
+	}
+	return 0
+}
+
+func (x *DeletePassthroughRouteRequest) GetProtocol() RouteProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
+type DeletePassthroughRouteResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Status message
+	Message       string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeletePassthroughRouteResponse) Reset() {
+	*x = DeletePassthroughRouteResponse{}
+	mi := &file_containarium_v1_network_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeletePassthroughRouteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeletePassthroughRouteResponse) ProtoMessage() {}
+
+func (x *DeletePassthroughRouteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeletePassthroughRouteResponse.ProtoReflect.Descriptor instead.
+func (*DeletePassthroughRouteResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DeletePassthroughRouteResponse) GetMessage() string {
 	if x != nil {
 		return x.Message
 	}
@@ -1194,7 +1771,7 @@ type DNSRecord struct {
 
 func (x *DNSRecord) Reset() {
 	*x = DNSRecord{}
-	mi := &file_containarium_v1_network_proto_msgTypes[14]
+	mi := &file_containarium_v1_network_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1206,7 +1783,7 @@ func (x *DNSRecord) String() string {
 func (*DNSRecord) ProtoMessage() {}
 
 func (x *DNSRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[14]
+	mi := &file_containarium_v1_network_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1219,7 +1796,7 @@ func (x *DNSRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DNSRecord.ProtoReflect.Descriptor instead.
 func (*DNSRecord) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{14}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DNSRecord) GetType() string {
@@ -1261,7 +1838,7 @@ type ListDNSRecordsRequest struct {
 
 func (x *ListDNSRecordsRequest) Reset() {
 	*x = ListDNSRecordsRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[15]
+	mi := &file_containarium_v1_network_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1273,7 +1850,7 @@ func (x *ListDNSRecordsRequest) String() string {
 func (*ListDNSRecordsRequest) ProtoMessage() {}
 
 func (x *ListDNSRecordsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[15]
+	mi := &file_containarium_v1_network_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1286,7 +1863,7 @@ func (x *ListDNSRecordsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDNSRecordsRequest.ProtoReflect.Descriptor instead.
 func (*ListDNSRecordsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{15}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListDNSRecordsRequest) GetRecordType() string {
@@ -1310,7 +1887,7 @@ type ListDNSRecordsResponse struct {
 
 func (x *ListDNSRecordsResponse) Reset() {
 	*x = ListDNSRecordsResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[16]
+	mi := &file_containarium_v1_network_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1322,7 +1899,7 @@ func (x *ListDNSRecordsResponse) String() string {
 func (*ListDNSRecordsResponse) ProtoMessage() {}
 
 func (x *ListDNSRecordsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[16]
+	mi := &file_containarium_v1_network_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1335,7 +1912,7 @@ func (x *ListDNSRecordsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDNSRecordsResponse.ProtoReflect.Descriptor instead.
 func (*ListDNSRecordsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{16}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListDNSRecordsResponse) GetRecords() []*DNSRecord {
@@ -1370,7 +1947,7 @@ type GetContainerACLRequest struct {
 
 func (x *GetContainerACLRequest) Reset() {
 	*x = GetContainerACLRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[17]
+	mi := &file_containarium_v1_network_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1382,7 +1959,7 @@ func (x *GetContainerACLRequest) String() string {
 func (*GetContainerACLRequest) ProtoMessage() {}
 
 func (x *GetContainerACLRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[17]
+	mi := &file_containarium_v1_network_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1395,7 +1972,7 @@ func (x *GetContainerACLRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetContainerACLRequest.ProtoReflect.Descriptor instead.
 func (*GetContainerACLRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetContainerACLRequest) GetUsername() string {
@@ -1415,7 +1992,7 @@ type GetContainerACLResponse struct {
 
 func (x *GetContainerACLResponse) Reset() {
 	*x = GetContainerACLResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[18]
+	mi := &file_containarium_v1_network_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1427,7 +2004,7 @@ func (x *GetContainerACLResponse) String() string {
 func (*GetContainerACLResponse) ProtoMessage() {}
 
 func (x *GetContainerACLResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[18]
+	mi := &file_containarium_v1_network_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1440,7 +2017,7 @@ func (x *GetContainerACLResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetContainerACLResponse.ProtoReflect.Descriptor instead.
 func (*GetContainerACLResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetContainerACLResponse) GetAcl() *NetworkACL {
@@ -1467,7 +2044,7 @@ type UpdateContainerACLRequest struct {
 
 func (x *UpdateContainerACLRequest) Reset() {
 	*x = UpdateContainerACLRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[19]
+	mi := &file_containarium_v1_network_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1479,7 +2056,7 @@ func (x *UpdateContainerACLRequest) String() string {
 func (*UpdateContainerACLRequest) ProtoMessage() {}
 
 func (x *UpdateContainerACLRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[19]
+	mi := &file_containarium_v1_network_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1492,7 +2069,7 @@ func (x *UpdateContainerACLRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateContainerACLRequest.ProtoReflect.Descriptor instead.
 func (*UpdateContainerACLRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *UpdateContainerACLRequest) GetUsername() string {
@@ -1535,7 +2112,7 @@ type UpdateContainerACLResponse struct {
 
 func (x *UpdateContainerACLResponse) Reset() {
 	*x = UpdateContainerACLResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[20]
+	mi := &file_containarium_v1_network_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1547,7 +2124,7 @@ func (x *UpdateContainerACLResponse) String() string {
 func (*UpdateContainerACLResponse) ProtoMessage() {}
 
 func (x *UpdateContainerACLResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[20]
+	mi := &file_containarium_v1_network_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1560,7 +2137,7 @@ func (x *UpdateContainerACLResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateContainerACLResponse.ProtoReflect.Descriptor instead.
 func (*UpdateContainerACLResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{20}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *UpdateContainerACLResponse) GetAcl() *NetworkACL {
@@ -1588,7 +2165,7 @@ type GetNetworkTopologyRequest struct {
 
 func (x *GetNetworkTopologyRequest) Reset() {
 	*x = GetNetworkTopologyRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[21]
+	mi := &file_containarium_v1_network_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1600,7 +2177,7 @@ func (x *GetNetworkTopologyRequest) String() string {
 func (*GetNetworkTopologyRequest) ProtoMessage() {}
 
 func (x *GetNetworkTopologyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[21]
+	mi := &file_containarium_v1_network_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1613,7 +2190,7 @@ func (x *GetNetworkTopologyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkTopologyRequest.ProtoReflect.Descriptor instead.
 func (*GetNetworkTopologyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{21}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetNetworkTopologyRequest) GetIncludeStopped() bool {
@@ -1633,7 +2210,7 @@ type GetNetworkTopologyResponse struct {
 
 func (x *GetNetworkTopologyResponse) Reset() {
 	*x = GetNetworkTopologyResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[22]
+	mi := &file_containarium_v1_network_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1645,7 +2222,7 @@ func (x *GetNetworkTopologyResponse) String() string {
 func (*GetNetworkTopologyResponse) ProtoMessage() {}
 
 func (x *GetNetworkTopologyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[22]
+	mi := &file_containarium_v1_network_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1658,7 +2235,7 @@ func (x *GetNetworkTopologyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkTopologyResponse.ProtoReflect.Descriptor instead.
 func (*GetNetworkTopologyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{22}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetNetworkTopologyResponse) GetTopology() *NetworkTopology {
@@ -1677,7 +2254,7 @@ type ListACLPresetsRequest struct {
 
 func (x *ListACLPresetsRequest) Reset() {
 	*x = ListACLPresetsRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[23]
+	mi := &file_containarium_v1_network_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1689,7 +2266,7 @@ func (x *ListACLPresetsRequest) String() string {
 func (*ListACLPresetsRequest) ProtoMessage() {}
 
 func (x *ListACLPresetsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[23]
+	mi := &file_containarium_v1_network_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1702,7 +2279,7 @@ func (x *ListACLPresetsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListACLPresetsRequest.ProtoReflect.Descriptor instead.
 func (*ListACLPresetsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{23}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{30}
 }
 
 type ACLPresetInfo struct {
@@ -1723,7 +2300,7 @@ type ACLPresetInfo struct {
 
 func (x *ACLPresetInfo) Reset() {
 	*x = ACLPresetInfo{}
-	mi := &file_containarium_v1_network_proto_msgTypes[24]
+	mi := &file_containarium_v1_network_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1735,7 +2312,7 @@ func (x *ACLPresetInfo) String() string {
 func (*ACLPresetInfo) ProtoMessage() {}
 
 func (x *ACLPresetInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[24]
+	mi := &file_containarium_v1_network_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1748,7 +2325,7 @@ func (x *ACLPresetInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ACLPresetInfo.ProtoReflect.Descriptor instead.
 func (*ACLPresetInfo) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{24}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ACLPresetInfo) GetPreset() ACLPreset {
@@ -1796,7 +2373,7 @@ type ListACLPresetsResponse struct {
 
 func (x *ListACLPresetsResponse) Reset() {
 	*x = ListACLPresetsResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[25]
+	mi := &file_containarium_v1_network_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1808,7 +2385,7 @@ func (x *ListACLPresetsResponse) String() string {
 func (*ListACLPresetsResponse) ProtoMessage() {}
 
 func (x *ListACLPresetsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[25]
+	mi := &file_containarium_v1_network_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1821,7 +2398,7 @@ func (x *ListACLPresetsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListACLPresetsResponse.ProtoReflect.Descriptor instead.
 func (*ListACLPresetsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{25}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListACLPresetsResponse) GetPresets() []*ACLPresetInfo {
@@ -1853,7 +2430,7 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\ringress_rules\x18\x05 \x03(\v2\x18.containarium.v1.ACLRuleR\fingressRules\x12;\n" +
 	"\fegress_rules\x18\x06 \x03(\v2\x18.containarium.v1.ACLRuleR\vegressRules\x12\x15\n" +
 	"\x06app_id\x18\a \x01(\tR\x05appId\x12%\n" +
-	"\x0econtainer_name\x18\b \x01(\tR\rcontainerName\"\xe8\x01\n" +
+	"\x0econtainer_name\x18\b \x01(\tR\rcontainerName\"\xa4\x02\n" +
 	"\n" +
 	"ProxyRoute\x12\x1c\n" +
 	"\tsubdomain\x18\x01 \x01(\tR\tsubdomain\x12\x1f\n" +
@@ -1864,7 +2441,17 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x06active\x18\x05 \x01(\bR\x06active\x12\x15\n" +
 	"\x06app_id\x18\x06 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\a \x01(\tR\aappName\x12\x1a\n" +
-	"\busername\x18\b \x01(\tR\busername\"\x95\x01\n" +
+	"\busername\x18\b \x01(\tR\busername\x12:\n" +
+	"\bprotocol\x18\t \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\"\x92\x02\n" +
+	"\x10PassthroughRoute\x12#\n" +
+	"\rexternal_port\x18\x01 \x01(\x05R\fexternalPort\x12\x1b\n" +
+	"\ttarget_ip\x18\x02 \x01(\tR\btargetIp\x12\x1f\n" +
+	"\vtarget_port\x18\x03 \x01(\x05R\n" +
+	"targetPort\x12:\n" +
+	"\bprotocol\x18\x04 \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\x12\x16\n" +
+	"\x06active\x18\x05 \x01(\bR\x06active\x12%\n" +
+	"\x0econtainer_name\x18\x06 \x01(\tR\rcontainerName\x12 \n" +
+	"\vdescription\x18\a \x01(\tR\vdescription\"\x95\x01\n" +
 	"\vNetworkNode\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -1892,31 +2479,54 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x11GetRoutesResponse\x123\n" +
 	"\x06routes\x18\x01 \x03(\v2\x1b.containarium.v1.ProxyRouteR\x06routes\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
-	"totalCount\"\xb0\x01\n" +
+	"totalCount\"\xec\x01\n" +
 	"\x0fAddRouteRequest\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1b\n" +
 	"\ttarget_ip\x18\x02 \x01(\tR\btargetIp\x12\x1f\n" +
 	"\vtarget_port\x18\x03 \x01(\x05R\n" +
 	"targetPort\x12%\n" +
 	"\x0econtainer_name\x18\x04 \x01(\tR\rcontainerName\x12 \n" +
-	"\vdescription\x18\x05 \x01(\tR\vdescription\"_\n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\x12:\n" +
+	"\bprotocol\x18\x06 \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\"_\n" +
 	"\x10AddRouteResponse\x121\n" +
 	"\x05route\x18\x01 \x01(\v2\x1b.containarium.v1.ProxyRouteR\x05route\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xb3\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xef\x01\n" +
 	"\x12UpdateRouteRequest\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1b\n" +
 	"\ttarget_ip\x18\x02 \x01(\tR\btargetIp\x12\x1f\n" +
 	"\vtarget_port\x18\x03 \x01(\x05R\n" +
 	"targetPort\x12%\n" +
 	"\x0econtainer_name\x18\x04 \x01(\tR\rcontainerName\x12 \n" +
-	"\vdescription\x18\x05 \x01(\tR\vdescription\"b\n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\x12:\n" +
+	"\bprotocol\x18\x06 \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\"b\n" +
 	"\x13UpdateRouteResponse\x121\n" +
 	"\x05route\x18\x01 \x01(\v2\x1b.containarium.v1.ProxyRouteR\x05route\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\",\n" +
 	"\x12DeleteRouteRequest\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\"/\n" +
 	"\x13DeleteRouteResponse\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"Y\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x1e\n" +
+	"\x1cListPassthroughRoutesRequest\"{\n" +
+	"\x1dListPassthroughRoutesResponse\x129\n" +
+	"\x06routes\x18\x01 \x03(\v2!.containarium.v1.PassthroughRouteR\x06routes\x12\x1f\n" +
+	"\vtotal_count\x18\x02 \x01(\x05R\n" +
+	"totalCount\"\x84\x02\n" +
+	"\x1aAddPassthroughRouteRequest\x12#\n" +
+	"\rexternal_port\x18\x01 \x01(\x05R\fexternalPort\x12\x1b\n" +
+	"\ttarget_ip\x18\x02 \x01(\tR\btargetIp\x12\x1f\n" +
+	"\vtarget_port\x18\x03 \x01(\x05R\n" +
+	"targetPort\x12:\n" +
+	"\bprotocol\x18\x04 \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\x12%\n" +
+	"\x0econtainer_name\x18\x05 \x01(\tR\rcontainerName\x12 \n" +
+	"\vdescription\x18\x06 \x01(\tR\vdescription\"p\n" +
+	"\x1bAddPassthroughRouteResponse\x127\n" +
+	"\x05route\x18\x01 \x01(\v2!.containarium.v1.PassthroughRouteR\x05route\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x80\x01\n" +
+	"\x1dDeletePassthroughRouteRequest\x12#\n" +
+	"\rexternal_port\x18\x01 \x01(\x05R\fexternalPort\x12:\n" +
+	"\bprotocol\x18\x02 \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\":\n" +
+	"\x1eDeletePassthroughRouteResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"Y\n" +
 	"\tDNSRecord\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -1955,7 +2565,17 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x15default_ingress_rules\x18\x04 \x03(\v2\x18.containarium.v1.ACLRuleR\x13defaultIngressRules\x12J\n" +
 	"\x14default_egress_rules\x18\x05 \x03(\v2\x18.containarium.v1.ACLRuleR\x12defaultEgressRules\"R\n" +
 	"\x16ListACLPresetsResponse\x128\n" +
-	"\apresets\x18\x01 \x03(\v2\x1e.containarium.v1.ACLPresetInfoR\apresets*i\n" +
+	"\apresets\x18\x01 \x03(\v2\x1e.containarium.v1.ACLPresetInfoR\apresets*Y\n" +
+	"\tRouteType\x12\x1a\n" +
+	"\x16ROUTE_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10ROUTE_TYPE_PROXY\x10\x01\x12\x1a\n" +
+	"\x16ROUTE_TYPE_PASSTHROUGH\x10\x02*\x91\x01\n" +
+	"\rRouteProtocol\x12\x1e\n" +
+	"\x1aROUTE_PROTOCOL_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13ROUTE_PROTOCOL_HTTP\x10\x01\x12\x17\n" +
+	"\x13ROUTE_PROTOCOL_GRPC\x10\x02\x12\x16\n" +
+	"\x12ROUTE_PROTOCOL_TCP\x10\x03\x12\x16\n" +
+	"\x12ROUTE_PROTOCOL_UDP\x10\x04*i\n" +
 	"\tACLAction\x12\x1a\n" +
 	"\x16ACL_ACTION_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ACL_ACTION_ALLOW\x10\x01\x12\x13\n" +
@@ -1966,7 +2586,7 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x19ACL_PRESET_FULL_ISOLATION\x10\x01\x12\x18\n" +
 	"\x14ACL_PRESET_HTTP_ONLY\x10\x02\x12\x19\n" +
 	"\x15ACL_PRESET_PERMISSIVE\x10\x03\x12\x15\n" +
-	"\x11ACL_PRESET_CUSTOM\x10\x042\xf8\x11\n" +
+	"\x11ACL_PRESET_CUSTOM\x10\x042\xb0\x19\n" +
 	"\x0eNetworkService\x12\xdd\x01\n" +
 	"\tGetRoutes\x12!.containarium.v1.GetRoutesRequest\x1a\".containarium.v1.GetRoutesResponse\"\x88\x01\x92Ak\n" +
 	"\aNetwork\x12\x11List proxy routes\x1aMReturns all DNS/domain to container mappings configured in the reverse proxy.\x82\xd3\xe4\x93\x02\x14\x12\x12/v1/network/routes\x12\xd0\x01\n" +
@@ -1977,7 +2597,13 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\vDeleteRoute\x12#.containarium.v1.DeleteRouteRequest\x1a$.containarium.v1.DeleteRouteResponse\"\x86\x01\x92A`\n" +
 	"\aNetwork\x12\x12Delete proxy route\x1aARemoves a DNS/domain to container mapping from the reverse proxy.\x82\xd3\xe4\x93\x02\x1d*\x1b/v1/network/routes/{domain}\x12\x97\x02\n" +
 	"\x0eListDNSRecords\x12&.containarium.v1.ListDNSRecordsRequest\x1a'.containarium.v1.ListDNSRecordsResponse\"\xb3\x01\x92A\x90\x01\n" +
-	"\aNetwork\x12\x10List DNS records\x1asReturns DNS records configured for the base domain. Useful for selecting available subdomains when creating routes.\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/network/dns-records\x12\x8a\x02\n" +
+	"\aNetwork\x12\x10List DNS records\x1asReturns DNS records configured for the base domain. Useful for selecting available subdomains when creating routes.\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/network/dns-records\x12\xc4\x02\n" +
+	"\x15ListPassthroughRoutes\x12-.containarium.v1.ListPassthroughRoutesRequest\x1a..containarium.v1.ListPassthroughRoutesResponse\"\xcb\x01\x92A\xa8\x01\n" +
+	"\aNetwork\x12\x17List passthrough routes\x1a\x83\x01Returns all TCP/UDP port forwarding rules configured via iptables. These routes provide direct passthrough without TLS termination.\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/network/passthrough\x12\xe3\x02\n" +
+	"\x13AddPassthroughRoute\x12+.containarium.v1.AddPassthroughRouteRequest\x1a,.containarium.v1.AddPassthroughRouteResponse\"\xf0\x01\x92A\xca\x01\n" +
+	"\aNetwork\x12\x15Add passthrough route\x1a\xa7\x01Creates a new TCP/UDP port forwarding rule via iptables. Traffic is forwarded directly to the container without TLS termination, suitable for mTLS or custom protocols.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/network/passthrough\x12\x88\x02\n" +
+	"\x16DeletePassthroughRoute\x12..containarium.v1.DeletePassthroughRouteRequest\x1a/.containarium.v1.DeletePassthroughRouteResponse\"\x8c\x01\x92AZ\n" +
+	"\aNetwork\x12\x18Delete passthrough route\x1a5Removes a TCP/UDP port forwarding rule from iptables.\x82\xd3\xe4\x93\x02)*'/v1/network/passthrough/{external_port}\x12\x8a\x02\n" +
 	"\x0fGetContainerACL\x12'.containarium.v1.GetContainerACLRequest\x1a(.containarium.v1.GetContainerACLResponse\"\xa3\x01\x92A{\n" +
 	"\aNetwork\x12\x1cGet container firewall rules\x1aRReturns the network ACL (firewall rules) configured for a user's DevBox container.\x82\xd3\xe4\x93\x02\x1f\x12\x1d/v1/containers/{username}/acl\x12\xb7\x02\n" +
 	"\x12UpdateContainerACL\x12*.containarium.v1.UpdateContainerACLRequest\x1a+.containarium.v1.UpdateContainerACLResponse\"\xc7\x01\x92A\x9b\x01\n" +
@@ -1999,82 +2625,105 @@ func file_containarium_v1_network_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_network_proto_rawDescData
 }
 
-var file_containarium_v1_network_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_containarium_v1_network_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_containarium_v1_network_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_containarium_v1_network_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_containarium_v1_network_proto_goTypes = []any{
-	(ACLAction)(0),                     // 0: containarium.v1.ACLAction
-	(ACLPreset)(0),                     // 1: containarium.v1.ACLPreset
-	(*ACLRule)(nil),                    // 2: containarium.v1.ACLRule
-	(*NetworkACL)(nil),                 // 3: containarium.v1.NetworkACL
-	(*ProxyRoute)(nil),                 // 4: containarium.v1.ProxyRoute
-	(*NetworkNode)(nil),                // 5: containarium.v1.NetworkNode
-	(*NetworkEdge)(nil),                // 6: containarium.v1.NetworkEdge
-	(*NetworkTopology)(nil),            // 7: containarium.v1.NetworkTopology
-	(*GetRoutesRequest)(nil),           // 8: containarium.v1.GetRoutesRequest
-	(*GetRoutesResponse)(nil),          // 9: containarium.v1.GetRoutesResponse
-	(*AddRouteRequest)(nil),            // 10: containarium.v1.AddRouteRequest
-	(*AddRouteResponse)(nil),           // 11: containarium.v1.AddRouteResponse
-	(*UpdateRouteRequest)(nil),         // 12: containarium.v1.UpdateRouteRequest
-	(*UpdateRouteResponse)(nil),        // 13: containarium.v1.UpdateRouteResponse
-	(*DeleteRouteRequest)(nil),         // 14: containarium.v1.DeleteRouteRequest
-	(*DeleteRouteResponse)(nil),        // 15: containarium.v1.DeleteRouteResponse
-	(*DNSRecord)(nil),                  // 16: containarium.v1.DNSRecord
-	(*ListDNSRecordsRequest)(nil),      // 17: containarium.v1.ListDNSRecordsRequest
-	(*ListDNSRecordsResponse)(nil),     // 18: containarium.v1.ListDNSRecordsResponse
-	(*GetContainerACLRequest)(nil),     // 19: containarium.v1.GetContainerACLRequest
-	(*GetContainerACLResponse)(nil),    // 20: containarium.v1.GetContainerACLResponse
-	(*UpdateContainerACLRequest)(nil),  // 21: containarium.v1.UpdateContainerACLRequest
-	(*UpdateContainerACLResponse)(nil), // 22: containarium.v1.UpdateContainerACLResponse
-	(*GetNetworkTopologyRequest)(nil),  // 23: containarium.v1.GetNetworkTopologyRequest
-	(*GetNetworkTopologyResponse)(nil), // 24: containarium.v1.GetNetworkTopologyResponse
-	(*ListACLPresetsRequest)(nil),      // 25: containarium.v1.ListACLPresetsRequest
-	(*ACLPresetInfo)(nil),              // 26: containarium.v1.ACLPresetInfo
-	(*ListACLPresetsResponse)(nil),     // 27: containarium.v1.ListACLPresetsResponse
+	(RouteType)(0),                         // 0: containarium.v1.RouteType
+	(RouteProtocol)(0),                     // 1: containarium.v1.RouteProtocol
+	(ACLAction)(0),                         // 2: containarium.v1.ACLAction
+	(ACLPreset)(0),                         // 3: containarium.v1.ACLPreset
+	(*ACLRule)(nil),                        // 4: containarium.v1.ACLRule
+	(*NetworkACL)(nil),                     // 5: containarium.v1.NetworkACL
+	(*ProxyRoute)(nil),                     // 6: containarium.v1.ProxyRoute
+	(*PassthroughRoute)(nil),               // 7: containarium.v1.PassthroughRoute
+	(*NetworkNode)(nil),                    // 8: containarium.v1.NetworkNode
+	(*NetworkEdge)(nil),                    // 9: containarium.v1.NetworkEdge
+	(*NetworkTopology)(nil),                // 10: containarium.v1.NetworkTopology
+	(*GetRoutesRequest)(nil),               // 11: containarium.v1.GetRoutesRequest
+	(*GetRoutesResponse)(nil),              // 12: containarium.v1.GetRoutesResponse
+	(*AddRouteRequest)(nil),                // 13: containarium.v1.AddRouteRequest
+	(*AddRouteResponse)(nil),               // 14: containarium.v1.AddRouteResponse
+	(*UpdateRouteRequest)(nil),             // 15: containarium.v1.UpdateRouteRequest
+	(*UpdateRouteResponse)(nil),            // 16: containarium.v1.UpdateRouteResponse
+	(*DeleteRouteRequest)(nil),             // 17: containarium.v1.DeleteRouteRequest
+	(*DeleteRouteResponse)(nil),            // 18: containarium.v1.DeleteRouteResponse
+	(*ListPassthroughRoutesRequest)(nil),   // 19: containarium.v1.ListPassthroughRoutesRequest
+	(*ListPassthroughRoutesResponse)(nil),  // 20: containarium.v1.ListPassthroughRoutesResponse
+	(*AddPassthroughRouteRequest)(nil),     // 21: containarium.v1.AddPassthroughRouteRequest
+	(*AddPassthroughRouteResponse)(nil),    // 22: containarium.v1.AddPassthroughRouteResponse
+	(*DeletePassthroughRouteRequest)(nil),  // 23: containarium.v1.DeletePassthroughRouteRequest
+	(*DeletePassthroughRouteResponse)(nil), // 24: containarium.v1.DeletePassthroughRouteResponse
+	(*DNSRecord)(nil),                      // 25: containarium.v1.DNSRecord
+	(*ListDNSRecordsRequest)(nil),          // 26: containarium.v1.ListDNSRecordsRequest
+	(*ListDNSRecordsResponse)(nil),         // 27: containarium.v1.ListDNSRecordsResponse
+	(*GetContainerACLRequest)(nil),         // 28: containarium.v1.GetContainerACLRequest
+	(*GetContainerACLResponse)(nil),        // 29: containarium.v1.GetContainerACLResponse
+	(*UpdateContainerACLRequest)(nil),      // 30: containarium.v1.UpdateContainerACLRequest
+	(*UpdateContainerACLResponse)(nil),     // 31: containarium.v1.UpdateContainerACLResponse
+	(*GetNetworkTopologyRequest)(nil),      // 32: containarium.v1.GetNetworkTopologyRequest
+	(*GetNetworkTopologyResponse)(nil),     // 33: containarium.v1.GetNetworkTopologyResponse
+	(*ListACLPresetsRequest)(nil),          // 34: containarium.v1.ListACLPresetsRequest
+	(*ACLPresetInfo)(nil),                  // 35: containarium.v1.ACLPresetInfo
+	(*ListACLPresetsResponse)(nil),         // 36: containarium.v1.ListACLPresetsResponse
 }
 var file_containarium_v1_network_proto_depIdxs = []int32{
-	0,  // 0: containarium.v1.ACLRule.action:type_name -> containarium.v1.ACLAction
-	1,  // 1: containarium.v1.NetworkACL.preset:type_name -> containarium.v1.ACLPreset
-	2,  // 2: containarium.v1.NetworkACL.ingress_rules:type_name -> containarium.v1.ACLRule
-	2,  // 3: containarium.v1.NetworkACL.egress_rules:type_name -> containarium.v1.ACLRule
-	5,  // 4: containarium.v1.NetworkTopology.nodes:type_name -> containarium.v1.NetworkNode
-	6,  // 5: containarium.v1.NetworkTopology.edges:type_name -> containarium.v1.NetworkEdge
-	4,  // 6: containarium.v1.GetRoutesResponse.routes:type_name -> containarium.v1.ProxyRoute
-	4,  // 7: containarium.v1.AddRouteResponse.route:type_name -> containarium.v1.ProxyRoute
-	4,  // 8: containarium.v1.UpdateRouteResponse.route:type_name -> containarium.v1.ProxyRoute
-	16, // 9: containarium.v1.ListDNSRecordsResponse.records:type_name -> containarium.v1.DNSRecord
-	3,  // 10: containarium.v1.GetContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
-	1,  // 11: containarium.v1.UpdateContainerACLRequest.preset:type_name -> containarium.v1.ACLPreset
-	2,  // 12: containarium.v1.UpdateContainerACLRequest.ingress_rules:type_name -> containarium.v1.ACLRule
-	2,  // 13: containarium.v1.UpdateContainerACLRequest.egress_rules:type_name -> containarium.v1.ACLRule
-	3,  // 14: containarium.v1.UpdateContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
-	7,  // 15: containarium.v1.GetNetworkTopologyResponse.topology:type_name -> containarium.v1.NetworkTopology
-	1,  // 16: containarium.v1.ACLPresetInfo.preset:type_name -> containarium.v1.ACLPreset
-	2,  // 17: containarium.v1.ACLPresetInfo.default_ingress_rules:type_name -> containarium.v1.ACLRule
-	2,  // 18: containarium.v1.ACLPresetInfo.default_egress_rules:type_name -> containarium.v1.ACLRule
-	26, // 19: containarium.v1.ListACLPresetsResponse.presets:type_name -> containarium.v1.ACLPresetInfo
-	8,  // 20: containarium.v1.NetworkService.GetRoutes:input_type -> containarium.v1.GetRoutesRequest
-	10, // 21: containarium.v1.NetworkService.AddRoute:input_type -> containarium.v1.AddRouteRequest
-	12, // 22: containarium.v1.NetworkService.UpdateRoute:input_type -> containarium.v1.UpdateRouteRequest
-	14, // 23: containarium.v1.NetworkService.DeleteRoute:input_type -> containarium.v1.DeleteRouteRequest
-	17, // 24: containarium.v1.NetworkService.ListDNSRecords:input_type -> containarium.v1.ListDNSRecordsRequest
-	19, // 25: containarium.v1.NetworkService.GetContainerACL:input_type -> containarium.v1.GetContainerACLRequest
-	21, // 26: containarium.v1.NetworkService.UpdateContainerACL:input_type -> containarium.v1.UpdateContainerACLRequest
-	23, // 27: containarium.v1.NetworkService.GetNetworkTopology:input_type -> containarium.v1.GetNetworkTopologyRequest
-	25, // 28: containarium.v1.NetworkService.ListACLPresets:input_type -> containarium.v1.ListACLPresetsRequest
-	9,  // 29: containarium.v1.NetworkService.GetRoutes:output_type -> containarium.v1.GetRoutesResponse
-	11, // 30: containarium.v1.NetworkService.AddRoute:output_type -> containarium.v1.AddRouteResponse
-	13, // 31: containarium.v1.NetworkService.UpdateRoute:output_type -> containarium.v1.UpdateRouteResponse
-	15, // 32: containarium.v1.NetworkService.DeleteRoute:output_type -> containarium.v1.DeleteRouteResponse
-	18, // 33: containarium.v1.NetworkService.ListDNSRecords:output_type -> containarium.v1.ListDNSRecordsResponse
-	20, // 34: containarium.v1.NetworkService.GetContainerACL:output_type -> containarium.v1.GetContainerACLResponse
-	22, // 35: containarium.v1.NetworkService.UpdateContainerACL:output_type -> containarium.v1.UpdateContainerACLResponse
-	24, // 36: containarium.v1.NetworkService.GetNetworkTopology:output_type -> containarium.v1.GetNetworkTopologyResponse
-	27, // 37: containarium.v1.NetworkService.ListACLPresets:output_type -> containarium.v1.ListACLPresetsResponse
-	29, // [29:38] is the sub-list for method output_type
-	20, // [20:29] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	2,  // 0: containarium.v1.ACLRule.action:type_name -> containarium.v1.ACLAction
+	3,  // 1: containarium.v1.NetworkACL.preset:type_name -> containarium.v1.ACLPreset
+	4,  // 2: containarium.v1.NetworkACL.ingress_rules:type_name -> containarium.v1.ACLRule
+	4,  // 3: containarium.v1.NetworkACL.egress_rules:type_name -> containarium.v1.ACLRule
+	1,  // 4: containarium.v1.ProxyRoute.protocol:type_name -> containarium.v1.RouteProtocol
+	1,  // 5: containarium.v1.PassthroughRoute.protocol:type_name -> containarium.v1.RouteProtocol
+	8,  // 6: containarium.v1.NetworkTopology.nodes:type_name -> containarium.v1.NetworkNode
+	9,  // 7: containarium.v1.NetworkTopology.edges:type_name -> containarium.v1.NetworkEdge
+	6,  // 8: containarium.v1.GetRoutesResponse.routes:type_name -> containarium.v1.ProxyRoute
+	1,  // 9: containarium.v1.AddRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
+	6,  // 10: containarium.v1.AddRouteResponse.route:type_name -> containarium.v1.ProxyRoute
+	1,  // 11: containarium.v1.UpdateRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
+	6,  // 12: containarium.v1.UpdateRouteResponse.route:type_name -> containarium.v1.ProxyRoute
+	7,  // 13: containarium.v1.ListPassthroughRoutesResponse.routes:type_name -> containarium.v1.PassthroughRoute
+	1,  // 14: containarium.v1.AddPassthroughRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
+	7,  // 15: containarium.v1.AddPassthroughRouteResponse.route:type_name -> containarium.v1.PassthroughRoute
+	1,  // 16: containarium.v1.DeletePassthroughRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
+	25, // 17: containarium.v1.ListDNSRecordsResponse.records:type_name -> containarium.v1.DNSRecord
+	5,  // 18: containarium.v1.GetContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
+	3,  // 19: containarium.v1.UpdateContainerACLRequest.preset:type_name -> containarium.v1.ACLPreset
+	4,  // 20: containarium.v1.UpdateContainerACLRequest.ingress_rules:type_name -> containarium.v1.ACLRule
+	4,  // 21: containarium.v1.UpdateContainerACLRequest.egress_rules:type_name -> containarium.v1.ACLRule
+	5,  // 22: containarium.v1.UpdateContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
+	10, // 23: containarium.v1.GetNetworkTopologyResponse.topology:type_name -> containarium.v1.NetworkTopology
+	3,  // 24: containarium.v1.ACLPresetInfo.preset:type_name -> containarium.v1.ACLPreset
+	4,  // 25: containarium.v1.ACLPresetInfo.default_ingress_rules:type_name -> containarium.v1.ACLRule
+	4,  // 26: containarium.v1.ACLPresetInfo.default_egress_rules:type_name -> containarium.v1.ACLRule
+	35, // 27: containarium.v1.ListACLPresetsResponse.presets:type_name -> containarium.v1.ACLPresetInfo
+	11, // 28: containarium.v1.NetworkService.GetRoutes:input_type -> containarium.v1.GetRoutesRequest
+	13, // 29: containarium.v1.NetworkService.AddRoute:input_type -> containarium.v1.AddRouteRequest
+	15, // 30: containarium.v1.NetworkService.UpdateRoute:input_type -> containarium.v1.UpdateRouteRequest
+	17, // 31: containarium.v1.NetworkService.DeleteRoute:input_type -> containarium.v1.DeleteRouteRequest
+	26, // 32: containarium.v1.NetworkService.ListDNSRecords:input_type -> containarium.v1.ListDNSRecordsRequest
+	19, // 33: containarium.v1.NetworkService.ListPassthroughRoutes:input_type -> containarium.v1.ListPassthroughRoutesRequest
+	21, // 34: containarium.v1.NetworkService.AddPassthroughRoute:input_type -> containarium.v1.AddPassthroughRouteRequest
+	23, // 35: containarium.v1.NetworkService.DeletePassthroughRoute:input_type -> containarium.v1.DeletePassthroughRouteRequest
+	28, // 36: containarium.v1.NetworkService.GetContainerACL:input_type -> containarium.v1.GetContainerACLRequest
+	30, // 37: containarium.v1.NetworkService.UpdateContainerACL:input_type -> containarium.v1.UpdateContainerACLRequest
+	32, // 38: containarium.v1.NetworkService.GetNetworkTopology:input_type -> containarium.v1.GetNetworkTopologyRequest
+	34, // 39: containarium.v1.NetworkService.ListACLPresets:input_type -> containarium.v1.ListACLPresetsRequest
+	12, // 40: containarium.v1.NetworkService.GetRoutes:output_type -> containarium.v1.GetRoutesResponse
+	14, // 41: containarium.v1.NetworkService.AddRoute:output_type -> containarium.v1.AddRouteResponse
+	16, // 42: containarium.v1.NetworkService.UpdateRoute:output_type -> containarium.v1.UpdateRouteResponse
+	18, // 43: containarium.v1.NetworkService.DeleteRoute:output_type -> containarium.v1.DeleteRouteResponse
+	27, // 44: containarium.v1.NetworkService.ListDNSRecords:output_type -> containarium.v1.ListDNSRecordsResponse
+	20, // 45: containarium.v1.NetworkService.ListPassthroughRoutes:output_type -> containarium.v1.ListPassthroughRoutesResponse
+	22, // 46: containarium.v1.NetworkService.AddPassthroughRoute:output_type -> containarium.v1.AddPassthroughRouteResponse
+	24, // 47: containarium.v1.NetworkService.DeletePassthroughRoute:output_type -> containarium.v1.DeletePassthroughRouteResponse
+	29, // 48: containarium.v1.NetworkService.GetContainerACL:output_type -> containarium.v1.GetContainerACLResponse
+	31, // 49: containarium.v1.NetworkService.UpdateContainerACL:output_type -> containarium.v1.UpdateContainerACLResponse
+	33, // 50: containarium.v1.NetworkService.GetNetworkTopology:output_type -> containarium.v1.GetNetworkTopologyResponse
+	36, // 51: containarium.v1.NetworkService.ListACLPresets:output_type -> containarium.v1.ListACLPresetsResponse
+	40, // [40:52] is the sub-list for method output_type
+	28, // [28:40] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_network_proto_init() }
@@ -2087,8 +2736,8 @@ func file_containarium_v1_network_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_network_proto_rawDesc), len(file_containarium_v1_network_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   26,
+			NumEnums:      4,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

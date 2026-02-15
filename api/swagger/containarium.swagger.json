@@ -1255,6 +1255,111 @@
         ]
       }
     },
+    "/v1/network/passthrough": {
+      "get": {
+        "summary": "List passthrough routes",
+        "description": "Returns all TCP/UDP port forwarding rules configured via iptables. These routes provide direct passthrough without TLS termination.",
+        "operationId": "NetworkService_ListPassthroughRoutes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListPassthroughRoutesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Network"
+        ]
+      },
+      "post": {
+        "summary": "Add passthrough route",
+        "description": "Creates a new TCP/UDP port forwarding rule via iptables. Traffic is forwarded directly to the container without TLS termination, suitable for mTLS or custom protocols.",
+        "operationId": "NetworkService_AddPassthroughRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AddPassthroughRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AddPassthroughRouteRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/v1/network/passthrough/{externalPort}": {
+      "delete": {
+        "summary": "Delete passthrough route",
+        "description": "Removes a TCP/UDP port forwarding rule from iptables.",
+        "operationId": "NetworkService_DeletePassthroughRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeletePassthroughRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "externalPort",
+            "description": "External port to remove",
+            "in": "path",
+            "required": true,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "protocol",
+            "description": "Protocol: TCP or UDP\n\n - ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "ROUTE_PROTOCOL_UNSPECIFIED",
+              "ROUTE_PROTOCOL_HTTP",
+              "ROUTE_PROTOCOL_GRPC",
+              "ROUTE_PROTOCOL_TCP",
+              "ROUTE_PROTOCOL_UDP"
+            ],
+            "default": "ROUTE_PROTOCOL_UNSPECIFIED"
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
     "/v1/network/routes": {
       "get": {
         "summary": "List proxy routes",
@@ -1617,6 +1722,51 @@
       },
       "title": "ACLRule represents a single firewall rule"
     },
+    "AddPassthroughRouteRequest": {
+      "type": "object",
+      "properties": {
+        "externalPort": {
+          "type": "integer",
+          "format": "int32",
+          "title": "External port on the host"
+        },
+        "targetIp": {
+          "type": "string",
+          "title": "Target container IP address"
+        },
+        "targetPort": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Target port on the container"
+        },
+        "protocol": {
+          "$ref": "#/definitions/RouteProtocol",
+          "title": "Protocol: TCP or UDP (defaults to TCP)"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Optional: Associated container name (for display)"
+        },
+        "description": {
+          "type": "string",
+          "title": "Optional: Description"
+        }
+      },
+      "title": "AddPassthroughRouteRequest adds a new passthrough route"
+    },
+    "AddPassthroughRouteResponse": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "$ref": "#/definitions/PassthroughRoute",
+          "title": "The created route"
+        },
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        }
+      }
+    },
     "AddRouteRequest": {
       "type": "object",
       "properties": {
@@ -1640,6 +1790,10 @@
         "description": {
           "type": "string",
           "title": "Optional: Description"
+        },
+        "protocol": {
+          "$ref": "#/definitions/RouteProtocol",
+          "title": "Protocol type (HTTP or gRPC, defaults to HTTP)"
         }
       },
       "title": "AddRouteRequest adds a new proxy route"
@@ -2249,6 +2403,15 @@
       },
       "title": "DeleteContainerResponse is the response from deleting a container"
     },
+    "DeletePassthroughRouteResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        }
+      }
+    },
     "DeleteRouteResponse": {
       "type": "object",
       "properties": {
@@ -2703,6 +2866,24 @@
         }
       }
     },
+    "ListPassthroughRoutesResponse": {
+      "type": "object",
+      "properties": {
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PassthroughRoute"
+          },
+          "title": "List of passthrough routes"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count"
+        }
+      }
+    },
     "MetricsEvent": {
       "type": "object",
       "properties": {
@@ -2871,6 +3052,42 @@
       },
       "title": "NetworkTopology represents the complete network visualization"
     },
+    "PassthroughRoute": {
+      "type": "object",
+      "properties": {
+        "externalPort": {
+          "type": "integer",
+          "format": "int32",
+          "title": "External port on the host"
+        },
+        "targetIp": {
+          "type": "string",
+          "title": "Target container IP address"
+        },
+        "targetPort": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Target port on the container"
+        },
+        "protocol": {
+          "$ref": "#/definitions/RouteProtocol",
+          "title": "Protocol: TCP or UDP"
+        },
+        "active": {
+          "type": "boolean",
+          "title": "Whether the route is active"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Associated container name (for display)"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description"
+        }
+      },
+      "title": "PassthroughRoute represents a direct TCP/UDP port forwarding rule"
+    },
     "Protocol": {
       "type": "string",
       "enum": [
@@ -2918,6 +3135,10 @@
         "username": {
           "type": "string",
           "title": "Owner username"
+        },
+        "protocol": {
+          "$ref": "#/definitions/RouteProtocol",
+          "title": "Protocol type (HTTP or gRPC)"
         }
       },
       "title": "ProxyRoute represents a DNS/domain to container mapping"
@@ -3013,6 +3234,19 @@
         }
       },
       "title": "RouteEvent contains route-specific event data"
+    },
+    "RouteProtocol": {
+      "type": "string",
+      "enum": [
+        "ROUTE_PROTOCOL_UNSPECIFIED",
+        "ROUTE_PROTOCOL_HTTP",
+        "ROUTE_PROTOCOL_GRPC",
+        "ROUTE_PROTOCOL_TCP",
+        "ROUTE_PROTOCOL_UDP"
+      ],
+      "default": "ROUTE_PROTOCOL_UNSPECIFIED",
+      "description": "- ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes",
+      "title": "RouteProtocol represents the protocol type for a route"
     },
     "StartAppBody": {
       "type": "object",
@@ -3335,6 +3569,10 @@
         "description": {
           "type": "string",
           "title": "Optional: Description"
+        },
+        "protocol": {
+          "$ref": "#/definitions/RouteProtocol",
+          "title": "Protocol type (HTTP or gRPC, defaults to HTTP)"
         }
       },
       "title": "UpdateRouteRequest updates an existing proxy route"

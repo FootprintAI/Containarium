@@ -30,6 +30,24 @@ export type ACLAction =
   | 'ACL_ACTION_REJECT';
 
 /**
+ * Route type enum
+ */
+export type RouteType =
+  | 'ROUTE_TYPE_UNSPECIFIED'
+  | 'ROUTE_TYPE_PROXY'
+  | 'ROUTE_TYPE_PASSTHROUGH';
+
+/**
+ * Route protocol enum
+ */
+export type RouteProtocol =
+  | 'ROUTE_PROTOCOL_UNSPECIFIED'
+  | 'ROUTE_PROTOCOL_HTTP'
+  | 'ROUTE_PROTOCOL_GRPC'
+  | 'ROUTE_PROTOCOL_TCP'
+  | 'ROUTE_PROTOCOL_UDP';
+
+/**
  * App resources
  */
 export interface AppResources {
@@ -50,6 +68,7 @@ export interface ProxyRoute {
   appId?: string;
   appName?: string;
   username?: string;
+  protocol?: RouteProtocol;
 }
 
 /**
@@ -60,6 +79,19 @@ export interface DNSRecord {
   name: string;
   data: string;
   ttl: number;
+}
+
+/**
+ * Passthrough route (TCP/UDP port forwarding)
+ */
+export interface PassthroughRoute {
+  externalPort: number;
+  targetIp: string;
+  targetPort: number;
+  protocol: RouteProtocol;
+  active: boolean;
+  containerName?: string;
+  description?: string;
 }
 
 /**
@@ -276,5 +308,51 @@ export function getACLActionDisplay(action: ACLAction): { label: string; color: 
       return { label: 'Reject', color: 'warning' };
     default:
       return { label: 'Unknown', color: 'warning' };
+  }
+}
+
+/**
+ * Helper function to get route protocol name
+ */
+export function getRouteProtocolName(protocol: RouteProtocol | undefined): string {
+  switch (protocol) {
+    case 'ROUTE_PROTOCOL_GRPC':
+      return 'gRPC';
+    case 'ROUTE_PROTOCOL_HTTP':
+      return 'HTTP';
+    case 'ROUTE_PROTOCOL_TCP':
+      return 'TCP';
+    case 'ROUTE_PROTOCOL_UDP':
+      return 'UDP';
+    default:
+      return 'HTTP';
+  }
+}
+
+/**
+ * Helper function to check if route is gRPC
+ */
+export function isGRPCRoute(protocol: RouteProtocol | undefined): boolean {
+  return protocol === 'ROUTE_PROTOCOL_GRPC';
+}
+
+/**
+ * Helper function to check if route is passthrough (TCP/UDP)
+ */
+export function isPassthroughProtocol(protocol: RouteProtocol | undefined): boolean {
+  return protocol === 'ROUTE_PROTOCOL_TCP' || protocol === 'ROUTE_PROTOCOL_UDP';
+}
+
+/**
+ * Helper function to get route type name
+ */
+export function getRouteTypeName(type: RouteType | undefined): string {
+  switch (type) {
+    case 'ROUTE_TYPE_PROXY':
+      return 'Proxy';
+    case 'ROUTE_TYPE_PASSTHROUGH':
+      return 'Passthrough';
+    default:
+      return 'Proxy';
   }
 }

@@ -1,7 +1,7 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerResponse, ListContainersResponse, MetricsResponse, SystemInfo } from '@/src/types/container';
 import { Server } from '@/src/types/server';
-import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord } from '@/src/types/app';
+import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute } from '@/src/types/app';
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
 
 /**
@@ -348,12 +348,14 @@ export class ContaineriumClient {
 
   /**
    * Add a new proxy route
+   * @param protocol - Route protocol: 'ROUTE_PROTOCOL_HTTP' (default) or 'ROUTE_PROTOCOL_GRPC'
    */
-  async addRoute(domain: string, targetIp: string, targetPort: number): Promise<ProxyRoute> {
+  async addRoute(domain: string, targetIp: string, targetPort: number, protocol?: string): Promise<ProxyRoute> {
     const response = await this.client.post<{ route?: ProxyRoute }>('/network/routes', {
       domain,
       target_ip: targetIp,
       target_port: targetPort,
+      protocol: protocol || 'ROUTE_PROTOCOL_HTTP',
     });
     return response.data.route || {
       subdomain: domain,
@@ -361,6 +363,7 @@ export class ContaineriumClient {
       containerIp: targetIp,
       port: targetPort,
       active: true,
+      protocol: protocol as any || 'ROUTE_PROTOCOL_HTTP',
     };
   }
 
@@ -369,6 +372,70 @@ export class ContaineriumClient {
    */
   async deleteRoute(domain: string): Promise<void> {
     await this.client.delete(`/network/routes/${encodeURIComponent(domain)}`);
+  }
+
+  /**
+   * Get passthrough routes (TCP/UDP port forwarding)
+   */
+  async getPassthroughRoutes(): Promise<PassthroughRoute[]> {
+    const response = await this.client.get<{ routes?: PassthroughRoute[] }>('/network/passthrough');
+    return (response.data.routes || []).map(r => ({
+      externalPort: r.externalPort || (r as any).external_port,
+      targetIp: r.targetIp || (r as any).target_ip,
+      targetPort: r.targetPort || (r as any).target_port,
+      protocol: r.protocol,
+      active: r.active,
+      containerName: r.containerName || (r as any).container_name,
+      description: r.description,
+    }));
+  }
+
+  /**
+   * Add a passthrough route (TCP/UDP port forwarding)
+   */
+  async addPassthroughRoute(
+    externalPort: number,
+    targetIp: string,
+    targetPort: number,
+    protocol: string = 'ROUTE_PROTOCOL_TCP',
+    containerName?: string,
+    description?: string
+  ): Promise<PassthroughRoute> {
+    const response = await this.client.post<{ route?: PassthroughRoute }>('/network/passthrough', {
+      external_port: externalPort,
+      target_ip: targetIp,
+      target_port: targetPort,
+      protocol,
+      container_name: containerName,
+      description,
+    });
+    const r = response.data.route;
+    return r ? {
+      externalPort: r.externalPort || (r as any).external_port,
+      targetIp: r.targetIp || (r as any).target_ip,
+      targetPort: r.targetPort || (r as any).target_port,
+      protocol: r.protocol,
+      active: r.active,
+      containerName: r.containerName || (r as any).container_name,
+      description: r.description,
+    } : {
+      externalPort,
+      targetIp,
+      targetPort,
+      protocol: protocol as any,
+      active: true,
+      containerName,
+      description,
+    };
+  }
+
+  /**
+   * Delete a passthrough route
+   */
+  async deletePassthroughRoute(externalPort: number, protocol: string = 'ROUTE_PROTOCOL_TCP'): Promise<void> {
+    await this.client.delete(`/network/passthrough/${externalPort}`, {
+      params: { protocol },
+    });
   }
 
   /**

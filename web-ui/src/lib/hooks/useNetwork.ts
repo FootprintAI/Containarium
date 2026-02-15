@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react';
 import useSWR from 'swr';
-import { NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord } from '@/src/types/app';
+import { NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, RouteProtocol, PassthroughRoute } from '@/src/types/app';
 import { Server } from '@/src/types/server';
 import { getClient } from '@/src/lib/api/client';
 import { useEventStream } from '@/src/lib/events/useEventStream';
@@ -48,10 +48,10 @@ export function useRoutes(server: Server | null, username?: string) {
     onEvent: handleEvent,
   });
 
-  const addRoute = async (domain: string, targetIp: string, targetPort: number) => {
+  const addRoute = async (domain: string, targetIp: string, targetPort: number, protocol?: RouteProtocol) => {
     if (!server) throw new Error('No server selected');
     const client = getClient(server);
-    const route = await client.addRoute(domain, targetIp, targetPort);
+    const route = await client.addRoute(domain, targetIp, targetPort, protocol);
     await mutate();
     return route;
   };
@@ -73,6 +73,60 @@ export function useRoutes(server: Server | null, username?: string) {
     // Event stream status
     eventStatus,
     reconnectEvents: reconnect,
+  };
+}
+
+/**
+ * Hook for managing passthrough routes (TCP/UDP port forwarding)
+ */
+export function usePassthroughRoutes(server: Server | null) {
+  const fetcher = async (): Promise<PassthroughRoute[]> => {
+    if (!server) return [];
+    const client = getClient(server);
+    return client.getPassthroughRoutes();
+  };
+
+  const swrKey = server ? `passthrough-routes-${server.id}` : null;
+
+  const { data, error, isLoading, mutate } = useSWR<PassthroughRoute[]>(
+    swrKey,
+    fetcher,
+    {
+      refreshInterval: 0,
+      revalidateOnFocus: true,
+      dedupingInterval: 5000,
+    }
+  );
+
+  const addPassthroughRoute = async (
+    externalPort: number,
+    targetIp: string,
+    targetPort: number,
+    protocol?: string,
+    containerName?: string,
+    description?: string
+  ) => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    const route = await client.addPassthroughRoute(externalPort, targetIp, targetPort, protocol, containerName, description);
+    await mutate();
+    return route;
+  };
+
+  const deletePassthroughRoute = async (externalPort: number, protocol?: string) => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    await client.deletePassthroughRoute(externalPort, protocol);
+    await mutate();
+  };
+
+  return {
+    routes: data || [],
+    isLoading,
+    error,
+    addPassthroughRoute,
+    deletePassthroughRoute,
+    refresh: () => mutate(),
   };
 }
 

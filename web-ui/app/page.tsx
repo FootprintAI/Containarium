@@ -22,7 +22,7 @@ import { useServers } from '@/src/lib/hooks/useServers';
 import { useContainers, CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 import { useMetrics } from '@/src/lib/hooks/useMetrics';
 import { useApps } from '@/src/lib/hooks/useApps';
-import { useRoutes, useNetworkTopology, useContainerACL, useACLPresets, useDNSRecords } from '@/src/lib/hooks/useNetwork';
+import { useRoutes, usePassthroughRoutes, useNetworkTopology, useContainerACL, useACLPresets, useDNSRecords } from '@/src/lib/hooks/useNetwork';
 import { CreateContainerRequest, ContainerMetricsWithRate } from '@/src/types/container';
 import { Server } from '@/src/types/server';
 import { ACLPreset } from '@/src/types/app';
@@ -82,6 +82,7 @@ export default function Home() {
   // Network hooks
   const [includeStopped, setIncludeStopped] = useState(false);
   const { routes, isLoading: routesLoading, error: routesError, addRoute, deleteRoute, refresh: refreshRoutes } = useRoutes(activeServer);
+  const { routes: passthroughRoutes, isLoading: passthroughLoading, addPassthroughRoute, deletePassthroughRoute, refresh: refreshPassthrough } = usePassthroughRoutes(activeServer);
   const { topology, isLoading: topologyLoading, error: topologyError, refresh: refreshTopology } = useNetworkTopology(activeServer, includeStopped);
   const { presets, isLoading: presetsLoading } = useACLPresets(activeServer);
   const { records: dnsRecords, baseDomain, refresh: refreshDNS } = useDNSRecords(activeServer);
@@ -293,19 +294,29 @@ export default function Home() {
               <NetworkTopologyView
                 topology={topology}
                 routes={routes}
+                passthroughRoutes={passthroughRoutes}
                 dnsRecords={dnsRecords}
                 baseDomain={baseDomain}
-                isLoading={topologyLoading || routesLoading}
+                isLoading={topologyLoading || routesLoading || passthroughLoading}
                 error={(topologyError || routesError) as Error | null}
                 includeStopped={includeStopped}
                 onIncludeStoppedChange={setIncludeStopped}
-                onAddRoute={async (domain, targetIp, targetPort) => {
-                  await addRoute(domain, targetIp, targetPort);
+                onAddRoute={async (domain, targetIp, targetPort, protocol) => {
+                  await addRoute(domain, targetIp, targetPort, protocol);
                 }}
                 onDeleteRoute={async (domain) => {
                   await deleteRoute(domain);
                 }}
-                onRefresh={handleRefreshNetwork}
+                onAddPassthroughRoute={async (externalPort, targetIp, targetPort, protocol, containerName) => {
+                  await addPassthroughRoute(externalPort, targetIp, targetPort, protocol, containerName);
+                }}
+                onDeletePassthroughRoute={async (externalPort, protocol) => {
+                  await deletePassthroughRoute(externalPort, protocol);
+                }}
+                onRefresh={() => {
+                  handleRefreshNetwork();
+                  refreshPassthrough();
+                }}
               />
             )}
 

@@ -7,30 +7,33 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/internal/network"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // NetworkServer implements the NetworkService gRPC service
 type NetworkServer struct {
 	pb.UnimplementedNetworkServiceServer
-	incusClient      *incus.Client
-	proxyManager     *app.ProxyManager
-	appStore         app.AppStore
-	containerNetwork string // e.g., "10.100.0.0/24"
-	proxyIP          string // e.g., "10.100.0.1"
-	baseDomain       string // e.g., "kafeido.app"
-	emitter          *events.Emitter
+	incusClient        *incus.Client
+	proxyManager       *app.ProxyManager
+	passthroughManager *network.PassthroughManager
+	appStore           app.AppStore
+	containerNetwork   string // e.g., "10.100.0.0/24"
+	proxyIP            string // e.g., "10.100.0.1"
+	baseDomain         string // e.g., "kafeido.app"
+	emitter            *events.Emitter
 }
 
 // NewNetworkServer creates a new network server
 func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager, appStore app.AppStore, containerNetwork, proxyIP string) *NetworkServer {
 	return &NetworkServer{
-		incusClient:      incusClient,
-		proxyManager:     proxyManager,
-		appStore:         appStore,
-		containerNetwork: containerNetwork,
-		proxyIP:          proxyIP,
-		emitter:          events.NewEmitter(events.GetBus()),
+		incusClient:        incusClient,
+		proxyManager:       proxyManager,
+		passthroughManager: network.NewPassthroughManager(containerNetwork),
+		appStore:           appStore,
+		containerNetwork:   containerNetwork,
+		proxyIP:            proxyIP,
+		emitter:            events.NewEmitter(events.GetBus()),
 	}
 }
 
@@ -78,6 +81,7 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 			ContainerIp: route.UpstreamIP,
 			Port:        int32(route.UpstreamPort),
 			Active:      true, // If it's in the list, it's active
+			Protocol:    routeProtocolToProto(route.Protocol),
 		}
 		pbRoutes = append(pbRoutes, pbRoute)
 	}
@@ -106,10 +110,17 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 		return nil, fmt.Errorf("target_port must be positive")
 	}
 
-	// Add route via proxy manager
+	// Add route via proxy manager based on protocol
 	// Use domain as subdomain identifier
-	if err := s.proxyManager.AddRoute(req.Domain, req.TargetIp, int(req.TargetPort)); err != nil {
-		return nil, fmt.Errorf("failed to add route: %w", err)
+	protocol := protoToRouteProtocol(req.Protocol)
+	if protocol == app.RouteProtocolGRPC {
+		if err := s.proxyManager.AddGRPCRoute(req.Domain, req.TargetIp, int(req.TargetPort)); err != nil {
+			return nil, fmt.Errorf("failed to add gRPC route: %w", err)
+		}
+	} else {
+		if err := s.proxyManager.AddRoute(req.Domain, req.TargetIp, int(req.TargetPort)); err != nil {
+			return nil, fmt.Errorf("failed to add route: %w", err)
+		}
 	}
 
 	route := &pb.ProxyRoute{
@@ -118,6 +129,7 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 		ContainerIp: req.TargetIp,
 		Port:        req.TargetPort,
 		Active:      true,
+		Protocol:    req.Protocol,
 	}
 
 	// Emit route added event
@@ -147,8 +159,9 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 		return nil, fmt.Errorf("target_port must be positive")
 	}
 
-	// Update route (remove and re-add)
-	if err := s.proxyManager.UpdateRoute(req.Domain, req.TargetIp, int(req.TargetPort)); err != nil {
+	// Update route (remove and re-add) with protocol
+	protocol := protoToRouteProtocol(req.Protocol)
+	if err := s.proxyManager.UpdateRouteWithProtocol(req.Domain, req.TargetIp, int(req.TargetPort), protocol); err != nil {
 		return nil, fmt.Errorf("failed to update route: %w", err)
 	}
 
@@ -159,6 +172,7 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 			ContainerIp: req.TargetIp,
 			Port:        req.TargetPort,
 			Active:      true,
+			Protocol:    req.Protocol,
 		},
 		Message: fmt.Sprintf("Route updated: %s -> %s:%d", req.Domain, req.TargetIp, req.TargetPort),
 	}, nil
@@ -186,6 +200,100 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 
 	return &pb.DeleteRouteResponse{
 		Message: fmt.Sprintf("Route deleted: %s", req.Domain),
+	}, nil
+}
+
+// ListPassthroughRoutes lists all TCP/UDP passthrough routes
+func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListPassthroughRoutesRequest) (*pb.ListPassthroughRoutesResponse, error) {
+	routes, err := s.passthroughManager.ListRoutes()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list passthrough routes: %w", err)
+	}
+
+	var pbRoutes []*pb.PassthroughRoute
+	for _, route := range routes {
+		protocol := pb.RouteProtocol_ROUTE_PROTOCOL_TCP
+		if route.Protocol == "udp" {
+			protocol = pb.RouteProtocol_ROUTE_PROTOCOL_UDP
+		}
+
+		pbRoutes = append(pbRoutes, &pb.PassthroughRoute{
+			ExternalPort:  int32(route.ExternalPort),
+			TargetIp:      route.TargetIP,
+			TargetPort:    int32(route.TargetPort),
+			Protocol:      protocol,
+			Active:        route.Active,
+			ContainerName: route.ContainerName,
+			Description:   route.Description,
+		})
+	}
+
+	return &pb.ListPassthroughRoutesResponse{
+		Routes:     pbRoutes,
+		TotalCount: int32(len(pbRoutes)),
+	}, nil
+}
+
+// AddPassthroughRoute adds a new TCP/UDP passthrough route
+func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPassthroughRouteRequest) (*pb.AddPassthroughRouteResponse, error) {
+	// Validate request
+	if req.ExternalPort <= 0 || req.ExternalPort > 65535 {
+		return nil, fmt.Errorf("external_port must be between 1 and 65535")
+	}
+	if req.TargetIp == "" {
+		return nil, fmt.Errorf("target_ip is required")
+	}
+	if req.TargetPort <= 0 || req.TargetPort > 65535 {
+		return nil, fmt.Errorf("target_port must be between 1 and 65535")
+	}
+
+	// Determine protocol
+	protocol := "tcp"
+	if req.Protocol == pb.RouteProtocol_ROUTE_PROTOCOL_UDP {
+		protocol = "udp"
+	}
+
+	// Add the route
+	if err := s.passthroughManager.AddRoute(int(req.ExternalPort), req.TargetIp, int(req.TargetPort), protocol); err != nil {
+		return nil, fmt.Errorf("failed to add passthrough route: %w", err)
+	}
+
+	route := &pb.PassthroughRoute{
+		ExternalPort:  req.ExternalPort,
+		TargetIp:      req.TargetIp,
+		TargetPort:    req.TargetPort,
+		Protocol:      req.Protocol,
+		Active:        true,
+		ContainerName: req.ContainerName,
+		Description:   req.Description,
+	}
+
+	return &pb.AddPassthroughRouteResponse{
+		Route:   route,
+		Message: fmt.Sprintf("Passthrough route added: %s:%d -> %s:%d", protocol, req.ExternalPort, req.TargetIp, req.TargetPort),
+	}, nil
+}
+
+// DeletePassthroughRoute removes a TCP/UDP passthrough route
+func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.DeletePassthroughRouteRequest) (*pb.DeletePassthroughRouteResponse, error) {
+	// Validate request
+	if req.ExternalPort <= 0 || req.ExternalPort > 65535 {
+		return nil, fmt.Errorf("external_port must be between 1 and 65535")
+	}
+
+	// Determine protocol
+	protocol := "tcp"
+	if req.Protocol == pb.RouteProtocol_ROUTE_PROTOCOL_UDP {
+		protocol = "udp"
+	}
+
+	// Remove the route
+	if err := s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol); err != nil {
+		return nil, fmt.Errorf("failed to remove passthrough route: %w", err)
+	}
+
+	return &pb.DeletePassthroughRouteResponse{
+		Message: fmt.Sprintf("Passthrough route removed: %s:%d", protocol, req.ExternalPort),
 	}, nil
 }
 
@@ -549,4 +657,28 @@ func containsImpl(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// routeProtocolToProto converts app.RouteProtocol to pb.RouteProtocol
+func routeProtocolToProto(protocol app.RouteProtocol) pb.RouteProtocol {
+	switch protocol {
+	case app.RouteProtocolGRPC:
+		return pb.RouteProtocol_ROUTE_PROTOCOL_GRPC
+	case app.RouteProtocolHTTP:
+		return pb.RouteProtocol_ROUTE_PROTOCOL_HTTP
+	default:
+		return pb.RouteProtocol_ROUTE_PROTOCOL_HTTP
+	}
+}
+
+// protoToRouteProtocol converts pb.RouteProtocol to app.RouteProtocol
+func protoToRouteProtocol(protocol pb.RouteProtocol) app.RouteProtocol {
+	switch protocol {
+	case pb.RouteProtocol_ROUTE_PROTOCOL_GRPC:
+		return app.RouteProtocolGRPC
+	case pb.RouteProtocol_ROUTE_PROTOCOL_HTTP:
+		return app.RouteProtocolHTTP
+	default:
+		return app.RouteProtocolHTTP
+	}
 }

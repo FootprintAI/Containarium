@@ -34,6 +34,22 @@ type CaddyReverseProxyHandler struct {
 	Handler   string                `json:"handler"` // Always "reverse_proxy"
 	Upstreams []CaddyUpstreamTyped  `json:"upstreams"`
 	Headers   *CaddyHeadersConfig   `json:"headers,omitempty"`
+	Transport *CaddyHTTPTransport   `json:"transport,omitempty"` // For gRPC/HTTP2 support
+}
+
+// CaddyHTTPTransport represents the HTTP transport configuration
+// Used to enable HTTP/2 (h2c) for gRPC proxying
+type CaddyHTTPTransport struct {
+	Protocol string   `json:"protocol"`          // Always "http" for HTTP transport
+	Versions []string `json:"versions,omitempty"` // ["h2c", "2"] for gRPC
+}
+
+// NewGRPCTransport creates a transport configuration for gRPC (HTTP/2 cleartext)
+func NewGRPCTransport() *CaddyHTTPTransport {
+	return &CaddyHTTPTransport{
+		Protocol: "http",
+		Versions: []string{"h2c", "2"},
+	}
 }
 
 // HandlerName implements CaddyHandler
@@ -122,7 +138,7 @@ type CaddyApps struct {
 	TLS  *CaddyTLSApp  `json:"tls,omitempty"`
 }
 
-// NewReverseProxyRoute creates a typed reverse proxy route
+// NewReverseProxyRoute creates a typed reverse proxy route for HTTP
 func NewReverseProxyRoute(id string, hosts []string, upstreamDial string) CaddyRouteTyped {
 	return CaddyRouteTyped{
 		ID: id,
@@ -135,6 +151,26 @@ func NewReverseProxyRoute(id string, hosts []string, upstreamDial string) CaddyR
 				Upstreams: []CaddyUpstreamTyped{
 					{Dial: upstreamDial},
 				},
+			},
+		},
+	}
+}
+
+// NewGRPCReverseProxyRoute creates a typed reverse proxy route for gRPC
+// gRPC requires HTTP/2 (h2c for cleartext to backend)
+func NewGRPCReverseProxyRoute(id string, hosts []string, upstreamDial string) CaddyRouteTyped {
+	return CaddyRouteTyped{
+		ID: id,
+		Match: []CaddyMatchTyped{
+			{Host: hosts},
+		},
+		Handle: []CaddyHandler{
+			CaddyReverseProxyHandler{
+				Handler: "reverse_proxy",
+				Upstreams: []CaddyUpstreamTyped{
+					{Dial: upstreamDial},
+				},
+				Transport: NewGRPCTransport(),
 			},
 		},
 	}

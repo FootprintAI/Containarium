@@ -22,12 +22,23 @@ type ProxyManager struct {
 	httpClient    *http.Client
 }
 
+// RouteProtocol represents the protocol type for a route
+type RouteProtocol string
+
+const (
+	// RouteProtocolHTTP is for standard HTTP/1.1 and HTTP/2 routes
+	RouteProtocolHTTP RouteProtocol = "http"
+	// RouteProtocolGRPC is for gRPC routes (requires HTTP/2)
+	RouteProtocolGRPC RouteProtocol = "grpc"
+)
+
 // Route represents a proxy route configuration (our domain model)
 type Route struct {
-	Subdomain    string `json:"subdomain"`
-	FullDomain   string `json:"full_domain"`
-	UpstreamIP   string `json:"upstream_ip"`
-	UpstreamPort int    `json:"upstream_port"`
+	Subdomain    string        `json:"subdomain"`
+	FullDomain   string        `json:"full_domain"`
+	UpstreamIP   string        `json:"upstream_ip"`
+	UpstreamPort int           `json:"upstream_port"`
+	Protocol     RouteProtocol `json:"protocol,omitempty"` // "http" or "grpc", defaults to "http"
 }
 
 // caddyRouteJSON is used for JSON marshaling routes to Caddy API
@@ -63,9 +74,20 @@ func (p *ProxyManager) SetServerName(name string) {
 	p.serverName = name
 }
 
-// AddRoute adds a new route to Caddy
+// AddRoute adds a new HTTP route to Caddy
 // If subdomain contains the base domain, it's used as-is; otherwise base domain is appended
 func (p *ProxyManager) AddRoute(subdomain, containerIP string, port int) error {
+	return p.addRouteWithProtocol(subdomain, containerIP, port, RouteProtocolHTTP)
+}
+
+// AddGRPCRoute adds a new gRPC route to Caddy with HTTP/2 transport
+// gRPC requires HTTP/2 (h2c for cleartext connection to backend)
+func (p *ProxyManager) AddGRPCRoute(subdomain, containerIP string, port int) error {
+	return p.addRouteWithProtocol(subdomain, containerIP, port, RouteProtocolGRPC)
+}
+
+// addRouteWithProtocol adds a route with the specified protocol type
+func (p *ProxyManager) addRouteWithProtocol(subdomain, containerIP string, port int, protocol RouteProtocol) error {
 	fullDomain := subdomain
 	routeID := subdomain
 
@@ -78,19 +100,25 @@ func (p *ProxyManager) AddRoute(subdomain, containerIP string, port int) error {
 		routeID = strings.TrimSuffix(routeID, p.baseDomain)
 	}
 
+	// Create handler based on protocol
+	handler := CaddyReverseProxyHandler{
+		Handler: "reverse_proxy",
+		Upstreams: []CaddyUpstreamTyped{
+			{Dial: fmt.Sprintf("%s:%d", containerIP, port)},
+		},
+	}
+
+	// Add HTTP/2 transport for gRPC
+	if protocol == RouteProtocolGRPC {
+		handler.Transport = NewGRPCTransport()
+	}
+
 	route := caddyRouteJSON{
 		ID: routeID, // Use subdomain as route ID for easy removal
 		Match: []CaddyMatchTyped{
 			{Host: []string{fullDomain}},
 		},
-		Handle: []CaddyReverseProxyHandler{
-			{
-				Handler: "reverse_proxy",
-				Upstreams: []CaddyUpstreamTyped{
-					{Dial: fmt.Sprintf("%s:%d", containerIP, port)},
-				},
-			},
-		},
+		Handle: []CaddyReverseProxyHandler{handler},
 	}
 
 	// Serialize route to JSON
@@ -345,6 +373,7 @@ func (p *ProxyManager) ListRoutes() ([]Route, error) {
 			route := Route{
 				Subdomain:  cr.ID,
 				FullDomain: fullDomain,
+				Protocol:   RouteProtocolHTTP, // Default to HTTP
 			}
 
 			// Extract upstream info from handler if available
@@ -363,6 +392,16 @@ func (p *ProxyManager) ListRoutes() ([]Route, error) {
 							route.UpstreamIP = dial
 						}
 					}
+
+					// Detect gRPC routes by checking for HTTP/2 transport
+					if handler.Transport != nil && handler.Transport.Protocol == "http" {
+						for _, v := range handler.Transport.Versions {
+							if v == "h2c" || v == "2" {
+								route.Protocol = RouteProtocolGRPC
+								break
+							}
+						}
+					}
 				}
 			}
 
@@ -373,13 +412,23 @@ func (p *ProxyManager) ListRoutes() ([]Route, error) {
 	return routes, nil
 }
 
-// UpdateRoute updates an existing route
+// UpdateRoute updates an existing HTTP route
 func (p *ProxyManager) UpdateRoute(subdomain, containerIP string, port int) error {
+	return p.UpdateRouteWithProtocol(subdomain, containerIP, port, RouteProtocolHTTP)
+}
+
+// UpdateGRPCRoute updates an existing gRPC route
+func (p *ProxyManager) UpdateGRPCRoute(subdomain, containerIP string, port int) error {
+	return p.UpdateRouteWithProtocol(subdomain, containerIP, port, RouteProtocolGRPC)
+}
+
+// UpdateRouteWithProtocol updates an existing route with the specified protocol
+func (p *ProxyManager) UpdateRouteWithProtocol(subdomain, containerIP string, port int, protocol RouteProtocol) error {
 	// Remove existing route first
 	p.RemoveRoute(subdomain) // Ignore errors
 
-	// Add new route
-	return p.AddRoute(subdomain, containerIP, port)
+	// Add new route with protocol
+	return p.addRouteWithProtocol(subdomain, containerIP, port, protocol)
 }
 
 // EnsureServerConfig ensures the Caddy server has basic configuration
