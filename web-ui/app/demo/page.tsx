@@ -495,8 +495,8 @@ export default function DemoPage() {
           error={null}
           includeStopped={includeStopped}
           onIncludeStoppedChange={setIncludeStopped}
-          onAddRoute={async (domain, targetIp, targetPort) => {
-            console.log('Demo: Would add route:', { domain, targetIp, targetPort });
+          onAddRoute={async (domain, targetIp, targetPort, protocol) => {
+            console.log('Demo: Would add route:', { domain, targetIp, targetPort, protocol });
           }}
           onDeleteRoute={async (domain) => {
             console.log('Demo: Would delete route:', domain);

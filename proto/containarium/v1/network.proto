@@ -7,6 +7,36 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
+// RouteType represents whether the route is a proxy or passthrough
+enum RouteType {
+  // Unspecified type
+  ROUTE_TYPE_UNSPECIFIED = 0;
+
+  // Proxy route: TLS terminated at Caddy, HTTP/gRPC reverse proxy
+  ROUTE_TYPE_PROXY = 1;
+
+  // Passthrough route: Direct TCP/UDP forwarding via iptables, end-to-end TLS
+  ROUTE_TYPE_PASSTHROUGH = 2;
+}
+
+// RouteProtocol represents the protocol type for a route
+enum RouteProtocol {
+  // Unspecified protocol (defaults to HTTP)
+  ROUTE_PROTOCOL_UNSPECIFIED = 0;
+
+  // HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes
+  ROUTE_PROTOCOL_HTTP = 1;
+
+  // gRPC (requires HTTP/2 transport) - for proxy routes
+  ROUTE_PROTOCOL_GRPC = 2;
+
+  // TCP passthrough - for passthrough routes
+  ROUTE_PROTOCOL_TCP = 3;
+
+  // UDP passthrough - for passthrough routes
+  ROUTE_PROTOCOL_UDP = 4;
+}
+
 // ACLAction represents the action to take when a rule matches
 enum ACLAction {
   // Unspecified action (should not be used)
@@ -116,6 +146,33 @@ message ProxyRoute {
 
   // Owner username
   string username = 8;
+
+  // Protocol type (HTTP or gRPC)
+  RouteProtocol protocol = 9;
+}
+
+// PassthroughRoute represents a direct TCP/UDP port forwarding rule
+message PassthroughRoute {
+  // External port on the host
+  int32 external_port = 1;
+
+  // Target container IP address
+  string target_ip = 2;
+
+  // Target port on the container
+  int32 target_port = 3;
+
+  // Protocol: TCP or UDP
+  RouteProtocol protocol = 4;
+
+  // Whether the route is active
+  bool active = 5;
+
+  // Associated container name (for display)
+  string container_name = 6;
+
+  // Description
+  string description = 7;
 }
 
 // NetworkNode represents a node in the network topology
@@ -205,6 +262,9 @@ message AddRouteRequest {
 
   // Optional: Description
   string description = 5;
+
+  // Protocol type (HTTP or gRPC, defaults to HTTP)
+  RouteProtocol protocol = 6;
 }
 
 message AddRouteResponse {
@@ -231,6 +291,9 @@ message UpdateRouteRequest {
 
   // Optional: Description
   string description = 5;
+
+  // Protocol type (HTTP or gRPC, defaults to HTTP)
+  RouteProtocol protocol = 6;
 }
 
 message UpdateRouteResponse {
@@ -250,6 +313,60 @@ message DeleteRouteRequest {
 message DeleteRouteResponse {
   // Status message
   string message = 2;
+}
+
+// ListPassthroughRoutesRequest lists all passthrough routes
+message ListPassthroughRoutesRequest {}
+
+message ListPassthroughRoutesResponse {
+  // List of passthrough routes
+  repeated PassthroughRoute routes = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// AddPassthroughRouteRequest adds a new passthrough route
+message AddPassthroughRouteRequest {
+  // External port on the host
+  int32 external_port = 1;
+
+  // Target container IP address
+  string target_ip = 2;
+
+  // Target port on the container
+  int32 target_port = 3;
+
+  // Protocol: TCP or UDP (defaults to TCP)
+  RouteProtocol protocol = 4;
+
+  // Optional: Associated container name (for display)
+  string container_name = 5;
+
+  // Optional: Description
+  string description = 6;
+}
+
+message AddPassthroughRouteResponse {
+  // The created route
+  PassthroughRoute route = 1;
+
+  // Status message
+  string message = 2;
+}
+
+// DeletePassthroughRouteRequest removes a passthrough route
+message DeletePassthroughRouteRequest {
+  // External port to remove
+  int32 external_port = 1;
+
+  // Protocol: TCP or UDP
+  RouteProtocol protocol = 2;
+}
+
+message DeletePassthroughRouteResponse {
+  // Status message
+  string message = 1;
 }
 
 // DNSRecord represents a DNS record
@@ -414,6 +531,43 @@ service NetworkService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List DNS records";
       description: "Returns DNS records configured for the base domain. Useful for selecting available subdomains when creating routes.";
+      tags: "Network";
+    };
+  }
+
+  // ListPassthroughRoutes lists all TCP/UDP passthrough routes
+  rpc ListPassthroughRoutes(ListPassthroughRoutesRequest) returns (ListPassthroughRoutesResponse) {
+    option (google.api.http) = {
+      get: "/v1/network/passthrough"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List passthrough routes";
+      description: "Returns all TCP/UDP port forwarding rules configured via iptables. These routes provide direct passthrough without TLS termination.";
+      tags: "Network";
+    };
+  }
+
+  // AddPassthroughRoute adds a new TCP/UDP passthrough route
+  rpc AddPassthroughRoute(AddPassthroughRouteRequest) returns (AddPassthroughRouteResponse) {
+    option (google.api.http) = {
+      post: "/v1/network/passthrough"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Add passthrough route";
+      description: "Creates a new TCP/UDP port forwarding rule via iptables. Traffic is forwarded directly to the container without TLS termination, suitable for mTLS or custom protocols.";
+      tags: "Network";
+    };
+  }
+
+  // DeletePassthroughRoute removes a TCP/UDP passthrough route
+  rpc DeletePassthroughRoute(DeletePassthroughRouteRequest) returns (DeletePassthroughRouteResponse) {
+    option (google.api.http) = {
+      delete: "/v1/network/passthrough/{external_port}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete passthrough route";
+      description: "Removes a TCP/UDP port forwarding rule from iptables.";
       tags: "Network";
     };
   }

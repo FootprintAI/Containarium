@@ -115,6 +115,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Routes managed via Caddy Admin API for dynamic configuration
 - New API endpoint: `GET /v1/network/dns-records` for domain suggestions
 
+#### gRPC Proxy Support
+- Added protocol selection (HTTP/gRPC) when creating proxy routes
+- gRPC routes use HTTP/2 (h2c) transport for backend communication
+- Caddy reverse proxy automatically configured with correct protocol handling
+- New `RouteProtocol` enum in proto: `ROUTE_PROTOCOL_HTTP`, `ROUTE_PROTOCOL_GRPC`
+- Protocol field added to `ProxyRoute`, `AddRouteRequest`, `UpdateRouteRequest`
+- Web UI shows protocol column in routes table (HTTP/gRPC chip)
+- Protocol selector dropdown in Add Route dialog
+- Backend support via `NewGRPCTransport()` and `AddGRPCRoute()` in proxy manager
+
+#### TCP/UDP Passthrough Routes
+- Added passthrough route support for direct TCP/UDP port forwarding via iptables
+- Ideal for mTLS gRPC services where TLS should not be terminated at proxy
+- Unified routes view in Web UI showing both proxy and passthrough routes
+- Route type selector in Add Route dialog: Proxy (TLS terminated) vs Passthrough (direct)
+- New proto definitions: `RouteType` enum, `PassthroughRoute` message
+- New `RouteProtocol` values: `ROUTE_PROTOCOL_TCP`, `ROUTE_PROTOCOL_UDP`
+- REST API endpoints:
+  - `GET /v1/network/passthrough` - List passthrough routes
+  - `POST /v1/network/passthrough` - Add passthrough route
+  - `DELETE /v1/network/passthrough/{external_port}` - Delete passthrough route
+- Backend `PassthroughManager` in `internal/network/portforward.go` for iptables management
+- Web UI visual distinction: Proxy routes (🌐) vs Passthrough routes (🔌)
+
 #### Automatic TLS Certificate Provisioning
 - New `ProvisionTLS()` method in ProxyManager for automatic SSL certificate provisioning
 - When adding a route, Caddy automatically obtains a TLS certificate for the domain
