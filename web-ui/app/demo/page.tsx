@@ -12,7 +12,7 @@ import { App, NetworkTopology, ProxyRoute, NetworkNode } from '@/src/types/app';
 
 // Mock system info for system resources card
 const mockSystemInfo: SystemInfo = {
-  version: '0.3.0',
+  version: '0.6.0',
   incusVersion: '6.21',
   hostname: 'gpu-cluster-01',
   os: 'Ubuntu 24.04 LTS',
