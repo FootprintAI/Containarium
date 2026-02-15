@@ -15,7 +15,8 @@ export type EventType =
   | 'EVENT_TYPE_APP_STATE_CHANGED'
   | 'EVENT_TYPE_ROUTE_ADDED'
   | 'EVENT_TYPE_ROUTE_DELETED'
-  | 'EVENT_TYPE_METRICS_UPDATE';
+  | 'EVENT_TYPE_METRICS_UPDATE'
+  | 'EVENT_TYPE_TRAFFIC_UPDATE';
 
 /**
  * Resource types from the backend
@@ -25,7 +26,8 @@ export type ResourceType =
   | 'RESOURCE_TYPE_CONTAINER'
   | 'RESOURCE_TYPE_APP'
   | 'RESOURCE_TYPE_ROUTE'
-  | 'RESOURCE_TYPE_METRICS';
+  | 'RESOURCE_TYPE_METRICS'
+  | 'RESOURCE_TYPE_TRAFFIC';
 
 /**
  * Container event payload
@@ -95,6 +97,31 @@ export interface MetricsEventPayload {
 }
 
 /**
+ * Traffic event payload
+ */
+export interface TrafficEventPayload {
+  eventType: 'NEW' | 'UPDATE' | 'DESTROY';
+  connection: {
+    id: string;
+    containerName: string;
+    containerIp: string;
+    protocol: string;
+    sourceIp: string;
+    sourcePort: number;
+    destIp: string;
+    destPort: number;
+    state: string;
+    direction: string;
+    bytesSent: number;
+    bytesReceived: number;
+    packetsSent: number;
+    packetsReceived: number;
+    firstSeen: string;
+    lastSeen: string;
+  };
+}
+
+/**
  * Server-sent event from the backend
  */
 export interface ServerEvent {
@@ -107,6 +134,7 @@ export interface ServerEvent {
   appEvent?: AppEventPayload;
   routeEvent?: RouteEventPayload;
   metricsEvent?: MetricsEventPayload;
+  trafficEvent?: TrafficEventPayload;
 }
 
 /**
@@ -153,4 +181,11 @@ export function isRouteEvent(event: ServerEvent): boolean {
  */
 export function isMetricsEvent(event: ServerEvent): boolean {
   return event.resourceType === 'RESOURCE_TYPE_METRICS';
+}
+
+/**
+ * Helper function to check if event is traffic-related
+ */
+export function isTrafficEvent(event: ServerEvent): boolean {
+  return event.resourceType === 'RESOURCE_TYPE_TRAFFIC';
 }

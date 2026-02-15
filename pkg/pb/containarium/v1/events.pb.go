@@ -60,6 +60,9 @@ const (
 	// System events (30-39)
 	// Metrics update
 	EventType_EVENT_TYPE_METRICS_UPDATE EventType = 30
+	// Traffic events (40-49)
+	// Traffic/connection update
+	EventType_EVENT_TYPE_TRAFFIC_UPDATE EventType = 40
 )
 
 // Enum value maps for EventType.
@@ -79,6 +82,7 @@ var (
 		20: "EVENT_TYPE_ROUTE_ADDED",
 		21: "EVENT_TYPE_ROUTE_DELETED",
 		30: "EVENT_TYPE_METRICS_UPDATE",
+		40: "EVENT_TYPE_TRAFFIC_UPDATE",
 	}
 	EventType_value = map[string]int32{
 		"EVENT_TYPE_UNSPECIFIED":             0,
@@ -95,6 +99,7 @@ var (
 		"EVENT_TYPE_ROUTE_ADDED":             20,
 		"EVENT_TYPE_ROUTE_DELETED":           21,
 		"EVENT_TYPE_METRICS_UPDATE":          30,
+		"EVENT_TYPE_TRAFFIC_UPDATE":          40,
 	}
 )
 
@@ -139,6 +144,8 @@ const (
 	ResourceType_RESOURCE_TYPE_ROUTE ResourceType = 3
 	// Metrics resource
 	ResourceType_RESOURCE_TYPE_METRICS ResourceType = 4
+	// Traffic resource
+	ResourceType_RESOURCE_TYPE_TRAFFIC ResourceType = 5
 )
 
 // Enum value maps for ResourceType.
@@ -149,6 +156,7 @@ var (
 		2: "RESOURCE_TYPE_APP",
 		3: "RESOURCE_TYPE_ROUTE",
 		4: "RESOURCE_TYPE_METRICS",
+		5: "RESOURCE_TYPE_TRAFFIC",
 	}
 	ResourceType_value = map[string]int32{
 		"RESOURCE_TYPE_UNSPECIFIED": 0,
@@ -156,6 +164,7 @@ var (
 		"RESOURCE_TYPE_APP":         2,
 		"RESOURCE_TYPE_ROUTE":       3,
 		"RESOURCE_TYPE_METRICS":     4,
+		"RESOURCE_TYPE_TRAFFIC":     5,
 	}
 )
 
@@ -409,6 +418,7 @@ type Event struct {
 	//	*Event_AppEvent
 	//	*Event_RouteEvent
 	//	*Event_MetricsEvent
+	//	*Event_TrafficEvent
 	Payload       isEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -522,6 +532,15 @@ func (x *Event) GetMetricsEvent() *MetricsEvent {
 	return nil
 }
 
+func (x *Event) GetTrafficEvent() *TrafficEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*Event_TrafficEvent); ok {
+			return x.TrafficEvent
+		}
+	}
+	return nil
+}
+
 type isEvent_Payload interface {
 	isEvent_Payload()
 }
@@ -542,6 +561,10 @@ type Event_MetricsEvent struct {
 	MetricsEvent *MetricsEvent `protobuf:"bytes,13,opt,name=metrics_event,json=metricsEvent,proto3,oneof"`
 }
 
+type Event_TrafficEvent struct {
+	TrafficEvent *TrafficEvent `protobuf:"bytes,14,opt,name=traffic_event,json=trafficEvent,proto3,oneof"`
+}
+
 func (*Event_ContainerEvent) isEvent_Payload() {}
 
 func (*Event_AppEvent) isEvent_Payload() {}
@@ -549,6 +572,8 @@ func (*Event_AppEvent) isEvent_Payload() {}
 func (*Event_RouteEvent) isEvent_Payload() {}
 
 func (*Event_MetricsEvent) isEvent_Payload() {}
+
+func (*Event_TrafficEvent) isEvent_Payload() {}
 
 // SubscribeEventsRequest configures the event subscription
 type SubscribeEventsRequest struct {
@@ -618,7 +643,7 @@ var File_containarium_v1_events_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/events.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/container.proto\x1a\x19containarium/v1/app.proto\x1a\x1dcontainarium/v1/network.proto\"\x92\x01\n" +
+	"\x1ccontainarium/v1/events.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/container.proto\x1a\x19containarium/v1/app.proto\x1a\x1dcontainarium/v1/network.proto\x1a\x1dcontainarium/v1/traffic.proto\"\x92\x01\n" +
 	"\x0eContainerEvent\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12F\n" +
 	"\x0eprevious_state\x18\x02 \x01(\x0e2\x1f.containarium.v1.ContainerStateR\rpreviousState\"t\n" +
@@ -629,7 +654,7 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"RouteEvent\x121\n" +
 	"\x05route\x18\x01 \x01(\v2\x1b.containarium.v1.ProxyRouteR\x05route\"K\n" +
 	"\fMetricsEvent\x12;\n" +
-	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics\"\xfd\x03\n" +
+	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics\"\xc3\x04\n" +
 	"\x05Event\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12.\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x1a.containarium.v1.EventTypeR\x04type\x12B\n" +
@@ -642,12 +667,13 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"\tapp_event\x18\v \x01(\v2\x19.containarium.v1.AppEventH\x00R\bappEvent\x12>\n" +
 	"\vroute_event\x18\f \x01(\v2\x1b.containarium.v1.RouteEventH\x00R\n" +
 	"routeEvent\x12D\n" +
-	"\rmetrics_event\x18\r \x01(\v2\x1d.containarium.v1.MetricsEventH\x00R\fmetricsEventB\t\n" +
+	"\rmetrics_event\x18\r \x01(\v2\x1d.containarium.v1.MetricsEventH\x00R\fmetricsEvent\x12D\n" +
+	"\rtraffic_event\x18\x0e \x01(\v2\x1d.containarium.v1.TrafficEventH\x00R\ftrafficEventB\t\n" +
 	"\apayload\"\xc1\x01\n" +
 	"\x16SubscribeEventsRequest\x12D\n" +
 	"\x0eresource_types\x18\x01 \x03(\x0e2\x1d.containarium.v1.ResourceTypeR\rresourceTypes\x12'\n" +
 	"\x0finclude_metrics\x18\x02 \x01(\bR\x0eincludeMetrics\x128\n" +
-	"\x18metrics_interval_seconds\x18\x03 \x01(\x05R\x16metricsIntervalSeconds*\xc3\x03\n" +
+	"\x18metrics_interval_seconds\x18\x03 \x01(\x05R\x16metricsIntervalSeconds*\xe2\x03\n" +
 	"\tEventType\x12\x1a\n" +
 	"\x16EVENT_TYPE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEVENT_TYPE_CONTAINER_CREATED\x10\x01\x12 \n" +
@@ -663,13 +689,15 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"\x1cEVENT_TYPE_APP_STATE_CHANGED\x10\x0e\x12\x1a\n" +
 	"\x16EVENT_TYPE_ROUTE_ADDED\x10\x14\x12\x1c\n" +
 	"\x18EVENT_TYPE_ROUTE_DELETED\x10\x15\x12\x1d\n" +
-	"\x19EVENT_TYPE_METRICS_UPDATE\x10\x1e*\x95\x01\n" +
+	"\x19EVENT_TYPE_METRICS_UPDATE\x10\x1e\x12\x1d\n" +
+	"\x19EVENT_TYPE_TRAFFIC_UPDATE\x10(*\xb0\x01\n" +
 	"\fResourceType\x12\x1d\n" +
 	"\x19RESOURCE_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17RESOURCE_TYPE_CONTAINER\x10\x01\x12\x15\n" +
 	"\x11RESOURCE_TYPE_APP\x10\x02\x12\x17\n" +
 	"\x13RESOURCE_TYPE_ROUTE\x10\x03\x12\x19\n" +
-	"\x15RESOURCE_TYPE_METRICS\x10\x042\xa3\x02\n" +
+	"\x15RESOURCE_TYPE_METRICS\x10\x04\x12\x19\n" +
+	"\x15RESOURCE_TYPE_TRAFFIC\x10\x052\xa3\x02\n" +
 	"\fEventService\x12\x92\x02\n" +
 	"\x0fSubscribeEvents\x12'.containarium.v1.SubscribeEventsRequest\x1a\x16.containarium.v1.Event\"\xbb\x01\x92A\x9b\x01\n" +
 	"\x06Events\x12\x1dSubscribe to real-time events\x1arOpens a Server-Sent Events stream for real-time resource updates. Filter by resource types using query parameters.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/events/subscribe0\x01BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
@@ -704,6 +732,7 @@ var file_containarium_v1_events_proto_goTypes = []any{
 	(*ProxyRoute)(nil),             // 12: containarium.v1.ProxyRoute
 	(*ContainerMetrics)(nil),       // 13: containarium.v1.ContainerMetrics
 	(*timestamppb.Timestamp)(nil),  // 14: google.protobuf.Timestamp
+	(*TrafficEvent)(nil),           // 15: containarium.v1.TrafficEvent
 }
 var file_containarium_v1_events_proto_depIdxs = []int32{
 	8,  // 0: containarium.v1.ContainerEvent.container:type_name -> containarium.v1.Container
@@ -719,14 +748,15 @@ var file_containarium_v1_events_proto_depIdxs = []int32{
 	3,  // 10: containarium.v1.Event.app_event:type_name -> containarium.v1.AppEvent
 	4,  // 11: containarium.v1.Event.route_event:type_name -> containarium.v1.RouteEvent
 	5,  // 12: containarium.v1.Event.metrics_event:type_name -> containarium.v1.MetricsEvent
-	1,  // 13: containarium.v1.SubscribeEventsRequest.resource_types:type_name -> containarium.v1.ResourceType
-	7,  // 14: containarium.v1.EventService.SubscribeEvents:input_type -> containarium.v1.SubscribeEventsRequest
-	6,  // 15: containarium.v1.EventService.SubscribeEvents:output_type -> containarium.v1.Event
-	15, // [15:16] is the sub-list for method output_type
-	14, // [14:15] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	15, // 13: containarium.v1.Event.traffic_event:type_name -> containarium.v1.TrafficEvent
+	1,  // 14: containarium.v1.SubscribeEventsRequest.resource_types:type_name -> containarium.v1.ResourceType
+	7,  // 15: containarium.v1.EventService.SubscribeEvents:input_type -> containarium.v1.SubscribeEventsRequest
+	6,  // 16: containarium.v1.EventService.SubscribeEvents:output_type -> containarium.v1.Event
+	16, // [16:17] is the sub-list for method output_type
+	15, // [15:16] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_events_proto_init() }
@@ -737,11 +767,13 @@ func file_containarium_v1_events_proto_init() {
 	file_containarium_v1_container_proto_init()
 	file_containarium_v1_app_proto_init()
 	file_containarium_v1_network_proto_init()
+	file_containarium_v1_traffic_proto_init()
 	file_containarium_v1_events_proto_msgTypes[4].OneofWrappers = []any{
 		(*Event_ContainerEvent)(nil),
 		(*Event_AppEvent)(nil),
 		(*Event_RouteEvent)(nil),
 		(*Event_MetricsEvent)(nil),
+		(*Event_TrafficEvent)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

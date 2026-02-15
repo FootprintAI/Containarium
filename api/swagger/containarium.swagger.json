@@ -24,6 +24,9 @@
       "name": "AppService"
     },
     {
+      "name": "TrafficService"
+    },
+    {
       "name": "EventService"
     }
   ],
@@ -501,6 +504,259 @@
         ]
       }
     },
+    "/v1/containers/{containerName}/connections": {
+      "get": {
+        "summary": "Get active connections",
+        "description": "Returns active network connections for a container tracked by conntrack.",
+        "operationId": "TrafficService_GetConnections",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetConnectionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Container name (required)",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "protocol",
+            "description": "Filter by protocol (optional)\n\n - PROTOCOL_UNSPECIFIED: Unspecified protocol (should not be used)\n - PROTOCOL_TCP: TCP protocol\n - PROTOCOL_UDP: UDP protocol\n - PROTOCOL_ICMP: ICMP protocol",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "PROTOCOL_UNSPECIFIED",
+              "PROTOCOL_TCP",
+              "PROTOCOL_UDP",
+              "PROTOCOL_ICMP"
+            ],
+            "default": "PROTOCOL_UNSPECIFIED"
+          },
+          {
+            "name": "destIpPrefix",
+            "description": "Filter by destination IP prefix (optional, e.g., \"10.100.\")",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "destPort",
+            "description": "Filter by destination port (optional, 0 = all)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "limit",
+            "description": "Maximum number of connections to return (default: 100)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Traffic"
+        ]
+      }
+    },
+    "/v1/containers/{containerName}/connections/summary": {
+      "get": {
+        "summary": "Get connection summary",
+        "description": "Returns aggregate connection statistics for a container.",
+        "operationId": "TrafficService_GetConnectionSummary",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetConnectionSummaryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Container name (required)",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Traffic"
+        ]
+      }
+    },
+    "/v1/containers/{containerName}/traffic/aggregates": {
+      "get": {
+        "summary": "Get traffic aggregates",
+        "description": "Returns aggregated traffic statistics over time for analysis.",
+        "operationId": "TrafficService_GetTrafficAggregates",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrafficAggregatesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Container name (required)",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "startTime",
+            "description": "Start time",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "endTime",
+            "description": "End time",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "interval",
+            "description": "Aggregation interval (e.g., \"1m\", \"5m\", \"1h\", \"1d\")",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "groupByDestIp",
+            "description": "Group by destination IP",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "groupByDestPort",
+            "description": "Group by destination port",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Traffic"
+        ]
+      }
+    },
+    "/v1/containers/{containerName}/traffic/history": {
+      "get": {
+        "summary": "Query traffic history",
+        "description": "Returns historical connection data from persistent storage.",
+        "operationId": "TrafficService_QueryTrafficHistory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/QueryTrafficHistoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Container name (required)",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "startTime",
+            "description": "Start time for query range",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "endTime",
+            "description": "End time for query range",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "destIp",
+            "description": "Filter by destination IP (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "destPort",
+            "description": "Filter by destination port (optional, 0 = all)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "offset",
+            "description": "Pagination: offset",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "limit",
+            "description": "Pagination: limit (default: 100, max: 1000)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Traffic"
+        ]
+      }
+    },
     "/v1/containers/{username}": {
       "get": {
         "summary": "Get container details",
@@ -838,7 +1094,7 @@
         "parameters": [
           {
             "name": "resourceTypes",
-            "description": "Filter by resource types (empty = all types)\n\n - RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource",
+            "description": "Filter by resource types (empty = all types)\n\n - RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource",
             "in": "query",
             "required": false,
             "type": "array",
@@ -849,7 +1105,8 @@
                 "RESOURCE_TYPE_CONTAINER",
                 "RESOURCE_TYPE_APP",
                 "RESOURCE_TYPE_ROUTE",
-                "RESOURCE_TYPE_METRICS"
+                "RESOURCE_TYPE_METRICS",
+                "RESOURCE_TYPE_TRAFFIC"
               ]
             },
             "collectionFormat": "multi"
@@ -1198,6 +1455,72 @@
           "System"
         ]
       }
+    },
+    "/v1/traffic/subscribe": {
+      "get": {
+        "summary": "Subscribe to traffic events",
+        "description": "Opens a Server-Sent Events stream for real-time connection events.",
+        "operationId": "TrafficService_SubscribeTraffic",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/TrafficEvent"
+                },
+                "error": {
+                  "$ref": "#/definitions/Status"
+                }
+              },
+              "title": "Stream result of TrafficEvent"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Container name (optional, empty = all containers)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "eventTypes",
+            "description": "Event types to include (empty = all types)\n\n - TRAFFIC_EVENT_TYPE_UNSPECIFIED: Unspecified event type\n - TRAFFIC_EVENT_TYPE_NEW: New connection established\n - TRAFFIC_EVENT_TYPE_UPDATE: Connection state or counters updated\n - TRAFFIC_EVENT_TYPE_DESTROY: Connection terminated",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "TRAFFIC_EVENT_TYPE_UNSPECIFIED",
+                "TRAFFIC_EVENT_TYPE_NEW",
+                "TRAFFIC_EVENT_TYPE_UPDATE",
+                "TRAFFIC_EVENT_TYPE_DESTROY"
+              ]
+            },
+            "collectionFormat": "multi"
+          },
+          {
+            "name": "externalOnly",
+            "description": "Only include external traffic (exclude inter-container)",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Traffic"
+        ]
+      }
     }
   },
   "definitions": {
@@ -1535,6 +1858,150 @@
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
     },
+    "Connection": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Unique connection ID (from conntrack)"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Container name this connection belongs to"
+        },
+        "containerIp": {
+          "type": "string",
+          "title": "Container IP address"
+        },
+        "protocol": {
+          "$ref": "#/definitions/Protocol",
+          "title": "Protocol (TCP, UDP, ICMP)"
+        },
+        "sourceIp": {
+          "type": "string",
+          "title": "Source IP address"
+        },
+        "sourcePort": {
+          "type": "integer",
+          "format": "int64",
+          "title": "Source port (0 for ICMP)"
+        },
+        "destIp": {
+          "type": "string",
+          "title": "Destination IP address"
+        },
+        "destPort": {
+          "type": "integer",
+          "format": "int64",
+          "title": "Destination port (0 for ICMP)"
+        },
+        "state": {
+          "$ref": "#/definitions/ConnectionState",
+          "title": "Connection state (primarily for TCP)"
+        },
+        "direction": {
+          "$ref": "#/definitions/TrafficDirection",
+          "title": "Direction relative to the container"
+        },
+        "bytesSent": {
+          "type": "string",
+          "format": "int64",
+          "title": "Bytes sent from the container"
+        },
+        "bytesReceived": {
+          "type": "string",
+          "format": "int64",
+          "title": "Bytes received by the container"
+        },
+        "packetsSent": {
+          "type": "string",
+          "format": "int64",
+          "title": "Packets sent from the container"
+        },
+        "packetsReceived": {
+          "type": "string",
+          "format": "int64",
+          "title": "Packets received by the container"
+        },
+        "firstSeen": {
+          "type": "string",
+          "format": "date-time",
+          "title": "When the connection was first seen"
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time",
+          "title": "When the connection was last active"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "TTL remaining in conntrack (seconds)"
+        }
+      },
+      "title": "Connection represents an active or recent network connection"
+    },
+    "ConnectionState": {
+      "type": "string",
+      "enum": [
+        "CONNECTION_STATE_UNSPECIFIED",
+        "CONNECTION_STATE_NEW",
+        "CONNECTION_STATE_ESTABLISHED",
+        "CONNECTION_STATE_RELATED",
+        "CONNECTION_STATE_TIME_WAIT",
+        "CONNECTION_STATE_CLOSE_WAIT",
+        "CONNECTION_STATE_FIN_WAIT",
+        "CONNECTION_STATE_CLOSED",
+        "CONNECTION_STATE_SYN_SENT",
+        "CONNECTION_STATE_SYN_RECV"
+      ],
+      "default": "CONNECTION_STATE_UNSPECIFIED",
+      "description": "- CONNECTION_STATE_UNSPECIFIED: Unspecified state\n - CONNECTION_STATE_NEW: New connection (SYN sent/received)\n - CONNECTION_STATE_ESTABLISHED: Connection established\n - CONNECTION_STATE_RELATED: Related connection (e.g., FTP data connection)\n - CONNECTION_STATE_TIME_WAIT: Connection in TIME_WAIT state\n - CONNECTION_STATE_CLOSE_WAIT: Connection in CLOSE_WAIT state\n - CONNECTION_STATE_FIN_WAIT: Connection in FIN_WAIT state\n - CONNECTION_STATE_CLOSED: Connection closed\n - CONNECTION_STATE_SYN_SENT: SYN sent, waiting for response\n - CONNECTION_STATE_SYN_RECV: SYN received, waiting for ACK",
+      "title": "ConnectionState represents the state of a TCP connection"
+    },
+    "ConnectionSummary": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "title": "Container name"
+        },
+        "activeConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total active connections"
+        },
+        "tcpConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Active TCP connections"
+        },
+        "udpConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Active UDP connections"
+        },
+        "totalBytesSent": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total bytes sent (all connections)"
+        },
+        "totalBytesReceived": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total bytes received (all connections)"
+        },
+        "topDestinations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/DestinationStats"
+          },
+          "title": "Top destination IPs by connection count"
+        }
+      },
+      "title": "ConnectionSummary provides aggregate statistics for a container"
+    },
     "Container": {
       "type": "object",
       "properties": {
@@ -1855,6 +2322,26 @@
         }
       }
     },
+    "DestinationStats": {
+      "type": "object",
+      "properties": {
+        "destIp": {
+          "type": "string",
+          "title": "Destination IP address"
+        },
+        "connectionCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of connections to this destination"
+        },
+        "bytesTotal": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total bytes transferred to/from this destination"
+        }
+      },
+      "title": "DestinationStats provides traffic statistics for a destination"
+    },
     "DetectedLanguage": {
       "type": "object",
       "properties": {
@@ -1908,6 +2395,9 @@
         },
         "metricsEvent": {
           "$ref": "#/definitions/MetricsEvent"
+        },
+        "trafficEvent": {
+          "$ref": "#/definitions/TrafficEvent"
         }
       },
       "title": "Event is the top-level event message sent to clients"
@@ -1928,10 +2418,11 @@
         "EVENT_TYPE_APP_STATE_CHANGED",
         "EVENT_TYPE_ROUTE_ADDED",
         "EVENT_TYPE_ROUTE_DELETED",
-        "EVENT_TYPE_METRICS_UPDATE"
+        "EVENT_TYPE_METRICS_UPDATE",
+        "EVENT_TYPE_TRAFFIC_UPDATE"
       ],
       "default": "EVENT_TYPE_UNSPECIFIED",
-      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update",
+      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update",
       "title": "EventType represents the type of resource change event"
     },
     "GetAppLogsResponse": {
@@ -1957,6 +2448,33 @@
         "app": {
           "$ref": "#/definitions/App",
           "title": "App details"
+        }
+      }
+    },
+    "GetConnectionSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "$ref": "#/definitions/ConnectionSummary",
+          "title": "Connection summary"
+        }
+      }
+    },
+    "GetConnectionsResponse": {
+      "type": "object",
+      "properties": {
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Connection"
+          },
+          "title": "Active connections"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count (may be more than returned if limit applied)"
         }
       }
     },
@@ -2033,6 +2551,85 @@
         }
       },
       "title": "GetSystemInfoResponse is the response from getting system information"
+    },
+    "GetTrafficAggregatesResponse": {
+      "type": "object",
+      "properties": {
+        "aggregates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrafficAggregate"
+          },
+          "title": "Aggregated traffic data"
+        }
+      }
+    },
+    "HistoricalConnection": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64",
+          "title": "Database ID"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Container name"
+        },
+        "protocol": {
+          "$ref": "#/definitions/Protocol",
+          "title": "Protocol"
+        },
+        "sourceIp": {
+          "type": "string",
+          "title": "Source IP address"
+        },
+        "sourcePort": {
+          "type": "integer",
+          "format": "int64",
+          "title": "Source port"
+        },
+        "destIp": {
+          "type": "string",
+          "title": "Destination IP address"
+        },
+        "destPort": {
+          "type": "integer",
+          "format": "int64",
+          "title": "Destination port"
+        },
+        "direction": {
+          "$ref": "#/definitions/TrafficDirection",
+          "title": "Direction relative to container"
+        },
+        "bytesSent": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total bytes sent"
+        },
+        "bytesReceived": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total bytes received"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Connection start time"
+        },
+        "endedAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Connection end time (null if still active)"
+        },
+        "durationSeconds": {
+          "type": "string",
+          "format": "int64",
+          "title": "Duration in seconds"
+        }
+      },
+      "title": "HistoricalConnection represents a persisted connection record"
     },
     "ListACLPresetsResponse": {
       "type": "object",
@@ -2274,6 +2871,18 @@
       },
       "title": "NetworkTopology represents the complete network visualization"
     },
+    "Protocol": {
+      "type": "string",
+      "enum": [
+        "PROTOCOL_UNSPECIFIED",
+        "PROTOCOL_TCP",
+        "PROTOCOL_UDP",
+        "PROTOCOL_ICMP"
+      ],
+      "default": "PROTOCOL_UNSPECIFIED",
+      "description": "- PROTOCOL_UNSPECIFIED: Unspecified protocol (should not be used)\n - PROTOCOL_TCP: TCP protocol\n - PROTOCOL_UDP: UDP protocol\n - PROTOCOL_ICMP: ICMP protocol",
+      "title": "Protocol represents the network protocol of a connection"
+    },
     "ProxyRoute": {
       "type": "object",
       "properties": {
@@ -2312,6 +2921,24 @@
         }
       },
       "title": "ProxyRoute represents a DNS/domain to container mapping"
+    },
+    "QueryTrafficHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/HistoricalConnection"
+          },
+          "title": "Historical connections"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count matching query"
+        }
+      }
     },
     "RemoveSSHKeyResponse": {
       "type": "object",
@@ -2353,10 +2980,11 @@
         "RESOURCE_TYPE_CONTAINER",
         "RESOURCE_TYPE_APP",
         "RESOURCE_TYPE_ROUTE",
-        "RESOURCE_TYPE_METRICS"
+        "RESOURCE_TYPE_METRICS",
+        "RESOURCE_TYPE_TRAFFIC"
       ],
       "default": "RESOURCE_TYPE_UNSPECIFIED",
-      "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource",
+      "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource",
       "title": "ResourceType identifies which resource type an event pertains to"
     },
     "RestartAppBody": {
@@ -2571,6 +3199,83 @@
         }
       },
       "title": "SystemInfo contains information about the host system"
+    },
+    "TrafficAggregate": {
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Start of the aggregation interval"
+        },
+        "destIp": {
+          "type": "string",
+          "title": "Destination IP (if grouped by dest_ip)"
+        },
+        "destPort": {
+          "type": "integer",
+          "format": "int64",
+          "title": "Destination port (if grouped by dest_port)"
+        },
+        "bytesSent": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total bytes sent in this interval"
+        },
+        "bytesReceived": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total bytes received in this interval"
+        },
+        "connectionCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of connections in this interval"
+        }
+      },
+      "title": "TrafficAggregate provides time-series aggregated traffic data"
+    },
+    "TrafficDirection": {
+      "type": "string",
+      "enum": [
+        "TRAFFIC_DIRECTION_UNSPECIFIED",
+        "TRAFFIC_DIRECTION_INGRESS",
+        "TRAFFIC_DIRECTION_EGRESS"
+      ],
+      "default": "TRAFFIC_DIRECTION_UNSPECIFIED",
+      "description": "- TRAFFIC_DIRECTION_UNSPECIFIED: Unspecified direction\n - TRAFFIC_DIRECTION_INGRESS: Traffic coming into the container\n - TRAFFIC_DIRECTION_EGRESS: Traffic leaving the container",
+      "title": "TrafficDirection indicates the direction of traffic relative to the container"
+    },
+    "TrafficEvent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/TrafficEventType",
+          "title": "Event type (new, update, destroy)"
+        },
+        "connection": {
+          "$ref": "#/definitions/Connection",
+          "title": "The connection affected"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "title": "When the event occurred"
+        }
+      },
+      "title": "TrafficEvent represents a real-time connection event"
+    },
+    "TrafficEventType": {
+      "type": "string",
+      "enum": [
+        "TRAFFIC_EVENT_TYPE_UNSPECIFIED",
+        "TRAFFIC_EVENT_TYPE_NEW",
+        "TRAFFIC_EVENT_TYPE_UPDATE",
+        "TRAFFIC_EVENT_TYPE_DESTROY"
+      ],
+      "default": "TRAFFIC_EVENT_TYPE_UNSPECIFIED",
+      "description": "- TRAFFIC_EVENT_TYPE_UNSPECIFIED: Unspecified event type\n - TRAFFIC_EVENT_TYPE_NEW: New connection established\n - TRAFFIC_EVENT_TYPE_UPDATE: Connection state or counters updated\n - TRAFFIC_EVENT_TYPE_DESTROY: Connection terminated",
+      "title": "TrafficEventType represents the type of traffic event"
     },
     "UpdateContainerACLBody": {
       "type": "object",

@@ -2,6 +2,7 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerResponse, ListContainersResponse, MetricsResponse, SystemInfo } from '@/src/types/container';
 import { Server } from '@/src/types/server';
 import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord } from '@/src/types/app';
+import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
 
 /**
  * API error response
@@ -453,6 +454,108 @@ export class ContaineriumClient {
   async removeLabel(username: string, key: string): Promise<Record<string, string>> {
     const response = await this.client.delete<{ labels?: Record<string, string> }>(`/containers/${username}/labels/${key}`);
     return response.data.labels || {};
+  }
+
+  // ============================================
+  // Traffic Monitoring Methods
+  // ============================================
+
+  /**
+   * Get active connections for a container
+   */
+  async getConnections(containerName: string, options?: {
+    protocol?: string;
+    destIpPrefix?: string;
+    destPort?: number;
+    limit?: number;
+  }): Promise<GetConnectionsResponse> {
+    const params: Record<string, unknown> = {};
+    if (options?.protocol) params.protocol = options.protocol;
+    if (options?.destIpPrefix) params.destIpPrefix = options.destIpPrefix;
+    if (options?.destPort) params.destPort = options.destPort;
+    if (options?.limit) params.limit = options.limit;
+
+    const response = await this.client.get<GetConnectionsResponse>(
+      `/containers/${containerName}/connections`,
+      { params }
+    );
+    return {
+      connections: response.data.connections || [],
+      totalCount: response.data.totalCount || 0,
+    };
+  }
+
+  /**
+   * Get connection summary for a container
+   */
+  async getConnectionSummary(containerName: string): Promise<ConnectionSummary> {
+    const response = await this.client.get<GetConnectionSummaryResponse>(
+      `/containers/${containerName}/connections/summary`
+    );
+    return response.data.summary || {
+      containerName,
+      activeConnections: 0,
+      tcpConnections: 0,
+      udpConnections: 0,
+      totalBytesSent: 0,
+      totalBytesReceived: 0,
+      topDestinations: [],
+    };
+  }
+
+  /**
+   * Query traffic history for a container
+   */
+  async getTrafficHistory(containerName: string, options: {
+    startTime: string;
+    endTime: string;
+    destIp?: string;
+    destPort?: number;
+    offset?: number;
+    limit?: number;
+  }): Promise<QueryTrafficHistoryResponse> {
+    const params: Record<string, unknown> = {
+      startTime: options.startTime,
+      endTime: options.endTime,
+    };
+    if (options.destIp) params.destIp = options.destIp;
+    if (options.destPort) params.destPort = options.destPort;
+    if (options.offset) params.offset = options.offset;
+    if (options.limit) params.limit = options.limit;
+
+    const response = await this.client.get<QueryTrafficHistoryResponse>(
+      `/containers/${containerName}/traffic/history`,
+      { params }
+    );
+    return {
+      connections: response.data.connections || [],
+      totalCount: response.data.totalCount || 0,
+    };
+  }
+
+  /**
+   * Get traffic aggregates for a container
+   */
+  async getTrafficAggregates(containerName: string, options: {
+    startTime: string;
+    endTime: string;
+    interval?: string;
+    groupByDestIp?: boolean;
+    groupByDestPort?: boolean;
+  }): Promise<TrafficAggregate[]> {
+    const params: Record<string, unknown> = {
+      startTime: options.startTime,
+      endTime: options.endTime,
+    };
+    if (options.interval) params.interval = options.interval;
+    if (options.groupByDestIp) params.groupByDestIp = options.groupByDestIp;
+    if (options.groupByDestPort) params.groupByDestPort = options.groupByDestPort;
+
+    const response = await this.client.get<GetTrafficAggregatesResponse>(
+      `/containers/${containerName}/traffic/aggregates`,
+      { params }
+    );
+    return response.data.aggregates || [];
   }
 }
 

@@ -221,3 +221,22 @@ func (e *Emitter) EmitMetricsUpdate(metrics []*pb.ContainerMetrics) {
 	}
 	e.bus.Publish(event)
 }
+
+// Traffic Events
+
+// EmitTrafficEvent emits a traffic event for connection updates
+func (e *Emitter) EmitTrafficEvent(trafficEvent *pb.TrafficEvent) {
+	resourceID := ""
+	if trafficEvent.Connection != nil {
+		resourceID = trafficEvent.Connection.ContainerName
+	}
+	event := newEvent(
+		pb.EventType_EVENT_TYPE_TRAFFIC_UPDATE,
+		pb.ResourceType_RESOURCE_TYPE_TRAFFIC,
+		resourceID,
+	)
+	event.Payload = &pb.Event_TrafficEvent{
+		TrafficEvent: trafficEvent,
+	}
+	e.bus.Publish(event)
+}
