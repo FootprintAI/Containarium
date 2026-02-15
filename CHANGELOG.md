@@ -75,6 +75,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recovery config is automatically saved to persistent storage during daemon startup
 - Supports `--dry-run` flag to preview recovery actions
 
+#### Per-Container Traffic Monitoring
+- New Traffic tab in Web UI for connection-level network monitoring
+- Real-time connection tracking using Linux conntrack via netlink
+- View active TCP/UDP connections per container with:
+  - Source/destination IP and port
+  - Protocol and connection state (ESTABLISHED, TIME_WAIT, etc.)
+  - Bytes sent/received with live counters
+  - Connection direction (INGRESS/EGRESS)
+  - Duration and timeout information
+- Connection summary showing aggregate stats:
+  - Active connection counts (total, TCP, UDP)
+  - Total bytes sent/received
+  - Top destinations by connection count and bandwidth
+- Real-time updates via Server-Sent Events (SSE)
+- Historical connection persistence in PostgreSQL
+- REST API endpoints:
+  - `GET /v1/containers/{name}/connections` - List active connections
+  - `GET /v1/containers/{name}/connections/summary` - Get connection summary
+  - `GET /v1/containers/{name}/traffic/history` - Query historical connections
+  - `GET /v1/containers/{name}/traffic/aggregates` - Get time-series aggregates
+- gRPC streaming: `SubscribeTraffic` for real-time connection events
+- Container IP to name resolution via cache with periodic refresh
+- New proto definitions in `traffic.proto` (Connection, TrafficEvent, etc.)
+- New `internal/traffic/` package:
+  - `conntrack_linux.go` - Linux netlink conntrack implementation
+  - `collector.go` - Event coordination and caching
+  - `store.go` - PostgreSQL persistence
+  - `server.go` - TrafficService gRPC implementation
+  - `cache.go` - Container IP mapping
+
 #### Network Route Management
 - Added route management UI to Network tab in Web UI
 - Add/Delete proxy routes through the web interface

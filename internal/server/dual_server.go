@@ -10,9 +10,11 @@ import (
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/incus"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/traffic"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -45,14 +47,16 @@ type DualServerConfig struct {
 
 // DualServer runs both gRPC and HTTP/REST servers
 type DualServer struct {
-	config          *DualServerConfig
-	grpcServer      *grpc.Server
-	containerServer *ContainerServer
-	appServer       *AppServer
-	networkServer   *NetworkServer
-	gatewayServer   *gateway.GatewayServer
-	tokenManager    *auth.TokenManager
-	authMiddleware  *auth.AuthMiddleware
+	config           *DualServerConfig
+	grpcServer       *grpc.Server
+	containerServer  *ContainerServer
+	appServer        *AppServer
+	networkServer    *NetworkServer
+	trafficServer    *TrafficServer
+	trafficCollector *traffic.Collector
+	gatewayServer    *gateway.GatewayServer
+	tokenManager     *auth.TokenManager
+	authMiddleware   *auth.AuthMiddleware
 }
 
 // NewDualServer creates a new dual server instance
@@ -101,11 +105,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 	// Create NetworkServer (always available for network topology)
 	var networkServer *NetworkServer
+	networkCIDR := "10.100.0.0/24" // Default, will be updated from incus
 	networkIncusClient, err := incus.New()
 	if err != nil {
 		log.Printf("Warning: Failed to create incus client for network service: %v", err)
 	} else {
-		networkCIDR := "10.100.0.0/24"
 		// Get actual network CIDR from incus
 		if subnet, err := networkIncusClient.GetNetworkSubnet("incusbr0"); err == nil {
 			if len(subnet) > 0 {
@@ -122,6 +126,31 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		)
 		pb.RegisterNetworkServiceServer(grpcServer, networkServer)
 		log.Printf("Network service enabled")
+	}
+
+	// Create TrafficServer (always available, but conntrack only works on Linux)
+	var trafficServer *TrafficServer
+	var trafficCollector *traffic.Collector
+	if networkIncusClient != nil {
+		// Traffic collector needs PostgreSQL - will be set up later if app hosting enabled
+		// For now, create without store and update later
+		emitter := events.NewEmitter(events.GetBus())
+		collectorConfig := traffic.DefaultCollectorConfig()
+		collectorConfig.NetworkCIDR = networkCIDR
+
+		// Create collector without store initially
+		trafficCollector, err = traffic.NewCollector(collectorConfig, networkIncusClient, nil, emitter)
+		if err != nil {
+			log.Printf("Warning: Failed to create traffic collector: %v", err)
+		} else {
+			trafficServer = NewTrafficServer(trafficCollector)
+			pb.RegisterTrafficServiceServer(grpcServer, trafficServer)
+			if trafficCollector.IsAvailable() {
+				log.Printf("Traffic monitoring service enabled (conntrack available)")
+			} else {
+				log.Printf("Traffic monitoring service enabled (conntrack unavailable - Linux only)")
+			}
+		}
 	}
 
 	// Create and register AppServer if app hosting is enabled
@@ -204,6 +233,29 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					networkServer.baseDomain = config.BaseDomain
 					log.Printf("Network service updated with app hosting features")
 				}
+
+				// Update TrafficCollector with store for persistence
+				if trafficCollector != nil && postgresConnString != "" {
+					trafficStore, err := traffic.NewStore(context.Background(), postgresConnString)
+					if err != nil {
+						log.Printf("Warning: Failed to create traffic store: %v. Traffic persistence disabled.", err)
+					} else {
+						// Re-create collector with store
+						emitter := events.NewEmitter(events.GetBus())
+						collectorConfig := traffic.DefaultCollectorConfig()
+						collectorConfig.NetworkCIDR = networkCIDR
+						collectorConfig.PostgresConnString = postgresConnString
+
+						newCollector, err := traffic.NewCollector(collectorConfig, incusClient, trafficStore, emitter)
+						if err != nil {
+							log.Printf("Warning: Failed to update traffic collector with store: %v", err)
+						} else {
+							trafficCollector = newCollector
+							trafficServer = NewTrafficServer(trafficCollector)
+							log.Printf("Traffic monitoring updated with persistence")
+						}
+					}
+				}
 			}
 		}
 	}
@@ -238,19 +290,28 @@ skipAppHosting:
 	}
 
 	return &DualServer{
-		config:          config,
-		grpcServer:      grpcServer,
-		containerServer: containerServer,
-		appServer:       appServer,
-		networkServer:   networkServer,
-		gatewayServer:   gatewayServer,
-		tokenManager:    tokenManager,
-		authMiddleware:  authMiddleware,
+		config:           config,
+		grpcServer:       grpcServer,
+		containerServer:  containerServer,
+		appServer:        appServer,
+		networkServer:    networkServer,
+		trafficServer:    trafficServer,
+		trafficCollector: trafficCollector,
+		gatewayServer:    gatewayServer,
+		tokenManager:     tokenManager,
+		authMiddleware:   authMiddleware,
 	}, nil
 }
 
 // Start starts both gRPC and HTTP servers
 func (ds *DualServer) Start(ctx context.Context) error {
+	// Start traffic collector if available
+	if ds.trafficCollector != nil {
+		if err := ds.trafficCollector.Start(); err != nil {
+			log.Printf("Warning: Failed to start traffic collector: %v", err)
+		}
+	}
+
 	// Start gRPC server
 	grpcAddr := fmt.Sprintf("%s:%d", ds.config.GRPCAddress, ds.config.GRPCPort)
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -285,6 +346,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 		log.Println("Shutting down servers...")
+		if ds.trafficCollector != nil {
+			ds.trafficCollector.Stop()
+		}
 		ds.grpcServer.GracefulStop()
 		return nil
 	}

@@ -1,0 +1,423 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Protocol represents the network protocol of a connection
+enum Protocol {
+  // Unspecified protocol (should not be used)
+  PROTOCOL_UNSPECIFIED = 0;
+
+  // TCP protocol
+  PROTOCOL_TCP = 1;
+
+  // UDP protocol
+  PROTOCOL_UDP = 2;
+
+  // ICMP protocol
+  PROTOCOL_ICMP = 3;
+}
+
+// ConnectionState represents the state of a TCP connection
+enum ConnectionState {
+  // Unspecified state
+  CONNECTION_STATE_UNSPECIFIED = 0;
+
+  // New connection (SYN sent/received)
+  CONNECTION_STATE_NEW = 1;
+
+  // Connection established
+  CONNECTION_STATE_ESTABLISHED = 2;
+
+  // Related connection (e.g., FTP data connection)
+  CONNECTION_STATE_RELATED = 3;
+
+  // Connection in TIME_WAIT state
+  CONNECTION_STATE_TIME_WAIT = 4;
+
+  // Connection in CLOSE_WAIT state
+  CONNECTION_STATE_CLOSE_WAIT = 5;
+
+  // Connection in FIN_WAIT state
+  CONNECTION_STATE_FIN_WAIT = 6;
+
+  // Connection closed
+  CONNECTION_STATE_CLOSED = 7;
+
+  // SYN sent, waiting for response
+  CONNECTION_STATE_SYN_SENT = 8;
+
+  // SYN received, waiting for ACK
+  CONNECTION_STATE_SYN_RECV = 9;
+}
+
+// TrafficDirection indicates the direction of traffic relative to the container
+enum TrafficDirection {
+  // Unspecified direction
+  TRAFFIC_DIRECTION_UNSPECIFIED = 0;
+
+  // Traffic coming into the container
+  TRAFFIC_DIRECTION_INGRESS = 1;
+
+  // Traffic leaving the container
+  TRAFFIC_DIRECTION_EGRESS = 2;
+}
+
+// TrafficEventType represents the type of traffic event
+enum TrafficEventType {
+  // Unspecified event type
+  TRAFFIC_EVENT_TYPE_UNSPECIFIED = 0;
+
+  // New connection established
+  TRAFFIC_EVENT_TYPE_NEW = 1;
+
+  // Connection state or counters updated
+  TRAFFIC_EVENT_TYPE_UPDATE = 2;
+
+  // Connection terminated
+  TRAFFIC_EVENT_TYPE_DESTROY = 3;
+}
+
+// Connection represents an active or recent network connection
+message Connection {
+  // Unique connection ID (from conntrack)
+  string id = 1;
+
+  // Container name this connection belongs to
+  string container_name = 2;
+
+  // Container IP address
+  string container_ip = 3;
+
+  // Protocol (TCP, UDP, ICMP)
+  Protocol protocol = 4;
+
+  // Source IP address
+  string source_ip = 5;
+
+  // Source port (0 for ICMP)
+  uint32 source_port = 6;
+
+  // Destination IP address
+  string dest_ip = 7;
+
+  // Destination port (0 for ICMP)
+  uint32 dest_port = 8;
+
+  // Connection state (primarily for TCP)
+  ConnectionState state = 9;
+
+  // Direction relative to the container
+  TrafficDirection direction = 10;
+
+  // Bytes sent from the container
+  int64 bytes_sent = 11;
+
+  // Bytes received by the container
+  int64 bytes_received = 12;
+
+  // Packets sent from the container
+  int64 packets_sent = 13;
+
+  // Packets received by the container
+  int64 packets_received = 14;
+
+  // When the connection was first seen
+  google.protobuf.Timestamp first_seen = 15;
+
+  // When the connection was last active
+  google.protobuf.Timestamp last_seen = 16;
+
+  // TTL remaining in conntrack (seconds)
+  int32 timeout_seconds = 17;
+}
+
+// TrafficEvent represents a real-time connection event
+message TrafficEvent {
+  // Event type (new, update, destroy)
+  TrafficEventType type = 1;
+
+  // The connection affected
+  Connection connection = 2;
+
+  // When the event occurred
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+// ConnectionSummary provides aggregate statistics for a container
+message ConnectionSummary {
+  // Container name
+  string container_name = 1;
+
+  // Total active connections
+  int32 active_connections = 2;
+
+  // Active TCP connections
+  int32 tcp_connections = 3;
+
+  // Active UDP connections
+  int32 udp_connections = 4;
+
+  // Total bytes sent (all connections)
+  int64 total_bytes_sent = 5;
+
+  // Total bytes received (all connections)
+  int64 total_bytes_received = 6;
+
+  // Top destination IPs by connection count
+  repeated DestinationStats top_destinations = 7;
+}
+
+// DestinationStats provides traffic statistics for a destination
+message DestinationStats {
+  // Destination IP address
+  string dest_ip = 1;
+
+  // Number of connections to this destination
+  int32 connection_count = 2;
+
+  // Total bytes transferred to/from this destination
+  int64 bytes_total = 3;
+}
+
+// HistoricalConnection represents a persisted connection record
+message HistoricalConnection {
+  // Database ID
+  int64 id = 1;
+
+  // Container name
+  string container_name = 2;
+
+  // Protocol
+  Protocol protocol = 3;
+
+  // Source IP address
+  string source_ip = 4;
+
+  // Source port
+  uint32 source_port = 5;
+
+  // Destination IP address
+  string dest_ip = 6;
+
+  // Destination port
+  uint32 dest_port = 7;
+
+  // Direction relative to container
+  TrafficDirection direction = 8;
+
+  // Total bytes sent
+  int64 bytes_sent = 9;
+
+  // Total bytes received
+  int64 bytes_received = 10;
+
+  // Connection start time
+  google.protobuf.Timestamp started_at = 11;
+
+  // Connection end time (null if still active)
+  google.protobuf.Timestamp ended_at = 12;
+
+  // Duration in seconds
+  int64 duration_seconds = 13;
+}
+
+// TrafficAggregate provides time-series aggregated traffic data
+message TrafficAggregate {
+  // Start of the aggregation interval
+  google.protobuf.Timestamp timestamp = 1;
+
+  // Destination IP (if grouped by dest_ip)
+  string dest_ip = 2;
+
+  // Destination port (if grouped by dest_port)
+  uint32 dest_port = 3;
+
+  // Total bytes sent in this interval
+  int64 bytes_sent = 4;
+
+  // Total bytes received in this interval
+  int64 bytes_received = 5;
+
+  // Number of connections in this interval
+  int32 connection_count = 6;
+}
+
+// ============= Request/Response Messages =============
+
+// GetConnectionsRequest retrieves active connections for a container
+message GetConnectionsRequest {
+  // Container name (required)
+  string container_name = 1;
+
+  // Filter by protocol (optional)
+  Protocol protocol = 2;
+
+  // Filter by destination IP prefix (optional, e.g., "10.100.")
+  string dest_ip_prefix = 3;
+
+  // Filter by destination port (optional, 0 = all)
+  uint32 dest_port = 4;
+
+  // Maximum number of connections to return (default: 100)
+  int32 limit = 5;
+}
+
+message GetConnectionsResponse {
+  // Active connections
+  repeated Connection connections = 1;
+
+  // Total count (may be more than returned if limit applied)
+  int32 total_count = 2;
+}
+
+// GetConnectionSummaryRequest retrieves aggregate connection statistics
+message GetConnectionSummaryRequest {
+  // Container name (required)
+  string container_name = 1;
+}
+
+message GetConnectionSummaryResponse {
+  // Connection summary
+  ConnectionSummary summary = 1;
+}
+
+// SubscribeTrafficRequest configures real-time traffic event subscription
+message SubscribeTrafficRequest {
+  // Container name (optional, empty = all containers)
+  string container_name = 1;
+
+  // Event types to include (empty = all types)
+  repeated TrafficEventType event_types = 2;
+
+  // Only include external traffic (exclude inter-container)
+  bool external_only = 3;
+}
+
+// QueryTrafficHistoryRequest queries persisted traffic data
+message QueryTrafficHistoryRequest {
+  // Container name (required)
+  string container_name = 1;
+
+  // Start time for query range
+  google.protobuf.Timestamp start_time = 2;
+
+  // End time for query range
+  google.protobuf.Timestamp end_time = 3;
+
+  // Filter by destination IP (optional)
+  string dest_ip = 4;
+
+  // Filter by destination port (optional, 0 = all)
+  uint32 dest_port = 5;
+
+  // Pagination: offset
+  int32 offset = 6;
+
+  // Pagination: limit (default: 100, max: 1000)
+  int32 limit = 7;
+}
+
+message QueryTrafficHistoryResponse {
+  // Historical connections
+  repeated HistoricalConnection connections = 1;
+
+  // Total count matching query
+  int32 total_count = 2;
+}
+
+// GetTrafficAggregatesRequest retrieves time-series traffic aggregates
+message GetTrafficAggregatesRequest {
+  // Container name (required)
+  string container_name = 1;
+
+  // Start time
+  google.protobuf.Timestamp start_time = 2;
+
+  // End time
+  google.protobuf.Timestamp end_time = 3;
+
+  // Aggregation interval (e.g., "1m", "5m", "1h", "1d")
+  string interval = 4;
+
+  // Group by destination IP
+  bool group_by_dest_ip = 5;
+
+  // Group by destination port
+  bool group_by_dest_port = 6;
+}
+
+message GetTrafficAggregatesResponse {
+  // Aggregated traffic data
+  repeated TrafficAggregate aggregates = 1;
+}
+
+// ============= Service Definition =============
+
+// TrafficService provides container traffic monitoring capabilities
+service TrafficService {
+  // GetConnections returns active connections for a container
+  rpc GetConnections(GetConnectionsRequest) returns (GetConnectionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{container_name}/connections"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get active connections";
+      description: "Returns active network connections for a container tracked by conntrack.";
+      tags: "Traffic";
+    };
+  }
+
+  // GetConnectionSummary returns aggregate connection statistics
+  rpc GetConnectionSummary(GetConnectionSummaryRequest) returns (GetConnectionSummaryResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{container_name}/connections/summary"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get connection summary";
+      description: "Returns aggregate connection statistics for a container.";
+      tags: "Traffic";
+    };
+  }
+
+  // SubscribeTraffic opens a streaming connection for real-time traffic events
+  rpc SubscribeTraffic(SubscribeTrafficRequest) returns (stream TrafficEvent) {
+    option (google.api.http) = {
+      get: "/v1/traffic/subscribe"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Subscribe to traffic events";
+      description: "Opens a Server-Sent Events stream for real-time connection events.";
+      tags: "Traffic";
+    };
+  }
+
+  // QueryTrafficHistory queries persisted traffic data
+  rpc QueryTrafficHistory(QueryTrafficHistoryRequest) returns (QueryTrafficHistoryResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{container_name}/traffic/history"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Query traffic history";
+      description: "Returns historical connection data from persistent storage.";
+      tags: "Traffic";
+    };
+  }
+
+  // GetTrafficAggregates returns time-series traffic aggregates
+  rpc GetTrafficAggregates(GetTrafficAggregatesRequest) returns (GetTrafficAggregatesResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{container_name}/traffic/aggregates"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get traffic aggregates";
+      description: "Returns aggregated traffic statistics over time for analysis.";
+      tags: "Traffic";
+    };
+  }
+}

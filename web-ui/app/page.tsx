@@ -6,6 +6,7 @@ import { Box, Typography, CircularProgress, Tabs, Tab } from '@mui/material';
 import DnsIcon from '@mui/icons-material/Dns';
 import AppsIcon from '@mui/icons-material/Apps';
 import HubIcon from '@mui/icons-material/Hub';
+import TimelineIcon from '@mui/icons-material/Timeline';
 import AppBar from '@/src/components/layout/AppBar';
 import ServerTabs from '@/src/components/layout/ServerTabs';
 import AddServerDialog from '@/src/components/servers/AddServerDialog';
@@ -16,6 +17,7 @@ import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
 import AppsView from '@/src/components/apps/AppsView';
 import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import FirewallEditor from '@/src/components/network/FirewallEditor';
+import TrafficView from '@/src/components/traffic/TrafficView';
 import { useServers } from '@/src/lib/hooks/useServers';
 import { useContainers, CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 import { useMetrics } from '@/src/lib/hooks/useMetrics';
@@ -250,6 +252,7 @@ export default function Home() {
               <Tab icon={<DnsIcon />} iconPosition="start" label="Containers" />
               <Tab icon={<AppsIcon />} iconPosition="start" label="Apps" />
               <Tab icon={<HubIcon />} iconPosition="start" label="Network" />
+              <Tab icon={<TimelineIcon />} iconPosition="start" label="Traffic" />
             </Tabs>
           </Box>
 
@@ -303,6 +306,13 @@ export default function Home() {
                   await deleteRoute(domain);
                 }}
                 onRefresh={handleRefreshNetwork}
+              />
+            )}
+
+            {viewTab === 3 && (
+              <TrafficView
+                server={activeServer}
+                containers={containers}
               />
             )}
           </Box>

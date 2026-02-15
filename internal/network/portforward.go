@@ -86,6 +86,19 @@ func (pf *PortForwarder) enableIPForwarding() error {
 	return nil
 }
 
+// EnableConntrackAccounting enables conntrack byte/packet accounting
+// This is required for traffic monitoring to get accurate byte counters
+func EnableConntrackAccounting() error {
+	// Enable conntrack accounting
+	cmd := exec.Command("sysctl", "-w", "net.netfilter.nf_conntrack_acct=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to enable conntrack accounting: %w, output: %s", err, string(output))
+	}
+	log.Printf("Conntrack accounting enabled")
+	return nil
+}
+
 // rulesExist checks if port forwarding rules already exist
 func (pf *PortForwarder) rulesExist() bool {
 	// Check if PREROUTING rule for port 80 exists (with network CIDR exclusion)

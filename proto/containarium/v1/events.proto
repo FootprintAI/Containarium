@@ -8,6 +8,7 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/container.proto";
 import "containarium/v1/app.proto";
 import "containarium/v1/network.proto";
+import "containarium/v1/traffic.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -49,6 +50,10 @@ enum EventType {
   // System events (30-39)
   // Metrics update
   EVENT_TYPE_METRICS_UPDATE = 30;
+
+  // Traffic events (40-49)
+  // Traffic/connection update
+  EVENT_TYPE_TRAFFIC_UPDATE = 40;
 }
 
 // ResourceType identifies which resource type an event pertains to
@@ -63,6 +68,8 @@ enum ResourceType {
   RESOURCE_TYPE_ROUTE = 3;
   // Metrics resource
   RESOURCE_TYPE_METRICS = 4;
+  // Traffic resource
+  RESOURCE_TYPE_TRAFFIC = 5;
 }
 
 // ContainerEvent contains container-specific event data
@@ -118,6 +125,7 @@ message Event {
     AppEvent app_event = 11;
     RouteEvent route_event = 12;
     MetricsEvent metrics_event = 13;
+    TrafficEvent traffic_event = 14;
   }
 }
 
