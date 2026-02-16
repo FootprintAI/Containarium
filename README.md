@@ -13,8 +13,14 @@ Built with LXC, SSH jump hosts, and cloud-native automation.
 ### App Hosting
 ![Apps Dashboard](docs/screenshots/dashboard-2.png)
 
+### Container List View
+![Container List](docs/screenshots/dashboard-3.png)
+
 ### Network Topology
-![Network Topology](docs/screenshots/dashboard-3.png)
+![Network Topology](docs/screenshots/dashboard-4.png)
+
+### Traffic Monitoring
+![Traffic Monitor](docs/screenshots/dashboard-5.png)
 
 🌐 **Live Demo:** [https://containarium.kafeido.app/webui/](https://containarium.kafeido.app/webui/)
 

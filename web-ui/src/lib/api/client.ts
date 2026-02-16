@@ -375,6 +375,40 @@ export class ContaineriumClient {
   }
 
   /**
+   * Update a proxy route (enable/disable or modify)
+   * @param domain - Domain name (identifies the route)
+   * @param options - Update options (active to toggle, targetIp/targetPort to update target)
+   */
+  async updateRoute(
+    domain: string,
+    options: {
+      active?: boolean;
+      targetIp?: string;
+      targetPort?: number;
+      protocol?: string;
+    }
+  ): Promise<ProxyRoute> {
+    const response = await this.client.put<{ route?: ProxyRoute }>(
+      `/network/routes/${encodeURIComponent(domain)}`,
+      {
+        domain,
+        target_ip: options.targetIp,
+        target_port: options.targetPort,
+        protocol: options.protocol,
+        active: options.active,
+      }
+    );
+    return response.data.route || {
+      subdomain: domain,
+      fullDomain: domain,
+      containerIp: options.targetIp || '',
+      port: options.targetPort || 0,
+      active: options.active ?? true,
+      protocol: options.protocol as any || 'ROUTE_PROTOCOL_HTTP',
+    };
+  }
+
+  /**
    * Get passthrough routes (TCP/UDP port forwarding)
    */
   async getPassthroughRoutes(): Promise<PassthroughRoute[]> {
@@ -436,6 +470,55 @@ export class ContaineriumClient {
     await this.client.delete(`/network/passthrough/${externalPort}`, {
       params: { protocol },
     });
+  }
+
+  /**
+   * Update a passthrough route (enable/disable or modify)
+   * @param externalPort - External port (identifies the route)
+   * @param protocol - Protocol (TCP/UDP, identifies the route)
+   * @param options - Update options
+   */
+  async updatePassthroughRoute(
+    externalPort: number,
+    protocol: string,
+    options: {
+      active?: boolean;
+      targetIp?: string;
+      targetPort?: number;
+      containerName?: string;
+      description?: string;
+    }
+  ): Promise<PassthroughRoute> {
+    const response = await this.client.put<{ route?: PassthroughRoute }>(
+      `/network/passthrough/${externalPort}`,
+      {
+        external_port: externalPort,
+        protocol,
+        target_ip: options.targetIp,
+        target_port: options.targetPort,
+        container_name: options.containerName,
+        description: options.description,
+        active: options.active,
+      }
+    );
+    const r = response.data.route;
+    return r ? {
+      externalPort: r.externalPort || (r as any).external_port,
+      targetIp: r.targetIp || (r as any).target_ip,
+      targetPort: r.targetPort || (r as any).target_port,
+      protocol: r.protocol,
+      active: r.active,
+      containerName: r.containerName || (r as any).container_name,
+      description: r.description,
+    } : {
+      externalPort,
+      targetIp: options.targetIp || '',
+      targetPort: options.targetPort || 0,
+      protocol: protocol as any,
+      active: options.active ?? true,
+      containerName: options.containerName,
+      description: options.description,
+    };
   }
 
   /**

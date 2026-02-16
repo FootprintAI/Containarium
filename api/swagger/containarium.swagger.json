@@ -1358,6 +1358,46 @@
         "tags": [
           "Network"
         ]
+      },
+      "put": {
+        "summary": "Update passthrough route",
+        "description": "Updates an existing TCP/UDP port forwarding rule. Can be used to enable/disable the route or change the target.",
+        "operationId": "NetworkService_UpdatePassthroughRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/UpdatePassthroughRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "externalPort",
+            "description": "External port to update (required, identifies the route)",
+            "in": "path",
+            "required": true,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/UpdatePassthroughRouteBody"
+            }
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
       }
     },
     "/v1/network/routes": {
@@ -3550,17 +3590,61 @@
         }
       }
     },
+    "UpdatePassthroughRouteBody": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "$ref": "#/definitions/RouteProtocol",
+          "title": "Protocol: TCP or UDP (required, identifies the route)"
+        },
+        "targetIp": {
+          "type": "string",
+          "title": "New target IP (optional, empty means no change)"
+        },
+        "targetPort": {
+          "type": "integer",
+          "format": "int32",
+          "title": "New target port (optional, 0 means no change)"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Optional: Associated container name (for display)"
+        },
+        "description": {
+          "type": "string",
+          "title": "Optional: Description"
+        },
+        "active": {
+          "type": "boolean",
+          "title": "Enable or disable the route (optional, only updated if set)"
+        }
+      },
+      "title": "UpdatePassthroughRouteRequest updates an existing passthrough route"
+    },
+    "UpdatePassthroughRouteResponse": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "$ref": "#/definitions/PassthroughRoute",
+          "title": "The updated route"
+        },
+        "message": {
+          "type": "string",
+          "title": "Status message"
+        }
+      }
+    },
     "UpdateRouteBody": {
       "type": "object",
       "properties": {
         "targetIp": {
           "type": "string",
-          "title": "New target container IP address"
+          "title": "New target container IP address (optional, empty means no change)"
         },
         "targetPort": {
           "type": "integer",
           "format": "int32",
-          "title": "New target port"
+          "title": "New target port (optional, 0 means no change)"
         },
         "containerName": {
           "type": "string",
@@ -3573,6 +3657,10 @@
         "protocol": {
           "$ref": "#/definitions/RouteProtocol",
           "title": "Protocol type (HTTP or gRPC, defaults to HTTP)"
+        },
+        "active": {
+          "type": "boolean",
+          "title": "Enable or disable the route (optional, only updated if set)"
         }
       },
       "title": "UpdateRouteRequest updates an existing proxy route"

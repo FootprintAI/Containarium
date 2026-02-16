@@ -280,10 +280,10 @@ message UpdateRouteRequest {
   // Domain name to update
   string domain = 1;
 
-  // New target container IP address
+  // New target container IP address (optional, empty means no change)
   string target_ip = 2;
 
-  // New target port
+  // New target port (optional, 0 means no change)
   int32 target_port = 3;
 
   // Optional: Associated container name
@@ -294,6 +294,9 @@ message UpdateRouteRequest {
 
   // Protocol type (HTTP or gRPC, defaults to HTTP)
   RouteProtocol protocol = 6;
+
+  // Enable or disable the route (optional, only updated if set)
+  optional bool active = 7;
 }
 
 message UpdateRouteResponse {
@@ -367,6 +370,38 @@ message DeletePassthroughRouteRequest {
 message DeletePassthroughRouteResponse {
   // Status message
   string message = 1;
+}
+
+// UpdatePassthroughRouteRequest updates an existing passthrough route
+message UpdatePassthroughRouteRequest {
+  // External port to update (required, identifies the route)
+  int32 external_port = 1;
+
+  // Protocol: TCP or UDP (required, identifies the route)
+  RouteProtocol protocol = 2;
+
+  // New target IP (optional, empty means no change)
+  string target_ip = 3;
+
+  // New target port (optional, 0 means no change)
+  int32 target_port = 4;
+
+  // Optional: Associated container name (for display)
+  string container_name = 5;
+
+  // Optional: Description
+  string description = 6;
+
+  // Enable or disable the route (optional, only updated if set)
+  optional bool active = 7;
+}
+
+message UpdatePassthroughRouteResponse {
+  // The updated route
+  PassthroughRoute route = 1;
+
+  // Status message
+  string message = 2;
 }
 
 // DNSRecord represents a DNS record
@@ -568,6 +603,19 @@ service NetworkService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Delete passthrough route";
       description: "Removes a TCP/UDP port forwarding rule from iptables.";
+      tags: "Network";
+    };
+  }
+
+  // UpdatePassthroughRoute updates an existing TCP/UDP passthrough route
+  rpc UpdatePassthroughRoute(UpdatePassthroughRouteRequest) returns (UpdatePassthroughRouteResponse) {
+    option (google.api.http) = {
+      put: "/v1/network/passthrough/{external_port}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Update passthrough route";
+      description: "Updates an existing TCP/UDP port forwarding rule. Can be used to enable/disable the route or change the target.";
       tags: "Network";
     };
   }

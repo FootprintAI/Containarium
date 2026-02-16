@@ -2,13 +2,18 @@
 
 import { useState } from 'react';
 import { Box, Typography, Tabs, Tab } from '@mui/material';
+import DnsIcon from '@mui/icons-material/Dns';
+import AppsIcon from '@mui/icons-material/Apps';
+import HubIcon from '@mui/icons-material/Hub';
+import TimelineIcon from '@mui/icons-material/Timeline';
 import AppBar from '@/src/components/layout/AppBar';
 import ContainerTopology from '@/src/components/containers/ContainerTopology';
 import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
 import AppsView from '@/src/components/apps/AppsView';
 import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
+import TrafficView, { RouteTrafficStats } from '@/src/components/traffic/TrafficView';
 import { Container, ContainerMetricsWithRate, SystemInfo } from '@/src/types/container';
-import { App, NetworkTopology, ProxyRoute, NetworkNode } from '@/src/types/app';
+import { App, NetworkTopology, ProxyRoute, NetworkNode, PassthroughRoute, DNSRecord } from '@/src/types/app';
 
 // Mock system info for system resources card
 const mockSystemInfo: SystemInfo = {
@@ -333,10 +338,13 @@ const mockNetworkNodes: NetworkNode[] = [
 const mockNetworkTopology: NetworkTopology = {
   nodes: mockNetworkNodes,
   edges: [
-    { source: 'proxy-caddy', target: 'alice-container', type: 'route', ports: '8080' },
-    { source: 'proxy-caddy', target: 'bob-container', type: 'route', ports: '3000' },
-    { source: 'proxy-caddy', target: 'charlie-container', type: 'route', ports: '5000' },
+    // Proxy routes (HTTP/gRPC via Caddy)
+    { source: 'proxy-caddy', target: 'alice-container', type: 'route', ports: '8080, 80', protocol: 'HTTP' },
+    { source: 'proxy-caddy', target: 'bob-container', type: 'route', ports: '3000', protocol: 'HTTP' },
+    { source: 'proxy-caddy', target: 'charlie-container', type: 'route', ports: '5000', protocol: 'HTTP' },
+    // emma-container has app building, not yet routed
     { source: 'proxy-caddy', target: 'emma-container', type: 'blocked' },
+    // david-container is stopped, no routes
   ],
   networkCidr: '10.0.100.0/24',
   gatewayIp: '10.0.100.1',
@@ -401,6 +409,80 @@ const mockRoutes: ProxyRoute[] = [
   },
 ];
 
+// Mock passthrough routes (TCP/UDP port forwarding for gRPC, mTLS, etc.)
+const mockPassthroughRoutes: PassthroughRoute[] = [
+  {
+    externalPort: 50051,
+    targetIp: '10.0.100.18',
+    targetPort: 50051,
+    protocol: 'ROUTE_PROTOCOL_TCP',
+    active: true,
+    containerName: 'charlie-container',
+    description: 'gRPC ML Training Service (mTLS)',
+  },
+  {
+    externalPort: 6379,
+    targetIp: '10.0.100.15',
+    targetPort: 6379,
+    protocol: 'ROUTE_PROTOCOL_TCP',
+    active: true,
+    containerName: 'bob-container',
+    description: 'Redis Cache',
+  },
+  {
+    externalPort: 5432,
+    targetIp: '10.0.100.12',
+    targetPort: 5432,
+    protocol: 'ROUTE_PROTOCOL_TCP',
+    active: false,
+    containerName: 'alice-container',
+    description: 'PostgreSQL Database (disabled)',
+  },
+];
+
+// Mock DNS records for domain suggestions
+const mockDNSRecords: DNSRecord[] = [
+  { type: 'A', name: 'alice-ml-dashboard', data: 'alice-ml-dashboard.containarium.dev', ttl: 300 },
+  { type: 'A', name: 'bob-api-server', data: 'bob-api-server.containarium.dev', ttl: 300 },
+  { type: 'A', name: 'charlie-training-monitor', data: 'charlie-training-monitor.containarium.dev', ttl: 300 },
+  { type: 'A', name: 'emma-ci-runner', data: 'emma-ci-runner.containarium.dev', ttl: 300 },
+  { type: 'A', name: 'alice-docs', data: 'alice-docs.containarium.dev', ttl: 300 },
+  { type: 'A', name: 'test', data: 'test.containarium.dev', ttl: 300 },
+  { type: 'A', name: 'staging-api', data: 'staging-api.containarium.dev', ttl: 300 },
+  { type: 'CNAME', name: 'www', data: 'containarium.dev', ttl: 300 },
+];
+
+const mockBaseDomain = 'containarium.dev';
+
+// Mock traffic stats - simulates route popularity based on requests per minute
+const mockTrafficStats: RouteTrafficStats[] = [
+  // Most popular - Charlie's training monitor gets heavy API traffic
+  { routeId: 'charlie-training-monitor.containarium.dev', requestsPerMin: 12500, bytesPerMin: 85 * 1024 * 1024 },
+  // Bob's API server - moderate traffic
+  { routeId: 'bob-api-server.containarium.dev', requestsPerMin: 4200, bytesPerMin: 28 * 1024 * 1024 },
+  // Alice's ML dashboard - decent traffic
+  { routeId: 'alice-ml-dashboard.containarium.dev', requestsPerMin: 1850, bytesPerMin: 12 * 1024 * 1024 },
+  // Staging API - some test traffic
+  { routeId: 'staging-api.containarium.dev', requestsPerMin: 320, bytesPerMin: 2 * 1024 * 1024 },
+  // Test endpoint - minimal traffic
+  { routeId: 'test.containarium.dev', requestsPerMin: 45, bytesPerMin: 256 * 1024 },
+  // Static docs - inactive (stopped)
+  { routeId: 'alice-docs.containarium.dev', requestsPerMin: 0, bytesPerMin: 0 },
+  // Passthrough routes
+  { routeId: '50051-ROUTE_PROTOCOL_TCP', requestsPerMin: 8500, bytesPerMin: 120 * 1024 * 1024 }, // gRPC ML training - heavy
+  { routeId: '6379-ROUTE_PROTOCOL_TCP', requestsPerMin: 25000, bytesPerMin: 45 * 1024 * 1024 }, // Redis - very high ops
+  { routeId: '5432-ROUTE_PROTOCOL_TCP', requestsPerMin: 0, bytesPerMin: 0 }, // PostgreSQL - disabled
+];
+
+// Mock server for TrafficView
+const mockServer = {
+  id: 'demo-server',
+  name: 'GPU Cluster',
+  endpoint: 'https://demo-server.local:50051',
+  token: 'mock-token',
+  addedAt: Date.now() - 86400000, // Added 1 day ago
+};
+
 interface TabPanelProps {
   children?: React.ReactNode;
   index: number;
@@ -444,11 +526,12 @@ export default function DemoPage() {
       </Box>
 
       {/* Tabs */}
-      <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-        <Tabs value={tabIndex} onChange={(_, v) => setTabIndex(v)}>
-          <Tab label="Containers" />
-          <Tab label="Apps" />
-          <Tab label="Network" />
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
+        <Tabs value={tabIndex} onChange={(_, v) => setTabIndex(v)} sx={{ px: 2 }}>
+          <Tab icon={<DnsIcon />} iconPosition="start" label="Containers" />
+          <Tab icon={<AppsIcon />} iconPosition="start" label="Apps" />
+          <Tab icon={<HubIcon />} iconPosition="start" label="Network" />
+          <Tab icon={<TimelineIcon />} iconPosition="start" label="Traffic" />
         </Tabs>
       </Box>
 
@@ -491,17 +574,46 @@ export default function DemoPage() {
         <NetworkTopologyView
           topology={mockNetworkTopology}
           routes={mockRoutes}
+          passthroughRoutes={mockPassthroughRoutes}
+          dnsRecords={mockDNSRecords}
+          baseDomain={mockBaseDomain}
           isLoading={false}
           error={null}
           includeStopped={includeStopped}
           onIncludeStoppedChange={setIncludeStopped}
           onAddRoute={async (domain, targetIp, targetPort, protocol) => {
-            console.log('Demo: Would add route:', { domain, targetIp, targetPort, protocol });
+            console.log('Demo: Would add proxy route:', { domain, targetIp, targetPort, protocol });
           }}
           onDeleteRoute={async (domain) => {
-            console.log('Demo: Would delete route:', domain);
+            console.log('Demo: Would delete proxy route:', domain);
+          }}
+          onToggleRoute={async (domain, enabled) => {
+            console.log('Demo: Would toggle proxy route:', { domain, enabled });
+          }}
+          onAddPassthroughRoute={async (externalPort, targetIp, targetPort, protocol, containerName) => {
+            console.log('Demo: Would add passthrough route:', { externalPort, targetIp, targetPort, protocol, containerName });
+          }}
+          onDeletePassthroughRoute={async (externalPort, protocol) => {
+            console.log('Demo: Would delete passthrough route:', { externalPort, protocol });
+          }}
+          onTogglePassthroughRoute={async (externalPort, protocol, enabled) => {
+            console.log('Demo: Would toggle passthrough route:', { externalPort, protocol, enabled });
           }}
           onRefresh={() => {}}
+        />
+      </TabPanel>
+
+      {/* Traffic View */}
+      <TabPanel value={tabIndex} index={3}>
+        <TrafficView
+          server={mockServer}
+          containers={mockContainers}
+          proxyRoutes={mockRoutes}
+          passthroughRoutes={mockPassthroughRoutes}
+          trafficStats={mockTrafficStats}
+          onDateRangeChange={(start, end) => {
+            console.log('Demo: Would query traffic for date range:', { start, end });
+          }}
         />
       </TabPanel>
 
