@@ -18,6 +18,7 @@ func ServeWebUI() http.HandlerFunc {
 		// Get the requested path, removing /webui prefix
 		path := strings.TrimPrefix(r.URL.Path, "/webui")
 		path = strings.TrimPrefix(path, "/")
+		path = strings.TrimSuffix(path, "/") // Remove trailing slash to avoid double slashes
 
 		// Default to index.html for root path
 		if path == "" {
@@ -32,32 +33,39 @@ func ServeWebUI() http.HandlerFunc {
 			strings.HasSuffix(path, ".woff") || strings.HasSuffix(path, ".woff2"))
 
 		// Use forward slashes for embed.FS (not filepath.Join which uses OS separators)
+		// Track the actual file path found for correct content-type detection
 		fullPath := "webui/" + path
+		actualPath := path
 		content, err := webUIFiles.ReadFile(fullPath)
 
 		// If not found and not a static asset, try with .html extension (for Next.js routes)
 		if err != nil && !isStaticAsset {
 			fullPath = "webui/" + path + ".html"
+			actualPath = path + ".html"
 			content, err = webUIFiles.ReadFile(fullPath)
 		}
 
 		// If still not found and not a static asset, try index.html in the path directory
 		if err != nil && !isStaticAsset {
 			fullPath = "webui/" + path + "/index.html"
+			actualPath = path + "/index.html"
 			content, err = webUIFiles.ReadFile(fullPath)
 		}
 
 		// If not found in embedded files, try reading from disk (development mode)
 		if err != nil {
 			diskPath := filepath.Join("internal/gateway/webui", path)
+			actualPath = path
 			content, err = os.ReadFile(diskPath)
 			if err != nil && !isStaticAsset {
 				// Try with .html extension
 				diskPath = filepath.Join("internal/gateway/webui", path+".html")
+				actualPath = path + ".html"
 				content, err = os.ReadFile(diskPath)
 				if err != nil {
 					// Try index.html in directory
 					diskPath = filepath.Join("internal/gateway/webui", path, "index.html")
+					actualPath = path + "/index.html"
 					content, err = os.ReadFile(diskPath)
 				}
 			}
@@ -72,6 +80,7 @@ func ServeWebUI() http.HandlerFunc {
 		// For page routes that aren't found, fallback to index.html (SPA routing)
 		if err != nil {
 			fullPath = "webui/index.html"
+			actualPath = "index.html"
 			content, err = webUIFiles.ReadFile(fullPath)
 			if err != nil {
 				diskPath := filepath.Join("internal/gateway/webui", "index.html")
@@ -83,8 +92,8 @@ func ServeWebUI() http.HandlerFunc {
 			}
 		}
 
-		// Determine content type
-		contentType := getWebUIContentType(path)
+		// Determine content type based on actual file path (not original request path)
+		contentType := getWebUIContentType(actualPath)
 		w.Header().Set("Content-Type", contentType)
 		w.Write(content)
 	}

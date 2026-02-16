@@ -27,6 +27,7 @@ const (
 	NetworkService_ListPassthroughRoutes_FullMethodName  = "/containarium.v1.NetworkService/ListPassthroughRoutes"
 	NetworkService_AddPassthroughRoute_FullMethodName    = "/containarium.v1.NetworkService/AddPassthroughRoute"
 	NetworkService_DeletePassthroughRoute_FullMethodName = "/containarium.v1.NetworkService/DeletePassthroughRoute"
+	NetworkService_UpdatePassthroughRoute_FullMethodName = "/containarium.v1.NetworkService/UpdatePassthroughRoute"
 	NetworkService_GetContainerACL_FullMethodName        = "/containarium.v1.NetworkService/GetContainerACL"
 	NetworkService_UpdateContainerACL_FullMethodName     = "/containarium.v1.NetworkService/UpdateContainerACL"
 	NetworkService_GetNetworkTopology_FullMethodName     = "/containarium.v1.NetworkService/GetNetworkTopology"
@@ -55,6 +56,8 @@ type NetworkServiceClient interface {
 	AddPassthroughRoute(ctx context.Context, in *AddPassthroughRouteRequest, opts ...grpc.CallOption) (*AddPassthroughRouteResponse, error)
 	// DeletePassthroughRoute removes a TCP/UDP passthrough route
 	DeletePassthroughRoute(ctx context.Context, in *DeletePassthroughRouteRequest, opts ...grpc.CallOption) (*DeletePassthroughRouteResponse, error)
+	// UpdatePassthroughRoute updates an existing TCP/UDP passthrough route
+	UpdatePassthroughRoute(ctx context.Context, in *UpdatePassthroughRouteRequest, opts ...grpc.CallOption) (*UpdatePassthroughRouteResponse, error)
 	// GetContainerACL gets firewall rules for a DevBox container
 	GetContainerACL(ctx context.Context, in *GetContainerACLRequest, opts ...grpc.CallOption) (*GetContainerACLResponse, error)
 	// UpdateContainerACL updates firewall rules for a DevBox container
@@ -153,6 +156,16 @@ func (c *networkServiceClient) DeletePassthroughRoute(ctx context.Context, in *D
 	return out, nil
 }
 
+func (c *networkServiceClient) UpdatePassthroughRoute(ctx context.Context, in *UpdatePassthroughRouteRequest, opts ...grpc.CallOption) (*UpdatePassthroughRouteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdatePassthroughRouteResponse)
+	err := c.cc.Invoke(ctx, NetworkService_UpdatePassthroughRoute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *networkServiceClient) GetContainerACL(ctx context.Context, in *GetContainerACLRequest, opts ...grpc.CallOption) (*GetContainerACLResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetContainerACLResponse)
@@ -215,6 +228,8 @@ type NetworkServiceServer interface {
 	AddPassthroughRoute(context.Context, *AddPassthroughRouteRequest) (*AddPassthroughRouteResponse, error)
 	// DeletePassthroughRoute removes a TCP/UDP passthrough route
 	DeletePassthroughRoute(context.Context, *DeletePassthroughRouteRequest) (*DeletePassthroughRouteResponse, error)
+	// UpdatePassthroughRoute updates an existing TCP/UDP passthrough route
+	UpdatePassthroughRoute(context.Context, *UpdatePassthroughRouteRequest) (*UpdatePassthroughRouteResponse, error)
 	// GetContainerACL gets firewall rules for a DevBox container
 	GetContainerACL(context.Context, *GetContainerACLRequest) (*GetContainerACLResponse, error)
 	// UpdateContainerACL updates firewall rules for a DevBox container
@@ -256,6 +271,9 @@ func (UnimplementedNetworkServiceServer) AddPassthroughRoute(context.Context, *A
 }
 func (UnimplementedNetworkServiceServer) DeletePassthroughRoute(context.Context, *DeletePassthroughRouteRequest) (*DeletePassthroughRouteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeletePassthroughRoute not implemented")
+}
+func (UnimplementedNetworkServiceServer) UpdatePassthroughRoute(context.Context, *UpdatePassthroughRouteRequest) (*UpdatePassthroughRouteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdatePassthroughRoute not implemented")
 }
 func (UnimplementedNetworkServiceServer) GetContainerACL(context.Context, *GetContainerACLRequest) (*GetContainerACLResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetContainerACL not implemented")
@@ -434,6 +452,24 @@ func _NetworkService_DeletePassthroughRoute_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NetworkService_UpdatePassthroughRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdatePassthroughRouteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkServiceServer).UpdatePassthroughRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkService_UpdatePassthroughRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkServiceServer).UpdatePassthroughRoute(ctx, req.(*UpdatePassthroughRouteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NetworkService_GetContainerACL_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetContainerACLRequest)
 	if err := dec(in); err != nil {
@@ -544,6 +580,10 @@ var NetworkService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeletePassthroughRoute",
 			Handler:    _NetworkService_DeletePassthroughRoute_Handler,
+		},
+		{
+			MethodName: "UpdatePassthroughRoute",
+			Handler:    _NetworkService_UpdatePassthroughRoute_Handler,
 		},
 		{
 			MethodName: "GetContainerACL",

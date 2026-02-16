@@ -54,6 +54,19 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 		return nil, fmt.Errorf("failed to list routes: %w", err)
 	}
 
+	// Build IP -> container name map for lookups
+	ipToContainer := make(map[string]string)
+	if s.incusClient != nil {
+		containers, err := s.incusClient.ListContainers()
+		if err == nil {
+			for _, c := range containers {
+				if c.IPAddress != "" {
+					ipToContainer[c.IPAddress] = c.Name
+				}
+			}
+		}
+	}
+
 	var pbRoutes []*pb.ProxyRoute
 	for _, route := range routes {
 		// Optionally filter by username
@@ -75,6 +88,9 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 			}
 		}
 
+		// Lookup container name by IP
+		containerName := ipToContainer[route.UpstreamIP]
+
 		pbRoute := &pb.ProxyRoute{
 			Subdomain:   route.Subdomain,
 			FullDomain:  route.FullDomain,
@@ -82,6 +98,7 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 			Port:        int32(route.UpstreamPort),
 			Active:      true, // If it's in the list, it's active
 			Protocol:    routeProtocolToProto(route.Protocol),
+			AppName:     containerName, // Use container name as app name for display
 		}
 		pbRoutes = append(pbRoutes, pbRoute)
 	}
@@ -152,6 +169,28 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 	if req.Domain == "" {
 		return nil, fmt.Errorf("domain is required")
 	}
+
+	// Handle enable/disable toggle
+	if req.Active != nil && !*req.Active {
+		// Disable route: remove from Caddy
+		if err := s.proxyManager.RemoveRoute(req.Domain); err != nil {
+			return nil, fmt.Errorf("failed to disable route: %w", err)
+		}
+
+		return &pb.UpdateRouteResponse{
+			Route: &pb.ProxyRoute{
+				Subdomain:   req.Domain,
+				FullDomain:  req.Domain,
+				ContainerIp: req.TargetIp,
+				Port:        req.TargetPort,
+				Active:      false,
+				Protocol:    req.Protocol,
+			},
+			Message: fmt.Sprintf("Route disabled: %s", req.Domain),
+		}, nil
+	}
+
+	// For enabling or updating, we need target info
 	if req.TargetIp == "" {
 		return nil, fmt.Errorf("target_ip is required")
 	}
@@ -210,11 +249,30 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 		return nil, fmt.Errorf("failed to list passthrough routes: %w", err)
 	}
 
+	// Build IP -> container name map for lookups
+	ipToContainer := make(map[string]string)
+	if s.incusClient != nil {
+		containers, err := s.incusClient.ListContainers()
+		if err == nil {
+			for _, c := range containers {
+				if c.IPAddress != "" {
+					ipToContainer[c.IPAddress] = c.Name
+				}
+			}
+		}
+	}
+
 	var pbRoutes []*pb.PassthroughRoute
 	for _, route := range routes {
 		protocol := pb.RouteProtocol_ROUTE_PROTOCOL_TCP
 		if route.Protocol == "udp" {
 			protocol = pb.RouteProtocol_ROUTE_PROTOCOL_UDP
+		}
+
+		// Lookup container name by IP if not already set
+		containerName := route.ContainerName
+		if containerName == "" {
+			containerName = ipToContainer[route.TargetIP]
 		}
 
 		pbRoutes = append(pbRoutes, &pb.PassthroughRoute{
@@ -223,7 +281,7 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 			TargetPort:    int32(route.TargetPort),
 			Protocol:      protocol,
 			Active:        route.Active,
-			ContainerName: route.ContainerName,
+			ContainerName: containerName,
 			Description:   route.Description,
 		})
 	}
@@ -294,6 +352,74 @@ func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.Dele
 
 	return &pb.DeletePassthroughRouteResponse{
 		Message: fmt.Sprintf("Passthrough route removed: %s:%d", protocol, req.ExternalPort),
+	}, nil
+}
+
+// UpdatePassthroughRoute updates an existing TCP/UDP passthrough route
+func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.UpdatePassthroughRouteRequest) (*pb.UpdatePassthroughRouteResponse, error) {
+	// Validate request
+	if req.ExternalPort <= 0 || req.ExternalPort > 65535 {
+		return nil, fmt.Errorf("external_port must be between 1 and 65535")
+	}
+
+	// Determine protocol
+	protocol := "tcp"
+	pbProtocol := req.Protocol
+	if pbProtocol == pb.RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED {
+		pbProtocol = pb.RouteProtocol_ROUTE_PROTOCOL_TCP
+	}
+	if pbProtocol == pb.RouteProtocol_ROUTE_PROTOCOL_UDP {
+		protocol = "udp"
+	}
+
+	// Handle enable/disable toggle
+	if req.Active != nil && !*req.Active {
+		// Disable route: remove from iptables
+		if err := s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol); err != nil {
+			return nil, fmt.Errorf("failed to disable passthrough route: %w", err)
+		}
+
+		return &pb.UpdatePassthroughRouteResponse{
+			Route: &pb.PassthroughRoute{
+				ExternalPort:  req.ExternalPort,
+				TargetIp:      req.TargetIp,
+				TargetPort:    req.TargetPort,
+				Protocol:      pbProtocol,
+				Active:        false,
+				ContainerName: req.ContainerName,
+				Description:   req.Description,
+			},
+			Message: fmt.Sprintf("Passthrough route disabled: %s:%d", protocol, req.ExternalPort),
+		}, nil
+	}
+
+	// For enabling or updating, we need target info
+	if req.TargetIp == "" {
+		return nil, fmt.Errorf("target_ip is required")
+	}
+	if req.TargetPort <= 0 || req.TargetPort > 65535 {
+		return nil, fmt.Errorf("target_port must be between 1 and 65535")
+	}
+
+	// Remove existing route first (ignore errors if it doesn't exist)
+	s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol)
+
+	// Add the updated route
+	if err := s.passthroughManager.AddRoute(int(req.ExternalPort), req.TargetIp, int(req.TargetPort), protocol); err != nil {
+		return nil, fmt.Errorf("failed to update passthrough route: %w", err)
+	}
+
+	return &pb.UpdatePassthroughRouteResponse{
+		Route: &pb.PassthroughRoute{
+			ExternalPort:  req.ExternalPort,
+			TargetIp:      req.TargetIp,
+			TargetPort:    req.TargetPort,
+			Protocol:      pbProtocol,
+			Active:        true,
+			ContainerName: req.ContainerName,
+			Description:   req.Description,
+		},
+		Message: fmt.Sprintf("Passthrough route updated: %s:%d -> %s:%d", protocol, req.ExternalPort, req.TargetIp, req.TargetPort),
 	}, nil
 }
 

@@ -31,16 +31,12 @@ import {
   InputLabel,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import CloudIcon from '@mui/icons-material/Cloud';
-import RouterIcon from '@mui/icons-material/Router';
-import DnsIcon from '@mui/icons-material/Dns';
-import BlockIcon from '@mui/icons-material/Block';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import { NetworkTopology, ProxyRoute, NetworkNode, DNSRecord, RouteProtocol, PassthroughRoute, getRouteProtocolName, isGRPCRoute, isPassthroughProtocol } from '@/src/types/app';
 import PublicIcon from '@mui/icons-material/Public';
 import CableIcon from '@mui/icons-material/Cable';
+import { NetworkTopology, ProxyRoute, DNSRecord, RouteProtocol, PassthroughRoute, getRouteProtocolName, isGRPCRoute } from '@/src/types/app';
 
 interface NetworkTopologyViewProps {
   topology: NetworkTopology;
@@ -54,121 +50,11 @@ interface NetworkTopologyViewProps {
   onIncludeStoppedChange: (value: boolean) => void;
   onAddRoute?: (domain: string, targetIp: string, targetPort: number, protocol?: RouteProtocol) => Promise<void>;
   onDeleteRoute?: (domain: string) => Promise<void>;
+  onToggleRoute?: (domain: string, enabled: boolean) => Promise<void>;
   onAddPassthroughRoute?: (externalPort: number, targetIp: string, targetPort: number, protocol?: RouteProtocol, containerName?: string) => Promise<void>;
   onDeletePassthroughRoute?: (externalPort: number, protocol?: RouteProtocol) => Promise<void>;
+  onTogglePassthroughRoute?: (externalPort: number, protocol: RouteProtocol, enabled: boolean) => Promise<void>;
   onRefresh: () => void;
-}
-
-// Simple visualization component for the network
-function NetworkDiagram({ topology }: { topology: NetworkTopology }) {
-  const proxyNode = topology.nodes.find(n => n.type === 'proxy');
-  const containerNodes = topology.nodes.filter(n => n.type === 'container');
-
-  return (
-    <Box sx={{ p: 3, textAlign: 'center' }}>
-      {/* Internet */}
-      <Box sx={{ mb: 2 }}>
-        <CloudIcon sx={{ fontSize: 40, color: 'primary.main' }} />
-        <Typography variant="body2" color="text.secondary">
-          Internet
-        </Typography>
-      </Box>
-
-      {/* Arrow */}
-      <Box sx={{ height: 30, borderLeft: '2px solid', borderColor: 'grey.400', width: 0, mx: 'auto' }} />
-
-      {/* Proxy */}
-      {proxyNode && (
-        <Paper
-          sx={{
-            p: 2,
-            display: 'inline-block',
-            minWidth: 200,
-            mb: 2,
-            bgcolor: 'primary.light',
-            color: 'primary.contrastText',
-          }}
-        >
-          <RouterIcon sx={{ fontSize: 30 }} />
-          <Typography variant="subtitle1">{proxyNode.name}</Typography>
-          <Typography variant="body2">{proxyNode.ipAddress}</Typography>
-          <Chip label="TLS Termination" size="small" sx={{ mt: 1 }} />
-        </Paper>
-      )}
-
-      {/* Connections */}
-      {containerNodes.length > 0 && (
-        <>
-          <Box
-            sx={{
-              display: 'flex',
-              justifyContent: 'center',
-              gap: 2,
-              my: 2,
-            }}
-          >
-            {containerNodes.slice(0, 5).map((node, idx) => (
-              <Box key={node.id} sx={{ height: 30, borderLeft: '2px solid', borderColor: 'grey.400', width: 0 }} />
-            ))}
-          </Box>
-
-          {/* Container Nodes */}
-          <Box
-            sx={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              justifyContent: 'center',
-              gap: 2,
-            }}
-          >
-            {containerNodes.map((node) => (
-              <ContainerNodeCard key={node.id} node={node} />
-            ))}
-          </Box>
-        </>
-      )}
-
-      {/* Network Info */}
-      <Box sx={{ mt: 3, p: 2, bgcolor: 'grey.100', borderRadius: 1 }}>
-        <Typography variant="body2" color="text.secondary">
-          Network: {topology.networkCidr} | Gateway: {topology.gatewayIp}
-        </Typography>
-      </Box>
-    </Box>
-  );
-}
-
-function ContainerNodeCard({ node }: { node: NetworkNode }) {
-  const isRunning = node.state === 'running';
-
-  return (
-    <Paper
-      sx={{
-        p: 2,
-        minWidth: 150,
-        borderLeft: 4,
-        borderColor: isRunning ? 'success.main' : 'grey.400',
-        opacity: isRunning ? 1 : 0.7,
-      }}
-    >
-      <DnsIcon sx={{ fontSize: 24, color: isRunning ? 'success.main' : 'grey.500' }} />
-      <Typography variant="subtitle2" noWrap sx={{ maxWidth: 130 }}>
-        {node.name}
-      </Typography>
-      <Typography variant="caption" color="text.secondary" display="block">
-        {node.ipAddress || 'No IP'}
-      </Typography>
-      {node.aclName && (
-        <Chip
-          icon={<BlockIcon sx={{ fontSize: 14 }} />}
-          label={node.aclName.replace('acl-', '')}
-          size="small"
-          variant="outlined"
-          sx={{ mt: 0.5, fontSize: 10 }}
-        />
-      )}
-    </Paper>
-  );
 }
 
 // Unified Route Table Component - shows both proxy and passthrough routes
@@ -176,10 +62,19 @@ interface UnifiedRouteTableProps {
   proxyRoutes: ProxyRoute[];
   passthroughRoutes: PassthroughRoute[];
   onDeleteProxyRoute?: (domain: string) => void;
+  onToggleProxyRoute?: (domain: string, enabled: boolean) => void;
   onDeletePassthroughRoute?: (externalPort: number, protocol?: RouteProtocol) => void;
+  onTogglePassthroughRoute?: (externalPort: number, protocol: RouteProtocol, enabled: boolean) => void;
 }
 
-function UnifiedRouteTable({ proxyRoutes, passthroughRoutes, onDeleteProxyRoute, onDeletePassthroughRoute }: UnifiedRouteTableProps) {
+function UnifiedRouteTable({
+  proxyRoutes,
+  passthroughRoutes,
+  onDeleteProxyRoute,
+  onToggleProxyRoute,
+  onDeletePassthroughRoute,
+  onTogglePassthroughRoute
+}: UnifiedRouteTableProps) {
   const totalRoutes = proxyRoutes.length + passthroughRoutes.length;
 
   if (totalRoutes === 0) {
@@ -200,14 +95,14 @@ function UnifiedRouteTable({ proxyRoutes, passthroughRoutes, onDeleteProxyRoute,
             <TableCell>Target</TableCell>
             <TableCell>Protocol</TableCell>
             <TableCell>Container</TableCell>
-            <TableCell>Status</TableCell>
+            <TableCell>Enabled</TableCell>
             <TableCell align="right">Actions</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
           {/* Proxy Routes */}
           {proxyRoutes.map((route) => (
-            <TableRow key={`proxy-${route.fullDomain || route.subdomain}`}>
+            <TableRow key={`proxy-${route.fullDomain || route.subdomain}`} sx={{ opacity: route.active ? 1 : 0.6 }}>
               <TableCell>
                 <Tooltip title="Proxy: TLS terminated at Caddy">
                   <Chip
@@ -224,7 +119,13 @@ function UnifiedRouteTable({ proxyRoutes, passthroughRoutes, onDeleteProxyRoute,
                   href={`https://${route.fullDomain}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 0.5,
+                    textDecoration: route.active ? 'none' : 'line-through',
+                    color: route.active ? 'primary.main' : 'text.disabled',
+                  }}
                 >
                   {route.fullDomain}
                   <OpenInNewIcon sx={{ fontSize: 14 }} />
@@ -249,10 +150,11 @@ function UnifiedRouteTable({ proxyRoutes, passthroughRoutes, onDeleteProxyRoute,
                 </Typography>
               </TableCell>
               <TableCell>
-                <Chip
-                  label={route.active ? 'Active' : 'Inactive'}
-                  color={route.active ? 'success' : 'default'}
+                <Switch
                   size="small"
+                  checked={route.active}
+                  onChange={(e) => onToggleProxyRoute?.(route.fullDomain, e.target.checked)}
+                  disabled={!onToggleProxyRoute}
                 />
               </TableCell>
               <TableCell align="right">
@@ -272,7 +174,7 @@ function UnifiedRouteTable({ proxyRoutes, passthroughRoutes, onDeleteProxyRoute,
           ))}
           {/* Passthrough Routes */}
           {passthroughRoutes.map((route) => (
-            <TableRow key={`passthrough-${route.externalPort}-${route.protocol}`}>
+            <TableRow key={`passthrough-${route.externalPort}-${route.protocol}`} sx={{ opacity: route.active ? 1 : 0.6 }}>
               <TableCell>
                 <Tooltip title="Passthrough: Direct TCP/UDP forwarding (mTLS supported)">
                   <Chip
@@ -285,7 +187,11 @@ function UnifiedRouteTable({ proxyRoutes, passthroughRoutes, onDeleteProxyRoute,
                 </Tooltip>
               </TableCell>
               <TableCell>
-                <Typography variant="body2" fontFamily="monospace">
+                <Typography
+                  variant="body2"
+                  fontFamily="monospace"
+                  sx={{ textDecoration: route.active ? 'none' : 'line-through' }}
+                >
                   :{route.externalPort}
                 </Typography>
               </TableCell>
@@ -308,10 +214,11 @@ function UnifiedRouteTable({ proxyRoutes, passthroughRoutes, onDeleteProxyRoute,
                 </Typography>
               </TableCell>
               <TableCell>
-                <Chip
-                  label={route.active ? 'Active' : 'Inactive'}
-                  color={route.active ? 'success' : 'default'}
+                <Switch
                   size="small"
+                  checked={route.active}
+                  onChange={(e) => onTogglePassthroughRoute?.(route.externalPort, route.protocol, e.target.checked)}
+                  disabled={!onTogglePassthroughRoute}
                 />
               </TableCell>
               <TableCell align="right">
@@ -347,8 +254,10 @@ export default function NetworkTopologyView({
   onIncludeStoppedChange,
   onAddRoute,
   onDeleteRoute,
+  onToggleRoute,
   onAddPassthroughRoute,
   onDeletePassthroughRoute,
+  onTogglePassthroughRoute,
   onRefresh,
 }: NetworkTopologyViewProps) {
   // Dialog states
@@ -492,13 +401,8 @@ export default function NetworkTopologyView({
         </Box>
       </Box>
 
-      {/* Network Diagram */}
-      <Paper sx={{ mb: 3 }}>
-        <NetworkDiagram topology={topology} />
-      </Paper>
-
       {/* Route Table */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 4, mb: 2 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h6">
           Routes ({routes.length + passthroughRoutes.length})
         </Typography>
@@ -517,7 +421,9 @@ export default function NetworkTopologyView({
           proxyRoutes={routes}
           passthroughRoutes={passthroughRoutes}
           onDeleteProxyRoute={onDeleteRoute ? handleDeleteRoute : undefined}
+          onToggleProxyRoute={onToggleRoute}
           onDeletePassthroughRoute={onDeletePassthroughRoute ? handleDeletePassthroughRoute : undefined}
+          onTogglePassthroughRoute={onTogglePassthroughRoute}
         />
       </Paper>
 

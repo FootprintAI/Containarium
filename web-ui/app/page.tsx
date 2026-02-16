@@ -324,6 +324,8 @@ export default function Home() {
               <TrafficView
                 server={activeServer}
                 containers={containers}
+                proxyRoutes={routes}
+                passthroughRoutes={passthroughRoutes}
               />
             )}
           </Box>
