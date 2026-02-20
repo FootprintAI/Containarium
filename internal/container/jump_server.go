@@ -365,12 +365,12 @@ func waitForLocksAndRun(fn func() error, verbose bool) error {
 // This handles transient /etc/passwd lock conflicts with google_guest_agent or other system processes
 func retryUserCommand(cmdFunc func() error, verbose bool) error {
 	const (
-		maxRetries         = 20                      // Further increased for very aggressive google_guest_agent
-		baseDelay          = 2 * time.Second         // Doubled from 1s
-		maxDelay           = 15 * time.Second        // Increased from 10s
-		lastStandDelay     = 120 * time.Second       // Doubled from 60s for final retries
-		jitterFraction     = 0.3                     // 30% jitter
-		lockFileWaitMax    = 30 * time.Second        // Doubled from 15s
+		maxRetries            = 20                // Further increased for very aggressive google_guest_agent
+		baseDelay             = 2 * time.Second   // Doubled from 1s
+		maxDelay              = 15 * time.Second  // Increased from 10s
+		lastStandDelay        = 120 * time.Second // Doubled from 60s for final retries
+		jitterFraction        = 0.3               // 30% jitter
+		lockFileWaitMax       = 30 * time.Second  // Doubled from 15s
 		lockFileCheckInterval = 500 * time.Millisecond
 	)
 
@@ -615,10 +615,16 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 	}
 
 	// Create user
+	// Note: Jump server users only do SSH ProxyJump - they don't need subordinate UIDs
+	// for user namespaces (Podman runs inside containers, not on the jump server).
+	// Using -K SUB_UID_COUNT=0 and -K SUB_GID_COUNT=0 prevents exhaustion of
+	// subordinate UID ranges in /etc/subuid and /etc/subgid.
 	fmt.Printf("       Creating user %s...\n", username)
 	cmd = exec.Command("useradd", username,
 		"-s", "/usr/sbin/nologin", // No shell access - ProxyJump only!
-		"-m",                        // Create home directory
+		"-m",                    // Create home directory
+		"-K", "SUB_UID_COUNT=0", // Don't allocate subordinate UIDs
+		"-K", "SUB_GID_COUNT=0", // Don't allocate subordinate GIDs
 		"-c", fmt.Sprintf("Containarium user - %s", username))
 
 	output, err := cmd.CombinedOutput()

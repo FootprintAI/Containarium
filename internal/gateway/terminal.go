@@ -11,8 +11,8 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
-	incus "github.com/lxc/incus/client"
-	"github.com/lxc/incus/shared/api"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/shared/api"
 )
 
 // TerminalHandler handles WebSocket terminal connections via Incus exec
