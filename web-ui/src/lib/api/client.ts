@@ -248,6 +248,24 @@ export class ContaineriumClient {
   }
 
   /**
+   * Resize container resources (CPU, memory, disk)
+   * All parameters are optional - only specified values will be changed
+   * Note: Disk can only be increased, not decreased
+   */
+  async resizeContainer(
+    username: string,
+    resources: { cpu?: string; memory?: string; disk?: string }
+  ): Promise<Container> {
+    const response = await this.client.put('/containers/' + username + '/resize', {
+      cpu: resources.cpu || '',
+      memory: resources.memory || '',
+      disk: resources.disk || '',
+    });
+    const container = response.data.container || response.data;
+    return transformContainer(container);
+  }
+
+  /**
    * Get metrics for all containers or a specific container
    */
   async getMetrics(username?: string): Promise<ContainerMetrics[]> {

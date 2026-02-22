@@ -900,6 +900,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/resize": {
+      "put": {
+        "summary": "Resize container resources",
+        "description": "Dynamically adjusts CPU, memory, and disk resources without container restart. Disk can only be increased, not decreased.",
+        "operationId": "ContainerService_ResizeContainer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ResizeContainerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container to resize",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ResizeContainerBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/ssh-keys": {
       "post": {
         "summary": "Add SSH key",
@@ -3215,6 +3256,38 @@
         }
       },
       "title": "RemoveSSHKeyResponse is the response from removing an SSH key"
+    },
+    "ResizeContainerBody": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "title": "New CPU limit (e.g., \"4\", \"2-4\") - empty means no change"
+        },
+        "memory": {
+          "type": "string",
+          "title": "New memory limit (e.g., \"8GB\", \"4096MB\") - empty means no change"
+        },
+        "disk": {
+          "type": "string",
+          "title": "New disk size (e.g., \"100GB\") - empty means no change\nNote: Can only increase, cannot shrink"
+        }
+      },
+      "title": "ResizeContainerRequest is the request to resize container resources"
+    },
+    "ResizeContainerResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Success message"
+        },
+        "container": {
+          "$ref": "#/definitions/Container",
+          "title": "Updated container with new resources"
+        }
+      },
+      "title": "ResizeContainerResponse is the response from resizing a container"
     },
     "ResourceLimits": {
       "type": "object",

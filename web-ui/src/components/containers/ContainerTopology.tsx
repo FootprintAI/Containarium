@@ -26,6 +26,7 @@ interface ContainerTopologyProps {
   onTerminalContainer?: (username: string) => void;
   onEditFirewall?: (username: string) => void;
   onEditLabels?: (username: string, labels: Record<string, string>) => void;
+  onResize?: (username: string, currentResources: { cpu: string; memory: string; disk: string }) => void;
   onRefresh: () => void;
 }
 
@@ -42,6 +43,7 @@ export default function ContainerTopology({
   onTerminalContainer,
   onEditFirewall,
   onEditLabels,
+  onResize,
   onRefresh,
 }: ContainerTopologyProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
@@ -208,6 +210,7 @@ export default function ContainerTopology({
                   onTerminal={onTerminalContainer}
                   onEditFirewall={onEditFirewall}
                   onEditLabels={onEditLabels}
+                  onResize={onResize}
                 />
               ) : (
                 <Box
@@ -228,6 +231,7 @@ export default function ContainerTopology({
                       onTerminal={onTerminalContainer}
                       onEditFirewall={onEditFirewall}
                       onEditLabels={onEditLabels ? (username: string) => onEditLabels(username, container.labels || {}) : undefined}
+                      onResize={onResize ? (username: string) => onResize(username, { cpu: container.cpu, memory: container.memory, disk: container.disk }) : undefined}
                     />
                   ))}
                 </Box>

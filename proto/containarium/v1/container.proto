@@ -308,3 +308,28 @@ message GetMetricsResponse {
   // Metrics for requested container(s)
   repeated ContainerMetrics metrics = 1;
 }
+
+// ResizeContainerRequest is the request to resize container resources
+message ResizeContainerRequest {
+  // Username of the container to resize
+  string username = 1;
+
+  // New CPU limit (e.g., "4", "2-4") - empty means no change
+  string cpu = 2;
+
+  // New memory limit (e.g., "8GB", "4096MB") - empty means no change
+  string memory = 3;
+
+  // New disk size (e.g., "100GB") - empty means no change
+  // Note: Can only increase, cannot shrink
+  string disk = 4;
+}
+
+// ResizeContainerResponse is the response from resizing a container
+message ResizeContainerResponse {
+  // Success message
+  string message = 1;
+
+  // Updated container with new resources
+  Container container = 2;
+}

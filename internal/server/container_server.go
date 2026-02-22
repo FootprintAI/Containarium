@@ -317,6 +317,39 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 	return nil, fmt.Errorf("not implemented yet")
 }
 
+// ResizeContainer dynamically resizes container resources
+func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeContainerRequest) (*pb.ResizeContainerResponse, error) {
+	if req.Username == "" {
+		return nil, fmt.Errorf("username is required")
+	}
+
+	// At least one resource must be specified
+	if req.Cpu == "" && req.Memory == "" && req.Disk == "" {
+		return nil, fmt.Errorf("at least one resource (cpu, memory, or disk) must be specified")
+	}
+
+	containerName := fmt.Sprintf("%s-container", req.Username)
+
+	// Perform resize
+	if err := s.manager.Resize(containerName, req.Cpu, req.Memory, req.Disk, false); err != nil {
+		return nil, fmt.Errorf("failed to resize container: %w", err)
+	}
+
+	// Get updated container info
+	info, err := s.manager.Get(req.Username)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get updated container info: %w", err)
+	}
+
+	// Convert to protobuf
+	protoContainer := toProtoContainer(info)
+
+	return &pb.ResizeContainerResponse{
+		Message:   fmt.Sprintf("Container %s resized successfully", containerName),
+		Container: protoContainer,
+	}, nil
+}
+
 // AddSSHKey adds an SSH key to a container
 func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyRequest) (*pb.AddSSHKeyResponse, error) {
 	if req.Username == "" {

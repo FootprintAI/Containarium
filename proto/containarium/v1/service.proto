@@ -125,6 +125,19 @@ service ContainerService {
     };
   }
 
+  // ResizeContainer dynamically adjusts container resources
+  rpc ResizeContainer(ResizeContainerRequest) returns (ResizeContainerResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/resize"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Resize container resources";
+      description: "Dynamically adjusts CPU, memory, and disk resources without container restart. Disk can only be increased, not decreased.";
+      tags: "Container Operations";
+    };
+  }
+
   // AddSSHKey adds an SSH public key to a container
   rpc AddSSHKey(AddSSHKeyRequest) returns (AddSSHKeyResponse) {
     option (google.api.http) = {

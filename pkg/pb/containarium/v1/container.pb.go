@@ -1526,6 +1526,135 @@ func (x *GetMetricsResponse) GetMetrics() []*ContainerMetrics {
 	return nil
 }
 
+// ResizeContainerRequest is the request to resize container resources
+type ResizeContainerRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Username of the container to resize
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// New CPU limit (e.g., "4", "2-4") - empty means no change
+	Cpu string `protobuf:"bytes,2,opt,name=cpu,proto3" json:"cpu,omitempty"`
+	// New memory limit (e.g., "8GB", "4096MB") - empty means no change
+	Memory string `protobuf:"bytes,3,opt,name=memory,proto3" json:"memory,omitempty"`
+	// New disk size (e.g., "100GB") - empty means no change
+	// Note: Can only increase, cannot shrink
+	Disk          string `protobuf:"bytes,4,opt,name=disk,proto3" json:"disk,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResizeContainerRequest) Reset() {
+	*x = ResizeContainerRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResizeContainerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResizeContainerRequest) ProtoMessage() {}
+
+func (x *ResizeContainerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResizeContainerRequest.ProtoReflect.Descriptor instead.
+func (*ResizeContainerRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ResizeContainerRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *ResizeContainerRequest) GetCpu() string {
+	if x != nil {
+		return x.Cpu
+	}
+	return ""
+}
+
+func (x *ResizeContainerRequest) GetMemory() string {
+	if x != nil {
+		return x.Memory
+	}
+	return ""
+}
+
+func (x *ResizeContainerRequest) GetDisk() string {
+	if x != nil {
+		return x.Disk
+	}
+	return ""
+}
+
+// ResizeContainerResponse is the response from resizing a container
+type ResizeContainerResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Success message
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// Updated container with new resources
+	Container     *Container `protobuf:"bytes,2,opt,name=container,proto3" json:"container,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResizeContainerResponse) Reset() {
+	*x = ResizeContainerResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResizeContainerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResizeContainerResponse) ProtoMessage() {}
+
+func (x *ResizeContainerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResizeContainerResponse.ProtoReflect.Descriptor instead.
+func (*ResizeContainerResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ResizeContainerResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *ResizeContainerResponse) GetContainer() *Container {
+	if x != nil {
+		return x.Container
+	}
+	return nil
+}
+
 var file_containarium_v1_container_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.EnumValueOptions)(nil),
@@ -1658,7 +1787,15 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x11GetMetricsRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\"Q\n" +
 	"\x12GetMetricsResponse\x12;\n" +
-	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics*\x8c\x02\n" +
+	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics\"r\n" +
+	"\x16ResizeContainerRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x10\n" +
+	"\x03cpu\x18\x02 \x01(\tR\x03cpu\x12\x16\n" +
+	"\x06memory\x18\x03 \x01(\tR\x06memory\x12\x12\n" +
+	"\x04disk\x18\x04 \x01(\tR\x04disk\"m\n" +
+	"\x17ResizeContainerResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x128\n" +
+	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer*\x8c\x02\n" +
 	"\x0eContainerState\x12,\n" +
 	"\x1bCONTAINER_STATE_UNSPECIFIED\x10\x00\x1a\v\x8a\xb5\x18\aUnknown\x12(\n" +
 	"\x17CONTAINER_STATE_RUNNING\x10\x01\x1a\v\x8a\xb5\x18\aRunning\x12(\n" +
@@ -1683,7 +1820,7 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_containarium_v1_container_proto_goTypes = []any{
 	(ContainerState)(0),                   // 0: containarium.v1.ContainerState
 	(*ResourceLimits)(nil),                // 1: containarium.v1.ResourceLimits
@@ -1708,33 +1845,36 @@ var file_containarium_v1_container_proto_goTypes = []any{
 	(*RemoveSSHKeyResponse)(nil),          // 20: containarium.v1.RemoveSSHKeyResponse
 	(*GetMetricsRequest)(nil),             // 21: containarium.v1.GetMetricsRequest
 	(*GetMetricsResponse)(nil),            // 22: containarium.v1.GetMetricsResponse
-	nil,                                   // 23: containarium.v1.Container.LabelsEntry
-	nil,                                   // 24: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                   // 25: containarium.v1.ListContainersRequest.LabelFilterEntry
-	(*descriptorpb.EnumValueOptions)(nil), // 26: google.protobuf.EnumValueOptions
+	(*ResizeContainerRequest)(nil),        // 23: containarium.v1.ResizeContainerRequest
+	(*ResizeContainerResponse)(nil),       // 24: containarium.v1.ResizeContainerResponse
+	nil,                                   // 25: containarium.v1.Container.LabelsEntry
+	nil,                                   // 26: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                   // 27: containarium.v1.ListContainersRequest.LabelFilterEntry
+	(*descriptorpb.EnumValueOptions)(nil), // 28: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
 	1,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
 	2,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	23, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	25, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
 	1,  // 4: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	24, // 5: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	26, // 5: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
 	3,  // 6: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
 	0,  // 7: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	25, // 8: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	27, // 8: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
 	3,  // 9: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
 	3,  // 10: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
 	4,  // 11: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
 	3,  // 12: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
 	3,  // 13: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
 	4,  // 14: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	26, // 15: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	16, // [16:16] is the sub-list for method output_type
-	16, // [16:16] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	15, // [15:16] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	3,  // 15: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
+	28, // 16: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	16, // [16:17] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }
@@ -1748,7 +1888,7 @@ func file_containarium_v1_container_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   25,
+			NumMessages:   27,
 			NumExtensions: 1,
 			NumServices:   0,
 		},

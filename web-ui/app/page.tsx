@@ -14,6 +14,7 @@ import ContainerTopology from '@/src/components/containers/ContainerTopology';
 import CreateContainerDialog from '@/src/components/containers/CreateContainerDialog';
 import DeleteConfirmDialog from '@/src/components/containers/DeleteConfirmDialog';
 import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
+import ResizeContainerDialog from '@/src/components/containers/ResizeContainerDialog';
 import AppsView from '@/src/components/apps/AppsView';
 import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import FirewallEditor from '@/src/components/network/FirewallEditor';
@@ -58,6 +59,7 @@ export default function Home() {
     deleteContainer,
     startContainer,
     stopContainer,
+    resizeContainer,
     setLabels,
     removeLabel,
     refresh: refreshContainers,
@@ -116,6 +118,8 @@ export default function Home() {
   const [terminalUsername, setTerminalUsername] = useState('');
   const [labelEditorOpen, setLabelEditorOpen] = useState(false);
   const [labelEditorContainer, setLabelEditorContainer] = useState<{username: string, labels: Record<string, string>} | null>(null);
+  const [resizeDialogOpen, setResizeDialogOpen] = useState(false);
+  const [resizeTarget, setResizeTarget] = useState<{username: string, cpu: string, memory: string, disk: string} | null>(null);
 
   // Server handlers
   const handleAddServer = async (name: string, endpoint: string, token: string) => {
@@ -174,6 +178,22 @@ export default function Home() {
   const handleCloseLabelEditor = () => {
     setLabelEditorOpen(false);
     setLabelEditorContainer(null);
+  };
+
+  // Resize handlers
+  const handleOpenResize = (username: string, currentResources: { cpu: string; memory: string; disk: string }) => {
+    setResizeTarget({ username, ...currentResources });
+    setResizeDialogOpen(true);
+  };
+
+  const handleCloseResize = () => {
+    setResizeDialogOpen(false);
+    setResizeTarget(null);
+  };
+
+  const handleResize = async (resources: { cpu?: string; memory?: string; disk?: string }) => {
+    if (!resizeTarget) return;
+    await resizeContainer(resizeTarget.username, resources);
   };
 
   // App handlers
@@ -273,6 +293,7 @@ export default function Home() {
                 onTerminalContainer={handleOpenTerminal}
                 onEditFirewall={handleEditContainerFirewall}
                 onEditLabels={handleEditLabels}
+                onResize={handleOpenResize}
                 onRefresh={refreshContainers}
               />
             )}
@@ -401,6 +422,22 @@ export default function Home() {
           onRemove={async (key) => {
             await removeLabel(labelEditorContainer.username, key);
           }}
+        />
+      )}
+
+      {/* Resize Container Dialog */}
+      {resizeTarget && (
+        <ResizeContainerDialog
+          open={resizeDialogOpen}
+          onClose={handleCloseResize}
+          containerName={`${resizeTarget.username}-container`}
+          username={resizeTarget.username}
+          currentCpu={resizeTarget.cpu}
+          currentMemory={resizeTarget.memory}
+          currentDisk={resizeTarget.disk}
+          memoryUsageBytes={metricsMap[`${resizeTarget.username}-container`]?.memoryUsageBytes}
+          diskUsageBytes={metricsMap[`${resizeTarget.username}-container`]?.diskUsageBytes}
+          onResize={handleResize}
         />
       )}
     </Box>

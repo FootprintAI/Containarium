@@ -25,6 +25,7 @@ const (
 	ContainerService_DeleteContainer_FullMethodName = "/containarium.v1.ContainerService/DeleteContainer"
 	ContainerService_StartContainer_FullMethodName  = "/containarium.v1.ContainerService/StartContainer"
 	ContainerService_StopContainer_FullMethodName   = "/containarium.v1.ContainerService/StopContainer"
+	ContainerService_ResizeContainer_FullMethodName = "/containarium.v1.ContainerService/ResizeContainer"
 	ContainerService_AddSSHKey_FullMethodName       = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_RemoveSSHKey_FullMethodName    = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_GetMetrics_FullMethodName      = "/containarium.v1.ContainerService/GetMetrics"
@@ -49,6 +50,8 @@ type ContainerServiceClient interface {
 	StartContainer(ctx context.Context, in *StartContainerRequest, opts ...grpc.CallOption) (*StartContainerResponse, error)
 	// StopContainer stops a running container
 	StopContainer(ctx context.Context, in *StopContainerRequest, opts ...grpc.CallOption) (*StopContainerResponse, error)
+	// ResizeContainer dynamically adjusts container resources
+	ResizeContainer(ctx context.Context, in *ResizeContainerRequest, opts ...grpc.CallOption) (*ResizeContainerResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -127,6 +130,16 @@ func (c *containerServiceClient) StopContainer(ctx context.Context, in *StopCont
 	return out, nil
 }
 
+func (c *containerServiceClient) ResizeContainer(ctx context.Context, in *ResizeContainerRequest, opts ...grpc.CallOption) (*ResizeContainerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResizeContainerResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ResizeContainer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AddSSHKeyResponse)
@@ -185,6 +198,8 @@ type ContainerServiceServer interface {
 	StartContainer(context.Context, *StartContainerRequest) (*StartContainerResponse, error)
 	// StopContainer stops a running container
 	StopContainer(context.Context, *StopContainerRequest) (*StopContainerResponse, error)
+	// ResizeContainer dynamically adjusts container resources
+	ResizeContainer(context.Context, *ResizeContainerRequest) (*ResizeContainerResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -220,6 +235,9 @@ func (UnimplementedContainerServiceServer) StartContainer(context.Context, *Star
 }
 func (UnimplementedContainerServiceServer) StopContainer(context.Context, *StopContainerRequest) (*StopContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopContainer not implemented")
+}
+func (UnimplementedContainerServiceServer) ResizeContainer(context.Context, *ResizeContainerRequest) (*ResizeContainerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResizeContainer not implemented")
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
@@ -362,6 +380,24 @@ func _ContainerService_StopContainer_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_ResizeContainer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResizeContainerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ResizeContainer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ResizeContainer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ResizeContainer(ctx, req.(*ResizeContainerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_AddSSHKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AddSSHKeyRequest)
 	if err := dec(in); err != nil {
@@ -464,6 +500,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopContainer",
 			Handler:    _ContainerService_StopContainer_Handler,
+		},
+		{
+			MethodName: "ResizeContainer",
+			Handler:    _ContainerService_ResizeContainer_Handler,
 		},
 		{
 			MethodName: "AddSSHKey",

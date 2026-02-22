@@ -197,6 +197,24 @@ export function useContainers(server: Server | null) {
     return result;
   };
 
+  /**
+   * Resize a container's resources (CPU, memory, disk)
+   */
+  const resizeContainer = async (
+    username: string,
+    resources: { cpu?: string; memory?: string; disk?: string }
+  ) => {
+    if (!server) throw new Error('No server selected');
+
+    const client = getClient(server);
+    const container = await client.resizeContainer(username, resources);
+
+    // Revalidate container list
+    await mutate();
+
+    return container;
+  };
+
   return {
     containers: data || [],
     systemInfo: systemInfo || null,
@@ -206,6 +224,7 @@ export function useContainers(server: Server | null) {
     deleteContainer,
     startContainer,
     stopContainer,
+    resizeContainer,
     getLabels,
     setLabels,
     removeLabel,

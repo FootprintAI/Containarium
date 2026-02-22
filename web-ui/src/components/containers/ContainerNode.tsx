@@ -19,6 +19,7 @@ import StorageIcon from '@mui/icons-material/Storage';
 import DnsIcon from '@mui/icons-material/Dns';
 import SecurityIcon from '@mui/icons-material/Security';
 import LabelIcon from '@mui/icons-material/Label';
+import TuneIcon from '@mui/icons-material/Tune';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
 
 interface ContainerNodeProps {
@@ -30,6 +31,7 @@ interface ContainerNodeProps {
   onTerminal?: (username: string) => void;
   onEditFirewall?: (username: string) => void;
   onEditLabels?: (username: string) => void;
+  onResize?: (username: string) => void;
 }
 
 /**
@@ -89,7 +91,7 @@ function getStateColor(state: ContainerState): 'success' | 'error' | 'warning' |
   }
 }
 
-export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall, onEditLabels }: ContainerNodeProps) {
+export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall, onEditLabels, onResize }: ContainerNodeProps) {
   const isRunning = container.state === 'Running';
 
   // Calculate CPU, memory and disk utilization
@@ -280,6 +282,17 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
                 onClick={() => onTerminal(container.username || container.name)}
               >
                 <TerminalIcon />
+              </IconButton>
+            </Tooltip>
+          )}
+          {onResize && (
+            <Tooltip title="Resize Resources">
+              <IconButton
+                size="small"
+                color="info"
+                onClick={() => onResize(container.username || container.name)}
+              >
+                <TuneIcon />
               </IconButton>
             </Tooltip>
           )}

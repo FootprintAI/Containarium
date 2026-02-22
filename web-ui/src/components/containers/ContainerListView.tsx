@@ -21,6 +21,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import SecurityIcon from '@mui/icons-material/Security';
 import LabelIcon from '@mui/icons-material/Label';
+import TuneIcon from '@mui/icons-material/Tune';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
 
 interface ContainerListViewProps {
@@ -32,6 +33,7 @@ interface ContainerListViewProps {
   onTerminal?: (username: string) => void;
   onEditFirewall?: (username: string) => void;
   onEditLabels?: (username: string, labels: Record<string, string>) => void;
+  onResize?: (username: string, currentResources: { cpu: string; memory: string; disk: string }) => void;
 }
 
 /**
@@ -124,6 +126,7 @@ export default function ContainerListView({
   onTerminal,
   onEditFirewall,
   onEditLabels,
+  onResize,
 }: ContainerListViewProps) {
   return (
     <TableContainer component={Paper} variant="outlined">
@@ -270,6 +273,21 @@ export default function ContainerListView({
                       <Tooltip title="Terminal">
                         <IconButton size="small" color="primary" onClick={() => onTerminal(username)}>
                           <TerminalIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    {onResize && (
+                      <Tooltip title="Resize Resources">
+                        <IconButton
+                          size="small"
+                          color="info"
+                          onClick={() => onResize(username, {
+                            cpu: container.cpu,
+                            memory: container.memory,
+                            disk: container.disk,
+                          })}
+                        >
+                          <TuneIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
                     )}
