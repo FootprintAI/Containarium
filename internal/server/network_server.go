@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/events"
@@ -24,6 +25,22 @@ type NetworkServer struct {
 	proxyIP            string                      // e.g., "10.100.0.1"
 	baseDomain         string                      // e.g., "kafeido.app"
 	emitter            *events.Emitter
+}
+
+// resolveFullDomain determines the full domain from a user-provided domain string.
+// - If domain already ends with baseDomain, use as-is.
+// - If domain is a simple name (no dots), append baseDomain.
+// - Otherwise it's an independent FQDN — use as-is.
+func resolveFullDomain(domain, baseDomain string) string {
+	if baseDomain != "" {
+		if strings.HasSuffix(domain, "."+baseDomain) || domain == baseDomain {
+			return domain
+		}
+		if !strings.Contains(domain, ".") {
+			return fmt.Sprintf("%s.%s", domain, baseDomain)
+		}
+	}
+	return domain
 }
 
 // NewNetworkServer creates a new network server
@@ -175,11 +192,8 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 	}
 
 	// Determine full domain
-	fullDomain := req.Domain
 	subdomain := req.Domain
-	if s.baseDomain != "" && !contains(req.Domain, s.baseDomain) {
-		fullDomain = fmt.Sprintf("%s.%s", req.Domain, s.baseDomain)
-	}
+	fullDomain := resolveFullDomain(req.Domain, s.baseDomain)
 
 	// Determine protocol
 	protocol := "http"
@@ -244,11 +258,8 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 	}
 
 	// Determine full domain
-	fullDomain := req.Domain
 	subdomain := req.Domain
-	if s.baseDomain != "" && !contains(req.Domain, s.baseDomain) {
-		fullDomain = fmt.Sprintf("%s.%s", req.Domain, s.baseDomain)
-	}
+	fullDomain := resolveFullDomain(req.Domain, s.baseDomain)
 
 	// Determine protocol
 	protocol := "http"
@@ -340,10 +351,7 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 	}
 
 	// Determine full domain for lookup
-	fullDomain := req.Domain
-	if s.baseDomain != "" && !contains(req.Domain, s.baseDomain) {
-		fullDomain = fmt.Sprintf("%s.%s", req.Domain, s.baseDomain)
-	}
+	fullDomain := resolveFullDomain(req.Domain, s.baseDomain)
 
 	// If RouteStore is available, delete from PostgreSQL (source of truth)
 	if s.routeStore != nil {
