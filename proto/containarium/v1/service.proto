@@ -215,6 +215,19 @@ service ContainerService {
     };
   }
 
+  // CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
+  rpc CleanupDisk(CleanupDiskRequest) returns (CleanupDiskResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/cleanup-disk"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Clean up container disk space";
+      description: "Frees disk space inside a container by removing temporary files, package manager caches, and trimming journal logs. Useful when disk is full and resize fails.";
+      tags: "Container Operations";
+    };
+  }
+
   // GetSystemInfo gets information about the Incus host
   rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse) {
     option (google.api.http) = {

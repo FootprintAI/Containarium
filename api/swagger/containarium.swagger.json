@@ -1012,6 +1012,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/cleanup-disk": {
+      "post": {
+        "summary": "Clean up container disk space",
+        "description": "Frees disk space inside a container by removing temporary files, package manager caches, and trimming journal logs. Useful when disk is full and resize fails.",
+        "operationId": "ContainerService_CleanupDisk",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CleanupDiskResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CleanupDiskBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/resize": {
       "put": {
         "summary": "Resize container resources",
@@ -2244,6 +2285,29 @@
         }
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
+    },
+    "CleanupDiskBody": {
+      "type": "object",
+      "title": "CleanupDiskRequest is the request to clean up disk space in a container"
+    },
+    "CleanupDiskResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Human-readable summary of what was cleaned"
+        },
+        "freedBytes": {
+          "type": "string",
+          "format": "int64",
+          "title": "Bytes freed by the cleanup"
+        },
+        "container": {
+          "$ref": "#/definitions/Container",
+          "title": "Updated container info after cleanup"
+        }
+      },
+      "title": "CleanupDiskResponse is the response from cleaning up disk space"
     },
     "Collaborator": {
       "type": "object",

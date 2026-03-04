@@ -475,7 +475,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			Protocol:    "http",
 			Description: "Containarium management UI",
 			Active:      true,
-			CreatedBy:   "system",
+			CreatedBy:   string(app.RouteCreatorSystem),
 		}
 		if err := ds.routeStore.Save(ctx, mgmtRoute); err != nil {
 			log.Printf("Warning: Failed to ensure management route: %v", err)

@@ -15,6 +15,16 @@ var (
 	ErrRouteNotFound = errors.New("route not found")
 )
 
+// RouteCreator identifies who created a route.
+type RouteCreator string
+
+const (
+	// RouteCreatorSystem marks routes created automatically by the daemon (e.g. management UI).
+	RouteCreatorSystem RouteCreator = "system"
+	// RouteCreatorUser marks routes created by a user via the API.
+	RouteCreatorUser RouteCreator = "user"
+)
+
 // RouteRecord represents a route stored in PostgreSQL (source of truth)
 type RouteRecord struct {
 	ID            string

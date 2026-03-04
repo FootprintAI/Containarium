@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -875,6 +876,14 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 		return fmt.Errorf("device %s not found in container", deviceName)
 	}
 
+	// If the disk is full, Incus cannot write backup.yaml during UpdateInstance.
+	// Detect this case and temporarily expand the ZFS quota to unblock the operation.
+	if deviceName == "root" {
+		if err := c.ensureZFSQuotaHeadroom(containerName, device["pool"], size); err != nil {
+			fmt.Printf("Warning: ZFS quota pre-expand failed (non-fatal): %v\n", err)
+		}
+	}
+
 	// Update the device size
 	device["size"] = size
 	inst.Devices[deviceName] = device
@@ -889,6 +898,37 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	err = op.Wait()
 	if err != nil {
 		return fmt.Errorf("failed to wait for device update: %w", err)
+	}
+
+	return nil
+}
+
+// ensureZFSQuotaHeadroom checks if the container's ZFS dataset is at quota and
+// temporarily expands it to the target size so Incus can write its backup.yaml.
+func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) error {
+	if pool == "" {
+		pool = "default"
+	}
+
+	// Determine the ZFS dataset name: <zfs-pool>/containers/containers/<name>
+	// Get the ZFS pool name from the Incus storage pool source
+	poolConfig, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return fmt.Errorf("failed to get storage pool %s: %w", pool, err)
+	}
+
+	zfsPool := poolConfig.Config["source"]
+	if zfsPool == "" {
+		// Try pool name as ZFS pool name
+		zfsPool = poolConfig.Name
+	}
+
+	dataset := fmt.Sprintf("%s/containers/containers/%s", zfsPool, containerName)
+
+	// Set the ZFS quota to the target size directly
+	cmd := exec.Command("zfs", "set", fmt.Sprintf("quota=%s", targetSize), dataset)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("zfs set quota failed on %s: %w (output: %s)", dataset, err, string(output))
 	}
 
 	return nil
@@ -1214,6 +1254,71 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 	}
 
 	return stdout.String(), stderr.String(), nil
+}
+
+// CleanupDisk frees disk space inside a container by removing temp files,
+// package manager caches, and trimming journal logs.
+// Returns a human-readable summary and the number of bytes freed.
+func (c *Client) CleanupDisk(containerName string) (string, int64, error) {
+	// Get disk usage before cleanup
+	dfBefore, _, _ := c.ExecWithOutput(containerName, []string{"df", "-B1", "/"})
+	usedBefore := parseDfUsedBytes(dfBefore)
+
+	// Run cleanup commands (ignore individual errors — some may not apply)
+	cleanupScript := `
+rm -rf /tmp/* /tmp/.* 2>/dev/null
+apt-get clean 2>/dev/null
+dnf clean all 2>/dev/null
+journalctl --vacuum-size=50M 2>/dev/null
+`
+	c.ExecWithOutput(containerName, []string{"/bin/bash", "-c", cleanupScript})
+
+	// Get disk usage after cleanup
+	dfAfter, _, _ := c.ExecWithOutput(containerName, []string{"df", "-B1", "/"})
+	usedAfter := parseDfUsedBytes(dfAfter)
+
+	var freedBytes int64
+	if usedBefore > 0 && usedAfter > 0 && usedBefore > usedAfter {
+		freedBytes = usedBefore - usedAfter
+	}
+
+	summary := fmt.Sprintf("Cleaned temp files, package cache, and trimmed journal logs. Freed %s.", formatBytesHuman(freedBytes))
+	return summary, freedBytes, nil
+}
+
+// parseDfUsedBytes parses "df -B1 /" output and returns the "Used" column in bytes.
+func parseDfUsedBytes(dfOutput string) int64 {
+	lines := strings.Split(strings.TrimSpace(dfOutput), "\n")
+	if len(lines) < 2 {
+		return 0
+	}
+	fields := strings.Fields(lines[1])
+	if len(fields) < 4 {
+		return 0
+	}
+	used, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return used
+}
+
+// formatBytesHuman formats bytes into a human-readable string.
+func formatBytesHuman(b int64) string {
+	if b <= 0 {
+		return "0 B"
+	}
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
 }
 
 // extractLabelsFromConfig extracts labels from container config

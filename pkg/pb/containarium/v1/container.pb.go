@@ -2130,6 +2130,116 @@ func (x *ListCollaboratorsResponse) GetTotalCount() int32 {
 	return 0
 }
 
+// CleanupDiskRequest is the request to clean up disk space in a container
+type CleanupDiskRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Username of the container
+	Username      string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CleanupDiskRequest) Reset() {
+	*x = CleanupDiskRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CleanupDiskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CleanupDiskRequest) ProtoMessage() {}
+
+func (x *CleanupDiskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CleanupDiskRequest.ProtoReflect.Descriptor instead.
+func (*CleanupDiskRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *CleanupDiskRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+// CleanupDiskResponse is the response from cleaning up disk space
+type CleanupDiskResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Human-readable summary of what was cleaned
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// Bytes freed by the cleanup
+	FreedBytes int64 `protobuf:"varint,2,opt,name=freed_bytes,json=freedBytes,proto3" json:"freed_bytes,omitempty"`
+	// Updated container info after cleanup
+	Container     *Container `protobuf:"bytes,3,opt,name=container,proto3" json:"container,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CleanupDiskResponse) Reset() {
+	*x = CleanupDiskResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CleanupDiskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CleanupDiskResponse) ProtoMessage() {}
+
+func (x *CleanupDiskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CleanupDiskResponse.ProtoReflect.Descriptor instead.
+func (*CleanupDiskResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *CleanupDiskResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *CleanupDiskResponse) GetFreedBytes() int64 {
+	if x != nil {
+		return x.FreedBytes
+	}
+	return 0
+}
+
+func (x *CleanupDiskResponse) GetContainer() *Container {
+	if x != nil {
+		return x.Container
+	}
+	return nil
+}
+
 var file_containarium_v1_container_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.EnumValueOptions)(nil),
@@ -2306,7 +2416,14 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x19ListCollaboratorsResponse\x12C\n" +
 	"\rcollaborators\x18\x01 \x03(\v2\x1d.containarium.v1.CollaboratorR\rcollaborators\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
-	"totalCount*\x8c\x02\n" +
+	"totalCount\"0\n" +
+	"\x12CleanupDiskRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"\x8a\x01\n" +
+	"\x13CleanupDiskResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12\x1f\n" +
+	"\vfreed_bytes\x18\x02 \x01(\x03R\n" +
+	"freedBytes\x128\n" +
+	"\tcontainer\x18\x03 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer*\x8c\x02\n" +
 	"\x0eContainerState\x12,\n" +
 	"\x1bCONTAINER_STATE_UNSPECIFIED\x10\x00\x1a\v\x8a\xb5\x18\aUnknown\x12(\n" +
 	"\x17CONTAINER_STATE_RUNNING\x10\x01\x1a\v\x8a\xb5\x18\aRunning\x12(\n" +
@@ -2331,7 +2448,7 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_containarium_v1_container_proto_goTypes = []any{
 	(ContainerState)(0),                   // 0: containarium.v1.ContainerState
 	(*ResourceLimits)(nil),                // 1: containarium.v1.ResourceLimits
@@ -2365,21 +2482,23 @@ var file_containarium_v1_container_proto_goTypes = []any{
 	(*RemoveCollaboratorResponse)(nil),    // 29: containarium.v1.RemoveCollaboratorResponse
 	(*ListCollaboratorsRequest)(nil),      // 30: containarium.v1.ListCollaboratorsRequest
 	(*ListCollaboratorsResponse)(nil),     // 31: containarium.v1.ListCollaboratorsResponse
-	nil,                                   // 32: containarium.v1.Container.LabelsEntry
-	nil,                                   // 33: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                   // 34: containarium.v1.ListContainersRequest.LabelFilterEntry
-	(*descriptorpb.EnumValueOptions)(nil), // 35: google.protobuf.EnumValueOptions
+	(*CleanupDiskRequest)(nil),            // 32: containarium.v1.CleanupDiskRequest
+	(*CleanupDiskResponse)(nil),           // 33: containarium.v1.CleanupDiskResponse
+	nil,                                   // 34: containarium.v1.Container.LabelsEntry
+	nil,                                   // 35: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                   // 36: containarium.v1.ListContainersRequest.LabelFilterEntry
+	(*descriptorpb.EnumValueOptions)(nil), // 37: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
 	1,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
 	2,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	32, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	34, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
 	1,  // 4: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	33, // 5: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	35, // 5: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
 	3,  // 6: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
 	0,  // 7: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	34, // 8: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	36, // 8: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
 	3,  // 9: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
 	3,  // 10: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
 	4,  // 11: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
@@ -2389,12 +2508,13 @@ var file_containarium_v1_container_proto_depIdxs = []int32{
 	3,  // 15: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
 	25, // 16: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
 	25, // 17: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
-	35, // 18: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	18, // [18:19] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	3,  // 18: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
+	37, // 19: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	19, // [19:20] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }
@@ -2408,7 +2528,7 @@ func file_containarium_v1_container_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   34,
+			NumMessages:   36,
 			NumExtensions: 1,
 			NumServices:   0,
 		},
