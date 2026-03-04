@@ -426,3 +426,21 @@ message ListCollaboratorsResponse {
   // Total count of collaborators
   int32 total_count = 2;
 }
+
+// CleanupDiskRequest is the request to clean up disk space in a container
+message CleanupDiskRequest {
+  // Username of the container
+  string username = 1;
+}
+
+// CleanupDiskResponse is the response from cleaning up disk space
+message CleanupDiskResponse {
+  // Human-readable summary of what was cleaned
+  string message = 1;
+
+  // Bytes freed by the cleanup
+  int64 freed_bytes = 2;
+
+  // Updated container info after cleanup
+  Container container = 3;
+}

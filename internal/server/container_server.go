@@ -382,6 +382,30 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 	}, nil
 }
 
+// CleanupDisk frees disk space inside a container
+func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRequest) (*pb.CleanupDiskResponse, error) {
+	if req.Username == "" {
+		return nil, fmt.Errorf("username is required")
+	}
+
+	message, freedBytes, err := s.manager.CleanupDisk(req.Username)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clean up disk: %w", err)
+	}
+
+	// Get updated container info
+	info, err := s.manager.Get(req.Username)
+	if err != nil {
+		return nil, fmt.Errorf("disk cleaned but failed to get container info: %w", err)
+	}
+
+	return &pb.CleanupDiskResponse{
+		Message:    message,
+		FreedBytes: freedBytes,
+		Container:  toProtoContainer(info),
+	}, nil
+}
+
 // AddSSHKey adds an SSH key to a container
 func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyRequest) (*pb.AddSSHKeyResponse, error) {
 	if req.Username == "" {

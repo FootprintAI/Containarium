@@ -1,6 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import {
   Box,
   Typography,
@@ -76,6 +78,42 @@ function UnifiedRouteTable({
   onTogglePassthroughRoute
 }: UnifiedRouteTableProps) {
   const totalRoutes = proxyRoutes.length + passthroughRoutes.length;
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  // Extract parent domain from a full domain (e.g. "api.dev.kafeido.app" → "dev.kafeido.app")
+  const getParentDomain = (fullDomain: string): string => {
+    const parts = fullDomain.split('.');
+    if (parts.length <= 2) return fullDomain; // e.g. "kafeido.app" has no parent
+    return parts.slice(1).join('.');
+  };
+
+  // Extract subdomain prefix (e.g. "api.dev.kafeido.app" → "api")
+  const getSubdomainPrefix = (fullDomain: string): string => {
+    const parts = fullDomain.split('.');
+    if (parts.length <= 2) return fullDomain;
+    return parts[0];
+  };
+
+  // Group proxy routes by parent domain
+  const proxyGroups = useMemo(() => {
+    const groups: Record<string, ProxyRoute[]> = {};
+    for (const route of proxyRoutes) {
+      const domain = route.fullDomain || route.subdomain;
+      const parent = getParentDomain(domain);
+      if (!groups[parent]) groups[parent] = [];
+      groups[parent].push(route);
+    }
+    // Sort groups by name, sort routes within each group
+    const sorted = Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+    for (const [, routes] of sorted) {
+      routes.sort((a, b) => (a.fullDomain || '').localeCompare(b.fullDomain || ''));
+    }
+    return sorted;
+  }, [proxyRoutes]);
+
+  const toggleGroup = (group: string) => {
+    setCollapsedGroups(prev => ({ ...prev, [group]: !prev[group] }));
+  };
 
   if (totalRoutes === 0) {
     return (
@@ -100,79 +138,132 @@ function UnifiedRouteTable({
           </TableRow>
         </TableHead>
         <TableBody>
-          {/* Proxy Routes */}
-          {proxyRoutes.map((route) => (
-            <TableRow key={`proxy-${route.fullDomain || route.subdomain}`} sx={{ opacity: route.active ? 1 : 0.6 }}>
-              <TableCell>
-                <Tooltip title="Proxy: TLS terminated at Caddy">
-                  <Chip
-                    icon={<PublicIcon sx={{ fontSize: 16 }} />}
-                    label="Proxy"
-                    size="small"
-                    color="primary"
-                    variant="outlined"
-                  />
-                </Tooltip>
-              </TableCell>
-              <TableCell>
-                <Link
-                  href={`https://${route.fullDomain}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 0.5,
-                    textDecoration: route.active ? 'none' : 'line-through',
-                    color: route.active ? 'primary.main' : 'text.disabled',
-                  }}
-                >
-                  {route.fullDomain}
-                  <OpenInNewIcon sx={{ fontSize: 14 }} />
-                </Link>
-              </TableCell>
-              <TableCell>
-                <Typography variant="body2" fontFamily="monospace">
-                  {route.containerIp ? `${route.containerIp}:${route.port}` : 'N/A'}
-                </Typography>
-              </TableCell>
-              <TableCell>
-                <Chip
-                  label={getRouteProtocolName(route.protocol)}
-                  color={isGRPCRoute(route.protocol) ? 'info' : 'default'}
-                  size="small"
-                  variant="outlined"
-                />
-              </TableCell>
-              <TableCell>
-                <Typography variant="body2" color="text.secondary">
-                  {route.appName || '-'}
-                </Typography>
-              </TableCell>
-              <TableCell>
-                <Switch
-                  size="small"
-                  checked={route.active}
-                  onChange={(e) => onToggleProxyRoute?.(route.fullDomain, e.target.checked)}
-                  disabled={!onToggleProxyRoute}
-                />
-              </TableCell>
-              <TableCell align="right">
-                {onDeleteProxyRoute && (
-                  <Tooltip title="Delete route">
-                    <IconButton
-                      size="small"
-                      color="error"
-                      onClick={() => onDeleteProxyRoute(route.fullDomain)}
+          {/* Proxy Routes — grouped by parent domain */}
+          {proxyGroups.map(([parentDomain, routes]) => {
+            const isCollapsed = collapsedGroups[parentDomain] ?? false;
+            const activeCount = routes.filter(r => r.active).length;
+
+            return [
+              // Group header row
+              <TableRow
+                key={`group-${parentDomain}`}
+                sx={{
+                  bgcolor: 'action.hover',
+                  cursor: 'pointer',
+                  '&:hover': { bgcolor: 'action.selected' },
+                }}
+                onClick={() => toggleGroup(parentDomain)}
+              >
+                <TableCell colSpan={2}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    {isCollapsed
+                      ? <KeyboardArrowRightIcon fontSize="small" />
+                      : <KeyboardArrowDownIcon fontSize="small" />
+                    }
+                    <PublicIcon sx={{ fontSize: 16, color: 'primary.main' }} />
+                    <Typography variant="body2" fontWeight="bold">
+                      *.{parentDomain}
+                    </Typography>
+                    <Chip label={`${routes.length}`} size="small" sx={{ ml: 0.5, height: 20, fontSize: '0.7rem' }} />
+                  </Box>
+                </TableCell>
+                <TableCell colSpan={3}>
+                  <Typography variant="caption" color="text.secondary">
+                    {activeCount}/{routes.length} active
+                  </Typography>
+                </TableCell>
+                <TableCell colSpan={2} />
+              </TableRow>,
+              // Route rows (hidden when collapsed)
+              ...(!isCollapsed ? routes.map((route) => (
+                <TableRow key={`proxy-${route.fullDomain || route.subdomain}`} sx={{ opacity: route.active ? 1 : 0.6 }}>
+                  <TableCell>
+                    <Tooltip title="Proxy: TLS terminated at Caddy">
+                      <Chip
+                        icon={<PublicIcon sx={{ fontSize: 16 }} />}
+                        label="Proxy"
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                      />
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      href={`https://${route.fullDomain}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 0.5,
+                        textDecoration: route.active ? 'none' : 'line-through',
+                        color: route.active ? 'primary.main' : 'text.disabled',
+                        pl: 1,
+                      }}
                     >
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                )}
+                      <Typography component="span" fontWeight="bold">{getSubdomainPrefix(route.fullDomain)}</Typography>
+                      <Typography component="span" color="text.secondary">.{parentDomain}</Typography>
+                      <OpenInNewIcon sx={{ fontSize: 14 }} />
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" fontFamily="monospace">
+                      {route.containerIp ? `${route.containerIp}:${route.port}` : 'N/A'}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      label={getRouteProtocolName(route.protocol)}
+                      color={isGRPCRoute(route.protocol) ? 'info' : 'default'}
+                      size="small"
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" color="text.secondary">
+                      {route.appName || '-'}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Switch
+                      size="small"
+                      checked={route.active}
+                      onChange={(e) => onToggleProxyRoute?.(route.fullDomain, e.target.checked)}
+                      disabled={!onToggleProxyRoute}
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    {onDeleteProxyRoute && (
+                      <Tooltip title="Delete route">
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => onDeleteProxyRoute(route.fullDomain)}
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </TableCell>
+                </TableRow>
+              )) : []),
+            ];
+          })}
+          {/* Passthrough Routes — no grouping */}
+          {passthroughRoutes.length > 0 && (
+            <TableRow sx={{ bgcolor: 'action.hover' }}>
+              <TableCell colSpan={7}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <CableIcon sx={{ fontSize: 16, color: 'secondary.main' }} />
+                  <Typography variant="body2" fontWeight="bold">
+                    Passthrough (TCP/UDP)
+                  </Typography>
+                  <Chip label={`${passthroughRoutes.length}`} size="small" sx={{ ml: 0.5, height: 20, fontSize: '0.7rem' }} />
+                </Box>
               </TableCell>
             </TableRow>
-          ))}
-          {/* Passthrough Routes */}
+          )}
           {passthroughRoutes.map((route) => (
             <TableRow key={`passthrough-${route.externalPort}-${route.protocol}`} sx={{ opacity: route.active ? 1 : 0.6 }}>
               <TableCell>
@@ -190,7 +281,7 @@ function UnifiedRouteTable({
                 <Typography
                   variant="body2"
                   fontFamily="monospace"
-                  sx={{ textDecoration: route.active ? 'none' : 'line-through' }}
+                  sx={{ textDecoration: route.active ? 'none' : 'line-through', pl: 1 }}
                 >
                   :{route.externalPort}
                 </Typography>

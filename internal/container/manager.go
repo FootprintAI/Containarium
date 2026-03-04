@@ -534,12 +534,28 @@ func (m *Manager) Resize(containerName, cpu, memory, disk string, verbose bool) 
 
 	changed := false
 
+	// Resize Disk FIRST — if the container's disk is full, Incus cannot write
+	// its backup.yaml for any config change. Expanding disk must happen before
+	// CPU/memory changes so those updates can succeed.
+	if disk != "" {
+		if verbose {
+			fmt.Printf("  Setting disk size: %s\n", disk)
+		}
+		if err := m.incus.SetDeviceSize(containerName, "root", disk); err != nil {
+			return fmt.Errorf("failed to set disk size: %w", err)
+		}
+		changed = true
+	}
+
 	// Resize CPU
 	if cpu != "" {
 		if verbose {
 			fmt.Printf("  Setting CPU limit: %s\n", cpu)
 		}
 		if err := m.incus.SetConfig(containerName, "limits.cpu", cpu); err != nil {
+			if strings.Contains(err.Error(), "disk quota exceeded") || strings.Contains(err.Error(), "no space left") {
+				return fmt.Errorf("container disk is full. Include a larger disk size in the resize request, or clean up disk space first")
+			}
 			return fmt.Errorf("failed to set CPU limit: %w", err)
 		}
 		changed = true
@@ -551,18 +567,10 @@ func (m *Manager) Resize(containerName, cpu, memory, disk string, verbose bool) 
 			fmt.Printf("  Setting memory limit: %s\n", memory)
 		}
 		if err := m.incus.SetConfig(containerName, "limits.memory", memory); err != nil {
+			if strings.Contains(err.Error(), "disk quota exceeded") || strings.Contains(err.Error(), "no space left") {
+				return fmt.Errorf("container disk is full. Include a larger disk size in the resize request, or clean up disk space first")
+			}
 			return fmt.Errorf("failed to set memory limit: %w", err)
-		}
-		changed = true
-	}
-
-	// Resize Disk
-	if disk != "" {
-		if verbose {
-			fmt.Printf("  Setting disk size: %s\n", disk)
-		}
-		if err := m.incus.SetDeviceSize(containerName, "root", disk); err != nil {
-			return fmt.Errorf("failed to set disk size: %w", err)
 		}
 		changed = true
 	}
@@ -576,6 +584,19 @@ func (m *Manager) Resize(containerName, cpu, memory, disk string, verbose bool) 
 	}
 
 	return nil
+}
+
+// CleanupDisk frees disk space inside a user's container
+func (m *Manager) CleanupDisk(username string) (string, int64, error) {
+	containerName := username + "-container"
+
+	// Verify container exists
+	_, err := m.incus.GetContainer(containerName)
+	if err != nil {
+		return "", 0, fmt.Errorf("container not found: %w", err)
+	}
+
+	return m.incus.CleanupDisk(containerName)
 }
 
 // GetInfo returns detailed information about a container

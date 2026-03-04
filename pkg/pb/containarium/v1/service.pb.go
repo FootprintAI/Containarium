@@ -26,7 +26,7 @@ var File_containarium_v1_service_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/service.proto\x12\x0fcontainarium.v1\x1a\x1fcontainarium/v1/container.proto\x1a\x1ccontainarium/v1/config.proto\x1a\x19containarium/v1/app.proto\x1a\x1dcontainarium/v1/network.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\x97!\n" +
+	"\x1dcontainarium/v1/service.proto\x12\x0fcontainarium.v1\x1a\x1fcontainarium/v1/container.proto\x1a\x1ccontainarium/v1/config.proto\x1a\x19containarium/v1/app.proto\x1a\x1dcontainarium/v1/network.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\x80$\n" +
 	"\x10ContainerService\x12\xae\x02\n" +
 	"\x0fCreateContainer\x12'.containarium.v1.CreateContainerRequest\x1a(.containarium.v1.CreateContainerResponse\"\xc7\x01\x92A\xaa\x01\n" +
 	"\n" +
@@ -59,7 +59,9 @@ const file_containarium_v1_service_proto_rawDesc = "" +
 	"\n" +
 	"GetMetrics\x12\".containarium.v1.GetMetricsRequest\x1a#.containarium.v1.GetMetricsResponse\"\xfa\x01\x92A\xc9\x01\n" +
 	"\n" +
-	"Monitoring\x12\x15Get container metrics\x1a\xa3\x01Returns runtime metrics (CPU, memory, disk, network usage) for containers. Specify username to get metrics for a specific container, or omit to get all containers.\x82\xd3\xe4\x93\x02'Z\x18\x12\x16/v1/metrics/{username}\x12\v/v1/metrics\x12\x8b\x02\n" +
+	"Monitoring\x12\x15Get container metrics\x1a\xa3\x01Returns runtime metrics (CPU, memory, disk, network usage) for containers. Specify username to get metrics for a specific container, or omit to get all containers.\x82\xd3\xe4\x93\x02'Z\x18\x12\x16/v1/metrics/{username}\x12\v/v1/metrics\x12\xe6\x02\n" +
+	"\vCleanupDisk\x12#.containarium.v1.CleanupDiskRequest\x1a$.containarium.v1.CleanupDiskResponse\"\x8b\x02\x92A\xd6\x01\n" +
+	"\x14Container Operations\x12\x1dClean up container disk space\x1a\x9e\x01Frees disk space inside a container by removing temporary files, package manager caches, and trimming journal logs. Useful when disk is full and resize fails.\x82\xd3\xe4\x93\x02+:\x01*\"&/v1/containers/{username}/cleanup-disk\x12\x8b\x02\n" +
 	"\rGetSystemInfo\x12%.containarium.v1.GetSystemInfoRequest\x1a&.containarium.v1.GetSystemInfoResponse\"\xaa\x01\x92A\x8f\x01\n" +
 	"\x06System\x12\x16Get system information\x1amReturns information about the host system including Incus version, available resources, and container counts.\x82\xd3\xe4\x93\x02\x11\x12\x0f/v1/system/infoB\xa4\x04\x92A\xd5\x03\x12\xc4\x02\n" +
 	"\x10Containarium API\x12\xa0\x01Container management API for LXC-based development environments. Provides both gRPC and REST interfaces for managing containers, SSH keys, and system resources.\";\n" +
@@ -86,21 +88,23 @@ var file_containarium_v1_service_proto_goTypes = []any{
 	(*RemoveCollaboratorRequest)(nil),  // 10: containarium.v1.RemoveCollaboratorRequest
 	(*ListCollaboratorsRequest)(nil),   // 11: containarium.v1.ListCollaboratorsRequest
 	(*GetMetricsRequest)(nil),          // 12: containarium.v1.GetMetricsRequest
-	(*GetSystemInfoRequest)(nil),       // 13: containarium.v1.GetSystemInfoRequest
-	(*CreateContainerResponse)(nil),    // 14: containarium.v1.CreateContainerResponse
-	(*ListContainersResponse)(nil),     // 15: containarium.v1.ListContainersResponse
-	(*GetContainerResponse)(nil),       // 16: containarium.v1.GetContainerResponse
-	(*DeleteContainerResponse)(nil),    // 17: containarium.v1.DeleteContainerResponse
-	(*StartContainerResponse)(nil),     // 18: containarium.v1.StartContainerResponse
-	(*StopContainerResponse)(nil),      // 19: containarium.v1.StopContainerResponse
-	(*ResizeContainerResponse)(nil),    // 20: containarium.v1.ResizeContainerResponse
-	(*AddSSHKeyResponse)(nil),          // 21: containarium.v1.AddSSHKeyResponse
-	(*RemoveSSHKeyResponse)(nil),       // 22: containarium.v1.RemoveSSHKeyResponse
-	(*AddCollaboratorResponse)(nil),    // 23: containarium.v1.AddCollaboratorResponse
-	(*RemoveCollaboratorResponse)(nil), // 24: containarium.v1.RemoveCollaboratorResponse
-	(*ListCollaboratorsResponse)(nil),  // 25: containarium.v1.ListCollaboratorsResponse
-	(*GetMetricsResponse)(nil),         // 26: containarium.v1.GetMetricsResponse
-	(*GetSystemInfoResponse)(nil),      // 27: containarium.v1.GetSystemInfoResponse
+	(*CleanupDiskRequest)(nil),         // 13: containarium.v1.CleanupDiskRequest
+	(*GetSystemInfoRequest)(nil),       // 14: containarium.v1.GetSystemInfoRequest
+	(*CreateContainerResponse)(nil),    // 15: containarium.v1.CreateContainerResponse
+	(*ListContainersResponse)(nil),     // 16: containarium.v1.ListContainersResponse
+	(*GetContainerResponse)(nil),       // 17: containarium.v1.GetContainerResponse
+	(*DeleteContainerResponse)(nil),    // 18: containarium.v1.DeleteContainerResponse
+	(*StartContainerResponse)(nil),     // 19: containarium.v1.StartContainerResponse
+	(*StopContainerResponse)(nil),      // 20: containarium.v1.StopContainerResponse
+	(*ResizeContainerResponse)(nil),    // 21: containarium.v1.ResizeContainerResponse
+	(*AddSSHKeyResponse)(nil),          // 22: containarium.v1.AddSSHKeyResponse
+	(*RemoveSSHKeyResponse)(nil),       // 23: containarium.v1.RemoveSSHKeyResponse
+	(*AddCollaboratorResponse)(nil),    // 24: containarium.v1.AddCollaboratorResponse
+	(*RemoveCollaboratorResponse)(nil), // 25: containarium.v1.RemoveCollaboratorResponse
+	(*ListCollaboratorsResponse)(nil),  // 26: containarium.v1.ListCollaboratorsResponse
+	(*GetMetricsResponse)(nil),         // 27: containarium.v1.GetMetricsResponse
+	(*CleanupDiskResponse)(nil),        // 28: containarium.v1.CleanupDiskResponse
+	(*GetSystemInfoResponse)(nil),      // 29: containarium.v1.GetSystemInfoResponse
 }
 var file_containarium_v1_service_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.ContainerService.CreateContainer:input_type -> containarium.v1.CreateContainerRequest
@@ -116,23 +120,25 @@ var file_containarium_v1_service_proto_depIdxs = []int32{
 	10, // 10: containarium.v1.ContainerService.RemoveCollaborator:input_type -> containarium.v1.RemoveCollaboratorRequest
 	11, // 11: containarium.v1.ContainerService.ListCollaborators:input_type -> containarium.v1.ListCollaboratorsRequest
 	12, // 12: containarium.v1.ContainerService.GetMetrics:input_type -> containarium.v1.GetMetricsRequest
-	13, // 13: containarium.v1.ContainerService.GetSystemInfo:input_type -> containarium.v1.GetSystemInfoRequest
-	14, // 14: containarium.v1.ContainerService.CreateContainer:output_type -> containarium.v1.CreateContainerResponse
-	15, // 15: containarium.v1.ContainerService.ListContainers:output_type -> containarium.v1.ListContainersResponse
-	16, // 16: containarium.v1.ContainerService.GetContainer:output_type -> containarium.v1.GetContainerResponse
-	17, // 17: containarium.v1.ContainerService.DeleteContainer:output_type -> containarium.v1.DeleteContainerResponse
-	18, // 18: containarium.v1.ContainerService.StartContainer:output_type -> containarium.v1.StartContainerResponse
-	19, // 19: containarium.v1.ContainerService.StopContainer:output_type -> containarium.v1.StopContainerResponse
-	20, // 20: containarium.v1.ContainerService.ResizeContainer:output_type -> containarium.v1.ResizeContainerResponse
-	21, // 21: containarium.v1.ContainerService.AddSSHKey:output_type -> containarium.v1.AddSSHKeyResponse
-	22, // 22: containarium.v1.ContainerService.RemoveSSHKey:output_type -> containarium.v1.RemoveSSHKeyResponse
-	23, // 23: containarium.v1.ContainerService.AddCollaborator:output_type -> containarium.v1.AddCollaboratorResponse
-	24, // 24: containarium.v1.ContainerService.RemoveCollaborator:output_type -> containarium.v1.RemoveCollaboratorResponse
-	25, // 25: containarium.v1.ContainerService.ListCollaborators:output_type -> containarium.v1.ListCollaboratorsResponse
-	26, // 26: containarium.v1.ContainerService.GetMetrics:output_type -> containarium.v1.GetMetricsResponse
-	27, // 27: containarium.v1.ContainerService.GetSystemInfo:output_type -> containarium.v1.GetSystemInfoResponse
-	14, // [14:28] is the sub-list for method output_type
-	0,  // [0:14] is the sub-list for method input_type
+	13, // 13: containarium.v1.ContainerService.CleanupDisk:input_type -> containarium.v1.CleanupDiskRequest
+	14, // 14: containarium.v1.ContainerService.GetSystemInfo:input_type -> containarium.v1.GetSystemInfoRequest
+	15, // 15: containarium.v1.ContainerService.CreateContainer:output_type -> containarium.v1.CreateContainerResponse
+	16, // 16: containarium.v1.ContainerService.ListContainers:output_type -> containarium.v1.ListContainersResponse
+	17, // 17: containarium.v1.ContainerService.GetContainer:output_type -> containarium.v1.GetContainerResponse
+	18, // 18: containarium.v1.ContainerService.DeleteContainer:output_type -> containarium.v1.DeleteContainerResponse
+	19, // 19: containarium.v1.ContainerService.StartContainer:output_type -> containarium.v1.StartContainerResponse
+	20, // 20: containarium.v1.ContainerService.StopContainer:output_type -> containarium.v1.StopContainerResponse
+	21, // 21: containarium.v1.ContainerService.ResizeContainer:output_type -> containarium.v1.ResizeContainerResponse
+	22, // 22: containarium.v1.ContainerService.AddSSHKey:output_type -> containarium.v1.AddSSHKeyResponse
+	23, // 23: containarium.v1.ContainerService.RemoveSSHKey:output_type -> containarium.v1.RemoveSSHKeyResponse
+	24, // 24: containarium.v1.ContainerService.AddCollaborator:output_type -> containarium.v1.AddCollaboratorResponse
+	25, // 25: containarium.v1.ContainerService.RemoveCollaborator:output_type -> containarium.v1.RemoveCollaboratorResponse
+	26, // 26: containarium.v1.ContainerService.ListCollaborators:output_type -> containarium.v1.ListCollaboratorsResponse
+	27, // 27: containarium.v1.ContainerService.GetMetrics:output_type -> containarium.v1.GetMetricsResponse
+	28, // 28: containarium.v1.ContainerService.CleanupDisk:output_type -> containarium.v1.CleanupDiskResponse
+	29, // 29: containarium.v1.ContainerService.GetSystemInfo:output_type -> containarium.v1.GetSystemInfoResponse
+	15, // [15:30] is the sub-list for method output_type
+	0,  // [0:15] is the sub-list for method input_type
 	0,  // [0:0] is the sub-list for extension type_name
 	0,  // [0:0] is the sub-list for extension extendee
 	0,  // [0:0] is the sub-list for field type_name

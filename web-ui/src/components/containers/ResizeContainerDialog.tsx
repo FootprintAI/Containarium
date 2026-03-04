@@ -19,6 +19,8 @@ import {
   InputAdornment,
 } from '@mui/material';
 import WarningIcon from '@mui/icons-material/Warning';
+import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
+import { AxiosError } from 'axios';
 
 interface ResizeContainerDialogProps {
   open: boolean;
@@ -31,6 +33,7 @@ interface ResizeContainerDialogProps {
   memoryUsageBytes?: number;
   diskUsageBytes?: number;
   onResize: (resources: { cpu?: string; memory?: string; disk?: string }) => Promise<void>;
+  onCleanupDisk?: () => Promise<{ message: string; freedBytes: number }>;
 }
 
 // Parse size string to value and unit (e.g., "4GB" -> { value: 4, unit: "GB" })
@@ -77,6 +80,7 @@ export default function ResizeContainerDialog({
   memoryUsageBytes,
   diskUsageBytes,
   onResize,
+  onCleanupDisk,
 }: ResizeContainerDialogProps) {
   // CPU state
   const [cpuValue, setCpuValue] = useState(4);
@@ -97,6 +101,8 @@ export default function ResizeContainerDialog({
   // UI state
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<string | null>(null);
 
   // Initialize values when dialog opens
   useEffect(() => {
@@ -119,8 +125,32 @@ export default function ResizeContainerDialog({
       setOriginalDiskBytes(toBytes(disk.value || 50, disk.unit || 'GB'));
 
       setError(null);
+      setCleanupResult(null);
     }
   }, [open, currentCpu, currentMemory, currentDisk]);
+
+  const handleCleanup = async () => {
+    if (!onCleanupDisk) return;
+    setCleaning(true);
+    setError(null);
+    setCleanupResult(null);
+    try {
+      const result = await onCleanupDisk();
+      setCleanupResult(result.message);
+    } catch (err) {
+      if (err && typeof err === 'object' && 'response' in err) {
+        const axiosErr = err as AxiosError<{ error?: string; message?: string }>;
+        const serverMsg = axiosErr.response?.data?.error || axiosErr.response?.data?.message;
+        setError(serverMsg || axiosErr.message);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError(`Failed to clean up disk: ${err}`);
+      }
+    } finally {
+      setCleaning(false);
+    }
+  };
 
   const handleSave = async () => {
     const newCpu = cpuValue.toString();
@@ -161,7 +191,15 @@ export default function ResizeContainerDialog({
       await onResize(resources);
       onClose();
     } catch (err) {
-      setError(`Failed to resize container: ${err}`);
+      if (err && typeof err === 'object' && 'response' in err) {
+        const axiosErr = err as AxiosError<{ error?: string; message?: string }>;
+        const serverMsg = axiosErr.response?.data?.error || axiosErr.response?.data?.message;
+        setError(serverMsg || axiosErr.message);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError(`Failed to resize container: ${err}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -378,6 +416,34 @@ export default function ResizeContainerDialog({
               Note: Disk can only be increased. Changes take effect immediately without restart.
             </Typography>
           </Box>
+
+          {/* Disk Cleanup Section */}
+          {onCleanupDisk && (
+            <Box>
+              {cleanupResult && (
+                <Alert severity="success" sx={{ mb: 1 }} onClose={() => setCleanupResult(null)}>
+                  {cleanupResult}
+                </Alert>
+              )}
+              {(diskUsageBytes !== undefined && originalDiskBytes > 0 && diskUsageBytes / originalDiskBytes > 0.9) || error?.toLowerCase().includes('disk') ? (
+                <Alert severity="warning" sx={{ mb: 1 }}>
+                  Disk usage is high. Consider cleaning up disk space before resizing.
+                </Alert>
+              ) : null}
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<CleaningServicesIcon />}
+                onClick={handleCleanup}
+                disabled={cleaning || saving}
+              >
+                {cleaning ? 'Cleaning...' : 'Clean Up Disk'}
+              </Button>
+              <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                Removes temp files, package caches, and trims logs
+              </Typography>
+            </Box>
+          )}
         </Box>
       </DialogContent>
       <DialogActions>

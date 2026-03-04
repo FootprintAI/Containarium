@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import { usePathname } from 'next/navigation';
 import { Box, Typography, CircularProgress, Tabs, Tab } from '@mui/material';
 import DnsIcon from '@mui/icons-material/Dns';
 import AppsIcon from '@mui/icons-material/Apps';
@@ -36,7 +37,18 @@ const TerminalDialog = dynamic(
   { ssr: false }
 );
 
+const TAB_PATHS = ['/containers/', '/apps/', '/network/', '/traffic/'] as const;
+const TAB_INDICES: Record<string, number> = {
+  '/': 0,
+  '/containers/': 0,
+  '/apps/': 1,
+  '/network/': 2,
+  '/traffic/': 3,
+};
+
 export default function Home() {
+  const pathname = usePathname();
+
   const {
     servers,
     activeServer,
@@ -48,8 +60,27 @@ export default function Home() {
     isLoading: serversLoading,
   } = useServers();
 
-  // View tab state
-  const [viewTab, setViewTab] = useState(0);
+  // Derive tab from URL path
+  const currentPath = (pathname || '/').replace(/\/?$/, '/');
+  const tabFromPath = TAB_INDICES[currentPath] ?? 0;
+  const [viewTab, setViewTabState] = useState(tabFromPath);
+
+  // Handle browser back/forward
+  useEffect(() => {
+    const onPopState = () => {
+      const path = window.location.pathname.replace(/^\/webui/, '').replace(/\/?$/, '/');
+      setViewTabState(TAB_INDICES[path] ?? 0);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // Update tab + URL without full page reload
+  const setViewTab = useCallback((newTab: number) => {
+    setViewTabState(newTab);
+    const path = '/webui' + (TAB_PATHS[newTab] || '/containers/');
+    window.history.pushState(null, '', path);
+  }, []);
 
   // Container hooks
   const {
@@ -62,6 +93,7 @@ export default function Home() {
     startContainer,
     stopContainer,
     resizeContainer,
+    cleanupDisk,
     setLabels,
     removeLabel,
     refresh: refreshContainers,
@@ -85,8 +117,8 @@ export default function Home() {
 
   // Network hooks
   const [includeStopped, setIncludeStopped] = useState(false);
-  const { routes, isLoading: routesLoading, error: routesError, addRoute, deleteRoute, refresh: refreshRoutes } = useRoutes(activeServer);
-  const { routes: passthroughRoutes, isLoading: passthroughLoading, addPassthroughRoute, deletePassthroughRoute, refresh: refreshPassthrough } = usePassthroughRoutes(activeServer);
+  const { routes, isLoading: routesLoading, error: routesError, addRoute, deleteRoute, updateRoute, refresh: refreshRoutes } = useRoutes(activeServer);
+  const { routes: passthroughRoutes, isLoading: passthroughLoading, addPassthroughRoute, deletePassthroughRoute, updatePassthroughRoute, refresh: refreshPassthrough } = usePassthroughRoutes(activeServer);
   const { topology, isLoading: topologyLoading, error: topologyError, refresh: refreshTopology } = useNetworkTopology(activeServer, includeStopped);
   const { presets, isLoading: presetsLoading } = useACLPresets(activeServer);
   const { records: dnsRecords, baseDomain, refresh: refreshDNS } = useDNSRecords(activeServer);
@@ -349,11 +381,17 @@ export default function Home() {
                 onDeleteRoute={async (domain) => {
                   await deleteRoute(domain);
                 }}
+                onToggleRoute={async (domain, enabled) => {
+                  await updateRoute(domain, { active: enabled });
+                }}
                 onAddPassthroughRoute={async (externalPort, targetIp, targetPort, protocol, containerName) => {
                   await addPassthroughRoute(externalPort, targetIp, targetPort, protocol, containerName);
                 }}
                 onDeletePassthroughRoute={async (externalPort, protocol) => {
                   await deletePassthroughRoute(externalPort, protocol);
+                }}
+                onTogglePassthroughRoute={async (externalPort, protocol, enabled) => {
+                  await updatePassthroughRoute(externalPort, protocol, { active: enabled });
                 }}
                 onRefresh={() => {
                   handleRefreshNetwork();
@@ -459,6 +497,10 @@ export default function Home() {
           memoryUsageBytes={metricsMap[`${resizeTarget.username}-container`]?.memoryUsageBytes}
           diskUsageBytes={metricsMap[`${resizeTarget.username}-container`]?.diskUsageBytes}
           onResize={handleResize}
+          onCleanupDisk={async () => {
+            if (!resizeTarget) throw new Error('No container selected');
+            return cleanupDisk(resizeTarget.username);
+          }}
         />
       )}
 

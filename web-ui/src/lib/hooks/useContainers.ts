@@ -215,6 +215,21 @@ export function useContainers(server: Server | null) {
     return container;
   };
 
+  /**
+   * Clean up disk space in a container
+   */
+  const cleanupDisk = async (username: string) => {
+    if (!server) throw new Error('No server selected');
+
+    const client = getClient(server);
+    const result = await client.cleanupDisk(username);
+
+    // Revalidate container list
+    await mutate();
+
+    return result;
+  };
+
   return {
     containers: data || [],
     systemInfo: systemInfo || null,
@@ -225,6 +240,7 @@ export function useContainers(server: Server | null) {
     startContainer,
     stopContainer,
     resizeContainer,
+    cleanupDisk,
     getLabels,
     setLabels,
     removeLabel,

@@ -32,6 +32,7 @@ const (
 	ContainerService_RemoveCollaborator_FullMethodName = "/containarium.v1.ContainerService/RemoveCollaborator"
 	ContainerService_ListCollaborators_FullMethodName  = "/containarium.v1.ContainerService/ListCollaborators"
 	ContainerService_GetMetrics_FullMethodName         = "/containarium.v1.ContainerService/GetMetrics"
+	ContainerService_CleanupDisk_FullMethodName        = "/containarium.v1.ContainerService/CleanupDisk"
 	ContainerService_GetSystemInfo_FullMethodName      = "/containarium.v1.ContainerService/GetSystemInfo"
 )
 
@@ -67,6 +68,8 @@ type ContainerServiceClient interface {
 	ListCollaborators(ctx context.Context, in *ListCollaboratorsRequest, opts ...grpc.CallOption) (*ListCollaboratorsResponse, error)
 	// GetMetrics gets runtime metrics for containers
 	GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error)
+	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
+	CleanupDisk(ctx context.Context, in *CleanupDiskRequest, opts ...grpc.CallOption) (*CleanupDiskResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(ctx context.Context, in *GetSystemInfoRequest, opts ...grpc.CallOption) (*GetSystemInfoResponse, error)
 }
@@ -209,6 +212,16 @@ func (c *containerServiceClient) GetMetrics(ctx context.Context, in *GetMetricsR
 	return out, nil
 }
 
+func (c *containerServiceClient) CleanupDisk(ctx context.Context, in *CleanupDiskRequest, opts ...grpc.CallOption) (*CleanupDiskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CleanupDiskResponse)
+	err := c.cc.Invoke(ctx, ContainerService_CleanupDisk_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetSystemInfo(ctx context.Context, in *GetSystemInfoRequest, opts ...grpc.CallOption) (*GetSystemInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetSystemInfoResponse)
@@ -251,6 +264,8 @@ type ContainerServiceServer interface {
 	ListCollaborators(context.Context, *ListCollaboratorsRequest) (*ListCollaboratorsResponse, error)
 	// GetMetrics gets runtime metrics for containers
 	GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error)
+	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
+	CleanupDisk(context.Context, *CleanupDiskRequest) (*CleanupDiskResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error)
 	mustEmbedUnimplementedContainerServiceServer()
@@ -301,6 +316,9 @@ func (UnimplementedContainerServiceServer) ListCollaborators(context.Context, *L
 }
 func (UnimplementedContainerServiceServer) GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMetrics not implemented")
+}
+func (UnimplementedContainerServiceServer) CleanupDisk(context.Context, *CleanupDiskRequest) (*CleanupDiskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CleanupDisk not implemented")
 }
 func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSystemInfo not implemented")
@@ -560,6 +578,24 @@ func _ContainerService_GetMetrics_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_CleanupDisk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CleanupDiskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).CleanupDisk(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_CleanupDisk_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).CleanupDisk(ctx, req.(*CleanupDiskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetSystemInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetSystemInfoRequest)
 	if err := dec(in); err != nil {
@@ -636,6 +672,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetMetrics",
 			Handler:    _ContainerService_GetMetrics_Handler,
+		},
+		{
+			MethodName: "CleanupDisk",
+			Handler:    _ContainerService_CleanupDisk_Handler,
 		},
 		{
 			MethodName: "GetSystemInfo",

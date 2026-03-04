@@ -266,6 +266,20 @@ export class ContaineriumClient {
   }
 
   /**
+   * Clean up disk space in a container
+   * Removes temp files, package caches, and trims journal logs
+   */
+  async cleanupDisk(username: string): Promise<{ message: string; freedBytes: number; container: Container }> {
+    const response = await this.client.post(`/containers/${username}/cleanup-disk`, {});
+    const container = response.data.container ? transformContainer(response.data.container) : await this.getContainer(username);
+    return {
+      message: response.data.message || 'Disk cleanup completed',
+      freedBytes: Number(response.data.freedBytes || response.data.freed_bytes) || 0,
+      container,
+    };
+  }
+
+  /**
    * Get metrics for all containers or a specific container
    */
   async getMetrics(username?: string): Promise<ContainerMetrics[]> {

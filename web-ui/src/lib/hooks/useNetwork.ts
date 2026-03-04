@@ -63,12 +63,21 @@ export function useRoutes(server: Server | null, username?: string) {
     await mutate();
   };
 
+  const updateRoute = async (domain: string, options: { active?: boolean; targetIp?: string; targetPort?: number; protocol?: string }) => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    const route = await client.updateRoute(domain, options);
+    await mutate();
+    return route;
+  };
+
   return {
     routes: data || [],
     isLoading,
     error,
     addRoute,
     deleteRoute,
+    updateRoute,
     refresh: () => mutate(),
     // Event stream status
     eventStatus,
@@ -120,12 +129,21 @@ export function usePassthroughRoutes(server: Server | null) {
     await mutate();
   };
 
+  const updatePassthroughRoute = async (externalPort: number, protocol: string, options: { active?: boolean; targetIp?: string; targetPort?: number }) => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    const route = await client.updatePassthroughRoute(externalPort, protocol, options);
+    await mutate();
+    return route;
+  };
+
   return {
     routes: data || [],
     isLoading,
     error,
     addPassthroughRoute,
     deletePassthroughRoute,
+    updatePassthroughRoute,
     refresh: () => mutate(),
   };
 }

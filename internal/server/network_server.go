@@ -60,7 +60,7 @@ func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager,
 func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest) (*pb.GetRoutesResponse, error) {
 	// If RouteStore is available, use it as source of truth
 	if s.routeStore != nil {
-		routes, err := s.routeStore.List(ctx, true) // activeOnly = true
+		routes, err := s.routeStore.List(ctx, false) // include disabled routes so UI can show toggle state
 		if err != nil {
 			return nil, fmt.Errorf("failed to list routes: %w", err)
 		}
@@ -80,6 +80,11 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 
 		var pbRoutes []*pb.ProxyRoute
 		for _, route := range routes {
+			// Hide system routes (e.g. management UI) from user-facing listings
+			if route.CreatedBy == string(app.RouteCreatorSystem) {
+				continue
+			}
+
 			// Lookup container name by IP
 			containerName := route.ContainerName
 			if containerName == "" {
@@ -201,6 +206,20 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 		protocol = "grpc"
 	}
 
+	// Auto-detect container name from target IP if not provided
+	containerName := req.ContainerName
+	if containerName == "" && s.incusClient != nil {
+		containers, err := s.incusClient.ListContainers()
+		if err == nil {
+			for _, c := range containers {
+				if c.IPAddress == req.TargetIp {
+					containerName = c.Name
+					break
+				}
+			}
+		}
+	}
+
 	// If RouteStore is available, save to PostgreSQL (source of truth)
 	if s.routeStore != nil {
 		routeRecord := &app.RouteRecord{
@@ -209,7 +228,7 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 			TargetIP:      req.TargetIp,
 			TargetPort:    int(req.TargetPort),
 			Protocol:      protocol,
-			ContainerName: req.ContainerName,
+			ContainerName: containerName,
 			Active:        true,
 		}
 
@@ -239,6 +258,7 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 		Port:        req.TargetPort,
 		Active:      true,
 		Protocol:    req.Protocol,
+		AppName:     containerName,
 	}
 
 	// Emit route added event
@@ -268,36 +288,45 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 	}
 
 	// Handle enable/disable toggle
-	if req.Active != nil && !*req.Active {
-		// Disable route: set active=false in PostgreSQL
+	if req.Active != nil {
+		active := *req.Active
+
 		if s.routeStore != nil {
-			if err := s.routeStore.SetActive(ctx, fullDomain, false); err != nil {
+			if err := s.routeStore.SetActive(ctx, fullDomain, active); err != nil {
 				// Try with original domain
-				if err := s.routeStore.SetActive(ctx, req.Domain, false); err != nil {
+				if err := s.routeStore.SetActive(ctx, req.Domain, active); err != nil {
+					if active {
+						return nil, fmt.Errorf("failed to enable route: %w", err)
+					}
 					return nil, fmt.Errorf("failed to disable route: %w", err)
 				}
 			}
-		} else if s.proxyManager != nil {
-			// Fallback: directly remove from Caddy
+		} else if s.proxyManager != nil && !active {
+			// Fallback: directly remove from Caddy (disable only)
 			if err := s.proxyManager.RemoveRoute(req.Domain); err != nil {
 				return nil, fmt.Errorf("failed to disable route: %w", err)
 			}
 		}
 
-		return &pb.UpdateRouteResponse{
-			Route: &pb.ProxyRoute{
-				Subdomain:   subdomain,
-				FullDomain:  fullDomain,
-				ContainerIp: req.TargetIp,
-				Port:        req.TargetPort,
-				Active:      false,
-				Protocol:    req.Protocol,
-			},
-			Message: fmt.Sprintf("Route disabled: %s (will sync to Caddy)", req.Domain),
-		}, nil
+		// If this is a pure toggle (no target info provided), return early
+		if req.TargetIp == "" && req.TargetPort == 0 {
+			action := "enabled"
+			if !active {
+				action = "disabled"
+			}
+			return &pb.UpdateRouteResponse{
+				Route: &pb.ProxyRoute{
+					Subdomain:  subdomain,
+					FullDomain: fullDomain,
+					Active:     active,
+					Protocol:   req.Protocol,
+				},
+				Message: fmt.Sprintf("Route %s: %s (will sync to Caddy)", action, req.Domain),
+			}, nil
+		}
 	}
 
-	// For enabling or updating, we need target info
+	// For updates with new target info, we need target fields
 	if req.TargetIp == "" {
 		return nil, fmt.Errorf("target_ip is required")
 	}
@@ -398,7 +427,7 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 
 	// If PassthroughStore is available, use it as source of truth
 	if s.passthroughStore != nil {
-		records, err := s.passthroughStore.List(ctx, true) // activeOnly = true
+		records, err := s.passthroughStore.List(ctx, false) // include disabled routes so UI can show toggle state
 		if err != nil {
 			return nil, fmt.Errorf("failed to list passthrough routes: %w", err)
 		}
@@ -573,33 +602,43 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 	}
 
 	// Handle enable/disable toggle
-	if req.Active != nil && !*req.Active {
+	if req.Active != nil {
+		active := *req.Active
+
 		if s.passthroughStore != nil {
-			if err := s.passthroughStore.SetActive(ctx, int(req.ExternalPort), protocol, false); err != nil {
+			if err := s.passthroughStore.SetActive(ctx, int(req.ExternalPort), protocol, active); err != nil {
+				if active {
+					return nil, fmt.Errorf("failed to enable passthrough route: %w", err)
+				}
 				return nil, fmt.Errorf("failed to disable passthrough route: %w", err)
 			}
-		} else {
-			// Fallback: directly remove from iptables
+		} else if !active {
+			// Fallback: directly remove from iptables (disable only)
 			if err := s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol); err != nil {
 				return nil, fmt.Errorf("failed to disable passthrough route: %w", err)
 			}
 		}
 
-		return &pb.UpdatePassthroughRouteResponse{
-			Route: &pb.PassthroughRoute{
-				ExternalPort:  req.ExternalPort,
-				TargetIp:      req.TargetIp,
-				TargetPort:    req.TargetPort,
-				Protocol:      pbProtocol,
-				Active:        false,
-				ContainerName: req.ContainerName,
-				Description:   req.Description,
-			},
-			Message: fmt.Sprintf("Passthrough route disabled: %s:%d (will sync to iptables)", protocol, req.ExternalPort),
-		}, nil
+		// If this is a pure toggle (no target info provided), return early
+		if req.TargetIp == "" && req.TargetPort == 0 {
+			action := "enabled"
+			if !active {
+				action = "disabled"
+			}
+			return &pb.UpdatePassthroughRouteResponse{
+				Route: &pb.PassthroughRoute{
+					ExternalPort:  req.ExternalPort,
+					Protocol:      pbProtocol,
+					Active:        active,
+					ContainerName: req.ContainerName,
+					Description:   req.Description,
+				},
+				Message: fmt.Sprintf("Passthrough route %s: %s:%d (will sync to iptables)", action, protocol, req.ExternalPort),
+			}, nil
+		}
 	}
 
-	// For enabling or updating, we need target info
+	// For updates with new target info, we need target fields
 	if req.TargetIp == "" {
 		return nil, fmt.Errorf("target_ip is required")
 	}
