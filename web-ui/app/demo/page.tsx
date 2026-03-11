@@ -1,11 +1,40 @@
 'use client';
 
 import { useState } from 'react';
-import { Box, Typography, Tabs, Tab } from '@mui/material';
+import {
+  Box,
+  Typography,
+  Tabs,
+  Tab,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Chip,
+  Button,
+  TextField,
+  Stack,
+  LinearProgress,
+  IconButton,
+} from '@mui/material';
 import DnsIcon from '@mui/icons-material/Dns';
 import AppsIcon from '@mui/icons-material/Apps';
 import HubIcon from '@mui/icons-material/Hub';
 import TimelineIcon from '@mui/icons-material/Timeline';
+import ShieldIcon from '@mui/icons-material/Shield';
+import MonitorHeartIcon from '@mui/icons-material/MonitorHeart';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import DownloadIcon from '@mui/icons-material/Download';
+import ScannerIcon from '@mui/icons-material/Scanner';
+import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import Tooltip from '@mui/material/Tooltip';
+import CircularProgress from '@mui/material/CircularProgress';
 import AppBar from '@/src/components/layout/AppBar';
 import ContainerTopology from '@/src/components/containers/ContainerTopology';
 import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
@@ -14,10 +43,11 @@ import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import TrafficView, { RouteTrafficStats } from '@/src/components/traffic/TrafficView';
 import { Container, ContainerMetricsWithRate, SystemInfo } from '@/src/types/container';
 import { App, NetworkTopology, ProxyRoute, NetworkNode, PassthroughRoute, DNSRecord } from '@/src/types/app';
+import { ClamavContainerSummary, ScanStatusResponse, ScanJob } from '@/src/types/security';
 
 // Mock system info for system resources card
 const mockSystemInfo: SystemInfo = {
-  version: '0.6.0',
+  version: '0.11.0',
   incusVersion: '6.21',
   hostname: 'gpu-cluster-01',
   os: 'Ubuntu 24.04 LTS',
@@ -454,6 +484,80 @@ const mockDNSRecords: DNSRecord[] = [
 
 const mockBaseDomain = 'containarium.dev';
 
+// Mock ClamAV security data — showcases all scan states
+const mockSecurityContainers: ClamavContainerSummary[] = [
+  {
+    containerName: 'charlie-container',
+    username: 'charlie',
+    lastScanAt: '2026-03-11T04:15:00Z',
+    lastStatus: 'infected',
+    lastFindingsCount: 3,
+    totalScans: 8,
+    infectedScans: 2,
+  },
+  {
+    containerName: 'frank-container',
+    username: 'frank',
+    lastScanAt: '',
+    lastStatus: 'never',
+    lastFindingsCount: 0,
+    totalScans: 0,
+    infectedScans: 0,
+  },
+  {
+    containerName: 'alice-container',
+    username: 'alice',
+    lastScanAt: '2026-03-11T04:12:00Z',
+    lastStatus: 'clean',
+    lastFindingsCount: 0,
+    totalScans: 12,
+    infectedScans: 0,
+  },
+  {
+    containerName: 'bob-container',
+    username: 'bob',
+    lastScanAt: '2026-03-11T04:10:00Z',
+    lastStatus: 'clean',
+    lastFindingsCount: 0,
+    totalScans: 11,
+    infectedScans: 1,
+  },
+  {
+    containerName: 'emma-container',
+    username: 'emma',
+    lastScanAt: '2026-03-11T04:18:00Z',
+    lastStatus: 'clean',
+    lastFindingsCount: 0,
+    totalScans: 9,
+    infectedScans: 0,
+  },
+  {
+    containerName: 'david-container',
+    username: 'david',
+    lastScanAt: '2026-03-09T20:00:00Z',
+    lastStatus: 'clean',
+    lastFindingsCount: 0,
+    totalScans: 5,
+    infectedScans: 0,
+  },
+];
+
+// Mock scan status — shows an active scan in progress
+const mockScanStatus: ScanStatusResponse = {
+  jobs: [
+    { id: 101, containerName: 'alice-container', username: 'alice', status: 'completed', retryCount: 0, errorMessage: '', createdAt: '2026-03-11T05:30:00Z', startedAt: '2026-03-11T05:30:02Z', completedAt: '2026-03-11T05:32:15Z' },
+    { id: 102, containerName: 'bob-container', username: 'bob', status: 'completed', retryCount: 0, errorMessage: '', createdAt: '2026-03-11T05:30:00Z', startedAt: '2026-03-11T05:30:03Z', completedAt: '2026-03-11T05:33:40Z' },
+    { id: 103, containerName: 'charlie-container', username: 'charlie', status: 'running', retryCount: 0, errorMessage: '', createdAt: '2026-03-11T05:30:00Z', startedAt: '2026-03-11T05:32:16Z', completedAt: '' },
+    { id: 104, containerName: 'emma-container', username: 'emma', status: 'pending', retryCount: 0, errorMessage: '', createdAt: '2026-03-11T05:30:00Z', startedAt: '', completedAt: '' },
+    { id: 105, containerName: 'david-container', username: 'david', status: 'pending', retryCount: 0, errorMessage: '', createdAt: '2026-03-11T05:30:00Z', startedAt: '', completedAt: '' },
+    { id: 106, containerName: 'frank-container', username: 'frank', status: 'failed', retryCount: 2, errorMessage: 'failed to mount rootfs: container stopped mid-scan', createdAt: '2026-03-11T05:30:00Z', startedAt: '2026-03-11T05:30:04Z', completedAt: '2026-03-11T05:31:10Z' },
+  ],
+  pendingCount: 2,
+  runningCount: 1,
+  completedCount: 2,
+  failedCount: 1,
+};
+
 // Mock traffic stats - simulates route popularity based on requests per minute
 const mockTrafficStats: RouteTrafficStats[] = [
   // Most popular - Charlie's training monitor gets heavy API traffic
@@ -482,6 +586,316 @@ const mockServer = {
   token: 'mock-token',
   addedAt: Date.now() - 86400000, // Added 1 day ago
 };
+
+// ============================================
+// Demo Monitoring View (mock Grafana dashboard)
+// ============================================
+
+function GaugeChart({ label, value, max, unit, color }: { label: string; value: number; max: number; unit: string; color: string }) {
+  const pct = Math.round((value / max) * 100);
+  return (
+    <Paper sx={{ p: 2, textAlign: 'center', minWidth: 160, flex: 1 }}>
+      <Box sx={{ position: 'relative', display: 'inline-flex', mb: 1 }}>
+        <CircularProgress variant="determinate" value={pct} size={80} thickness={6}
+          sx={{ color, '& .MuiCircularProgress-circle': { strokeLinecap: 'round' } }} />
+        <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Typography variant="body2" fontWeight="bold">{pct}%</Typography>
+        </Box>
+      </Box>
+      <Typography variant="body2" fontWeight={500}>{label}</Typography>
+      <Typography variant="caption" color="text.secondary">{value}{unit} / {max}{unit}</Typography>
+    </Paper>
+  );
+}
+
+function SparkBar({ label, values, color }: { label: string; values: number[]; color: string }) {
+  const maxVal = Math.max(...values, 1);
+  return (
+    <Paper sx={{ p: 2, flex: 1, minWidth: 200 }}>
+      <Typography variant="body2" fontWeight={500} gutterBottom>{label}</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: 48 }}>
+        {values.map((v, i) => (
+          <Box key={i} sx={{ flex: 1, bgcolor: color, borderRadius: '2px 2px 0 0', height: `${(v / maxVal) * 100}%`, minHeight: 2, opacity: 0.5 + (i / values.length) * 0.5 }} />
+        ))}
+      </Box>
+      <Typography variant="caption" color="text.secondary">Last 30 minutes</Typography>
+    </Paper>
+  );
+}
+
+function DemoMonitoringView() {
+  // Mock per-container CPU sparkline data (30 data points each)
+  const cpuSpark = [12, 15, 22, 18, 35, 42, 38, 45, 52, 48, 55, 60, 58, 62, 55, 50, 48, 52, 58, 65, 70, 68, 72, 75, 70, 65, 60, 58, 55, 52];
+  const memSpark = [40, 41, 42, 42, 43, 44, 45, 46, 48, 50, 52, 55, 58, 60, 62, 64, 65, 65, 64, 63, 62, 61, 60, 60, 59, 58, 58, 57, 57, 56];
+  const netSpark = [5, 8, 12, 15, 22, 35, 28, 18, 42, 55, 38, 25, 32, 45, 50, 48, 35, 28, 22, 15, 18, 25, 32, 28, 22, 18, 15, 12, 10, 8];
+
+  return (
+    <Box sx={{ p: 3 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <MonitorHeartIcon />
+          <Typography variant="h5">Monitoring</Typography>
+        </Box>
+        <IconButton size="small"><RefreshIcon /></IconButton>
+      </Box>
+
+      {/* System Gauges */}
+      <Typography variant="subtitle2" color="text.secondary" gutterBottom>System Resources</Typography>
+      <Stack direction="row" spacing={2} sx={{ mb: 3, flexWrap: 'wrap' }}>
+        <GaugeChart label="CPU Load (1m)" value={18.5} max={32} unit=" cores" color="#1976d2" />
+        <GaugeChart label="Memory" value={80} max={128} unit=" GB" color="#9c27b0" />
+        <GaugeChart label="Disk" value={800} max={2048} unit=" GB" color="#ed6c02" />
+      </Stack>
+
+      {/* Container counts */}
+      <Stack direction="row" spacing={2} sx={{ mb: 3 }}>
+        <Paper sx={{ p: 2, textAlign: 'center', flex: 1 }}>
+          <Typography variant="h3" color="success.main" fontWeight="bold">5</Typography>
+          <Typography variant="body2" color="text.secondary">Running</Typography>
+        </Paper>
+        <Paper sx={{ p: 2, textAlign: 'center', flex: 1 }}>
+          <Typography variant="h3" color="text.secondary" fontWeight="bold">1</Typography>
+          <Typography variant="body2" color="text.secondary">Stopped</Typography>
+        </Paper>
+        <Paper sx={{ p: 2, textAlign: 'center', flex: 1 }}>
+          <Typography variant="h3" color="primary.main" fontWeight="bold">6</Typography>
+          <Typography variant="body2" color="text.secondary">Total</Typography>
+        </Paper>
+      </Stack>
+
+      {/* Sparkline charts */}
+      <Typography variant="subtitle2" color="text.secondary" gutterBottom>Cluster Activity</Typography>
+      <Stack direction="row" spacing={2} sx={{ mb: 3, flexWrap: 'wrap' }}>
+        <SparkBar label="CPU Usage (%)" values={cpuSpark} color="#1976d2" />
+        <SparkBar label="Memory Usage (%)" values={memSpark} color="#9c27b0" />
+        <SparkBar label="Network I/O (MB/s)" values={netSpark} color="#2e7d32" />
+      </Stack>
+
+      {/* Per-container table */}
+      <Typography variant="subtitle2" color="text.secondary" gutterBottom>Per-Container Metrics</Typography>
+      <TableContainer component={Paper}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Container</TableCell>
+              <TableCell align="right">CPU (cores)</TableCell>
+              <TableCell align="right">Memory</TableCell>
+              <TableCell align="right">Disk</TableCell>
+              <TableCell align="right">Network Rx</TableCell>
+              <TableCell align="right">Network Tx</TableCell>
+              <TableCell align="right">Processes</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {[
+              { name: 'alice-container', cpu: '3.2 / 8', mem: '12.0 / 16 GB', disk: '65 / 100 GB', rx: '2.5 GB', tx: '1.2 GB', procs: 156 },
+              { name: 'charlie-container', cpu: '14.5 / 16', mem: '28.0 / 32 GB', disk: '145 / 200 GB', rx: '15.0 GB', tx: '8.0 GB', procs: 312 },
+              { name: 'bob-container', cpu: '0.9 / 4', mem: '3.2 / 8 GB', disk: '22 / 50 GB', rx: '850 MB', tx: '320 MB', procs: 42 },
+              { name: 'emma-container', cpu: '0.5 / 4', mem: '1.8 / 8 GB', disk: '8 / 50 GB', rx: '120 MB', tx: '45 MB', procs: 28 },
+              { name: 'frank-container', cpu: '0.0 / 8', mem: '0.2 / 16 GB', disk: '2 / 100 GB', rx: '0 MB', tx: '0 MB', procs: 0 },
+            ].map(row => (
+              <TableRow key={row.name} hover>
+                <TableCell>{row.name}</TableCell>
+                <TableCell align="right">{row.cpu}</TableCell>
+                <TableCell align="right">{row.mem}</TableCell>
+                <TableCell align="right">{row.disk}</TableCell>
+                <TableCell align="right">{row.rx}</TableCell>
+                <TableCell align="right">{row.tx}</TableCell>
+                <TableCell align="right">{row.procs}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+        In production, this tab embeds a live Grafana dashboard via iframe.
+      </Typography>
+    </Box>
+  );
+}
+
+// ============================================
+// Demo Security View (self-contained, no API calls)
+// ============================================
+
+function DemoStatusChip({ status }: { status: string }) {
+  switch (status) {
+    case 'clean':
+      return <Chip label="Clean" color="success" size="small" />;
+    case 'infected':
+      return <Chip label="Infected" color="error" size="small" />;
+    case 'never':
+      return <Chip label="Never Scanned" size="small" sx={{ bgcolor: 'grey.300' }} />;
+    default:
+      return <Chip label={status} size="small" />;
+  }
+}
+
+function DemoSummaryCard({ title, value, color }: { title: string; value: number; color: string }) {
+  return (
+    <Paper sx={{ p: 2, textAlign: 'center', minWidth: 140 }}>
+      <Typography variant="h4" sx={{ color, fontWeight: 'bold' }}>
+        {value}
+      </Typography>
+      <Typography variant="body2" color="text.secondary">
+        {title}
+      </Typography>
+    </Paper>
+  );
+}
+
+function DemoScanAction({ containerName, scanStatus }: { containerName: string; scanStatus: ScanStatusResponse }) {
+  const job = scanStatus.jobs.find(j => j.containerName === containerName && (j.status === 'pending' || j.status === 'running'));
+  if (job?.status === 'pending') {
+    return (
+      <Tooltip title="Queued — waiting for available worker">
+        <HourglassEmptyIcon fontSize="small" color="action" />
+      </Tooltip>
+    );
+  }
+  if (job?.status === 'running') {
+    return (
+      <Tooltip title="Scanning...">
+        <CircularProgress size={18} />
+      </Tooltip>
+    );
+  }
+  const recentJob = scanStatus.jobs.find(j => j.containerName === containerName);
+  if (recentJob?.status === 'failed') {
+    return (
+      <Tooltip title={`Failed: ${recentJob.errorMessage}`}>
+        <IconButton size="small"><ErrorOutlineIcon fontSize="small" color="error" /></IconButton>
+      </Tooltip>
+    );
+  }
+  if (recentJob?.status === 'completed') {
+    return (
+      <Tooltip title="Scan completed — click to re-scan">
+        <IconButton size="small"><CheckCircleOutlineIcon fontSize="small" color="success" /></IconButton>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip title="Trigger scan">
+      <IconButton size="small"><ScannerIcon fontSize="small" /></IconButton>
+    </Tooltip>
+  );
+}
+
+function formatDate(iso: string): string {
+  if (!iso) return 'Never';
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function DemoSecurityView() {
+  const summary = {
+    totalContainers: mockSecurityContainers.length,
+    cleanContainers: mockSecurityContainers.filter(c => c.lastStatus === 'clean').length,
+    infectedContainers: mockSecurityContainers.filter(c => c.lastStatus === 'infected').length,
+    neverScannedContainers: mockSecurityContainers.filter(c => c.lastStatus === 'never').length,
+  };
+  const total = mockScanStatus.completedCount + mockScanStatus.failedCount + mockScanStatus.runningCount + mockScanStatus.pendingCount;
+  const progress = total > 0 ? ((mockScanStatus.completedCount + mockScanStatus.failedCount) / total) * 100 : 0;
+  const today = new Date().toISOString().slice(0, 10);
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  // Sort: infected first, then never, then clean
+  const sorted = [...mockSecurityContainers].sort((a, b) => {
+    const order: Record<string, number> = { infected: 0, never: 1, clean: 2 };
+    return (order[a.lastStatus] ?? 3) - (order[b.lastStatus] ?? 3);
+  });
+
+  return (
+    <Box sx={{ p: 3 }}>
+      {/* Header */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <ShieldIcon />
+          <Typography variant="h5">Security Scanning</Typography>
+        </Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Button variant="contained" size="small" startIcon={<CircularProgress size={16} color="inherit" />} disabled>
+            Scan All
+          </Button>
+          <IconButton size="small"><RefreshIcon /></IconButton>
+        </Box>
+      </Box>
+
+      {/* Summary Cards */}
+      <Stack direction="row" spacing={2} sx={{ mb: 3, flexWrap: 'wrap' }}>
+        <DemoSummaryCard title="Total Containers" value={summary.totalContainers} color="text.primary" />
+        <DemoSummaryCard title="Clean" value={summary.cleanContainers} color="success.main" />
+        <DemoSummaryCard title="Infected" value={summary.infectedContainers} color="error.main" />
+        <DemoSummaryCard title="Never Scanned" value={summary.neverScannedContainers} color="text.secondary" />
+      </Stack>
+
+      {/* Scan Progress */}
+      <Paper sx={{ p: 2, mb: 3 }}>
+        <Typography variant="subtitle2" gutterBottom>Scan Progress</Typography>
+        <Box sx={{ mb: 1 }}>
+          <LinearProgress variant="determinate" value={progress} />
+        </Box>
+        <Stack direction="row" spacing={2}>
+          <Typography variant="body2" color="text.secondary">Pending: {mockScanStatus.pendingCount}</Typography>
+          <Typography variant="body2" color="info.main">Running: {mockScanStatus.runningCount}</Typography>
+          <Typography variant="body2" color="success.main">Completed: {mockScanStatus.completedCount}</Typography>
+          <Typography variant="body2" color="error.main">Failed: {mockScanStatus.failedCount}</Typography>
+        </Stack>
+      </Paper>
+
+      {/* CSV Download Section */}
+      <Paper sx={{ p: 2, mb: 3 }}>
+        <Typography variant="subtitle2" gutterBottom>Download Scan Reports</Typography>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <TextField type="date" label="Start Date" value={weekAgo} size="small" InputLabelProps={{ shrink: true }} />
+          <TextField type="date" label="End Date" value={today} size="small" InputLabelProps={{ shrink: true }} />
+          <Button variant="contained" startIcon={<DownloadIcon />} size="small">Download CSV</Button>
+        </Stack>
+      </Paper>
+
+      {/* Container Table */}
+      <TableContainer component={Paper}>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableCell>Container</TableCell>
+              <TableCell>Username</TableCell>
+              <TableCell>Last Scan</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell align="right">Findings</TableCell>
+              <TableCell align="right">Total Scans</TableCell>
+              <TableCell align="right">Actions</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {sorted.map((container) => (
+              <TableRow key={container.containerName} hover>
+                <TableCell>{container.containerName}</TableCell>
+                <TableCell>{container.username}</TableCell>
+                <TableCell>{formatDate(container.lastScanAt)}</TableCell>
+                <TableCell><DemoStatusChip status={container.lastStatus} /></TableCell>
+                <TableCell align="right">{container.lastFindingsCount}</TableCell>
+                <TableCell align="right">{container.totalScans}</TableCell>
+                <TableCell align="right">
+                  <DemoScanAction containerName={container.containerName} scanStatus={mockScanStatus} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+        Summary generated at: {formatDate(new Date().toISOString())}
+      </Typography>
+    </Box>
+  );
+}
+
+// ============================================
+// Tab Panel
+// ============================================
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -532,6 +946,8 @@ export default function DemoPage() {
           <Tab icon={<AppsIcon />} iconPosition="start" label="Apps" />
           <Tab icon={<HubIcon />} iconPosition="start" label="Network" />
           <Tab icon={<TimelineIcon />} iconPosition="start" label="Traffic" />
+          <Tab icon={<MonitorHeartIcon />} iconPosition="start" label="Monitoring" />
+          <Tab icon={<ShieldIcon />} iconPosition="start" label="Security" />
         </Tabs>
       </Box>
 
@@ -615,6 +1031,16 @@ export default function DemoPage() {
             console.log('Demo: Would query traffic for date range:', { start, end });
           }}
         />
+      </TabPanel>
+
+      {/* Monitoring View */}
+      <TabPanel value={tabIndex} index={4}>
+        <DemoMonitoringView />
+      </TabPanel>
+
+      {/* Security View */}
+      <TabPanel value={tabIndex} index={5}>
+        <DemoSecurityView />
       </TabPanel>
 
       {/* Label Editor Dialog */}

@@ -22,7 +22,13 @@ Built with LXC, SSH jump hosts, and cloud-native automation.
 ### Traffic Monitoring
 ![Traffic Monitor](docs/screenshots/dashboard-5.png)
 
-🌐 **Live Demo:** [https://containarium.kafeido.app/webui/](https://containarium.kafeido.app/webui/)
+### Monitoring Dashboard
+![Monitoring Dashboard](docs/screenshots/dashboard-6.png)
+
+### Security Scanning
+![Security Scanning](docs/screenshots/dashboard-7.png)
+
+🌐 **Live Demo:** [https://containarium.kafeido.app/webui/demo](https://containarium.kafeido.app/webui/demo)
 
 ## Quick Start
 
