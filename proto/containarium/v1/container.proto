@@ -445,6 +445,24 @@ message CleanupDiskResponse {
   Container container = 3;
 }
 
+// InstallStackRequest is the request to install a stack on a running container
+message InstallStackRequest {
+  // Username of the container
+  string username = 1;
+
+  // Stack or base script ID to install (e.g., "nodejs", "clamav")
+  string stack_id = 2;
+}
+
+// InstallStackResponse is the response from installing a stack
+message InstallStackResponse {
+  // Human-readable result message
+  string message = 1;
+
+  // Updated container info after installation
+  Container container = 2;
+}
+
 // GetMonitoringInfoRequest is the request to get monitoring info
 message GetMonitoringInfoRequest {}
 

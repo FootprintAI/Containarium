@@ -25,7 +25,8 @@ type Stack struct {
 
 // Config holds the stack configuration
 type Config struct {
-	Stacks []Stack `yaml:"stacks" json:"stacks"`
+	BaseScripts []Stack `yaml:"base_scripts" json:"baseScripts"`
+	Stacks      []Stack `yaml:"stacks" json:"stacks"`
 }
 
 // Manager manages stack definitions
@@ -170,4 +171,40 @@ func (m *Manager) GetPostInstallCommands(id string) ([]string, error) {
 		return nil, err
 	}
 	return stack.PostInstall, nil
+}
+
+// GetBaseScript returns a base script by ID
+func (m *Manager) GetBaseScript(id string) (*Stack, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, bs := range m.config.BaseScripts {
+		if bs.ID == id {
+			return &bs, nil
+		}
+	}
+
+	return nil, fmt.Errorf("base script not found: %s", id)
+}
+
+// GetAllBaseScripts returns all base scripts
+func (m *Manager) GetAllBaseScripts() []Stack {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]Stack, len(m.config.BaseScripts))
+	copy(result, m.config.BaseScripts)
+	return result
+}
+
+// GetStackOrBaseScript looks up an ID in both stacks and base_scripts.
+// Returns (stack, isBaseScript, error).
+func (m *Manager) GetStackOrBaseScript(id string) (*Stack, bool, error) {
+	if s, err := m.GetStack(id); err == nil {
+		return s, false, nil
+	}
+	if s, err := m.GetBaseScript(id); err == nil {
+		return s, true, nil
+	}
+	return nil, false, fmt.Errorf("stack or base script not found: %s", id)
 }

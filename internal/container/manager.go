@@ -255,10 +255,19 @@ apt-get update
 		packages = append(packages, "podman")
 	}
 
+	// Collect base script packages and run their pre-install commands
+	stackMgr := stacks.GetDefault()
+	baseScripts := stackMgr.GetAllBaseScripts()
+	for _, bs := range baseScripts {
+		for _, cmd := range bs.PreInstall {
+			cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", username)
+			_ = m.incus.Exec(containerName, []string{"bash", "-c", cmd})
+		}
+		packages = append(packages, bs.Packages...)
+	}
+
 	// Add stack-specific packages and run pre-install commands
 	if stackID != "" {
-		stackMgr := stacks.GetDefault()
-
 		// Run pre-install commands as root (e.g., adding apt repositories)
 		preInstallCmds, err := stackMgr.GetPreInstallCommands(stackID)
 		if err == nil && len(preInstallCmds) > 0 {
@@ -305,6 +314,14 @@ apt-get update
 	}
 	if err := m.incus.Exec(containerName, []string{"systemctl", "start", "ssh"}); err != nil {
 		return fmt.Errorf("failed to start ssh: %w", err)
+	}
+
+	// Run base scripts post-install commands as root
+	for _, bs := range baseScripts {
+		for _, cmd := range bs.PostInstall {
+			cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", username)
+			_ = m.incus.Exec(containerName, []string{"bash", "-c", cmd})
+		}
 	}
 
 	// Run stack post-install commands as the user
@@ -597,6 +614,79 @@ func (m *Manager) CleanupDisk(username string) (string, int64, error) {
 	}
 
 	return m.incus.CleanupDisk(containerName)
+}
+
+// InstallStack installs a stack or base script on a running container
+func (m *Manager) InstallStack(username, stackID string) error {
+	containerName := username + "-container"
+	effectiveUser := username
+
+	// Try username-container first; fall back to literal name (for core containers)
+	info, err := m.incus.GetContainer(containerName)
+	if err != nil {
+		// Try the name directly (e.g., "containarium-core-caddy")
+		info, err = m.incus.GetContainer(username)
+		if err != nil {
+			return fmt.Errorf("container not found: %w", err)
+		}
+		containerName = username
+		// For non-standard containers, fall back to "ubuntu" as the user
+		effectiveUser = "ubuntu"
+	}
+	if info.State != "Running" {
+		return fmt.Errorf("container is not running (state: %s)", info.State)
+	}
+
+	// Verify the effective user exists in the container; fall back to "ubuntu"
+	if err := m.incus.Exec(containerName, []string{"id", effectiveUser}); err != nil {
+		log.Printf("User %q not found in %s, falling back to ubuntu", effectiveUser, containerName)
+		effectiveUser = "ubuntu"
+	}
+
+	// Look up in both stacks and base_scripts
+	stackMgr := stacks.GetDefault()
+	stack, isBaseScript, err := stackMgr.GetStackOrBaseScript(stackID)
+	if err != nil {
+		return fmt.Errorf("unknown stack or base script: %s", stackID)
+	}
+
+	// Run apt-get update
+	if err := m.incus.Exec(containerName, []string{"apt-get", "update"}); err != nil {
+		return fmt.Errorf("apt-get update failed: %w", err)
+	}
+
+	// Run pre-install commands as root
+	for _, cmd := range stack.PreInstall {
+		cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", effectiveUser)
+		if err := m.incus.Exec(containerName, []string{"bash", "-c", cmd}); err != nil {
+			log.Printf("Warning: pre-install command failed: %v", err)
+		}
+	}
+
+	// Install packages
+	if len(stack.Packages) > 0 {
+		installCmd := append([]string{"apt-get", "install", "-y"}, stack.Packages...)
+		if err := m.incus.Exec(containerName, installCmd); err != nil {
+			return fmt.Errorf("apt-get install failed: %w", err)
+		}
+	}
+
+	// Run post-install commands
+	for _, cmd := range stack.PostInstall {
+		cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", effectiveUser)
+		if isBaseScript {
+			// Base scripts: run as root
+			if err := m.incus.Exec(containerName, []string{"bash", "-c", cmd}); err != nil {
+				log.Printf("Warning: post-install command failed: %v", err)
+			}
+		} else {
+			// Dev stacks: run as user
+			userCmd := []string{"su", "-", effectiveUser, "-c", cmd}
+			_ = m.incus.Exec(containerName, userCmd)
+		}
+	}
+
+	return nil
 }
 
 // GetInfo returns detailed information about a container

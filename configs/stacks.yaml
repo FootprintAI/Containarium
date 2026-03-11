@@ -2,6 +2,17 @@
 # These stacks define pre-configured software environments that can be
 # installed in containers during creation.
 
+# Base scripts are root-only system hardening scripts applied to every new container.
+# Unlike stacks, post_install commands run as root (not as user).
+base_scripts:
+  - id: ntp
+    name: Timezone Setup
+    description: Set timezone to Asia/Taipei (NTP is inherited from host in LXC containers)
+    packages: []
+    pre_install:
+      - "timedatectl set-timezone Asia/Taipei"
+    post_install: []
+
 stacks:
   - id: nodejs
     name: Node.js Development

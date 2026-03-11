@@ -23,6 +23,7 @@ import (
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/network"
+	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/internal/traffic"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
@@ -88,6 +89,8 @@ type DualServer struct {
 	collaboratorStore     *collaborator.Store
 	daemonConfigStore     *app.DaemonConfigStore
 	metricsCollector      *metrics.Collector
+	securityScanner       *security.Scanner
+	securityStore         *security.Store
 }
 
 // NewDualServer creates a new dual server instance
@@ -464,6 +467,47 @@ skipAppHosting:
 		containerServer.SetMonitoringURLs(config.VictoriaMetricsURL, grafanaURL)
 	}
 
+	// Setup ClamAV security scanner
+	var securityScanner *security.Scanner
+	var securityStore *security.Store
+	if postgresConnString != "" {
+		securityPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		if poolErr != nil {
+			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
+		} else {
+			securityStore, err = security.NewStore(context.Background(), securityPool)
+			if err != nil {
+				log.Printf("Warning: Failed to create security store: %v", err)
+				securityPool.Close()
+			} else {
+				// Register SecurityService gRPC handler
+				securityIncusClient, incusErr := incus.New()
+				if incusErr != nil {
+					log.Printf("Warning: Failed to create incus client for security: %v", incusErr)
+				} else {
+					// Create scanner first so we can pass it to the server
+					securityScanner = security.NewScanner(securityIncusClient, securityStore)
+
+					securityServer := NewSecurityServer(securityStore, securityIncusClient, securityScanner)
+					pb.RegisterSecurityServiceServer(grpcServer, securityServer)
+					log.Printf("Security service enabled")
+
+					// Ensure security container exists (background, non-blocking)
+					go func() {
+						coreServices := NewCoreServices(securityIncusClient, CoreServicesConfig{
+							NetworkCIDR: networkCIDR,
+						})
+						if err := coreServices.EnsureSecurity(context.Background()); err != nil {
+							log.Printf("Warning: Failed to setup security container: %v. ClamAV scanning disabled.", err)
+						} else {
+							log.Printf("Security container ready")
+						}
+					}()
+				}
+			}
+		}
+	}
+
 	// Create gateway server if REST is enabled
 	var gatewayServer *gateway.GatewayServer
 	if config.EnableREST {
@@ -488,6 +532,11 @@ skipAppHosting:
 			certsDir,
 			config.CaddyCertDir,
 		)
+
+		// Wire security store for CSV export
+		if securityStore != nil {
+			gatewayServer.SetSecurityStore(securityStore)
+		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured
 		if config.VictoriaMetricsURL != "" {
@@ -519,6 +568,8 @@ skipAppHosting:
 		collaboratorStore:  collabStore,
 		daemonConfigStore:  config.DaemonConfigStore,
 		metricsCollector:   metricsCollector,
+		securityScanner:    securityScanner,
+		securityStore:      securityStore,
 	}, nil
 }
 
@@ -534,6 +585,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// Start OTel metrics collector if available
 	if ds.metricsCollector != nil {
 		ds.metricsCollector.Start()
+	}
+
+	// Start security scanner if available
+	if ds.securityScanner != nil {
+		ds.securityScanner.Start(ctx)
+		log.Printf("Security scanner started")
 	}
 
 	// Log Grafana availability (served via reverse proxy at /grafana/ on the HTTP gateway)
@@ -635,6 +692,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.metricsCollector != nil {
 			ds.metricsCollector.Stop()
+		}
+		if ds.securityScanner != nil {
+			ds.securityScanner.Stop()
 		}
 		if ds.collaboratorStore != nil {
 			ds.collaboratorStore.Close()

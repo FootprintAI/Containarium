@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/internal/stacks"
 )
 
 const (
@@ -24,6 +26,9 @@ const (
 
 	// Default Caddy admin port
 	DefaultCaddyAdminPort = 2019
+
+	// CoreSecurityContainer is the name of the core ClamAV security container
+	CoreSecurityContainer = "containarium-core-security"
 
 	// CoreVictoriaMetricsContainer is the name of the core Victoria Metrics + Grafana container
 	CoreVictoriaMetricsContainer = "containarium-core-victoriametrics"
@@ -153,6 +158,9 @@ func (cs *CoreServices) EnsurePostgres(ctx context.Context) (string, error) {
 	if err := cs.setupPostgres(ctx); err != nil {
 		return "", fmt.Errorf("failed to setup postgres: %w", err)
 	}
+
+	// Apply base scripts (timezone, clamav) — best-effort
+	cs.applyBaseScripts(CorePostgresContainer, "ubuntu")
 
 	return cs.getPostgresConnString(), nil
 }
@@ -348,6 +356,9 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 		return "", fmt.Errorf("failed to setup caddy: %w", err)
 	}
 
+	// Apply base scripts (timezone, clamav) — best-effort
+	cs.applyBaseScripts(CoreCaddyContainer, "ubuntu")
+
 	return cs.getCaddyAdminURL(), nil
 }
 
@@ -485,6 +496,9 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 	if err := cs.setupVictoriaMetrics(ctx, postgresIP); err != nil {
 		return "", fmt.Errorf("failed to setup victoriametrics: %w", err)
 	}
+
+	// Apply base scripts (timezone, clamav) — best-effort
+	cs.applyBaseScripts(CoreVictoriaMetricsContainer, "ubuntu")
 
 	return cs.victoriaMetricsIP, nil
 }
@@ -743,9 +757,144 @@ func (cs *CoreServices) GetVictoriaMetricsURL() string {
 	return fmt.Sprintf("http://%s:%d", cs.victoriaMetricsIP, DefaultVMPort)
 }
 
+// applyBaseScripts runs all base scripts on a container using the given username.
+// Errors are logged but not fatal — base scripts are best-effort on core containers.
+func (cs *CoreServices) applyBaseScripts(containerName, username string) {
+	stackMgr := stacks.GetDefault()
+	baseScripts := stackMgr.GetAllBaseScripts()
+	if len(baseScripts) == 0 {
+		return
+	}
+
+	log.Printf("Applying base scripts to %s (user=%s)...", containerName, username)
+
+	// Collect all packages
+	var allPkgs []string
+	for _, bs := range baseScripts {
+		// Pre-install
+		for _, cmd := range bs.PreInstall {
+			cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", username)
+			_ = cs.incusClient.Exec(containerName, []string{"bash", "-c", cmd})
+		}
+		allPkgs = append(allPkgs, bs.Packages...)
+	}
+
+	// Install packages in one shot
+	if len(allPkgs) > 0 {
+		_ = cs.incusClient.Exec(containerName, []string{"apt-get", "update"})
+		installCmd := append([]string{"apt-get", "install", "-y"}, allPkgs...)
+		_ = cs.incusClient.Exec(containerName, installCmd)
+	}
+
+	// Post-install
+	for _, bs := range baseScripts {
+		for _, cmd := range bs.PostInstall {
+			cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", username)
+			_ = cs.incusClient.Exec(containerName, []string{"bash", "-c", cmd})
+		}
+	}
+
+	log.Printf("Base scripts applied to %s", containerName)
+}
+
 // GetGrafanaURL returns the Grafana URL
 func (cs *CoreServices) GetGrafanaURL() string {
 	return fmt.Sprintf("http://%s:%d", cs.victoriaMetricsIP, DefaultGrafanaPort)
+}
+
+// EnsureSecurity ensures the ClamAV security container is running
+func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
+	// Check if container already exists
+	info, err := cs.incusClient.GetContainer(CoreSecurityContainer)
+	if err == nil {
+		cs.backfillConfig(CoreSecurityContainer, incus.RoleSecurity, "70")
+
+		if info.State == "Running" {
+			log.Printf("Security container already running at %s", info.IPAddress)
+			return nil
+		}
+		log.Printf("Starting existing Security container...")
+		if err := cs.incusClient.StartContainer(CoreSecurityContainer); err != nil {
+			return fmt.Errorf("failed to start security container: %w", err)
+		}
+		if _, err := cs.incusClient.WaitForNetwork(CoreSecurityContainer, 60*time.Second); err != nil {
+			return fmt.Errorf("failed to get security container IP: %w", err)
+		}
+		return nil
+	}
+
+	// Container doesn't exist, create it
+	log.Printf("Creating ClamAV security container...")
+
+	config := incus.ContainerConfig{
+		Name:      CoreSecurityContainer,
+		Image:     "images:ubuntu/24.04",
+		CPU:       "1",
+		Memory:    "1GB",
+		AutoStart: true,
+		Disk: &incus.DiskDevice{
+			Path: "/",
+			Pool: "default",
+			Size: "5GB",
+		},
+	}
+
+	if err := cs.incusClient.CreateContainer(config); err != nil {
+		return fmt.Errorf("failed to create security container: %w", err)
+	}
+
+	cs.incusClient.UpdateContainerConfig(CoreSecurityContainer, incus.RoleKey, string(incus.RoleSecurity))
+	cs.incusClient.UpdateContainerConfig(CoreSecurityContainer, "boot.autostart", "true")
+	cs.incusClient.UpdateContainerConfig(CoreSecurityContainer, "boot.autostart.priority", "70")
+
+	if err := cs.incusClient.StartContainer(CoreSecurityContainer); err != nil {
+		return fmt.Errorf("failed to start security container: %w", err)
+	}
+
+	if _, err := cs.incusClient.WaitForNetwork(CoreSecurityContainer, 60*time.Second); err != nil {
+		return fmt.Errorf("failed to get security container IP: %w", err)
+	}
+
+	if err := cs.setupSecurity(ctx); err != nil {
+		return fmt.Errorf("failed to setup security: %w", err)
+	}
+
+	// Apply base scripts (timezone) — best-effort
+	cs.applyBaseScripts(CoreSecurityContainer, "ubuntu")
+
+	return nil
+}
+
+// setupSecurity installs ClamAV in the security container
+func (cs *CoreServices) setupSecurity(ctx context.Context) error {
+	log.Printf("Installing ClamAV...")
+
+	time.Sleep(5 * time.Second)
+
+	commands := [][]string{
+		{"apt-get", "update"},
+		{"apt-get", "install", "-y", "clamav", "clamav-daemon", "clamav-freshclam"},
+	}
+
+	for _, cmd := range commands {
+		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
+			return fmt.Errorf("failed to run %v: %w", cmd, err)
+		}
+	}
+
+	// Enable and start freshclam (virus database updater)
+	startCmds := [][]string{
+		{"systemctl", "enable", "clamav-freshclam"},
+		{"systemctl", "start", "clamav-freshclam"},
+	}
+	for _, cmd := range startCmds {
+		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
+			return fmt.Errorf("failed to run %v: %w", cmd, err)
+		}
+	}
+
+	log.Printf("ClamAV security container setup complete")
+	return nil
 }
 
 // backfillConfig ensures role label and boot priority are set on an existing

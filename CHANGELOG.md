@@ -5,6 +5,32 @@ All notable changes to Containarium will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **ClamAV security scanning** — Full antivirus integration via a `containarium-core-security` container running ClamAV. Scans container root filesystems by mounting them read-only into the security container.
+  - Persistent scan reports in PostgreSQL (`clamav_reports` table) with filtering by container, status, and date range
+  - CSV export via `GET /v1/security/clamav-reports/export`
+  - Per-container summary API (`GET /v1/security/clamav-summary`) with clean/infected/never-scanned counts
+  - Automatic daily background scan cycle with 90-day report retention
+- **Async scan job queue** — ClamAV scans now run asynchronously via a PostgreSQL-backed job queue (`scan_jobs` table), replacing the previous synchronous blocking approach.
+  - `POST /v1/security/clamav-scan` returns immediately with queued job count instead of blocking for 10+ minutes
+  - 3-worker pool processes scans concurrently, polling the queue with `FOR UPDATE SKIP LOCKED` for safe concurrent claiming
+  - Automatic retries (up to 2) for transient failures (e.g., stale mount errors)
+  - Jobs survive daemon restarts — pending/failed-retryable jobs resume automatically
+- **Scan status API** — New `GET /v1/security/scan-status` endpoint returns real-time queue state: per-job details and aggregate pending/running/completed/failed counts
+- **Security dashboard** — New `/security` page in the web UI
+  - Summary cards: total, clean, infected, and never-scanned container counts
+  - Container table sorted by severity (infected first), with expandable per-container scan history
+  - Context-aware per-container scan action icons reflecting job queue state: hourglass (queued), spinner (running), green checkmark (completed), red error with tooltip (failed), scanner icon (idle)
+  - Real-time scan progress bar with status counts, polls every 5 seconds during active scans
+  - Date range picker for CSV report download
+- **Core services section** — New panel in the web UI showing infrastructure container status (PostgreSQL, Caddy, VictoriaMetrics, ClamAV) via `GET /system/core-services`
+- **Stack install CLI** — New `containarium install-stack` command for deploying predefined container stacks
+
+### Changed
+- **`SecurityService` proto** — New gRPC service with 4 RPCs: `ListClamavReports`, `TriggerClamavScan`, `GetClamavSummary`, `GetScanStatus`. Auto-registered on the gRPC-gateway for REST access.
+
 ## [v0.10.0] - 2026-03-09
 
 ### Added

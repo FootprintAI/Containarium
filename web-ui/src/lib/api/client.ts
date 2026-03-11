@@ -3,6 +3,17 @@ import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerRes
 import { Server } from '@/src/types/server';
 import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute } from '@/src/types/app';
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
+import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse } from '@/src/types/security';
+
+/**
+ * Core infrastructure service info (read-only)
+ */
+export interface CoreService {
+  name: string;
+  role: string;
+  state: string;
+  ipAddress: string;
+}
 
 /**
  * API error response
@@ -298,6 +309,18 @@ export class ContaineriumClient {
       networkTxBytes: Number(m.networkTxBytes) || 0,
       processCount: Number(m.processCount) || 0,
     }));
+  }
+
+  // ============================================
+  // Core Services Methods
+  // ============================================
+
+  /**
+   * Get core infrastructure services (PostgreSQL, Caddy, VictoriaMetrics, ClamAV)
+   */
+  async getCoreServices(): Promise<CoreService[]> {
+    const response = await this.client.get<{ services?: CoreService[] }>('/system/core-services');
+    return response.data.services || [];
   }
 
   // ============================================
@@ -821,6 +844,77 @@ export class ContaineriumClient {
       { params }
     );
     return response.data.aggregates || [];
+  }
+
+  /**
+   * Get ClamAV scan summary across all containers
+   */
+  async getClamavSummary(): Promise<ClamavSummaryResponse> {
+    const response = await this.client.get('/security/clamav-summary');
+    return response.data;
+  }
+
+  /**
+   * List ClamAV scan reports with optional filtering
+   */
+  async listClamavReports(params?: ListClamavReportsParams): Promise<ClamavReportsResponse> {
+    const response = await this.client.get('/security/clamav-reports', { params });
+    return {
+      reports: response.data.reports || [],
+      totalCount: response.data.totalCount || 0,
+    };
+  }
+
+  /**
+   * Trigger an on-demand ClamAV scan
+   * @param containerName - Optional container name (empty = scan all)
+   */
+  async triggerClamavScan(containerName?: string): Promise<TriggerScanResponse> {
+    const response = await this.client.post<TriggerScanResponse>('/security/clamav-scan', {
+      container_name: containerName || '',
+    }, {
+      timeout: 30000, // Now async — returns immediately
+    });
+    return {
+      message: response.data.message || '',
+      scannedCount: response.data.scannedCount || 0,
+    };
+  }
+
+  /**
+   * Get scan job queue status (pending/running/completed/failed jobs)
+   */
+  async getScanStatus(): Promise<ScanStatusResponse> {
+    const response = await this.client.get<ScanStatusResponse>('/security/scan-status');
+    return {
+      jobs: (response.data.jobs || []).map(j => ({
+        id: j.id,
+        containerName: j.containerName || (j as any).container_name || '',
+        username: j.username || '',
+        status: j.status,
+        retryCount: j.retryCount || (j as any).retry_count || 0,
+        errorMessage: j.errorMessage || (j as any).error_message || '',
+        createdAt: j.createdAt || (j as any).created_at || '',
+        startedAt: j.startedAt || (j as any).started_at || '',
+        completedAt: j.completedAt || (j as any).completed_at || '',
+      })),
+      pendingCount: response.data.pendingCount || (response.data as any).pending_count || 0,
+      runningCount: response.data.runningCount || (response.data as any).running_count || 0,
+      completedCount: response.data.completedCount || (response.data as any).completed_count || 0,
+      failedCount: response.data.failedCount || (response.data as any).failed_count || 0,
+    };
+  }
+
+  /**
+   * Get the URL for downloading ClamAV reports as CSV
+   */
+  getClamavReportExportUrl(from: string, to: string, containerName?: string, status?: string): string {
+    const baseURL = normalizeEndpoint(this.server.endpoint);
+    const token = sanitizeToken(this.server.token);
+    const params = new URLSearchParams({ from, to, token });
+    if (containerName) params.set('container_name', containerName);
+    if (status) params.set('status', status);
+    return `${baseURL}/security/clamav-reports/export?${params.toString()}`;
   }
 }
 

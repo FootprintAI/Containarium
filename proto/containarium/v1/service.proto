@@ -228,6 +228,19 @@ service ContainerService {
     };
   }
 
+  // InstallStack installs a software stack or base script on a running container
+  rpc InstallStack(InstallStackRequest) returns (InstallStackResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/install-stack"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Install a software stack on a container";
+      description: "Installs a pre-configured software stack or base script on an existing running container.";
+      tags: "Container Operations";
+    };
+  }
+
   // GetSystemInfo gets information about the Incus host
   rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse) {
     option (google.api.http) = {
