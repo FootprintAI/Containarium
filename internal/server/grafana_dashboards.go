@@ -76,7 +76,7 @@ const OverviewDashboard = `{
     {
       "id": 8, "title": "Container CPU (cores)", "type": "timeseries",
       "gridPos": { "h": 6, "w": 12, "x": 0, "y": 10 },
-      "targets": [{ "expr": "rate(container_cpu_usage_seconds[5m])", "legendFormat": "{{ container_name }}", "refId": "A" }],
+      "targets": [{ "expr": "rate(container_cpu_usage_seconds{container_name!~\"containarium-core-.*\"}[5m])", "legendFormat": "{{ container_name }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "short" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
@@ -84,7 +84,7 @@ const OverviewDashboard = `{
     {
       "id": 9, "title": "Container Memory", "type": "timeseries",
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 10 },
-      "targets": [{ "expr": "container_memory_usage_bytes", "legendFormat": "{{ container_name }}", "refId": "A" }],
+      "targets": [{ "expr": "container_memory_usage_bytes{container_name!~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
@@ -92,7 +92,7 @@ const OverviewDashboard = `{
     {
       "id": 10, "title": "Container Disk", "type": "timeseries",
       "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
-      "targets": [{ "expr": "container_disk_usage_bytes", "legendFormat": "{{ container_name }}", "refId": "A" }],
+      "targets": [{ "expr": "container_disk_usage_bytes{container_name!~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
@@ -101,12 +101,54 @@ const OverviewDashboard = `{
       "id": 11, "title": "Container Network I/O", "type": "timeseries",
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
       "targets": [
-        { "expr": "container_network_rx_bytes", "legendFormat": "{{ container_name }} RX", "refId": "A" },
-        { "expr": "container_network_tx_bytes", "legendFormat": "{{ container_name }} TX", "refId": "B" }
+        { "expr": "container_network_rx_bytes{container_name!~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }} RX", "refId": "A" },
+        { "expr": "container_network_tx_bytes{container_name!~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }} TX", "refId": "B" }
       ],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 12, "title": "Core Infrastructure", "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "collapsed": true,
+      "panels": [
+        {
+          "id": 13, "title": "Core CPU (cores)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 23 },
+          "targets": [{ "expr": "rate(container_cpu_usage_seconds{container_name=~\"containarium-core-.*\"}[5m])", "legendFormat": "{{ container_name }}", "refId": "A" }],
+          "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+          "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "short" }, "overrides": [] },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+        },
+        {
+          "id": 14, "title": "Core Memory", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 23 },
+          "targets": [{ "expr": "container_memory_usage_bytes{container_name=~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }}", "refId": "A" }],
+          "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+          "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+        },
+        {
+          "id": 15, "title": "Core Disk", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 29 },
+          "targets": [{ "expr": "container_disk_usage_bytes{container_name=~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }}", "refId": "A" }],
+          "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+          "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+        },
+        {
+          "id": 16, "title": "Core Network I/O", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 29 },
+          "targets": [
+            { "expr": "container_network_rx_bytes{container_name=~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }} RX", "refId": "A" },
+            { "expr": "container_network_tx_bytes{container_name=~\"containarium-core-.*\"}", "legendFormat": "{{ container_name }} TX", "refId": "B" }
+          ],
+          "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+          "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

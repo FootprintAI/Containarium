@@ -409,6 +409,31 @@ func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRe
 	}, nil
 }
 
+// InstallStack installs a software stack or base script on a running container
+func (s *ContainerServer) InstallStack(ctx context.Context, req *pb.InstallStackRequest) (*pb.InstallStackResponse, error) {
+	if req.Username == "" {
+		return nil, fmt.Errorf("username is required")
+	}
+	if req.StackId == "" {
+		return nil, fmt.Errorf("stack_id is required")
+	}
+
+	if err := s.manager.InstallStack(req.Username, req.StackId); err != nil {
+		return nil, fmt.Errorf("failed to install stack: %w", err)
+	}
+
+	// Get updated container info
+	info, err := s.manager.Get(req.Username)
+	if err != nil {
+		return nil, fmt.Errorf("stack installed but failed to get container info: %w", err)
+	}
+
+	return &pb.InstallStackResponse{
+		Message:   fmt.Sprintf("Stack %q installed successfully on %s-container", req.StackId, req.Username),
+		Container: toProtoContainer(info),
+	}, nil
+}
+
 // AddSSHKey adds an SSH key to a container
 func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyRequest) (*pb.AddSSHKeyResponse, error) {
 	if req.Username == "" {

@@ -9,6 +9,7 @@ import AppsIcon from '@mui/icons-material/Apps';
 import HubIcon from '@mui/icons-material/Hub';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import InsightsIcon from '@mui/icons-material/Insights';
+import ShieldIcon from '@mui/icons-material/Shield';
 import AppBar from '@/src/components/layout/AppBar';
 import ServerTabs from '@/src/components/layout/ServerTabs';
 import AddServerDialog from '@/src/components/servers/AddServerDialog';
@@ -23,6 +24,7 @@ import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import FirewallEditor from '@/src/components/network/FirewallEditor';
 import TrafficView from '@/src/components/traffic/TrafficView';
 import MonitoringView from '@/src/components/monitoring/MonitoringView';
+import SecurityView from '@/src/components/security/SecurityView';
 import { useServers } from '@/src/lib/hooks/useServers';
 import { useContainers, CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 import { useMetrics } from '@/src/lib/hooks/useMetrics';
@@ -39,7 +41,7 @@ const TerminalDialog = dynamic(
   { ssr: false }
 );
 
-const TAB_PATHS = ['/containers/', '/apps/', '/network/', '/traffic/', '/monitoring/'] as const;
+const TAB_PATHS = ['/containers/', '/apps/', '/network/', '/traffic/', '/monitoring/', '/security/'] as const;
 const TAB_INDICES: Record<string, number> = {
   '/': 0,
   '/containers/': 0,
@@ -47,6 +49,7 @@ const TAB_INDICES: Record<string, number> = {
   '/network/': 2,
   '/traffic/': 3,
   '/monitoring/': 4,
+  '/security/': 5,
 };
 
 export default function Home() {
@@ -88,6 +91,7 @@ export default function Home() {
   // Container hooks
   const {
     containers,
+    coreServices,
     systemInfo,
     isLoading: containersLoading,
     error: containersError,
@@ -330,6 +334,7 @@ export default function Home() {
               <Tab icon={<HubIcon />} iconPosition="start" label="Network" />
               <Tab icon={<TimelineIcon />} iconPosition="start" label="Traffic" />
               <Tab icon={<InsightsIcon />} iconPosition="start" label="Monitoring" />
+              <Tab icon={<ShieldIcon />} iconPosition="start" label="Security" />
             </Tabs>
           </Box>
 
@@ -338,6 +343,7 @@ export default function Home() {
             {viewTab === 0 && (
               <ContainerTopology
                 containers={containers}
+                coreServices={coreServices}
                 metricsMap={metricsMap}
                 systemInfo={systemInfo}
                 isLoading={containersLoading}
@@ -415,6 +421,10 @@ export default function Home() {
 
             {viewTab === 4 && (
               <MonitoringView server={activeServer} />
+            )}
+
+            {viewTab === 5 && (
+              <SecurityView server={activeServer} />
             )}
           </Box>
         </>

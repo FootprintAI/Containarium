@@ -1,0 +1,224 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// ClamavReport represents a single ClamAV scan result for a container
+message ClamavReport {
+  // Database ID
+  int64 id = 1;
+
+  // Container name that was scanned
+  string container_name = 2;
+
+  // Username associated with the container
+  string username = 3;
+
+  // Scan status: "clean" or "infected"
+  string status = 4;
+
+  // Number of infected files found
+  int32 findings_count = 5;
+
+  // Infected file lines from ClamAV output
+  string findings = 6;
+
+  // When the scan was performed (ISO 8601 timestamp)
+  string scanned_at = 7;
+
+  // How long the scan took
+  string scan_duration = 8;
+
+  // When the report was created in the database
+  string created_at = 9;
+}
+
+// ClamavContainerSummary provides per-container scan summary
+message ClamavContainerSummary {
+  // Container name
+  string container_name = 1;
+
+  // Username associated with the container
+  string username = 2;
+
+  // When the last scan was performed
+  string last_scan_at = 3;
+
+  // Last scan status: "clean", "infected", or "never"
+  string last_status = 4;
+
+  // Number of findings in the last scan
+  int32 last_findings_count = 5;
+
+  // Total number of scans performed
+  int32 total_scans = 6;
+
+  // Number of scans that found infections
+  int32 infected_scans = 7;
+}
+
+// ============= Request/Response Messages =============
+
+message ListClamavReportsRequest {
+  // Filter by container name (optional)
+  string container_name = 1;
+
+  // Filter by status: "clean" or "infected" (optional)
+  string status = 2;
+
+  // Start date filter (ISO 8601, optional)
+  string from = 3;
+
+  // End date filter (ISO 8601, optional)
+  string to = 4;
+
+  // Maximum number of reports to return (default: 50)
+  int32 limit = 5;
+
+  // Offset for pagination
+  int32 offset = 6;
+}
+
+message ListClamavReportsResponse {
+  // List of scan reports
+  repeated ClamavReport reports = 1;
+
+  // Total count matching query
+  int32 total_count = 2;
+}
+
+message GetClamavSummaryRequest {}
+
+message GetClamavSummaryResponse {
+  // Per-container summaries
+  repeated ClamavContainerSummary containers = 1;
+
+  // Total number of containers
+  int32 total_containers = 2;
+
+  // Number of containers with clean last scan
+  int32 clean_containers = 3;
+
+  // Number of containers with infected last scan
+  int32 infected_containers = 4;
+
+  // Number of containers never scanned
+  int32 never_scanned_containers = 5;
+
+  // When the summary was last collected
+  string last_collection_at = 6;
+}
+
+message TriggerClamavScanRequest {
+  // Container name to scan (empty = scan all running user containers)
+  string container_name = 1;
+}
+
+message TriggerClamavScanResponse {
+  // Human-readable result message
+  string message = 1;
+
+  // Number of containers queued for scanning
+  int32 scanned_count = 2;
+}
+
+// ScanJob represents a queued ClamAV scan job
+message ScanJob {
+  // Database ID
+  int64 id = 1;
+
+  // Container name to scan
+  string container_name = 2;
+
+  // Username associated with the container
+  string username = 3;
+
+  // Job status: pending, running, completed, failed
+  string status = 4;
+
+  // Number of retry attempts so far
+  int32 retry_count = 5;
+
+  // Error message if the job failed
+  string error_message = 6;
+
+  // When the job was created (ISO 8601)
+  string created_at = 7;
+
+  // When the job started running (ISO 8601)
+  string started_at = 8;
+
+  // When the job completed (ISO 8601)
+  string completed_at = 9;
+}
+
+message GetScanStatusRequest {}
+
+message GetScanStatusResponse {
+  // Recent scan jobs
+  repeated ScanJob jobs = 1;
+
+  // Count of jobs by status
+  int32 pending_count = 2;
+  int32 running_count = 3;
+  int32 completed_count = 4;
+  int32 failed_count = 5;
+}
+
+// ============= Service Definition =============
+
+// SecurityService provides container security scanning and reporting
+service SecurityService {
+  // ListClamavReports returns ClamAV scan reports with optional filtering
+  rpc ListClamavReports(ListClamavReportsRequest) returns (ListClamavReportsResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/clamav-reports"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List ClamAV scan reports";
+      description: "Returns ClamAV scan reports with optional filtering by container, status, and date range.";
+      tags: "Security";
+    };
+  }
+
+  // TriggerClamavScan triggers an on-demand ClamAV scan
+  rpc TriggerClamavScan(TriggerClamavScanRequest) returns (TriggerClamavScanResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/clamav-scan"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Trigger ClamAV scan";
+      description: "Triggers an on-demand ClamAV scan for a specific container or all running user containers.";
+      tags: "Security";
+    };
+  }
+
+  // GetClamavSummary returns a summary of ClamAV scan status across all containers
+  rpc GetClamavSummary(GetClamavSummaryRequest) returns (GetClamavSummaryResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/clamav-summary"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get ClamAV scan summary";
+      description: "Returns a summary of ClamAV scan status across all containers including last scan time and infection status.";
+      tags: "Security";
+    };
+  }
+
+  // GetScanStatus returns the current state of the scan job queue
+  rpc GetScanStatus(GetScanStatusRequest) returns (GetScanStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/scan-status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get scan job queue status";
+      description: "Returns recent scan jobs and counts by status (pending, running, completed, failed).";
+      tags: "Security";
+    };
+  }
+}

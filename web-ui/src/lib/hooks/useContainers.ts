@@ -4,7 +4,7 @@ import { useCallback } from 'react';
 import useSWR from 'swr';
 import { Container, CreateContainerRequest, SystemInfo } from '@/src/types/container';
 import { Server } from '@/src/types/server';
-import { getClient } from '@/src/lib/api/client';
+import { getClient, CoreService } from '@/src/lib/api/client';
 import { useEventStream } from '@/src/lib/events/useEventStream';
 import { ServerEvent, isContainerEvent, ConnectionStatus } from '@/src/types/events';
 
@@ -74,6 +74,28 @@ export function useContainers(server: Server | null) {
       refreshInterval: 60000, // Refresh every minute
       revalidateOnFocus: false,
       dedupingInterval: 30000,
+    }
+  );
+
+  // Fetch core infrastructure services
+  const coreServicesFetcher = async (): Promise<CoreService[]> => {
+    if (!server) return [];
+    const client = getClient(server);
+    try {
+      return await client.getCoreServices();
+    } catch {
+      return [];
+    }
+  };
+
+  const coreServicesKey = server ? 'core-services-' + server.id : null;
+  const { data: coreServices } = useSWR<CoreService[]>(
+    coreServicesKey,
+    coreServicesFetcher,
+    {
+      refreshInterval: 30000, // Refresh every 30s
+      revalidateOnFocus: true,
+      dedupingInterval: 10000,
     }
   );
 
@@ -232,6 +254,7 @@ export function useContainers(server: Server | null) {
 
   return {
     containers: data || [],
+    coreServices: coreServices || [],
     systemInfo: systemInfo || null,
     isLoading,
     error,

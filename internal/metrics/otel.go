@@ -301,15 +301,13 @@ func (c *Collector) collect() {
 
 	var running, stopped int64
 	for _, ct := range containers {
-		// Skip core containers for aggregate counts
-		if ct.Role.IsCoreRole() {
-			continue
-		}
-
 		if ct.State == "Running" {
-			running++
+			// Only count user containers for aggregate stats
+			if !ct.Role.IsCoreRole() {
+				running++
+			}
 
-			// Collect per-container metrics
+			// Collect per-container metrics for ALL containers (core + user)
 			metrics, err := c.incusClient.GetContainerMetrics(ct.Name)
 			if err != nil {
 				continue
@@ -326,7 +324,10 @@ func (c *Collector) collect() {
 			c.containerNetTx.Record(ctx, metrics.NetworkTxBytes, attrs)
 			c.containerProcessCount.Record(ctx, int64(metrics.ProcessCount), attrs)
 		} else {
-			stopped++
+			// Only count user containers for aggregate stats
+			if !ct.Role.IsCoreRole() {
+				stopped++
+			}
 		}
 	}
 

@@ -28,6 +28,9 @@
     },
     {
       "name": "EventService"
+    },
+    {
+      "name": "SecurityService"
     }
   ],
   "schemes": [
@@ -1053,6 +1056,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/install-stack": {
+      "post": {
+        "summary": "Install a software stack on a container",
+        "description": "Installs a pre-configured software stack or base script on an existing running container.",
+        "operationId": "ContainerService_InstallStack",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/InstallStackResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/InstallStackBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/resize": {
       "put": {
         "summary": "Resize container resources",
@@ -1771,6 +1815,158 @@
         ]
       }
     },
+    "/v1/security/clamav-reports": {
+      "get": {
+        "summary": "List ClamAV scan reports",
+        "description": "Returns ClamAV scan reports with optional filtering by container, status, and date range.",
+        "operationId": "SecurityService_ListClamavReports",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListClamavReportsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Filter by container name (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "description": "Filter by status: \"clean\" or \"infected\" (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "from",
+            "description": "Start date filter (ISO 8601, optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "to",
+            "description": "End date filter (ISO 8601, optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "limit",
+            "description": "Maximum number of reports to return (default: 50)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "offset",
+            "description": "Offset for pagination",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/clamav-scan": {
+      "post": {
+        "summary": "Trigger ClamAV scan",
+        "description": "Triggers an on-demand ClamAV scan for a specific container or all running user containers.",
+        "operationId": "SecurityService_TriggerClamavScan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TriggerClamavScanResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TriggerClamavScanRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/clamav-summary": {
+      "get": {
+        "summary": "Get ClamAV scan summary",
+        "description": "Returns a summary of ClamAV scan status across all containers including last scan time and infection status.",
+        "operationId": "SecurityService_GetClamavSummary",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetClamavSummaryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/scan-status": {
+      "get": {
+        "summary": "Get scan job queue status",
+        "description": "Returns recent scan jobs and counts by status (pending, running, completed, failed).",
+        "operationId": "SecurityService_GetScanStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetScanStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/system/info": {
       "get": {
         "summary": "Get system information",
@@ -2309,6 +2505,87 @@
         }
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
+    },
+    "ClamavContainerSummary": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "title": "Container name"
+        },
+        "username": {
+          "type": "string",
+          "title": "Username associated with the container"
+        },
+        "lastScanAt": {
+          "type": "string",
+          "title": "When the last scan was performed"
+        },
+        "lastStatus": {
+          "type": "string",
+          "title": "Last scan status: \"clean\", \"infected\", or \"never\""
+        },
+        "lastFindingsCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of findings in the last scan"
+        },
+        "totalScans": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total number of scans performed"
+        },
+        "infectedScans": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of scans that found infections"
+        }
+      },
+      "title": "ClamavContainerSummary provides per-container scan summary"
+    },
+    "ClamavReport": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64",
+          "title": "Database ID"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Container name that was scanned"
+        },
+        "username": {
+          "type": "string",
+          "title": "Username associated with the container"
+        },
+        "status": {
+          "type": "string",
+          "title": "Scan status: \"clean\" or \"infected\""
+        },
+        "findingsCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of infected files found"
+        },
+        "findings": {
+          "type": "string",
+          "title": "Infected file lines from ClamAV output"
+        },
+        "scannedAt": {
+          "type": "string",
+          "title": "When the scan was performed (ISO 8601 timestamp)"
+        },
+        "scanDuration": {
+          "type": "string",
+          "title": "How long the scan took"
+        },
+        "createdAt": {
+          "type": "string",
+          "title": "When the report was created in the database"
+        }
+      },
+      "title": "ClamavReport represents a single ClamAV scan result for a container"
     },
     "CleanupDiskBody": {
       "type": "object",
@@ -2982,6 +3259,43 @@
         }
       }
     },
+    "GetClamavSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "containers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ClamavContainerSummary"
+          },
+          "title": "Per-container summaries"
+        },
+        "totalContainers": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total number of containers"
+        },
+        "cleanContainers": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of containers with clean last scan"
+        },
+        "infectedContainers": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of containers with infected last scan"
+        },
+        "neverScannedContainers": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of containers never scanned"
+        },
+        "lastCollectionAt": {
+          "type": "string",
+          "title": "When the summary was last collected"
+        }
+      }
+    },
     "GetConnectionSummaryResponse": {
       "type": "object",
       "properties": {
@@ -3091,6 +3405,36 @@
         }
       }
     },
+    "GetScanStatusResponse": {
+      "type": "object",
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ScanJob"
+          },
+          "title": "Recent scan jobs"
+        },
+        "pendingCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Count of jobs by status"
+        },
+        "runningCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "completedCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "failedCount": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -3180,6 +3524,30 @@
       },
       "title": "HistoricalConnection represents a persisted connection record"
     },
+    "InstallStackBody": {
+      "type": "object",
+      "properties": {
+        "stackId": {
+          "type": "string",
+          "title": "Stack or base script ID to install (e.g., \"nodejs\", \"clamav\")"
+        }
+      },
+      "title": "InstallStackRequest is the request to install a stack on a running container"
+    },
+    "InstallStackResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Human-readable result message"
+        },
+        "container": {
+          "$ref": "#/definitions/Container",
+          "title": "Updated container info after installation"
+        }
+      },
+      "title": "InstallStackResponse is the response from installing a stack"
+    },
     "ListACLPresetsResponse": {
       "type": "object",
       "properties": {
@@ -3208,6 +3576,24 @@
           "type": "integer",
           "format": "int32",
           "title": "Total count"
+        }
+      }
+    },
+    "ListClamavReportsResponse": {
+      "type": "object",
+      "properties": {
+        "reports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ClamavReport"
+          },
+          "title": "List of scan reports"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count matching query"
         }
       }
     },
@@ -3695,6 +4081,50 @@
       "description": "- ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes",
       "title": "RouteProtocol represents the protocol type for a route"
     },
+    "ScanJob": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64",
+          "title": "Database ID"
+        },
+        "containerName": {
+          "type": "string",
+          "title": "Container name to scan"
+        },
+        "username": {
+          "type": "string",
+          "title": "Username associated with the container"
+        },
+        "status": {
+          "type": "string",
+          "title": "Job status: pending, running, completed, failed"
+        },
+        "retryCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of retry attempts so far"
+        },
+        "errorMessage": {
+          "type": "string",
+          "title": "Error message if the job failed"
+        },
+        "createdAt": {
+          "type": "string",
+          "title": "When the job was created (ISO 8601)"
+        },
+        "startedAt": {
+          "type": "string",
+          "title": "When the job started running (ISO 8601)"
+        },
+        "completedAt": {
+          "type": "string",
+          "title": "When the job completed (ISO 8601)"
+        }
+      },
+      "title": "ScanJob represents a queued ClamAV scan job"
+    },
     "StartAppBody": {
       "type": "object",
       "title": "StartAppRequest starts a stopped app"
@@ -3957,6 +4387,29 @@
       "default": "TRAFFIC_EVENT_TYPE_UNSPECIFIED",
       "description": "- TRAFFIC_EVENT_TYPE_UNSPECIFIED: Unspecified event type\n - TRAFFIC_EVENT_TYPE_NEW: New connection established\n - TRAFFIC_EVENT_TYPE_UPDATE: Connection state or counters updated\n - TRAFFIC_EVENT_TYPE_DESTROY: Connection terminated",
       "title": "TrafficEventType represents the type of traffic event"
+    },
+    "TriggerClamavScanRequest": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "title": "Container name to scan (empty = scan all running user containers)"
+        }
+      }
+    },
+    "TriggerClamavScanResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "title": "Human-readable result message"
+        },
+        "scannedCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of containers queued for scanning"
+        }
+      }
     },
     "UpdateContainerACLBody": {
       "type": "object",

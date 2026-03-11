@@ -319,6 +319,36 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	return info, nil
 }
 
+// InstallStack installs a stack or base script on a running container via HTTP
+func (c *HTTPClient) InstallStack(username, stackID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/install-stack", url.PathEscape(username))
+	reqBody := map[string]interface{}{
+		"stackId": stackID,
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPost, path, reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to install stack: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return fmt.Errorf("%s", errResp.Error)
+		}
+		return fmt.Errorf("failed to install stack: status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
 // labelResponse is the response from label operations
 type labelResponse struct {
 	Container string            `json:"container"`

@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/container"
 	"github.com/footprintai/containarium/internal/incus"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/network"
@@ -160,6 +161,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Backfill role labels on core containers (for upgrades from older versions)
 	backfillCoreContainerLabels(incusClient)
+
+	// Reconcile base scripts on all running containers (best-effort, runs in background)
+	go reconcileBaseScripts(incusClient)
 
 	// Always auto-detect Caddy container IP if no URL specified
 	// This ensures port forwarding (80/443 → Caddy) and route sync work
@@ -453,6 +457,7 @@ func backfillCoreContainerLabels(incusClient *incus.Client) {
 		{server.CorePostgresContainer, incus.RolePostgres, "100"},
 		{server.CoreCaddyContainer, incus.RoleCaddy, "90"},
 		{server.CoreVictoriaMetricsContainer, incus.RoleVictoriaMetrics, "80"},
+		{server.CoreSecurityContainer, incus.RoleSecurity, "70"},
 	}
 	for _, c := range cores {
 		cfg, _, err := incusClient.GetRawInstance(c.name)
@@ -471,6 +476,45 @@ func backfillCoreContainerLabels(incusClient *incus.Client) {
 			incusClient.UpdateContainerConfig(c.name, "boot.autostart", "true")
 		}
 	}
+}
+
+// reconcileBaseScripts ensures all running containers have base scripts applied.
+// It runs in the background at daemon startup. Containers that already have the
+// scripts are fast (apt-get install is a no-op for already-installed packages).
+func reconcileBaseScripts(incusClient *incus.Client) {
+	log.Printf("Reconciling base scripts on all running containers...")
+
+	mgr, err := container.New()
+	if err != nil {
+		log.Printf("Warning: base script reconciliation failed: %v", err)
+		return
+	}
+
+	containers, err := incusClient.ListContainers()
+	if err != nil {
+		log.Printf("Warning: base script reconciliation failed: %v", err)
+		return
+	}
+
+	for _, c := range containers {
+		if c.State != "Running" {
+			continue
+		}
+
+		// Derive the lookup name for InstallStack:
+		// - "hsin-container" → pass "hsin" (InstallStack adds "-container" back)
+		// - "containarium-core-caddy" → pass as-is (fallback to literal name)
+		lookupName := c.Name
+		if strings.HasSuffix(c.Name, "-container") {
+			lookupName = strings.TrimSuffix(c.Name, "-container")
+		}
+
+		if err := mgr.InstallStack(lookupName, "ntp"); err != nil {
+			log.Printf("Warning: failed to apply ntp to %s: %v", c.Name, err)
+		}
+	}
+
+	log.Printf("Base script reconciliation complete")
 }
 
 // waitForCoreContainers discovers core containers by role label and waits for

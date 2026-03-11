@@ -33,6 +33,7 @@ const (
 	ContainerService_ListCollaborators_FullMethodName  = "/containarium.v1.ContainerService/ListCollaborators"
 	ContainerService_GetMetrics_FullMethodName         = "/containarium.v1.ContainerService/GetMetrics"
 	ContainerService_CleanupDisk_FullMethodName        = "/containarium.v1.ContainerService/CleanupDisk"
+	ContainerService_InstallStack_FullMethodName       = "/containarium.v1.ContainerService/InstallStack"
 	ContainerService_GetSystemInfo_FullMethodName      = "/containarium.v1.ContainerService/GetSystemInfo"
 	ContainerService_GetMonitoringInfo_FullMethodName  = "/containarium.v1.ContainerService/GetMonitoringInfo"
 )
@@ -71,6 +72,8 @@ type ContainerServiceClient interface {
 	GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error)
 	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
 	CleanupDisk(ctx context.Context, in *CleanupDiskRequest, opts ...grpc.CallOption) (*CleanupDiskResponse, error)
+	// InstallStack installs a software stack or base script on a running container
+	InstallStack(ctx context.Context, in *InstallStackRequest, opts ...grpc.CallOption) (*InstallStackResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(ctx context.Context, in *GetSystemInfoRequest, opts ...grpc.CallOption) (*GetSystemInfoResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
@@ -225,6 +228,16 @@ func (c *containerServiceClient) CleanupDisk(ctx context.Context, in *CleanupDis
 	return out, nil
 }
 
+func (c *containerServiceClient) InstallStack(ctx context.Context, in *InstallStackRequest, opts ...grpc.CallOption) (*InstallStackResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InstallStackResponse)
+	err := c.cc.Invoke(ctx, ContainerService_InstallStack_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetSystemInfo(ctx context.Context, in *GetSystemInfoRequest, opts ...grpc.CallOption) (*GetSystemInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetSystemInfoResponse)
@@ -279,6 +292,8 @@ type ContainerServiceServer interface {
 	GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error)
 	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
 	CleanupDisk(context.Context, *CleanupDiskRequest) (*CleanupDiskResponse, error)
+	// InstallStack installs a software stack or base script on a running container
+	InstallStack(context.Context, *InstallStackRequest) (*InstallStackResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
@@ -334,6 +349,9 @@ func (UnimplementedContainerServiceServer) GetMetrics(context.Context, *GetMetri
 }
 func (UnimplementedContainerServiceServer) CleanupDisk(context.Context, *CleanupDiskRequest) (*CleanupDiskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CleanupDisk not implemented")
+}
+func (UnimplementedContainerServiceServer) InstallStack(context.Context, *InstallStackRequest) (*InstallStackResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InstallStack not implemented")
 }
 func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSystemInfo not implemented")
@@ -614,6 +632,24 @@ func _ContainerService_CleanupDisk_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_InstallStack_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InstallStackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).InstallStack(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_InstallStack_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).InstallStack(ctx, req.(*InstallStackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetSystemInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetSystemInfoRequest)
 	if err := dec(in); err != nil {
@@ -712,6 +748,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CleanupDisk",
 			Handler:    _ContainerService_CleanupDisk_Handler,
+		},
+		{
+			MethodName: "InstallStack",
+			Handler:    _ContainerService_InstallStack_Handler,
 		},
 		{
 			MethodName: "GetSystemInfo",

@@ -9,12 +9,15 @@ import ViewListIcon from '@mui/icons-material/ViewList';
 import { Container, ContainerMetricsWithRate, SystemInfo } from '@/src/types/container';
 import ContainerNode from './ContainerNode';
 import ContainerListView from './ContainerListView';
+import CoreServicesSection from './CoreServicesSection';
 import SystemResourcesCard from '../system/SystemResourcesCard';
+import { CoreService } from '@/src/lib/api/client';
 
 type ViewMode = 'grid' | 'list';
 
 interface ContainerTopologyProps {
   containers: Container[];
+  coreServices?: CoreService[];
   metricsMap: Record<string, ContainerMetricsWithRate>;
   systemInfo?: SystemInfo | null;
   isLoading: boolean;
@@ -33,6 +36,7 @@ interface ContainerTopologyProps {
 
 export default function ContainerTopology({
   containers,
+  coreServices,
   metricsMap,
   systemInfo,
   isLoading,
@@ -171,6 +175,11 @@ export default function ContainerTopology({
 
       {/* System Resources */}
       <SystemResourcesCard systemInfo={systemInfo || null} />
+
+      {/* Core Infrastructure Services */}
+      {coreServices && coreServices.length > 0 && (
+        <CoreServicesSection services={coreServices} />
+      )}
 
       {containers.length === 0 ? (
         <Box sx={{ textAlign: 'center', py: 6 }}>

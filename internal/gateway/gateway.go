@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"
@@ -32,9 +33,11 @@ type GatewayServer struct {
 	certsDir           string // Optional: for mTLS connection to gRPC server
 	caddyCertDir       string // Optional: Caddy certificate directory for /certs endpoint
 	grafanaBackendURL  string // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
-	terminalHandler    *TerminalHandler
-	labelHandler       *LabelHandler
-	eventHandler       *EventHandler
+	securityStore      *security.Store // Optional: for CSV export endpoint
+	terminalHandler     *TerminalHandler
+	labelHandler        *LabelHandler
+	eventHandler        *EventHandler
+	coreServicesHandler *CoreServicesHandler
 }
 
 // NewGatewayServer creates a new gateway server
@@ -51,6 +54,12 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		log.Printf("Warning: Label handler not available: %v", err)
 	}
 
+	// Try to create core services handler (may fail if Incus not available)
+	coreServicesHandler, err := NewCoreServicesHandler()
+	if err != nil {
+		log.Printf("Warning: Core services handler not available: %v", err)
+	}
+
 	// Create event handler with global event bus
 	eventHandler := NewEventHandler(events.GetBus())
 
@@ -61,15 +70,21 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		swaggerDir:      swaggerDir,
 		certsDir:        certsDir,
 		caddyCertDir:    caddyCertDir,
-		terminalHandler: terminalHandler,
-		labelHandler:    labelHandler,
-		eventHandler:    eventHandler,
+		terminalHandler:     terminalHandler,
+		labelHandler:        labelHandler,
+		eventHandler:        eventHandler,
+		coreServicesHandler: coreServicesHandler,
 	}
 }
 
 // SetGrafanaBackendURL sets the internal Grafana URL for the reverse proxy
 func (gs *GatewayServer) SetGrafanaBackendURL(backendURL string) {
 	gs.grafanaBackendURL = backendURL
+}
+
+// SetSecurityStore sets the security store for the CSV export endpoint
+func (gs *GatewayServer) SetSecurityStore(store *security.Store) {
+	gs.securityStore = store
 }
 
 // Start starts the HTTP gateway server
@@ -128,6 +143,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Register TrafficService gateway handler
 	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
 		return fmt.Errorf("failed to register traffic service gateway: %w", err)
+	}
+
+	// Register SecurityService gateway handler
+	if err := pb.RegisterSecurityServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register security service gateway: %w", err)
 	}
 
 	// Create HTTP handler with authentication middleware
@@ -217,6 +237,17 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		httpMux.Handle("/v1/", corsHandler)
 	}
 
+	// Core services endpoint (with authentication via CORS handler)
+	if gs.coreServicesHandler != nil {
+		coreServicesCORS := cors.New(cors.Options{
+			AllowedOrigins:   getAllowedOrigins(),
+			AllowedMethods:   []string{"GET", "OPTIONS"},
+			AllowedHeaders:   []string{"Authorization", "Content-Type"},
+			AllowCredentials: true,
+		}).Handler(gs.authMiddleware.HTTPMiddleware(http.HandlerFunc(gs.coreServicesHandler.HandleGetCoreServices)))
+		httpMux.Handle("/v1/system/core-services", coreServicesCORS)
+	}
+
 	// Events SSE endpoint (with authentication)
 	eventsWithCORS := cors.New(cors.Options{
 		AllowedOrigins:   getAllowedOrigins(),
@@ -277,6 +308,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 			})
 			log.Printf("Grafana reverse proxy enabled at /grafana/ -> %s", gs.grafanaBackendURL)
 		}
+	}
+
+	// Security CSV export endpoint (with auth via token query param or Authorization header)
+	if gs.securityStore != nil {
+		registerSecurityExport(httpMux, gs.securityStore, gs.authMiddleware)
+		log.Printf("Security CSV export endpoint enabled at /v1/security/clamav-reports/export")
 	}
 
 	// Cert export endpoint (no auth — only reachable within VPC)

@@ -226,6 +226,24 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	return info, nil
 }
 
+// InstallStack installs a stack or base script on a running container via gRPC
+func (c *GRPCClient) InstallStack(username, stackID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	req := &pb.InstallStackRequest{
+		Username: username,
+		StackId:  stackID,
+	}
+
+	_, err := c.client.InstallStack(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to install stack: %w", err)
+	}
+
+	return nil
+}
+
 // GetSystemInfo gets system information via gRPC
 func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
