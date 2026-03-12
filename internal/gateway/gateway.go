@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/mtls"
@@ -34,6 +35,7 @@ type GatewayServer struct {
 	caddyCertDir       string // Optional: Caddy certificate directory for /certs endpoint
 	grafanaBackendURL  string // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
 	securityStore      *security.Store // Optional: for CSV export endpoint
+	auditStore         *audit.Store    // Optional: for HTTP audit middleware
 	terminalHandler     *TerminalHandler
 	labelHandler        *LabelHandler
 	eventHandler        *EventHandler
@@ -85,6 +87,11 @@ func (gs *GatewayServer) SetGrafanaBackendURL(backendURL string) {
 // SetSecurityStore sets the security store for the CSV export endpoint
 func (gs *GatewayServer) SetSecurityStore(store *security.Store) {
 	gs.securityStore = store
+}
+
+// SetAuditStore sets the audit store for the HTTP audit middleware
+func (gs *GatewayServer) SetAuditStore(store *audit.Store) {
+	gs.auditStore = store
 }
 
 // Start starts the HTTP gateway server
@@ -150,8 +157,14 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register security service gateway: %w", err)
 	}
 
-	// Create HTTP handler with authentication middleware
-	handler := gs.authMiddleware.HTTPMiddleware(mux)
+	// Create HTTP handler with authentication middleware, then audit middleware.
+	// Audit wraps the inner handler so auth runs first (sets username in context),
+	// then audit captures the response on the way out.
+	var handler http.Handler = mux
+	if gs.auditStore != nil {
+		handler = audit.HTTPAuditMiddleware(handler, gs.auditStore)
+	}
+	handler = gs.authMiddleware.HTTPMiddleware(handler)
 
 	// Add CORS support with configurable origins (secure by default)
 	// Set CONTAINARIUM_ALLOWED_ORIGINS env var to configure allowed origins
@@ -192,10 +205,38 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				return
 			}
 
-			_, err := gs.authMiddleware.ValidateToken(token)
+			claims, err := gs.authMiddleware.ValidateToken(token)
 			if err != nil {
 				http.Error(w, `{"error": "unauthorized: invalid token", "code": 401}`, http.StatusUnauthorized)
 				return
+			}
+
+			// Log terminal access to audit store
+			if gs.auditStore != nil {
+				// Extract container name from URL path (e.g. /v1/containers/{name}/terminal)
+				parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+				containerName := ""
+				for i, p := range parts {
+					if p == "containers" && i+1 < len(parts) {
+						containerName = parts[i+1]
+						break
+					}
+				}
+				auditUsername := ""
+				if claims != nil {
+					auditUsername = claims.Username
+				}
+				sourceIP := r.Header.Get("X-Forwarded-For")
+				if sourceIP == "" {
+					sourceIP = r.RemoteAddr
+				}
+				gs.auditStore.Log(r.Context(), &audit.AuditEntry{
+					Username:     auditUsername,
+					Action:       "terminal_access",
+					ResourceType: "container",
+					ResourceID:   containerName,
+					SourceIP:     sourceIP,
+				})
 			}
 
 			gs.terminalHandler.HandleTerminal(w, r)
@@ -314,6 +355,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if gs.securityStore != nil {
 		registerSecurityExport(httpMux, gs.securityStore, gs.authMiddleware)
 		log.Printf("Security CSV export endpoint enabled at /v1/security/clamav-reports/export")
+	}
+
+	// Audit logs query endpoint (with auth via token query param or Authorization header)
+	if gs.auditStore != nil {
+		registerAuditEndpoint(httpMux, gs.auditStore, gs.authMiddleware)
+		log.Printf("Audit logs endpoint enabled at /v1/audit/logs")
 	}
 
 	// Cert export endpoint (no auth — only reachable within VPC)
