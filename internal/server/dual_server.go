@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/collaborator"
 	"github.com/footprintai/containarium/internal/container"
@@ -91,6 +92,9 @@ type DualServer struct {
 	metricsCollector      *metrics.Collector
 	securityScanner       *security.Scanner
 	securityStore         *security.Store
+	auditStore            *audit.Store
+	auditEventSubscriber  *audit.EventSubscriber
+	sshCollector          *audit.SSHCollector
 }
 
 // NewDualServer creates a new dual server instance
@@ -508,6 +512,37 @@ skipAppHosting:
 		}
 	}
 
+	// Setup audit logging store and event subscriber
+	var auditStore *audit.Store
+	var auditEventSubscriber *audit.EventSubscriber
+	if postgresConnString != "" {
+		auditPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		if poolErr != nil {
+			log.Printf("Warning: Failed to connect to PostgreSQL for audit store: %v", poolErr)
+		} else {
+			auditStore, err = audit.NewStore(context.Background(), auditPool)
+			if err != nil {
+				log.Printf("Warning: Failed to create audit store: %v", err)
+				auditPool.Close()
+			} else {
+				auditEventSubscriber = audit.NewEventSubscriber(events.GetBus(), auditStore)
+				log.Printf("Audit logging service enabled")
+			}
+		}
+	}
+
+	// Setup SSH login collector (requires audit store + incus client)
+	var sshCollector *audit.SSHCollector
+	if auditStore != nil {
+		sshIncusClient, incusErr := incus.New()
+		if incusErr != nil {
+			log.Printf("Warning: Failed to create incus client for SSH collector: %v", incusErr)
+		} else {
+			sshCollector = audit.NewSSHCollector(sshIncusClient, auditStore)
+			log.Printf("SSH login collector configured")
+		}
+	}
+
 	// Create gateway server if REST is enabled
 	var gatewayServer *gateway.GatewayServer
 	if config.EnableREST {
@@ -536,6 +571,11 @@ skipAppHosting:
 		// Wire security store for CSV export
 		if securityStore != nil {
 			gatewayServer.SetSecurityStore(securityStore)
+		}
+
+		// Wire audit store for HTTP audit middleware
+		if auditStore != nil {
+			gatewayServer.SetAuditStore(auditStore)
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured
@@ -568,8 +608,11 @@ skipAppHosting:
 		collaboratorStore:  collabStore,
 		daemonConfigStore:  config.DaemonConfigStore,
 		metricsCollector:   metricsCollector,
-		securityScanner:    securityScanner,
-		securityStore:      securityStore,
+		securityScanner:      securityScanner,
+		securityStore:        securityStore,
+		auditStore:           auditStore,
+		auditEventSubscriber: auditEventSubscriber,
+		sshCollector:         sshCollector,
 	}, nil
 }
 
@@ -591,6 +634,18 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.securityScanner != nil {
 		ds.securityScanner.Start(ctx)
 		log.Printf("Security scanner started")
+	}
+
+	// Start audit event subscriber if available
+	if ds.auditEventSubscriber != nil {
+		ds.auditEventSubscriber.Start(ctx)
+		log.Printf("Audit event subscriber started")
+	}
+
+	// Start SSH login collector if available
+	if ds.sshCollector != nil {
+		ds.sshCollector.Start(ctx)
+		log.Printf("SSH login collector started")
 	}
 
 	// Log Grafana availability (served via reverse proxy at /grafana/ on the HTTP gateway)
@@ -695,6 +750,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.securityScanner != nil {
 			ds.securityScanner.Stop()
+		}
+		if ds.sshCollector != nil {
+			ds.sshCollector.Stop()
+		}
+		if ds.auditEventSubscriber != nil {
+			ds.auditEventSubscriber.Stop()
+		}
+		if ds.auditStore != nil {
+			ds.auditStore.Close()
 		}
 		if ds.collaboratorStore != nil {
 			ds.collaboratorStore.Close()

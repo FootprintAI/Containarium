@@ -4,6 +4,7 @@ import { Server } from '@/src/types/server';
 import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute } from '@/src/types/app';
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
 import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse } from '@/src/types/security';
+import { AuditLogsResponse, AuditLogsParams } from '@/src/types/audit';
 
 /**
  * Core infrastructure service info (read-only)
@@ -908,6 +909,21 @@ export class ContaineriumClient {
   /**
    * Get the URL for downloading ClamAV reports as CSV
    */
+  // ============================================
+  // Audit Log Methods
+  // ============================================
+
+  /**
+   * Get audit logs with optional filtering and pagination
+   */
+  async getAuditLogs(params?: AuditLogsParams): Promise<AuditLogsResponse> {
+    const response = await this.client.get<AuditLogsResponse>('/audit/logs', { params });
+    return {
+      logs: response.data.logs || [],
+      totalCount: response.data.totalCount || 0,
+    };
+  }
+
   getClamavReportExportUrl(from: string, to: string, containerName?: string, status?: string): string {
     const baseURL = normalizeEndpoint(this.server.endpoint);
     const token = sanitizeToken(this.server.token);
