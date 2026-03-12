@@ -3,7 +3,7 @@ module github.com/footprintai/containarium
 go 1.25.8
 
 require (
-	cloud.google.com/go/compute v1.55.0
+	cloud.google.com/go/compute v1.56.0
 	github.com/footprintai/go-certs v0.0.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
