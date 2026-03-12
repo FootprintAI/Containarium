@@ -1,0 +1,145 @@
+name: Release MCP Server
+
+on:
+  push:
+    tags:
+      - 'mcp-v*'  # Trigger on tags like mcp-v0.1.0
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/mcp-v}" >> $GITHUB_OUTPUT
+
+      - name: Build MCP Server for all platforms
+        run: make build-mcp-all
+
+      - name: Rename binaries with version
+        run: |
+          mv bin/mcp-server-linux-amd64 bin/mcp-server-linux-amd64-${{ steps.get_version.outputs.VERSION }}
+          mv bin/mcp-server-darwin-amd64 bin/mcp-server-darwin-amd64-${{ steps.get_version.outputs.VERSION }}
+          mv bin/mcp-server-darwin-arm64 bin/mcp-server-darwin-arm64-${{ steps.get_version.outputs.VERSION }}
+
+      - name: Calculate checksums
+        run: |
+          cd bin
+          sha256sum mcp-server-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create Release Notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Containarium MCP Server ${{ steps.get_version.outputs.VERSION }}
+
+          Enable Claude Desktop to manage your Containarium containers using natural language!
+
+          ### 🎯 Features
+
+          - **8 Container Management Tools**: Create, list, start, stop, delete containers
+          - **Resource Monitoring**: Get real-time CPU, memory, disk, and network metrics
+          - **System Information**: Query host system status
+          - **Secure Authentication**: JWT token-based authentication
+          - **REST API Integration**: Works with Containarium REST API (port 8080)
+
+          ### 📦 Installation
+
+          **Quick Install (All Platforms):**
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/scripts/install-mcp.sh | bash
+          ```
+
+          **Manual Installation:**
+
+          **macOS (Intel):**
+          ```bash
+          curl -L https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/mcp-server-darwin-amd64-${{ steps.get_version.outputs.VERSION }} -o /usr/local/bin/mcp-server
+          chmod +x /usr/local/bin/mcp-server
+          ```
+
+          **macOS (Apple Silicon):**
+          ```bash
+          curl -L https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/mcp-server-darwin-arm64-${{ steps.get_version.outputs.VERSION }} -o /usr/local/bin/mcp-server
+          chmod +x /usr/local/bin/mcp-server
+          ```
+
+          **Linux (x86_64):**
+          ```bash
+          curl -L https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/mcp-server-linux-amd64-${{ steps.get_version.outputs.VERSION }} -o /usr/local/bin/mcp-server
+          chmod +x /usr/local/bin/mcp-server
+          ```
+
+          ### ⚙️ Configuration
+
+          Add to your Claude Desktop config (`~/.config/claude/claude_desktop_config.json`):
+
+          ```json
+          {
+            "mcpServers": {
+              "containarium": {
+                "command": "/usr/local/bin/mcp-server",
+                "env": {
+                  "CONTAINARIUM_SERVER_URL": "http://your-server:8080",
+                  "CONTAINARIUM_JWT_TOKEN": "your-jwt-token"
+                }
+              }
+            }
+          }
+          ```
+
+          ### 📚 Documentation
+
+          - **Quick Start**: [5-Minute Setup Guide](https://github.com/footprintai/containarium/blob/main/docs/MCP-QUICKSTART.md)
+          - **Full Documentation**: [MCP Integration Guide](https://github.com/footprintai/containarium/blob/main/docs/MCP-INTEGRATION.md)
+          - **Troubleshooting**: See documentation for common issues
+
+          ### 🔧 Requirements
+
+          - Containarium server running with REST API enabled
+          - JWT token with admin role
+          - Claude Desktop (for UI) or Claude API (for programmatic access)
+
+          ### 🐛 Known Issues
+
+          None reported for this release.
+
+          ### 📝 Checksums
+
+          See `SHA256SUMS.txt` for file checksums.
+
+          ### 🙏 Feedback
+
+          Found a bug or have a feature request? [Open an issue](https://github.com/footprintai/containarium/issues)!
+
+          ---
+
+          **Star us on GitHub!** ⭐ https://github.com/footprintai/containarium
+          EOF
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: release_notes.md
+          files: |
+            bin/mcp-server-linux-amd64-${{ steps.get_version.outputs.VERSION }}
+            bin/mcp-server-darwin-amd64-${{ steps.get_version.outputs.VERSION }}
+            bin/mcp-server-darwin-arm64-${{ steps.get_version.outputs.VERSION }}
+            bin/SHA256SUMS.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
