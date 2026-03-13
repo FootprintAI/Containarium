@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -69,6 +70,10 @@ type DualServerConfig struct {
 
 	// DaemonConfigStore for persisting daemon config to PostgreSQL (optional)
 	DaemonConfigStore *app.DaemonConfigStore
+
+	// Alerting settings
+	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
+	AlertWebhookSecret string // HMAC-SHA256 signing secret for webhook payloads (optional)
 }
 
 // DualServer runs both gRPC and HTTP/REST servers
@@ -95,6 +100,9 @@ type DualServer struct {
 	auditStore            *audit.Store
 	auditEventSubscriber  *audit.EventSubscriber
 	sshCollector          *audit.SSHCollector
+	alertStore            *alert.Store
+	alertManager          *alert.Manager
+	alertDeliveryStore    *alert.DeliveryStore
 }
 
 // NewDualServer creates a new dual server instance
@@ -195,6 +203,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	var appServer *AppServer
 	var routeStore *app.RouteStore
 	var routeSyncJob *app.RouteSyncJob
+	// coreServices is hoisted so alert setup can reference it later
+	var coreServices *CoreServices
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
 	postgresConnString := config.PostgresConnString
 	if config.EnableAppHosting {
@@ -216,7 +226,6 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			}
 
 			// If no external PostgreSQL/Caddy provided, set up core services
-			var coreServices *CoreServices
 			if postgresConnString == "" || caddyAdminURL == "" {
 				log.Printf("Setting up core services (PostgreSQL, Caddy) in containers...")
 
@@ -279,6 +288,26 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				}
 			}
 			config.VictoriaMetricsURL = victoriaMetricsURL
+
+			// Setup alerting (vmalert + Alertmanager) if VictoriaMetrics is available
+			if victoriaMetricsURL != "" {
+				if coreServices == nil {
+					coreServices = NewCoreServices(incusClient, CoreServicesConfig{
+						NetworkCIDR: networkCIDR,
+					})
+				}
+				// If a signing secret is configured, route Alertmanager through the
+				// daemon's relay endpoint so payloads get HMAC-signed before forwarding.
+				alertTargetURL := config.AlertWebhookURL
+				if config.AlertWebhookSecret != "" && config.AlertWebhookURL != "" && config.HostIP != "" {
+					alertTargetURL = fmt.Sprintf("http://%s:%d/internal/alert-relay", config.HostIP, config.HTTPPort)
+				}
+				if err := coreServices.SetupAlerting(context.Background(), alertTargetURL); err != nil {
+					log.Printf("Warning: Failed to setup alerting: %v. Alerting disabled.", err)
+				} else {
+					log.Printf("Alerting ready (vmalert + Alertmanager)")
+				}
+			}
 
 			// Connect to app store
 			appStore, err := app.NewStore(context.Background(), postgresConnString)
@@ -553,6 +582,46 @@ skipAppHosting:
 		}
 	}
 
+	// Setup alert store and manager
+	var alertStore *alert.Store
+	var alertManager *alert.Manager
+	if postgresConnString != "" && config.VictoriaMetricsURL != "" {
+		alertPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		if poolErr != nil {
+			log.Printf("Warning: Failed to connect to PostgreSQL for alert store: %v", poolErr)
+		} else {
+			alertStore, err = alert.NewStore(context.Background(), alertPool)
+			if err != nil {
+				log.Printf("Warning: Failed to create alert store: %v", err)
+				alertPool.Close()
+			} else {
+				// Create incus client for alert manager
+				alertIncusClient, incusErr := incus.New()
+				if incusErr != nil {
+					log.Printf("Warning: Failed to create incus client for alert manager: %v", incusErr)
+				} else {
+					alertManager = alert.NewManager(alertStore, alertIncusClient, CoreVictoriaMetricsContainer)
+					containerServer.SetAlertManager(alertStore, alertManager, config.AlertWebhookURL, config.AlertWebhookSecret, coreServices, config.DaemonConfigStore)
+
+					// Create delivery store on the same pool
+					alertDeliveryStore, delivErr := alert.NewDeliveryStore(context.Background(), alertPool)
+					if delivErr != nil {
+						log.Printf("Warning: Failed to create delivery store: %v", delivErr)
+					} else {
+						containerServer.SetAlertDeliveryStore(alertDeliveryStore)
+					}
+
+					log.Printf("Alert management service enabled")
+
+					// Initial sync of custom rules
+					if err := alertManager.SyncRules(context.Background()); err != nil {
+						log.Printf("Warning: Initial alert rules sync failed: %v", err)
+					}
+				}
+			}
+		}
+	}
+
 	// Create gateway server if REST is enabled
 	var gatewayServer *gateway.GatewayServer
 	if config.EnableREST {
@@ -594,10 +663,48 @@ skipAppHosting:
 			if vmIP != "" {
 				grafanaBackend := fmt.Sprintf("http://%s:%d", vmIP, DefaultGrafanaPort)
 				gatewayServer.SetGrafanaBackendURL(grafanaBackend)
+
+				// Wire Alertmanager reverse proxy
+				alertmanagerBackend := fmt.Sprintf("http://%s:%d", vmIP, DefaultAlertmanagerPort)
+				gatewayServer.SetAlertmanagerBackendURL(alertmanagerBackend)
 			}
 		}
 
+		// Wire alert relay config for HMAC signing
+		if config.AlertWebhookURL != "" {
+			gatewayServer.SetAlertRelayConfig(config.AlertWebhookURL, config.AlertWebhookSecret)
+		}
+
+		// Wire delivery recording callback into gateway for relay deliveries
+		if containerServer.alertDeliveryStore != nil {
+			ds := containerServer.alertDeliveryStore
+			gatewayServer.SetRecordDeliveryFn(func(ctx context.Context, alertName, source, webhookURL string, success bool, httpStatus int, errMsg string, payloadSize, durationMs int) {
+				d := &alert.WebhookDelivery{
+					AlertName:    alertName,
+					Source:       source,
+					WebhookURL:   webhookURL,
+					Success:      success,
+					HTTPStatus:   httpStatus,
+					ErrorMessage: errMsg,
+					PayloadSize:  payloadSize,
+					DurationMs:   durationMs,
+				}
+				if err := ds.Record(ctx, d); err != nil {
+					log.Printf("Warning: failed to record relay delivery: %v", err)
+				}
+			})
+		}
+
 		log.Printf("HTTP/REST gateway enabled on port %d", config.HTTPPort)
+	}
+
+	// Wire the relay URL + callback into the container server so runtime
+	// UpdateAlertingConfig can update the gateway relay config dynamically.
+	if gatewayServer != nil && config.HostIP != "" {
+		relayURL := fmt.Sprintf("http://%s:%d/internal/alert-relay", config.HostIP, config.HTTPPort)
+		containerServer.SetAlertRelayConfig(relayURL, func(webhookURL, secret string) {
+			gatewayServer.SetAlertRelayConfig(webhookURL, secret)
+		})
 	}
 
 	return &DualServer{
@@ -623,6 +730,9 @@ skipAppHosting:
 		auditStore:           auditStore,
 		auditEventSubscriber: auditEventSubscriber,
 		sshCollector:         sshCollector,
+		alertStore:           alertStore,
+		alertManager:         alertManager,
+		alertDeliveryStore:   containerServer.alertDeliveryStore,
 	}, nil
 }
 
@@ -772,6 +882,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.collaboratorStore != nil {
 			ds.collaboratorStore.Close()
+		}
+		if ds.alertStore != nil {
+			ds.alertStore.Close()
 		}
 		ds.grpcServer.GracefulStop()
 		return nil

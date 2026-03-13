@@ -41,6 +41,12 @@ const (
 
 	// Default Victoria Metrics retention period
 	DefaultVMRetention = "30d"
+
+	// Default vmalert port
+	DefaultVMAlertPort = 8880
+
+	// Default Alertmanager port
+	DefaultAlertmanagerPort = 9093
 )
 
 // CoreServicesConfig holds configuration for core services
@@ -52,6 +58,9 @@ type CoreServicesConfig struct {
 
 	// Network settings
 	NetworkCIDR string // e.g., "10.100.0.0/24"
+
+	// Alerting settings
+	AlertWebhookURL string // Webhook URL for alert notifications (optional)
 }
 
 // CoreServices manages the core infrastructure containers (PostgreSQL, Caddy, VictoriaMetrics+Grafana)
@@ -844,6 +853,285 @@ func (cs *CoreServices) applyBaseScripts(containerName, username string) {
 // GetGrafanaURL returns the Grafana URL
 func (cs *CoreServices) GetGrafanaURL() string {
 	return fmt.Sprintf("http://%s:%d", cs.victoriaMetricsIP, DefaultGrafanaPort)
+}
+
+// SetupAlerting installs vmalert and Alertmanager inside the VictoriaMetrics
+// container. It writes default rules, configures Alertmanager with the
+// webhook URL, creates systemd services, and starts both.
+// Idempotent: if vmalert is already running, it only updates rules and config.
+func (cs *CoreServices) SetupAlerting(ctx context.Context, webhookURL string) error {
+	// Auto-detect VictoriaMetrics IP if not already set
+	if cs.victoriaMetricsIP == "" {
+		info, err := cs.incusClient.GetContainer(CoreVictoriaMetricsContainer)
+		if err != nil {
+			return fmt.Errorf("VictoriaMetrics container not found: %w", err)
+		}
+		if info.State != "Running" {
+			return fmt.Errorf("VictoriaMetrics container is not running (state: %s)", info.State)
+		}
+		cs.victoriaMetricsIP = info.IPAddress
+	}
+
+	// Check if vmalert is already installed.
+	// Use ExecWithOutput which properly checks exit codes (unlike Exec).
+	_, _, checkErr := cs.incusClient.ExecWithOutput(CoreVictoriaMetricsContainer, []string{
+		"test", "-x", "/usr/local/bin/vmalert-prod",
+	})
+	alreadyInstalled := checkErr == nil
+
+	if alreadyInstalled {
+		log.Printf("vmalert already installed, updating rules and config...")
+	} else {
+		log.Printf("Setting up alerting (vmalert + Alertmanager)...")
+	}
+
+	// Create directories
+	mkdirCmds := [][]string{
+		{"mkdir", "-p", "/etc/vmalert/rules"},
+		{"mkdir", "-p", "/etc/alertmanager"},
+		{"mkdir", "-p", "/var/lib/alertmanager"},
+	}
+	for _, cmd := range mkdirCmds {
+		if err := cs.incusClient.Exec(CoreVictoriaMetricsContainer, cmd); err != nil {
+			return fmt.Errorf("failed to create dirs: %w", err)
+		}
+	}
+
+	if !alreadyInstalled {
+		// Download vmalert binary (from VictoriaMetrics release, same version as VM)
+		vmAlertCmds := [][]string{
+			{"bash", "-c", "wget -qO /tmp/vmutils.tar.gz https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.108.1/vmutils-linux-amd64-v1.108.1.tar.gz"},
+			{"bash", "-c", "tar -xzf /tmp/vmutils.tar.gz -C /usr/local/bin/ vmalert-prod"},
+			{"chmod", "+x", "/usr/local/bin/vmalert-prod"},
+		}
+		for _, cmd := range vmAlertCmds {
+			if err := cs.incusClient.Exec(CoreVictoriaMetricsContainer, cmd); err != nil {
+				return fmt.Errorf("failed to install vmalert: %w", err)
+			}
+		}
+
+		// Download Alertmanager binary
+		amCmds := [][]string{
+			{"bash", "-c", "wget -qO /tmp/alertmanager.tar.gz https://github.com/prometheus/alertmanager/releases/download/v0.27.0/alertmanager-0.27.0.linux-amd64.tar.gz"},
+			{"bash", "-c", "tar -xzf /tmp/alertmanager.tar.gz -C /tmp/ alertmanager-0.27.0.linux-amd64/alertmanager"},
+			{"bash", "-c", "mv /tmp/alertmanager-0.27.0.linux-amd64/alertmanager /usr/local/bin/alertmanager"},
+			{"chmod", "+x", "/usr/local/bin/alertmanager"},
+			{"bash", "-c", "rm -rf /tmp/alertmanager-0.27.0.linux-amd64"},
+		}
+		for _, cmd := range amCmds {
+			if err := cs.incusClient.Exec(CoreVictoriaMetricsContainer, cmd); err != nil {
+				return fmt.Errorf("failed to install alertmanager: %w", err)
+			}
+		}
+	}
+
+	// Write default alert rules (always update to latest)
+	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, "/etc/vmalert/rules/default.yml", []byte(DefaultAlertRules), "0644"); err != nil {
+		return fmt.Errorf("failed to write default rules: %w", err)
+	}
+
+	// Write empty custom rules file
+	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, "/etc/vmalert/rules/custom.yml", []byte("groups: []\n"), "0644"); err != nil {
+		return fmt.Errorf("failed to write custom rules: %w", err)
+	}
+
+	// Write Alertmanager config
+	amConfig := cs.generateAlertmanagerConfig(webhookURL)
+	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, "/etc/alertmanager/alertmanager.yml", []byte(amConfig), "0644"); err != nil {
+		return fmt.Errorf("failed to write alertmanager config: %w", err)
+	}
+
+	if !alreadyInstalled {
+		// Create vmalert systemd service
+		vmAlertService := fmt.Sprintf(`[Unit]
+Description=vmalert - VictoriaMetrics alerting engine
+After=network.target victoria-metrics.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vmalert-prod \
+  -datasource.url=http://localhost:%d \
+  -remoteRead.url=http://localhost:%d \
+  -remoteWrite.url=http://localhost:%d \
+  -notifier.url=http://localhost:%d \
+  -rule="/etc/vmalert/rules/*.yml" \
+  -evaluationInterval=30s \
+  -httpListenAddr=:%d
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`, DefaultVMPort, DefaultVMPort, DefaultVMPort, DefaultAlertmanagerPort, DefaultVMAlertPort)
+
+		if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, "/etc/systemd/system/vmalert.service", []byte(vmAlertService), "0644"); err != nil {
+			return fmt.Errorf("failed to write vmalert service: %w", err)
+		}
+
+		// Create Alertmanager systemd service
+		amService := fmt.Sprintf(`[Unit]
+Description=Prometheus Alertmanager
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/alertmanager \
+  --config.file=/etc/alertmanager/alertmanager.yml \
+  --storage.path=/var/lib/alertmanager \
+  --web.listen-address=:%d \
+  --web.external-url=http://localhost:%d/alertmanager/
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`, DefaultAlertmanagerPort, DefaultAlertmanagerPort)
+
+		if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, "/etc/systemd/system/alertmanager.service", []byte(amService), "0644"); err != nil {
+			return fmt.Errorf("failed to write alertmanager service: %w", err)
+		}
+	}
+
+	// Start/restart services (always run to pick up config/rules changes)
+	startCmds := [][]string{
+		{"systemctl", "daemon-reload"},
+		{"systemctl", "enable", "alertmanager"},
+		{"systemctl", "restart", "alertmanager"},
+		{"systemctl", "enable", "vmalert"},
+		{"systemctl", "restart", "vmalert"},
+	}
+	for _, cmd := range startCmds {
+		if err := cs.incusClient.Exec(CoreVictoriaMetricsContainer, cmd); err != nil {
+			return fmt.Errorf("failed to start alerting services: %w", err)
+		}
+	}
+
+	// Wait for health
+	if err := cs.waitForVMAlert(ctx); err != nil {
+		return fmt.Errorf("vmalert not ready: %w", err)
+	}
+	if err := cs.waitForAlertmanager(ctx); err != nil {
+		return fmt.Errorf("alertmanager not ready: %w", err)
+	}
+
+	log.Printf("Alerting setup complete (vmalert :%d, Alertmanager :%d)", DefaultVMAlertPort, DefaultAlertmanagerPort)
+	return nil
+}
+
+// generateAlertmanagerConfig creates the Alertmanager YAML configuration
+func (cs *CoreServices) generateAlertmanagerConfig(webhookURL string) string {
+	if webhookURL == "" {
+		// No webhook configured — use a null receiver
+		return `global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'null'
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: 'null'
+`
+	}
+
+	return fmt.Sprintf(`global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'webhook'
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      repeat_interval: 1h
+      receiver: 'webhook'
+
+receivers:
+  - name: 'webhook'
+    webhook_configs:
+      - url: '%s'
+        send_resolved: true
+`, webhookURL)
+}
+
+// UpdateAlertmanagerWebhook regenerates the Alertmanager config with a new webhook URL
+// and restarts Alertmanager to apply the change.
+func (cs *CoreServices) UpdateAlertmanagerWebhook(ctx context.Context, webhookURL string) error {
+	amConfig := cs.generateAlertmanagerConfig(webhookURL)
+
+	// Write updated config to container
+	if err := cs.incusClient.WriteFile(
+		CoreVictoriaMetricsContainer,
+		"/etc/alertmanager/alertmanager.yml",
+		[]byte(amConfig),
+		"0644",
+	); err != nil {
+		return fmt.Errorf("failed to write alertmanager config: %w", err)
+	}
+
+	// Restart alertmanager to pick up new config
+	if err := cs.incusClient.Exec(CoreVictoriaMetricsContainer, []string{
+		"systemctl", "restart", "alertmanager",
+	}); err != nil {
+		return fmt.Errorf("failed to restart alertmanager: %w", err)
+	}
+
+	log.Printf("Alertmanager webhook updated and restarted")
+	return nil
+}
+
+// waitForVMAlert waits for vmalert to be ready
+func (cs *CoreServices) waitForVMAlert(ctx context.Context) error {
+	log.Printf("Waiting for vmalert to be ready...")
+
+	for i := 0; i < 30; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := cs.incusClient.Exec(CoreVictoriaMetricsContainer, []string{
+			"curl", "-sf", fmt.Sprintf("http://localhost:%d/-/healthy", DefaultVMAlertPort),
+		}); err == nil {
+			log.Printf("vmalert is ready")
+			return nil
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	return fmt.Errorf("timeout waiting for vmalert to be ready")
+}
+
+// waitForAlertmanager waits for Alertmanager to be ready
+func (cs *CoreServices) waitForAlertmanager(ctx context.Context) error {
+	log.Printf("Waiting for Alertmanager to be ready...")
+
+	for i := 0; i < 30; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := cs.incusClient.Exec(CoreVictoriaMetricsContainer, []string{
+			"curl", "-sf", fmt.Sprintf("http://localhost:%d/alertmanager/-/healthy", DefaultAlertmanagerPort),
+		}); err == nil {
+			log.Printf("Alertmanager is ready")
+			return nil
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	return fmt.Errorf("timeout waiting for Alertmanager to be ready")
 }
 
 // EnsureSecurity ensures the ClamAV security container is running

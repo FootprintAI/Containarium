@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// AlertRule represents an alerting rule evaluated by vmalert
+message AlertRule {
+  // Unique identifier (UUID)
+  string id = 1;
+
+  // Human-readable name for the alert rule
+  string name = 2;
+
+  // PromQL expression to evaluate
+  string expr = 3;
+
+  // Duration the expression must be true before firing (e.g. "5m")
+  string duration = 4;
+
+  // Severity level: "critical", "warning", or "info"
+  string severity = 5;
+
+  // Human-readable description of what this alert means
+  string description = 6;
+
+  // Additional labels attached to the alert
+  map<string, string> labels = 7;
+
+  // Annotations (e.g. summary, runbook_url)
+  map<string, string> annotations = 8;
+
+  // Whether the rule is active
+  bool enabled = 9;
+
+  // Unix timestamp (seconds) when the rule was created
+  int64 created_at = 10;
+
+  // Unix timestamp (seconds) when the rule was last updated
+  int64 updated_at = 11;
+}
+
+// CreateAlertRuleRequest creates a new alert rule
+message CreateAlertRuleRequest {
+  string name = 1;
+  string expr = 2;
+  string duration = 3;
+  string severity = 4;
+  string description = 5;
+  map<string, string> labels = 6;
+  map<string, string> annotations = 7;
+  bool enabled = 8;
+}
+
+// CreateAlertRuleResponse returns the created alert rule
+message CreateAlertRuleResponse {
+  AlertRule rule = 1;
+}
+
+// GetAlertRuleRequest gets a single alert rule by ID
+message GetAlertRuleRequest {
+  string id = 1;
+}
+
+// GetAlertRuleResponse returns a single alert rule
+message GetAlertRuleResponse {
+  AlertRule rule = 1;
+}
+
+// ListAlertRulesRequest lists all alert rules
+message ListAlertRulesRequest {}
+
+// ListAlertRulesResponse returns all alert rules
+message ListAlertRulesResponse {
+  repeated AlertRule rules = 1;
+}
+
+// UpdateAlertRuleRequest updates an existing alert rule
+message UpdateAlertRuleRequest {
+  string id = 1;
+  string name = 2;
+  string expr = 3;
+  string duration = 4;
+  string severity = 5;
+  string description = 6;
+  map<string, string> labels = 7;
+  map<string, string> annotations = 8;
+  optional bool enabled = 9;
+}
+
+// UpdateAlertRuleResponse returns the updated alert rule
+message UpdateAlertRuleResponse {
+  AlertRule rule = 1;
+}
+
+// DeleteAlertRuleRequest deletes an alert rule by ID
+message DeleteAlertRuleRequest {
+  string id = 1;
+}
+
+// DeleteAlertRuleResponse confirms deletion
+message DeleteAlertRuleResponse {}
+
+// GetAlertingInfoRequest gets the alerting system status
+message GetAlertingInfoRequest {}
+
+// GetAlertingInfoResponse returns alerting system information
+message GetAlertingInfoResponse {
+  // Whether the alerting system is configured and running
+  bool enabled = 1;
+
+  // vmalert health status
+  string vmalert_status = 2;
+
+  // Alertmanager health status
+  string alertmanager_status = 3;
+
+  // Configured webhook URL (masked for security)
+  string webhook_url = 4;
+
+  // Number of active alert rules (default + custom)
+  int32 total_rules = 5;
+
+  // Number of custom alert rules
+  int32 custom_rules = 6;
+
+  // Whether a webhook HMAC signing secret is configured
+  bool webhook_secret_configured = 7;
+}
+
+// ListDefaultAlertRulesRequest lists the built-in default alert rules
+message ListDefaultAlertRulesRequest {}
+
+// ListDefaultAlertRulesResponse returns the built-in default alert rules
+message ListDefaultAlertRulesResponse {
+  repeated AlertRule rules = 1;
+}
+
+// UpdateAlertingConfigRequest updates alerting system configuration
+message UpdateAlertingConfigRequest {
+  // Webhook URL for alert notifications (empty string to disable)
+  string webhook_url = 1;
+
+  // When true, the server generates a new HMAC signing secret for webhook payloads
+  bool generate_webhook_secret = 2;
+}
+
+// UpdateAlertingConfigResponse returns updated alerting configuration
+message UpdateAlertingConfigResponse {
+  // Configured webhook URL (masked for security)
+  string webhook_url = 1;
+
+  // Whether the configuration was applied successfully
+  bool success = 2;
+
+  // The generated webhook secret (returned only once when generate_webhook_secret=true)
+  string webhook_secret = 3;
+}
+
+// TestWebhookRequest triggers a test notification to the configured webhook
+message TestWebhookRequest {}
+
+// TestWebhookResponse returns the result of the test
+message TestWebhookResponse {
+  // Whether the test notification was sent successfully
+  bool success = 1;
+
+  // HTTP status code from the webhook endpoint
+  int32 status_code = 2;
+
+  // Human-readable message
+  string message = 3;
+}
+
+// WebhookDelivery represents a single webhook delivery attempt
+message WebhookDelivery {
+  int64 id = 1;
+  string timestamp = 2;
+  string alert_name = 3;
+  string source = 4;       // "relay" or "test"
+  string webhook_url = 5;  // masked
+  bool success = 6;
+  int32 http_status = 7;
+  string error_message = 8;
+  int32 payload_size = 9;
+  int32 duration_ms = 10;
+}
+
+// ListWebhookDeliveriesRequest lists webhook delivery history
+message ListWebhookDeliveriesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+// ListWebhookDeliveriesResponse returns webhook delivery history
+message ListWebhookDeliveriesResponse {
+  repeated WebhookDelivery deliveries = 1;
+  int32 total_count = 2;
+}

@@ -11,6 +11,7 @@ import TimelineIcon from '@mui/icons-material/Timeline';
 import InsightsIcon from '@mui/icons-material/Insights';
 import ShieldIcon from '@mui/icons-material/Shield';
 import PolicyIcon from '@mui/icons-material/Policy';
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import AppBar from '@/src/components/layout/AppBar';
 import ServerTabs from '@/src/components/layout/ServerTabs';
 import AddServerDialog from '@/src/components/servers/AddServerDialog';
@@ -27,6 +28,7 @@ import TrafficView from '@/src/components/traffic/TrafficView';
 import MonitoringView from '@/src/components/monitoring/MonitoringView';
 import SecurityView from '@/src/components/security/SecurityView';
 import AuditView from '@/src/components/audit/AuditView';
+import AlertsView from '@/src/components/alerts/AlertsView';
 import { useServers } from '@/src/lib/hooks/useServers';
 import { useContainers, CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 import { useMetrics } from '@/src/lib/hooks/useMetrics';
@@ -43,7 +45,7 @@ const TerminalDialog = dynamic(
   { ssr: false }
 );
 
-const TAB_PATHS = ['/containers/', '/apps/', '/network/', '/traffic/', '/monitoring/', '/security/', '/audit/'] as const;
+const TAB_PATHS = ['/containers/', '/apps/', '/network/', '/traffic/', '/monitoring/', '/security/', '/audit/', '/alerts/'] as const;
 const TAB_INDICES: Record<string, number> = {
   '/': 0,
   '/containers/': 0,
@@ -53,6 +55,7 @@ const TAB_INDICES: Record<string, number> = {
   '/monitoring/': 4,
   '/security/': 5,
   '/audit/': 6,
+  '/alerts/': 7,
 };
 
 export default function Home() {
@@ -339,6 +342,7 @@ export default function Home() {
               <Tab icon={<InsightsIcon />} iconPosition="start" label="Monitoring" />
               <Tab icon={<ShieldIcon />} iconPosition="start" label="Security" />
               <Tab icon={<PolicyIcon />} iconPosition="start" label="Audit" />
+              <Tab icon={<NotificationsActiveIcon />} iconPosition="start" label="Alerts" />
             </Tabs>
           </Box>
 
@@ -433,6 +437,10 @@ export default function Home() {
 
             {viewTab === 6 && (
               <AuditView server={activeServer} />
+            )}
+
+            {viewTab === 7 && (
+              <AlertsView server={activeServer} />
             )}
           </Box>
         </>

@@ -44,6 +44,186 @@
     "application/json"
   ],
   "paths": {
+    "/v1/alerts": {
+      "get": {
+        "summary": "List alert rules",
+        "description": "Returns all custom alert rules stored in the database.",
+        "operationId": "ContainerService_ListAlertRules",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAlertRulesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Alerts"
+        ]
+      },
+      "post": {
+        "summary": "Create alert rule",
+        "description": "Creates a new custom alert rule. The rule is persisted in PostgreSQL and synced to vmalert for evaluation.",
+        "operationId": "ContainerService_CreateAlertRule",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CreateAlertRuleResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateAlertRuleRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Alerts"
+        ]
+      }
+    },
+    "/v1/alerts/defaults": {
+      "get": {
+        "summary": "List default alert rules",
+        "description": "Returns the built-in default alert rules for system and container monitoring. These rules are always active and cannot be modified.",
+        "operationId": "ContainerService_ListDefaultAlertRules",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListDefaultAlertRulesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Alerts"
+        ]
+      }
+    },
+    "/v1/alerts/{id}": {
+      "get": {
+        "summary": "Get alert rule",
+        "description": "Returns a single alert rule by its ID.",
+        "operationId": "ContainerService_GetAlertRule",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetAlertRuleResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Alerts"
+        ]
+      },
+      "delete": {
+        "summary": "Delete alert rule",
+        "description": "Deletes an alert rule by ID. The rule is removed from both the database and vmalert.",
+        "operationId": "ContainerService_DeleteAlertRule",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteAlertRuleResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Alerts"
+        ]
+      },
+      "put": {
+        "summary": "Update alert rule",
+        "description": "Updates an existing alert rule. Changes are synced to vmalert automatically.",
+        "operationId": "ContainerService_UpdateAlertRule",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/UpdateAlertRuleResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/UpdateAlertRuleBody"
+            }
+          }
+        ],
+        "tags": [
+          "Alerts"
+        ]
+      }
+    },
     "/v1/apps": {
       "get": {
         "summary": "List applications",
@@ -1968,6 +2148,136 @@
         ]
       }
     },
+    "/v1/system/alerting": {
+      "get": {
+        "summary": "Get alerting information",
+        "description": "Returns alerting system status including vmalert and Alertmanager health, webhook configuration, and rule counts.",
+        "operationId": "ContainerService_GetAlertingInfo",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetAlertingInfoResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Alerts"
+        ]
+      },
+      "put": {
+        "summary": "Update alerting configuration",
+        "description": "Updates the alerting system configuration, such as the webhook URL for notifications. Changes take effect immediately.",
+        "operationId": "ContainerService_UpdateAlertingConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/UpdateAlertingConfigResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/UpdateAlertingConfigRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Alerts"
+        ]
+      }
+    },
+    "/v1/system/alerting/deliveries": {
+      "get": {
+        "summary": "List webhook deliveries",
+        "description": "Returns the history of webhook delivery attempts including success/failure status, HTTP codes, and timing.",
+        "operationId": "ContainerService_ListWebhookDeliveries",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListWebhookDeliveriesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Alerts"
+        ]
+      }
+    },
+    "/v1/system/alerting/test": {
+      "post": {
+        "summary": "Test webhook",
+        "description": "Sends a test alert notification to the configured webhook URL with current system status information.",
+        "operationId": "ContainerService_TestWebhook",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TestWebhookResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TestWebhookRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Alerts"
+        ]
+      }
+    },
     "/v1/system/info": {
       "get": {
         "summary": "Get system information",
@@ -2330,6 +2640,64 @@
         }
       },
       "title": "AddSSHKeyResponse is the response from adding an SSH key"
+    },
+    "AlertRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Unique identifier (UUID)"
+        },
+        "name": {
+          "type": "string",
+          "title": "Human-readable name for the alert rule"
+        },
+        "expr": {
+          "type": "string",
+          "title": "PromQL expression to evaluate"
+        },
+        "duration": {
+          "type": "string",
+          "title": "Duration the expression must be true before firing (e.g. \"5m\")"
+        },
+        "severity": {
+          "type": "string",
+          "title": "Severity level: \"critical\", \"warning\", or \"info\""
+        },
+        "description": {
+          "type": "string",
+          "title": "Human-readable description of what this alert means"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Additional labels attached to the alert"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Annotations (e.g. summary, runbook_url)"
+        },
+        "enabled": {
+          "type": "boolean",
+          "title": "Whether the rule is active"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix timestamp (seconds) when the rule was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix timestamp (seconds) when the rule was last updated"
+        }
+      },
+      "title": "AlertRule represents an alerting rule evaluated by vmalert"
     },
     "Any": {
       "type": "object",
@@ -2937,6 +3305,51 @@
       "description": "- CONTAINER_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - CONTAINER_STATE_RUNNING: Container is running\n - CONTAINER_STATE_STOPPED: Container is stopped\n - CONTAINER_STATE_FROZEN: Container is frozen (paused)\n - CONTAINER_STATE_CREATING: Container is being created\n - CONTAINER_STATE_ERROR: Container creation failed or is in error state",
       "title": "ContainerState represents the current state of a container"
     },
+    "CreateAlertRuleRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "expr": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "title": "CreateAlertRuleRequest creates a new alert rule"
+    },
+    "CreateAlertRuleResponse": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "$ref": "#/definitions/AlertRule"
+        }
+      },
+      "title": "CreateAlertRuleResponse returns the created alert rule"
+    },
     "CreateContainerRequest": {
       "type": "object",
       "properties": {
@@ -3025,6 +3438,10 @@
         }
       },
       "title": "DNSRecord represents a DNS record"
+    },
+    "DeleteAlertRuleResponse": {
+      "type": "object",
+      "title": "DeleteAlertRuleResponse confirms deletion"
     },
     "DeleteAppResponse": {
       "type": "object",
@@ -3233,6 +3650,51 @@
       "default": "EVENT_TYPE_UNSPECIFIED",
       "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update",
       "title": "EventType represents the type of resource change event"
+    },
+    "GetAlertRuleResponse": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "$ref": "#/definitions/AlertRule"
+        }
+      },
+      "title": "GetAlertRuleResponse returns a single alert rule"
+    },
+    "GetAlertingInfoResponse": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Whether the alerting system is configured and running"
+        },
+        "vmalertStatus": {
+          "type": "string",
+          "title": "vmalert health status"
+        },
+        "alertmanagerStatus": {
+          "type": "string",
+          "title": "Alertmanager health status"
+        },
+        "webhookUrl": {
+          "type": "string",
+          "title": "Configured webhook URL (masked for security)"
+        },
+        "totalRules": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of active alert rules (default + custom)"
+        },
+        "customRules": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of custom alert rules"
+        },
+        "webhookSecretConfigured": {
+          "type": "boolean",
+          "title": "Whether a webhook HMAC signing secret is configured"
+        }
+      },
+      "title": "GetAlertingInfoResponse returns alerting system information"
     },
     "GetAppLogsResponse": {
       "type": "object",
@@ -3562,6 +4024,19 @@
         }
       }
     },
+    "ListAlertRulesResponse": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AlertRule"
+          }
+        }
+      },
+      "title": "ListAlertRulesResponse returns all alert rules"
+    },
     "ListAppsResponse": {
       "type": "object",
       "properties": {
@@ -3658,6 +4133,19 @@
         }
       }
     },
+    "ListDefaultAlertRulesResponse": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AlertRule"
+          }
+        }
+      },
+      "title": "ListDefaultAlertRulesResponse returns the built-in default alert rules"
+    },
     "ListPassthroughRoutesResponse": {
       "type": "object",
       "properties": {
@@ -3675,6 +4163,23 @@
           "title": "Total count"
         }
       }
+    },
+    "ListWebhookDeliveriesResponse": {
+      "type": "object",
+      "properties": {
+        "deliveries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/WebhookDelivery"
+          }
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "title": "ListWebhookDeliveriesResponse returns webhook delivery history"
     },
     "MetricsEvent": {
       "type": "object",
@@ -4313,6 +4818,29 @@
       },
       "title": "SystemInfo contains information about the host system"
     },
+    "TestWebhookRequest": {
+      "type": "object",
+      "title": "TestWebhookRequest triggers a test notification to the configured webhook"
+    },
+    "TestWebhookResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "title": "Whether the test notification was sent successfully"
+        },
+        "statusCode": {
+          "type": "integer",
+          "format": "int32",
+          "title": "HTTP status code from the webhook endpoint"
+        },
+        "message": {
+          "type": "string",
+          "title": "Human-readable message"
+        }
+      },
+      "title": "TestWebhookResponse returns the result of the test"
+    },
     "TrafficAggregate": {
       "type": "object",
       "properties": {
@@ -4412,6 +4940,83 @@
           "title": "Number of containers queued for scanning"
         }
       }
+    },
+    "UpdateAlertRuleBody": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "expr": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "title": "UpdateAlertRuleRequest updates an existing alert rule"
+    },
+    "UpdateAlertRuleResponse": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "$ref": "#/definitions/AlertRule"
+        }
+      },
+      "title": "UpdateAlertRuleResponse returns the updated alert rule"
+    },
+    "UpdateAlertingConfigRequest": {
+      "type": "object",
+      "properties": {
+        "webhookUrl": {
+          "type": "string",
+          "title": "Webhook URL for alert notifications (empty string to disable)"
+        },
+        "generateWebhookSecret": {
+          "type": "boolean",
+          "title": "When true, the server generates a new HMAC signing secret for webhook payloads"
+        }
+      },
+      "title": "UpdateAlertingConfigRequest updates alerting system configuration"
+    },
+    "UpdateAlertingConfigResponse": {
+      "type": "object",
+      "properties": {
+        "webhookUrl": {
+          "type": "string",
+          "title": "Configured webhook URL (masked for security)"
+        },
+        "success": {
+          "type": "boolean",
+          "title": "Whether the configuration was applied successfully"
+        },
+        "webhookSecret": {
+          "type": "string",
+          "title": "The generated webhook secret (returned only once when generate_webhook_secret=true)"
+        }
+      },
+      "title": "UpdateAlertingConfigResponse returns updated alerting configuration"
     },
     "UpdateContainerACLBody": {
       "type": "object",
@@ -4539,6 +5144,48 @@
           "title": "Status message"
         }
       }
+    },
+    "WebhookDelivery": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "alertName": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "title": "\"relay\" or \"test\""
+        },
+        "webhookUrl": {
+          "type": "string",
+          "title": "masked"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "httpStatus": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "errorMessage": {
+          "type": "string"
+        },
+        "payloadSize": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "durationMs": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "title": "WebhookDelivery represents a single webhook delivery attempt"
     }
   },
   "securityDefinitions": {
