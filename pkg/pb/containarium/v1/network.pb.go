@@ -90,6 +90,8 @@ const (
 	RouteProtocol_ROUTE_PROTOCOL_TCP RouteProtocol = 3
 	// UDP passthrough - for passthrough routes
 	RouteProtocol_ROUTE_PROTOCOL_UDP RouteProtocol = 4
+	// TLS passthrough - SNI-based routing without TLS termination (for mTLS gRPC)
+	RouteProtocol_ROUTE_PROTOCOL_TLS_PASSTHROUGH RouteProtocol = 5
 )
 
 // Enum value maps for RouteProtocol.
@@ -100,13 +102,15 @@ var (
 		2: "ROUTE_PROTOCOL_GRPC",
 		3: "ROUTE_PROTOCOL_TCP",
 		4: "ROUTE_PROTOCOL_UDP",
+		5: "ROUTE_PROTOCOL_TLS_PASSTHROUGH",
 	}
 	RouteProtocol_value = map[string]int32{
-		"ROUTE_PROTOCOL_UNSPECIFIED": 0,
-		"ROUTE_PROTOCOL_HTTP":        1,
-		"ROUTE_PROTOCOL_GRPC":        2,
-		"ROUTE_PROTOCOL_TCP":         3,
-		"ROUTE_PROTOCOL_UDP":         4,
+		"ROUTE_PROTOCOL_UNSPECIFIED":     0,
+		"ROUTE_PROTOCOL_HTTP":            1,
+		"ROUTE_PROTOCOL_GRPC":            2,
+		"ROUTE_PROTOCOL_TCP":             3,
+		"ROUTE_PROTOCOL_UDP":             4,
+		"ROUTE_PROTOCOL_TLS_PASSTHROUGH": 5,
 	}
 )
 
@@ -2747,13 +2751,14 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\tRouteType\x12\x1a\n" +
 	"\x16ROUTE_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ROUTE_TYPE_PROXY\x10\x01\x12\x1a\n" +
-	"\x16ROUTE_TYPE_PASSTHROUGH\x10\x02*\x91\x01\n" +
+	"\x16ROUTE_TYPE_PASSTHROUGH\x10\x02*\xb5\x01\n" +
 	"\rRouteProtocol\x12\x1e\n" +
 	"\x1aROUTE_PROTOCOL_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13ROUTE_PROTOCOL_HTTP\x10\x01\x12\x17\n" +
 	"\x13ROUTE_PROTOCOL_GRPC\x10\x02\x12\x16\n" +
 	"\x12ROUTE_PROTOCOL_TCP\x10\x03\x12\x16\n" +
-	"\x12ROUTE_PROTOCOL_UDP\x10\x04*i\n" +
+	"\x12ROUTE_PROTOCOL_UDP\x10\x04\x12\"\n" +
+	"\x1eROUTE_PROTOCOL_TLS_PASSTHROUGH\x10\x05*i\n" +
 	"\tACLAction\x12\x1a\n" +
 	"\x16ACL_ACTION_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ACL_ACTION_ALLOW\x10\x01\x12\x13\n" +

@@ -92,8 +92,11 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 			}
 
 			protocol := pb.RouteProtocol_ROUTE_PROTOCOL_HTTP
-			if route.Protocol == "grpc" {
+			switch route.Protocol {
+			case "grpc":
 				protocol = pb.RouteProtocol_ROUTE_PROTOCOL_GRPC
+			case "tls_passthrough":
+				protocol = pb.RouteProtocol_ROUTE_PROTOCOL_TLS_PASSTHROUGH
 			}
 
 			pbRoute := &pb.ProxyRoute{
@@ -202,8 +205,11 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 
 	// Determine protocol
 	protocol := "http"
-	if req.Protocol == pb.RouteProtocol_ROUTE_PROTOCOL_GRPC {
+	switch req.Protocol {
+	case pb.RouteProtocol_ROUTE_PROTOCOL_GRPC:
 		protocol = "grpc"
+	case pb.RouteProtocol_ROUTE_PROTOCOL_TLS_PASSTHROUGH:
+		protocol = "tls_passthrough"
 	}
 
 	// Auto-detect container name from target IP if not provided
@@ -283,8 +289,11 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 
 	// Determine protocol
 	protocol := "http"
-	if req.Protocol == pb.RouteProtocol_ROUTE_PROTOCOL_GRPC {
+	switch req.Protocol {
+	case pb.RouteProtocol_ROUTE_PROTOCOL_GRPC:
 		protocol = "grpc"
+	case pb.RouteProtocol_ROUTE_PROTOCOL_TLS_PASSTHROUGH:
+		protocol = "tls_passthrough"
 	}
 
 	// Handle enable/disable toggle
@@ -1053,6 +1062,8 @@ func routeProtocolToProto(protocol app.RouteProtocol) pb.RouteProtocol {
 		return pb.RouteProtocol_ROUTE_PROTOCOL_GRPC
 	case app.RouteProtocolHTTP:
 		return pb.RouteProtocol_ROUTE_PROTOCOL_HTTP
+	case app.RouteProtocolTLSPassthrough:
+		return pb.RouteProtocol_ROUTE_PROTOCOL_TLS_PASSTHROUGH
 	default:
 		return pb.RouteProtocol_ROUTE_PROTOCOL_HTTP
 	}
@@ -1065,6 +1076,8 @@ func protoToRouteProtocol(protocol pb.RouteProtocol) app.RouteProtocol {
 		return app.RouteProtocolGRPC
 	case pb.RouteProtocol_ROUTE_PROTOCOL_HTTP:
 		return app.RouteProtocolHTTP
+	case pb.RouteProtocol_ROUTE_PROTOCOL_TLS_PASSTHROUGH:
+		return app.RouteProtocolTLSPassthrough
 	default:
 		return app.RouteProtocolHTTP
 	}

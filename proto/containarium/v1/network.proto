@@ -35,6 +35,9 @@ enum RouteProtocol {
 
   // UDP passthrough - for passthrough routes
   ROUTE_PROTOCOL_UDP = 4;
+
+  // TLS passthrough - SNI-based routing without TLS termination (for mTLS gRPC)
+  ROUTE_PROTOCOL_TLS_PASSTHROUGH = 5;
 }
 
 // ACLAction represents the action to take when a rule matches

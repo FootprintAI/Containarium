@@ -30,6 +30,8 @@ const (
 	RouteProtocolHTTP RouteProtocol = "http"
 	// RouteProtocolGRPC is for gRPC routes (requires HTTP/2)
 	RouteProtocolGRPC RouteProtocol = "grpc"
+	// RouteProtocolTLSPassthrough is for TLS passthrough routes (SNI-based, no TLS termination)
+	RouteProtocolTLSPassthrough RouteProtocol = "tls_passthrough"
 )
 
 // Route represents a proxy route configuration (our domain model)

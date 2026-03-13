@@ -121,6 +121,46 @@ type CaddyHTTPApp struct {
 	Servers map[string]*CaddyServerConfig `json:"servers,omitempty"`
 }
 
+// --- Layer 4 (caddy-l4) types for SNI-based TLS passthrough ---
+
+// CaddyL4App represents the layer4 app configuration
+type CaddyL4App struct {
+	Servers map[string]*CaddyL4Server `json:"servers"`
+}
+
+// CaddyL4Server represents a layer4 server with listeners and routes
+type CaddyL4Server struct {
+	Listen []string       `json:"listen"`
+	Routes []CaddyL4Route `json:"routes"`
+}
+
+// CaddyL4Route represents a layer4 route with match conditions and handlers
+type CaddyL4Route struct {
+	Match  []CaddyL4Match   `json:"match,omitempty"`
+	Handle []CaddyL4Handler `json:"handle"`
+}
+
+// CaddyL4Match represents match conditions for a layer4 route
+type CaddyL4Match struct {
+	TLS *CaddyL4TLSMatch `json:"tls,omitempty"`
+}
+
+// CaddyL4TLSMatch matches TLS ClientHello SNI field
+type CaddyL4TLSMatch struct {
+	SNI []string `json:"sni"`
+}
+
+// CaddyL4Handler represents a layer4 handler (proxy or subroute)
+type CaddyL4Handler struct {
+	Handler   string           `json:"handler"`
+	Upstreams []CaddyL4Upstream `json:"upstreams,omitempty"`
+}
+
+// CaddyL4Upstream represents an upstream for layer4 proxy
+type CaddyL4Upstream struct {
+	Dial []string `json:"dial"`
+}
+
 // CaddyConfig represents the top-level Caddy configuration
 type CaddyConfig struct {
 	Admin *CaddyAdminConfig `json:"admin,omitempty"`

@@ -110,9 +110,10 @@ func (m *CaddyManager) IsCaddyInstalled() bool {
 		return false
 	}
 
-	// Look for dns.providers.<provider>
+	// Look for dns.providers.<provider> and layer4 module
 	expectedModule := fmt.Sprintf("dns.providers.%s", m.config.Provider)
-	return strings.Contains(string(output), expectedModule)
+	outputStr := string(output)
+	return strings.Contains(outputStr, expectedModule) && strings.Contains(outputStr, "layer4")
 }
 
 // InstallCaddy installs Caddy with the DNS provider plugin using xcaddy
@@ -142,7 +143,10 @@ func (m *CaddyManager) InstallCaddy(ctx context.Context) error {
 		return fmt.Errorf("create build dir: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "xcaddy", "build", "--with", module, "--output", m.config.CaddyBin)
+	cmd := exec.CommandContext(ctx, "xcaddy", "build",
+		"--with", module,
+		"--with", "github.com/mholt/caddy-l4",
+		"--output", m.config.CaddyBin)
 	cmd.Dir = buildDir
 	cmd.Env = os.Environ()
 

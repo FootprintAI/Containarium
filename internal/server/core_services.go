@@ -362,21 +362,19 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 	return cs.getCaddyAdminURL(), nil
 }
 
-// setupCaddy installs and configures Caddy in the container
+// setupCaddy installs and configures Caddy in the container.
+// It builds Caddy from source with xcaddy to include the caddy-l4 plugin
+// for SNI-based TLS passthrough routing.
 func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error {
-	log.Printf("Installing Caddy...")
+	log.Printf("Installing Caddy with L4 plugin...")
 
 	// Wait for apt to be available
 	time.Sleep(5 * time.Second)
 
-	// Install Caddy
+	// Install Go and build dependencies (needed for xcaddy)
 	commands := [][]string{
 		{"apt-get", "update"},
-		{"apt-get", "install", "-y", "debian-keyring", "debian-archive-keyring", "apt-transport-https", "curl"},
-		{"bash", "-c", "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg"},
-		{"bash", "-c", "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list"},
-		{"apt-get", "update"},
-		{"apt-get", "install", "-y", "caddy"},
+		{"apt-get", "install", "-y", "curl", "golang-go"},
 	}
 
 	for _, cmd := range commands {
@@ -385,31 +383,77 @@ func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error
 		}
 	}
 
+	// Install xcaddy
+	log.Printf("Installing xcaddy...")
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{
+		"bash", "-c", "GOBIN=/usr/local/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest",
+	}); err != nil {
+		return fmt.Errorf("failed to install xcaddy: %w", err)
+	}
+
+	// Build Caddy with caddy-l4 plugin using xcaddy
+	log.Printf("Building Caddy with caddy-l4 plugin (this may take a few minutes)...")
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{
+		"bash", "-c", "xcaddy build --with github.com/mholt/caddy-l4 --output /usr/bin/caddy",
+	}); err != nil {
+		return fmt.Errorf("failed to build caddy with xcaddy: %w", err)
+	}
+
+	// Create caddy user and directories
+	cs.incusClient.Exec(CoreCaddyContainer, []string{
+		"bash", "-c", "id caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy",
+	})
+	cs.incusClient.Exec(CoreCaddyContainer, []string{"mkdir", "-p", "/var/lib/caddy", "/etc/caddy"})
+	cs.incusClient.Exec(CoreCaddyContainer, []string{"chown", "-R", "caddy:caddy", "/var/lib/caddy"})
+
 	// Create Caddyfile with admin API enabled
-	caddyfile := fmt.Sprintf(`{
+	caddyfile := `{
 	admin :2019
 }
 
 # Default catch-all - will be configured dynamically via admin API
-`)
+`
 
 	if err := cs.incusClient.WriteFile(CoreCaddyContainer, "/etc/caddy/Caddyfile", []byte(caddyfile), "0644"); err != nil {
 		return fmt.Errorf("failed to write Caddyfile: %w", err)
 	}
 
-	// Start Caddy
-	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "restart", "caddy"}); err != nil {
-		return fmt.Errorf("failed to restart caddy: %w", err)
+	// Create systemd service for Caddy
+	systemdUnit := `[Unit]
+Description=Caddy
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+`
+	if err := cs.incusClient.WriteFile(CoreCaddyContainer, "/etc/systemd/system/caddy.service", []byte(systemdUnit), "0644"); err != nil {
+		return fmt.Errorf("failed to write caddy service: %w", err)
 	}
 
+	// Enable and start Caddy
+	cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "daemon-reload"})
 	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "enable", "caddy"}); err != nil {
 		return fmt.Errorf("failed to enable caddy: %w", err)
+	}
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "restart", "caddy"}); err != nil {
+		return fmt.Errorf("failed to restart caddy: %w", err)
 	}
 
 	// Wait for Caddy to be ready
 	time.Sleep(3 * time.Second)
 
-	log.Printf("Caddy setup complete")
+	log.Printf("Caddy setup complete (with caddy-l4 plugin)")
 	return nil
 }
 

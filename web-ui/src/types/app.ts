@@ -45,7 +45,8 @@ export type RouteProtocol =
   | 'ROUTE_PROTOCOL_HTTP'
   | 'ROUTE_PROTOCOL_GRPC'
   | 'ROUTE_PROTOCOL_TCP'
-  | 'ROUTE_PROTOCOL_UDP';
+  | 'ROUTE_PROTOCOL_UDP'
+  | 'ROUTE_PROTOCOL_TLS_PASSTHROUGH';
 
 /**
  * App resources
@@ -324,6 +325,8 @@ export function getRouteProtocolName(protocol: RouteProtocol | undefined): strin
       return 'TCP';
     case 'ROUTE_PROTOCOL_UDP':
       return 'UDP';
+    case 'ROUTE_PROTOCOL_TLS_PASSTHROUGH':
+      return 'TLS Passthrough';
     default:
       return 'HTTP';
   }
@@ -341,6 +344,13 @@ export function isGRPCRoute(protocol: RouteProtocol | undefined): boolean {
  */
 export function isPassthroughProtocol(protocol: RouteProtocol | undefined): boolean {
   return protocol === 'ROUTE_PROTOCOL_TCP' || protocol === 'ROUTE_PROTOCOL_UDP';
+}
+
+/**
+ * Helper function to check if route is TLS passthrough (SNI-based)
+ */
+export function isTLSPassthroughProtocol(protocol: RouteProtocol | undefined): boolean {
+  return protocol === 'ROUTE_PROTOCOL_TLS_PASSTHROUGH';
 }
 
 /**

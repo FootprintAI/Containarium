@@ -5,6 +5,25 @@ All notable changes to Containarium will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Caddy L4 SNI-based TLS passthrough** — mTLS gRPC services are now exposed on `:443` via SNI hostname routing, eliminating the need for per-port GCP firewall rules and sentinel iptables forwarding. Caddy L4 inspects the TLS ClientHello SNI field without decrypting, preserving end-to-end mTLS.
+- **L4ProxyManager** (`internal/app/l4_proxy.go`) — manages Caddy L4 TLS passthrough routes via the admin API using atomic `/load` config replacement
+- **Lazy L4 activation** — the L4 layer activates only when TLS passthrough routes exist in the database and deactivates automatically when all are removed
+- **TLS Passthrough protocol** (`tls_passthrough`) — new route protocol in protobuf, route store, and sync job (`ROUTE_PROTOCOL_TLS_PASSTHROUGH = 5`)
+- **Custom Caddy build with L4 plugin** — `setupCaddy()` now builds Caddy via xcaddy with `github.com/mholt/caddy-l4` instead of stock apt install
+- **TLS Passthrough section in Network UI** — dedicated table section with VpnLockIcon showing SNI-routed connections on `:443`
+- L4 config types (`CaddyL4App`, `CaddyL4Server`, `CaddyL4Route`, etc.) in `internal/app/caddy_types.go`
+
+### Changed
+- **Add Route form simplified** — removed the old "Passthrough (TCP/UDP)" route type selector; all routes now use a unified form with Protocol dropdown (HTTP / gRPC / TLS Passthrough)
+- **RouteSyncJob** splits routes by protocol: HTTP/gRPC routes sync to ProxyManager, `tls_passthrough` routes sync to L4ProxyManager
+- **HTTP server port handoff** — when L4 is active, the HTTP server moves from `:443` to `:8443` with `tls_connection_policies`; L4 catch-all routes non-matching SNI back to the HTTP server
+
+### Removed
+- Old per-port TCP/UDP passthrough form in the Add Route dialog (replaced by TLS passthrough on `:443`)
+
 ## [v0.11.0] - 2026-03-11
 
 ### Added

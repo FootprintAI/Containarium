@@ -304,6 +304,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
 						}
 
+						// Create L4ProxyManager for TLS passthrough (SNI-based) routing
+						l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
+
 						// Create RouteStore for persistent route storage
 						routeStore, err = app.NewRouteStore(context.Background(), appStore.Pool())
 						if err != nil {
@@ -315,6 +318,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 								syncInterval = 5 * time.Second
 							}
 							routeSyncJob = app.NewRouteSyncJob(routeStore, proxyManager, syncInterval)
+							routeSyncJob.SetL4ProxyManager(l4ProxyManager)
 							log.Printf("Route persistence enabled with %v sync interval", syncInterval)
 						}
 					}
@@ -398,11 +402,17 @@ skipAppHosting:
 				if err := proxyManager.EnsureServerConfig(); err != nil {
 					log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
 				}
+
+				// Create L4ProxyManager for TLS passthrough (SNI-based) routing.
+				// L4 is activated lazily by RouteSyncJob when passthrough routes exist.
+				l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
+
 				syncInterval := config.RouteSyncInterval
 				if syncInterval == 0 {
 					syncInterval = 5 * time.Second
 				}
 				routeSyncJob = app.NewRouteSyncJob(routeStore, proxyManager, syncInterval)
+				routeSyncJob.SetL4ProxyManager(l4ProxyManager)
 				log.Printf("Route persistence enabled (standalone) with %v sync interval", syncInterval)
 
 				// Update NetworkServer so the /v1/network/routes API returns routes from PostgreSQL

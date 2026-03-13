@@ -1579,7 +1579,7 @@
           },
           {
             "name": "protocol",
-            "description": "Protocol: TCP or UDP\n\n - ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes",
+            "description": "Protocol: TCP or UDP\n\n - ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_TLS_PASSTHROUGH: TLS passthrough - SNI-based routing without TLS termination (for mTLS gRPC)",
             "in": "query",
             "required": false,
             "type": "string",
@@ -1588,7 +1588,8 @@
               "ROUTE_PROTOCOL_HTTP",
               "ROUTE_PROTOCOL_GRPC",
               "ROUTE_PROTOCOL_TCP",
-              "ROUTE_PROTOCOL_UDP"
+              "ROUTE_PROTOCOL_UDP",
+              "ROUTE_PROTOCOL_TLS_PASSTHROUGH"
             ],
             "default": "ROUTE_PROTOCOL_UNSPECIFIED"
           }
@@ -4075,10 +4076,11 @@
         "ROUTE_PROTOCOL_HTTP",
         "ROUTE_PROTOCOL_GRPC",
         "ROUTE_PROTOCOL_TCP",
-        "ROUTE_PROTOCOL_UDP"
+        "ROUTE_PROTOCOL_UDP",
+        "ROUTE_PROTOCOL_TLS_PASSTHROUGH"
       ],
       "default": "ROUTE_PROTOCOL_UNSPECIFIED",
-      "description": "- ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes",
+      "description": "- ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_TLS_PASSTHROUGH: TLS passthrough - SNI-based routing without TLS termination (for mTLS gRPC)",
       "title": "RouteProtocol represents the protocol type for a route"
     },
     "ScanJob": {

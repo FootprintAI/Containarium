@@ -38,7 +38,8 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import PublicIcon from '@mui/icons-material/Public';
 import CableIcon from '@mui/icons-material/Cable';
-import { NetworkTopology, ProxyRoute, DNSRecord, RouteProtocol, PassthroughRoute, getRouteProtocolName, isGRPCRoute } from '@/src/types/app';
+import VpnLockIcon from '@mui/icons-material/VpnLock';
+import { NetworkTopology, ProxyRoute, DNSRecord, RouteProtocol, PassthroughRoute, getRouteProtocolName, isGRPCRoute, isTLSPassthroughProtocol } from '@/src/types/app';
 
 interface NetworkTopologyViewProps {
   topology: NetworkTopology;
@@ -94,10 +95,24 @@ function UnifiedRouteTable({
     return parts[0];
   };
 
-  // Group proxy routes by parent domain
+  // Split proxy routes into HTTP/gRPC and TLS passthrough
+  const { httpGrpcRoutes, tlsPassthroughRoutes } = useMemo(() => {
+    const httpGrpc: ProxyRoute[] = [];
+    const tlsPassthrough: ProxyRoute[] = [];
+    for (const route of proxyRoutes) {
+      if (isTLSPassthroughProtocol(route.protocol)) {
+        tlsPassthrough.push(route);
+      } else {
+        httpGrpc.push(route);
+      }
+    }
+    return { httpGrpcRoutes: httpGrpc, tlsPassthroughRoutes: tlsPassthrough };
+  }, [proxyRoutes]);
+
+  // Group HTTP/gRPC proxy routes by parent domain
   const proxyGroups = useMemo(() => {
     const groups: Record<string, ProxyRoute[]> = {};
-    for (const route of proxyRoutes) {
+    for (const route of httpGrpcRoutes) {
       const domain = route.fullDomain || route.subdomain;
       const parent = getParentDomain(domain);
       if (!groups[parent]) groups[parent] = [];
@@ -109,7 +124,7 @@ function UnifiedRouteTable({
       routes.sort((a, b) => (a.fullDomain || '').localeCompare(b.fullDomain || ''));
     }
     return sorted;
-  }, [proxyRoutes]);
+  }, [httpGrpcRoutes]);
 
   const toggleGroup = (group: string) => {
     setCollapsedGroups(prev => ({ ...prev, [group]: !prev[group] }));
@@ -215,7 +230,7 @@ function UnifiedRouteTable({
                   <TableCell>
                     <Chip
                       label={getRouteProtocolName(route.protocol)}
-                      color={isGRPCRoute(route.protocol) ? 'info' : 'default'}
+                      color={isTLSPassthroughProtocol(route.protocol) ? 'secondary' : isGRPCRoute(route.protocol) ? 'info' : 'default'}
                       size="small"
                       variant="outlined"
                     />
@@ -250,7 +265,91 @@ function UnifiedRouteTable({
               )) : []),
             ];
           })}
-          {/* Passthrough Routes — no grouping */}
+          {/* TLS Passthrough Routes (SNI-based on :443) */}
+          {tlsPassthroughRoutes.length > 0 && (
+            <TableRow sx={{ bgcolor: 'action.hover' }}>
+              <TableCell colSpan={7}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <VpnLockIcon sx={{ fontSize: 16, color: 'secondary.main' }} />
+                  <Typography variant="body2" fontWeight="bold">
+                    TLS Passthrough (SNI)
+                  </Typography>
+                  <Chip label={`${tlsPassthroughRoutes.length}`} size="small" sx={{ ml: 0.5, height: 20, fontSize: '0.7rem' }} />
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                    All on :443 — raw TLS forwarded, mTLS preserved
+                  </Typography>
+                </Box>
+              </TableCell>
+            </TableRow>
+          )}
+          {tlsPassthroughRoutes.map((route) => (
+            <TableRow key={`tls-${route.fullDomain || route.subdomain}`} sx={{ opacity: route.active ? 1 : 0.6 }}>
+              <TableCell>
+                <Tooltip title="TLS Passthrough: Raw TLS forwarded by SNI, mTLS preserved end-to-end">
+                  <Chip
+                    icon={<VpnLockIcon sx={{ fontSize: 16 }} />}
+                    label="TLS Passthrough"
+                    size="small"
+                    color="secondary"
+                    variant="outlined"
+                  />
+                </Tooltip>
+              </TableCell>
+              <TableCell>
+                <Typography
+                  variant="body2"
+                  fontFamily="monospace"
+                  sx={{
+                    textDecoration: route.active ? 'none' : 'line-through',
+                    color: route.active ? 'text.primary' : 'text.disabled',
+                    pl: 1,
+                  }}
+                >
+                  {route.fullDomain || route.subdomain}:443
+                </Typography>
+              </TableCell>
+              <TableCell>
+                <Typography variant="body2" fontFamily="monospace">
+                  {route.containerIp ? `${route.containerIp}:${route.port}` : 'N/A'}
+                </Typography>
+              </TableCell>
+              <TableCell>
+                <Chip
+                  label="TLS Passthrough"
+                  color="secondary"
+                  size="small"
+                  variant="outlined"
+                />
+              </TableCell>
+              <TableCell>
+                <Typography variant="body2" color="text.secondary">
+                  {route.appName || '-'}
+                </Typography>
+              </TableCell>
+              <TableCell>
+                <Switch
+                  size="small"
+                  checked={route.active}
+                  onChange={(e) => onToggleProxyRoute?.(route.fullDomain, e.target.checked)}
+                  disabled={!onToggleProxyRoute}
+                />
+              </TableCell>
+              <TableCell align="right">
+                {onDeleteProxyRoute && (
+                  <Tooltip title="Delete route">
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={() => onDeleteProxyRoute(route.fullDomain)}
+                    >
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+          {/* Passthrough Routes (TCP/UDP) — no grouping */}
           {passthroughRoutes.length > 0 && (
             <TableRow sx={{ bgcolor: 'action.hover' }}>
               <TableCell colSpan={7}>
@@ -353,7 +452,6 @@ export default function NetworkTopologyView({
 }: NetworkTopologyViewProps) {
   // Dialog states
   const [addRouteDialog, setAddRouteDialog] = useState(false);
-  const [routeType, setRouteType] = useState<'proxy' | 'passthrough'>('proxy');
   const [newRoute, setNewRoute] = useState({
     domain: '',
     targetIp: '',
@@ -396,27 +494,10 @@ export default function NetworkTopologyView({
     }));
 
   const handleAddRoute = async () => {
-    if (routeType === 'proxy') {
-      if (onAddRoute && newRoute.domain && newRoute.targetIp && newRoute.targetPort) {
-        await onAddRoute(newRoute.domain, newRoute.targetIp, parseInt(newRoute.targetPort, 10), newRoute.protocol);
-        setAddRouteDialog(false);
-        setNewRoute({ domain: '', targetIp: '', targetPort: '', protocol: 'ROUTE_PROTOCOL_HTTP', externalPort: '' });
-        setRouteType('proxy');
-      }
-    } else {
-      if (onAddPassthroughRoute && newRoute.externalPort && newRoute.targetIp && newRoute.targetPort) {
-        const containerName = containerOptions.find(c => c.ip === newRoute.targetIp)?.name;
-        await onAddPassthroughRoute(
-          parseInt(newRoute.externalPort, 10),
-          newRoute.targetIp,
-          parseInt(newRoute.targetPort, 10),
-          newRoute.protocol,
-          containerName
-        );
-        setAddRouteDialog(false);
-        setNewRoute({ domain: '', targetIp: '', targetPort: '', protocol: 'ROUTE_PROTOCOL_TCP', externalPort: '' });
-        setRouteType('proxy');
-      }
+    if (onAddRoute && newRoute.domain && newRoute.targetIp && newRoute.targetPort) {
+      await onAddRoute(newRoute.domain, newRoute.targetIp, parseInt(newRoute.targetPort, 10), newRoute.protocol);
+      setAddRouteDialog(false);
+      setNewRoute({ domain: '', targetIp: '', targetPort: '', protocol: 'ROUTE_PROTOCOL_HTTP', externalPort: '' });
     }
   };
 
@@ -522,131 +603,71 @@ export default function NetworkTopologyView({
       <Dialog open={addRouteDialog} onClose={() => setAddRouteDialog(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Add Route</DialogTitle>
         <DialogContent>
-          {/* Route Type Selection */}
-          <FormControl fullWidth sx={{ mb: 2, mt: 1 }}>
-            <InputLabel id="route-type-label">Route Type</InputLabel>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 1 }}>
+            Map a domain to a container. For HTTP/gRPC, TLS is terminated at Caddy. For TLS Passthrough, raw TLS is forwarded via SNI routing (mTLS preserved).
+          </Typography>
+
+          {/* Domain - Autocomplete with suggestions from DNS records */}
+          <Autocomplete
+            freeSolo
+            options={domainSuggestions}
+            getOptionLabel={(option) => {
+              if (typeof option === 'string') return option;
+              return option.fullDomain;
+            }}
+            value={newRoute.domain}
+            onChange={(_, value) => {
+              if (typeof value === 'string') {
+                setNewRoute({ ...newRoute, domain: value });
+              } else if (value) {
+                setNewRoute({ ...newRoute, domain: value.fullDomain });
+              }
+            }}
+            onInputChange={(_, value) => setNewRoute({ ...newRoute, domain: value })}
+            renderOption={(props, option) => (
+              <li {...props} key={typeof option === 'string' ? option : option.fullDomain}>
+                <Box>
+                  <Typography variant="body2" fontWeight={500}>
+                    {typeof option === 'string' ? option : option.subdomain}
+                  </Typography>
+                  {typeof option !== 'string' && (
+                    <Typography variant="caption" color="text.secondary">
+                      {option.fullDomain}
+                    </Typography>
+                  )}
+                </Box>
+              </li>
+            )}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                fullWidth
+                label="Domain"
+                placeholder={baseDomain ? `subdomain.${baseDomain}` : 'test.example.com'}
+                helperText={baseDomain ? `Base domain: ${baseDomain}` : 'Enter the full domain name'}
+                sx={{ mb: 2 }}
+              />
+            )}
+          />
+
+          <FormControl fullWidth sx={{ mb: 2 }}>
+            <InputLabel id="protocol-select-label">Protocol</InputLabel>
             <Select
-              labelId="route-type-label"
-              value={routeType}
-              label="Route Type"
-              onChange={(e) => {
-                const newType = e.target.value as 'proxy' | 'passthrough';
-                setRouteType(newType);
-                // Reset protocol based on type
-                if (newType === 'proxy') {
-                  setNewRoute({ ...newRoute, protocol: 'ROUTE_PROTOCOL_HTTP', externalPort: '' });
-                } else {
-                  setNewRoute({ ...newRoute, protocol: 'ROUTE_PROTOCOL_TCP', domain: '' });
-                }
-              }}
+              labelId="protocol-select-label"
+              value={newRoute.protocol}
+              label="Protocol"
+              onChange={(e) => setNewRoute({ ...newRoute, protocol: e.target.value as RouteProtocol })}
             >
-              <MenuItem value="proxy">
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <PublicIcon fontSize="small" />
-                  Proxy (HTTP/gRPC) - TLS terminated at Caddy
-                </Box>
-              </MenuItem>
-              <MenuItem value="passthrough">
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <CableIcon fontSize="small" />
-                  Passthrough (TCP/UDP) - Direct forwarding, mTLS supported
-                </Box>
-              </MenuItem>
+              <MenuItem value="ROUTE_PROTOCOL_HTTP">HTTP (Web traffic)</MenuItem>
+              <MenuItem value="ROUTE_PROTOCOL_GRPC">gRPC (HTTP/2)</MenuItem>
+              <MenuItem value="ROUTE_PROTOCOL_TLS_PASSTHROUGH">TLS Passthrough (mTLS/SNI)</MenuItem>
             </Select>
           </FormControl>
 
-          {routeType === 'proxy' ? (
-            <>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Create a proxy route to map a domain to a container. TLS is terminated at Caddy.
-              </Typography>
-
-              {/* Domain - Autocomplete with suggestions from DNS records */}
-              <Autocomplete
-                freeSolo
-                options={domainSuggestions}
-                getOptionLabel={(option) => {
-                  if (typeof option === 'string') return option;
-                  return option.fullDomain;
-                }}
-                value={newRoute.domain}
-                onChange={(_, value) => {
-                  if (typeof value === 'string') {
-                    setNewRoute({ ...newRoute, domain: value });
-                  } else if (value) {
-                    setNewRoute({ ...newRoute, domain: value.fullDomain });
-                  }
-                }}
-                onInputChange={(_, value) => setNewRoute({ ...newRoute, domain: value })}
-                renderOption={(props, option) => (
-                  <li {...props} key={typeof option === 'string' ? option : option.fullDomain}>
-                    <Box>
-                      <Typography variant="body2" fontWeight={500}>
-                        {typeof option === 'string' ? option : option.subdomain}
-                      </Typography>
-                      {typeof option !== 'string' && (
-                        <Typography variant="caption" color="text.secondary">
-                          {option.fullDomain}
-                        </Typography>
-                      )}
-                    </Box>
-                  </li>
-                )}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    fullWidth
-                    label="Domain"
-                    placeholder={baseDomain ? `subdomain.${baseDomain}` : 'test.example.com'}
-                    helperText={baseDomain ? `Base domain: ${baseDomain}` : 'Enter the full domain name'}
-                    sx={{ mb: 2 }}
-                  />
-                )}
-              />
-
-              <FormControl fullWidth sx={{ mb: 2 }}>
-                <InputLabel id="protocol-select-label">Protocol</InputLabel>
-                <Select
-                  labelId="protocol-select-label"
-                  value={newRoute.protocol}
-                  label="Protocol"
-                  onChange={(e) => setNewRoute({ ...newRoute, protocol: e.target.value as RouteProtocol })}
-                >
-                  <MenuItem value="ROUTE_PROTOCOL_HTTP">HTTP (Web traffic)</MenuItem>
-                  <MenuItem value="ROUTE_PROTOCOL_GRPC">gRPC (HTTP/2)</MenuItem>
-                </Select>
-              </FormControl>
-            </>
-          ) : (
-            <>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Create a passthrough route for direct TCP/UDP port forwarding. Ideal for mTLS or custom protocols.
-              </Typography>
-
-              <TextField
-                fullWidth
-                label="External Port"
-                placeholder="50051"
-                type="number"
-                value={newRoute.externalPort}
-                onChange={(e) => setNewRoute({ ...newRoute, externalPort: e.target.value })}
-                helperText="The port exposed on the host"
-                sx={{ mb: 2 }}
-              />
-
-              <FormControl fullWidth sx={{ mb: 2 }}>
-                <InputLabel id="passthrough-protocol-label">Protocol</InputLabel>
-                <Select
-                  labelId="passthrough-protocol-label"
-                  value={newRoute.protocol}
-                  label="Protocol"
-                  onChange={(e) => setNewRoute({ ...newRoute, protocol: e.target.value as RouteProtocol })}
-                >
-                  <MenuItem value="ROUTE_PROTOCOL_TCP">TCP</MenuItem>
-                  <MenuItem value="ROUTE_PROTOCOL_UDP">UDP</MenuItem>
-                </Select>
-              </FormControl>
-            </>
+          {newRoute.protocol === 'ROUTE_PROTOCOL_TLS_PASSTHROUGH' && (
+            <Typography variant="body2" color="info.main" sx={{ mb: 2, mt: -1 }}>
+              TLS passthrough routes forward raw TLS traffic based on SNI hostname on :443, preserving end-to-end mTLS. No additional firewall or port changes needed.
+            </Typography>
           )}
 
           {/* Target - Select from containers or custom input (common for both types) */}
@@ -705,7 +726,7 @@ export default function NetworkTopologyView({
           <TextField
             fullWidth
             label="Target Port"
-            placeholder={routeType === 'proxy' ? '8080' : '50051'}
+            placeholder="8080"
             type="number"
             value={newRoute.targetPort}
             onChange={(e) => setNewRoute({ ...newRoute, targetPort: e.target.value })}
@@ -717,11 +738,7 @@ export default function NetworkTopologyView({
           <Button
             onClick={handleAddRoute}
             variant="contained"
-            disabled={
-              routeType === 'proxy'
-                ? !newRoute.domain || !newRoute.targetIp || !newRoute.targetPort
-                : !newRoute.externalPort || !newRoute.targetIp || !newRoute.targetPort
-            }
+            disabled={!newRoute.domain || !newRoute.targetIp || !newRoute.targetPort}
           >
             Add Route
           </Button>
