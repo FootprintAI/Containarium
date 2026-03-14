@@ -343,6 +343,19 @@ apt-get update
 		}
 	}
 
+	// Install cgroup wrappers so nested containers see LXC resource limits
+	if err := m.installCgroupWrappers(containerName, enablePodman, stackID == "docker"); err != nil {
+		log.Printf("Warning: failed to install cgroup wrappers: %v", err)
+	}
+
+	// Install OCI runtime for Docker so Compose v2 and API-created containers
+	// also see LXC cgroup limits (CLI wrapper only catches docker CLI calls)
+	if stackID == "docker" {
+		if err := m.installDockerOCIRuntime(containerName); err != nil {
+			log.Printf("Warning: failed to install Docker OCI runtime: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -683,6 +696,16 @@ func (m *Manager) InstallStack(username, stackID string) error {
 			// Dev stacks: run as user
 			userCmd := []string{"su", "-", effectiveUser, "-c", cmd}
 			_ = m.incus.Exec(containerName, userCmd)
+		}
+	}
+
+	// Install cgroup wrapper for docker stack so nested containers see LXC limits
+	if stackID == "docker" {
+		if err := m.installCgroupWrappers(containerName, false, true); err != nil {
+			log.Printf("Warning: failed to install docker cgroup wrapper: %v", err)
+		}
+		if err := m.installDockerOCIRuntime(containerName); err != nil {
+			log.Printf("Warning: failed to install Docker OCI runtime: %v", err)
 		}
 	}
 

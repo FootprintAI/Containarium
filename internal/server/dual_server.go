@@ -712,6 +712,16 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 	}
 
+	// Best-effort: install cgroup wrappers on existing containers
+	go func() {
+		count, err := ds.containerServer.GetManager().UpgradeCgroupWrappers()
+		if err != nil {
+			log.Printf("Warning: cgroup wrapper upgrade: %v", err)
+		} else if count > 0 {
+			log.Printf("Installed cgroup wrappers on %d existing container(s)", count)
+		}
+	}()
+
 	// Start gRPC server
 	grpcAddr := fmt.Sprintf("%s:%d", ds.config.GRPCAddress, ds.config.GRPCPort)
 	lis, err := net.Listen("tcp", grpcAddr)
