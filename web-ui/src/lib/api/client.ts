@@ -5,6 +5,7 @@ import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord,
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
 import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse } from '@/src/types/security';
 import { AuditLogsResponse, AuditLogsParams } from '@/src/types/audit';
+import { AlertRule, AlertRulesResponse, AlertingInfoResponse, CreateAlertRuleRequest, UpdateAlertRuleRequest, UpdateAlertingConfigResponse, TestWebhookResponse, WebhookDeliveriesResponse } from '@/src/types/alerts';
 
 /**
  * Core infrastructure service info (read-only)
@@ -921,6 +922,122 @@ export class ContaineriumClient {
     return {
       logs: response.data.logs || [],
       totalCount: response.data.totalCount || 0,
+    };
+  }
+
+  // ============================================
+  // Alert Management Methods
+  // ============================================
+
+  /**
+   * List all custom alert rules
+   */
+  async listAlertRules(): Promise<AlertRulesResponse> {
+    const response = await this.client.get<AlertRulesResponse>('/alerts');
+    return {
+      rules: response.data.rules || [],
+    };
+  }
+
+  /**
+   * Get a single alert rule by ID
+   */
+  async getAlertRule(id: string): Promise<AlertRule> {
+    const response = await this.client.get<{ rule: AlertRule }>(`/alerts/${id}`);
+    return response.data.rule;
+  }
+
+  /**
+   * Create a new alert rule
+   */
+  async createAlertRule(req: CreateAlertRuleRequest): Promise<AlertRule> {
+    const response = await this.client.post<{ rule: AlertRule }>('/alerts', req);
+    return response.data.rule;
+  }
+
+  /**
+   * Update an existing alert rule
+   */
+  async updateAlertRule(id: string, req: UpdateAlertRuleRequest): Promise<AlertRule> {
+    const response = await this.client.put<{ rule: AlertRule }>(`/alerts/${id}`, {
+      ...req,
+      id,
+    });
+    return response.data.rule;
+  }
+
+  /**
+   * Delete an alert rule
+   */
+  async deleteAlertRule(id: string): Promise<void> {
+    await this.client.delete(`/alerts/${id}`);
+  }
+
+  /**
+   * Get alerting system status
+   */
+  async getAlertingInfo(): Promise<AlertingInfoResponse> {
+    const response = await this.client.get<AlertingInfoResponse>('/system/alerting');
+    return {
+      enabled: response.data.enabled || false,
+      vmalertStatus: response.data.vmalertStatus || '',
+      alertmanagerStatus: response.data.alertmanagerStatus || '',
+      webhookUrl: response.data.webhookUrl || '',
+      totalRules: response.data.totalRules || 0,
+      customRules: response.data.customRules || 0,
+      webhookSecretConfigured: response.data.webhookSecretConfigured || false,
+    };
+  }
+
+  /**
+   * List built-in default alert rules
+   */
+  async listDefaultAlertRules(): Promise<AlertRulesResponse> {
+    const response = await this.client.get<AlertRulesResponse>('/alerts/defaults');
+    return response.data;
+  }
+
+  /**
+   * Update alerting configuration (webhook URL and/or secret)
+   */
+  async updateAlertingConfig(webhookUrl: string, generateWebhookSecret?: boolean): Promise<UpdateAlertingConfigResponse> {
+    const body: Record<string, unknown> = { webhook_url: webhookUrl };
+    if (generateWebhookSecret) {
+      body.generate_webhook_secret = true;
+    }
+    const response = await this.client.put<UpdateAlertingConfigResponse>('/system/alerting', body);
+    return response.data;
+  }
+
+  /**
+   * Test webhook by sending a test notification with current system status
+   */
+  async testWebhook(): Promise<TestWebhookResponse> {
+    const response = await this.client.post<TestWebhookResponse>('/system/alerting/test', {});
+    return response.data;
+  }
+
+  /**
+   * List webhook delivery history
+   */
+  async listWebhookDeliveries(limit: number = 50, offset: number = 0): Promise<WebhookDeliveriesResponse> {
+    const response = await this.client.get<WebhookDeliveriesResponse>('/system/alerting/deliveries', {
+      params: { limit, offset },
+    });
+    return {
+      deliveries: (response.data.deliveries || []).map(d => ({
+        id: d.id,
+        timestamp: d.timestamp || '',
+        alertName: d.alertName || (d as any).alert_name || '',
+        source: d.source || '',
+        webhookUrl: d.webhookUrl || (d as any).webhook_url || '',
+        success: d.success || false,
+        httpStatus: d.httpStatus || (d as any).http_status || 0,
+        errorMessage: d.errorMessage || (d as any).error_message || '',
+        payloadSize: d.payloadSize || (d as any).payload_size || 0,
+        durationMs: d.durationMs || (d as any).duration_ms || 0,
+      })),
+      totalCount: response.data.totalCount || (response.data as any).total_count || 0,
     };
   }
 

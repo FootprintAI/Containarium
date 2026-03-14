@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **OCI runtime wrapper for Docker cgroup limit injection** — Registers a custom OCI runtime (`containarium-runtime`) as Docker's default via `daemon.json`. Intercepts every `runc create` — from CLI, Compose v2, or API — and injects LXC memory/CPU cgroup limits into the OCI spec. Also bind-mounts LXCFS-backed `/proc` files (`meminfo`, `cpuinfo`, `stat`, etc.) so tools like `free` and `top` report correct values inside nested containers. See [`docs/OCI-RUNTIME-CGROUP-INJECTION.md`](docs/OCI-RUNTIME-CGROUP-INJECTION.md).
+- **Automatic OCI runtime upgrade on daemon startup** — `UpgradeCgroupWrappers()` now installs the OCI runtime on all existing Docker containers, in addition to CLI wrappers
 - **Caddy L4 SNI-based TLS passthrough** — mTLS gRPC services are now exposed on `:443` via SNI hostname routing, eliminating the need for per-port GCP firewall rules and sentinel iptables forwarding. Caddy L4 inspects the TLS ClientHello SNI field without decrypting, preserving end-to-end mTLS.
 - **L4ProxyManager** (`internal/app/l4_proxy.go`) — manages Caddy L4 TLS passthrough routes via the admin API using atomic `/load` config replacement
 - **Lazy L4 activation** — the L4 layer activates only when TLS passthrough routes exist in the database and deactivates automatically when all are removed
@@ -20,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Add Route form simplified** — removed the old "Passthrough (TCP/UDP)" route type selector; all routes now use a unified form with Protocol dropdown (HTTP / gRPC / TLS Passthrough)
 - **RouteSyncJob** splits routes by protocol: HTTP/gRPC routes sync to ProxyManager, `tls_passthrough` routes sync to L4ProxyManager
 - **HTTP server port handoff** — when L4 is active, the HTTP server moves from `:443` to `:8443` with `tls_connection_policies`; L4 catch-all routes non-matching SNI back to the HTTP server
+
+### Fixed
+- **Docker Compose v2 containers now see correct cgroup limits** — Previously, Compose v2 bypassed the CLI wrapper (it uses the Docker Engine API directly), so compose-managed containers saw the host's full resources instead of the LXC cgroup limits. The OCI runtime wrapper fixes this at the runc level.
+- **`free` / `top` inside Docker containers now report correct memory** — LXCFS bind mounts are passed through from the LXC container into nested Docker containers via the OCI runtime
 
 ### Removed
 - Old per-port TCP/UDP passthrough form in the Add Route dialog (replaced by TLS passthrough on `:443`)

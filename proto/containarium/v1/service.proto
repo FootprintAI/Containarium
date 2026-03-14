@@ -6,6 +6,7 @@ import "containarium/v1/container.proto";
 import "containarium/v1/config.proto";
 import "containarium/v1/app.proto";
 import "containarium/v1/network.proto";
+import "containarium/v1/alert.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
@@ -262,6 +263,130 @@ service ContainerService {
       summary: "Get monitoring information";
       description: "Returns monitoring configuration including Grafana and VictoriaMetrics URLs. Used by the web UI to embed the Grafana dashboard.";
       tags: "Monitoring";
+    };
+  }
+
+  // CreateAlertRule creates a new custom alert rule
+  rpc CreateAlertRule(CreateAlertRuleRequest) returns (CreateAlertRuleResponse) {
+    option (google.api.http) = {
+      post: "/v1/alerts"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create alert rule";
+      description: "Creates a new custom alert rule. The rule is persisted in PostgreSQL and synced to vmalert for evaluation.";
+      tags: "Alerts";
+    };
+  }
+
+  // ListAlertRules lists all alert rules
+  rpc ListAlertRules(ListAlertRulesRequest) returns (ListAlertRulesResponse) {
+    option (google.api.http) = {
+      get: "/v1/alerts"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List alert rules";
+      description: "Returns all custom alert rules stored in the database.";
+      tags: "Alerts";
+    };
+  }
+
+  // GetAlertRule gets a single alert rule by ID
+  rpc GetAlertRule(GetAlertRuleRequest) returns (GetAlertRuleResponse) {
+    option (google.api.http) = {
+      get: "/v1/alerts/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get alert rule";
+      description: "Returns a single alert rule by its ID.";
+      tags: "Alerts";
+    };
+  }
+
+  // UpdateAlertRule updates an existing alert rule
+  rpc UpdateAlertRule(UpdateAlertRuleRequest) returns (UpdateAlertRuleResponse) {
+    option (google.api.http) = {
+      put: "/v1/alerts/{id}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Update alert rule";
+      description: "Updates an existing alert rule. Changes are synced to vmalert automatically.";
+      tags: "Alerts";
+    };
+  }
+
+  // DeleteAlertRule deletes an alert rule
+  rpc DeleteAlertRule(DeleteAlertRuleRequest) returns (DeleteAlertRuleResponse) {
+    option (google.api.http) = {
+      delete: "/v1/alerts/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete alert rule";
+      description: "Deletes an alert rule by ID. The rule is removed from both the database and vmalert.";
+      tags: "Alerts";
+    };
+  }
+
+  // GetAlertingInfo gets alerting system status and configuration
+  rpc GetAlertingInfo(GetAlertingInfoRequest) returns (GetAlertingInfoResponse) {
+    option (google.api.http) = {
+      get: "/v1/system/alerting"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get alerting information";
+      description: "Returns alerting system status including vmalert and Alertmanager health, webhook configuration, and rule counts.";
+      tags: "Alerts";
+    };
+  }
+
+  // ListDefaultAlertRules lists the built-in default alert rules
+  rpc ListDefaultAlertRules(ListDefaultAlertRulesRequest) returns (ListDefaultAlertRulesResponse) {
+    option (google.api.http) = {
+      get: "/v1/alerts/defaults"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List default alert rules";
+      description: "Returns the built-in default alert rules for system and container monitoring. These rules are always active and cannot be modified.";
+      tags: "Alerts";
+    };
+  }
+
+  // UpdateAlertingConfig updates alerting system configuration (webhook URL)
+  rpc UpdateAlertingConfig(UpdateAlertingConfigRequest) returns (UpdateAlertingConfigResponse) {
+    option (google.api.http) = {
+      put: "/v1/system/alerting"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Update alerting configuration";
+      description: "Updates the alerting system configuration, such as the webhook URL for notifications. Changes take effect immediately.";
+      tags: "Alerts";
+    };
+  }
+
+  // TestWebhook sends a test notification to the configured webhook with current system status
+  rpc TestWebhook(TestWebhookRequest) returns (TestWebhookResponse) {
+    option (google.api.http) = {
+      post: "/v1/system/alerting/test"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Test webhook";
+      description: "Sends a test alert notification to the configured webhook URL with current system status information.";
+      tags: "Alerts";
+    };
+  }
+
+  // ListWebhookDeliveries lists webhook delivery history
+  rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse) {
+    option (google.api.http) = {
+      get: "/v1/system/alerting/deliveries"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List webhook deliveries";
+      description: "Returns the history of webhook delivery attempts including success/failure status, HTTP codes, and timing.";
+      tags: "Alerts";
     };
   }
 }

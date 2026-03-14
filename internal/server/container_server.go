@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/footprintai/containarium/internal/alert"
+	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/container"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/incus"
@@ -31,6 +33,16 @@ type ContainerServer struct {
 	// Monitoring URLs (set by DualServer after setup)
 	victoriaMetricsURL  string
 	grafanaURL          string
+	// Alerting (set by DualServer after setup)
+	alertStore           *alert.Store
+	alertManager         *alert.Manager
+	alertDeliveryStore   *alert.DeliveryStore
+	alertWebhookURL      string
+	alertWebhookSecret   string
+	hostRelayURL         string // e.g. "http://10.100.0.1:8080/internal/alert-relay"
+	alertRelayConfigFn   func(webhookURL, secret string) // callback to update gateway relay config
+	coreServices         *CoreServices
+	daemonConfigStore    *app.DaemonConfigStore
 }
 
 // NewContainerServer creates a new container server

@@ -1,15 +1,22 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -33,13 +40,22 @@ type GatewayServer struct {
 	swaggerDir         string
 	certsDir           string // Optional: for mTLS connection to gRPC server
 	caddyCertDir       string // Optional: Caddy certificate directory for /certs endpoint
-	grafanaBackendURL  string // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
+	grafanaBackendURL      string // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
+	alertmanagerBackendURL string // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
 	securityStore      *security.Store // Optional: for CSV export endpoint
 	auditStore         *audit.Store    // Optional: for HTTP audit middleware
 	terminalHandler     *TerminalHandler
 	labelHandler        *LabelHandler
 	eventHandler        *EventHandler
 	coreServicesHandler *CoreServicesHandler
+
+	// Alert relay (no auth — internal network only)
+	alertRelayMu     sync.RWMutex
+	alertRelayURL    string // external webhook URL to forward to
+	alertRelaySecret string // HMAC-SHA256 signing secret
+
+	// Callback to record relay delivery attempts (set by dual_server)
+	recordDeliveryFn func(ctx context.Context, alertName, source, webhookURL string, success bool, httpStatus int, errMsg string, payloadSize, durationMs int)
 }
 
 // NewGatewayServer creates a new gateway server
@@ -84,6 +100,11 @@ func (gs *GatewayServer) SetGrafanaBackendURL(backendURL string) {
 	gs.grafanaBackendURL = backendURL
 }
 
+// SetAlertmanagerBackendURL sets the internal Alertmanager URL for the reverse proxy
+func (gs *GatewayServer) SetAlertmanagerBackendURL(backendURL string) {
+	gs.alertmanagerBackendURL = backendURL
+}
+
 // SetSecurityStore sets the security store for the CSV export endpoint
 func (gs *GatewayServer) SetSecurityStore(store *security.Store) {
 	gs.securityStore = store
@@ -92,6 +113,135 @@ func (gs *GatewayServer) SetSecurityStore(store *security.Store) {
 // SetAuditStore sets the audit store for the HTTP audit middleware
 func (gs *GatewayServer) SetAuditStore(store *audit.Store) {
 	gs.auditStore = store
+}
+
+// SetRecordDeliveryFn sets the callback used to record relay delivery attempts
+func (gs *GatewayServer) SetRecordDeliveryFn(fn func(ctx context.Context, alertName, source, webhookURL string, success bool, httpStatus int, errMsg string, payloadSize, durationMs int)) {
+	gs.recordDeliveryFn = fn
+}
+
+// SetAlertRelayConfig sets the external webhook URL and HMAC signing secret
+// for the alert relay handler. Thread-safe; can be called at any time.
+func (gs *GatewayServer) SetAlertRelayConfig(webhookURL, secret string) {
+	gs.alertRelayMu.Lock()
+	defer gs.alertRelayMu.Unlock()
+	gs.alertRelayURL = webhookURL
+	gs.alertRelaySecret = secret
+}
+
+// handleAlertRelay receives Alertmanager webhook POSTs (from the local VictoriaMetrics
+// container), signs them with HMAC-SHA256, and forwards them to the external webhook URL.
+// No JWT auth is required — this endpoint is only reachable from the local container network.
+func (gs *GatewayServer) handleAlertRelay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	gs.alertRelayMu.RLock()
+	webhookURL := gs.alertRelayURL
+	secret := gs.alertRelaySecret
+	gs.alertRelayMu.RUnlock()
+
+	if webhookURL == "" {
+		http.Error(w, `{"error":"no webhook URL configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Read the body from Alertmanager
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
+	if err != nil {
+		http.Error(w, `{"error":"failed to read body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Extract alert name from Alertmanager JSON payload (best-effort)
+	alertName := extractAlertName(body)
+
+	// Create forwarding request
+	fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, webhookURL, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, `{"error":"failed to create forwarding request"}`, http.StatusInternalServerError)
+		return
+	}
+	fwdReq.Header.Set("Content-Type", "application/json")
+
+	// Sign payload with HMAC-SHA256 if secret is configured
+	if secret != "" {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(body)
+		sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+		fwdReq.Header.Set("X-Containarium-Signature", sig)
+	}
+
+	// Forward to external webhook
+	start := time.Now()
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(fwdReq)
+	durationMs := int(time.Since(start).Milliseconds())
+	if err != nil {
+		log.Printf("Alert relay: failed to forward to %s: %v", webhookURL, err)
+		gs.recordRelayDelivery(r.Context(), alertName, webhookURL, false, 0, fmt.Sprintf("failed to forward: %v", err), len(body), durationMs)
+		http.Error(w, fmt.Sprintf(`{"error":"failed to forward: %v"}`, err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	success := resp.StatusCode >= 200 && resp.StatusCode < 300
+	errMsg := ""
+	if !success {
+		errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+	gs.recordRelayDelivery(r.Context(), alertName, webhookURL, success, resp.StatusCode, errMsg, len(body), durationMs)
+
+	// Mirror the upstream status code back to Alertmanager
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, io.LimitReader(resp.Body, 1<<20))
+}
+
+// extractAlertName extracts the first alert name from an Alertmanager webhook payload
+func extractAlertName(body []byte) string {
+	var payload struct {
+		CommonLabels map[string]string `json:"commonLabels"`
+		Alerts       []struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"alerts"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	if name, ok := payload.CommonLabels["alertname"]; ok {
+		return name
+	}
+	if len(payload.Alerts) > 0 {
+		if name, ok := payload.Alerts[0].Labels["alertname"]; ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// maskRelayURL masks a URL for display (shows scheme + host, hides path)
+func maskRelayURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	parts := strings.SplitN(rawURL, "//", 2)
+	if len(parts) < 2 {
+		return "***"
+	}
+	hostPart := parts[1]
+	if idx := strings.Index(hostPart, "/"); idx > 0 {
+		return parts[0] + "//" + hostPart[:idx] + "/***"
+	}
+	return rawURL
+}
+
+// recordRelayDelivery records a relay delivery attempt via the callback
+func (gs *GatewayServer) recordRelayDelivery(ctx context.Context, alertName, webhookURL string, success bool, httpStatus int, errMsg string, payloadSize, durationMs int) {
+	if gs.recordDeliveryFn != nil {
+		gs.recordDeliveryFn(ctx, alertName, "relay", maskRelayURL(webhookURL), success, httpStatus, errMsg, payloadSize, durationMs)
+	}
 }
 
 // Start starts the HTTP gateway server
@@ -327,6 +477,9 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Web UI routes (no authentication required - auth handled client-side via tokens)
 	httpMux.HandleFunc("/webui/", ServeWebUI())
 
+	// Alert relay endpoint (no auth — internal network only, called by Alertmanager)
+	httpMux.HandleFunc("/internal/alert-relay", gs.handleAlertRelay)
+
 	// Health check endpoint (no auth required)
 	httpMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -348,6 +501,23 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				http.Redirect(w, r, "/grafana/", http.StatusMovedPermanently)
 			})
 			log.Printf("Grafana reverse proxy enabled at /grafana/ -> %s", gs.grafanaBackendURL)
+		}
+	}
+
+	// Alertmanager reverse proxy (no auth — Alertmanager handles its own access)
+	if gs.alertmanagerBackendURL != "" {
+		amTarget, err := url.Parse(gs.alertmanagerBackendURL)
+		if err != nil {
+			log.Printf("Warning: Invalid Alertmanager backend URL %q: %v", gs.alertmanagerBackendURL, err)
+		} else {
+			amProxy := httputil.NewSingleHostReverseProxy(amTarget)
+			httpMux.HandleFunc("/alertmanager/", func(w http.ResponseWriter, r *http.Request) {
+				amProxy.ServeHTTP(w, r)
+			})
+			httpMux.HandleFunc("/alertmanager", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "/alertmanager/", http.StatusMovedPermanently)
+			})
+			log.Printf("Alertmanager reverse proxy enabled at /alertmanager/ -> %s", gs.alertmanagerBackendURL)
 		}
 	}
 

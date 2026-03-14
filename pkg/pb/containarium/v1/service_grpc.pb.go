@@ -19,23 +19,33 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ContainerService_CreateContainer_FullMethodName    = "/containarium.v1.ContainerService/CreateContainer"
-	ContainerService_ListContainers_FullMethodName     = "/containarium.v1.ContainerService/ListContainers"
-	ContainerService_GetContainer_FullMethodName       = "/containarium.v1.ContainerService/GetContainer"
-	ContainerService_DeleteContainer_FullMethodName    = "/containarium.v1.ContainerService/DeleteContainer"
-	ContainerService_StartContainer_FullMethodName     = "/containarium.v1.ContainerService/StartContainer"
-	ContainerService_StopContainer_FullMethodName      = "/containarium.v1.ContainerService/StopContainer"
-	ContainerService_ResizeContainer_FullMethodName    = "/containarium.v1.ContainerService/ResizeContainer"
-	ContainerService_AddSSHKey_FullMethodName          = "/containarium.v1.ContainerService/AddSSHKey"
-	ContainerService_RemoveSSHKey_FullMethodName       = "/containarium.v1.ContainerService/RemoveSSHKey"
-	ContainerService_AddCollaborator_FullMethodName    = "/containarium.v1.ContainerService/AddCollaborator"
-	ContainerService_RemoveCollaborator_FullMethodName = "/containarium.v1.ContainerService/RemoveCollaborator"
-	ContainerService_ListCollaborators_FullMethodName  = "/containarium.v1.ContainerService/ListCollaborators"
-	ContainerService_GetMetrics_FullMethodName         = "/containarium.v1.ContainerService/GetMetrics"
-	ContainerService_CleanupDisk_FullMethodName        = "/containarium.v1.ContainerService/CleanupDisk"
-	ContainerService_InstallStack_FullMethodName       = "/containarium.v1.ContainerService/InstallStack"
-	ContainerService_GetSystemInfo_FullMethodName      = "/containarium.v1.ContainerService/GetSystemInfo"
-	ContainerService_GetMonitoringInfo_FullMethodName  = "/containarium.v1.ContainerService/GetMonitoringInfo"
+	ContainerService_CreateContainer_FullMethodName       = "/containarium.v1.ContainerService/CreateContainer"
+	ContainerService_ListContainers_FullMethodName        = "/containarium.v1.ContainerService/ListContainers"
+	ContainerService_GetContainer_FullMethodName          = "/containarium.v1.ContainerService/GetContainer"
+	ContainerService_DeleteContainer_FullMethodName       = "/containarium.v1.ContainerService/DeleteContainer"
+	ContainerService_StartContainer_FullMethodName        = "/containarium.v1.ContainerService/StartContainer"
+	ContainerService_StopContainer_FullMethodName         = "/containarium.v1.ContainerService/StopContainer"
+	ContainerService_ResizeContainer_FullMethodName       = "/containarium.v1.ContainerService/ResizeContainer"
+	ContainerService_AddSSHKey_FullMethodName             = "/containarium.v1.ContainerService/AddSSHKey"
+	ContainerService_RemoveSSHKey_FullMethodName          = "/containarium.v1.ContainerService/RemoveSSHKey"
+	ContainerService_AddCollaborator_FullMethodName       = "/containarium.v1.ContainerService/AddCollaborator"
+	ContainerService_RemoveCollaborator_FullMethodName    = "/containarium.v1.ContainerService/RemoveCollaborator"
+	ContainerService_ListCollaborators_FullMethodName     = "/containarium.v1.ContainerService/ListCollaborators"
+	ContainerService_GetMetrics_FullMethodName            = "/containarium.v1.ContainerService/GetMetrics"
+	ContainerService_CleanupDisk_FullMethodName           = "/containarium.v1.ContainerService/CleanupDisk"
+	ContainerService_InstallStack_FullMethodName          = "/containarium.v1.ContainerService/InstallStack"
+	ContainerService_GetSystemInfo_FullMethodName         = "/containarium.v1.ContainerService/GetSystemInfo"
+	ContainerService_GetMonitoringInfo_FullMethodName     = "/containarium.v1.ContainerService/GetMonitoringInfo"
+	ContainerService_CreateAlertRule_FullMethodName       = "/containarium.v1.ContainerService/CreateAlertRule"
+	ContainerService_ListAlertRules_FullMethodName        = "/containarium.v1.ContainerService/ListAlertRules"
+	ContainerService_GetAlertRule_FullMethodName          = "/containarium.v1.ContainerService/GetAlertRule"
+	ContainerService_UpdateAlertRule_FullMethodName       = "/containarium.v1.ContainerService/UpdateAlertRule"
+	ContainerService_DeleteAlertRule_FullMethodName       = "/containarium.v1.ContainerService/DeleteAlertRule"
+	ContainerService_GetAlertingInfo_FullMethodName       = "/containarium.v1.ContainerService/GetAlertingInfo"
+	ContainerService_ListDefaultAlertRules_FullMethodName = "/containarium.v1.ContainerService/ListDefaultAlertRules"
+	ContainerService_UpdateAlertingConfig_FullMethodName  = "/containarium.v1.ContainerService/UpdateAlertingConfig"
+	ContainerService_TestWebhook_FullMethodName           = "/containarium.v1.ContainerService/TestWebhook"
+	ContainerService_ListWebhookDeliveries_FullMethodName = "/containarium.v1.ContainerService/ListWebhookDeliveries"
 )
 
 // ContainerServiceClient is the client API for ContainerService service.
@@ -78,6 +88,26 @@ type ContainerServiceClient interface {
 	GetSystemInfo(ctx context.Context, in *GetSystemInfoRequest, opts ...grpc.CallOption) (*GetSystemInfoResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
+	// CreateAlertRule creates a new custom alert rule
+	CreateAlertRule(ctx context.Context, in *CreateAlertRuleRequest, opts ...grpc.CallOption) (*CreateAlertRuleResponse, error)
+	// ListAlertRules lists all alert rules
+	ListAlertRules(ctx context.Context, in *ListAlertRulesRequest, opts ...grpc.CallOption) (*ListAlertRulesResponse, error)
+	// GetAlertRule gets a single alert rule by ID
+	GetAlertRule(ctx context.Context, in *GetAlertRuleRequest, opts ...grpc.CallOption) (*GetAlertRuleResponse, error)
+	// UpdateAlertRule updates an existing alert rule
+	UpdateAlertRule(ctx context.Context, in *UpdateAlertRuleRequest, opts ...grpc.CallOption) (*UpdateAlertRuleResponse, error)
+	// DeleteAlertRule deletes an alert rule
+	DeleteAlertRule(ctx context.Context, in *DeleteAlertRuleRequest, opts ...grpc.CallOption) (*DeleteAlertRuleResponse, error)
+	// GetAlertingInfo gets alerting system status and configuration
+	GetAlertingInfo(ctx context.Context, in *GetAlertingInfoRequest, opts ...grpc.CallOption) (*GetAlertingInfoResponse, error)
+	// ListDefaultAlertRules lists the built-in default alert rules
+	ListDefaultAlertRules(ctx context.Context, in *ListDefaultAlertRulesRequest, opts ...grpc.CallOption) (*ListDefaultAlertRulesResponse, error)
+	// UpdateAlertingConfig updates alerting system configuration (webhook URL)
+	UpdateAlertingConfig(ctx context.Context, in *UpdateAlertingConfigRequest, opts ...grpc.CallOption) (*UpdateAlertingConfigResponse, error)
+	// TestWebhook sends a test notification to the configured webhook with current system status
+	TestWebhook(ctx context.Context, in *TestWebhookRequest, opts ...grpc.CallOption) (*TestWebhookResponse, error)
+	// ListWebhookDeliveries lists webhook delivery history
+	ListWebhookDeliveries(ctx context.Context, in *ListWebhookDeliveriesRequest, opts ...grpc.CallOption) (*ListWebhookDeliveriesResponse, error)
 }
 
 type containerServiceClient struct {
@@ -258,6 +288,106 @@ func (c *containerServiceClient) GetMonitoringInfo(ctx context.Context, in *GetM
 	return out, nil
 }
 
+func (c *containerServiceClient) CreateAlertRule(ctx context.Context, in *CreateAlertRuleRequest, opts ...grpc.CallOption) (*CreateAlertRuleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateAlertRuleResponse)
+	err := c.cc.Invoke(ctx, ContainerService_CreateAlertRule_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListAlertRules(ctx context.Context, in *ListAlertRulesRequest, opts ...grpc.CallOption) (*ListAlertRulesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAlertRulesResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListAlertRules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetAlertRule(ctx context.Context, in *GetAlertRuleRequest, opts ...grpc.CallOption) (*GetAlertRuleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAlertRuleResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetAlertRule_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) UpdateAlertRule(ctx context.Context, in *UpdateAlertRuleRequest, opts ...grpc.CallOption) (*UpdateAlertRuleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateAlertRuleResponse)
+	err := c.cc.Invoke(ctx, ContainerService_UpdateAlertRule_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) DeleteAlertRule(ctx context.Context, in *DeleteAlertRuleRequest, opts ...grpc.CallOption) (*DeleteAlertRuleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteAlertRuleResponse)
+	err := c.cc.Invoke(ctx, ContainerService_DeleteAlertRule_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetAlertingInfo(ctx context.Context, in *GetAlertingInfoRequest, opts ...grpc.CallOption) (*GetAlertingInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAlertingInfoResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetAlertingInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListDefaultAlertRules(ctx context.Context, in *ListDefaultAlertRulesRequest, opts ...grpc.CallOption) (*ListDefaultAlertRulesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDefaultAlertRulesResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListDefaultAlertRules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) UpdateAlertingConfig(ctx context.Context, in *UpdateAlertingConfigRequest, opts ...grpc.CallOption) (*UpdateAlertingConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateAlertingConfigResponse)
+	err := c.cc.Invoke(ctx, ContainerService_UpdateAlertingConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) TestWebhook(ctx context.Context, in *TestWebhookRequest, opts ...grpc.CallOption) (*TestWebhookResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TestWebhookResponse)
+	err := c.cc.Invoke(ctx, ContainerService_TestWebhook_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListWebhookDeliveries(ctx context.Context, in *ListWebhookDeliveriesRequest, opts ...grpc.CallOption) (*ListWebhookDeliveriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListWebhookDeliveriesResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListWebhookDeliveries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ContainerServiceServer is the server API for ContainerService service.
 // All implementations must embed UnimplementedContainerServiceServer
 // for forward compatibility.
@@ -298,6 +428,26 @@ type ContainerServiceServer interface {
 	GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
+	// CreateAlertRule creates a new custom alert rule
+	CreateAlertRule(context.Context, *CreateAlertRuleRequest) (*CreateAlertRuleResponse, error)
+	// ListAlertRules lists all alert rules
+	ListAlertRules(context.Context, *ListAlertRulesRequest) (*ListAlertRulesResponse, error)
+	// GetAlertRule gets a single alert rule by ID
+	GetAlertRule(context.Context, *GetAlertRuleRequest) (*GetAlertRuleResponse, error)
+	// UpdateAlertRule updates an existing alert rule
+	UpdateAlertRule(context.Context, *UpdateAlertRuleRequest) (*UpdateAlertRuleResponse, error)
+	// DeleteAlertRule deletes an alert rule
+	DeleteAlertRule(context.Context, *DeleteAlertRuleRequest) (*DeleteAlertRuleResponse, error)
+	// GetAlertingInfo gets alerting system status and configuration
+	GetAlertingInfo(context.Context, *GetAlertingInfoRequest) (*GetAlertingInfoResponse, error)
+	// ListDefaultAlertRules lists the built-in default alert rules
+	ListDefaultAlertRules(context.Context, *ListDefaultAlertRulesRequest) (*ListDefaultAlertRulesResponse, error)
+	// UpdateAlertingConfig updates alerting system configuration (webhook URL)
+	UpdateAlertingConfig(context.Context, *UpdateAlertingConfigRequest) (*UpdateAlertingConfigResponse, error)
+	// TestWebhook sends a test notification to the configured webhook with current system status
+	TestWebhook(context.Context, *TestWebhookRequest) (*TestWebhookResponse, error)
+	// ListWebhookDeliveries lists webhook delivery history
+	ListWebhookDeliveries(context.Context, *ListWebhookDeliveriesRequest) (*ListWebhookDeliveriesResponse, error)
 	mustEmbedUnimplementedContainerServiceServer()
 }
 
@@ -358,6 +508,36 @@ func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSy
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
+}
+func (UnimplementedContainerServiceServer) CreateAlertRule(context.Context, *CreateAlertRuleRequest) (*CreateAlertRuleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateAlertRule not implemented")
+}
+func (UnimplementedContainerServiceServer) ListAlertRules(context.Context, *ListAlertRulesRequest) (*ListAlertRulesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAlertRules not implemented")
+}
+func (UnimplementedContainerServiceServer) GetAlertRule(context.Context, *GetAlertRuleRequest) (*GetAlertRuleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAlertRule not implemented")
+}
+func (UnimplementedContainerServiceServer) UpdateAlertRule(context.Context, *UpdateAlertRuleRequest) (*UpdateAlertRuleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateAlertRule not implemented")
+}
+func (UnimplementedContainerServiceServer) DeleteAlertRule(context.Context, *DeleteAlertRuleRequest) (*DeleteAlertRuleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteAlertRule not implemented")
+}
+func (UnimplementedContainerServiceServer) GetAlertingInfo(context.Context, *GetAlertingInfoRequest) (*GetAlertingInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAlertingInfo not implemented")
+}
+func (UnimplementedContainerServiceServer) ListDefaultAlertRules(context.Context, *ListDefaultAlertRulesRequest) (*ListDefaultAlertRulesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDefaultAlertRules not implemented")
+}
+func (UnimplementedContainerServiceServer) UpdateAlertingConfig(context.Context, *UpdateAlertingConfigRequest) (*UpdateAlertingConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateAlertingConfig not implemented")
+}
+func (UnimplementedContainerServiceServer) TestWebhook(context.Context, *TestWebhookRequest) (*TestWebhookResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TestWebhook not implemented")
+}
+func (UnimplementedContainerServiceServer) ListWebhookDeliveries(context.Context, *ListWebhookDeliveriesRequest) (*ListWebhookDeliveriesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListWebhookDeliveries not implemented")
 }
 func (UnimplementedContainerServiceServer) mustEmbedUnimplementedContainerServiceServer() {}
 func (UnimplementedContainerServiceServer) testEmbeddedByValue()                          {}
@@ -686,6 +866,186 @@ func _ContainerService_GetMonitoringInfo_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_CreateAlertRule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateAlertRuleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).CreateAlertRule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_CreateAlertRule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).CreateAlertRule(ctx, req.(*CreateAlertRuleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListAlertRules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAlertRulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListAlertRules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListAlertRules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListAlertRules(ctx, req.(*ListAlertRulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetAlertRule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAlertRuleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetAlertRule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetAlertRule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetAlertRule(ctx, req.(*GetAlertRuleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_UpdateAlertRule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateAlertRuleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).UpdateAlertRule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_UpdateAlertRule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).UpdateAlertRule(ctx, req.(*UpdateAlertRuleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_DeleteAlertRule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteAlertRuleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).DeleteAlertRule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_DeleteAlertRule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).DeleteAlertRule(ctx, req.(*DeleteAlertRuleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetAlertingInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAlertingInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetAlertingInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetAlertingInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetAlertingInfo(ctx, req.(*GetAlertingInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListDefaultAlertRules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDefaultAlertRulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListDefaultAlertRules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListDefaultAlertRules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListDefaultAlertRules(ctx, req.(*ListDefaultAlertRulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_UpdateAlertingConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateAlertingConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).UpdateAlertingConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_UpdateAlertingConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).UpdateAlertingConfig(ctx, req.(*UpdateAlertingConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_TestWebhook_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TestWebhookRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).TestWebhook(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_TestWebhook_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).TestWebhook(ctx, req.(*TestWebhookRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListWebhookDeliveries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListWebhookDeliveriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListWebhookDeliveries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListWebhookDeliveries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListWebhookDeliveries(ctx, req.(*ListWebhookDeliveriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ContainerService_ServiceDesc is the grpc.ServiceDesc for ContainerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -760,6 +1120,46 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetMonitoringInfo",
 			Handler:    _ContainerService_GetMonitoringInfo_Handler,
+		},
+		{
+			MethodName: "CreateAlertRule",
+			Handler:    _ContainerService_CreateAlertRule_Handler,
+		},
+		{
+			MethodName: "ListAlertRules",
+			Handler:    _ContainerService_ListAlertRules_Handler,
+		},
+		{
+			MethodName: "GetAlertRule",
+			Handler:    _ContainerService_GetAlertRule_Handler,
+		},
+		{
+			MethodName: "UpdateAlertRule",
+			Handler:    _ContainerService_UpdateAlertRule_Handler,
+		},
+		{
+			MethodName: "DeleteAlertRule",
+			Handler:    _ContainerService_DeleteAlertRule_Handler,
+		},
+		{
+			MethodName: "GetAlertingInfo",
+			Handler:    _ContainerService_GetAlertingInfo_Handler,
+		},
+		{
+			MethodName: "ListDefaultAlertRules",
+			Handler:    _ContainerService_ListDefaultAlertRules_Handler,
+		},
+		{
+			MethodName: "UpdateAlertingConfig",
+			Handler:    _ContainerService_UpdateAlertingConfig_Handler,
+		},
+		{
+			MethodName: "TestWebhook",
+			Handler:    _ContainerService_TestWebhook_Handler,
+		},
+		{
+			MethodName: "ListWebhookDeliveries",
+			Handler:    _ContainerService_ListWebhookDeliveries_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

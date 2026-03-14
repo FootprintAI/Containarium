@@ -109,8 +109,34 @@ const OverviewDashboard = `{
       "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
     },
     {
-      "id": 12, "title": "Core Infrastructure", "type": "row",
+      "id": 17, "title": "Alerts", "type": "row",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "collapsed": true,
+      "panels": [
+        {
+          "id": 18, "title": "Active Alerts", "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 23 },
+          "targets": [{ "expr": "ALERTS{alertstate=\"firing\"}", "refId": "A", "instant": true }],
+          "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+          "options": { "reduceOptions": { "calcs": ["count"], "fields": "", "values": false } }
+        },
+        {
+          "id": 19, "title": "Alerts Firing Over Time", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 18, "x": 6, "y": 23 },
+          "targets": [
+            { "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "legendFormat": "Firing", "refId": "A" },
+            { "expr": "count(ALERTS{alertstate=\"pending\"}) or vector(0)", "legendFormat": "Pending", "refId": "B" }
+          ],
+          "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+          "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 20 }, "unit": "short" }, "overrides": [{ "matcher": { "id": "byName", "options": "Firing" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }] },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+        }
+      ]
+    },
+    {
+      "id": 12, "title": "Core Infrastructure", "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
       "collapsed": true,
       "panels": [
         {
