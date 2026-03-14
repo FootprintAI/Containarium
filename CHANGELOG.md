@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.12.0] - 2026-03-15
+
 ### Added
+- **Alerting system with vmalert + Alertmanager** — Metric-based alerting integrated into the daemon via VictoriaMetrics vmalert (v1.108.1) and Prometheus Alertmanager (v0.27.0), running inside the `core-victoriametrics` container.
+  - 9 default alert rules: `HighMemoryUsage`, `HighDiskUsage`, `DiskAlmostFull`, `HighCPULoad`, `MetricsCollectionDown`, `ContainerHighMemory`, `ContainerHighCPU`, `ContainerStopped`, `NoRunningContainers`
+  - Custom alert rule CRUD via gRPC/REST API (`/v1/alerts`) with PostgreSQL persistence
+  - Webhook notifications with optional HMAC-SHA256 payload signing (`X-Containarium-Signature` header) via an internal relay
+  - Webhook delivery history tracking (`/v1/system/alerting/deliveries`) with 1000-row / 30-day retention
+  - Idempotent setup — detects existing vmalert install and only updates rules on restart
+- **Alerts web UI** (`/webui/alerts/`) — Full management interface with tabs for default rules, custom rules, and delivery history. Clickable rule rows open a detail dialog showing the full PromQL expression, equivalent vmalert YAML, and a PromQL writing guide. Webhook configuration dialog with HMAC secret generation and inline verification code examples (Python, Go, Node.js).
+- **Alert proto definitions** (`proto/containarium/v1/alert.proto`) — 8 new RPCs: `CreateAlertRule`, `ListAlertRules`, `GetAlertRule`, `UpdateAlertRule`, `DeleteAlertRule`, `GetAlertingInfo`, `UpdateAlertingConfig`, `TestWebhook`, `ListWebhookDeliveries`
 - **OCI runtime wrapper for Docker cgroup limit injection** — Registers a custom OCI runtime (`containarium-runtime`) as Docker's default via `daemon.json`. Intercepts every `runc create` — from CLI, Compose v2, or API — and injects LXC memory/CPU cgroup limits into the OCI spec. Also bind-mounts LXCFS-backed `/proc` files (`meminfo`, `cpuinfo`, `stat`, etc.) so tools like `free` and `top` report correct values inside nested containers. See [`docs/OCI-RUNTIME-CGROUP-INJECTION.md`](docs/OCI-RUNTIME-CGROUP-INJECTION.md).
 - **Automatic OCI runtime upgrade on daemon startup** — `UpgradeCgroupWrappers()` now installs the OCI runtime on all existing Docker containers, in addition to CLI wrappers
 - **Caddy L4 SNI-based TLS passthrough** — mTLS gRPC services are now exposed on `:443` via SNI hostname routing, eliminating the need for per-port GCP firewall rules and sentinel iptables forwarding. Caddy L4 inspects the TLS ClientHello SNI field without decrypting, preserving end-to-end mTLS.
