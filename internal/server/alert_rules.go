@@ -98,4 +98,47 @@ const DefaultAlertRules = `groups:
         annotations:
           summary: "No running containers"
           description: "There are no running user containers for more than 5 minutes."
+
+  - name: pentest_alerts
+    interval: 60s
+    rules:
+      - alert: PentestCriticalFindings
+        expr: pentest_findings_open{severity="critical"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          source: default
+        annotations:
+          summary: "Critical pentest findings detected"
+          description: "There are {{ $value }} critical security findings from automated penetration testing."
+
+      - alert: PentestHighFindings
+        expr: pentest_findings_open{severity="high"} > 3
+        for: 10m
+        labels:
+          severity: warning
+          source: default
+        annotations:
+          summary: "Multiple high-severity pentest findings"
+          description: "There are {{ $value }} high-severity security findings from automated penetration testing."
+
+      - alert: PentestScanStale
+        expr: time() - pentest_scan_last_timestamp > 172800
+        for: 5m
+        labels:
+          severity: warning
+          source: default
+        annotations:
+          summary: "Pentest scan is stale"
+          description: "No penetration test scan has completed in the last 48 hours."
+
+      - alert: PentestHighCPU
+        expr: avg_over_time(system_cpu_load_1m[10m]) > system_cpu_count * 0.9
+        for: 10m
+        labels:
+          severity: warning
+          source: default
+        annotations:
+          summary: "Sustained high CPU during pentest"
+          description: "System CPU load has been above 90% for 10 minutes, possibly due to an active pentest scan or attack."
 `

@@ -8,25 +8,31 @@ Built with LXC, SSH jump hosts, and cloud-native automation.
 ✅ Just fast, cheap, isolated Linux environments
 
 ### Container Management
-![Container Dashboard](docs/screenshots/dashboard-1.png)
-
-### App Hosting
-![Apps Dashboard](docs/screenshots/dashboard-2.png)
+![Container Dashboard](docs/screenshots/dashboard-container.png)
 
 ### Container List View
-![Container List](docs/screenshots/dashboard-3.png)
+![Container List](docs/screenshots/dashboard-container-listview.png)
+
+### App Hosting
+![Apps Dashboard](docs/screenshots/dashboard-app.png)
 
 ### Network Topology
-![Network Topology](docs/screenshots/dashboard-4.png)
+![Network Topology](docs/screenshots/dashboard-network.png)
 
 ### Traffic Monitoring
-![Traffic Monitor](docs/screenshots/dashboard-5.png)
+![Traffic Monitor](docs/screenshots/dashboard-traffic.png)
 
 ### Monitoring Dashboard
-![Monitoring Dashboard](docs/screenshots/dashboard-6.png)
+![Monitoring Dashboard](docs/screenshots/dashboard-monitoring.png)
+
+### Alerts
+![Alerts](docs/screenshots/dashboard-alert.png)
+
+### Audit Logs
+![Audit Logs](docs/screenshots/dashboard-audit.png)
 
 ### Security Scanning
-![Security Scanning](docs/screenshots/dashboard-7.png)
+![Security Scanning](docs/screenshots/dashboard-security.png)
 
 🌐 **Live Demo:** [https://containarium.kafeido.app/webui/demo](https://containarium.kafeido.app/webui/demo)
 

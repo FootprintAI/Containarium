@@ -30,6 +30,9 @@
       "name": "EventService"
     },
     {
+      "name": "PentestService"
+    },
+    {
       "name": "SecurityService"
     }
   ],
@@ -1996,6 +1999,302 @@
         ]
       }
     },
+    "/v1/pentest/config": {
+      "get": {
+        "summary": "Get pentest configuration",
+        "description": "Returns the current penetration test configuration including enabled modules and external tool availability.",
+        "operationId": "PentestService_GetPentestConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetPentestConfigResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/findings": {
+      "get": {
+        "summary": "List pentest findings",
+        "description": "Returns security findings from penetration test scans with optional filtering by severity, category, and status.",
+        "operationId": "PentestService_ListPentestFindings",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListPentestFindingsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "severity",
+            "description": "Filter by severity (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "category",
+            "description": "Filter by category/module (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "description": "Filter by status: \"open\", \"resolved\", \"suppressed\" (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "limit",
+            "description": "Maximum number of findings to return (default: 50)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "offset",
+            "description": "Offset for pagination",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/findings/summary": {
+      "get": {
+        "summary": "Get pentest finding summary",
+        "description": "Returns aggregate statistics of security findings including counts by severity and category.",
+        "operationId": "PentestService_GetPentestFindingSummary",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetPentestFindingSummaryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/findings/{findingId}/suppress": {
+      "post": {
+        "summary": "Suppress a pentest finding",
+        "description": "Marks a finding as suppressed with a reason. Suppressed findings are excluded from open counts and alerts.",
+        "operationId": "PentestService_SuppressPentestFinding",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SuppressPentestFindingResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "findingId",
+            "description": "Finding ID to suppress",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SuppressPentestFindingBody"
+            }
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/scan": {
+      "post": {
+        "summary": "Trigger penetration test scan",
+        "description": "Triggers an on-demand penetration test scan across all registered endpoints and containers.",
+        "operationId": "PentestService_TriggerPentestScan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TriggerPentestScanResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TriggerPentestScanRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/scans": {
+      "get": {
+        "summary": "List pentest scan runs",
+        "description": "Returns recent penetration test scan runs with their status and finding counts.",
+        "operationId": "PentestService_ListPentestScanRuns",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListPentestScanRunsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "description": "Maximum number of scan runs to return (default: 20)",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "offset",
+            "description": "Offset for pagination",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/scans/{id}": {
+      "get": {
+        "summary": "Get pentest scan run details",
+        "description": "Returns details of a specific penetration test scan run including finding counts.",
+        "operationId": "PentestService_GetPentestScanRun",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetPentestScanRunResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Scan run ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/tools/install": {
+      "post": {
+        "summary": "Install pentest tool",
+        "description": "Downloads and installs an external pentest tool (nuclei or trivy) from GitHub releases.",
+        "operationId": "PentestService_InstallPentestTool",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/InstallPentestToolResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/InstallPentestToolRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
     "/v1/security/clamav-reports": {
       "get": {
         "summary": "List ClamAV scan reports",
@@ -3850,6 +4149,30 @@
         }
       }
     },
+    "GetPentestConfigResponse": {
+      "type": "object",
+      "properties": {
+        "config": {
+          "$ref": "#/definitions/PentestConfig"
+        }
+      }
+    },
+    "GetPentestFindingSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "$ref": "#/definitions/PentestFindingSummary"
+        }
+      }
+    },
+    "GetPentestScanRunResponse": {
+      "type": "object",
+      "properties": {
+        "scanRun": {
+          "$ref": "#/definitions/PentestScanRun"
+        }
+      }
+    },
     "GetRoutesResponse": {
       "type": "object",
       "properties": {
@@ -3986,6 +4309,26 @@
         }
       },
       "title": "HistoricalConnection represents a persisted connection record"
+    },
+    "InstallPentestToolRequest": {
+      "type": "object",
+      "properties": {
+        "toolName": {
+          "type": "string",
+          "title": "Tool name: \"nuclei\" or \"trivy\""
+        }
+      }
+    },
+    "InstallPentestToolResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
     },
     "InstallStackBody": {
       "type": "object",
@@ -4161,6 +4504,38 @@
           "type": "integer",
           "format": "int32",
           "title": "Total count"
+        }
+      }
+    },
+    "ListPentestFindingsResponse": {
+      "type": "object",
+      "properties": {
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PentestFinding"
+          }
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "ListPentestScanRunsResponse": {
+      "type": "object",
+      "properties": {
+        "scanRuns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PentestScanRun"
+          }
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },
@@ -4384,6 +4759,230 @@
         }
       },
       "title": "PassthroughRoute represents a direct TCP/UDP port forwarding rule"
+    },
+    "PentestConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Whether pentest scanning is enabled"
+        },
+        "interval": {
+          "type": "string",
+          "title": "Scan interval (e.g., \"24h\")"
+        },
+        "modules": {
+          "type": "string",
+          "title": "Comma-separated list of enabled modules"
+        },
+        "nucleiAvailable": {
+          "type": "boolean",
+          "title": "Whether Nuclei is available"
+        },
+        "trivyAvailable": {
+          "type": "boolean",
+          "title": "Whether Trivy is available"
+        }
+      },
+      "title": "PentestConfig returns the current pentest configuration"
+    },
+    "PentestFinding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64",
+          "title": "Database ID"
+        },
+        "fingerprint": {
+          "type": "string",
+          "title": "SHA-256 fingerprint for deduplication (category|target|title)"
+        },
+        "category": {
+          "type": "string",
+          "title": "Scanner module that found this (e.g., \"headers\", \"tls\", \"nuclei\")"
+        },
+        "severity": {
+          "type": "string",
+          "title": "Severity: \"critical\", \"high\", \"medium\", \"low\", \"info\""
+        },
+        "title": {
+          "type": "string",
+          "title": "Short title of the finding"
+        },
+        "description": {
+          "type": "string",
+          "title": "Detailed description"
+        },
+        "target": {
+          "type": "string",
+          "title": "Target that was scanned (URL, IP:port, domain)"
+        },
+        "evidence": {
+          "type": "string",
+          "title": "Evidence or raw output supporting the finding"
+        },
+        "cveIds": {
+          "type": "string",
+          "title": "Comma-separated CVE IDs if applicable"
+        },
+        "remediation": {
+          "type": "string",
+          "title": "Remediation guidance"
+        },
+        "status": {
+          "type": "string",
+          "title": "Current status: \"open\", \"resolved\", \"suppressed\""
+        },
+        "firstScanRunId": {
+          "type": "string",
+          "title": "Scan run ID that first found this"
+        },
+        "lastScanRunId": {
+          "type": "string",
+          "title": "Scan run ID that last saw this"
+        },
+        "firstSeenAt": {
+          "type": "string",
+          "title": "When first seen (ISO 8601)"
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "title": "When last seen (ISO 8601)"
+        },
+        "resolvedAt": {
+          "type": "string",
+          "title": "When resolved (ISO 8601, empty if still open)"
+        },
+        "suppressed": {
+          "type": "boolean",
+          "title": "Whether the finding is suppressed"
+        },
+        "suppressedReason": {
+          "type": "string",
+          "title": "Reason for suppression"
+        }
+      },
+      "title": "PentestFinding represents a single security finding"
+    },
+    "PentestFindingSummary": {
+      "type": "object",
+      "properties": {
+        "totalFindings": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "openFindings": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "resolvedFindings": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "suppressedFindings": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "criticalCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "highCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "mediumCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "lowCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "infoCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "byCategory": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": "Per-category breakdown"
+        }
+      },
+      "title": "PentestFindingSummary provides aggregate counts"
+    },
+    "PentestScanRun": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Unique scan run ID (UUID)"
+        },
+        "trigger": {
+          "type": "string",
+          "title": "How the scan was triggered: \"scheduled\", \"manual\", \"startup\""
+        },
+        "status": {
+          "type": "string",
+          "title": "Scan status: \"running\", \"completed\", \"failed\""
+        },
+        "modules": {
+          "type": "string",
+          "title": "Comma-separated list of modules that were run"
+        },
+        "targetsCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of targets scanned"
+        },
+        "criticalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Finding counts by severity"
+        },
+        "highCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "mediumCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "lowCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "infoCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "errorMessage": {
+          "type": "string",
+          "title": "Error message if status is \"failed\""
+        },
+        "startedAt": {
+          "type": "string",
+          "title": "When the scan started (ISO 8601)"
+        },
+        "completedAt": {
+          "type": "string",
+          "title": "When the scan completed (ISO 8601)"
+        },
+        "duration": {
+          "type": "string",
+          "title": "Duration of the scan"
+        },
+        "completedCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of targets that finished processing"
+        }
+      },
+      "title": "PentestScanRun represents a single penetration test scan execution"
     },
     "Protocol": {
       "type": "string",
@@ -4732,6 +5331,23 @@
       },
       "title": "StopContainerResponse is the response from stopping a container"
     },
+    "SuppressPentestFindingBody": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "title": "Reason for suppression"
+        }
+      }
+    },
+    "SuppressPentestFindingResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "SystemInfo": {
       "type": "object",
       "properties": {
@@ -4938,6 +5554,28 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of containers queued for scanning"
+        }
+      }
+    },
+    "TriggerPentestScanRequest": {
+      "type": "object",
+      "properties": {
+        "modules": {
+          "type": "string",
+          "title": "Optional: comma-separated list of modules to run (empty = all enabled)"
+        }
+      }
+    },
+    "TriggerPentestScanResponse": {
+      "type": "object",
+      "properties": {
+        "scanRunId": {
+          "type": "string",
+          "title": "Scan run ID"
+        },
+        "message": {
+          "type": "string",
+          "title": "Human-readable message"
         }
       }
     },

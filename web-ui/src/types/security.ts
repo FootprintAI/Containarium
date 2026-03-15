@@ -91,3 +91,101 @@ export interface ScanStatusResponse {
   completedCount: number;
   failedCount: number;
 }
+
+// ============= Pentest Types =============
+
+export interface PentestScanRun {
+  id: string;
+  trigger: string;
+  status: 'running' | 'completed' | 'failed';
+  modules: string;
+  targetsCount: number;
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  infoCount: number;
+  errorMessage: string;
+  startedAt: string;
+  completedAt: string;
+  duration: string;
+  completedCount: number;
+}
+
+export interface PentestFinding {
+  id: number;
+  fingerprint: string;
+  category: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  title: string;
+  description: string;
+  target: string;
+  evidence: string;
+  cveIds: string;
+  remediation: string;
+  status: 'open' | 'resolved' | 'suppressed';
+  firstScanRunId: string;
+  lastScanRunId: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  resolvedAt: string;
+  suppressed: boolean;
+  suppressedReason: string;
+}
+
+export interface PentestFindingSummary {
+  totalFindings: number;
+  openFindings: number;
+  resolvedFindings: number;
+  suppressedFindings: number;
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  infoCount: number;
+  byCategory: Record<string, number>;
+}
+
+export interface PentestConfig {
+  enabled: boolean;
+  interval: string;
+  modules: string;
+  nucleiAvailable: boolean;
+  trivyAvailable: boolean;
+}
+
+export interface PentestScanRunsResponse {
+  scanRuns: PentestScanRun[];
+  totalCount: number;
+}
+
+export interface PentestFindingsResponse {
+  findings: PentestFinding[];
+  totalCount: number;
+}
+
+export interface PentestFindingSummaryResponse {
+  summary: PentestFindingSummary;
+}
+
+export interface PentestConfigResponse {
+  config: PentestConfig;
+}
+
+export interface TriggerPentestScanResponse {
+  scanRunId: string;
+  message: string;
+}
+
+export interface InstallPentestToolResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface ListPentestFindingsParams {
+  severity?: string;
+  category?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}

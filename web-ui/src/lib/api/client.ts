@@ -3,7 +3,7 @@ import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerRes
 import { Server } from '@/src/types/server';
 import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute } from '@/src/types/app';
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
-import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse } from '@/src/types/security';
+import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse, PentestScanRunsResponse, PentestFindingsResponse, PentestFindingSummaryResponse, PentestConfigResponse, TriggerPentestScanResponse, ListPentestFindingsParams, InstallPentestToolResponse } from '@/src/types/security';
 import { AuditLogsResponse, AuditLogsParams } from '@/src/types/audit';
 import { AlertRule, AlertRulesResponse, AlertingInfoResponse, CreateAlertRuleRequest, UpdateAlertRuleRequest, UpdateAlertingConfigResponse, TestWebhookResponse, WebhookDeliveriesResponse } from '@/src/types/alerts';
 
@@ -907,9 +907,124 @@ export class ContaineriumClient {
     };
   }
 
-  /**
-   * Get the URL for downloading ClamAV reports as CSV
-   */
+  // ============================================
+  // Pentest Methods
+  // ============================================
+
+  async triggerPentestScan(): Promise<TriggerPentestScanResponse> {
+    const response = await this.client.post<TriggerPentestScanResponse>('/pentest/scan', {});
+    return {
+      scanRunId: response.data.scanRunId || (response.data as any).scan_run_id || '',
+      message: response.data.message || '',
+    };
+  }
+
+  async listPentestScanRuns(limit: number = 20, offset: number = 0): Promise<PentestScanRunsResponse> {
+    const response = await this.client.get<PentestScanRunsResponse>('/pentest/scans', {
+      params: { limit, offset },
+    });
+    return {
+      scanRuns: (response.data.scanRuns || (response.data as any).scan_runs || []).map((r: any) => ({
+        id: r.id,
+        trigger: r.trigger || '',
+        status: r.status || '',
+        modules: r.modules || '',
+        targetsCount: r.targetsCount || r.targets_count || 0,
+        criticalCount: r.criticalCount || r.critical_count || 0,
+        highCount: r.highCount || r.high_count || 0,
+        mediumCount: r.mediumCount || r.medium_count || 0,
+        lowCount: r.lowCount || r.low_count || 0,
+        infoCount: r.infoCount || r.info_count || 0,
+        errorMessage: r.errorMessage || r.error_message || '',
+        startedAt: r.startedAt || r.started_at || '',
+        completedAt: r.completedAt || r.completed_at || '',
+        duration: r.duration || '',
+        completedCount: r.completedCount || r.completed_count || 0,
+      })),
+      totalCount: response.data.totalCount || (response.data as any).total_count || 0,
+    };
+  }
+
+  async listPentestFindings(params?: ListPentestFindingsParams): Promise<PentestFindingsResponse> {
+    const response = await this.client.get<PentestFindingsResponse>('/pentest/findings', { params });
+    return {
+      findings: (response.data.findings || []).map((f: any) => ({
+        id: f.id,
+        fingerprint: f.fingerprint || '',
+        category: f.category || '',
+        severity: f.severity || '',
+        title: f.title || '',
+        description: f.description || '',
+        target: f.target || '',
+        evidence: f.evidence || '',
+        cveIds: f.cveIds || f.cve_ids || '',
+        remediation: f.remediation || '',
+        status: f.status || '',
+        firstScanRunId: f.firstScanRunId || f.first_scan_run_id || '',
+        lastScanRunId: f.lastScanRunId || f.last_scan_run_id || '',
+        firstSeenAt: f.firstSeenAt || f.first_seen_at || '',
+        lastSeenAt: f.lastSeenAt || f.last_seen_at || '',
+        resolvedAt: f.resolvedAt || f.resolved_at || '',
+        suppressed: f.suppressed || false,
+        suppressedReason: f.suppressedReason || f.suppressed_reason || '',
+      })),
+      totalCount: response.data.totalCount || (response.data as any).total_count || 0,
+    };
+  }
+
+  async getPentestFindingSummary(): Promise<PentestFindingSummaryResponse> {
+    const response = await this.client.get<PentestFindingSummaryResponse>('/pentest/findings/summary');
+    const s: any = response.data.summary || response.data;
+    return {
+      summary: {
+        totalFindings: s.totalFindings || s.total_findings || 0,
+        openFindings: s.openFindings || s.open_findings || 0,
+        resolvedFindings: s.resolvedFindings || s.resolved_findings || 0,
+        suppressedFindings: s.suppressedFindings || s.suppressed_findings || 0,
+        criticalCount: s.criticalCount || s.critical_count || 0,
+        highCount: s.highCount || s.high_count || 0,
+        mediumCount: s.mediumCount || s.medium_count || 0,
+        lowCount: s.lowCount || s.low_count || 0,
+        infoCount: s.infoCount || s.info_count || 0,
+        byCategory: s.byCategory || s.by_category || {},
+      },
+    };
+  }
+
+  async suppressPentestFinding(findingId: number, reason: string): Promise<{ message: string }> {
+    const response = await this.client.post(`/pentest/findings/${findingId}/suppress`, {
+      finding_id: findingId,
+      reason,
+    });
+    return { message: response.data.message || '' };
+  }
+
+  async getPentestConfig(): Promise<PentestConfigResponse> {
+    const response = await this.client.get<PentestConfigResponse>('/pentest/config');
+    const c: any = response.data.config || response.data;
+    return {
+      config: {
+        enabled: c.enabled || false,
+        interval: c.interval || '',
+        modules: c.modules || '',
+        nucleiAvailable: c.nucleiAvailable || c.nuclei_available || false,
+        trivyAvailable: c.trivyAvailable || c.trivy_available || false,
+      },
+    };
+  }
+
+  async installPentestTool(toolName: string): Promise<InstallPentestToolResponse> {
+    const response = await this.client.post<InstallPentestToolResponse>('/pentest/tools/install', {
+      tool_name: toolName,
+    }, {
+      timeout: 120000, // 2 minutes — download + extract can be slow
+    });
+    return {
+      success: response.data.success || false,
+      message: response.data.message || '',
+    };
+  }
+
   // ============================================
   // Audit Log Methods
   // ============================================

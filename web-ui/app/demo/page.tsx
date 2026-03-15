@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -19,22 +19,41 @@ import {
   Stack,
   LinearProgress,
   IconButton,
+  Collapse,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import DnsIcon from '@mui/icons-material/Dns';
 import AppsIcon from '@mui/icons-material/Apps';
 import HubIcon from '@mui/icons-material/Hub';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import ShieldIcon from '@mui/icons-material/Shield';
 import MonitorHeartIcon from '@mui/icons-material/MonitorHeart';
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
+import BugReportIcon from '@mui/icons-material/BugReport';
+import HistoryIcon from '@mui/icons-material/History';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import DownloadIcon from '@mui/icons-material/Download';
 import ScannerIcon from '@mui/icons-material/Scanner';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import ErrorIcon from '@mui/icons-material/Error';
+import AddIcon from '@mui/icons-material/Add';
+import LockIcon from '@mui/icons-material/Lock';
+import SendIcon from '@mui/icons-material/Send';
 import Tooltip from '@mui/material/Tooltip';
 import CircularProgress from '@mui/material/CircularProgress';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import Snackbar from '@mui/material/Snackbar';
 import AppBar from '@/src/components/layout/AppBar';
 import ContainerTopology from '@/src/components/containers/ContainerTopology';
 import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
@@ -43,7 +62,8 @@ import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import TrafficView, { RouteTrafficStats } from '@/src/components/traffic/TrafficView';
 import { Container, ContainerMetricsWithRate, SystemInfo } from '@/src/types/container';
 import { App, NetworkTopology, ProxyRoute, NetworkNode, PassthroughRoute, DNSRecord } from '@/src/types/app';
-import { ClamavContainerSummary, ScanStatusResponse, ScanJob } from '@/src/types/security';
+import { ClamavContainerSummary, ScanStatusResponse, ScanJob, PentestFinding } from '@/src/types/security';
+import { AuditLogEntry } from '@/src/types/audit';
 
 // Mock system info for system resources card
 const mockSystemInfo: SystemInfo = {
@@ -807,7 +827,7 @@ function DemoSecurityView() {
   });
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box>
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -894,6 +914,537 @@ function DemoSecurityView() {
 }
 
 // ============================================
+// Demo Audit View (self-contained, no API calls)
+// ============================================
+
+const mockAuditLogs: AuditLogEntry[] = [
+  { id: 1, timestamp: '2026-03-15T10:30:15Z', username: 'alice', action: 'ssh_login', resourceType: 'container', resourceId: 'alice-container', detail: 'SSH session established via sshpiper', sourceIp: '203.0.113.42', statusCode: 0 },
+  { id: 2, timestamp: '2026-03-15T10:25:00Z', username: 'admin', action: 'api_post', resourceType: 'api', resourceId: 'POST /v1/pentest/scan', detail: 'Manual pentest scan triggered', sourceIp: '10.0.100.1', statusCode: 200 },
+  { id: 3, timestamp: '2026-03-15T10:20:30Z', username: '', action: 'EVENT_TYPE_APP_DEPLOYED', resourceType: 'app', resourceId: 'ml-dashboard', detail: 'App deployed: ml-dashboard (alice-container)', sourceIp: '', statusCode: 0 },
+  { id: 4, timestamp: '2026-03-15T10:15:00Z', username: 'bob', action: 'terminal_access', resourceType: 'container', resourceId: 'bob-container', detail: 'Web terminal session opened', sourceIp: '198.51.100.5', statusCode: 0 },
+  { id: 5, timestamp: '2026-03-15T10:10:45Z', username: 'admin', action: 'api_put', resourceType: 'api', resourceId: 'PUT /v1/system/alerting/config', detail: 'Webhook URL updated', sourceIp: '10.0.100.1', statusCode: 200 },
+  { id: 6, timestamp: '2026-03-15T09:55:00Z', username: '', action: 'EVENT_TYPE_CONTAINER_CREATED', resourceType: 'container', resourceId: 'frank-container', detail: 'Container created: frank (8 CPU, 16GB RAM, RTX 3090)', sourceIp: '', statusCode: 0 },
+  { id: 7, timestamp: '2026-03-15T09:30:00Z', username: 'admin', action: 'api_delete', resourceType: 'api', resourceId: 'DELETE /v1/alerts/rules/old-rule-1', detail: 'Alert rule deleted', sourceIp: '10.0.100.1', statusCode: 200 },
+  { id: 8, timestamp: '2026-03-15T09:15:20Z', username: 'charlie', action: 'ssh_login', resourceType: 'container', resourceId: 'charlie-container', detail: 'SSH session established via sshpiper', sourceIp: '192.0.2.88', statusCode: 0 },
+  { id: 9, timestamp: '2026-03-15T08:45:00Z', username: '', action: 'EVENT_TYPE_ROUTE_ADDED', resourceType: 'route', resourceId: 'charlie-training-monitor.containarium.dev', detail: 'Route added: charlie-training-monitor → 10.0.100.18:5000', sourceIp: '', statusCode: 0 },
+  { id: 10, timestamp: '2026-03-15T08:00:00Z', username: 'admin', action: 'api_get', resourceType: 'api', resourceId: 'GET /v1/containers', detail: 'Listed containers', sourceIp: '10.0.100.1', statusCode: 200 },
+  { id: 11, timestamp: '2026-03-14T23:00:00Z', username: '', action: 'EVENT_TYPE_CONTAINER_STOPPED', resourceType: 'container', resourceId: 'david-container', detail: 'Container stopped by user', sourceIp: '', statusCode: 0 },
+  { id: 12, timestamp: '2026-03-14T22:30:00Z', username: 'emma', action: 'ssh_login', resourceType: 'container', resourceId: 'emma-container', detail: 'SSH session established via sshpiper', sourceIp: '198.51.100.12', statusCode: 0 },
+];
+
+const DEMO_METHOD_STYLES: Record<string, { label: string; bg: string; color: string }> = {
+  api_get:    { label: 'GET',    bg: '#e8f5e9', color: '#2e7d32' },
+  api_post:   { label: 'POST',   bg: '#e3f2fd', color: '#1565c0' },
+  api_put:    { label: 'PUT',    bg: '#fff3e0', color: '#e65100' },
+  api_delete: { label: 'DELETE', bg: '#ffebee', color: '#c62828' },
+};
+
+function DemoActionChip({ action }: { action: string }) {
+  if (action === 'ssh_login') return <Chip label="SSH Login" color="info" size="small" />;
+  if (action === 'terminal_access') return <Chip label="Terminal" color="secondary" size="small" />;
+  const ms = DEMO_METHOD_STYLES[action];
+  if (ms) return <Chip label={ms.label} size="small" sx={{ bgcolor: ms.bg, color: ms.color, fontWeight: 'bold', border: `1px solid ${ms.color}40` }} />;
+  if (action.startsWith('EVENT_TYPE_')) {
+    const label = action.replace('EVENT_TYPE_', '').split('_').map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+    return <Chip label={label} color="success" size="small" variant="outlined" />;
+  }
+  return <Chip label={action} size="small" variant="outlined" />;
+}
+
+function DemoAuditView() {
+  return (
+    <Box sx={{ p: 3 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
+        <Typography variant="h5" sx={{ flexGrow: 1 }}>Audit Logs</Typography>
+        <IconButton size="small"><RefreshIcon /></IconButton>
+      </Box>
+
+      {/* Filters */}
+      <Paper sx={{ p: 2, mb: 3 }}>
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+          <TextField label="Username" size="small" sx={{ minWidth: 140 }} />
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel>Action</InputLabel>
+            <Select value="" label="Action">
+              <MenuItem value="">All</MenuItem>
+              <MenuItem value="ssh_login">SSH Login</MenuItem>
+              <MenuItem value="terminal_access">Terminal Access</MenuItem>
+              <MenuItem value="api_post">API POST</MenuItem>
+              <MenuItem value="api_get">API GET</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel>Resource Type</InputLabel>
+            <Select value="" label="Resource Type">
+              <MenuItem value="">All</MenuItem>
+              <MenuItem value="container">Container</MenuItem>
+              <MenuItem value="app">App</MenuItem>
+              <MenuItem value="route">Route</MenuItem>
+              <MenuItem value="api">API</MenuItem>
+            </Select>
+          </FormControl>
+        </Stack>
+      </Paper>
+
+      {/* Table */}
+      <TableContainer component={Paper}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Timestamp</TableCell>
+              <TableCell>Username</TableCell>
+              <TableCell>Action</TableCell>
+              <TableCell>Resource</TableCell>
+              <TableCell>Detail</TableCell>
+              <TableCell>Source IP</TableCell>
+              <TableCell>Status</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {mockAuditLogs.map(entry => (
+              <TableRow key={entry.id} hover>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(entry.timestamp)}</TableCell>
+                <TableCell>{entry.username || '-'}</TableCell>
+                <TableCell><DemoActionChip action={entry.action} /></TableCell>
+                <TableCell>
+                  {entry.resourceType === 'api' ? (
+                    <Typography variant="body2" component="span" sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                      {entry.resourceId.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/, '')}
+                    </Typography>
+                  ) : (
+                    <>
+                      <Typography variant="body2" component="span" color="text.secondary">{entry.resourceType}/</Typography>
+                      {entry.resourceId}
+                    </>
+                  )}
+                </TableCell>
+                <TableCell sx={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.detail || '-'}</TableCell>
+                <TableCell>{entry.sourceIp || '-'}</TableCell>
+                <TableCell>{entry.statusCode > 0 ? entry.statusCode : '-'}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+}
+
+// ============================================
+// Demo Alerts View (self-contained, no API calls)
+// ============================================
+
+const mockDefaultRules = [
+  { name: 'HighMemoryUsage', expr: 'system_memory_used_bytes / system_memory_total_bytes * 100 > 90', duration: '5m', severity: 'critical', description: 'System memory usage exceeds 90% for 5 minutes' },
+  { name: 'HighDiskUsage', expr: 'system_disk_used_bytes / system_disk_total_bytes * 100 > 85', duration: '5m', severity: 'warning', description: 'System disk usage exceeds 85%' },
+  { name: 'DiskAlmostFull', expr: 'system_disk_used_bytes / system_disk_total_bytes * 100 > 95', duration: '1m', severity: 'critical', description: 'System disk usage exceeds 95% — immediate action required' },
+  { name: 'HighCPULoad', expr: 'system_cpu_load_5m / system_cpu_cores * 100 > 80', duration: '10m', severity: 'warning', description: 'CPU load average exceeds 80% of available cores' },
+  { name: 'MetricsCollectionDown', expr: 'up == 0', duration: '5m', severity: 'critical', description: 'Metrics scrape target is down' },
+  { name: 'ContainerHighMemory', expr: 'container_memory_usage_bytes / container_memory_limit_bytes * 100 > 90', duration: '5m', severity: 'warning', description: 'Container memory usage exceeds 90% of its limit' },
+  { name: 'ContainerHighCPU', expr: 'container_cpu_usage_percent > 90', duration: '10m', severity: 'warning', description: 'Container CPU usage exceeds 90%' },
+  { name: 'ContainerStopped', expr: 'container_state{state="Stopped"} == 1', duration: '15m', severity: 'info', description: 'Container has been in Stopped state for 15 minutes' },
+  { name: 'NoRunningContainers', expr: 'count(container_state{state="Running"}) == 0', duration: '5m', severity: 'critical', description: 'No running containers detected' },
+];
+
+const mockCustomRules = [
+  { id: 'cr-1', name: 'GPUTempHigh', expr: 'gpu_temperature_celsius > 85', duration: '3m', severity: 'warning', description: 'GPU temperature exceeds 85°C', enabled: true, createdAt: '2026-03-10T10:00:00Z' },
+  { id: 'cr-2', name: 'TrainingJobStalled', expr: 'rate(training_steps_total[10m]) == 0', duration: '15m', severity: 'critical', description: 'No training progress for 15 minutes', enabled: true, createdAt: '2026-03-12T14:30:00Z' },
+];
+
+const mockDeliveries = [
+  { id: 'd1', timestamp: '2026-03-15T09:30:15Z', alertName: 'HighCPULoad', source: 'vmalert', success: true, httpStatus: 200, durationMs: 125, errorMessage: '' },
+  { id: 'd2', timestamp: '2026-03-15T08:15:00Z', alertName: 'Test Alert', source: 'test', success: true, httpStatus: 200, durationMs: 89, errorMessage: '' },
+  { id: 'd3', timestamp: '2026-03-14T22:10:45Z', alertName: 'ContainerHighMemory', source: 'vmalert', success: false, httpStatus: 502, durationMs: 5032, errorMessage: 'upstream connect error or disconnect/reset before headers' },
+  { id: 'd4', timestamp: '2026-03-14T18:00:00Z', alertName: 'HighDiskUsage', source: 'vmalert', success: true, httpStatus: 200, durationMs: 98, errorMessage: '' },
+];
+
+function DemoAlertSeverityChip({ severity }: { severity: string }) {
+  const colorMap: Record<string, 'error' | 'warning' | 'info' | 'default'> = { critical: 'error', warning: 'warning', info: 'info' };
+  return <Chip label={severity} size="small" color={colorMap[severity] || 'default'} variant="outlined" />;
+}
+
+function DemoAlertsView() {
+  const [ruleTab, setRuleTab] = useState(0);
+
+  return (
+    <Box sx={{ p: 3 }}>
+      {/* Header */}
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+        <Typography variant="h5">Alerts</Typography>
+        <Stack direction="row" spacing={1}>
+          <Button variant="contained" startIcon={<AddIcon />} size="small">Create Rule</Button>
+          <IconButton size="small"><RefreshIcon /></IconButton>
+        </Stack>
+      </Box>
+
+      {/* Status Cards */}
+      <Stack direction="row" spacing={2} sx={{ mb: 3, flexWrap: 'wrap' }}>
+        <Card sx={{ minWidth: 160 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant="caption" color="text.secondary">vmalert</Typography>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <CheckCircleIcon sx={{ fontSize: 16, color: 'success.main' }} />
+              <Typography variant="body2" color="success.main">healthy</Typography>
+            </Stack>
+          </CardContent>
+        </Card>
+        <Card sx={{ minWidth: 160 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant="caption" color="text.secondary">Alertmanager</Typography>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <CheckCircleIcon sx={{ fontSize: 16, color: 'success.main' }} />
+              <Typography variant="body2" color="success.main">healthy</Typography>
+            </Stack>
+          </CardContent>
+        </Card>
+        <Card sx={{ minWidth: 160 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant="caption" color="text.secondary">Total Rules</Typography>
+            <Typography variant="h6">{mockDefaultRules.length + mockCustomRules.length}</Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ minWidth: 160 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant="caption" color="text.secondary">Custom Rules</Typography>
+            <Typography variant="h6">{mockCustomRules.length}</Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ minWidth: 200 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant="caption" color="text.secondary">Webhook Target</Typography>
+            <Typography variant="body2" noWrap>https://hooks.slack.com/services/T.../B.../xxx</Typography>
+          </CardContent>
+        </Card>
+      </Stack>
+
+      {/* Rule Tabs */}
+      <Tabs value={ruleTab} onChange={(_, v) => setRuleTab(v)} sx={{ mb: 2 }}>
+        <Tab label={`Default Rules (${mockDefaultRules.length})`} />
+        <Tab label={`Custom Rules (${mockCustomRules.length})`} />
+        <Tab label={`Delivery History (${mockDeliveries.length})`} />
+      </Tabs>
+
+      {/* Default Rules */}
+      {ruleTab === 0 && (
+        <TableContainer component={Paper} variant="outlined">
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Name</TableCell>
+                <TableCell>Expression</TableCell>
+                <TableCell>Duration</TableCell>
+                <TableCell>Severity</TableCell>
+                <TableCell>Status</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {mockDefaultRules.map((rule) => (
+                <TableRow key={rule.name} hover sx={{ cursor: 'pointer' }}>
+                  <TableCell>
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <LockIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
+                      <Box>
+                        <Typography variant="body2" fontWeight={500}>{rule.name}</Typography>
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ maxWidth: 400 }}>{rule.description}</Typography>
+                      </Box>
+                    </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.8rem', maxWidth: 350, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {rule.expr}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>{rule.duration}</TableCell>
+                  <TableCell><DemoAlertSeverityChip severity={rule.severity} /></TableCell>
+                  <TableCell><Chip label="Always Active" size="small" color="success" variant="outlined" /></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+
+      {/* Custom Rules */}
+      {ruleTab === 1 && (
+        <TableContainer component={Paper} variant="outlined">
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Name</TableCell>
+                <TableCell>Expression</TableCell>
+                <TableCell>Duration</TableCell>
+                <TableCell>Severity</TableCell>
+                <TableCell>Enabled</TableCell>
+                <TableCell>Created</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {mockCustomRules.map((rule) => (
+                <TableRow key={rule.id} hover>
+                  <TableCell>
+                    <Typography variant="body2" fontWeight={500}>{rule.name}</Typography>
+                    <Typography variant="caption" color="text.secondary" display="block">{rule.description}</Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.8rem', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {rule.expr}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>{rule.duration}</TableCell>
+                  <TableCell><DemoAlertSeverityChip severity={rule.severity} /></TableCell>
+                  <TableCell><Chip label="On" size="small" color="success" variant="outlined" /></TableCell>
+                  <TableCell><Typography variant="caption">{formatDate(rule.createdAt)}</Typography></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+
+      {/* Delivery History */}
+      {ruleTab === 2 && (
+        <TableContainer component={Paper} variant="outlined">
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Time</TableCell>
+                <TableCell>Alert</TableCell>
+                <TableCell>Source</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell>HTTP Code</TableCell>
+                <TableCell>Duration</TableCell>
+                <TableCell>Error</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {mockDeliveries.map((d) => (
+                <TableRow key={d.id} hover>
+                  <TableCell><Typography variant="caption">{formatDate(d.timestamp)}</Typography></TableCell>
+                  <TableCell><Typography variant="body2" fontWeight={500}>{d.alertName}</Typography></TableCell>
+                  <TableCell>
+                    <Chip label={d.source} size="small" color={d.source === 'test' ? 'info' : 'default'} variant="outlined"
+                      icon={d.source === 'test' ? <SendIcon sx={{ fontSize: 14 }} /> : undefined} />
+                  </TableCell>
+                  <TableCell>
+                    {d.success ? <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} /> : <ErrorIcon sx={{ fontSize: 18, color: 'error.main' }} />}
+                  </TableCell>
+                  <TableCell><Typography variant="body2" sx={{ fontFamily: 'monospace' }}>{d.httpStatus}</Typography></TableCell>
+                  <TableCell><Typography variant="caption">{d.durationMs}ms</Typography></TableCell>
+                  <TableCell>
+                    {d.errorMessage && <Typography variant="caption" color="error">{d.errorMessage}</Typography>}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </Box>
+  );
+}
+
+// ============================================
+// Demo Pentest View (grouped findings by container)
+// ============================================
+
+const mockPentestFindings: PentestFinding[] = [
+  { id: 1, fingerprint: 'f1', category: 'trivy', severity: 'critical', title: 'crypto/tls: Unexpected session resumption in crypto/tls', description: 'Go stdlib vulnerability allowing TLS session resumption bypass.', target: 'alice-container (usr/bin/docker)', evidence: 'CVE-2024-45238 detected in go1.21.5', cveIds: 'CVE-2024-45238', remediation: 'Upgrade Go to 1.22.2 or later.', status: 'open', firstScanRunId: 'run-1', lastScanRunId: 'run-2', firstSeenAt: '2026-03-10T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 2, fingerprint: 'f2', category: 'trivy', severity: 'high', title: 'cryptography: Subgroup Attack Due to Missing Validation', description: 'Python cryptography package vulnerable to subgroup attacks on SECT curves.', target: 'alice-container (Python)', evidence: 'cryptography==41.0.7', cveIds: 'CVE-2024-26130', remediation: 'Upgrade cryptography to >= 42.0.0.', status: 'open', firstScanRunId: 'run-1', lastScanRunId: 'run-2', firstSeenAt: '2026-03-10T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 3, fingerprint: 'f3', category: 'trivy', severity: 'critical', title: 'crypto/tls: Unexpected session resumption in crypto/tls', description: '', target: 'alice-container (usr/libexec/docker/cli-plugins/docker-compose)', evidence: 'CVE-2024-45238', cveIds: 'CVE-2024-45238', remediation: 'Upgrade Go runtime.', status: 'open', firstScanRunId: 'run-1', lastScanRunId: 'run-2', firstSeenAt: '2026-03-10T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 4, fingerprint: 'f4', category: 'trivy', severity: 'high', title: 'net/http: HTTP/2 CONTINUATION flood in net/http', description: '', target: 'alice-container (usr/libexec/docker/cli-plugins/docker-compose)', evidence: 'CVE-2024-24791', cveIds: 'CVE-2024-24791', remediation: 'Upgrade Go runtime.', status: 'open', firstScanRunId: 'run-1', lastScanRunId: 'run-2', firstSeenAt: '2026-03-10T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 5, fingerprint: 'f5', category: 'trivy', severity: 'medium', title: 'archive/zip: Incorrect handling of certain ZIP files', description: '', target: 'alice-container (usr/libexec/docker/cli-plugins/docker-compose)', evidence: 'CVE-2024-24789', cveIds: 'CVE-2024-24789', remediation: 'Upgrade Go runtime.', status: 'open', firstScanRunId: 'run-1', lastScanRunId: 'run-2', firstSeenAt: '2026-03-10T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 6, fingerprint: 'f6', category: 'ports', severity: 'medium', title: 'Undeclared open port: 8080 (HTTP Alt)', description: 'Container is listening on port 8080 which is not declared in configuration.', target: '10.0.100.12:8080 (alice-container)', evidence: 'TCP port 8080 OPEN', cveIds: '', remediation: 'Declare port in container config or close unused ports.', status: 'open', firstScanRunId: 'run-2', lastScanRunId: 'run-2', firstSeenAt: '2026-03-15T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 7, fingerprint: 'f7', category: 'ports', severity: 'high', title: 'Undeclared open port: 5432 (PostgreSQL)', description: 'Database port exposed without declaration.', target: '10.0.100.18:5432 (charlie-container)', evidence: 'TCP port 5432 OPEN', cveIds: '', remediation: 'Restrict database access or declare port.', status: 'open', firstScanRunId: 'run-2', lastScanRunId: 'run-2', firstSeenAt: '2026-03-15T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 8, fingerprint: 'f8', category: 'ports', severity: 'medium', title: 'Undeclared open port: 22 (SSH)', description: 'SSH port exposed.', target: '10.0.100.18:22 (charlie-container)', evidence: 'TCP port 22 OPEN', cveIds: '', remediation: 'Consider restricting SSH access.', status: 'open', firstScanRunId: 'run-2', lastScanRunId: 'run-2', firstSeenAt: '2026-03-15T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+  { id: 9, fingerprint: 'f9', category: 'trivy', severity: 'low', title: 'golang.org/x/net: Excessive memory usage in net/http', description: '', target: 'bob-container (usr/bin/containerd)', evidence: 'CVE-2023-44487', cveIds: 'CVE-2023-44487', remediation: 'Upgrade Go module.', status: 'open', firstScanRunId: 'run-1', lastScanRunId: 'run-2', firstSeenAt: '2026-03-10T04:00:00Z', lastSeenAt: '2026-03-15T04:00:00Z', resolvedAt: '', suppressed: false, suppressedReason: '' },
+];
+
+function DemoSeverityChip({ severity }: { severity: string }) {
+  const colorMap: Record<string, 'error' | 'warning' | 'info' | 'default' | 'success'> = {
+    critical: 'error', high: 'warning', medium: 'info', low: 'default', info: 'default',
+  };
+  return <Chip label={severity} color={colorMap[severity] || 'default'} size="small" sx={severity === 'critical' ? { fontWeight: 'bold' } : undefined} />;
+}
+
+function DemoPentestFindingRow({ finding }: { finding: PentestFinding }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <>
+      <TableRow hover sx={{ cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
+        <TableCell>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+            <DemoSeverityChip severity={finding.severity} />
+          </Box>
+        </TableCell>
+        <TableCell><Chip label={finding.category} size="small" variant="outlined" /></TableCell>
+        <TableCell><Typography variant="body2" sx={{ fontWeight: 500 }}>{finding.title}</Typography></TableCell>
+        <TableCell>
+          <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.8rem', maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {finding.target}
+          </Typography>
+        </TableCell>
+        <TableCell><Chip label="Open" color="error" size="small" variant="outlined" /></TableCell>
+        <TableCell>{formatDate(finding.lastSeenAt)}</TableCell>
+        <TableCell align="right">
+          <Tooltip title="Suppress finding">
+            <IconButton size="small"><VisibilityOffIcon fontSize="small" /></IconButton>
+          </Tooltip>
+        </TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell colSpan={7} sx={{ py: 0, borderBottom: expanded ? undefined : 'none' }}>
+          <Collapse in={expanded} timeout="auto" unmountOnExit>
+            <Box sx={{ py: 2, pl: 4 }}>
+              <Stack spacing={1}>
+                {finding.description && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">Description</Typography>
+                    <Typography variant="body2">{finding.description}</Typography>
+                  </Box>
+                )}
+                {finding.evidence && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">Evidence</Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.8rem', bgcolor: 'grey.100', p: 1, borderRadius: 1 }}>{finding.evidence}</Typography>
+                  </Box>
+                )}
+                {finding.remediation && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">Remediation</Typography>
+                    <Typography variant="body2">{finding.remediation}</Typography>
+                  </Box>
+                )}
+                {finding.cveIds && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">CVE IDs</Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>{finding.cveIds}</Typography>
+                  </Box>
+                )}
+              </Stack>
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </>
+  );
+}
+
+function DemoPentestView() {
+  const [collapsedTargets, setCollapsedTargets] = useState<Set<string>>(new Set());
+
+  const groupedFindings = useMemo(() => {
+    const groups = new Map<string, PentestFinding[]>();
+    for (const f of mockPentestFindings) {
+      const ipMatch = f.target.match(/^\d+\.\d+\.\d+\.\d+:\d+\s+\((.+)\)$/);
+      const nameMatch = f.target.match(/^(.+?)\s+\(/);
+      const containerName = ipMatch ? ipMatch[1] : nameMatch ? nameMatch[1] : f.target;
+      const list = groups.get(containerName) || [];
+      list.push(f);
+      groups.set(containerName, list);
+    }
+    return [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, []);
+
+  const toggleTargetGroup = (target: string) => {
+    setCollapsedTargets((prev) => {
+      const next = new Set(prev);
+      if (next.has(target)) { next.delete(target); } else { next.add(target); }
+      return next;
+    });
+  };
+
+  return (
+    <Box>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+        <Box>
+          <Typography variant="h6">Penetration Test Findings</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Modules: ports,trivy | Interval: 6h | Nuclei: active | Trivy: active
+          </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Button variant="contained" size="small" startIcon={<PlayArrowIcon />}>Run Scan</Button>
+          <IconButton size="small"><RefreshIcon /></IconButton>
+        </Box>
+      </Box>
+
+      {/* Summary Cards */}
+      <Stack direction="row" spacing={2} sx={{ mb: 3, flexWrap: 'wrap' }}>
+        <DemoSummaryCard title="Open" value={9} color="error.main" />
+        <DemoSummaryCard title="Critical" value={3} color="#d32f2f" />
+        <DemoSummaryCard title="High" value={3} color="warning.main" />
+        <DemoSummaryCard title="Medium" value={2} color="info.main" />
+        <DemoSummaryCard title="Low" value={1} color="text.secondary" />
+        <DemoSummaryCard title="Resolved" value={0} color="success.main" />
+      </Stack>
+
+      {/* Findings Table — grouped by container */}
+      <TableContainer component={Paper} sx={{ mb: 3 }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: 100 }}>Severity</TableCell>
+              <TableCell sx={{ width: 100 }}>Module</TableCell>
+              <TableCell>Title</TableCell>
+              <TableCell>Target</TableCell>
+              <TableCell sx={{ width: 100 }}>Status</TableCell>
+              <TableCell sx={{ width: 160 }}>Last Seen</TableCell>
+              <TableCell align="right" sx={{ width: 60 }}>Actions</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {groupedFindings.map(([target, targetFindings]) => {
+              const isCollapsed = collapsedTargets.has(target);
+              return (
+                <React.Fragment key={target}>
+                  <TableRow hover sx={{ cursor: 'pointer', bgcolor: 'action.hover' }} onClick={() => toggleTargetGroup(target)}>
+                    <TableCell colSpan={7}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        {isCollapsed ? <ExpandMoreIcon fontSize="small" /> : <ExpandLessIcon fontSize="small" />}
+                        <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600 }}>{target}</Typography>
+                        <Chip label={targetFindings.length} size="small" variant="outlined" />
+                      </Box>
+                    </TableCell>
+                  </TableRow>
+                  {!isCollapsed && targetFindings.map((finding) => (
+                    <DemoPentestFindingRow key={finding.id} finding={finding} />
+                  ))}
+                </React.Fragment>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+}
+
+// ============================================
+// Demo Combined Security View (sub-tabs: Malware Scan + Pentest)
+// ============================================
+
+function DemoCombinedSecurityView() {
+  const [securityTab, setSecurityTab] = useState(0);
+
+  return (
+    <Box sx={{ p: 3 }}>
+      <Tabs
+        value={securityTab}
+        onChange={(_, v) => setSecurityTab(v)}
+        sx={{ mb: 3, borderBottom: 1, borderColor: 'divider' }}
+      >
+        <Tab icon={<ShieldIcon />} iconPosition="start" label="Malware Scan" />
+        <Tab icon={<BugReportIcon />} iconPosition="start" label="Pentest" />
+      </Tabs>
+
+      {securityTab === 0 && <DemoSecurityView />}
+      {securityTab === 1 && <DemoPentestView />}
+    </Box>
+  );
+}
+
+// ============================================
 // Tab Panel
 // ============================================
 
@@ -947,6 +1498,8 @@ export default function DemoPage() {
           <Tab icon={<HubIcon />} iconPosition="start" label="Network" />
           <Tab icon={<TimelineIcon />} iconPosition="start" label="Traffic" />
           <Tab icon={<MonitorHeartIcon />} iconPosition="start" label="Monitoring" />
+          <Tab icon={<NotificationsActiveIcon />} iconPosition="start" label="Alerts" />
+          <Tab icon={<HistoryIcon />} iconPosition="start" label="Audit" />
           <Tab icon={<ShieldIcon />} iconPosition="start" label="Security" />
         </Tabs>
       </Box>
@@ -1038,9 +1591,19 @@ export default function DemoPage() {
         <DemoMonitoringView />
       </TabPanel>
 
-      {/* Security View */}
+      {/* Alerts View */}
       <TabPanel value={tabIndex} index={5}>
-        <DemoSecurityView />
+        <DemoAlertsView />
+      </TabPanel>
+
+      {/* Audit View */}
+      <TabPanel value={tabIndex} index={6}>
+        <DemoAuditView />
+      </TabPanel>
+
+      {/* Security View (with sub-tabs: Malware Scan + Pentest) */}
+      <TabPanel value={tabIndex} index={7}>
+        <DemoCombinedSecurityView />
       </TabPanel>
 
       {/* Label Editor Dialog */}

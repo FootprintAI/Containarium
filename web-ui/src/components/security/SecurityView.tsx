@@ -20,12 +20,15 @@ import {
   Stack,
   Collapse,
   LinearProgress,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ShieldIcon from '@mui/icons-material/Shield';
+import BugReportIcon from '@mui/icons-material/BugReport';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import ScannerIcon from '@mui/icons-material/Scanner';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
@@ -37,6 +40,7 @@ import { Server } from '@/src/types/server';
 import { ClamavContainerSummary, ClamavReport, ScanStatusResponse } from '@/src/types/security';
 import { useSecurity } from '@/src/lib/hooks/useSecurity';
 import { getClient } from '@/src/lib/api/client';
+import PentestView from './PentestView';
 
 interface SecurityViewProps {
   server: Server;
@@ -239,6 +243,27 @@ function ContainerRow({ container, server, onScan, scanStatus }: { container: Cl
 }
 
 export default function SecurityView({ server }: SecurityViewProps) {
+  const [securityTab, setSecurityTab] = useState(0);
+
+  return (
+    <Box sx={{ p: 3 }}>
+      {/* Sub-tabs */}
+      <Tabs
+        value={securityTab}
+        onChange={(_, v) => setSecurityTab(v)}
+        sx={{ mb: 3, borderBottom: 1, borderColor: 'divider' }}
+      >
+        <Tab icon={<ShieldIcon />} iconPosition="start" label="Malware Scan" />
+        <Tab icon={<BugReportIcon />} iconPosition="start" label="Pentest" />
+      </Tabs>
+
+      {securityTab === 0 && <ClamavView server={server} />}
+      {securityTab === 1 && <PentestView server={server} />}
+    </Box>
+  );
+}
+
+function ClamavView({ server }: SecurityViewProps) {
   const { summary, isLoading, error, refresh } = useSecurity(server);
 
   // Scan state
@@ -333,7 +358,7 @@ export default function SecurityView({ server }: SecurityViewProps) {
 
   if (isLoading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '40vh' }}>
         <CircularProgress />
       </Box>
     );
@@ -341,26 +366,21 @@ export default function SecurityView({ server }: SecurityViewProps) {
 
   if (error) {
     return (
-      <Box sx={{ p: 3 }}>
-        <Alert severity="error" action={
-          <IconButton color="inherit" size="small" onClick={refresh}>
-            <RefreshIcon />
-          </IconButton>
-        }>
-          {error instanceof Error ? error.message : 'Failed to fetch security data'}
-        </Alert>
-      </Box>
+      <Alert severity="error" action={
+        <IconButton color="inherit" size="small" onClick={refresh}>
+          <RefreshIcon />
+        </IconButton>
+      }>
+        {error instanceof Error ? error.message : 'Failed to fetch security data'}
+      </Alert>
     );
   }
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box>
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <ShieldIcon />
-          <Typography variant="h5">Security Scanning</Typography>
-        </Box>
+        <Typography variant="h6">ClamAV Malware Scanning</Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Button
             variant="contained"

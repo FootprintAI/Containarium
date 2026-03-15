@@ -25,9 +25,11 @@ import (
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/network"
+	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/internal/traffic"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
@@ -103,6 +105,8 @@ type DualServer struct {
 	alertStore            *alert.Store
 	alertManager          *alert.Manager
 	alertDeliveryStore    *alert.DeliveryStore
+	pentestManager        *pentest.Manager
+	pentestStore          *pentest.Store
 }
 
 // NewDualServer creates a new dual server instance
@@ -551,6 +555,42 @@ skipAppHosting:
 		}
 	}
 
+	// Setup pentest manager
+	var pentestManager *pentest.Manager
+	var pentestStore *pentest.Store
+	if postgresConnString != "" {
+		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		if poolErr != nil {
+			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
+		} else {
+			pentestStore, err = pentest.NewStore(context.Background(), pentestPool)
+			if err != nil {
+				log.Printf("Warning: Failed to create pentest store: %v", err)
+				pentestPool.Close()
+			} else {
+				pentestIncusClient, incusErr := incus.New()
+				if incusErr != nil {
+					log.Printf("Warning: Failed to create incus client for pentest: %v", incusErr)
+				} else {
+					var meterProvider *sdkmetric.MeterProvider
+					if metricsCollector != nil {
+						meterProvider = metricsCollector.MeterProvider()
+					}
+					pentestManager = pentest.NewManager(
+						pentestStore,
+						pentestIncusClient,
+						routeStore,
+						meterProvider,
+						pentest.ManagerConfig{},
+					)
+					pentestServer := NewPentestServer(pentestStore, pentestManager)
+					pb.RegisterPentestServiceServer(grpcServer, pentestServer)
+					log.Printf("Pentest service enabled")
+				}
+			}
+		}
+	}
+
 	// Setup audit logging store and event subscriber
 	var auditStore *audit.Store
 	var auditEventSubscriber *audit.EventSubscriber
@@ -733,6 +773,8 @@ skipAppHosting:
 		alertStore:           alertStore,
 		alertManager:         alertManager,
 		alertDeliveryStore:   containerServer.alertDeliveryStore,
+		pentestManager:       pentestManager,
+		pentestStore:         pentestStore,
 	}, nil
 }
 
@@ -754,6 +796,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.securityScanner != nil {
 		ds.securityScanner.Start(ctx)
 		log.Printf("Security scanner started")
+	}
+
+	// Start pentest manager if available
+	if ds.pentestManager != nil {
+		ds.pentestManager.Start(ctx)
+		log.Printf("Pentest manager started")
 	}
 
 	// Start audit event subscriber if available
@@ -880,6 +928,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.securityScanner != nil {
 			ds.securityScanner.Stop()
+		}
+		if ds.pentestManager != nil {
+			ds.pentestManager.Stop()
+		}
+		if ds.pentestStore != nil {
+			ds.pentestStore.Close()
 		}
 		if ds.sshCollector != nil {
 			ds.sshCollector.Stop()

@@ -307,6 +307,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register security service gateway: %w", err)
 	}
 
+	// Register PentestService gateway handler
+	if err := pb.RegisterPentestServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register pentest service gateway: %w", err)
+	}
+
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.
