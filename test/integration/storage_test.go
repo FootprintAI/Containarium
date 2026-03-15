@@ -254,11 +254,11 @@ func testPrepareRebootData(t *testing.T, ctx context.Context, grpcClient *client
 	t.Logf("✓ Test container created and state saved")
 	t.Logf("  Container: %s", info.Name)
 	t.Logf("  Test data hash: %s", testDataHash)
-	t.Logf("")
-	t.Logf("=" + strings.Repeat("=", 70))
-	t.Logf("REBOOT TEST PREPARATION COMPLETE")
-	t.Logf("=" + strings.Repeat("=", 70))
-	t.Logf("")
+	t.Log("")
+	t.Log("=" + strings.Repeat("=", 70))
+	t.Log("REBOOT TEST PREPARATION COMPLETE")
+	t.Log("=" + strings.Repeat("=", 70))
+	t.Log("")
 	t.Logf("Next steps:")
 	t.Logf("  1. Write test data to container:")
 	t.Logf("     sudo incus exec %s -- bash -c 'echo \"%s\" > /home/%s/test-data.txt'",
@@ -271,8 +271,8 @@ func testPrepareRebootData(t *testing.T, ctx context.Context, grpcClient *client
 	t.Logf("")
 	t.Logf("  3. After reboot, run this test again:")
 	t.Logf("     make test-integration")
-	t.Logf("")
-	t.Logf("=" + strings.Repeat("=", 70))
+	t.Log("")
+	t.Log("=" + strings.Repeat("=", 70))
 }
 
 // testDataPersistenceAfterReboot verifies data survived the reboot
@@ -310,11 +310,11 @@ func testDataPersistenceAfterReboot(t *testing.T, stateFile string) {
 		t.Log("✓ Test cleanup complete")
 	}()
 
-	t.Logf("")
-	t.Logf("=" + strings.Repeat("=", 70))
-	t.Logf("REBOOT PERSISTENCE TEST PASSED")
-	t.Logf("=" + strings.Repeat("=", 70))
-	t.Logf("")
+	t.Log("")
+	t.Log("=" + strings.Repeat("=", 70))
+	t.Log("REBOOT PERSISTENCE TEST PASSED")
+	t.Log("=" + strings.Repeat("=", 70))
+	t.Log("")
 	t.Logf("To complete verification:")
 	t.Logf("  1. Verify data integrity:")
 	t.Logf("     sudo incus exec %s -- cat /home/%s/test-data.txt",
