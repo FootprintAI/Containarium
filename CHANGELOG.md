@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.13.0] - 2026-03-15
+
 ### Added
 - **Penetration testing system** — Built-in security scanner with 7 modules that scan container endpoints and dependencies:
   - **Built-in modules**: `ports` (open port detection), `headers` (HTTP security header audit), `tls` (weak protocol/cipher/cert checks), `web` (exposed .env/.git/debug endpoints), `dns` (dangling CNAMEs, missing SPF/DMARC/DKIM)
@@ -14,10 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 8 gRPC/REST endpoints (`/v1/pentest/*`): trigger scans, list findings with severity/category/status filters, suppress findings, view scan history, install tools
   - Async job queue with 5 concurrent workers, SHA-256 fingerprint-based finding deduplication, scheduled scans (default 24h), 90-day retention
   - Proto definitions (`proto/containarium/v1/pentest.proto`), server implementation, and web UI (Security > Pentest tab)
-- **Demo page: Pentest tab** — New demo tab showcasing the pentest findings view with grouped-by-container layout and mock data.
+- **Demo page: Alerts, Audit, and Pentest tabs** — Complete demo coverage with mock data for all tabs including alert rules, webhook delivery history, audit logs, and grouped pentest findings.
 
 ### Changed
-- **Pentest findings grouped by container** — The Security > Pentest tab now groups findings by container name instead of showing a flat list. Each group has a collapsible header showing the container name and finding count, sorted by most findings first. Container names are extracted from target strings (e.g., `voicegpt-container (usr/bin/docker)` → `voicegpt-container`, `10.0.3.136:8080 (pes-container)` → `pes-container`).
+- **Pentest findings grouped by container** — The Security > Pentest tab now groups findings by container name instead of showing a flat list. Each group has a collapsible header showing the container name and finding count, sorted by most findings first.
+- **README screenshots updated** — Replaced numbered screenshots with descriptive names; added Alerts and Audit sections.
+- **Next.js upgraded to 16.1.6** — Security update addressing CVE-2025-66478 (RCE), CVE-2025-55182/55183/55184 (RSC vulnerabilities), and CVE-2026-23864 (DoS).
 
 ## [v0.12.0] - 2026-03-15
 
