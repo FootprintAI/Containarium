@@ -4,11 +4,13 @@ import useSWR from 'swr';
 import { Server } from '@/src/types/server';
 import { ClamavSummaryResponse } from '@/src/types/security';
 import { getClient } from '@/src/lib/api/client';
+import { usePageVisibility } from './usePageVisibility';
 
 /**
  * Hook for fetching ClamAV security summary
  */
 export function useSecurity(server: Server | null) {
+  const isVisible = usePageVisibility();
   const fetcher = async (): Promise<ClamavSummaryResponse> => {
     if (!server) throw new Error('No server');
     const client = getClient(server);
@@ -21,7 +23,7 @@ export function useSecurity(server: Server | null) {
     swrKey,
     fetcher,
     {
-      refreshInterval: 60000, // 60s refresh
+      refreshInterval: isVisible ? 60000 : 0, // 60s refresh (paused when tab hidden)
       revalidateOnFocus: true,
       dedupingInterval: 10000,
     }

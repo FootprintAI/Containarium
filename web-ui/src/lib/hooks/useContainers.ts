@@ -7,6 +7,7 @@ import { Server } from '@/src/types/server';
 import { getClient, CoreService } from '@/src/lib/api/client';
 import { useEventStream } from '@/src/lib/events/useEventStream';
 import { ServerEvent, isContainerEvent, ConnectionStatus } from '@/src/types/events';
+import { usePageVisibility } from './usePageVisibility';
 
 export interface CreateContainerProgress {
   state: string;
@@ -17,6 +18,7 @@ export interface CreateContainerProgress {
  * Hook for managing containers for a specific server
  */
 export function useContainers(server: Server | null) {
+  const isVisible = usePageVisibility();
   // Create a stable fetcher for this server
   const fetcher = async (): Promise<Container[]> => {
     if (!server) return [];
@@ -71,7 +73,7 @@ export function useContainers(server: Server | null) {
     systemInfoKey,
     systemInfoFetcher,
     {
-      refreshInterval: 60000, // Refresh every minute
+      refreshInterval: isVisible ? 60000 : 0, // Refresh every minute (paused when tab hidden)
       revalidateOnFocus: false,
       dedupingInterval: 30000,
     }
@@ -93,7 +95,7 @@ export function useContainers(server: Server | null) {
     coreServicesKey,
     coreServicesFetcher,
     {
-      refreshInterval: 30000, // Refresh every 30s
+      refreshInterval: isVisible ? 30000 : 0, // Refresh every 30s (paused when tab hidden)
       revalidateOnFocus: true,
       dedupingInterval: 10000,
     }

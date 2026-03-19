@@ -5,6 +5,7 @@ import useSWR from 'swr';
 import { ContainerMetrics, ContainerMetricsWithRate } from '@/src/types/container';
 import { Server } from '@/src/types/server';
 import { getClient } from '@/src/lib/api/client';
+import { usePageVisibility } from './usePageVisibility';
 
 interface MetricsSnapshot {
   metrics: Record<string, ContainerMetrics>;
@@ -15,6 +16,7 @@ interface MetricsSnapshot {
  * Hook for fetching container metrics with polling and CPU rate calculation
  */
 export function useMetrics(server: Server | null, enabled: boolean = true) {
+  const isVisible = usePageVisibility();
   // Store previous metrics for CPU rate calculation
   const prevSnapshot = useRef<MetricsSnapshot | null>(null);
 
@@ -30,7 +32,7 @@ export function useMetrics(server: Server | null, enabled: boolean = true) {
     swrKey,
     fetcher,
     {
-      refreshInterval: 5000, // Poll every 5 seconds for metrics
+      refreshInterval: (() => { const interval = isVisible ? 5000 : 0; console.log('[useMetrics] refreshInterval:', interval, 'isVisible:', isVisible); return interval; })(),
       revalidateOnFocus: true,
       dedupingInterval: 2000,
     }

@@ -4,11 +4,13 @@ import useSWR from 'swr';
 import { Server } from '@/src/types/server';
 import { AlertRulesResponse, AlertingInfoResponse, WebhookDeliveriesResponse } from '@/src/types/alerts';
 import { getClient } from '@/src/lib/api/client';
+import { usePageVisibility } from './usePageVisibility';
 
 /**
  * Hook for fetching alert rules
  */
 export function useAlerts(server: Server | null) {
+  const isVisible = usePageVisibility();
   const fetcher = async (): Promise<AlertRulesResponse> => {
     if (!server) throw new Error('No server');
     const client = getClient(server);
@@ -21,7 +23,7 @@ export function useAlerts(server: Server | null) {
     swrKey,
     fetcher,
     {
-      refreshInterval: 30000,
+      refreshInterval: isVisible ? 30000 : 0,
       revalidateOnFocus: true,
       dedupingInterval: 5000,
     }
@@ -39,6 +41,7 @@ export function useAlerts(server: Server | null) {
  * Hook for fetching alerting system info
  */
 export function useAlertingInfo(server: Server | null) {
+  const isVisible = usePageVisibility();
   const fetcher = async (): Promise<AlertingInfoResponse> => {
     if (!server) throw new Error('No server');
     const client = getClient(server);
@@ -51,7 +54,7 @@ export function useAlertingInfo(server: Server | null) {
     swrKey,
     fetcher,
     {
-      refreshInterval: 60000,
+      refreshInterval: isVisible ? 60000 : 0,
       revalidateOnFocus: true,
       dedupingInterval: 10000,
     }
@@ -69,6 +72,7 @@ export function useAlertingInfo(server: Server | null) {
  * Hook for fetching webhook delivery history
  */
 export function useWebhookDeliveries(server: Server | null) {
+  const isVisible = usePageVisibility();
   const fetcher = async (): Promise<WebhookDeliveriesResponse> => {
     if (!server) throw new Error('No server');
     const client = getClient(server);
@@ -81,7 +85,7 @@ export function useWebhookDeliveries(server: Server | null) {
     swrKey,
     fetcher,
     {
-      refreshInterval: 30000,
+      refreshInterval: isVisible ? 30000 : 0,
       revalidateOnFocus: true,
       dedupingInterval: 5000,
     }

@@ -7,11 +7,13 @@ import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate }
 import { getClient } from '@/src/lib/api/client';
 import { useEventStream } from '@/src/lib/events/useEventStream';
 import { ServerEvent } from '@/src/types/events';
+import { usePageVisibility } from './usePageVisibility';
 
 /**
  * Hook for managing traffic monitoring for a specific container
  */
 export function useTraffic(server: Server | null, containerName: string | null) {
+  const isVisible = usePageVisibility();
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   // Fetcher for active connections
@@ -31,7 +33,7 @@ export function useTraffic(server: Server | null, containerName: string | null) 
     isLoading: connectionsLoading,
     mutate: mutateConnections,
   } = useSWR<Connection[]>(connectionsKey, connectionsFetcher, {
-    refreshInterval: autoRefresh ? 5000 : 0, // Poll every 5 seconds if auto-refresh enabled
+    refreshInterval: autoRefresh && isVisible ? 5000 : 0, // Poll every 5 seconds if auto-refresh enabled
     revalidateOnFocus: true,
     dedupingInterval: 2000,
   });
@@ -52,7 +54,7 @@ export function useTraffic(server: Server | null, containerName: string | null) 
     isLoading: summaryLoading,
     mutate: mutateSummary,
   } = useSWR<ConnectionSummary | null>(summaryKey, summaryFetcher, {
-    refreshInterval: autoRefresh ? 5000 : 0,
+    refreshInterval: autoRefresh && isVisible ? 5000 : 0,
     revalidateOnFocus: true,
     dedupingInterval: 2000,
   });
