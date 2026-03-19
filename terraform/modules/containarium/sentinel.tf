@@ -120,7 +120,7 @@ resource "google_compute_firewall" "sentinel_to_spot" {
 
   allow {
     protocol = "tcp"
-    ports    = ["22", "80", "443", "8080", "50051"]
+    ports    = ["22", "80", "443", "8080"]
   }
 
   source_tags = ["containarium-sentinel"]
@@ -167,28 +167,3 @@ resource "google_compute_firewall" "sentinel_mgmt_ssh" {
   description = "Allow SSH management to sentinel on port 2222 (port 22 handled by sshpiper)"
 }
 
-# -----------------------------------------------------------------------------
-# Optional: Unmanaged Instance Group for GLB backend
-# -----------------------------------------------------------------------------
-
-resource "google_compute_instance_group" "sentinel" {
-  count = local.use_sentinel && var.enable_glb_backend ? 1 : 0
-
-  name    = "${var.instance_name}-sentinel-group"
-  zone    = var.zone
-  project = var.project_id
-
-  instances = [
-    google_compute_instance.sentinel[0].self_link,
-  ]
-
-  named_port {
-    name = "http"
-    port = 8080
-  }
-
-  named_port {
-    name = "ssh"
-    port = 22
-  }
-}

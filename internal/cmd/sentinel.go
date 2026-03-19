@@ -65,7 +65,7 @@ func init() {
 	sentinelCmd.Flags().DurationVar(&sentinelCheckInterval, "check-interval", 15*time.Second, "Health check interval")
 	sentinelCmd.Flags().IntVar(&sentinelHTTPPort, "http-port", 80, "Maintenance page HTTP port")
 	sentinelCmd.Flags().IntVar(&sentinelHTTPSPort, "https-port", 443, "Maintenance page HTTPS port")
-	sentinelCmd.Flags().StringVar(&sentinelForwardedPorts, "forwarded-ports", "80,443,8080,50051", "Comma-separated ports to DNAT forward (port 22 handled by sshpiper)")
+	sentinelCmd.Flags().StringVar(&sentinelForwardedPorts, "forwarded-ports", "80,443", "Comma-separated ports to DNAT forward (port 22 handled by sshpiper)")
 	sentinelCmd.Flags().IntVar(&sentinelHealthyThreshold, "healthy-threshold", 2, "Consecutive healthy checks before switching to proxy")
 	sentinelCmd.Flags().IntVar(&sentinelUnhealthyThreshold, "unhealthy-threshold", 2, "Consecutive unhealthy checks before switching to maintenance")
 	sentinelCmd.Flags().IntVar(&sentinelBinaryPort, "binary-port", 8888, "Port to serve containarium binary for spot VM downloads (0 to disable)")

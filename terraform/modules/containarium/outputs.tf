@@ -37,11 +37,6 @@ output "sentinel_instance_self_link" {
   value       = local.use_sentinel ? google_compute_instance.sentinel[0].self_link : null
 }
 
-output "sentinel_instance_group" {
-  description = "Self link of the sentinel unmanaged instance group (for GLB)"
-  value       = local.use_sentinel && var.enable_glb_backend ? google_compute_instance_group.sentinel[0].self_link : null
-}
-
 output "spot_vm_name" {
   description = "Name of the spot VM"
   value       = var.use_spot_instance ? google_compute_instance.jump_server_spot[0].name : null

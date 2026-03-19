@@ -91,24 +91,6 @@ resource "google_compute_firewall" "allow_iap_ssh" {
   description = "Allow IAP SSH tunneling to Containarium instances"
 }
 
-# Health check firewall (for GCP load balancer health checks)
-resource "google_compute_firewall" "allow_health_check" {
-  count   = var.enable_health_check_firewall ? 1 : 0
-  name    = "${var.instance_name}-allow-health-check"
-  network = local.network
-  project = var.project_id
-
-  allow {
-    protocol = "tcp"
-    ports    = ["8080", "22"]
-  }
-
-  source_ranges = ["130.211.0.0/22", "35.191.0.0/16"]
-  target_tags   = var.instance_tags
-
-  description = "Allow GCP health check probes to Containarium instances"
-}
-
 # -----------------------------------------------------------------------------
 # Regular (non-spot) VM Instance
 # -----------------------------------------------------------------------------

@@ -134,18 +134,6 @@ variable "enable_iap_firewall" {
   default     = false
 }
 
-variable "enable_health_check_firewall" {
-  description = "Create firewall rule for GCP health check IP ranges"
-  type        = bool
-  default     = false
-}
-
-variable "enable_glb_backend" {
-  description = "Create unmanaged instance group with named ports for GLB"
-  type        = bool
-  default     = false
-}
-
 variable "spot_vm_external_ip" {
   description = "Give spot VM an ephemeral external IP (false = Cloud NAT only)"
   type        = bool

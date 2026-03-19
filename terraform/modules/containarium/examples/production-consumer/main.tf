@@ -2,7 +2,7 @@
 # Example: Production Consumer (kafeido-infra style)
 # =============================================================================
 # This example shows how a production deployment (e.g., kafeido-infra) would
-# consume the containarium module with VPC networking and GLB backend.
+# consume the containarium module with VPC networking.
 #
 # Copy and adapt this for your production environment.
 
@@ -51,8 +51,6 @@ module "containarium" {
 
   # Production features
   enable_iap_firewall          = true
-  enable_health_check_firewall = true
-  enable_glb_backend           = true
   jwt_secret                   = var.jwt_secret
   fail2ban_whitelist_cidr      = "10.0.0.0/8"
   instance_tags                = ["containarium-jump-server-usw1", "containarium-sentinel"]
@@ -172,6 +170,3 @@ output "jump_server_ip" {
   value = module.containarium.jump_server_ip
 }
 
-output "sentinel_instance_group" {
-  value = module.containarium.sentinel_instance_group
-}
