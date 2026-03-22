@@ -12,8 +12,9 @@ import (
 )
 
 // maxConcurrentScans limits parallel ClamAV scans to avoid overloading the
-// security container's CPU and memory.
-const maxConcurrentScans = 3
+// security container's CPU and memory. Set to 1 because all scans share a
+// single clamd daemon inside the security container.
+const maxConcurrentScans = 1
 
 // SecurityContainerName is the name of the core ClamAV security container.
 // Defined here to avoid an import cycle with internal/server.
@@ -218,23 +219,22 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 	// Wait briefly for device to be available
 	time.Sleep(2 * time.Second)
 
-	// Run clamscan
+	// Run clamdscan (uses the resident clamd daemon which keeps the virus DB in
+	// memory, avoiding the expensive DB reload that clamscan performs on each
+	// invocation). Directory exclusions are configured in clamd.conf ExcludePath.
 	startTime := time.Now()
 	stdout, _, scanErr := s.incusClient.ExecWithOutput(SecurityContainerName, []string{
-		"clamscan", "-ri", "--no-summary",
-		fmt.Sprintf("--exclude-dir=^%s/sys", mountPath),
-		fmt.Sprintf("--exclude-dir=^%s/proc", mountPath),
-		fmt.Sprintf("--exclude-dir=^%s/dev", mountPath),
+		"clamdscan", "--infected", "--no-summary", "--multiscan",
 		mountPath,
 	})
 	scanDuration := time.Since(startTime)
 
-	// Parse output - clamscan returns exit code 1 if infections found (not an error)
+	// Parse output - clamdscan returns exit code 1 if infections found (not an error)
 	status, findingsCount, findings := ParseClamScanOutput(stdout)
 
 	// If scanErr is set but it's just exit code 1 (infections found), that's OK
 	if scanErr != nil && status == "clean" {
-		log.Printf("Warning: clamscan error for %s: %v", containerName, scanErr)
+		log.Printf("Warning: clamdscan error for %s: %v", containerName, scanErr)
 	}
 
 	// Save report

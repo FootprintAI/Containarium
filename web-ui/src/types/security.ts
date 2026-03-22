@@ -131,6 +131,7 @@ export interface PentestFinding {
   resolvedAt: string;
   suppressed: boolean;
   suppressedReason: string;
+  targetType: string;
 }
 
 export interface PentestFindingSummary {
@@ -186,6 +187,7 @@ export interface ListPentestFindingsParams {
   severity?: string;
   category?: string;
   status?: string;
+  targetType?: string;
   limit?: number;
   offset?: number;
 }

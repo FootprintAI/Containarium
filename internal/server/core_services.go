@@ -1161,8 +1161,8 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 	config := incus.ContainerConfig{
 		Name:      CoreSecurityContainer,
 		Image:     "images:ubuntu/24.04",
-		CPU:       "1",
-		Memory:    "1GB",
+		CPU:       "2",
+		Memory:    "2GB",
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",
@@ -1214,10 +1214,27 @@ func (cs *CoreServices) setupSecurity(ctx context.Context) error {
 		}
 	}
 
-	// Enable and start freshclam (virus database updater)
+	// Configure clamd to exclude pseudo-filesystem directories in scan mounts.
+	// clamdscan does not support --exclude-dir, so we set ExcludePath in clamd.conf.
+	excludeCmds := [][]string{
+		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/sys' >> /etc/clamav/clamd.conf`},
+		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/proc' >> /etc/clamav/clamd.conf`},
+		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/dev' >> /etc/clamav/clamd.conf`},
+	}
+	for _, cmd := range excludeCmds {
+		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
+			log.Printf("Warning: failed to configure clamd ExcludePath: %v", err)
+		}
+	}
+
+	// Enable and start freshclam (virus database updater) and clamd (scan daemon).
+	// clamd keeps the virus DB resident in memory so clamdscan doesn't need to
+	// reload it on every scan, dramatically reducing CPU usage.
 	startCmds := [][]string{
 		{"systemctl", "enable", "clamav-freshclam"},
 		{"systemctl", "start", "clamav-freshclam"},
+		{"systemctl", "enable", "clamav-daemon"},
+		{"systemctl", "start", "clamav-daemon"},
 	}
 	for _, cmd := range startCmds {
 		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {

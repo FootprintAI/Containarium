@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Pentest findings download** — Download all filtered pentest findings as CSV or JSON from the Security > Pentest tab. The download respects current severity/category/status filters and fetches up to 1000 findings per target type.
+
+### Fixed
+- **Port-scan findings misclassified as domain findings** — The `ports` scanner module now only runs on container targets, preventing open-port findings from appearing under "Domain Findings". Existing misclassified findings are automatically reclassified on startup.
+
 ## [v0.13.0] - 2026-03-15
 
 ### Added

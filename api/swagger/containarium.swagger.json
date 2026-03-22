@@ -2079,6 +2079,13 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          },
+          {
+            "name": "targetType",
+            "description": "Filter by target type: \"route\" or \"container\" (optional)",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [
@@ -4861,6 +4868,10 @@
         "suppressedReason": {
           "type": "string",
           "title": "Reason for suppression"
+        },
+        "targetType": {
+          "type": "string",
+          "title": "Target type: \"route\" (domain-based) or \"container\" (container-based)"
         }
       },
       "title": "PentestFinding represents a single security finding"

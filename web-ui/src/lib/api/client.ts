@@ -946,7 +946,17 @@ export class ContaineriumClient {
   }
 
   async listPentestFindings(params?: ListPentestFindingsParams): Promise<PentestFindingsResponse> {
-    const response = await this.client.get<PentestFindingsResponse>('/pentest/findings', { params });
+    // Map camelCase params to snake_case for the gRPC-gateway API
+    const queryParams: Record<string, any> = {};
+    if (params) {
+      if (params.severity) queryParams.severity = params.severity;
+      if (params.category) queryParams.category = params.category;
+      if (params.status) queryParams.status = params.status;
+      if (params.targetType) queryParams.target_type = params.targetType;
+      if (params.limit !== undefined) queryParams.limit = params.limit;
+      if (params.offset !== undefined) queryParams.offset = params.offset;
+    }
+    const response = await this.client.get<PentestFindingsResponse>('/pentest/findings', { params: queryParams });
     return {
       findings: (response.data.findings || []).map((f: any) => ({
         id: f.id,
@@ -967,6 +977,7 @@ export class ContaineriumClient {
         resolvedAt: f.resolvedAt || f.resolved_at || '',
         suppressed: f.suppressed || false,
         suppressedReason: f.suppressedReason || f.suppressed_reason || '',
+        targetType: f.targetType || f.target_type || '',
       })),
       totalCount: response.data.totalCount || (response.data as any).total_count || 0,
     };
