@@ -89,10 +89,16 @@ func (s *Scanner) EnsureDaemonRunning(ctx context.Context) error {
 
 	log.Printf("ZAP: Starting daemon in security container on port %d", zapAPIPort)
 
+	// Clean stale lock files from any previous crashed ZAP instance
+	cleanCmd := exec.CommandContext(ctx, "incus", "exec", SecurityContainerName, "--",
+		"bash", "-c", "rm -f /root/.ZAP/.homelock /root/.ZAP/session/*.lck /root/.ZAP/db/*.lck 2>/dev/null; pkill -f zap-2 2>/dev/null; true")
+	cleanCmd.CombinedOutput() // ignore errors
+
 	// Start ZAP daemon inside the security container (background)
+	// -host 0.0.0.0 makes ZAP listen on all interfaces so the host can reach it
 	cmd := exec.CommandContext(ctx, "incus", "exec", SecurityContainerName, "--",
 		"bash", "-c", fmt.Sprintf(
-			"nohup %s/ZAP/zap.sh -daemon -port %d -config api.disablekey=true -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true > /var/log/zap.log 2>&1 &",
+			"nohup %s/ZAP/zap.sh -daemon -host 0.0.0.0 -port %d -config api.disablekey=true -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true > /var/log/zap.log 2>&1 &",
 			zapInstallDir, zapAPIPort,
 		))
 	if out, err := cmd.CombinedOutput(); err != nil {
