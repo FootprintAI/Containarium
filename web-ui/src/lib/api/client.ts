@@ -1281,6 +1281,7 @@ export class ContaineriumClient {
   async getZapReport(scanRunId: string, format: string = 'html'): Promise<ZapReportResponse> {
     const response = await this.client.get<ZapReportResponse>(`/zap/scans/${scanRunId}/report`, {
       params: { format },
+      timeout: 180000, // 3 minutes — ZAP report generation can be slow (daemon startup + report)
     });
     return {
       content: response.data.content || '',
