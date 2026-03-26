@@ -357,6 +357,12 @@ func (m *Manager) finalizeScanRun(ctx context.Context, scanRunID string) {
 
 // generateAndStoreReports generates HTML and JSON reports from ZAP and stores them in the DB
 func (m *Manager) generateAndStoreReports(ctx context.Context, scanRunID string) {
+	// Ensure daemon is running and apiBase is set
+	if err := m.scanner.EnsureDaemonRunning(ctx); err != nil {
+		log.Printf("ZAP report: daemon not available for %s: %v", scanRunID, err)
+		return
+	}
+
 	htmlReport, err := m.scanner.GenerateHTMLReport()
 	if err != nil {
 		log.Printf("ZAP report: failed to generate HTML for %s: %v", scanRunID, err)
