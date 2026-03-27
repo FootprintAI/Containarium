@@ -21,6 +21,56 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// BackendType represents the type of backend instance
+type BackendType int32
+
+const (
+	BackendType_BACKEND_TYPE_UNSPECIFIED BackendType = 0
+	BackendType_BACKEND_TYPE_GCP         BackendType = 1
+	BackendType_BACKEND_TYPE_TUNNEL      BackendType = 2
+)
+
+// Enum value maps for BackendType.
+var (
+	BackendType_name = map[int32]string{
+		0: "BACKEND_TYPE_UNSPECIFIED",
+		1: "BACKEND_TYPE_GCP",
+		2: "BACKEND_TYPE_TUNNEL",
+	}
+	BackendType_value = map[string]int32{
+		"BACKEND_TYPE_UNSPECIFIED": 0,
+		"BACKEND_TYPE_GCP":         1,
+		"BACKEND_TYPE_TUNNEL":      2,
+	}
+)
+
+func (x BackendType) Enum() *BackendType {
+	p := new(BackendType)
+	*p = x
+	return p
+}
+
+func (x BackendType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BackendType) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_config_proto_enumTypes[0].Descriptor()
+}
+
+func (BackendType) Type() protoreflect.EnumType {
+	return &file_containarium_v1_config_proto_enumTypes[0]
+}
+
+func (x BackendType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BackendType.Descriptor instead.
+func (BackendType) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{0}
+}
+
 // Config represents the system-wide configuration for Containarium
 type Config struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -915,6 +965,162 @@ func (x *GetSystemInfoResponse) GetInfo() *SystemInfo {
 	return nil
 }
 
+// BackendInfo contains information about a backend instance
+type BackendInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique backend identifier (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Backend type
+	Type BackendType `protobuf:"varint,2,opt,name=type,proto3,enum=containarium.v1.BackendType" json:"type,omitempty"`
+	// Whether the backend is currently healthy
+	Healthy bool `protobuf:"varint,3,opt,name=healthy,proto3" json:"healthy,omitempty"`
+	// Priority (lower = preferred, GCP=0, tunnel=10)
+	Priority      int32 `protobuf:"varint,4,opt,name=priority,proto3" json:"priority,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackendInfo) Reset() {
+	*x = BackendInfo{}
+	mi := &file_containarium_v1_config_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackendInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackendInfo) ProtoMessage() {}
+
+func (x *BackendInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackendInfo.ProtoReflect.Descriptor instead.
+func (*BackendInfo) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *BackendInfo) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *BackendInfo) GetType() BackendType {
+	if x != nil {
+		return x.Type
+	}
+	return BackendType_BACKEND_TYPE_UNSPECIFIED
+}
+
+func (x *BackendInfo) GetHealthy() bool {
+	if x != nil {
+		return x.Healthy
+	}
+	return false
+}
+
+func (x *BackendInfo) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+// ListBackendsRequest is the request to list available backends
+type ListBackendsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBackendsRequest) Reset() {
+	*x = ListBackendsRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBackendsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBackendsRequest) ProtoMessage() {}
+
+func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
+func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{13}
+}
+
+// ListBackendsResponse is the response from listing backends
+type ListBackendsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// List of available backends
+	Backends      []*BackendInfo `protobuf:"bytes,1,rep,name=backends,proto3" json:"backends,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBackendsResponse) Reset() {
+	*x = ListBackendsResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBackendsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBackendsResponse) ProtoMessage() {}
+
+func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
+func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
+	if x != nil {
+		return x.Backends
+	}
+	return nil
+}
+
 var File_containarium_v1_config_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_config_proto_rawDesc = "" +
@@ -989,7 +1195,19 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x0ecpu_load_15min\x18\x11 \x01(\x01R\fcpuLoad15min\"\x16\n" +
 	"\x14GetSystemInfoRequest\"H\n" +
 	"\x15GetSystemInfoResponse\x12/\n" +
-	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04infoBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04info\"\x85\x01\n" +
+	"\vBackendInfo\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
+	"\x04type\x18\x02 \x01(\x0e2\x1c.containarium.v1.BackendTypeR\x04type\x12\x18\n" +
+	"\ahealthy\x18\x03 \x01(\bR\ahealthy\x12\x1a\n" +
+	"\bpriority\x18\x04 \x01(\x05R\bpriority\"\x15\n" +
+	"\x13ListBackendsRequest\"P\n" +
+	"\x14ListBackendsResponse\x128\n" +
+	"\bbackends\x18\x01 \x03(\v2\x1c.containarium.v1.BackendInfoR\bbackends*Z\n" +
+	"\vBackendType\x12\x1c\n" +
+	"\x18BACKEND_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10BACKEND_TYPE_GCP\x10\x01\x12\x17\n" +
+	"\x13BACKEND_TYPE_TUNNEL\x10\x02BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_config_proto_rawDescOnce sync.Once
@@ -1003,37 +1221,44 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_config_proto_rawDescData
 }
 
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_containarium_v1_config_proto_goTypes = []any{
-	(*Config)(nil),                // 0: containarium.v1.Config
-	(*IncusConfig)(nil),           // 1: containarium.v1.IncusConfig
-	(*NetworkConfig)(nil),         // 2: containarium.v1.NetworkConfig
-	(*StorageConfig)(nil),         // 3: containarium.v1.StorageConfig
-	(*SecurityConfig)(nil),        // 4: containarium.v1.SecurityConfig
-	(*GetConfigRequest)(nil),      // 5: containarium.v1.GetConfigRequest
-	(*GetConfigResponse)(nil),     // 6: containarium.v1.GetConfigResponse
-	(*UpdateConfigRequest)(nil),   // 7: containarium.v1.UpdateConfigRequest
-	(*UpdateConfigResponse)(nil),  // 8: containarium.v1.UpdateConfigResponse
-	(*SystemInfo)(nil),            // 9: containarium.v1.SystemInfo
-	(*GetSystemInfoRequest)(nil),  // 10: containarium.v1.GetSystemInfoRequest
-	(*GetSystemInfoResponse)(nil), // 11: containarium.v1.GetSystemInfoResponse
-	(*ResourceLimits)(nil),        // 12: containarium.v1.ResourceLimits
+	(BackendType)(0),              // 0: containarium.v1.BackendType
+	(*Config)(nil),                // 1: containarium.v1.Config
+	(*IncusConfig)(nil),           // 2: containarium.v1.IncusConfig
+	(*NetworkConfig)(nil),         // 3: containarium.v1.NetworkConfig
+	(*StorageConfig)(nil),         // 4: containarium.v1.StorageConfig
+	(*SecurityConfig)(nil),        // 5: containarium.v1.SecurityConfig
+	(*GetConfigRequest)(nil),      // 6: containarium.v1.GetConfigRequest
+	(*GetConfigResponse)(nil),     // 7: containarium.v1.GetConfigResponse
+	(*UpdateConfigRequest)(nil),   // 8: containarium.v1.UpdateConfigRequest
+	(*UpdateConfigResponse)(nil),  // 9: containarium.v1.UpdateConfigResponse
+	(*SystemInfo)(nil),            // 10: containarium.v1.SystemInfo
+	(*GetSystemInfoRequest)(nil),  // 11: containarium.v1.GetSystemInfoRequest
+	(*GetSystemInfoResponse)(nil), // 12: containarium.v1.GetSystemInfoResponse
+	(*BackendInfo)(nil),           // 13: containarium.v1.BackendInfo
+	(*ListBackendsRequest)(nil),   // 14: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),  // 15: containarium.v1.ListBackendsResponse
+	(*ResourceLimits)(nil),        // 16: containarium.v1.ResourceLimits
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
-	1,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	12, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
-	2,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
-	3,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
-	4,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	0,  // 5: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
-	0,  // 6: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
-	0,  // 7: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
-	9,  // 8: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
-	9,  // [9:9] is the sub-list for method output_type
-	9,  // [9:9] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	2,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
+	16, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	3,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
+	4,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
+	5,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
+	1,  // 5: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
+	1,  // 6: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
+	1,  // 7: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
+	10, // 8: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
+	0,  // 9: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
+	13, // 10: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -1047,13 +1272,14 @@ func file_containarium_v1_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   12,
+			NumEnums:      1,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_containarium_v1_config_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_config_proto_depIdxs,
+		EnumInfos:         file_containarium_v1_config_proto_enumTypes,
 		MessageInfos:      file_containarium_v1_config_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_config_proto = out.File

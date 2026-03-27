@@ -191,3 +191,34 @@ message GetSystemInfoResponse {
   // System information
   SystemInfo info = 1;
 }
+
+// BackendType represents the type of backend instance
+enum BackendType {
+  BACKEND_TYPE_UNSPECIFIED = 0;
+  BACKEND_TYPE_GCP = 1;
+  BACKEND_TYPE_TUNNEL = 2;
+}
+
+// BackendInfo contains information about a backend instance
+message BackendInfo {
+  // Unique backend identifier (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+  string id = 1;
+
+  // Backend type
+  BackendType type = 2;
+
+  // Whether the backend is currently healthy
+  bool healthy = 3;
+
+  // Priority (lower = preferred, GCP=0, tunnel=10)
+  int32 priority = 4;
+}
+
+// ListBackendsRequest is the request to list available backends
+message ListBackendsRequest {}
+
+// ListBackendsResponse is the response from listing backends
+message ListBackendsResponse {
+  // List of available backends
+  repeated BackendInfo backends = 1;
+}

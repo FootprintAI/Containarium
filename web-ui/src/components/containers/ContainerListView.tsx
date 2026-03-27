@@ -142,6 +142,7 @@ export default function ContainerListView({
             <TableCell><strong>CPU</strong></TableCell>
             <TableCell><strong>Memory</strong></TableCell>
             <TableCell><strong>Disk</strong></TableCell>
+            <TableCell><strong>Node</strong></TableCell>
             <TableCell><strong>Labels</strong></TableCell>
             <TableCell align="right"><strong>Actions</strong></TableCell>
           </TableRow>
@@ -229,6 +230,19 @@ export default function ContainerListView({
                     <Typography variant="body2" color="text.secondary">
                       {container.disk || '-'}
                     </Typography>
+                  )}
+                </TableCell>
+
+                <TableCell>
+                  {container.backendId ? (
+                    <Chip
+                      label={container.backendId}
+                      size="small"
+                      variant="outlined"
+                      color={container.backendId.startsWith('tunnel-') ? 'secondary' : 'primary'}
+                    />
+                  ) : (
+                    <Typography variant="caption" color="text.secondary">-</Typography>
                   )}
                 </TableCell>
 

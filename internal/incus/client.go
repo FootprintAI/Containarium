@@ -59,6 +59,29 @@ func (n NICDevice) ToMap() map[string]string {
 	return m
 }
 
+// GPUDevice represents a GPU device configuration for passthrough
+type GPUDevice struct {
+	// ID is the GPU device ID (e.g., "0" for first GPU).
+	// Leave empty to pass through all GPUs.
+	ID string
+	// PCI is the PCI address (e.g., "0000:0b:00.0") for a specific GPU.
+	// Takes precedence over ID if set.
+	PCI string
+}
+
+// ToMap converts GPUDevice to the map format required by Incus API
+func (g GPUDevice) ToMap() map[string]string {
+	m := map[string]string{
+		"type": "gpu",
+	}
+	if g.PCI != "" {
+		m["pci"] = g.PCI
+	} else if g.ID != "" {
+		m["id"] = g.ID
+	}
+	return m
+}
+
 // ContainerConfig holds configuration for creating a container
 type ContainerConfig struct {
 	Name                   string
@@ -67,6 +90,7 @@ type ContainerConfig struct {
 	Memory                 string
 	Disk                   *DiskDevice // Root disk configuration
 	NIC                    *NICDevice  // Network interface configuration
+	GPU                    *GPUDevice  // GPU device configuration for passthrough
 	EnableNesting          bool
 	EnablePodmanPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
 	AutoStart              bool
@@ -108,6 +132,7 @@ type ContainerInfo struct {
 	Labels    map[string]string
 	Role      Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
 	CreatedAt time.Time
+	BackendID string // Backend this container runs on (populated by PeerPool fan-out)
 }
 
 // ContainerMetrics holds runtime metrics for a container
@@ -258,6 +283,12 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 			fmt.Printf("[DEBUG] CreateContainer - NIC: name=%s, network=%s, static_ip=%s\n",
 				config.NIC.Name, config.NIC.Network, config.NIC.IPv4Address)
 		}
+	}
+
+	// GPU device passthrough
+	if config.GPU != nil {
+		req.Devices["gpu"] = config.GPU.ToMap()
+		fmt.Printf("[DEBUG] CreateContainer - GPU: id=%s, pci=%s\n", config.GPU.ID, config.GPU.PCI)
 	}
 
 	// Create the container

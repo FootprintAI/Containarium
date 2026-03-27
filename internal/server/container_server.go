@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/grpc/metadata"
 )
 
 // PendingCreation tracks an async container creation
@@ -43,6 +45,7 @@ type ContainerServer struct {
 	alertRelayConfigFn   func(webhookURL, secret string) // callback to update gateway relay config
 	coreServices         *CoreServices
 	daemonConfigStore    *app.DaemonConfigStore
+	peerPool             *PeerPool
 }
 
 // NewContainerServer creates a new container server
@@ -65,6 +68,27 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		return nil, fmt.Errorf("username is required")
 	}
 
+	// Route to peer if backend_id specifies a remote backend
+	if req.BackendId != "" && s.peerPool != nil {
+		localID := s.peerPool.LocalBackendID()
+		if req.BackendId != localID && req.BackendId != "" {
+			peer := s.peerPool.Get(req.BackendId)
+			if peer == nil {
+				return nil, fmt.Errorf("backend %q not found", req.BackendId)
+			}
+			if !peer.Healthy {
+				return nil, fmt.Errorf("backend %q is not healthy", req.BackendId)
+			}
+			// Forward to peer — extract auth token from context
+			authToken := extractAuthToken(ctx)
+			respBody, err := peer.ForwardCreateContainer(authToken, req)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create container on backend %q: %w", req.BackendId, err)
+			}
+			return respBody, nil
+		}
+	}
+
 	// Build create options
 	opts := container.CreateOptions{
 		Username:               req.Username,
@@ -82,6 +106,11 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		opts.CPU = req.Resources.Cpu
 		opts.Memory = req.Resources.Memory
 		opts.Disk = req.Resources.Disk
+	}
+
+	// Set GPU passthrough
+	if req.Gpu != "" {
+		opts.GPU = req.Gpu
 	}
 
 	// Set static IP if specified
@@ -226,10 +255,26 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		filtered = append(filtered, c)
 	}
 
+	// Tag local containers with this daemon's backend ID
+	if s.peerPool != nil && s.peerPool.LocalBackendID() != "" {
+		for i := range filtered {
+			filtered[i].BackendID = s.peerPool.LocalBackendID()
+		}
+	}
+
 	// Convert to protobuf
 	var protoContainers []*pb.Container
 	for i := range filtered {
 		protoContainers = append(protoContainers, toProtoContainer(&filtered[i]))
+	}
+
+	// Add containers from peer backends
+	if s.peerPool != nil {
+		authToken := extractAuthToken(ctx)
+		peerContainers := s.peerPool.ListContainers(authToken)
+		for i := range peerContainers {
+			protoContainers = append(protoContainers, toProtoContainer(&peerContainers[i]))
+		}
 	}
 
 	return &pb.ListContainersResponse{
@@ -274,6 +319,21 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 	// Try to get from Incus
 	info, err := s.manager.Get(req.Username)
 	if err != nil {
+		// Not found locally — try peers
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peerContainers := s.peerPool.ListContainers(authToken)
+			containerName := req.Username + "-container"
+			for _, pc := range peerContainers {
+				if pc.Name == containerName {
+					proto := toProtoContainer(&pc)
+					return &pb.GetContainerResponse{
+						Container: proto,
+					}, nil
+				}
+			}
+		}
+
 		// If we had a pending creation that completed, clean it up
 		if hasPending && pending.Done {
 			s.pendingMu.Lock()
@@ -306,6 +366,28 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 
 	err := s.manager.Delete(req.Username, req.Force)
 	if err != nil {
+		// Not found locally — try peers
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer != nil {
+				forceParam := ""
+				if req.Force {
+					forceParam = "?force=true"
+				}
+				_, statusCode, fwdErr := peer.ForwardRequest("DELETE", fmt.Sprintf("/v1/containers/%s%s", req.Username, forceParam), authToken, nil)
+				if fwdErr != nil {
+					return nil, fmt.Errorf("failed to delete container on peer %s: %w", peer.ID, fwdErr)
+				}
+				if statusCode >= 400 {
+					return nil, fmt.Errorf("peer %s returned status %d for delete", peer.ID, statusCode)
+				}
+				return &pb.DeleteContainerResponse{
+					Message:       fmt.Sprintf("Container for user %s deleted on backend %s", req.Username, peer.ID),
+					ContainerName: containerName,
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("failed to delete container: %w", err)
 	}
 
@@ -325,6 +407,19 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 	}
 
 	if err := s.manager.Start(req.Username); err != nil {
+		// Try peer
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer != nil {
+				_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/start", req.Username), authToken, nil)
+				if fwdErr == nil {
+					return &pb.StartContainerResponse{
+						Message: fmt.Sprintf("Container for user %s started on backend %s", req.Username, peer.ID),
+					}, nil
+				}
+			}
+		}
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
@@ -348,6 +443,20 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 	}
 
 	if err := s.manager.Stop(req.Username, req.Force); err != nil {
+		// Try peer
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer != nil {
+				body, _ := json.Marshal(map[string]bool{"force": req.Force})
+				_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/stop", req.Username), authToken, body)
+				if fwdErr == nil {
+					return &pb.StopContainerResponse{
+						Message: fmt.Sprintf("Container for user %s stopped on backend %s", req.Username, peer.ID),
+					}, nil
+				}
+			}
+		}
 		return nil, fmt.Errorf("failed to stop container: %w", err)
 	}
 
@@ -618,12 +727,35 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		CreatedAt:     info.CreatedAt.Unix(),
 		PodmanEnabled: true,  // TODO: Get from container config
 		Stack:         "",    // TODO: Get from container labels
+		GpuDevice:     info.GPU,
+		BackendId:     info.BackendID,
 	}
 }
 
 // GetManager returns the container manager for reuse by other components
 func (s *ContainerServer) GetManager() *container.Manager {
 	return s.manager
+}
+
+// extractAuthToken extracts the JWT token from gRPC metadata.
+func extractAuthToken(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if vals := md.Get("authorization"); len(vals) > 0 {
+		token := vals[0]
+		if len(token) > 7 && token[:7] == "Bearer " {
+			return token[7:]
+		}
+		return token
+	}
+	return ""
+}
+
+// SetPeerPool sets the peer pool for multi-backend support
+func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
+	s.peerPool = pool
 }
 
 // SetCollaboratorManager sets the collaborator manager for handling collaborator operations

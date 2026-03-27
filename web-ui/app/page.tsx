@@ -99,6 +99,7 @@ export default function Home() {
     containers,
     coreServices,
     systemInfo,
+    backends,
     isLoading: containersLoading,
     error: containersError,
     createContainer,
@@ -466,6 +467,7 @@ export default function Home() {
         onClose={() => setCreateContainerOpen(false)}
         onSubmit={handleCreateContainer}
         networkCidr={systemInfo?.networkCidr}
+        backends={backends}
       />
 
       <DeleteConfirmDialog

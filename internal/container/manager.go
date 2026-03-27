@@ -23,6 +23,7 @@ type CreateOptions struct {
 	CPU                    string
 	Memory                 string
 	Disk                   string // Disk size (e.g., "20GB")
+	GPU                    string // GPU device ID for passthrough (e.g., "0", PCI address, or empty for none)
 	StaticIP               string // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 	SSHKeys                []string
 	Labels                 map[string]string // Kubernetes-style labels
@@ -81,6 +82,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 			Name:        "eth0",
 			Network:     "incusbr0",
 			IPv4Address: opts.StaticIP,
+		}
+	}
+
+	// Configure GPU passthrough
+	if opts.GPU != "" {
+		config.GPU = &incus.GPUDevice{
+			ID: opts.GPU,
 		}
 	}
 

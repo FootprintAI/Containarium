@@ -11,13 +11,18 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+// ExternalPortBase is the starting port for external tunnel proxy listeners.
+// Each tunnel backend gets ExternalPortBase + index (e.g., 18001, 18002, ...).
+const ExternalPortBase = 18000
+
 // TunnelSpot represents a connected remote spot instance.
 type TunnelSpot struct {
-	ID        string
-	Session   *yamux.Session
-	LocalIP   string // assigned loopback alias, e.g. "127.0.0.2"
-	Ports     []int  // ports this spot serves
-	Connected time.Time
+	ID           string
+	Session      *yamux.Session
+	LocalIP      string // assigned loopback alias, e.g. "127.0.0.2"
+	ExternalPort int    // externally reachable port for API access (e.g., 18001)
+	Ports        []int  // ports this spot serves
+	Connected    time.Time
 }
 
 // TunnelRegistry tracks connected tunnel clients and assigns loopback aliases.
@@ -72,12 +77,15 @@ func (r *TunnelRegistry) Register(spotID string, session *yamux.Session, ports [
 		return "", fmt.Errorf("add loopback alias %s: %w", localIP, err)
 	}
 
+	externalPort := ExternalPortBase + int(octet)
+
 	spot := &TunnelSpot{
-		ID:        spotID,
-		Session:   session,
-		LocalIP:   localIP,
-		Ports:     ports,
-		Connected: time.Now(),
+		ID:           spotID,
+		Session:      session,
+		LocalIP:      localIP,
+		ExternalPort: externalPort,
+		Ports:        ports,
+		Connected:    time.Now(),
 	}
 	r.spots[spotID] = spot
 
@@ -138,6 +146,17 @@ func (r *TunnelRegistry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.spots)
+}
+
+// Spots returns a snapshot of all connected spots.
+func (r *TunnelRegistry) Spots() []*TunnelSpot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]*TunnelSpot, 0, len(r.spots))
+	for _, spot := range r.spots {
+		result = append(result, spot)
+	}
+	return result
 }
 
 func (r *TunnelRegistry) allocateOctet(spotID string) (byte, error) {

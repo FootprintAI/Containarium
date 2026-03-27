@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react';
 import useSWR from 'swr';
-import { Container, CreateContainerRequest, SystemInfo } from '@/src/types/container';
+import { Container, CreateContainerRequest, SystemInfo, BackendInfo } from '@/src/types/container';
 import { Server } from '@/src/types/server';
 import { getClient, CoreService } from '@/src/lib/api/client';
 import { useEventStream } from '@/src/lib/events/useEventStream';
@@ -76,6 +76,28 @@ export function useContainers(server: Server | null) {
       refreshInterval: isVisible ? 60000 : 0, // Refresh every minute (paused when tab hidden)
       revalidateOnFocus: false,
       dedupingInterval: 30000,
+    }
+  );
+
+  // Fetch available backends
+  const backendsFetcher = async (): Promise<BackendInfo[]> => {
+    if (!server) return [];
+    const client = getClient(server);
+    try {
+      return await client.listBackends();
+    } catch {
+      return [];
+    }
+  };
+
+  const backendsKey = server ? 'backends-' + server.id : null;
+  const { data: backends } = useSWR<BackendInfo[]>(
+    backendsKey,
+    backendsFetcher,
+    {
+      refreshInterval: isVisible ? 30000 : 0,
+      revalidateOnFocus: false,
+      dedupingInterval: 15000,
     }
   );
 
@@ -258,6 +280,7 @@ export function useContainers(server: Server | null) {
     containers: data || [],
     coreServices: coreServices || [],
     systemInfo: systemInfo || null,
+    backends: backends || [],
     isLoading,
     error,
     createContainer,

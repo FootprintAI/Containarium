@@ -109,6 +109,7 @@ type containerResponse struct {
 	Labels        map[string]string `json:"labels"`
 	Image         string            `json:"image"`
 	PodmanEnabled bool              `json:"dockerEnabled"`
+	GpuDevice     string            `json:"gpuDevice"`
 }
 
 type resourceLimits struct {
@@ -168,6 +169,8 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 		info.Memory = c.Resources.Memory
 	}
 
+	info.GPU = c.GpuDevice
+
 	// Parse createdAt timestamp (RFC3339 format from protobuf JSON)
 	if c.CreatedAt != "" {
 		// CreatedAt may be a Unix timestamp string or RFC3339
@@ -203,7 +206,7 @@ func (c *HTTPClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via HTTP
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -218,6 +221,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		"image":        image,
 		"enablePodman": enablePodman,
 		"stack":        stack,
+		"gpu":          gpu,
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", reqBody)

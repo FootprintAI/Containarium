@@ -22,6 +22,7 @@ export interface Container {
   updatedAt: string;
   labels: Record<string, string>;
   sshKeys: string[];
+  backendId?: string;
 }
 
 /**
@@ -40,6 +41,18 @@ export interface CreateContainerRequest {
   enablePodman?: boolean;
   stack?: string; // Software stack to install (e.g., "nodejs", "python", "fullstack")
   staticIp?: string; // Static IP address (e.g., "10.100.0.100") - empty for DHCP
+  gpu?: string; // GPU device ID for passthrough (e.g., "0" for first GPU)
+  backendId?: string; // Target backend for creation (empty = primary)
+}
+
+/**
+ * Backend instance information
+ */
+export interface BackendInfo {
+  id: string;
+  type: 'gcp' | 'tunnel';
+  healthy: boolean;
+  priority: number;
 }
 
 /**

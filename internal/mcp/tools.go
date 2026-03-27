@@ -54,6 +54,10 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Enable Podman support (default: true)",
 					},
+					"gpu": map[string]interface{}{
+						"type":        "string",
+						"description": "GPU device ID for passthrough (e.g., '0' for first GPU, PCI address, or empty for none)",
+					},
 				},
 				"required": []string{"username"},
 			},
@@ -179,6 +183,7 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		},
 		Image:        getStringArg(args, "image", "images:ubuntu/24.04"),
 		EnablePodman: getBoolArg(args, "enable_podman", true),
+		GPU:          getStringArg(args, "gpu", ""),
 	}
 
 	// Handle SSH keys

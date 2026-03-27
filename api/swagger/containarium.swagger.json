@@ -3833,6 +3833,14 @@
         "stack": {
           "type": "string",
           "title": "Software stack installed in the container (e.g., \"nodejs\", \"python\")"
+        },
+        "gpuDevice": {
+          "type": "string",
+          "title": "GPU device info (e.g., GPU ID or PCI address if attached)"
+        },
+        "backendId": {
+          "type": "string",
+          "title": "Backend ID this container runs on (e.g., \"gcp-spot\", \"tunnel-fts-5900x-gpu\")"
         }
       },
       "title": "Container represents a complete container instance"
@@ -3999,6 +4007,14 @@
         "stack": {
           "type": "string",
           "title": "Software stack to install (optional, e.g., \"nodejs\", \"python\", \"fullstack\")\nSee available stacks in configs/stacks.yaml"
+        },
+        "gpu": {
+          "type": "string",
+          "title": "GPU device ID for passthrough (e.g., \"0\" for first GPU, PCI address, or empty for none)"
+        },
+        "backendId": {
+          "type": "string",
+          "title": "Target backend ID for creation (empty = primary backend)"
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -5517,6 +5533,10 @@
         "disk": {
           "type": "string",
           "title": "Disk/storage limit (e.g., \"50GB\", \"100GB\")"
+        },
+        "gpu": {
+          "type": "string",
+          "title": "GPU device ID for passthrough (e.g., \"0\" for first GPU, PCI address, or empty for none)"
         }
       },
       "title": "ResourceLimits defines resource constraints for a container"

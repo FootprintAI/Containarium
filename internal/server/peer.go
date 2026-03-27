@@ -1,0 +1,509 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/footprintai/containarium/internal/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
+
+// PeerClient represents a connection to a remote containarium daemon.
+type PeerClient struct {
+	ID      string
+	Addr    string // host:port of the remote daemon's REST API
+	Healthy bool
+	client  *http.Client
+	token   string // JWT token for auth (if needed)
+}
+
+// PeerPool manages connections to remote containarium daemon peers.
+// The primary daemon uses this to fan out API calls to other backends.
+type PeerPool struct {
+	mu    sync.RWMutex
+	peers map[string]*PeerClient
+
+	// Auto-discovery from sentinel
+	sentinelURL    string
+	discoveryStop  chan struct{}
+	localBackendID string // this daemon's backend ID
+}
+
+// NewPeerPool creates a new peer pool.
+// If sentinelURL is provided, it will auto-discover tunnel backends.
+// localBackendID is used to tag local containers.
+func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string) *PeerPool {
+	p := &PeerPool{
+		peers:          make(map[string]*PeerClient),
+		sentinelURL:    sentinelURL,
+		localBackendID: localBackendID,
+	}
+
+	// Add static peers
+	for _, addr := range staticPeers {
+		p.peers[addr] = &PeerClient{
+			ID:   addr,
+			Addr: addr,
+			client: &http.Client{
+				Timeout: 30 * time.Second,
+			},
+		}
+	}
+
+	return p
+}
+
+// StartDiscovery starts background auto-discovery of peers from the sentinel.
+func (p *PeerPool) StartDiscovery(ctx context.Context) {
+	if p.sentinelURL == "" {
+		return
+	}
+
+	p.discoveryStop = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		// Initial discovery
+		p.discover()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.discoveryStop:
+				return
+			case <-ticker.C:
+				p.discover()
+			}
+		}
+	}()
+	log.Printf("[peers] auto-discovery started (sentinel: %s)", p.sentinelURL)
+}
+
+// discover fetches peer list from sentinel's /sentinel/peers endpoint.
+func (p *PeerPool) discover() {
+	url := p.sentinelURL + "/sentinel/peers"
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Printf("[peers] discovery failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
+	var result struct {
+		Peers []struct {
+			ID        string `json:"id"`
+			ProxyPath string `json:"proxy_path"`
+			Healthy   bool   `json:"healthy"`
+		} `json:"peers"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		log.Printf("[peers] discovery parse error: %v", err)
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Build new peer set from discovery
+	// Peer address is the sentinel's binary server (port 8888) + proxy path
+	// e.g., "10.130.0.13:8888/peer/tunnel-fts-5900x-gpu"
+	sentinelHost := extractHost(p.sentinelURL)
+	sentinelPort := extractPort(p.sentinelURL)
+
+	discovered := make(map[string]bool)
+	for _, peer := range result.Peers {
+		discovered[peer.ID] = true
+
+		// The peer addr includes the proxy path prefix
+		// API calls will be: http://sentinelHost:sentinelPort/peer/<id>/v1/containers
+		peerAddr := fmt.Sprintf("%s:%s%s", sentinelHost, sentinelPort, peer.ProxyPath)
+
+		if existing, ok := p.peers[peer.ID]; ok {
+			existing.Addr = peerAddr
+			existing.Healthy = peer.Healthy
+		} else {
+			p.peers[peer.ID] = &PeerClient{
+				ID:      peer.ID,
+				Addr:    peerAddr,
+				Healthy: peer.Healthy,
+				client: &http.Client{
+					Timeout: 30 * time.Second,
+				},
+			}
+			log.Printf("[peers] discovered new peer: %s via %s", peer.ID, peerAddr)
+		}
+	}
+
+	// Remove peers that are no longer in the sentinel's list
+	// (but don't remove static peers)
+	for id := range p.peers {
+		if !discovered[id] && isDiscoveredPeer(id) {
+			log.Printf("[peers] peer removed: %s", id)
+			delete(p.peers, id)
+		}
+	}
+}
+
+// LocalBackendID returns this daemon's backend ID.
+func (p *PeerPool) LocalBackendID() string {
+	return p.localBackendID
+}
+
+// Peers returns all current peers.
+func (p *PeerPool) Peers() []*PeerClient {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	result := make([]*PeerClient, 0, len(p.peers))
+	for _, peer := range p.peers {
+		result = append(result, peer)
+	}
+	return result
+}
+
+// Get returns a peer by ID.
+func (p *PeerPool) Get(id string) *PeerClient {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.peers[id]
+}
+
+// ListContainers fans out to all healthy peers and returns merged container list.
+// Each container gets a backend_id field set to the peer's ID.
+func (p *PeerPool) ListContainers(authToken string) []incus.ContainerInfo {
+	peers := p.Peers()
+	if len(peers) == 0 {
+		return nil
+	}
+
+	type result struct {
+		peerID     string
+		containers []incus.ContainerInfo
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan result, len(peers))
+
+	for _, peer := range peers {
+		if !peer.Healthy {
+			continue
+		}
+		wg.Add(1)
+		go func(pc *PeerClient) {
+			defer wg.Done()
+			containers, err := pc.fetchContainers(authToken)
+			if err != nil {
+				log.Printf("[peers] failed to list containers from %s: %v", pc.ID, err)
+				return
+			}
+			results <- result{peerID: pc.ID, containers: containers}
+		}(peer)
+	}
+
+	wg.Wait()
+	close(results)
+
+	var all []incus.ContainerInfo
+	for res := range results {
+		all = append(all, res.containers...)
+	}
+	return all
+}
+
+// fetchContainers fetches containers from a single peer.
+func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, error) {
+	// Addr includes proxy path, e.g. "10.130.0.13:8888/peer/tunnel-fts-5900x-gpu"
+	url := fmt.Sprintf("http://%s/v1/containers", pc.Addr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+
+	resp, err := pc.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var data struct {
+		Containers []struct {
+			Name      string `json:"name"`
+			Username  string `json:"username"`
+			State     string `json:"state"`
+			Resources struct {
+				CPU    string `json:"cpu"`
+				Memory string `json:"memory"`
+				Disk   string `json:"disk"`
+				GPU    string `json:"gpu"`
+			} `json:"resources"`
+			Network struct {
+				IPAddress string `json:"ipAddress"`
+			} `json:"network"`
+			Labels    map[string]string `json:"labels"`
+			GpuDevice string            `json:"gpuDevice"`
+			BackendID string            `json:"backendId"`
+		} `json:"containers"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("parse error: %w", err)
+	}
+
+	containers := make([]incus.ContainerInfo, 0, len(data.Containers))
+	for _, c := range data.Containers {
+		// Map state string
+		state := c.State
+		if state == "CONTAINER_STATE_RUNNING" {
+			state = "Running"
+		} else if state == "CONTAINER_STATE_STOPPED" {
+			state = "Stopped"
+		}
+
+		containers = append(containers, incus.ContainerInfo{
+			Name:      c.Name,
+			State:     state,
+			IPAddress: c.Network.IPAddress,
+			CPU:       c.Resources.CPU,
+			Memory:    c.Resources.Memory,
+			Disk:      c.Resources.Disk,
+			GPU:       c.GpuDevice,
+			Labels:    c.Labels,
+			BackendID: pc.ID, // Tag with peer's backend ID
+		})
+	}
+	return containers, nil
+}
+
+// ForwardCreateContainer forwards a create container request to a specific peer.
+func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
+	reqBody := map[string]interface{}{
+		"username": pbReq.Username,
+		"image":    pbReq.Image,
+		"resources": map[string]string{
+			"cpu":    pbReq.Resources.GetCpu(),
+			"memory": pbReq.Resources.GetMemory(),
+			"disk":   pbReq.Resources.GetDisk(),
+		},
+		"ssh_keys":      pbReq.SshKeys,
+		"enable_podman": pbReq.EnablePodman,
+		"stack":         pbReq.Stack,
+		"gpu":           pbReq.Gpu,
+		"static_ip":     pbReq.StaticIp,
+		"labels":        pbReq.Labels,
+		"async":         pbReq.Async,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("http://%s/v1/containers", pc.Addr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+
+	resp, err := pc.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("peer returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse the response into proto format
+	var data struct {
+		Container struct {
+			Name     string `json:"name"`
+			Username string `json:"username"`
+			State    string `json:"state"`
+			Network  struct {
+				IPAddress string `json:"ipAddress"`
+			} `json:"network"`
+			Resources struct {
+				CPU    string `json:"cpu"`
+				Memory string `json:"memory"`
+				Disk   string `json:"disk"`
+			} `json:"resources"`
+		} `json:"container"`
+		Message    string `json:"message"`
+		SshCommand string `json:"sshCommand"`
+	}
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	return &pb.CreateContainerResponse{
+		Container: &pb.Container{
+			Name:     data.Container.Name,
+			Username: data.Container.Username,
+			BackendId: pc.ID,
+			Network: &pb.NetworkInfo{
+				IpAddress: data.Container.Network.IPAddress,
+			},
+			Resources: &pb.ResourceLimits{
+				Cpu:    data.Container.Resources.CPU,
+				Memory: data.Container.Resources.Memory,
+				Disk:   data.Container.Resources.Disk,
+			},
+		},
+		Message:    data.Message,
+		SshCommand: data.SshCommand,
+	}, nil
+}
+
+// ForwardRequest forwards an arbitrary HTTP request to the peer and returns the response body.
+func (pc *PeerClient) ForwardRequest(method, path, authToken string, body []byte) ([]byte, int, error) {
+	url := fmt.Sprintf("http://%s%s", pc.Addr, path)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return nil, 0, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+
+	resp, err := pc.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return respBody, resp.StatusCode, nil
+}
+
+// FindContainerPeer searches all peers for a container by username.
+// Returns the peer that has it, or nil if not found on any peer.
+func (pp *PeerPool) FindContainerPeer(username, authToken string) *PeerClient {
+	containerName := username + "-container"
+	for _, peer := range pp.Peers() {
+		if !peer.Healthy {
+			continue
+		}
+		containers, err := peer.fetchContainers(authToken)
+		if err != nil {
+			continue
+		}
+		for _, c := range containers {
+			if c.Name == containerName {
+				return peer
+			}
+		}
+	}
+	return nil
+}
+
+// extractHost extracts the hostname/IP from a URL like "http://10.128.0.5:8081"
+func extractHost(rawURL string) string {
+	// Simple extraction — strip scheme and port
+	host := rawURL
+	if idx := len("http://"); len(host) > idx && host[:idx] == "http://" {
+		host = host[idx:]
+	}
+	if idx := len("https://"); len(host) > idx && host[:idx] == "https://" {
+		host = host[idx:]
+	}
+	// Strip port
+	for i := len(host) - 1; i >= 0; i-- {
+		if host[i] == ':' {
+			return host[:i]
+		}
+		if host[i] == '/' {
+			return host[:i]
+		}
+	}
+	return host
+}
+
+// extractPort extracts the port from a URL like "http://10.128.0.5:8888"
+func extractPort(rawURL string) string {
+	host := rawURL
+	// Strip scheme
+	if idx := strings.Index(host, "://"); idx >= 0 {
+		host = host[idx+3:]
+	}
+	// Strip path
+	if idx := strings.Index(host, "/"); idx >= 0 {
+		host = host[:idx]
+	}
+	// Extract port
+	if idx := strings.LastIndex(host, ":"); idx >= 0 {
+		return host[idx+1:]
+	}
+	return "8888" // default
+}
+
+// isDiscoveredPeer returns true if the peer ID looks like a tunnel-discovered peer.
+func isDiscoveredPeer(id string) bool {
+	return len(id) > 7 && id[:7] == "tunnel-"
+}
+
+// jsonReader wraps a byte slice as an io.Reader.
+func jsonReader(b []byte) io.Reader {
+	return io.NopCloser(io.Reader(byteReader(b)))
+}
+
+type byteReader []byte
+
+func (b byteReader) Read(p []byte) (n int, err error) {
+	return copy(p, b), io.EOF
+}

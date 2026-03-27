@@ -145,7 +145,11 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	log.Printf("[tunnel-server] spot %q authenticated, assigned %s, ports %v", hs.SpotID, localIP, hs.Ports)
 
 	// Start local TCP proxy listeners for each port
-	ts.startProxies(ctx, hs.SpotID, localIP, hs.Ports, session)
+	externalPort := 0
+	if spot := ts.registry.Get(hs.SpotID); spot != nil {
+		externalPort = spot.ExternalPort
+	}
+	ts.startProxies(ctx, hs.SpotID, localIP, externalPort, hs.Ports, session)
 
 	// Notify manager
 	spot := ts.registry.Get(hs.SpotID)
@@ -161,7 +165,9 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 // Connections to these listeners are proxied through the yamux session.
 // If binding to localIP fails (e.g., loopback alias not available on non-Linux),
 // it falls back to 127.0.0.1.
-func (ts *TunnelServer) startProxies(ctx context.Context, spotID, localIP string, ports []int, session *yamux.Session) {
+// For the health port (8080), it also binds on 0.0.0.0:externalPort so that
+// the primary daemon on another VM can reach this tunnel backend's API.
+func (ts *TunnelServer) startProxies(ctx context.Context, spotID, localIP string, externalPort int, ports []int, session *yamux.Session) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
@@ -185,8 +191,21 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID, localIP string
 			log.Printf("[tunnel-server] proxy listening on %s → tunnel → spot %s", addr, spotID)
 		}
 		listeners = append(listeners, ln)
-
 		go ts.proxyLoop(ctx, ln, port, session, spotID)
+
+		// For the health/API port (8080), also bind on an externally reachable port
+		// so the primary daemon can reach this tunnel backend
+		if port == 8080 && externalPort > 0 {
+			extAddr := fmt.Sprintf("0.0.0.0:%d", externalPort)
+			extLn, extErr := net.Listen("tcp", extAddr)
+			if extErr != nil {
+				log.Printf("[tunnel-server] failed to bind external port %s for spot %s: %v", extAddr, spotID, extErr)
+			} else {
+				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %s (for peer discovery)", extAddr, spotID)
+				listeners = append(listeners, extLn)
+				go ts.proxyLoop(ctx, extLn, port, session, spotID)
+			}
+		}
 	}
 	ts.proxies[spotID] = listeners
 }

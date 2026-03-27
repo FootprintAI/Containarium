@@ -39,6 +39,7 @@ var (
 	swaggerDir         string
 	networkSubnet      string
 	skipInfraInit      bool
+	standaloneMode     bool
 	enableAppHosting   bool
 	postgresConnString string
 	baseDomain         string
@@ -46,6 +47,9 @@ var (
 	caddyCertDir       string
 	alertWebhookURL    string
 	alertWebhookSecret string
+	sentinelURL        string
+	peerAddrs          []string
+	localBackendID     string
 )
 
 var daemonCmd = &cobra.Command{
@@ -108,6 +112,7 @@ func init() {
 	// Infrastructure settings
 	daemonCmd.Flags().StringVar(&networkSubnet, "network-subnet", "10.100.0.1/24", "IPv4 subnet for container network (CIDR format, e.g., 10.100.0.1/24)")
 	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
+	daemonCmd.Flags().BoolVar(&standaloneMode, "standalone", false, "Standalone mode: skip core containers (PostgreSQL, Caddy) and start immediately")
 
 	// App hosting settings
 	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
@@ -118,6 +123,11 @@ func init() {
 
 	// Alerting settings
 	daemonCmd.Flags().StringVar(&alertWebhookURL, "alert-webhook-url", "", "Webhook URL for alert notifications (optional)")
+
+	// Multi-backend peer settings
+	daemonCmd.Flags().StringVar(&sentinelURL, "sentinel-url", "", "Sentinel URL for auto-discovering tunnel peers (e.g., http://10.128.0.5:8081)")
+	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses (e.g., 10.128.0.5:18001)")
+	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -159,9 +169,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Wait for core containers (postgres, caddy) to be ready before proceeding.
 	// This prevents the race condition where the daemon starts before core
 	// containers are fully booted after a spot VM preemption/restart.
-	if err := waitForCoreContainers(incusClient, 2*time.Minute); err != nil {
-		log.Printf("Warning: %v", err)
-		log.Printf("  Proceeding anyway — some features may be unavailable")
+	if standaloneMode {
+		log.Printf("Standalone mode: skipping core containers and PostgreSQL")
+	} else {
+		if err := waitForCoreContainers(incusClient, 2*time.Minute); err != nil {
+			log.Printf("Warning: %v", err)
+			log.Printf("  Proceeding anyway — some features may be unavailable")
+		}
 	}
 
 	// Backfill role labels on core containers (for upgrades from older versions)
@@ -209,7 +223,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	// Auto-detect PostgreSQL container IP if no --postgres flag specified
-	if postgresConnString == "" {
+	if standaloneMode {
+		postgresConnString = "" // Skip PostgreSQL in standalone mode
+	} else if postgresConnString == "" {
 		if pgInfo, err := incusClient.FindContainerByRole(incus.RolePostgres); err == nil && pgInfo.IPAddress != "" {
 			postgresConnString = fmt.Sprintf(
 				"postgres://%s:%s@%s:%d/%s?sslmode=disable",
@@ -381,8 +397,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		DaemonConfigStore:    daemonConfigStore,
 		CaddyCertDir:         caddyCertDir,
 		VictoriaMetricsURL:   victoriaMetricsURL,
+		Standalone:           standaloneMode,
 		AlertWebhookURL:      alertWebhookURL,
 		AlertWebhookSecret:   alertWebhookSecret,
+		SentinelURL:          sentinelURL,
+		Peers:                peerAddrs,
+		LocalBackendID:       resolveBackendID(localBackendID),
 	}
 
 	// Create dual server
@@ -460,6 +480,17 @@ func hostIPFromCIDR(cidr string) string {
 		return cidr[:idx]
 	}
 	return cidr
+}
+
+// resolveBackendID returns the backend ID, defaulting to hostname if empty.
+func resolveBackendID(id string) string {
+	if id != "" {
+		return id
+	}
+	if h, err := os.Hostname(); err == nil {
+		return h
+	}
+	return "local"
 }
 
 // backfillCoreContainerLabels ensures role labels and boot priority are set on
