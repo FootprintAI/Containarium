@@ -793,6 +793,16 @@ func (c *Client) GetServerInfo() (*api.Server, error) {
 	return server, nil
 }
 
+// GPUInfo holds information about a GPU device
+type GPUInfo struct {
+	Vendor        string // e.g., "NVIDIA Corporation", "AMD", "Intel"
+	Model         string // e.g., "GeForce RTX 4090", "NVIDIA A100"
+	PCIAddress    string // e.g., "0000:0b:00.0"
+	DriverVersion string // e.g., "570.86.15"
+	CUDAVersion   string // NVIDIA only
+	VRAMBytes     int64  // VRAM in bytes (when available)
+}
+
 // SystemResources holds system resource information
 type SystemResources struct {
 	TotalCPUs          int32
@@ -805,6 +815,8 @@ type SystemResources struct {
 	CPULoad1Min  float64
 	CPULoad5Min  float64
 	CPULoad15Min float64
+	// GPU devices
+	GPUs []GPUInfo
 }
 
 // GetSystemResources gets system resource information from Incus
@@ -844,6 +856,34 @@ func (c *Client) GetSystemResources() (*SystemResources, error) {
 		res.CPULoad1Min = load1
 		res.CPULoad5Min = load5
 		res.CPULoad15Min = load15
+	}
+
+	// Detect GPU devices
+	for _, card := range resources.GPU.Cards {
+		gpu := GPUInfo{
+			PCIAddress:    card.PCIAddress,
+			DriverVersion: card.DriverVersion,
+		}
+		if card.Vendor != "" {
+			gpu.Vendor = card.Vendor
+		} else if card.VendorID != "" {
+			gpu.Vendor = card.VendorID
+		}
+		if card.Product != "" {
+			gpu.Model = card.Product
+		} else if card.ProductID != "" {
+			gpu.Model = card.ProductID
+		}
+		// Enrich with NVIDIA-specific info
+		if card.Nvidia != nil {
+			if card.Nvidia.Model != "" {
+				gpu.Model = card.Nvidia.Model
+			}
+			gpu.CUDAVersion = card.Nvidia.CUDAVersion
+			gpu.DriverVersion = card.Nvidia.NVRMVersion
+			gpu.Vendor = "NVIDIA"
+		}
+		res.GPUs = append(res.GPUs, gpu)
 	}
 
 	return res, nil

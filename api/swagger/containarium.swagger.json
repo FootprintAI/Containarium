@@ -4272,6 +4272,85 @@
       "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update",
       "title": "EventType represents the type of resource change event"
     },
+    "GPUInfo": {
+      "type": "object",
+      "properties": {
+        "vendor": {
+          "$ref": "#/definitions/GPUVendor",
+          "title": "GPU vendor"
+        },
+        "model": {
+          "$ref": "#/definitions/GPUModel",
+          "title": "GPU model (known models mapped to enum, or UNSPECIFIED for unknown)"
+        },
+        "modelName": {
+          "type": "string",
+          "title": "Raw model name string from the driver (for display when model is UNSPECIFIED)"
+        },
+        "pciAddress": {
+          "type": "string",
+          "title": "PCI address (e.g., \"0000:0b:00.0\")"
+        },
+        "driverVersion": {
+          "type": "string",
+          "title": "Driver version (e.g., \"570.86.15\")"
+        },
+        "cudaVersion": {
+          "type": "string",
+          "title": "CUDA version (e.g., \"12.7\") — NVIDIA only"
+        },
+        "vramBytes": {
+          "type": "string",
+          "format": "int64",
+          "title": "VRAM in bytes (when available)"
+        }
+      },
+      "title": "GPUInfo represents a GPU device on the system"
+    },
+    "GPUModel": {
+      "type": "string",
+      "enum": [
+        "GPU_MODEL_UNSPECIFIED",
+        "GPU_MODEL_NVIDIA_RTX_4090",
+        "GPU_MODEL_NVIDIA_RTX_4080",
+        "GPU_MODEL_NVIDIA_RTX_4070_TI",
+        "GPU_MODEL_NVIDIA_RTX_4070",
+        "GPU_MODEL_NVIDIA_RTX_3090",
+        "GPU_MODEL_NVIDIA_RTX_3080",
+        "GPU_MODEL_NVIDIA_RTX_5090",
+        "GPU_MODEL_NVIDIA_RTX_5080",
+        "GPU_MODEL_NVIDIA_A100",
+        "GPU_MODEL_NVIDIA_A10",
+        "GPU_MODEL_NVIDIA_A10G",
+        "GPU_MODEL_NVIDIA_H100",
+        "GPU_MODEL_NVIDIA_H200",
+        "GPU_MODEL_NVIDIA_L4",
+        "GPU_MODEL_NVIDIA_L40",
+        "GPU_MODEL_NVIDIA_L40S",
+        "GPU_MODEL_NVIDIA_T4",
+        "GPU_MODEL_NVIDIA_V100",
+        "GPU_MODEL_NVIDIA_B200",
+        "GPU_MODEL_AMD_MI300X",
+        "GPU_MODEL_AMD_MI250X",
+        "GPU_MODEL_AMD_RX_7900_XTX",
+        "GPU_MODEL_INTEL_MAX_1550",
+        "GPU_MODEL_INTEL_ARC_A770"
+      ],
+      "default": "GPU_MODEL_UNSPECIFIED",
+      "description": "- GPU_MODEL_NVIDIA_RTX_4090: NVIDIA Consumer\n - GPU_MODEL_NVIDIA_A100: NVIDIA Datacenter\n - GPU_MODEL_AMD_MI300X: AMD\n - GPU_MODEL_INTEL_MAX_1550: Intel",
+      "title": "GPU model enum (common datacenter and workstation GPUs)"
+    },
+    "GPUVendor": {
+      "type": "string",
+      "enum": [
+        "GPU_VENDOR_UNSPECIFIED",
+        "GPU_VENDOR_NVIDIA",
+        "GPU_VENDOR_AMD",
+        "GPU_VENDOR_INTEL"
+      ],
+      "default": "GPU_VENDOR_UNSPECIFIED",
+      "title": "GPU vendor enum"
+    },
     "GetAlertRuleResponse": {
       "type": "object",
       "properties": {
@@ -5856,6 +5935,14 @@
           "type": "number",
           "format": "double",
           "title": "CPU load average (15 minutes)"
+        },
+        "gpus": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GPUInfo"
+          },
+          "title": "GPU information"
         }
       },
       "title": "SystemInfo contains information about the host system"

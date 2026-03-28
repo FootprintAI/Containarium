@@ -144,7 +144,11 @@ export class ContaineriumClient {
   /**
    * Get system information
    */
-  async getSystemInfo(): Promise<SystemInfo> {
+  async getSystemInfo(backendId?: string): Promise<SystemInfo> {
+    if (backendId) {
+      const response = await this.client.get(`/backends/${backendId}/system-info`);
+      return response.data.info || response.data;
+    }
     const response = await this.client.get('/system/info');
     return response.data.info || response.data;
   }

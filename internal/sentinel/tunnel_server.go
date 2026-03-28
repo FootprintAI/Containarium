@@ -176,19 +176,27 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID, localIP string
 
 	var listeners []net.Listener
 	for _, port := range ports {
-		addr := fmt.Sprintf("%s:%d", localIP, port)
+		// Use a high-port offset for port 22 to avoid conflicting with sshpiper
+		// which binds *:22. The offset port (e.g., 20022) is used in sshpiper
+		// config so that tunnel SSH traffic goes: sshpiper -> 127.0.0.x:20022
+		// -> yamux tunnel -> spot:22.
+		listenPort := port
+		if port == 22 {
+			listenPort = 20022
+		}
+		addr := fmt.Sprintf("%s:%d", localIP, listenPort)
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			// Fall back to 127.0.0.1 if the loopback alias isn't available
-			fallbackAddr := fmt.Sprintf("127.0.0.1:%d", port)
+			fallbackAddr := fmt.Sprintf("127.0.0.1:%d", listenPort)
 			ln, err = net.Listen("tcp", fallbackAddr)
 			if err != nil {
 				log.Printf("[tunnel-server] failed to listen on %s (and fallback %s) for spot %s: %v", addr, fallbackAddr, spotID, err)
 				continue
 			}
-			log.Printf("[tunnel-server] proxy listening on %s (fallback) → tunnel → spot %s", fallbackAddr, spotID)
+			log.Printf("[tunnel-server] proxy listening on %s (fallback) → tunnel → spot %s (remote port %d)", fallbackAddr, spotID, port)
 		} else {
-			log.Printf("[tunnel-server] proxy listening on %s → tunnel → spot %s", addr, spotID)
+			log.Printf("[tunnel-server] proxy listening on %s → tunnel → spot %s (remote port %d)", addr, spotID, port)
 		}
 		listeners = append(listeners, ln)
 		go ts.proxyLoop(ctx, ln, port, session, spotID)

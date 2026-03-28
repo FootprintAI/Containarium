@@ -142,15 +142,25 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
           </Box>
         )}
 
-        {/* GPU chip if available */}
-        {container.gpu && (
-          <Box sx={{ mb: 2 }}>
-            <Chip
-              label={'GPU: ' + container.gpu}
-              size="small"
-              variant="outlined"
-              color="secondary"
-            />
+        {/* GPU and Node chips */}
+        {(container.gpu || container.backendId) && (
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mb: 2 }}>
+            {container.gpu && (
+              <Chip
+                label={'GPU: ' + container.gpu}
+                size="small"
+                variant="outlined"
+                color="secondary"
+              />
+            )}
+            {container.backendId && (
+              <Chip
+                label={container.backendId}
+                size="small"
+                variant="outlined"
+                color={container.backendId.startsWith('tunnel-') ? 'secondary' : 'primary'}
+              />
+            )}
           </Box>
         )}
 

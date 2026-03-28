@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -488,6 +489,28 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 
 	// Perform resize
 	if err := s.manager.Resize(containerName, req.Cpu, req.Memory, req.Disk, false); err != nil {
+		// Try peer
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer != nil {
+				body, _ := json.Marshal(map[string]string{
+					"cpu":    req.Cpu,
+					"memory": req.Memory,
+					"disk":   req.Disk,
+				})
+				respBody, statusCode, fwdErr := peer.ForwardRequest("PUT", fmt.Sprintf("/v1/containers/%s/resize", req.Username), authToken, body)
+				if fwdErr != nil {
+					return nil, fmt.Errorf("failed to resize container on peer %s: %w", peer.ID, fwdErr)
+				}
+				if statusCode >= 400 {
+					return nil, fmt.Errorf("peer %s returned status %d for resize: %s", peer.ID, statusCode, string(respBody))
+				}
+				return &pb.ResizeContainerResponse{
+					Message: fmt.Sprintf("Container %s resized on backend %s", containerName, peer.ID),
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("failed to resize container: %w", err)
 	}
 
@@ -514,6 +537,34 @@ func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRe
 
 	message, freedBytes, err := s.manager.CleanupDisk(req.Username)
 	if err != nil {
+		// Try peer
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer != nil {
+				respBody, statusCode, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/cleanup-disk", req.Username), authToken, nil)
+				if fwdErr != nil {
+					return nil, fmt.Errorf("failed to cleanup disk on peer %s: %w", peer.ID, fwdErr)
+				}
+				if statusCode >= 400 {
+					return nil, fmt.Errorf("peer %s returned status %d for cleanup: %s", peer.ID, statusCode, string(respBody))
+				}
+				// Parse peer response
+				var peerResp struct {
+					Message    string `json:"message"`
+					FreedBytes int64  `json:"freedBytes"`
+				}
+				if jsonErr := json.Unmarshal(respBody, &peerResp); jsonErr == nil {
+					return &pb.CleanupDiskResponse{
+						Message:    peerResp.Message,
+						FreedBytes: peerResp.FreedBytes,
+					}, nil
+				}
+				return &pb.CleanupDiskResponse{
+					Message: fmt.Sprintf("Disk cleaned on backend %s", peer.ID),
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("failed to clean up disk: %w", err)
 	}
 
@@ -671,9 +722,98 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		CpuLoad_15Min:         sysResources.CPULoad15Min,
 	}
 
+	// Populate GPU info
+	for _, gpu := range sysResources.GPUs {
+		info.Gpus = append(info.Gpus, &pb.GPUInfo{
+			Vendor:        mapGPUVendor(gpu.Vendor),
+			Model:         mapGPUModel(gpu.Model),
+			ModelName:     gpu.Model,
+			PciAddress:    gpu.PCIAddress,
+			DriverVersion: gpu.DriverVersion,
+			CudaVersion:   gpu.CUDAVersion,
+			VramBytes:     gpu.VRAMBytes,
+		})
+	}
+
 	return &pb.GetSystemInfoResponse{
 		Info: info,
 	}, nil
+}
+
+// mapGPUVendor maps a vendor string to the proto enum.
+func mapGPUVendor(vendor string) pb.GPUVendor {
+	v := strings.ToLower(vendor)
+	switch {
+	case strings.Contains(v, "nvidia"):
+		return pb.GPUVendor_GPU_VENDOR_NVIDIA
+	case strings.Contains(v, "amd") || strings.Contains(v, "advanced micro"):
+		return pb.GPUVendor_GPU_VENDOR_AMD
+	case strings.Contains(v, "intel"):
+		return pb.GPUVendor_GPU_VENDOR_INTEL
+	default:
+		return pb.GPUVendor_GPU_VENDOR_UNSPECIFIED
+	}
+}
+
+// mapGPUModel maps a model name string to the proto enum.
+func mapGPUModel(model string) pb.GPUModel {
+	m := strings.ToLower(model)
+	switch {
+	// NVIDIA Consumer
+	case strings.Contains(m, "rtx 5090"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_5090
+	case strings.Contains(m, "rtx 5080"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_5080
+	case strings.Contains(m, "rtx 4090"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_4090
+	case strings.Contains(m, "rtx 4080"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_4080
+	case strings.Contains(m, "rtx 4070 ti"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_4070_TI
+	case strings.Contains(m, "rtx 4070"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_4070
+	case strings.Contains(m, "rtx 3090"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_3090
+	case strings.Contains(m, "rtx 3080"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_RTX_3080
+	// NVIDIA Datacenter
+	case strings.Contains(m, "b200"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_B200
+	case strings.Contains(m, "h200"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_H200
+	case strings.Contains(m, "h100"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_H100
+	case strings.Contains(m, "a100"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_A100
+	case strings.Contains(m, "a10g"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_A10G
+	case strings.Contains(m, "a10"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_A10
+	case strings.Contains(m, "l40s"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_L40S
+	case strings.Contains(m, "l40"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_L40
+	case strings.Contains(m, "l4"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_L4
+	case strings.Contains(m, "t4"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_T4
+	case strings.Contains(m, "v100"):
+		return pb.GPUModel_GPU_MODEL_NVIDIA_V100
+	// AMD
+	case strings.Contains(m, "mi300x"):
+		return pb.GPUModel_GPU_MODEL_AMD_MI300X
+	case strings.Contains(m, "mi250x"):
+		return pb.GPUModel_GPU_MODEL_AMD_MI250X
+	case strings.Contains(m, "7900 xtx"):
+		return pb.GPUModel_GPU_MODEL_AMD_RX_7900_XTX
+	// Intel
+	case strings.Contains(m, "max 1550"):
+		return pb.GPUModel_GPU_MODEL_INTEL_MAX_1550
+	case strings.Contains(m, "a770"):
+		return pb.GPUModel_GPU_MODEL_INTEL_ARC_A770
+	default:
+		return pb.GPUModel_GPU_MODEL_UNSPECIFIED
+	}
 }
 
 // toProtoMetrics converts internal metrics to protobuf
@@ -776,6 +916,41 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	}
 
 	if s.collaboratorManager == nil {
+		// No local collaborator manager — try peer
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			if peer != nil {
+				body, _ := json.Marshal(map[string]interface{}{
+					"collaborator_username":    req.CollaboratorUsername,
+					"ssh_public_key":           req.SshPublicKey,
+					"grant_sudo":               req.GrantSudo,
+					"grant_container_runtime":  req.GrantContainerRuntime,
+				})
+				respBody, statusCode, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/collaborators", req.OwnerUsername), authToken, body)
+				if fwdErr != nil {
+					return nil, fmt.Errorf("failed to add collaborator on peer %s: %w", peer.ID, fwdErr)
+				}
+				if statusCode >= 400 {
+					return nil, fmt.Errorf("peer %s returned status %d: %s", peer.ID, statusCode, string(respBody))
+				}
+				var peerResp struct {
+					Collaborator *pb.Collaborator `json:"collaborator"`
+					SshCommand   string           `json:"sshCommand"`
+					Message      string           `json:"message"`
+				}
+				if jsonErr := json.Unmarshal(respBody, &peerResp); jsonErr == nil && peerResp.Collaborator != nil {
+					return &pb.AddCollaboratorResponse{
+						Message:      peerResp.Message,
+						Collaborator: peerResp.Collaborator,
+						SshCommand:   peerResp.SshCommand,
+					}, nil
+				}
+				return &pb.AddCollaboratorResponse{
+					Message: fmt.Sprintf("Collaborator added on backend %s", peer.ID),
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("collaborator management not enabled")
 	}
 
@@ -812,6 +987,23 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 	}
 
 	if s.collaboratorManager == nil {
+		// No local collaborator manager — try peer
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			if peer != nil {
+				_, statusCode, fwdErr := peer.ForwardRequest("DELETE", fmt.Sprintf("/v1/containers/%s/collaborators/%s", req.OwnerUsername, req.CollaboratorUsername), authToken, nil)
+				if fwdErr != nil {
+					return nil, fmt.Errorf("failed to remove collaborator on peer %s: %w", peer.ID, fwdErr)
+				}
+				if statusCode >= 400 {
+					return nil, fmt.Errorf("peer %s returned status %d for remove collaborator", peer.ID, statusCode)
+				}
+				return &pb.RemoveCollaboratorResponse{
+					Message: fmt.Sprintf("Collaborator %s removed on backend %s", req.CollaboratorUsername, peer.ID),
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("collaborator management not enabled")
 	}
 
@@ -831,6 +1023,25 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 	}
 
 	if s.collaboratorManager == nil {
+		// No local collaborator manager — try peer
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			peer := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			if peer != nil {
+				respBody, statusCode, fwdErr := peer.ForwardRequest("GET", fmt.Sprintf("/v1/containers/%s/collaborators", req.OwnerUsername), authToken, nil)
+				if fwdErr != nil {
+					return nil, fmt.Errorf("failed to list collaborators on peer %s: %w", peer.ID, fwdErr)
+				}
+				if statusCode >= 400 {
+					return nil, fmt.Errorf("peer %s returned status %d for list collaborators", peer.ID, statusCode)
+				}
+				var peerResp pb.ListCollaboratorsResponse
+				if jsonErr := json.Unmarshal(respBody, &peerResp); jsonErr == nil {
+					return &peerResp, nil
+				}
+				return &pb.ListCollaboratorsResponse{}, nil
+			}
+		}
 		return nil, fmt.Errorf("collaborator management not enabled")
 	}
 

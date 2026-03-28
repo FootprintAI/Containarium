@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -826,39 +828,114 @@ skipAppHosting:
 
 // Start starts both gRPC and HTTP servers
 // backendsHandler returns an HTTP handler for the /v1/backends endpoint.
+// It also handles /v1/backends/{id}/system-info for per-backend system info.
 func (ds *DualServer) backendsHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		type backendInfo struct {
-			ID      string `json:"id"`
-			Type    string `json:"type"`
-			Healthy bool   `json:"healthy"`
+		path := strings.TrimPrefix(r.URL.Path, "/v1/backends")
+		path = strings.TrimPrefix(path, "/")
+
+		// /v1/backends/{id}/system-info — forward system info request to specific backend
+		if strings.Contains(path, "/system-info") {
+			backendID := strings.Split(path, "/")[0]
+			ds.handleBackendSystemInfo(w, r, backendID)
+			return
 		}
 
-		var backends []backendInfo
-
-		// Add local backend
-		if ds.peerPool != nil {
-			backends = append(backends, backendInfo{
-				ID:      ds.peerPool.LocalBackendID(),
-				Type:    "local",
-				Healthy: true,
-			})
-
-			// Add peer backends
-			for _, peer := range ds.peerPool.Peers() {
-				backends = append(backends, backendInfo{
-					ID:      peer.ID,
-					Type:    "tunnel",
-					Healthy: peer.Healthy,
-				})
+		// /v1/backends — list all backends
+		if path == "" {
+			type backendInfo struct {
+				ID      string `json:"id"`
+				Type    string `json:"type"`
+				Healthy bool   `json:"healthy"`
 			}
+
+			var backends []backendInfo
+
+			if ds.peerPool != nil {
+				backends = append(backends, backendInfo{
+					ID:      ds.peerPool.LocalBackendID(),
+					Type:    "local",
+					Healthy: true,
+				})
+
+				for _, peer := range ds.peerPool.Peers() {
+					backends = append(backends, backendInfo{
+						ID:      peer.ID,
+						Type:    "tunnel",
+						Healthy: peer.Healthy,
+					})
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"backends": backends,
+			})
+			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"backends": backends,
-		})
+		http.NotFound(w, r)
 	}
+}
+
+// handleBackendSystemInfo returns system info for a specific backend.
+// For the local backend, it returns the local system info.
+// For peer backends, it forwards the request to the peer.
+func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Request, backendID string) {
+	if ds.peerPool == nil {
+		http.Error(w, `{"error":"no backends configured"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Local backend — use the gRPC system info endpoint
+	if backendID == ds.peerPool.LocalBackendID() {
+		// Forward to local system info endpoint
+		authToken := r.Header.Get("Authorization")
+		if authToken == "" {
+			authToken = "Bearer " + r.URL.Query().Get("token")
+		}
+		// Use the internal gRPC client path by proxying to ourselves
+		client := &http.Client{Timeout: 10 * time.Second}
+		req, _ := http.NewRequestWithContext(r.Context(), "GET", fmt.Sprintf("http://localhost:%d/v1/system/info", ds.config.HTTPPort), nil)
+		req.Header.Set("Authorization", authToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"failed to get local system info: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return
+	}
+
+	// Peer backend — forward to peer
+	peer := ds.peerPool.Get(backendID)
+	if peer == nil {
+		http.Error(w, fmt.Sprintf(`{"error":"backend %q not found"}`, backendID), http.StatusNotFound)
+		return
+	}
+	if !peer.Healthy {
+		http.Error(w, fmt.Sprintf(`{"error":"backend %q is not healthy"}`, backendID), http.StatusServiceUnavailable)
+		return
+	}
+
+	authToken := ""
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		authToken = authHeader[7:]
+	}
+
+	respBody, statusCode, err := peer.ForwardRequest("GET", "/v1/system/info", authToken, nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to get system info from peer: %v"}`, err), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(statusCode)
+	w.Write(respBody)
 }
 
 func (ds *DualServer) Start(ctx context.Context) error {
@@ -870,6 +947,8 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// Register /v1/backends endpoint on gateway
 		if ds.gatewayServer != nil {
 			ds.gatewayServer.SetBackendsHandler(ds.backendsHandler())
+			// Enable terminal WebSocket proxying to peer backends
+			ds.gatewayServer.SetTerminalPeerProxy(ds.peerPool)
 		}
 	}
 

@@ -698,91 +698,73 @@ One sentinel monitors all spot VMs in the cluster. Each spot VM is independently
 
 #### SSH Connection Flow
 
-**With Sentinel HA (production):**
+Containarium supports two SSH connection methods. The choice depends on whether the sentinel can reach the container's IP directly.
+
+**Method 1: Direct via sshpiper (recommended)**
+
+The simplest setup — sshpiper on the sentinel routes by username and `containarium-shell` on the backend host proxies into the container. Works regardless of network topology since the sentinel only needs to reach the backend host, not the container IP:
+
 ```
-1. User: ssh my-dev (from ~/.ssh/config)
+~/.ssh/config:
+  Host my-dev
+      HostName containarium.example.com   ← sentinel address
+      User alice                           ← username = routing key
+      IdentityFile ~/.ssh/containarium
+
+Flow:
+1. User: ssh my-dev
 2. SSH: Connect to sentinel:22 (sshpiper)
-3. sshpiper: Authenticate alice's key, route to spot VM
-4. Spot VM: ProxyJump forwards to container IP (10.0.3.x)
-5. Container: Authenticate alice's key (same key!)
-6. User: Shell access in isolated container
+3. sshpiper: Match username "alice", route to backend host
+4. Host sshd: Authenticate sentinel upstream key
+5. containarium-shell: sudo incus exec alice-container -- su -l alice
+6. User: Interactive shell in container
    (If auth fails 3x → sshpiper bans client IP for 1h)
 ```
 
-**Without sentinel (single VM):**
-```
-1. User: ssh my-dev (from ~/.ssh/config)
-2. SSH: Connect to jump server as alice (ProxyJump)
-3. Jump: Authenticate alice's key (proxy-only account, no shell)
-4. SSH: Forward connection to container IP (10.0.3.x)
-5. Container: Authenticate alice's key (same key!)
-6. User: Shell access in isolated container
-```
+**Method 2: ProxyJump with container IP**
 
-**Secure Multi-Tenant Architecture:**
+Uses the sentinel as a TCP tunnel to reach the container's sshd directly. Requires that the container IP (on the Incus bridge) is routable from the sentinel — this only works when the backend host is on the same network (e.g., same VPC). Does **not** work when the backend is behind a firewall, NAT, or connected via tunnel:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ User's Local Machine                                          │
-│                                                               │
-│ ~/.ssh/config:                                               │
-│   Host my-dev                                                │
-│     HostName 10.0.3.100                                      │
-│     User alice                                               │
-│     IdentityFile ~/.ssh/containarium  ← ALICE'S KEY          │
-│     ProxyJump containarium-jump                              │
-│                                                               │
-│   Host containarium-jump                                     │
-│     HostName 35.229.246.67                                  │
-│     User alice                        ← ALICE'S ACCOUNT!     │
-│     IdentityFile ~/.ssh/containarium  ← SAME KEY             │
-└──────────────────────────────────────────────────────────────┘
-                     │
-                     │ (1) SSH as alice (proxy-only)
-                     ▼
-┌──────────────────────────────────────────────────────────────┐
-│ GCE Instance (Jump Server)                                   │
-│                                                               │
-│ /home/admin/.ssh/authorized_keys:                            │
-│   ssh-ed25519 AAAA... admin@laptop  ← ADMIN ONLY             │
-│   Shell: /bin/bash                   ← FULL ACCESS           │
-│                                                               │
-│ /home/alice/.ssh/authorized_keys:                            │
-│   ssh-ed25519 AAAA... alice@laptop  ← ALICE'S KEY            │
-│   Shell: /usr/sbin/nologin           ← NO SHELL ACCESS!      │
-│                                                               │
-│ /home/bob/.ssh/authorized_keys:                              │
-│   ssh-ed25519 AAAA... bob@laptop    ← BOB'S KEY              │
-│   Shell: /usr/sbin/nologin           ← NO SHELL ACCESS!      │
-│                                                               │
-│ ✓ Alice authenticated for proxy only                         │
-│ ✗ Cannot execute commands on jump server                     │
-│ ✓ ProxyJump forwards connection to container                 │
-│ ✓ Audit log: alice@jump-server → 10.0.3.100                 │
-└──────────────────────────────────────────────────────────────┘
-                     │
-                     │ (2) SSH with same key
-                     ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Guest Container (alice-container)                             │
-│                                                               │
-│ /home/alice/.ssh/authorized_keys:                            │
-│   ssh-ed25519 AAAA... alice@laptop  ← SAME KEY               │
-│                                                               │
-│ ✓ Alice authenticated                                        │
-│ ✓ Shell access granted                                       │
-│ ✓ Audit log: alice@alice-container                           │
-└──────────────────────────────────────────────────────────────┘
+~/.ssh/config:
+  Host containarium-jump
+      HostName containarium.example.com
+      User alice
+      IdentityFile ~/.ssh/containarium
+
+  Host my-dev
+      HostName 10.0.3.100                 ← container IP on Incus bridge
+      User alice
+      IdentityFile ~/.ssh/containarium
+      ProxyJump containarium-jump
+
+Flow:
+1. User: ssh my-dev
+2. SSH: ProxyJump through sentinel:22 (sshpiper)
+3. sshpiper: TCP-forward to backend host
+4. Backend host: Forward TCP to container IP (10.0.3.100:22)
+5. Container sshd: Authenticate alice's key
+6. User: Shell access in container
 ```
+
+**Method Comparison:**
+
+| | Method 1 (Direct) | Method 2 (ProxyJump) |
+|---|---|---|
+| Config complexity | Simple (1 Host entry) | Requires jump host + container IP |
+| Same-network backends | Yes | Yes |
+| Firewalled/NAT backends | Yes | No (container IP not routable) |
+| `ssh host "command"` | Interactive shell only | Full command execution |
+| Container IP needed | No | Yes |
 
 **Security Architecture:**
-- **Separate accounts**: Each user has their own account on jump server
-- **No shell access**: User accounts use `/usr/sbin/nologin` (proxy-only)
-- **Same key**: Users use one key for both jump server and container
-- **Admin isolation**: Only admin can access jump server shell
+- **Separate accounts**: Each user has their own account on the backend host
+- **containarium-shell**: Login shell proxies into the user's container via `incus exec` (no host shell access)
+- **Same key**: Users use one key for both sentinel auth and container access
+- **Admin isolation**: Only admin can access host shell directly
 - **Audit trail**: Each user's connections logged separately
-- **DDoS protection**: sshpiper failtoban (sentinel) or fail2ban (single VM) blocks malicious users per IP
-- **Zero trust**: Users cannot see other containers or inspect system
+- **DDoS protection**: sshpiper failtoban bans IPs after 3 failed auth attempts for 1h
+- **Zero trust**: Users cannot see other containers or inspect the host system
 
 #### Spot Instance Recovery Flow
 

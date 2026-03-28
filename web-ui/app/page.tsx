@@ -110,6 +110,7 @@ export default function Home() {
     cleanupDisk,
     setLabels,
     removeLabel,
+    getSystemInfoForBackend,
     refresh: refreshContainers,
   } = useContainers(activeServer);
 
@@ -367,6 +368,8 @@ export default function Home() {
                 onResize={handleOpenResize}
                 onManageCollaborators={handleManageCollaborators}
                 onRefresh={refreshContainers}
+                backends={backends}
+                onSelectBackend={getSystemInfoForBackend}
               />
             )}
 

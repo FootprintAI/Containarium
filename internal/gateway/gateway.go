@@ -130,6 +130,14 @@ func (gs *GatewayServer) SetBackendsHandler(handler http.HandlerFunc) {
 	gs.backendsHandler = handler
 }
 
+// SetTerminalPeerProxy configures the terminal handler to proxy WebSocket
+// connections to peer backends for multi-backend terminal support.
+func (gs *GatewayServer) SetTerminalPeerProxy(proxy PeerTerminalProxy) {
+	if gs.terminalHandler != nil {
+		gs.terminalHandler.SetPeerProxy(proxy)
+	}
+}
+
 func (gs *GatewayServer) SetAlertRelayConfig(webhookURL, secret string) {
 	gs.alertRelayMu.Lock()
 	defer gs.alertRelayMu.Unlock()
@@ -553,6 +561,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 
 	// Backends endpoint (no auth — for web UI backend selector)
 	if gs.backendsHandler != nil {
+		httpMux.HandleFunc("/v1/backends/", gs.backendsHandler)
 		httpMux.HandleFunc("/v1/backends", gs.backendsHandler)
 	}
 

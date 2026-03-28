@@ -276,6 +276,16 @@ export function useContainers(server: Server | null) {
     return result;
   };
 
+  const getSystemInfoForBackend = async (backendId: string): Promise<SystemInfo | null> => {
+    if (!server) return null;
+    const client = getClient(server);
+    try {
+      return await client.getSystemInfo(backendId);
+    } catch {
+      return null;
+    }
+  };
+
   return {
     containers: data || [],
     coreServices: coreServices || [],
@@ -292,6 +302,7 @@ export function useContainers(server: Server | null) {
     getLabels,
     setLabels,
     removeLabel,
+    getSystemInfoForBackend,
     refresh,
     // Event stream status
     eventStatus,

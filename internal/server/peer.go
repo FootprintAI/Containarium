@@ -497,6 +497,19 @@ func isDiscoveredPeer(id string) bool {
 	return len(id) > 7 && id[:7] == "tunnel-"
 }
 
+// PeerTerminalURL implements gateway.PeerTerminalProxy.
+// It checks if a container lives on a peer and returns the WebSocket URL for its terminal.
+// Returns ("", nil) if the container is not on any peer (i.e., it's local).
+func (pp *PeerPool) PeerTerminalURL(username, authToken string) (string, error) {
+	peer := pp.FindContainerPeer(username, authToken)
+	if peer == nil {
+		return "", nil
+	}
+	// Build ws:// URL pointing at the peer's terminal endpoint via sentinel proxy
+	wsURL := fmt.Sprintf("ws://%s/v1/containers/%s/terminal", peer.Addr, username)
+	return wsURL, nil
+}
+
 // jsonReader wraps a byte slice as an io.Reader.
 func jsonReader(b []byte) io.Reader {
 	return io.NopCloser(io.Reader(byteReader(b)))

@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Multi-backend peer operations** — Resize, CleanupDisk, and Collaborator operations (Add/Remove/List) now forward to peer backends when the container is not local
+- **Terminal WebSocket peer routing** — Terminal sessions proxy to peer backends transparently via `PeerTerminalProxy` interface; the gateway bridges WebSocket connections between client and peer
+- **Per-backend system info API** — New `GET /v1/backends/{id}/system-info` endpoint returns CPU, memory, disk, and GPU info for a specific backend
+- **GPU system info** — `GPUVendor` and `GPUModel` proto enums, `GPUInfo` message with vendor/model/driver/CUDA/VRAM fields, populated from Incus server resources
+- **Web UI node filter and search** — Real-time search by name/username/IP, node dropdown filter (when multiple backends), filtered count display, backend chip on grid cards
+- **Web UI backend resource selector** — Toggle button group on System Resources card to view CPU/memory/disk/GPU stats per backend, with auto-refresh
+- **SSH container proxy (`containarium-shell`)** — Login shell that proxies SSH sessions into containers via `incus exec`, enabling unified `ssh user@sentinel` for all backends including firewalled/NAT hosts
+- **Setup script** `scripts/setup-ssh-container-proxy.sh` — Installs containarium-shell, sudoers rule, and /etc/shells entry
+
+### Fixed
+- **Tunnel SSH port conflict** — Tunnel server uses port 20022 for SSH proxy listeners on loopback aliases, preventing conflict with sshpiper's `*:22` binding on the sentinel
+- **NVIDIA GPU model name** — Fixed duplicate brand prefix in model name string from Incus nvidia sub-struct
+
+
+### Added
 - **OWASP ZAP web application scanning** — New "ZAP Scan" tab under Security for automated web application vulnerability scanning of all exposed Containarium endpoints.
   - Full gRPC service with 8 RPCs: trigger scan, list scans, list alerts, get summary, suppress alert, get config, download report, install ZAP
   - PostgreSQL persistence with 3 tables (`zap_scan_runs`, `zap_alerts`, `zap_scan_jobs`) and fingerprint-based alert deduplication
