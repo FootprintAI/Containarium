@@ -99,6 +99,7 @@ export default function Home() {
     containers,
     coreServices,
     systemInfo,
+    backends,
     isLoading: containersLoading,
     error: containersError,
     createContainer,
@@ -109,6 +110,7 @@ export default function Home() {
     cleanupDisk,
     setLabels,
     removeLabel,
+    getSystemInfoForBackend,
     refresh: refreshContainers,
   } = useContainers(activeServer);
 
@@ -366,6 +368,8 @@ export default function Home() {
                 onResize={handleOpenResize}
                 onManageCollaborators={handleManageCollaborators}
                 onRefresh={refreshContainers}
+                backends={backends}
+                onSelectBackend={getSystemInfoForBackend}
               />
             )}
 
@@ -466,6 +470,7 @@ export default function Home() {
         onClose={() => setCreateContainerOpen(false)}
         onSubmit={handleCreateContainer}
         networkCidr={systemInfo?.networkCidr}
+        backends={backends}
       />
 
       <DeleteConfirmDialog

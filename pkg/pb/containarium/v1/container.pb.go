@@ -95,7 +95,9 @@ type ResourceLimits struct {
 	// Memory limit (e.g., "4GB", "2048MB")
 	Memory string `protobuf:"bytes,2,opt,name=memory,proto3" json:"memory,omitempty"`
 	// Disk/storage limit (e.g., "50GB", "100GB")
-	Disk          string `protobuf:"bytes,3,opt,name=disk,proto3" json:"disk,omitempty"`
+	Disk string `protobuf:"bytes,3,opt,name=disk,proto3" json:"disk,omitempty"`
+	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
+	Gpu           string `protobuf:"bytes,4,opt,name=gpu,proto3" json:"gpu,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -147,6 +149,13 @@ func (x *ResourceLimits) GetMemory() string {
 func (x *ResourceLimits) GetDisk() string {
 	if x != nil {
 		return x.Disk
+	}
+	return ""
+}
+
+func (x *ResourceLimits) GetGpu() string {
+	if x != nil {
+		return x.Gpu
 	}
 	return ""
 }
@@ -250,7 +259,11 @@ type Container struct {
 	// Whether Podman support is enabled (nesting)
 	PodmanEnabled bool `protobuf:"varint,11,opt,name=podman_enabled,json=podmanEnabled,proto3" json:"podman_enabled,omitempty"`
 	// Software stack installed in the container (e.g., "nodejs", "python")
-	Stack         string `protobuf:"bytes,12,opt,name=stack,proto3" json:"stack,omitempty"`
+	Stack string `protobuf:"bytes,12,opt,name=stack,proto3" json:"stack,omitempty"`
+	// GPU device info (e.g., GPU ID or PCI address if attached)
+	GpuDevice string `protobuf:"bytes,13,opt,name=gpu_device,json=gpuDevice,proto3" json:"gpu_device,omitempty"`
+	// Backend ID this container runs on (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+	BackendId     string `protobuf:"bytes,14,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -365,6 +378,20 @@ func (x *Container) GetPodmanEnabled() bool {
 func (x *Container) GetStack() string {
 	if x != nil {
 		return x.Stack
+	}
+	return ""
+}
+
+func (x *Container) GetGpuDevice() string {
+	if x != nil {
+		return x.GpuDevice
+	}
+	return ""
+}
+
+func (x *Container) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
 	}
 	return ""
 }
@@ -502,7 +529,11 @@ type CreateContainerRequest struct {
 	StaticIp string `protobuf:"bytes,8,opt,name=static_ip,json=staticIp,proto3" json:"static_ip,omitempty"`
 	// Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
 	// See available stacks in configs/stacks.yaml
-	Stack         string `protobuf:"bytes,9,opt,name=stack,proto3" json:"stack,omitempty"`
+	Stack string `protobuf:"bytes,9,opt,name=stack,proto3" json:"stack,omitempty"`
+	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
+	Gpu string `protobuf:"bytes,10,opt,name=gpu,proto3" json:"gpu,omitempty"`
+	// Target backend ID for creation (empty = primary backend)
+	BackendId     string `protobuf:"bytes,11,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -596,6 +627,20 @@ func (x *CreateContainerRequest) GetStaticIp() string {
 func (x *CreateContainerRequest) GetStack() string {
 	if x != nil {
 		return x.Stack
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetGpu() string {
+	if x != nil {
+		return x.Gpu
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
 	}
 	return ""
 }
@@ -2472,18 +2517,19 @@ var File_containarium_v1_container_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
-	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\"N\n" +
+	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\"`\n" +
 	"\x0eResourceLimits\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\tR\x06memory\x12\x12\n" +
-	"\x04disk\x18\x03 \x01(\tR\x04disk\"\x83\x01\n" +
+	"\x04disk\x18\x03 \x01(\tR\x04disk\x12\x10\n" +
+	"\x03gpu\x18\x04 \x01(\tR\x03gpu\"\x83\x01\n" +
 	"\vNetworkInfo\x12\x1d\n" +
 	"\n" +
 	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1f\n" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\x90\x04\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xce\x04\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -2499,7 +2545,11 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x05image\x18\n" +
 	" \x01(\tR\x05image\x12%\n" +
 	"\x0epodman_enabled\x18\v \x01(\bR\rpodmanEnabled\x12\x14\n" +
-	"\x05stack\x18\f \x01(\tR\x05stack\x1a9\n" +
+	"\x05stack\x18\f \x01(\tR\x05stack\x12\x1d\n" +
+	"\n" +
+	"gpu_device\x18\r \x01(\tR\tgpuDevice\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x0e \x01(\tR\tbackendId\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
@@ -2511,7 +2561,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\x9a\x03\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xcb\x03\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -2521,7 +2571,11 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\renable_podman\x18\x06 \x01(\bR\fenablePodman\x12\x14\n" +
 	"\x05async\x18\a \x01(\bR\x05async\x12\x1b\n" +
 	"\tstatic_ip\x18\b \x01(\tR\bstaticIp\x12\x14\n" +
-	"\x05stack\x18\t \x01(\tR\x05stack\x1a9\n" +
+	"\x05stack\x18\t \x01(\tR\x05stack\x12\x10\n" +
+	"\x03gpu\x18\n" +
+	" \x01(\tR\x03gpu\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\v \x01(\tR\tbackendId\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8e\x01\n" +

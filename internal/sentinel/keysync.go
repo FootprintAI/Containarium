@@ -163,13 +163,20 @@ func (ks *KeyStore) Apply() error {
 	buf.WriteString("version: \"1.0\"\npipes:\n")
 
 	for _, r := range routes {
+		// Tunnel backends use loopback aliases (127.0.0.x where x >= 10) with
+		// SSH on port 20022 to avoid conflicting with sshpiper's *:22 listener.
+		// Direct backends (e.g., 10.x.x.x) use the standard port 22.
+		sshPort := 22
+		if isTunnelLoopback(r.backendIP) {
+			sshPort = 20022
+		}
 		akPath := filepath.Join(sshpiperUsersDir, r.username, "authorized_keys")
 		fmt.Fprintf(&buf, "  - from:\n")
 		fmt.Fprintf(&buf, "      - username: %q\n", r.username)
 		fmt.Fprintf(&buf, "        authorized_keys:\n")
 		fmt.Fprintf(&buf, "          - %s\n", akPath)
 		fmt.Fprintf(&buf, "    to:\n")
-		fmt.Fprintf(&buf, "      host: %s:22\n", r.backendIP)
+		fmt.Fprintf(&buf, "      host: %s:%d\n", r.backendIP, sshPort)
 		fmt.Fprintf(&buf, "      username: %q\n", r.username)
 		fmt.Fprintf(&buf, "      ignore_hostkey: true\n")
 		fmt.Fprintf(&buf, "      private_key: %s\n", sshpiperUpstreamKey)
@@ -305,6 +312,12 @@ func (ks *KeyStore) ensureBackendLocked(backendID, backendIP string) *backendKey
 	}
 	bk.backendIP = backendIP
 	return bk
+}
+
+// isTunnelLoopback returns true if the IP is a tunnel loopback alias (127.0.0.x, x >= 10).
+// These addresses are assigned by the TunnelRegistry for tunnel-connected backends.
+func isTunnelLoopback(ip string) bool {
+	return strings.HasPrefix(ip, "127.0.0.") && len(ip) > 8 && ip != "127.0.0.1"
 }
 
 func (ks *KeyStore) backendCount() int {

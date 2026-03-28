@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -21,7 +21,7 @@ import {
   Typography,
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
-import { CreateContainerRequest, AVAILABLE_STACKS } from '@/src/types/container';
+import { CreateContainerRequest, AVAILABLE_STACKS, BackendInfo } from '@/src/types/container';
 import { generateSSHKeyPair, downloadPrivateKey, SSHKeyPair } from '@/src/lib/sshkey';
 import { CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 
@@ -30,6 +30,7 @@ interface CreateContainerDialogProps {
   onClose: () => void;
   onSubmit: (request: CreateContainerRequest, onProgress?: (progress: CreateContainerProgress) => void) => Promise<unknown>;
   networkCidr?: string; // Network CIDR from server (e.g., "10.100.0.0/24")
+  backends?: BackendInfo[]; // Available backends for backend selector
 }
 
 const IMAGES = [
@@ -117,7 +118,7 @@ function validateStaticIP(ip: string, cidr: string): { valid: boolean; error?: s
   return { valid: true };
 }
 
-export default function CreateContainerDialog({ open, onClose, onSubmit, networkCidr }: CreateContainerDialogProps) {
+export default function CreateContainerDialog({ open, onClose, onSubmit, networkCidr, backends }: CreateContainerDialogProps) {
   // Use provided network CIDR or default
   const effectiveCidr = networkCidr || DEFAULT_NETWORK_CIDR;
 
@@ -127,6 +128,8 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
   const [memory, setMemory] = useState('4GB');
   const [disk, setDisk] = useState('50GB');
   const [stack, setStack] = useState('');
+  const [gpu, setGpu] = useState('');
+  const [backendId, setBackendId] = useState('');
   const [enablePodman, setEnablePodman] = useState(true);
   const [staticIp, setStaticIp] = useState('');
   const [staticIpError, setStaticIpError] = useState<string | null>(null);
@@ -163,6 +166,8 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
     setMemory('4GB');
     setDisk('50GB');
     setStack('');
+    setGpu('');
+    setBackendId('');
     setEnablePodman(true);
     setStaticIp('');
     setStaticIpError(null);
@@ -237,6 +242,8 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
         enablePodman,
         stack: stack || undefined,
         staticIp: staticIp || undefined,
+        gpu: gpu || undefined,
+        backendId: backendId || undefined,
       };
 
       const container = await onSubmit(request, (prog) => {
@@ -356,6 +363,41 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
               ))}
             </Select>
           </FormControl>
+
+          {backends && backends.length > 1 && (
+            <FormControl fullWidth disabled={success || submitting}>
+              <InputLabel>Backend Node</InputLabel>
+              <Select
+                value={backendId}
+                label="Backend Node"
+                onChange={(e) => setBackendId(e.target.value)}
+              >
+                <MenuItem value="">
+                  <Typography variant="body1">Auto (Primary)</Typography>
+                </MenuItem>
+                {backends.filter(b => b.healthy).map((b) => (
+                  <MenuItem key={b.id} value={b.id}>
+                    <Box>
+                      <Typography variant="body1">{b.id}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {b.type} | priority: {b.priority}
+                      </Typography>
+                    </Box>
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+
+          <TextField
+            label="GPU Device (Optional)"
+            value={gpu}
+            onChange={(e) => setGpu(e.target.value)}
+            placeholder="e.g., 0 for first GPU, or PCI address"
+            fullWidth
+            disabled={success || submitting}
+            helperText="GPU device ID for passthrough (leave empty for no GPU)"
+          />
 
           <FormControlLabel
             control={

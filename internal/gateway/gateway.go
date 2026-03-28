@@ -49,6 +49,9 @@ type GatewayServer struct {
 	eventHandler        *EventHandler
 	coreServicesHandler *CoreServicesHandler
 
+	// Backends handler (for multi-backend support, set externally)
+	backendsHandler http.HandlerFunc
+
 	// Alert relay (no auth — internal network only)
 	alertRelayMu     sync.RWMutex
 	alertRelayURL    string // external webhook URL to forward to
@@ -122,6 +125,19 @@ func (gs *GatewayServer) SetRecordDeliveryFn(fn func(ctx context.Context, alertN
 
 // SetAlertRelayConfig sets the external webhook URL and HMAC signing secret
 // for the alert relay handler. Thread-safe; can be called at any time.
+// SetBackendsHandler sets the handler for the /v1/backends endpoint.
+func (gs *GatewayServer) SetBackendsHandler(handler http.HandlerFunc) {
+	gs.backendsHandler = handler
+}
+
+// SetTerminalPeerProxy configures the terminal handler to proxy WebSocket
+// connections to peer backends for multi-backend terminal support.
+func (gs *GatewayServer) SetTerminalPeerProxy(proxy PeerTerminalProxy) {
+	if gs.terminalHandler != nil {
+		gs.terminalHandler.SetPeerProxy(proxy)
+	}
+}
+
 func (gs *GatewayServer) SetAlertRelayConfig(webhookURL, secret string) {
 	gs.alertRelayMu.Lock()
 	defer gs.alertRelayMu.Unlock()
@@ -541,6 +557,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if gs.auditStore != nil {
 		registerAuditEndpoint(httpMux, gs.auditStore, gs.authMiddleware)
 		log.Printf("Audit logs endpoint enabled at /v1/audit/logs")
+	}
+
+	// Backends endpoint (no auth — for web UI backend selector)
+	if gs.backendsHandler != nil {
+		httpMux.HandleFunc("/v1/backends/", gs.backendsHandler)
+		httpMux.HandleFunc("/v1/backends", gs.backendsHandler)
 	}
 
 	// Cert export endpoint (no auth — only reachable within VPC)

@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerResponse, ListContainersResponse, MetricsResponse, SystemInfo, Collaborator, AddCollaboratorRequest } from '@/src/types/container';
+import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerResponse, ListContainersResponse, MetricsResponse, SystemInfo, Collaborator, AddCollaboratorRequest, BackendInfo } from '@/src/types/container';
 import { Server } from '@/src/types/server';
 import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute } from '@/src/types/app';
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
@@ -76,7 +76,7 @@ function transformContainer(apiContainer: Record<string, unknown>): Container {
     cpu: ((apiContainer.resources as Record<string, unknown>)?.cpu as string) || '',
     memory: ((apiContainer.resources as Record<string, unknown>)?.memory as string) || '',
     disk: ((apiContainer.resources as Record<string, unknown>)?.disk as string) || '',
-    gpu: ((apiContainer.resources as Record<string, unknown>)?.gpu as string) || '',
+    gpu: (apiContainer.gpuDevice as string) || ((apiContainer.resources as Record<string, unknown>)?.gpu as string) || '',
     image: (apiContainer.image as string) || '',
     podmanEnabled: (apiContainer.podmanEnabled as boolean) || false,
     stack: (apiContainer.stack as string) || '',
@@ -84,6 +84,7 @@ function transformContainer(apiContainer: Record<string, unknown>): Container {
     updatedAt: (apiContainer.updatedAt as string) || '',
     labels: (apiContainer.labels as Record<string, string>) || {},
     sshKeys: (apiContainer.sshKeys as string[]) || [],
+    backendId: (apiContainer.backendId as string) || '',
   };
 }
 
@@ -143,7 +144,11 @@ export class ContaineriumClient {
   /**
    * Get system information
    */
-  async getSystemInfo(): Promise<SystemInfo> {
+  async getSystemInfo(backendId?: string): Promise<SystemInfo> {
+    if (backendId) {
+      const response = await this.client.get(`/backends/${backendId}/system-info`);
+      return response.data.info || response.data;
+    }
     const response = await this.client.get('/system/info');
     return response.data.info || response.data;
   }
@@ -180,11 +185,21 @@ export class ContaineriumClient {
       enable_podman: request.enablePodman ?? true,
       stack: request.stack || '',
       static_ip: request.staticIp || '',
+      gpu: request.gpu || '',
+      backend_id: request.backendId || '',
       async: async,
     }, {
       timeout: async ? 30000 : 300000, // 30s for async, 5min for sync
     });
     return response.data;
+  }
+
+  /**
+   * List available backends
+   */
+  async listBackends(): Promise<BackendInfo[]> {
+    const response = await this.client.get('/backends');
+    return response.data.backends || [];
   }
 
   /**

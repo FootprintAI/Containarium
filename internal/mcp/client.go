@@ -199,12 +199,13 @@ func (c *Client) GetSystemInfo() (*GetSystemInfoResponse, error) {
 // API Request/Response types
 
 type CreateContainerRequest struct {
-	Username  string                 `json:"username"`
-	Resources *ResourceLimits        `json:"resources,omitempty"`
-	SSHKeys   []string               `json:"sshKeys,omitempty"`
-	Labels    map[string]string      `json:"labels,omitempty"`
-	Image     string                 `json:"image,omitempty"`
-	EnablePodman bool                `json:"enablePodman,omitempty"`
+	Username     string            `json:"username"`
+	Resources    *ResourceLimits   `json:"resources,omitempty"`
+	SSHKeys      []string          `json:"sshKeys,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Image        string            `json:"image,omitempty"`
+	EnablePodman bool              `json:"enablePodman,omitempty"`
+	GPU          string            `json:"gpu,omitempty"`
 }
 
 type ResourceLimits struct {

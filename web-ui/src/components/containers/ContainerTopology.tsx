@@ -1,12 +1,14 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Box, Typography, Button, CircularProgress, ToggleButton, ToggleButtonGroup, FormControl, InputLabel, Select, MenuItem, Chip } from '@mui/material';
+import { Box, Typography, Button, CircularProgress, ToggleButton, ToggleButtonGroup, FormControl, InputLabel, Select, MenuItem, Chip, TextField, InputAdornment } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import GridViewIcon from '@mui/icons-material/GridView';
 import ViewListIcon from '@mui/icons-material/ViewList';
-import { Container, ContainerMetricsWithRate, SystemInfo } from '@/src/types/container';
+import SearchIcon from '@mui/icons-material/Search';
+import DnsIcon from '@mui/icons-material/Dns';
+import { Container, ContainerMetricsWithRate, SystemInfo, BackendInfo } from '@/src/types/container';
 import ContainerNode from './ContainerNode';
 import ContainerListView from './ContainerListView';
 import CoreServicesSection from './CoreServicesSection';
@@ -32,6 +34,8 @@ interface ContainerTopologyProps {
   onResize?: (username: string, currentResources: { cpu: string; memory: string; disk: string }) => void;
   onManageCollaborators?: (username: string) => void;
   onRefresh: () => void;
+  backends?: BackendInfo[];
+  onSelectBackend?: (backendId: string) => Promise<SystemInfo | null>;
 }
 
 export default function ContainerTopology({
@@ -51,9 +55,13 @@ export default function ContainerTopology({
   onResize,
   onManageCollaborators,
   onRefresh,
+  backends,
+  onSelectBackend,
 }: ContainerTopologyProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [groupByLabel, setGroupByLabel] = useState<string>('');
+  const [nodeFilter, setNodeFilter] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   const handleViewModeChange = (_: React.MouseEvent<HTMLElement>, newMode: ViewMode | null) => {
     if (newMode !== null) {
@@ -61,24 +69,50 @@ export default function ContainerTopology({
     }
   };
 
+  // Extract unique backend/node IDs
+  const availableNodes = useMemo(() => {
+    const nodes = new Set<string>();
+    containers.forEach(c => {
+      if (c.backendId) nodes.add(c.backendId);
+    });
+    return Array.from(nodes).sort();
+  }, [containers]);
+
+  // Filter containers by node and search query
+  const filteredContainers = useMemo(() => {
+    let result = containers;
+    if (nodeFilter) {
+      result = result.filter(c => c.backendId === nodeFilter);
+    }
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(c =>
+        c.name.toLowerCase().includes(q) ||
+        c.username.toLowerCase().includes(q) ||
+        (c.ipAddress && c.ipAddress.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [containers, nodeFilter, searchQuery]);
+
   // Extract all unique label keys from containers
   const availableLabelKeys = useMemo(() => {
     const keys = new Set<string>();
-    containers.forEach(c => {
+    filteredContainers.forEach(c => {
       if (c.labels) {
         Object.keys(c.labels).forEach(k => keys.add(k));
       }
     });
     return Array.from(keys).sort();
-  }, [containers]);
+  }, [filteredContainers]);
 
   // Group containers by selected label
   const groupedContainers = useMemo(() => {
     if (!groupByLabel) {
-      return { '': containers };
+      return { '': filteredContainers };
     }
     const groups: Record<string, Container[]> = {};
-    containers.forEach(c => {
+    filteredContainers.forEach(c => {
       const labelValue = c.labels?.[groupByLabel] || '(no label)';
       if (!groups[labelValue]) {
         groups[labelValue] = [];
@@ -91,7 +125,7 @@ export default function ContainerTopology({
       sortedGroups[key] = groups[key];
     });
     return sortedGroups;
-  }, [containers, groupByLabel]);
+  }, [filteredContainers, groupByLabel]);
 
   if (isLoading && containers.length === 0) {
     return (
@@ -121,9 +155,46 @@ export default function ContainerTopology({
     <Box sx={{ p: 3 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Typography variant="h5">
-          Containers ({containers.length})
+          Containers ({filteredContainers.length}{filteredContainers.length !== containers.length ? ` / ${containers.length}` : ''})
         </Typography>
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          <TextField
+            size="small"
+            placeholder="Search..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            sx={{ width: 180 }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" color="action" />
+                </InputAdornment>
+              ),
+            }}
+          />
+          {availableNodes.length > 1 && (
+            <FormControl size="small" sx={{ minWidth: 150 }}>
+              <InputLabel id="node-filter-label">Node</InputLabel>
+              <Select
+                labelId="node-filter-label"
+                value={nodeFilter}
+                label="Node"
+                onChange={(e) => setNodeFilter(e.target.value)}
+                startAdornment={
+                  <InputAdornment position="start">
+                    <DnsIcon fontSize="small" color="action" />
+                  </InputAdornment>
+                }
+              >
+                <MenuItem value="">
+                  <em>All nodes</em>
+                </MenuItem>
+                {availableNodes.map(node => (
+                  <MenuItem key={node} value={node}>{node}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
           {availableLabelKeys.length > 0 && (
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel id="group-by-label">Group by</InputLabel>
@@ -174,26 +245,40 @@ export default function ContainerTopology({
       </Box>
 
       {/* System Resources */}
-      <SystemResourcesCard systemInfo={systemInfo || null} />
+      <SystemResourcesCard
+        systemInfo={systemInfo || null}
+        backends={backends}
+        onSelectBackend={onSelectBackend}
+      />
 
       {/* Core Infrastructure Services */}
       {coreServices && coreServices.length > 0 && (
         <CoreServicesSection services={coreServices} />
       )}
 
-      {containers.length === 0 ? (
+      {filteredContainers.length === 0 ? (
         <Box sx={{ textAlign: 'center', py: 6 }}>
           <Typography color="text.secondary" gutterBottom>
-            No containers found
+            {containers.length === 0 ? 'No containers found' : 'No containers match the current filters'}
           </Typography>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={onCreateContainer}
-            sx={{ mt: 2 }}
-          >
-            Create your first container
-          </Button>
+          {containers.length === 0 ? (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={onCreateContainer}
+              sx={{ mt: 2 }}
+            >
+              Create your first container
+            </Button>
+          ) : (
+            <Button
+              variant="outlined"
+              onClick={() => { setNodeFilter(''); setSearchQuery(''); }}
+              sx={{ mt: 2 }}
+            >
+              Clear filters
+            </Button>
+          )}
         </Box>
       ) : (
         <>

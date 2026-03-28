@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,6 +78,14 @@ type DualServerConfig struct {
 	// DaemonConfigStore for persisting daemon config to PostgreSQL (optional)
 	DaemonConfigStore *app.DaemonConfigStore
 
+	// Standalone mode: skip all PostgreSQL/core container dependencies
+	Standalone bool
+
+	// Multi-backend peer settings
+	SentinelURL    string   // URL for auto-discovering tunnel peers (e.g., "http://10.128.0.5:8081")
+	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
+	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
+
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
 	AlertWebhookSecret string // HMAC-SHA256 signing secret for webhook payloads (optional)
@@ -110,6 +122,7 @@ type DualServer struct {
 	pentestStore          *pentest.Store
 	zapManager            *zapscanner.Manager
 	zapStore              *zapscanner.Store
+	peerPool              *PeerPool
 }
 
 // NewDualServer creates a new dual server instance
@@ -394,30 +407,34 @@ skipAppHosting:
 
 	// Setup collaborator store and manager (independent of app hosting)
 	// postgresConnString was set by app hosting setup above, or from config
-	if postgresConnString == "" {
+	if config.Standalone {
+		postgresConnString = ""
+	} else if postgresConnString == "" {
 		postgresConnString = os.Getenv("CONTAINARIUM_POSTGRES_URL")
-	}
-	if postgresConnString == "" {
-		postgresConnString = "postgres://containarium:containarium@10.100.0.2:5432/containarium?sslmode=disable"
+		if postgresConnString == "" {
+			postgresConnString = "postgres://containarium:containarium@10.100.0.2:5432/containarium?sslmode=disable" // #nosec G101 -- default dev credentials for local Incus container Postgres
+		}
 	}
 
 	var collabStore *collaborator.Store
-	for attempt := 1; attempt <= 5; attempt++ {
-		collabStore, err = collaborator.NewStore(context.Background(), postgresConnString)
-		if err == nil {
-			break
+	if postgresConnString != "" {
+		for attempt := 1; attempt <= 5; attempt++ {
+			collabStore, err = collaborator.NewStore(context.Background(), postgresConnString)
+			if err == nil {
+				break
+			}
+			if attempt < 5 {
+				log.Printf("Collaborator store attempt %d/5 failed: %v (retrying in 3s)", attempt, err)
+				time.Sleep(3 * time.Second)
+			}
 		}
-		if attempt < 5 {
-			log.Printf("Collaborator store attempt %d/5 failed: %v (retrying in 3s)", attempt, err)
-			time.Sleep(3 * time.Second)
+		if err != nil {
+			log.Printf("Warning: Failed to create collaborator store: %v. Collaborator features disabled.", err)
+		} else {
+			collaboratorMgr := container.NewCollaboratorManager(containerServer.GetManager(), collabStore)
+			containerServer.SetCollaboratorManager(collaboratorMgr)
+			log.Printf("Collaborator management service enabled")
 		}
-	}
-	if err != nil {
-		log.Printf("Warning: Failed to create collaborator store: %v. Collaborator features disabled.", err)
-	} else {
-		collaboratorMgr := container.NewCollaboratorManager(containerServer.GetManager(), collabStore)
-		containerServer.SetCollaboratorManager(collaboratorMgr)
-		log.Printf("Collaborator management service enabled")
 	}
 
 	// Setup route persistence and Caddy sync (independent of app hosting).
@@ -805,11 +822,136 @@ skipAppHosting:
 		pentestStore:         pentestStore,
 		zapManager:           zapManager,
 		zapStore:             zapStore,
+		peerPool:             NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers),
 	}, nil
 }
 
 // Start starts both gRPC and HTTP servers
+// backendsHandler returns an HTTP handler for the /v1/backends endpoint.
+// It also handles /v1/backends/{id}/system-info for per-backend system info.
+func (ds *DualServer) backendsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/v1/backends")
+		path = strings.TrimPrefix(path, "/")
+
+		// /v1/backends/{id}/system-info — forward system info request to specific backend
+		if strings.Contains(path, "/system-info") {
+			backendID := strings.Split(path, "/")[0]
+			ds.handleBackendSystemInfo(w, r, backendID)
+			return
+		}
+
+		// /v1/backends — list all backends
+		if path == "" {
+			type backendInfo struct {
+				ID      string `json:"id"`
+				Type    string `json:"type"`
+				Healthy bool   `json:"healthy"`
+			}
+
+			var backends []backendInfo
+
+			if ds.peerPool != nil {
+				backends = append(backends, backendInfo{
+					ID:      ds.peerPool.LocalBackendID(),
+					Type:    "local",
+					Healthy: true,
+				})
+
+				for _, peer := range ds.peerPool.Peers() {
+					backends = append(backends, backendInfo{
+						ID:      peer.ID,
+						Type:    "tunnel",
+						Healthy: peer.Healthy,
+					})
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"backends": backends,
+			})
+			return
+		}
+
+		http.NotFound(w, r)
+	}
+}
+
+// handleBackendSystemInfo returns system info for a specific backend.
+// For the local backend, it returns the local system info.
+// For peer backends, it forwards the request to the peer.
+func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Request, backendID string) {
+	if ds.peerPool == nil {
+		http.Error(w, `{"error":"no backends configured"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Local backend — use the gRPC system info endpoint
+	if backendID == ds.peerPool.LocalBackendID() {
+		// Forward to local system info endpoint
+		authToken := r.Header.Get("Authorization")
+		if authToken == "" {
+			authToken = "Bearer " + r.URL.Query().Get("token")
+		}
+		// Use the internal gRPC client path by proxying to ourselves
+		client := &http.Client{Timeout: 10 * time.Second}
+		req, _ := http.NewRequestWithContext(r.Context(), "GET", fmt.Sprintf("http://localhost:%d/v1/system/info", ds.config.HTTPPort), nil)
+		req.Header.Set("Authorization", authToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"failed to get local system info: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return
+	}
+
+	// Peer backend — forward to peer
+	peer := ds.peerPool.Get(backendID)
+	if peer == nil {
+		http.Error(w, fmt.Sprintf(`{"error":"backend %q not found"}`, backendID), http.StatusNotFound)
+		return
+	}
+	if !peer.Healthy {
+		http.Error(w, fmt.Sprintf(`{"error":"backend %q is not healthy"}`, backendID), http.StatusServiceUnavailable)
+		return
+	}
+
+	authToken := ""
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		authToken = authHeader[7:]
+	}
+
+	respBody, statusCode, err := peer.ForwardRequest("GET", "/v1/system/info", authToken, nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to get system info from peer: %v"}`, err), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(statusCode)
+	w.Write(respBody)
+}
+
 func (ds *DualServer) Start(ctx context.Context) error {
+	// Start peer discovery for multi-backend support
+	if ds.peerPool != nil {
+		ds.peerPool.StartDiscovery(ctx)
+		ds.containerServer.SetPeerPool(ds.peerPool)
+
+		// Register /v1/backends endpoint on gateway
+		if ds.gatewayServer != nil {
+			ds.gatewayServer.SetBackendsHandler(ds.backendsHandler())
+			// Enable terminal WebSocket proxying to peer backends
+			ds.gatewayServer.SetTerminalPeerProxy(ds.peerPool)
+		}
+	}
+
 	// Start traffic collector if available
 	if ds.trafficCollector != nil {
 		if err := ds.trafficCollector.Start(); err != nil {

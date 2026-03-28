@@ -15,11 +15,12 @@ const (
 
 // Backend represents a single backend instance that the sentinel can forward to.
 type Backend struct {
-	ID       string
-	Type     BackendType
-	IP       string
-	Provider CloudProvider // for diagnose/recover (GCP can restart VMs; tunnel cannot)
-	Priority int           // lower = higher priority for HTTP primary selection (GCP=0, tunnel=10)
+	ID           string
+	Type         BackendType
+	IP           string
+	ExternalPort int           // externally reachable API port (for tunnel backends, e.g., 18001)
+	Provider     CloudProvider // for diagnose/recover (GCP can restart VMs; tunnel cannot)
+	Priority     int           // lower = higher priority for HTTP primary selection (GCP=0, tunnel=10)
 
 	// Per-backend health tracking
 	Healthy        bool

@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -43,6 +46,40 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
+	})
+
+	// Peers endpoint — for daemon multi-backend discovery
+	mux.HandleFunc("/sentinel/peers", manager.PeersHandler())
+
+	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
+	// This allows the primary daemon to reach tunnel backends through the sentinel
+	// without needing extra firewall rules for external ports.
+	mux.HandleFunc("/peer/", func(w http.ResponseWriter, r *http.Request) {
+		// Parse path: /peer/<backend-id>/v1/containers → backend-id, /v1/containers
+		path := strings.TrimPrefix(r.URL.Path, "/peer/")
+		slashIdx := strings.Index(path, "/")
+		if slashIdx < 0 {
+			http.Error(w, "invalid peer path", http.StatusBadRequest)
+			return
+		}
+		backendID := path[:slashIdx]
+		remainingPath := path[slashIdx:]
+
+		// Find the backend's loopback IP
+		backend := manager.backends.Get(backendID)
+		if backend == nil {
+			http.Error(w, fmt.Sprintf("backend %q not found", backendID), http.StatusNotFound)
+			return
+		}
+
+		target := &url.URL{
+			Scheme: "http",
+			Host:   fmt.Sprintf("%s:%d", backend.IP, manager.config.HealthPort),
+		}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		r.URL.Path = remainingPath
+		r.Host = target.Host
+		proxy.ServeHTTP(w, r)
 	})
 
 	// Status JSON endpoint — always available

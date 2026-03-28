@@ -21,6 +21,229 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// GPU vendor enum
+type GPUVendor int32
+
+const (
+	GPUVendor_GPU_VENDOR_UNSPECIFIED GPUVendor = 0
+	GPUVendor_GPU_VENDOR_NVIDIA      GPUVendor = 1
+	GPUVendor_GPU_VENDOR_AMD         GPUVendor = 2
+	GPUVendor_GPU_VENDOR_INTEL       GPUVendor = 3
+)
+
+// Enum value maps for GPUVendor.
+var (
+	GPUVendor_name = map[int32]string{
+		0: "GPU_VENDOR_UNSPECIFIED",
+		1: "GPU_VENDOR_NVIDIA",
+		2: "GPU_VENDOR_AMD",
+		3: "GPU_VENDOR_INTEL",
+	}
+	GPUVendor_value = map[string]int32{
+		"GPU_VENDOR_UNSPECIFIED": 0,
+		"GPU_VENDOR_NVIDIA":      1,
+		"GPU_VENDOR_AMD":         2,
+		"GPU_VENDOR_INTEL":       3,
+	}
+)
+
+func (x GPUVendor) Enum() *GPUVendor {
+	p := new(GPUVendor)
+	*p = x
+	return p
+}
+
+func (x GPUVendor) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GPUVendor) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_config_proto_enumTypes[0].Descriptor()
+}
+
+func (GPUVendor) Type() protoreflect.EnumType {
+	return &file_containarium_v1_config_proto_enumTypes[0]
+}
+
+func (x GPUVendor) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GPUVendor.Descriptor instead.
+func (GPUVendor) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{0}
+}
+
+// GPU model enum (common datacenter and workstation GPUs)
+type GPUModel int32
+
+const (
+	GPUModel_GPU_MODEL_UNSPECIFIED GPUModel = 0
+	// NVIDIA Consumer
+	GPUModel_GPU_MODEL_NVIDIA_RTX_4090    GPUModel = 100
+	GPUModel_GPU_MODEL_NVIDIA_RTX_4080    GPUModel = 101
+	GPUModel_GPU_MODEL_NVIDIA_RTX_4070_TI GPUModel = 102
+	GPUModel_GPU_MODEL_NVIDIA_RTX_4070    GPUModel = 103
+	GPUModel_GPU_MODEL_NVIDIA_RTX_3090    GPUModel = 104
+	GPUModel_GPU_MODEL_NVIDIA_RTX_3080    GPUModel = 105
+	GPUModel_GPU_MODEL_NVIDIA_RTX_5090    GPUModel = 106
+	GPUModel_GPU_MODEL_NVIDIA_RTX_5080    GPUModel = 107
+	// NVIDIA Datacenter
+	GPUModel_GPU_MODEL_NVIDIA_A100 GPUModel = 200
+	GPUModel_GPU_MODEL_NVIDIA_A10  GPUModel = 201
+	GPUModel_GPU_MODEL_NVIDIA_A10G GPUModel = 202
+	GPUModel_GPU_MODEL_NVIDIA_H100 GPUModel = 203
+	GPUModel_GPU_MODEL_NVIDIA_H200 GPUModel = 204
+	GPUModel_GPU_MODEL_NVIDIA_L4   GPUModel = 205
+	GPUModel_GPU_MODEL_NVIDIA_L40  GPUModel = 206
+	GPUModel_GPU_MODEL_NVIDIA_L40S GPUModel = 207
+	GPUModel_GPU_MODEL_NVIDIA_T4   GPUModel = 208
+	GPUModel_GPU_MODEL_NVIDIA_V100 GPUModel = 209
+	GPUModel_GPU_MODEL_NVIDIA_B200 GPUModel = 210
+	// AMD
+	GPUModel_GPU_MODEL_AMD_MI300X      GPUModel = 300
+	GPUModel_GPU_MODEL_AMD_MI250X      GPUModel = 301
+	GPUModel_GPU_MODEL_AMD_RX_7900_XTX GPUModel = 302
+	// Intel
+	GPUModel_GPU_MODEL_INTEL_MAX_1550 GPUModel = 400
+	GPUModel_GPU_MODEL_INTEL_ARC_A770 GPUModel = 401
+)
+
+// Enum value maps for GPUModel.
+var (
+	GPUModel_name = map[int32]string{
+		0:   "GPU_MODEL_UNSPECIFIED",
+		100: "GPU_MODEL_NVIDIA_RTX_4090",
+		101: "GPU_MODEL_NVIDIA_RTX_4080",
+		102: "GPU_MODEL_NVIDIA_RTX_4070_TI",
+		103: "GPU_MODEL_NVIDIA_RTX_4070",
+		104: "GPU_MODEL_NVIDIA_RTX_3090",
+		105: "GPU_MODEL_NVIDIA_RTX_3080",
+		106: "GPU_MODEL_NVIDIA_RTX_5090",
+		107: "GPU_MODEL_NVIDIA_RTX_5080",
+		200: "GPU_MODEL_NVIDIA_A100",
+		201: "GPU_MODEL_NVIDIA_A10",
+		202: "GPU_MODEL_NVIDIA_A10G",
+		203: "GPU_MODEL_NVIDIA_H100",
+		204: "GPU_MODEL_NVIDIA_H200",
+		205: "GPU_MODEL_NVIDIA_L4",
+		206: "GPU_MODEL_NVIDIA_L40",
+		207: "GPU_MODEL_NVIDIA_L40S",
+		208: "GPU_MODEL_NVIDIA_T4",
+		209: "GPU_MODEL_NVIDIA_V100",
+		210: "GPU_MODEL_NVIDIA_B200",
+		300: "GPU_MODEL_AMD_MI300X",
+		301: "GPU_MODEL_AMD_MI250X",
+		302: "GPU_MODEL_AMD_RX_7900_XTX",
+		400: "GPU_MODEL_INTEL_MAX_1550",
+		401: "GPU_MODEL_INTEL_ARC_A770",
+	}
+	GPUModel_value = map[string]int32{
+		"GPU_MODEL_UNSPECIFIED":        0,
+		"GPU_MODEL_NVIDIA_RTX_4090":    100,
+		"GPU_MODEL_NVIDIA_RTX_4080":    101,
+		"GPU_MODEL_NVIDIA_RTX_4070_TI": 102,
+		"GPU_MODEL_NVIDIA_RTX_4070":    103,
+		"GPU_MODEL_NVIDIA_RTX_3090":    104,
+		"GPU_MODEL_NVIDIA_RTX_3080":    105,
+		"GPU_MODEL_NVIDIA_RTX_5090":    106,
+		"GPU_MODEL_NVIDIA_RTX_5080":    107,
+		"GPU_MODEL_NVIDIA_A100":        200,
+		"GPU_MODEL_NVIDIA_A10":         201,
+		"GPU_MODEL_NVIDIA_A10G":        202,
+		"GPU_MODEL_NVIDIA_H100":        203,
+		"GPU_MODEL_NVIDIA_H200":        204,
+		"GPU_MODEL_NVIDIA_L4":          205,
+		"GPU_MODEL_NVIDIA_L40":         206,
+		"GPU_MODEL_NVIDIA_L40S":        207,
+		"GPU_MODEL_NVIDIA_T4":          208,
+		"GPU_MODEL_NVIDIA_V100":        209,
+		"GPU_MODEL_NVIDIA_B200":        210,
+		"GPU_MODEL_AMD_MI300X":         300,
+		"GPU_MODEL_AMD_MI250X":         301,
+		"GPU_MODEL_AMD_RX_7900_XTX":    302,
+		"GPU_MODEL_INTEL_MAX_1550":     400,
+		"GPU_MODEL_INTEL_ARC_A770":     401,
+	}
+)
+
+func (x GPUModel) Enum() *GPUModel {
+	p := new(GPUModel)
+	*p = x
+	return p
+}
+
+func (x GPUModel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GPUModel) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_config_proto_enumTypes[1].Descriptor()
+}
+
+func (GPUModel) Type() protoreflect.EnumType {
+	return &file_containarium_v1_config_proto_enumTypes[1]
+}
+
+func (x GPUModel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GPUModel.Descriptor instead.
+func (GPUModel) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{1}
+}
+
+// BackendType represents the type of backend instance
+type BackendType int32
+
+const (
+	BackendType_BACKEND_TYPE_UNSPECIFIED BackendType = 0
+	BackendType_BACKEND_TYPE_GCP         BackendType = 1
+	BackendType_BACKEND_TYPE_TUNNEL      BackendType = 2
+)
+
+// Enum value maps for BackendType.
+var (
+	BackendType_name = map[int32]string{
+		0: "BACKEND_TYPE_UNSPECIFIED",
+		1: "BACKEND_TYPE_GCP",
+		2: "BACKEND_TYPE_TUNNEL",
+	}
+	BackendType_value = map[string]int32{
+		"BACKEND_TYPE_UNSPECIFIED": 0,
+		"BACKEND_TYPE_GCP":         1,
+		"BACKEND_TYPE_TUNNEL":      2,
+	}
+)
+
+func (x BackendType) Enum() *BackendType {
+	p := new(BackendType)
+	*p = x
+	return p
+}
+
+func (x BackendType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BackendType) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_config_proto_enumTypes[2].Descriptor()
+}
+
+func (BackendType) Type() protoreflect.EnumType {
+	return &file_containarium_v1_config_proto_enumTypes[2]
+}
+
+func (x BackendType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BackendType.Descriptor instead.
+func (BackendType) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{2}
+}
+
 // Config represents the system-wide configuration for Containarium
 type Config struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -679,6 +902,8 @@ type SystemInfo struct {
 	CpuLoad_5Min float64 `protobuf:"fixed64,16,opt,name=cpu_load_5min,json=cpuLoad5min,proto3" json:"cpu_load_5min,omitempty"`
 	// CPU load average (15 minutes)
 	CpuLoad_15Min float64 `protobuf:"fixed64,17,opt,name=cpu_load_15min,json=cpuLoad15min,proto3" json:"cpu_load_15min,omitempty"`
+	// GPU information
+	Gpus          []*GPUInfo `protobuf:"bytes,18,rep,name=gpus,proto3" json:"gpus,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -832,6 +1057,113 @@ func (x *SystemInfo) GetCpuLoad_15Min() float64 {
 	return 0
 }
 
+func (x *SystemInfo) GetGpus() []*GPUInfo {
+	if x != nil {
+		return x.Gpus
+	}
+	return nil
+}
+
+// GPUInfo represents a GPU device on the system
+type GPUInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// GPU vendor
+	Vendor GPUVendor `protobuf:"varint,1,opt,name=vendor,proto3,enum=containarium.v1.GPUVendor" json:"vendor,omitempty"`
+	// GPU model (known models mapped to enum, or UNSPECIFIED for unknown)
+	Model GPUModel `protobuf:"varint,2,opt,name=model,proto3,enum=containarium.v1.GPUModel" json:"model,omitempty"`
+	// Raw model name string from the driver (for display when model is UNSPECIFIED)
+	ModelName string `protobuf:"bytes,3,opt,name=model_name,json=modelName,proto3" json:"model_name,omitempty"`
+	// PCI address (e.g., "0000:0b:00.0")
+	PciAddress string `protobuf:"bytes,4,opt,name=pci_address,json=pciAddress,proto3" json:"pci_address,omitempty"`
+	// Driver version (e.g., "570.86.15")
+	DriverVersion string `protobuf:"bytes,5,opt,name=driver_version,json=driverVersion,proto3" json:"driver_version,omitempty"`
+	// CUDA version (e.g., "12.7") — NVIDIA only
+	CudaVersion string `protobuf:"bytes,6,opt,name=cuda_version,json=cudaVersion,proto3" json:"cuda_version,omitempty"`
+	// VRAM in bytes (when available)
+	VramBytes     int64 `protobuf:"varint,7,opt,name=vram_bytes,json=vramBytes,proto3" json:"vram_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GPUInfo) Reset() {
+	*x = GPUInfo{}
+	mi := &file_containarium_v1_config_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GPUInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GPUInfo) ProtoMessage() {}
+
+func (x *GPUInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GPUInfo.ProtoReflect.Descriptor instead.
+func (*GPUInfo) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GPUInfo) GetVendor() GPUVendor {
+	if x != nil {
+		return x.Vendor
+	}
+	return GPUVendor_GPU_VENDOR_UNSPECIFIED
+}
+
+func (x *GPUInfo) GetModel() GPUModel {
+	if x != nil {
+		return x.Model
+	}
+	return GPUModel_GPU_MODEL_UNSPECIFIED
+}
+
+func (x *GPUInfo) GetModelName() string {
+	if x != nil {
+		return x.ModelName
+	}
+	return ""
+}
+
+func (x *GPUInfo) GetPciAddress() string {
+	if x != nil {
+		return x.PciAddress
+	}
+	return ""
+}
+
+func (x *GPUInfo) GetDriverVersion() string {
+	if x != nil {
+		return x.DriverVersion
+	}
+	return ""
+}
+
+func (x *GPUInfo) GetCudaVersion() string {
+	if x != nil {
+		return x.CudaVersion
+	}
+	return ""
+}
+
+func (x *GPUInfo) GetVramBytes() int64 {
+	if x != nil {
+		return x.VramBytes
+	}
+	return 0
+}
+
 // GetSystemInfoRequest is the request to get system information
 type GetSystemInfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -841,7 +1173,7 @@ type GetSystemInfoRequest struct {
 
 func (x *GetSystemInfoRequest) Reset() {
 	*x = GetSystemInfoRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[10]
+	mi := &file_containarium_v1_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -853,7 +1185,7 @@ func (x *GetSystemInfoRequest) String() string {
 func (*GetSystemInfoRequest) ProtoMessage() {}
 
 func (x *GetSystemInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[10]
+	mi := &file_containarium_v1_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -866,7 +1198,7 @@ func (x *GetSystemInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSystemInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetSystemInfoRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{10}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{11}
 }
 
 // GetSystemInfoResponse is the response from getting system information
@@ -880,7 +1212,7 @@ type GetSystemInfoResponse struct {
 
 func (x *GetSystemInfoResponse) Reset() {
 	*x = GetSystemInfoResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[11]
+	mi := &file_containarium_v1_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -892,7 +1224,7 @@ func (x *GetSystemInfoResponse) String() string {
 func (*GetSystemInfoResponse) ProtoMessage() {}
 
 func (x *GetSystemInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[11]
+	mi := &file_containarium_v1_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -905,12 +1237,168 @@ func (x *GetSystemInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSystemInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetSystemInfoResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetSystemInfoResponse) GetInfo() *SystemInfo {
 	if x != nil {
 		return x.Info
+	}
+	return nil
+}
+
+// BackendInfo contains information about a backend instance
+type BackendInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique backend identifier (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Backend type
+	Type BackendType `protobuf:"varint,2,opt,name=type,proto3,enum=containarium.v1.BackendType" json:"type,omitempty"`
+	// Whether the backend is currently healthy
+	Healthy bool `protobuf:"varint,3,opt,name=healthy,proto3" json:"healthy,omitempty"`
+	// Priority (lower = preferred, GCP=0, tunnel=10)
+	Priority      int32 `protobuf:"varint,4,opt,name=priority,proto3" json:"priority,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackendInfo) Reset() {
+	*x = BackendInfo{}
+	mi := &file_containarium_v1_config_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackendInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackendInfo) ProtoMessage() {}
+
+func (x *BackendInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackendInfo.ProtoReflect.Descriptor instead.
+func (*BackendInfo) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *BackendInfo) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *BackendInfo) GetType() BackendType {
+	if x != nil {
+		return x.Type
+	}
+	return BackendType_BACKEND_TYPE_UNSPECIFIED
+}
+
+func (x *BackendInfo) GetHealthy() bool {
+	if x != nil {
+		return x.Healthy
+	}
+	return false
+}
+
+func (x *BackendInfo) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+// ListBackendsRequest is the request to list available backends
+type ListBackendsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBackendsRequest) Reset() {
+	*x = ListBackendsRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBackendsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBackendsRequest) ProtoMessage() {}
+
+func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
+func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{14}
+}
+
+// ListBackendsResponse is the response from listing backends
+type ListBackendsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// List of available backends
+	Backends      []*BackendInfo `protobuf:"bytes,1,rep,name=backends,proto3" json:"backends,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBackendsResponse) Reset() {
+	*x = ListBackendsResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBackendsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBackendsResponse) ProtoMessage() {}
+
+func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
+func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
+	if x != nil {
+		return x.Backends
 	}
 	return nil
 }
@@ -965,7 +1453,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xa4\x05\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xd2\x05\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -986,10 +1474,65 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\fnetwork_cidr\x18\x0e \x01(\tR\vnetworkCidr\x12\"\n" +
 	"\rcpu_load_1min\x18\x0f \x01(\x01R\vcpuLoad1min\x12\"\n" +
 	"\rcpu_load_5min\x18\x10 \x01(\x01R\vcpuLoad5min\x12$\n" +
-	"\x0ecpu_load_15min\x18\x11 \x01(\x01R\fcpuLoad15min\"\x16\n" +
+	"\x0ecpu_load_15min\x18\x11 \x01(\x01R\fcpuLoad15min\x12,\n" +
+	"\x04gpus\x18\x12 \x03(\v2\x18.containarium.v1.GPUInfoR\x04gpus\"\x97\x02\n" +
+	"\aGPUInfo\x122\n" +
+	"\x06vendor\x18\x01 \x01(\x0e2\x1a.containarium.v1.GPUVendorR\x06vendor\x12/\n" +
+	"\x05model\x18\x02 \x01(\x0e2\x19.containarium.v1.GPUModelR\x05model\x12\x1d\n" +
+	"\n" +
+	"model_name\x18\x03 \x01(\tR\tmodelName\x12\x1f\n" +
+	"\vpci_address\x18\x04 \x01(\tR\n" +
+	"pciAddress\x12%\n" +
+	"\x0edriver_version\x18\x05 \x01(\tR\rdriverVersion\x12!\n" +
+	"\fcuda_version\x18\x06 \x01(\tR\vcudaVersion\x12\x1d\n" +
+	"\n" +
+	"vram_bytes\x18\a \x01(\x03R\tvramBytes\"\x16\n" +
 	"\x14GetSystemInfoRequest\"H\n" +
 	"\x15GetSystemInfoResponse\x12/\n" +
-	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04infoBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04info\"\x85\x01\n" +
+	"\vBackendInfo\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
+	"\x04type\x18\x02 \x01(\x0e2\x1c.containarium.v1.BackendTypeR\x04type\x12\x18\n" +
+	"\ahealthy\x18\x03 \x01(\bR\ahealthy\x12\x1a\n" +
+	"\bpriority\x18\x04 \x01(\x05R\bpriority\"\x15\n" +
+	"\x13ListBackendsRequest\"P\n" +
+	"\x14ListBackendsResponse\x128\n" +
+	"\bbackends\x18\x01 \x03(\v2\x1c.containarium.v1.BackendInfoR\bbackends*h\n" +
+	"\tGPUVendor\x12\x1a\n" +
+	"\x16GPU_VENDOR_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11GPU_VENDOR_NVIDIA\x10\x01\x12\x12\n" +
+	"\x0eGPU_VENDOR_AMD\x10\x02\x12\x14\n" +
+	"\x10GPU_VENDOR_INTEL\x10\x03*\xe2\x05\n" +
+	"\bGPUModel\x12\x19\n" +
+	"\x15GPU_MODEL_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19GPU_MODEL_NVIDIA_RTX_4090\x10d\x12\x1d\n" +
+	"\x19GPU_MODEL_NVIDIA_RTX_4080\x10e\x12 \n" +
+	"\x1cGPU_MODEL_NVIDIA_RTX_4070_TI\x10f\x12\x1d\n" +
+	"\x19GPU_MODEL_NVIDIA_RTX_4070\x10g\x12\x1d\n" +
+	"\x19GPU_MODEL_NVIDIA_RTX_3090\x10h\x12\x1d\n" +
+	"\x19GPU_MODEL_NVIDIA_RTX_3080\x10i\x12\x1d\n" +
+	"\x19GPU_MODEL_NVIDIA_RTX_5090\x10j\x12\x1d\n" +
+	"\x19GPU_MODEL_NVIDIA_RTX_5080\x10k\x12\x1a\n" +
+	"\x15GPU_MODEL_NVIDIA_A100\x10\xc8\x01\x12\x19\n" +
+	"\x14GPU_MODEL_NVIDIA_A10\x10\xc9\x01\x12\x1a\n" +
+	"\x15GPU_MODEL_NVIDIA_A10G\x10\xca\x01\x12\x1a\n" +
+	"\x15GPU_MODEL_NVIDIA_H100\x10\xcb\x01\x12\x1a\n" +
+	"\x15GPU_MODEL_NVIDIA_H200\x10\xcc\x01\x12\x18\n" +
+	"\x13GPU_MODEL_NVIDIA_L4\x10\xcd\x01\x12\x19\n" +
+	"\x14GPU_MODEL_NVIDIA_L40\x10\xce\x01\x12\x1a\n" +
+	"\x15GPU_MODEL_NVIDIA_L40S\x10\xcf\x01\x12\x18\n" +
+	"\x13GPU_MODEL_NVIDIA_T4\x10\xd0\x01\x12\x1a\n" +
+	"\x15GPU_MODEL_NVIDIA_V100\x10\xd1\x01\x12\x1a\n" +
+	"\x15GPU_MODEL_NVIDIA_B200\x10\xd2\x01\x12\x19\n" +
+	"\x14GPU_MODEL_AMD_MI300X\x10\xac\x02\x12\x19\n" +
+	"\x14GPU_MODEL_AMD_MI250X\x10\xad\x02\x12\x1e\n" +
+	"\x19GPU_MODEL_AMD_RX_7900_XTX\x10\xae\x02\x12\x1d\n" +
+	"\x18GPU_MODEL_INTEL_MAX_1550\x10\x90\x03\x12\x1d\n" +
+	"\x18GPU_MODEL_INTEL_ARC_A770\x10\x91\x03*Z\n" +
+	"\vBackendType\x12\x1c\n" +
+	"\x18BACKEND_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10BACKEND_TYPE_GCP\x10\x01\x12\x17\n" +
+	"\x13BACKEND_TYPE_TUNNEL\x10\x02BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_config_proto_rawDescOnce sync.Once
@@ -1003,37 +1546,50 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_config_proto_rawDescData
 }
 
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_containarium_v1_config_proto_goTypes = []any{
-	(*Config)(nil),                // 0: containarium.v1.Config
-	(*IncusConfig)(nil),           // 1: containarium.v1.IncusConfig
-	(*NetworkConfig)(nil),         // 2: containarium.v1.NetworkConfig
-	(*StorageConfig)(nil),         // 3: containarium.v1.StorageConfig
-	(*SecurityConfig)(nil),        // 4: containarium.v1.SecurityConfig
-	(*GetConfigRequest)(nil),      // 5: containarium.v1.GetConfigRequest
-	(*GetConfigResponse)(nil),     // 6: containarium.v1.GetConfigResponse
-	(*UpdateConfigRequest)(nil),   // 7: containarium.v1.UpdateConfigRequest
-	(*UpdateConfigResponse)(nil),  // 8: containarium.v1.UpdateConfigResponse
-	(*SystemInfo)(nil),            // 9: containarium.v1.SystemInfo
-	(*GetSystemInfoRequest)(nil),  // 10: containarium.v1.GetSystemInfoRequest
-	(*GetSystemInfoResponse)(nil), // 11: containarium.v1.GetSystemInfoResponse
-	(*ResourceLimits)(nil),        // 12: containarium.v1.ResourceLimits
+	(GPUVendor)(0),                // 0: containarium.v1.GPUVendor
+	(GPUModel)(0),                 // 1: containarium.v1.GPUModel
+	(BackendType)(0),              // 2: containarium.v1.BackendType
+	(*Config)(nil),                // 3: containarium.v1.Config
+	(*IncusConfig)(nil),           // 4: containarium.v1.IncusConfig
+	(*NetworkConfig)(nil),         // 5: containarium.v1.NetworkConfig
+	(*StorageConfig)(nil),         // 6: containarium.v1.StorageConfig
+	(*SecurityConfig)(nil),        // 7: containarium.v1.SecurityConfig
+	(*GetConfigRequest)(nil),      // 8: containarium.v1.GetConfigRequest
+	(*GetConfigResponse)(nil),     // 9: containarium.v1.GetConfigResponse
+	(*UpdateConfigRequest)(nil),   // 10: containarium.v1.UpdateConfigRequest
+	(*UpdateConfigResponse)(nil),  // 11: containarium.v1.UpdateConfigResponse
+	(*SystemInfo)(nil),            // 12: containarium.v1.SystemInfo
+	(*GPUInfo)(nil),               // 13: containarium.v1.GPUInfo
+	(*GetSystemInfoRequest)(nil),  // 14: containarium.v1.GetSystemInfoRequest
+	(*GetSystemInfoResponse)(nil), // 15: containarium.v1.GetSystemInfoResponse
+	(*BackendInfo)(nil),           // 16: containarium.v1.BackendInfo
+	(*ListBackendsRequest)(nil),   // 17: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),  // 18: containarium.v1.ListBackendsResponse
+	(*ResourceLimits)(nil),        // 19: containarium.v1.ResourceLimits
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
-	1,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	12, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
-	2,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
-	3,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
-	4,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	0,  // 5: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
-	0,  // 6: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
-	0,  // 7: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
-	9,  // 8: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
-	9,  // [9:9] is the sub-list for method output_type
-	9,  // [9:9] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	4,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
+	19, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	5,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
+	6,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
+	7,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
+	3,  // 5: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
+	3,  // 6: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
+	3,  // 7: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
+	13, // 8: containarium.v1.SystemInfo.gpus:type_name -> containarium.v1.GPUInfo
+	0,  // 9: containarium.v1.GPUInfo.vendor:type_name -> containarium.v1.GPUVendor
+	1,  // 10: containarium.v1.GPUInfo.model:type_name -> containarium.v1.GPUModel
+	12, // 11: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
+	2,  // 12: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
+	16, // 13: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -1047,13 +1603,14 @@ func file_containarium_v1_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   12,
+			NumEnums:      3,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_containarium_v1_config_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_config_proto_depIdxs,
+		EnumInfos:         file_containarium_v1_config_proto_enumTypes,
 		MessageInfos:      file_containarium_v1_config_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_config_proto = out.File

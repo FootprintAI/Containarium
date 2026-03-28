@@ -3,6 +3,7 @@ package sentinel
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -84,12 +85,42 @@ func (m *Manager) SetHTTPSListener(ln *chanListener) {
 	m.httpsDispatch = newDispatchListener(ln)
 }
 
+// PeersHandler returns an HTTP handler that serves the list of tunnel backend peers.
+// This allows the primary daemon to discover tunnel backends and their reachable addresses.
+func (m *Manager) PeersHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		type peerInfo struct {
+			ID        string `json:"id"`
+			ProxyPath string `json:"proxy_path"` // path prefix on binary server, e.g. "/peer/tunnel-fts-5900x-gpu"
+			Healthy   bool   `json:"healthy"`
+		}
+
+		backends := m.backends.All()
+		peers := make([]peerInfo, 0)
+		for _, b := range backends {
+			if b.Type != BackendTunnel {
+				continue
+			}
+			peers = append(peers, peerInfo{
+				ID:        b.ID,
+				ProxyPath: "/peer/" + b.ID,
+				Healthy:   b.Healthy,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"peers": peers,
+		})
+	}
+}
+
 // Run is the main loop. Blocks until ctx is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
 	log.Printf("[sentinel] starting (check-interval=%s, health-port=%d, forwarded-ports=%v, hybrid=%v)",
 		m.config.CheckInterval, m.config.HealthPort, m.config.ForwardedPorts, m.config.HybridMode)
 
-	// Start binary server if configured
+	// Start binary server if configured (also serves /sentinel/peers for peer discovery)
 	if m.config.BinaryPort > 0 {
 		stopBinary, err := StartBinaryServer(m.config.BinaryPort, m)
 		if err != nil {
@@ -370,7 +401,9 @@ func (m *Manager) switchToMaintenance() error {
 	return nil
 }
 
-// startHTTPSProxy sets the dispatch handler to proxy HTTPS to a backend.
+// startHTTPSProxy sets the dispatch handler to proxy HTTPS to the primary backend.
+// HTTPS is forwarded as raw TCP (TLS passthrough) so the backend (Caddy) handles
+// TLS termination with real Let's Encrypt certificates.
 func (m *Manager) startHTTPSProxy(backendIP string) {
 	target := net.JoinHostPort(backendIP, fmt.Sprintf("%d", m.config.HTTPSPort))
 	m.httpsDispatch.SetHandler(func(conn net.Conn) {
@@ -552,11 +585,12 @@ func (m *Manager) cleanup() {
 // OnTunnelConnect is called when a remote spot connects via tunnel.
 func (m *Manager) OnTunnelConnect(spot *TunnelSpot) {
 	b := &Backend{
-		ID:       "tunnel-" + spot.ID,
-		Type:     BackendTunnel,
-		IP:       spot.LocalIP,
-		Provider: NewTunnelProvider(nil, spot.ID), // tunnel provider can't restart VMs
-		Priority: 10, // lower priority than GCP for HTTP
+		ID:           "tunnel-" + spot.ID,
+		Type:         BackendTunnel,
+		IP:           spot.LocalIP,
+		ExternalPort: spot.ExternalPort,
+		Provider:     NewTunnelProvider(nil, spot.ID), // tunnel provider can't restart VMs
+		Priority:     10, // lower priority than GCP for HTTP
 	}
 	m.backends.Add(b)
 

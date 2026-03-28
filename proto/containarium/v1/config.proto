@@ -181,6 +181,78 @@ message SystemInfo {
 
   // CPU load average (15 minutes)
   double cpu_load_15min = 17;
+
+  // GPU information
+  repeated GPUInfo gpus = 18;
+}
+
+// GPU vendor enum
+enum GPUVendor {
+  GPU_VENDOR_UNSPECIFIED = 0;
+  GPU_VENDOR_NVIDIA = 1;
+  GPU_VENDOR_AMD = 2;
+  GPU_VENDOR_INTEL = 3;
+}
+
+// GPU model enum (common datacenter and workstation GPUs)
+enum GPUModel {
+  GPU_MODEL_UNSPECIFIED = 0;
+
+  // NVIDIA Consumer
+  GPU_MODEL_NVIDIA_RTX_4090 = 100;
+  GPU_MODEL_NVIDIA_RTX_4080 = 101;
+  GPU_MODEL_NVIDIA_RTX_4070_TI = 102;
+  GPU_MODEL_NVIDIA_RTX_4070 = 103;
+  GPU_MODEL_NVIDIA_RTX_3090 = 104;
+  GPU_MODEL_NVIDIA_RTX_3080 = 105;
+  GPU_MODEL_NVIDIA_RTX_5090 = 106;
+  GPU_MODEL_NVIDIA_RTX_5080 = 107;
+
+  // NVIDIA Datacenter
+  GPU_MODEL_NVIDIA_A100 = 200;
+  GPU_MODEL_NVIDIA_A10 = 201;
+  GPU_MODEL_NVIDIA_A10G = 202;
+  GPU_MODEL_NVIDIA_H100 = 203;
+  GPU_MODEL_NVIDIA_H200 = 204;
+  GPU_MODEL_NVIDIA_L4 = 205;
+  GPU_MODEL_NVIDIA_L40 = 206;
+  GPU_MODEL_NVIDIA_L40S = 207;
+  GPU_MODEL_NVIDIA_T4 = 208;
+  GPU_MODEL_NVIDIA_V100 = 209;
+  GPU_MODEL_NVIDIA_B200 = 210;
+
+  // AMD
+  GPU_MODEL_AMD_MI300X = 300;
+  GPU_MODEL_AMD_MI250X = 301;
+  GPU_MODEL_AMD_RX_7900_XTX = 302;
+
+  // Intel
+  GPU_MODEL_INTEL_MAX_1550 = 400;
+  GPU_MODEL_INTEL_ARC_A770 = 401;
+}
+
+// GPUInfo represents a GPU device on the system
+message GPUInfo {
+  // GPU vendor
+  GPUVendor vendor = 1;
+
+  // GPU model (known models mapped to enum, or UNSPECIFIED for unknown)
+  GPUModel model = 2;
+
+  // Raw model name string from the driver (for display when model is UNSPECIFIED)
+  string model_name = 3;
+
+  // PCI address (e.g., "0000:0b:00.0")
+  string pci_address = 4;
+
+  // Driver version (e.g., "570.86.15")
+  string driver_version = 5;
+
+  // CUDA version (e.g., "12.7") — NVIDIA only
+  string cuda_version = 6;
+
+  // VRAM in bytes (when available)
+  int64 vram_bytes = 7;
 }
 
 // GetSystemInfoRequest is the request to get system information
@@ -190,4 +262,35 @@ message GetSystemInfoRequest {}
 message GetSystemInfoResponse {
   // System information
   SystemInfo info = 1;
+}
+
+// BackendType represents the type of backend instance
+enum BackendType {
+  BACKEND_TYPE_UNSPECIFIED = 0;
+  BACKEND_TYPE_GCP = 1;
+  BACKEND_TYPE_TUNNEL = 2;
+}
+
+// BackendInfo contains information about a backend instance
+message BackendInfo {
+  // Unique backend identifier (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+  string id = 1;
+
+  // Backend type
+  BackendType type = 2;
+
+  // Whether the backend is currently healthy
+  bool healthy = 3;
+
+  // Priority (lower = preferred, GCP=0, tunnel=10)
+  int32 priority = 4;
+}
+
+// ListBackendsRequest is the request to list available backends
+message ListBackendsRequest {}
+
+// ListBackendsResponse is the response from listing backends
+message ListBackendsResponse {
+  // List of available backends
+  repeated BackendInfo backends = 1;
 }

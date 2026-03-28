@@ -42,6 +42,9 @@ message ResourceLimits {
 
   // Disk/storage limit (e.g., "50GB", "100GB")
   string disk = 3;
+
+  // GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
+  string gpu = 4;
 }
 
 // NetworkInfo contains network configuration for a container
@@ -96,6 +99,12 @@ message Container {
 
   // Software stack installed in the container (e.g., "nodejs", "python")
   string stack = 12;
+
+  // GPU device info (e.g., GPU ID or PCI address if attached)
+  string gpu_device = 13;
+
+  // Backend ID this container runs on (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+  string backend_id = 14;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -157,6 +166,12 @@ message CreateContainerRequest {
   // Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
   // See available stacks in configs/stacks.yaml
   string stack = 9;
+
+  // GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
+  string gpu = 10;
+
+  // Target backend ID for creation (empty = primary backend)
+  string backend_id = 11;
 }
 
 // CreateContainerResponse is the response from creating a container

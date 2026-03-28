@@ -59,6 +59,29 @@ func (n NICDevice) ToMap() map[string]string {
 	return m
 }
 
+// GPUDevice represents a GPU device configuration for passthrough
+type GPUDevice struct {
+	// ID is the GPU device ID (e.g., "0" for first GPU).
+	// Leave empty to pass through all GPUs.
+	ID string
+	// PCI is the PCI address (e.g., "0000:0b:00.0") for a specific GPU.
+	// Takes precedence over ID if set.
+	PCI string
+}
+
+// ToMap converts GPUDevice to the map format required by Incus API
+func (g GPUDevice) ToMap() map[string]string {
+	m := map[string]string{
+		"type": "gpu",
+	}
+	if g.PCI != "" {
+		m["pci"] = g.PCI
+	} else if g.ID != "" {
+		m["id"] = g.ID
+	}
+	return m
+}
+
 // ContainerConfig holds configuration for creating a container
 type ContainerConfig struct {
 	Name                   string
@@ -67,6 +90,7 @@ type ContainerConfig struct {
 	Memory                 string
 	Disk                   *DiskDevice // Root disk configuration
 	NIC                    *NICDevice  // Network interface configuration
+	GPU                    *GPUDevice  // GPU device configuration for passthrough
 	EnableNesting          bool
 	EnablePodmanPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
 	AutoStart              bool
@@ -108,6 +132,7 @@ type ContainerInfo struct {
 	Labels    map[string]string
 	Role      Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
 	CreatedAt time.Time
+	BackendID string // Backend this container runs on (populated by PeerPool fan-out)
 }
 
 // ContainerMetrics holds runtime metrics for a container
@@ -258,6 +283,12 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 			fmt.Printf("[DEBUG] CreateContainer - NIC: name=%s, network=%s, static_ip=%s\n",
 				config.NIC.Name, config.NIC.Network, config.NIC.IPv4Address)
 		}
+	}
+
+	// GPU device passthrough
+	if config.GPU != nil {
+		req.Devices["gpu"] = config.GPU.ToMap()
+		fmt.Printf("[DEBUG] CreateContainer - GPU: id=%s, pci=%s\n", config.GPU.ID, config.GPU.PCI)
 	}
 
 	// Create the container
@@ -762,6 +793,16 @@ func (c *Client) GetServerInfo() (*api.Server, error) {
 	return server, nil
 }
 
+// GPUInfo holds information about a GPU device
+type GPUInfo struct {
+	Vendor        string // e.g., "NVIDIA Corporation", "AMD", "Intel"
+	Model         string // e.g., "GeForce RTX 4090", "NVIDIA A100"
+	PCIAddress    string // e.g., "0000:0b:00.0"
+	DriverVersion string // e.g., "570.86.15"
+	CUDAVersion   string // NVIDIA only
+	VRAMBytes     int64  // VRAM in bytes (when available)
+}
+
 // SystemResources holds system resource information
 type SystemResources struct {
 	TotalCPUs          int32
@@ -774,6 +815,8 @@ type SystemResources struct {
 	CPULoad1Min  float64
 	CPULoad5Min  float64
 	CPULoad15Min float64
+	// GPU devices
+	GPUs []GPUInfo
 }
 
 // GetSystemResources gets system resource information from Incus
@@ -813,6 +856,34 @@ func (c *Client) GetSystemResources() (*SystemResources, error) {
 		res.CPULoad1Min = load1
 		res.CPULoad5Min = load5
 		res.CPULoad15Min = load15
+	}
+
+	// Detect GPU devices
+	for _, card := range resources.GPU.Cards {
+		gpu := GPUInfo{
+			PCIAddress:    card.PCIAddress,
+			DriverVersion: card.DriverVersion,
+		}
+		if card.Vendor != "" {
+			gpu.Vendor = card.Vendor
+		} else if card.VendorID != "" {
+			gpu.Vendor = card.VendorID
+		}
+		if card.Product != "" {
+			gpu.Model = card.Product
+		} else if card.ProductID != "" {
+			gpu.Model = card.ProductID
+		}
+		// Enrich with NVIDIA-specific info
+		if card.Nvidia != nil {
+			if card.Nvidia.Model != "" {
+				gpu.Model = card.Nvidia.Model
+			}
+			gpu.CUDAVersion = card.Nvidia.CUDAVersion
+			gpu.DriverVersion = card.Nvidia.NVRMVersion
+			gpu.Vendor = "NVIDIA"
+		}
+		res.GPUs = append(res.GPUs, gpu)
 	}
 
 	return res, nil

@@ -308,11 +308,28 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	return nil
 }
 
-// ensureProxyOnlyShell ensures the user's shell is set to /usr/sbin/nologin
+// containerShellPath is the path to the containarium-shell wrapper that
+// proxies SSH sessions into Incus containers. When present, it's used
+// instead of nologin so that SSH sessions land inside the container.
+const containerShellPath = "/usr/local/bin/containarium-shell"
+
+// getUserShell returns the shell to use for containarium host accounts.
+// If containarium-shell wrapper exists (standalone/tunnel backends), use it
+// so SSH sessions are proxied into the container. Otherwise use nologin
+// (sentinel/GCP backends where sshpiper handles routing).
+func getUserShell() string {
+	if _, err := os.Stat(containerShellPath); err == nil {
+		return containerShellPath
+	}
+	return "/usr/sbin/nologin"
+}
+
+// ensureProxyOnlyShell ensures the user's shell is set correctly
 func ensureProxyOnlyShell(username string, verbose bool) error {
+	shell := getUserShell()
 	// Wait for locks to clear before modifying user
 	if err := waitForLocksAndRun(func() error {
-		cmd := exec.Command("usermod", "-s", "/usr/sbin/nologin", username)
+		cmd := exec.Command("usermod", "-s", shell, username)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to set shell for %s: %w\nOutput: %s", username, err, output)
 		}
@@ -322,7 +339,7 @@ func ensureProxyOnlyShell(username string, verbose bool) error {
 	}
 
 	if verbose {
-		fmt.Printf("  ✓ Shell set to /usr/sbin/nologin for %s\n", username)
+		fmt.Printf("  ✓ Shell set to %s for %s\n", shell, username)
 	}
 
 	return nil
@@ -629,9 +646,10 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 		// Create user using flock for serialization
 		// flock -w 30 ensures we wait up to 30 seconds to acquire the lock
 		fmt.Printf("       Creating user %s (with flock)...\n", username)
+		shell := getUserShell()
 		cmd = exec.Command("flock", "-w", "30", "/var/lock/containarium-useradd.lock",
 			"useradd", username,
-			"-s", "/usr/sbin/nologin", // No shell access - ProxyJump only!
+			"-s", shell, // nologin (ProxyJump) or containarium-shell (exec into container)
 			"-m",                      // Create home directory
 			"-K", "SUB_UID_COUNT=0",   // Don't allocate subordinate UIDs
 			"-K", "SUB_GID_COUNT=0",   // Don't allocate subordinate GIDs
