@@ -85,6 +85,7 @@ function getStateColor(state: ContainerState): 'success' | 'error' | 'warning' |
       return 'error';
     case 'Frozen':
     case 'Creating':
+    case 'Provisioning':
       return 'warning';
     default:
       return 'default';

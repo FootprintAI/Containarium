@@ -112,6 +112,7 @@ type DualServer struct {
 	metricsCollector      *metrics.Collector
 	securityScanner       *security.Scanner
 	securityStore         *security.Store
+	securityServer        *SecurityServer
 	auditStore            *audit.Store
 	auditEventSubscriber  *audit.EventSubscriber
 	sshCollector          *audit.SSHCollector
@@ -515,6 +516,7 @@ skipAppHosting:
 		} else {
 			collectorConfig := metrics.DefaultCollectorConfig()
 			collectorConfig.VictoriaMetricsURL = config.VictoriaMetricsURL
+			collectorConfig.LocalBackendID = config.LocalBackendID
 			mc, err := metrics.NewCollector(collectorConfig, metricsIncusClient)
 			if err != nil {
 				log.Printf("Warning: Failed to create OTel metrics collector: %v", err)
@@ -537,6 +539,7 @@ skipAppHosting:
 	// Setup ClamAV security scanner
 	var securityScanner *security.Scanner
 	var securityStore *security.Store
+	var securityServerInstance *SecurityServer
 	if postgresConnString != "" {
 		securityPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
@@ -555,8 +558,8 @@ skipAppHosting:
 					// Create scanner first so we can pass it to the server
 					securityScanner = security.NewScanner(securityIncusClient, securityStore)
 
-					securityServer := NewSecurityServer(securityStore, securityIncusClient, securityScanner)
-					pb.RegisterSecurityServiceServer(grpcServer, securityServer)
+					securityServerInstance = NewSecurityServer(securityStore, securityIncusClient, securityScanner)
+					pb.RegisterSecurityServiceServer(grpcServer, securityServerInstance)
 					log.Printf("Security service enabled")
 
 					// Ensure security container exists (background, non-blocking)
@@ -812,6 +815,7 @@ skipAppHosting:
 		metricsCollector:   metricsCollector,
 		securityScanner:      securityScanner,
 		securityStore:        securityStore,
+		securityServer:       securityServerInstance,
 		auditStore:           auditStore,
 		auditEventSubscriber: auditEventSubscriber,
 		sshCollector:         sshCollector,
@@ -944,6 +948,16 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.peerPool.StartDiscovery(ctx)
 		ds.containerServer.SetPeerPool(ds.peerPool)
 
+		// Wire peer pool into traffic server for peer container queries
+		if ds.trafficServer != nil {
+			ds.trafficServer.SetPeerPool(ds.peerPool)
+		}
+
+		// Wire peer pool into security server so peer containers show in summaries
+		if ds.securityServer != nil {
+			ds.securityServer.SetPeerPool(ds.peerPool)
+		}
+
 		// Register /v1/backends endpoint on gateway
 		if ds.gatewayServer != nil {
 			ds.gatewayServer.SetBackendsHandler(ds.backendsHandler())
@@ -961,6 +975,19 @@ func (ds *DualServer) Start(ctx context.Context) error {
 
 	// Start OTel metrics collector if available
 	if ds.metricsCollector != nil {
+		// Wire peer metrics fetcher so peer container metrics are pushed to VictoriaMetrics
+		if ds.peerPool != nil {
+			// Generate a long-lived service token for internal peer API calls
+			serviceToken, err := ds.tokenManager.GenerateToken("_system", []string{"admin"}, 30*24*time.Hour)
+			if err != nil {
+				log.Printf("Warning: failed to generate service token for peer metrics: %v", err)
+			} else {
+				ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
+					Pool:         ds.peerPool,
+					ServiceToken: serviceToken,
+				})
+			}
+		}
 		ds.metricsCollector.Start()
 	}
 

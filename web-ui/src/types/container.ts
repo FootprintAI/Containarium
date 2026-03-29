@@ -1,7 +1,7 @@
 /**
  * Container state enum
  */
-export type ContainerState = 'Running' | 'Stopped' | 'Frozen' | 'Creating' | 'Error' | 'Unknown';
+export type ContainerState = 'Running' | 'Stopped' | 'Frozen' | 'Creating' | 'Provisioning' | 'Error' | 'Unknown';
 
 /**
  * Container information from Containarium API
@@ -50,7 +50,7 @@ export interface CreateContainerRequest {
  */
 export interface BackendInfo {
   id: string;
-  type: 'gcp' | 'tunnel';
+  type: 'local' | 'gcp' | 'tunnel';
   healthy: boolean;
   priority: number;
 }
@@ -79,6 +79,8 @@ export const AVAILABLE_STACKS: Stack[] = [
   { id: 'devops', name: 'DevOps Tools', description: 'kubectl, Terraform, infrastructure tools', icon: 'kubernetes' },
   { id: 'database', name: 'Database Clients', description: 'PostgreSQL, MySQL, Redis CLI clients', icon: 'database' },
   { id: 'fullstack', name: 'Full Stack Web', description: 'Node.js, Python, database clients', icon: 'code' },
+  { id: 'gpu', name: 'GPU / CUDA Development', description: 'NVIDIA drivers, CUDA toolkit, cuDNN', icon: 'gpu' },
+  { id: 'gpu-docker', name: 'GPU + Docker (CUDA)', description: 'NVIDIA CUDA, Docker CE, nvidia-container-toolkit', icon: 'gpu' },
 ];
 
 /**
@@ -122,6 +124,16 @@ export interface SystemInfo {
   cpuLoad15min?: number;
   // GPU devices
   gpus?: GPUInfo[];
+  // Backend identifier (set for peer backends)
+  backendId?: string;
+}
+
+/**
+ * System info response including peer backends
+ */
+export interface SystemInfoResponse {
+  info: SystemInfo;
+  peers?: SystemInfo[];
 }
 
 /**

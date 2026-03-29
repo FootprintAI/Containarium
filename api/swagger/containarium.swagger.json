@@ -627,7 +627,7 @@
         "parameters": [
           {
             "name": "state",
-            "description": "Filter by state (optional, empty means all states)\n\n - CONTAINER_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - CONTAINER_STATE_RUNNING: Container is running\n - CONTAINER_STATE_STOPPED: Container is stopped\n - CONTAINER_STATE_FROZEN: Container is frozen (paused)\n - CONTAINER_STATE_CREATING: Container is being created\n - CONTAINER_STATE_ERROR: Container creation failed or is in error state",
+            "description": "Filter by state (optional, empty means all states)\n\n - CONTAINER_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - CONTAINER_STATE_RUNNING: Container is running\n - CONTAINER_STATE_STOPPED: Container is stopped\n - CONTAINER_STATE_FROZEN: Container is frozen (paused)\n - CONTAINER_STATE_CREATING: Container is being created\n - CONTAINER_STATE_ERROR: Container creation failed or is in error state\n - CONTAINER_STATE_PROVISIONING: Container is running but provisioning (installing stack/packages)",
             "in": "query",
             "required": false,
             "type": "string",
@@ -637,7 +637,8 @@
               "CONTAINER_STATE_STOPPED",
               "CONTAINER_STATE_FROZEN",
               "CONTAINER_STATE_CREATING",
-              "CONTAINER_STATE_ERROR"
+              "CONTAINER_STATE_ERROR",
+              "CONTAINER_STATE_PROVISIONING"
             ],
             "default": "CONTAINER_STATE_UNSPECIFIED"
           },
@@ -3912,10 +3913,11 @@
         "CONTAINER_STATE_STOPPED",
         "CONTAINER_STATE_FROZEN",
         "CONTAINER_STATE_CREATING",
-        "CONTAINER_STATE_ERROR"
+        "CONTAINER_STATE_ERROR",
+        "CONTAINER_STATE_PROVISIONING"
       ],
       "default": "CONTAINER_STATE_UNSPECIFIED",
-      "description": "- CONTAINER_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - CONTAINER_STATE_RUNNING: Container is running\n - CONTAINER_STATE_STOPPED: Container is stopped\n - CONTAINER_STATE_FROZEN: Container is frozen (paused)\n - CONTAINER_STATE_CREATING: Container is being created\n - CONTAINER_STATE_ERROR: Container creation failed or is in error state",
+      "description": "- CONTAINER_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - CONTAINER_STATE_RUNNING: Container is running\n - CONTAINER_STATE_STOPPED: Container is stopped\n - CONTAINER_STATE_FROZEN: Container is frozen (paused)\n - CONTAINER_STATE_CREATING: Container is being created\n - CONTAINER_STATE_ERROR: Container creation failed or is in error state\n - CONTAINER_STATE_PROVISIONING: Container is running but provisioning (installing stack/packages)",
       "title": "ContainerState represents the current state of a container"
     },
     "CreateAlertRuleRequest": {
@@ -4627,7 +4629,15 @@
       "properties": {
         "info": {
           "$ref": "#/definitions/SystemInfo",
-          "title": "System information"
+          "title": "System information (local/primary backend)"
+        },
+        "peers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/SystemInfo"
+          },
+          "title": "System information from peer backends (tunnel-connected)"
         }
       },
       "title": "GetSystemInfoResponse is the response from getting system information"
@@ -5943,6 +5953,10 @@
             "$ref": "#/definitions/GPUInfo"
           },
           "title": "GPU information"
+        },
+        "backendId": {
+          "type": "string",
+          "title": "Backend ID (e.g., \"tunnel-fts-5900x-gpu\") — set when returned from peer"
         }
       },
       "title": "SystemInfo contains information about the host system"

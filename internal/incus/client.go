@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -13,6 +14,12 @@ import (
 	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
 )
+
+// detectZFSContainersDataset checks if the "incus-local/containers" ZFS dataset exists.
+func detectZFSContainersDataset() bool {
+	cmd := exec.Command("zfs", "list", "-H", "-o", "name", "incus-local/containers") // #nosec G204 -- hardcoded args
+	return cmd.Run() == nil
+}
 
 // Client wraps the Incus API client
 type Client struct {
@@ -1141,8 +1148,11 @@ func (c *Client) EnsureNetwork(config NetworkConfig) (string, error) {
 	return config.Name, nil
 }
 
-// EnsureStorage creates a storage pool if it doesn't exist
-// Returns the storage pool name
+// EnsureStorage creates a storage pool if it doesn't exist.
+// It auto-detects ZFS pools: if a ZFS pool named "incus-local" exists with a
+// "containers" dataset, it creates a ZFS-backed Incus storage pool using it.
+// Otherwise, falls back to a directory-backed pool.
+// Returns the storage pool name.
 func (c *Client) EnsureStorage(name string) (string, error) {
 	if name == "" {
 		name = "default"
@@ -1161,10 +1171,23 @@ func (c *Client) EnsureStorage(name string) (string, error) {
 		}
 	}
 
-	// Create storage pool (using dir driver for simplicity)
+	// Auto-detect ZFS pool: check if "incus-local/containers" dataset exists
+	driver := "dir"
+	config := map[string]string{}
+	if detectZFSContainersDataset() {
+		driver = "zfs"
+		config["source"] = "incus-local/containers"
+		log.Printf("  Auto-detected ZFS dataset incus-local/containers, using ZFS driver")
+	} else {
+		log.Printf("  No ZFS dataset found, using dir driver")
+	}
+
 	poolReq := api.StoragePoolsPost{
 		Name:   name,
-		Driver: "dir",
+		Driver: driver,
+		StoragePoolPut: api.StoragePoolPut{
+			Config: config,
+		},
 	}
 
 	if err := c.server.CreateStoragePool(poolReq); err != nil {
@@ -1172,6 +1195,16 @@ func (c *Client) EnsureStorage(name string) (string, error) {
 	}
 
 	return name, nil
+}
+
+// GetStorageDriver returns the driver type ("zfs", "dir", etc.) for the named pool.
+// Returns "unknown" if the pool cannot be found.
+func (c *Client) GetStorageDriver(name string) string {
+	pool, _, err := c.server.GetStoragePool(name)
+	if err != nil {
+		return "unknown"
+	}
+	return pool.Driver
 }
 
 // EnsureDefaultProfile configures the default profile with network and storage

@@ -162,7 +162,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to initialize infrastructure: %w", err)
 		}
 		log.Printf("  Network: incusbr0 (%s)", networkSubnet)
-		log.Printf("  Storage: default (dir)")
+		storageDriver := incusClient.GetStorageDriver("default")
+		log.Printf("  Storage: default (%s)", storageDriver)
 		log.Printf("  Profile: default (configured)")
 	}
 

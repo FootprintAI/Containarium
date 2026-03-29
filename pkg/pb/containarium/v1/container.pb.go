@@ -38,6 +38,8 @@ const (
 	ContainerState_CONTAINER_STATE_CREATING ContainerState = 4
 	// Container creation failed or is in error state
 	ContainerState_CONTAINER_STATE_ERROR ContainerState = 5
+	// Container is running but provisioning (installing stack/packages)
+	ContainerState_CONTAINER_STATE_PROVISIONING ContainerState = 6
 )
 
 // Enum value maps for ContainerState.
@@ -49,14 +51,16 @@ var (
 		3: "CONTAINER_STATE_FROZEN",
 		4: "CONTAINER_STATE_CREATING",
 		5: "CONTAINER_STATE_ERROR",
+		6: "CONTAINER_STATE_PROVISIONING",
 	}
 	ContainerState_value = map[string]int32{
-		"CONTAINER_STATE_UNSPECIFIED": 0,
-		"CONTAINER_STATE_RUNNING":     1,
-		"CONTAINER_STATE_STOPPED":     2,
-		"CONTAINER_STATE_FROZEN":      3,
-		"CONTAINER_STATE_CREATING":    4,
-		"CONTAINER_STATE_ERROR":       5,
+		"CONTAINER_STATE_UNSPECIFIED":  0,
+		"CONTAINER_STATE_RUNNING":      1,
+		"CONTAINER_STATE_STOPPED":      2,
+		"CONTAINER_STATE_FROZEN":       3,
+		"CONTAINER_STATE_CREATING":     4,
+		"CONTAINER_STATE_ERROR":        5,
+		"CONTAINER_STATE_PROVISIONING": 6,
 	}
 )
 
@@ -2700,7 +2704,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vgrafana_url\x18\x02 \x01(\tR\n" +
 	"grafanaUrl\x120\n" +
-	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl*\x8c\x02\n" +
+	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl*\xc0\x02\n" +
 	"\x0eContainerState\x12,\n" +
 	"\x1bCONTAINER_STATE_UNSPECIFIED\x10\x00\x1a\v\x8a\xb5\x18\aUnknown\x12(\n" +
 	"\x17CONTAINER_STATE_RUNNING\x10\x01\x1a\v\x8a\xb5\x18\aRunning\x12(\n" +
@@ -2708,7 +2712,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x16CONTAINER_STATE_FROZEN\x10\x03\x1a\n" +
 	"\x8a\xb5\x18\x06Frozen\x12*\n" +
 	"\x18CONTAINER_STATE_CREATING\x10\x04\x1a\f\x8a\xb5\x18\bCreating\x12$\n" +
-	"\x15CONTAINER_STATE_ERROR\x10\x05\x1a\t\x8a\xb5\x18\x05Error:B\n" +
+	"\x15CONTAINER_STATE_ERROR\x10\x05\x1a\t\x8a\xb5\x18\x05Error\x122\n" +
+	"\x1cCONTAINER_STATE_PROVISIONING\x10\x06\x1a\x10\x8a\xb5\x18\fProvisioning:B\n" +
 	"\n" +
 	"state_name\x12!.google.protobuf.EnumValueOptions\x18ц\x03 \x01(\tR\tstateNameBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 

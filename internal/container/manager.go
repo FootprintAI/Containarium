@@ -32,6 +32,7 @@ type CreateOptions struct {
 	AutoStart              bool
 	Verbose                bool
 	Stack                  string // Software stack to install (e.g., "nodejs", "python")
+	OnProvisioning         func() // Called when container is running but still provisioning (installing packages/stack)
 }
 
 // New creates a new container manager
@@ -148,6 +149,11 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 
 	if opts.Verbose {
 		fmt.Printf("  Container IP: %s\n", ipAddr)
+	}
+
+	// Signal provisioning state — container is running but still installing packages
+	if opts.OnProvisioning != nil {
+		opts.OnProvisioning()
 	}
 
 	// Step 5: Install packages
@@ -346,21 +352,27 @@ apt-get update
 		}
 
 		// Add user to docker group if docker stack is selected
-		if stackID == "docker" {
+		if stackID == "docker" || stackID == "gpu-docker" {
 			_ = m.incus.Exec(containerName, []string{"usermod", "-aG", "docker", username})
 		}
 	}
 
 	// Install cgroup wrappers so nested containers see LXC resource limits
-	if err := m.installCgroupWrappers(containerName, enablePodman, stackID == "docker"); err != nil {
+	isDockerStack := stackID == "docker" || stackID == "gpu-docker"
+	if err := m.installCgroupWrappers(containerName, enablePodman, isDockerStack); err != nil {
 		log.Printf("Warning: failed to install cgroup wrappers: %v", err)
 	}
 
 	// Install OCI runtime for Docker so Compose v2 and API-created containers
 	// also see LXC cgroup limits (CLI wrapper only catches docker CLI calls)
-	if stackID == "docker" {
+	if isDockerStack {
 		if err := m.installDockerOCIRuntime(containerName); err != nil {
 			log.Printf("Warning: failed to install Docker OCI runtime: %v", err)
+		}
+		// Configure NVIDIA runtime for Docker if gpu-docker stack
+		if stackID == "gpu-docker" {
+			_ = m.incus.Exec(containerName, []string{"nvidia-ctk", "runtime", "configure", "--runtime=docker"})
+			_ = m.incus.Exec(containerName, []string{"systemctl", "restart", "docker"})
 		}
 	}
 

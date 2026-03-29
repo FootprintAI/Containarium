@@ -17,6 +17,41 @@ import (
 )
 
 // CollectorConfig holds configuration for the OTel metrics collector
+// PeerMetrics represents metrics from a peer backend container.
+type PeerMetrics struct {
+	ContainerName     string
+	BackendID         string
+	CPUUsageSeconds   int64
+	MemoryUsageBytes  int64
+	DiskUsageBytes    int64
+	NetworkRxBytes    int64
+	NetworkTxBytes    int64
+	ProcessCount      int64
+}
+
+// PeerSystemMetrics represents system-level metrics from a peer backend.
+type PeerSystemMetrics struct {
+	BackendID         string
+	TotalCPUs         int64
+	TotalMemoryBytes  int64
+	UsedMemoryBytes   int64
+	TotalDiskBytes    int64
+	UsedDiskBytes     int64
+	CPULoad1Min       float64
+	CPULoad5Min       float64
+	CPULoad15Min      float64
+	ContainersRunning int64
+	ContainersStopped int64
+}
+
+// PeerMetricsFetcher fetches container and system metrics from peer backends.
+type PeerMetricsFetcher interface {
+	// FetchPeerMetrics returns container metrics from all healthy peers.
+	FetchPeerMetrics(authToken string) []PeerMetrics
+	// FetchPeerSystemMetrics returns system metrics from all healthy peers.
+	FetchPeerSystemMetrics(authToken string) []PeerSystemMetrics
+}
+
 type CollectorConfig struct {
 	// VictoriaMetricsURL is the base URL for Victoria Metrics (e.g., "http://10.100.0.x:8428")
 	VictoriaMetricsURL string
@@ -26,6 +61,9 @@ type CollectorConfig struct {
 
 	// ServiceName is the OTel service name (default "containarium")
 	ServiceName string
+
+	// LocalBackendID is this daemon's backend ID (used as backend.id label on local metrics)
+	LocalBackendID string
 }
 
 // DefaultCollectorConfig returns a default collector configuration
@@ -64,8 +102,9 @@ type Collector struct {
 	containersRunning otelmetric.Int64Gauge
 	containersStopped otelmetric.Int64Gauge
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx          context.Context
+	cancel       context.CancelFunc
+	peerFetcher  PeerMetricsFetcher
 }
 
 // NewCollector creates a new OTel metrics collector
@@ -277,19 +316,41 @@ func (c *Collector) collectLoop() {
 func (c *Collector) collect() {
 	ctx := c.ctx
 
-	// Collect system metrics
+	// Collect system metrics (local)
+	localAttrs := otelmetric.WithAttributes(
+		attribute.String("backend.id", c.config.LocalBackendID),
+	)
 	sysRes, err := c.incusClient.GetSystemResources()
 	if err != nil {
 		log.Printf("Warning: failed to collect system metrics: %v", err)
 	} else {
-		c.systemCPUCount.Record(ctx, int64(sysRes.TotalCPUs))
-		c.systemMemTotal.Record(ctx, sysRes.TotalMemoryBytes)
-		c.systemMemUsed.Record(ctx, sysRes.UsedMemoryBytes)
-		c.systemDiskTotal.Record(ctx, sysRes.TotalDiskBytes)
-		c.systemDiskUsed.Record(ctx, sysRes.UsedDiskBytes)
-		c.systemCPULoad1m.Record(ctx, sysRes.CPULoad1Min)
-		c.systemCPULoad5m.Record(ctx, sysRes.CPULoad5Min)
-		c.systemCPULoad15m.Record(ctx, sysRes.CPULoad15Min)
+		c.systemCPUCount.Record(ctx, int64(sysRes.TotalCPUs), localAttrs)
+		c.systemMemTotal.Record(ctx, sysRes.TotalMemoryBytes, localAttrs)
+		c.systemMemUsed.Record(ctx, sysRes.UsedMemoryBytes, localAttrs)
+		c.systemDiskTotal.Record(ctx, sysRes.TotalDiskBytes, localAttrs)
+		c.systemDiskUsed.Record(ctx, sysRes.UsedDiskBytes, localAttrs)
+		c.systemCPULoad1m.Record(ctx, sysRes.CPULoad1Min, localAttrs)
+		c.systemCPULoad5m.Record(ctx, sysRes.CPULoad5Min, localAttrs)
+		c.systemCPULoad15m.Record(ctx, sysRes.CPULoad15Min, localAttrs)
+	}
+
+	// Collect system metrics from peers
+	if c.peerFetcher != nil {
+		for _, ps := range c.peerFetcher.FetchPeerSystemMetrics("") {
+			peerAttrs := otelmetric.WithAttributes(
+				attribute.String("backend.id", ps.BackendID),
+			)
+			c.systemCPUCount.Record(ctx, ps.TotalCPUs, peerAttrs)
+			c.systemMemTotal.Record(ctx, ps.TotalMemoryBytes, peerAttrs)
+			c.systemMemUsed.Record(ctx, ps.UsedMemoryBytes, peerAttrs)
+			c.systemDiskTotal.Record(ctx, ps.TotalDiskBytes, peerAttrs)
+			c.systemDiskUsed.Record(ctx, ps.UsedDiskBytes, peerAttrs)
+			c.systemCPULoad1m.Record(ctx, ps.CPULoad1Min, peerAttrs)
+			c.systemCPULoad5m.Record(ctx, ps.CPULoad5Min, peerAttrs)
+			c.systemCPULoad15m.Record(ctx, ps.CPULoad15Min, peerAttrs)
+			c.containersRunning.Record(ctx, ps.ContainersRunning, peerAttrs)
+			c.containersStopped.Record(ctx, ps.ContainersStopped, peerAttrs)
+		}
 	}
 
 	// List containers and collect per-container metrics
@@ -315,6 +376,7 @@ func (c *Collector) collect() {
 
 			attrs := otelmetric.WithAttributes(
 				attribute.String("container.name", ct.Name),
+				attribute.String("backend.id", c.config.LocalBackendID),
 			)
 
 			c.containerCPUUsage.Record(ctx, metrics.CPUUsageSeconds, attrs)
@@ -331,8 +393,33 @@ func (c *Collector) collect() {
 		}
 	}
 
-	c.containersRunning.Record(ctx, running)
-	c.containersStopped.Record(ctx, stopped)
+	c.containersRunning.Record(ctx, running, localAttrs)
+	c.containersStopped.Record(ctx, stopped, localAttrs)
+
+	// Collect metrics from peer backends
+	if c.peerFetcher != nil {
+		peerMetrics := c.peerFetcher.FetchPeerMetrics("")
+		if len(peerMetrics) > 0 {
+			log.Printf("[metrics] collected %d metrics from peer backends", len(peerMetrics))
+		}
+		for _, pm := range peerMetrics {
+			attrs := otelmetric.WithAttributes(
+				attribute.String("container.name", pm.ContainerName),
+				attribute.String("backend.id", pm.BackendID),
+			)
+			c.containerCPUUsage.Record(ctx, pm.CPUUsageSeconds, attrs)
+			c.containerMemUsage.Record(ctx, pm.MemoryUsageBytes, attrs)
+			c.containerDiskUsage.Record(ctx, pm.DiskUsageBytes, attrs)
+			c.containerNetRx.Record(ctx, pm.NetworkRxBytes, attrs)
+			c.containerNetTx.Record(ctx, pm.NetworkTxBytes, attrs)
+			c.containerProcessCount.Record(ctx, pm.ProcessCount, attrs)
+		}
+	}
+}
+
+// SetPeerFetcher sets the peer metrics fetcher for collecting metrics from peer backends.
+func (c *Collector) SetPeerFetcher(fetcher PeerMetricsFetcher) {
+	c.peerFetcher = fetcher
 }
 
 // Stop shuts down the collector

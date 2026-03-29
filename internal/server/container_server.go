@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -15,14 +16,16 @@ import (
 	"github.com/footprintai/containarium/internal/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // PendingCreation tracks an async container creation
 type PendingCreation struct {
-	Username  string
-	StartedAt time.Time
-	Error     error
-	Done      bool
+	Username     string
+	StartedAt    time.Time
+	Error        error
+	Done         bool
+	Provisioning bool // container is running but installing stack/packages
 }
 
 // ContainerServer implements the gRPC ContainerService
@@ -149,6 +152,15 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		}
 		s.pendingMu.Unlock()
 
+		// Set provisioning callback
+		opts.OnProvisioning = func() {
+			s.pendingMu.Lock()
+			if pending, exists := s.pendingCreations[req.Username]; exists {
+				pending.Provisioning = true
+			}
+			s.pendingMu.Unlock()
+		}
+
 		// Start async creation
 		go func() {
 			info, err := s.manager.Create(opts)
@@ -159,6 +171,10 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				pending.Error = err
 			}
 			s.pendingMu.Unlock()
+
+			if err != nil {
+				log.Printf("Async container creation failed for %s: %v", req.Username, err)
+			}
 
 			// Emit event on success
 			if err == nil && info != nil {
@@ -296,18 +312,23 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 	s.pendingMu.RUnlock()
 
 	if hasPending && !pending.Done {
-		// Still creating - return CREATING state
+		// Determine if creating or provisioning
+		state := pb.ContainerState_CONTAINER_STATE_CREATING
+		if pending.Provisioning {
+			state = pb.ContainerState_CONTAINER_STATE_PROVISIONING
+		}
 		return &pb.GetContainerResponse{
 			Container: &pb.Container{
 				Name:     fmt.Sprintf("%s-container", req.Username),
 				Username: req.Username,
-				State:    pb.ContainerState_CONTAINER_STATE_CREATING,
+				State:    state,
 			},
 		}, nil
 	}
 
 	if hasPending && pending.Done && pending.Error != nil {
-		// Creation failed - return ERROR state
+		// Creation failed - return ERROR state with error details
+		log.Printf("Async creation failed for %s: %v", req.Username, pending.Error)
 		return &pb.GetContainerResponse{
 			Container: &pb.Container{
 				Name:     fmt.Sprintf("%s-container", req.Username),
@@ -637,20 +658,56 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 	var protoMetrics []*pb.ContainerMetrics
 
 	if req.Username != "" {
-		// Get metrics for a specific container
+		// Get metrics for a specific container — try local first, then peers
 		metrics, err := s.manager.GetMetrics(req.Username)
 		if err != nil {
+			// Not found locally — try peers
+			if s.peerPool != nil {
+				authToken := extractAuthToken(ctx)
+				peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+				if peer != nil {
+					body, peerErr := peer.ForwardGetMetrics(authToken, req.Username)
+					if peerErr == nil {
+						// Parse and return peer metrics (use protojson for enum handling)
+						var peerResp pb.GetMetricsResponse
+						if jsonErr := protojson.Unmarshal(body, &peerResp); jsonErr == nil {
+							return &peerResp, nil
+						}
+					}
+				}
+			}
 			return nil, fmt.Errorf("failed to get metrics: %w", err)
 		}
 		protoMetrics = append(protoMetrics, toProtoMetrics(metrics))
 	} else {
-		// Get metrics for all containers
+		// Get metrics for all containers (local)
 		allMetrics, err := s.manager.GetAllMetrics()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get metrics: %w", err)
 		}
 		for _, m := range allMetrics {
 			protoMetrics = append(protoMetrics, toProtoMetrics(m))
+		}
+
+		// Merge metrics from all healthy peers
+		if s.peerPool != nil {
+			authToken := extractAuthToken(ctx)
+			for _, peer := range s.peerPool.Peers() {
+				if !peer.Healthy {
+					continue
+				}
+				body, err := peer.ForwardGetMetrics(authToken, "")
+				if err != nil {
+					log.Printf("[metrics] peer %s: %v", peer.ID, err)
+					continue
+				}
+				var peerMetricsResp pb.GetMetricsResponse
+				if err := protojson.Unmarshal(body, &peerMetricsResp); err != nil {
+					log.Printf("[metrics] peer %s parse error: %v", peer.ID, err)
+					continue
+				}
+				protoMetrics = append(protoMetrics, peerMetricsResp.Metrics...)
+			}
 		}
 	}
 
@@ -735,8 +792,35 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		})
 	}
 
+	// Fetch system info from all healthy peers
+	var peerInfos []*pb.SystemInfo
+	if s.peerPool != nil {
+		authToken := extractAuthToken(ctx)
+		for _, peer := range s.peerPool.Peers() {
+			if !peer.Healthy {
+				continue
+			}
+			body, err := peer.ForwardGetSystemInfo(authToken)
+			if err != nil {
+				log.Printf("[system-info] peer %s: %v", peer.ID, err)
+				continue
+			}
+			// Use protojson to handle enum string values from gRPC-gateway JSON
+			var peerResp pb.GetSystemInfoResponse
+			if err := protojson.Unmarshal(body, &peerResp); err != nil {
+				log.Printf("[system-info] peer %s parse error: %v", peer.ID, err)
+				continue
+			}
+			if peerResp.Info != nil {
+				peerResp.Info.BackendId = peer.ID
+				peerInfos = append(peerInfos, peerResp.Info)
+			}
+		}
+	}
+
 	return &pb.GetSystemInfoResponse{
-		Info: info,
+		Info:  info,
+		Peers: peerInfos,
 	}, nil
 }
 

@@ -30,6 +30,9 @@ enum ContainerState {
 
   // Container creation failed or is in error state
   CONTAINER_STATE_ERROR = 5 [(state_name) = "Error"];
+
+  // Container is running but provisioning (installing stack/packages)
+  CONTAINER_STATE_PROVISIONING = 6 [(state_name) = "Provisioning"];
 }
 
 // ResourceLimits defines resource constraints for a container

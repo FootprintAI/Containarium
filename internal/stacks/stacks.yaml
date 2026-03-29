@@ -123,3 +123,48 @@ stacks:
     post_install:
       - npm install -g yarn typescript
       - pip3 install --upgrade pip virtualenv
+
+  - id: gpu
+    name: GPU / CUDA Development
+    description: NVIDIA drivers, CUDA toolkit, cuDNN, and container toolkit for GPU workloads
+    icon: gpu
+    pre_install:
+      # Install NVIDIA userspace utilities (matches host driver version)
+      - "apt-get install -y nvidia-utils-570"
+      # Add NVIDIA CUDA repository
+      - "curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o /tmp/cuda-keyring.deb && dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb"
+      - "apt-get update"
+    packages:
+      - cuda-toolkit
+      - libcudnn9-cuda-12
+    post_install:
+      - echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
+      - echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+
+  - id: gpu-docker
+    name: GPU + Docker (CUDA)
+    description: NVIDIA CUDA, Docker CE with nvidia-container-toolkit for GPU containers
+    icon: gpu
+    pre_install:
+      # NVIDIA userspace
+      - "apt-get install -y nvidia-utils-570"
+      # CUDA repo
+      - "curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o /tmp/cuda-keyring.deb && dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb"
+      # Docker repo
+      - "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg"
+      - "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable' > /etc/apt/sources.list.d/docker.list"
+      # NVIDIA Container Toolkit repo
+      - "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+      - "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+      - "apt-get update"
+    packages:
+      - cuda-toolkit
+      - libcudnn9-cuda-12
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - nvidia-container-toolkit
+    post_install:
+      - echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
+      - echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc

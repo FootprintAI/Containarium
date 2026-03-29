@@ -10,7 +10,13 @@
 #   5. Kernel modules and sysctl for containers
 #
 # Usage:
-#   sudo ./setup-gpu-host.sh [--skip-reboot]
+#   sudo ./setup-gpu-host.sh [--skip-reboot] [--yes] [--data-disk DISK] [--backup-disks DISK1,DISK2]
+#
+# Disk layout (auto-detected if not specified):
+#   --data-disk     Fastest unused disk for container storage (e.g., nvme0n1)
+#   --backup-disks  Rotational disks for ZFS mirror backup pool (e.g., sda,sdb)
+#   --yes           Skip confirmation prompt (for automation)
+#   If no unused disks are found, falls back to file-backed 50GB pool.
 #
 # After running, reboot the machine if the NVIDIA driver was freshly installed.
 # Then run: nvidia-smi  to verify GPU access.
@@ -31,15 +37,132 @@ NVIDIA_CTK_VERSION=""                 # leave empty for latest stable
 # Options
 # ============================================================
 SKIP_REBOOT=false
-for arg in "$@"; do
-    case "$arg" in
-        --skip-reboot) SKIP_REBOOT=true ;;
+AUTO_YES=false
+DATA_DISK=""
+BACKUP_DISKS=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-reboot) SKIP_REBOOT=true; shift ;;
+        --yes|-y) AUTO_YES=true; shift ;;
+        --data-disk) DATA_DISK="$2"; shift 2 ;;
+        --backup-disks) BACKUP_DISKS="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: sudo $0 [--skip-reboot]"
+            echo "Usage: sudo $0 [--skip-reboot] [--yes] [--data-disk DISK] [--backup-disks DISK1,DISK2]"
             exit 0
             ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# ============================================================
+# Disk auto-detection
+# ============================================================
+# Returns unused whole disks (no partitions, not mounted, not in a zpool)
+detect_unused_disks() {
+    local nvme_disks=()
+    local rotational_disks=()
+    local ssd_disks=()
+
+    while IFS= read -r disk; do
+        [ -z "$disk" ] && continue
+        local devname="/dev/$disk"
+
+        # Skip if disk has partitions
+        if lsblk -n -o TYPE "$devname" 2>/dev/null | grep -q part; then
+            continue
+        fi
+
+        # Skip if any part of it is mounted
+        if lsblk -n -o MOUNTPOINTS "$devname" 2>/dev/null | grep -q '/'; then
+            continue
+        fi
+
+        # Skip if already in a zpool
+        if zpool status 2>/dev/null | grep -q "$disk"; then
+            continue
+        fi
+
+        # Classify by type
+        if [[ "$disk" == nvme* ]]; then
+            nvme_disks+=("$disk")
+        elif [ -f "/sys/block/$disk/queue/rotational" ] && [ "$(cat "/sys/block/$disk/queue/rotational")" = "1" ]; then
+            rotational_disks+=("$disk")
+        else
+            ssd_disks+=("$disk")
+        fi
+    done < <(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2=="disk"{print $1}')
+
+    # Export results via global arrays
+    DETECTED_NVME_COUNT=${#nvme_disks[@]}
+    DETECTED_ROTATIONAL_COUNT=${#rotational_disks[@]}
+    DETECTED_SSD_COUNT=${#ssd_disks[@]}
+    DETECTED_NVME_LIST="${nvme_disks[*]:-}"
+    DETECTED_ROTATIONAL_LIST="${rotational_disks[*]:-}"
+    DETECTED_SSD_LIST="${ssd_disks[*]:-}"
+    # First items for auto-selection
+    DETECTED_NVME_FIRST="${nvme_disks[0]:-}"
+    DETECTED_SSD_FIRST="${ssd_disks[0]:-}"
+    DETECTED_ROT_FIRST="${rotational_disks[0]:-}"
+    DETECTED_ROT_SECOND="${rotational_disks[1]:-}"
+}
+
+if [ -z "$DATA_DISK" ] || [ -z "$BACKUP_DISKS" ]; then
+    detect_unused_disks
+
+    # Auto-select data disk: prefer NVMe, then SSD
+    if [ -z "$DATA_DISK" ]; then
+        if [ -n "$DETECTED_NVME_FIRST" ]; then
+            DATA_DISK="$DETECTED_NVME_FIRST"
+        elif [ -n "$DETECTED_SSD_FIRST" ]; then
+            DATA_DISK="$DETECTED_SSD_FIRST"
+        fi
+    fi
+
+    # Auto-select backup disks: need at least 2 rotational disks for mirror
+    if [ -z "$BACKUP_DISKS" ]; then
+        if [ -n "$DETECTED_ROT_FIRST" ] && [ -n "$DETECTED_ROT_SECOND" ]; then
+            BACKUP_DISKS="${DETECTED_ROT_FIRST},${DETECTED_ROT_SECOND}"
+        fi
+    fi
+
+    # Show detection results and confirm
+    echo "================================================"
+    echo "Disk Auto-Detection Results"
+    echo "================================================"
+    if [ "$DETECTED_NVME_COUNT" -gt 0 ]; then
+        echo "  NVMe (unused):       $DETECTED_NVME_LIST"
+    fi
+    if [ "$DETECTED_SSD_COUNT" -gt 0 ]; then
+        echo "  SSD (unused):        $DETECTED_SSD_LIST"
+    fi
+    if [ "$DETECTED_ROTATIONAL_COUNT" -gt 0 ]; then
+        echo "  HDD (unused):        $DETECTED_ROTATIONAL_LIST"
+    fi
+    echo ""
+    echo "  Planned layout:"
+    if [ -n "$DATA_DISK" ]; then
+        _size=$(lsblk -d -n -o SIZE "/dev/$DATA_DISK" 2>/dev/null | tr -d ' ')
+        echo "    Data pool:    /dev/$DATA_DISK ($_size) — ZFS for containers"
+    else
+        echo "    Data pool:    file-backed (50GB fallback)"
+    fi
+    if [ -n "$BACKUP_DISKS" ]; then
+        IFS=',' read -ra _BD <<< "$BACKUP_DISKS"
+        _size1=$(lsblk -d -n -o SIZE "/dev/${_BD[0]}" 2>/dev/null | tr -d ' ')
+        echo "    Backup pool:  /dev/${_BD[0]} + /dev/${_BD[1]} ($_size1 each) — ZFS mirror"
+    else
+        echo "    Backup pool:  (none — no matching HDD pair found)"
+    fi
+    echo ""
+
+    if [ "$AUTO_YES" = false ]; then
+        read -rp "  Proceed with this layout? [y/N] " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Aborted. Use --data-disk and --backup-disks to specify manually."
+            exit 0
+        fi
+    fi
+fi
 
 # ============================================================
 # Pre-flight checks
@@ -59,12 +182,14 @@ echo "================================================"
 echo "  NVIDIA driver:   $NVIDIA_DRIVER_VERSION"
 echo "  Incus:           ${INCUS_VERSION:-latest stable}"
 echo "  NVIDIA CTK:      ${NVIDIA_CTK_VERSION:-latest stable}"
+echo "  Data disk:       ${DATA_DISK:-(file-backed 50GB)}"
+echo "  Backup disks:    ${BACKUP_DISKS:-(none)}"
 echo ""
 
 # ============================================================
 # 1. System update & essentials
 # ============================================================
-echo "==> [1/7] Updating system packages..."
+echo "==> [1/8] Updating system packages..."
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl wget git vim htop jq net-tools bridge-utils \
@@ -73,7 +198,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 # ============================================================
 # 2. NVIDIA Driver
 # ============================================================
-echo "==> [2/7] Installing NVIDIA driver ${NVIDIA_DRIVER_VERSION}..."
+echo "==> [2/8] Installing NVIDIA driver ${NVIDIA_DRIVER_VERSION}..."
 
 NEED_REBOOT=false
 
@@ -91,7 +216,7 @@ fi
 # ============================================================
 # 3. NVIDIA Container Toolkit
 # ============================================================
-echo "==> [3/7] Installing NVIDIA Container Toolkit..."
+echo "==> [3/8] Installing NVIDIA Container Toolkit..."
 
 if ! command -v nvidia-ctk &>/dev/null; then
     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
@@ -116,7 +241,7 @@ fi
 # ============================================================
 # 4. Incus (from Zabbly)
 # ============================================================
-echo "==> [4/7] Installing Incus from Zabbly repository..."
+echo "==> [4/8] Installing Incus from Zabbly repository..."
 
 # Remove Ubuntu's default Incus packages (6.0.0) if present — they conflict with Zabbly
 if dpkg -l incus-tools 2>/dev/null | grep -q '^ii.*6\.0'; then
@@ -158,7 +283,7 @@ fi
 # ============================================================
 # 5. ZFS + Incus initialization
 # ============================================================
-echo "==> [5/7] Setting up ZFS and initializing Incus..."
+echo "==> [5/8] Setting up ZFS and initializing Incus..."
 
 if ! command -v zpool &>/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y zfsutils-linux
@@ -167,19 +292,43 @@ if ! command -v zpool &>/dev/null; then
 fi
 
 if [ ! -f /var/lib/incus/.initialized ]; then
+    # --- Main storage pool (incus-local) ---
     if ! zpool list incus-local &>/dev/null; then
-        mkdir -p /var/lib/incus/disks
-        truncate -s 50G /var/lib/incus/disks/incus.img
-        zpool create \
-            -o ashift=12 \
-            -O compression=lz4 \
-            -O atime=off \
-            -O xattr=sa \
-            -m /var/lib/incus/storage \
-            incus-local /var/lib/incus/disks/incus.img
-
+        if [ -n "$DATA_DISK" ]; then
+            # Use dedicated NVMe disk for container storage
+            DISK_PATH="/dev/${DATA_DISK}"
+            if [ ! -b "$DISK_PATH" ]; then
+                echo "ERROR: Data disk $DISK_PATH not found"
+                exit 1
+            fi
+            # Safety check: refuse if disk has partitions (likely in use)
+            if lsblk -n -o TYPE "$DISK_PATH" | grep -q part; then
+                echo "ERROR: $DISK_PATH has existing partitions. Wipe it first if you're sure."
+                exit 1
+            fi
+            zpool create \
+                -o ashift=12 \
+                -O compression=lz4 \
+                -O atime=off \
+                -O xattr=sa \
+                -O recordsize=128k \
+                -m /var/lib/incus/storage \
+                incus-local "$DISK_PATH"
+            echo "  ZFS pool created on $DISK_PATH ($(lsblk -n -o SIZE "$DISK_PATH" | head -1))"
+        else
+            # Fallback: file-backed pool
+            mkdir -p /var/lib/incus/disks
+            truncate -s 50G /var/lib/incus/disks/incus.img
+            zpool create \
+                -o ashift=12 \
+                -O compression=lz4 \
+                -O atime=off \
+                -O xattr=sa \
+                -m /var/lib/incus/storage \
+                incus-local /var/lib/incus/disks/incus.img
+            echo "  ZFS pool created (file-backed, 50GB)"
+        fi
         zfs create incus-local/containers
-        echo "  ZFS pool created (file-backed, 50GB)"
     fi
 
     cat <<EOF | incus admin init --preseed
@@ -216,10 +365,43 @@ else
     echo "  Incus already initialized"
 fi
 
+# --- Backup pool (incus-backup) — ZFS mirror on HDDs ---
+if [ -n "$BACKUP_DISKS" ]; then
+    if ! zpool list incus-backup &>/dev/null; then
+        echo "  Setting up backup pool (ZFS mirror)..."
+        IFS=',' read -ra BDISKS <<< "$BACKUP_DISKS"
+        if [ ${#BDISKS[@]} -ne 2 ]; then
+            echo "ERROR: --backup-disks requires exactly 2 disks (e.g., sda,sdb)"
+            exit 1
+        fi
+        DISK1="/dev/${BDISKS[0]}"
+        DISK2="/dev/${BDISKS[1]}"
+        for d in "$DISK1" "$DISK2"; do
+            if [ ! -b "$d" ]; then
+                echo "ERROR: Backup disk $d not found"
+                exit 1
+            fi
+            if lsblk -n -o TYPE "$d" | grep -q part; then
+                echo "ERROR: $d has existing partitions. Wipe it first if you're sure."
+                exit 1
+            fi
+        done
+        zpool create \
+            -o ashift=12 \
+            -O compression=lz4 \
+            -O atime=off \
+            incus-backup mirror "$DISK1" "$DISK2"
+        zfs create incus-backup/snapshots
+        echo "  Backup pool created: mirror of $DISK1 + $DISK2"
+    else
+        echo "  Backup pool already exists"
+    fi
+fi
+
 # ============================================================
 # 6. Kernel modules & sysctl
 # ============================================================
-echo "==> [6/7] Loading kernel modules and configuring sysctl..."
+echo "==> [6/8] Loading kernel modules and configuring sysctl..."
 
 MODULES=(overlay br_netfilter nf_nat xt_conntrack ip_tables iptable_nat)
 for mod in "${MODULES[@]}"; do
@@ -242,13 +424,144 @@ sysctl --system >/dev/null 2>&1
 echo "  Kernel modules and sysctl configured"
 
 # ============================================================
-# 7. Verify GPU + Incus integration
+# 7. ZFS backup script
 # ============================================================
-echo "==> [7/7] Verifying setup..."
+echo "==> [7/8] Installing ZFS backup script..."
+
+BACKUP_SCRIPT="/usr/local/bin/containarium-zfs-backup"
+cat > "$BACKUP_SCRIPT" <<'BACKUPEOF'
+#!/bin/bash
+#
+# Containarium ZFS Backup — snapshots incus-local and replicates to incus-backup
+#
+# Usage:
+#   containarium-zfs-backup              # run backup
+#   containarium-zfs-backup --list       # list snapshots
+#   containarium-zfs-backup --prune 7    # keep only last N snapshots
+#
+set -euo pipefail
+
+MAIN_POOL="incus-local"
+BACKUP_POOL="incus-backup/snapshots"
+SNAP_PREFIX="backup"
+KEEP_COUNT="${CONTAINARIUM_BACKUP_KEEP:-7}"
+
+case "${1:-}" in
+    --list)
+        echo "=== Main pool snapshots ==="
+        zfs list -t snapshot -r "$MAIN_POOL" -o name,creation,used 2>/dev/null || echo "  (none)"
+        echo ""
+        echo "=== Backup pool snapshots ==="
+        zfs list -t snapshot -r "$BACKUP_POOL" 2>/dev/null && \
+            zfs list -t snapshot -r "$BACKUP_POOL" -o name,creation,used || echo "  (none)"
+        exit 0
+        ;;
+    --prune)
+        KEEP_COUNT="${2:-$KEEP_COUNT}"
+        echo "Pruning snapshots, keeping last $KEEP_COUNT..."
+        for dataset in "$MAIN_POOL" "$BACKUP_POOL"; do
+            SNAPS=$(zfs list -t snapshot -r "$dataset" -o name -H -S creation 2>/dev/null | grep "@${SNAP_PREFIX}-" || true)
+            COUNT=0
+            while IFS= read -r snap; do
+                [ -z "$snap" ] && continue
+                COUNT=$((COUNT + 1))
+                if [ "$COUNT" -gt "$KEEP_COUNT" ]; then
+                    echo "  Destroying $snap"
+                    zfs destroy "$snap"
+                fi
+            done <<< "$SNAPS"
+        done
+        echo "Done."
+        exit 0
+        ;;
+esac
+
+# Check pools exist
+if ! zpool list "$MAIN_POOL" &>/dev/null; then
+    echo "ERROR: Main pool $MAIN_POOL not found"
+    exit 1
+fi
+
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+SNAP_NAME="${SNAP_PREFIX}-${TIMESTAMP}"
+
+echo "==> Creating snapshot ${MAIN_POOL}@${SNAP_NAME}..."
+zfs snapshot -r "${MAIN_POOL}@${SNAP_NAME}"
+
+if zpool list incus-backup &>/dev/null; then
+    echo "==> Replicating to backup pool..."
+
+    # Find the previous snapshot for incremental send
+    PREV_SNAP=$(zfs list -t snapshot -r "$MAIN_POOL" -o name -H -S creation 2>/dev/null \
+        | grep "@${SNAP_PREFIX}-" \
+        | grep -v "@${SNAP_NAME}" \
+        | head -1 || true)
+
+    # Check if the previous snapshot exists on the backup pool
+    if [ -n "$PREV_SNAP" ]; then
+        PREV_TAG="${PREV_SNAP#*@}"
+        if zfs list "${BACKUP_POOL}/${MAIN_POOL}@${PREV_TAG}" &>/dev/null 2>&1; then
+            # Incremental send
+            echo "  Incremental send from @${PREV_TAG} to @${SNAP_NAME}"
+            zfs send -R -i "${MAIN_POOL}@${PREV_TAG}" "${MAIN_POOL}@${SNAP_NAME}" \
+                | zfs receive -F "${BACKUP_POOL}/${MAIN_POOL}"
+        else
+            # Previous snapshot not on backup — full send
+            echo "  Full send (previous snapshot not found on backup)"
+            zfs send -R "${MAIN_POOL}@${SNAP_NAME}" \
+                | zfs receive -F "${BACKUP_POOL}/${MAIN_POOL}"
+        fi
+    else
+        # First backup — full send
+        echo "  Full send (first backup)"
+        zfs send -R "${MAIN_POOL}@${SNAP_NAME}" \
+            | zfs receive -F "${BACKUP_POOL}/${MAIN_POOL}"
+    fi
+
+    echo "  Backup replicated to ${BACKUP_POOL}/${MAIN_POOL}@${SNAP_NAME}"
+else
+    echo "  Backup pool not available — snapshot only (no replication)"
+fi
+
+# Auto-prune old snapshots
+echo "==> Pruning old snapshots (keeping last $KEEP_COUNT)..."
+for dataset in "$MAIN_POOL" "$BACKUP_POOL"; do
+    SNAPS=$(zfs list -t snapshot -r "$dataset" -o name -H -S creation 2>/dev/null | grep "@${SNAP_PREFIX}-" || true)
+    COUNT=0
+    while IFS= read -r snap; do
+        [ -z "$snap" ] && continue
+        COUNT=$((COUNT + 1))
+        if [ "$COUNT" -gt "$KEEP_COUNT" ]; then
+            zfs destroy "$snap" 2>/dev/null || true
+        fi
+    done <<< "$SNAPS"
+done
+
+echo "==> Backup complete."
+BACKUPEOF
+chmod +x "$BACKUP_SCRIPT"
+echo "  Installed $BACKUP_SCRIPT"
+
+# Install daily cron job if backup pool exists
+if zpool list incus-backup &>/dev/null 2>&1; then
+    cat > /etc/cron.d/containarium-zfs-backup <<CRONEOF
+# Daily ZFS backup at 3am
+0 3 * * * root /usr/local/bin/containarium-zfs-backup >> /var/log/containarium-zfs-backup.log 2>&1
+CRONEOF
+    echo "  Daily backup cron installed (3am)"
+fi
+
+# ============================================================
+# 8. Verify GPU + Incus integration
+# ============================================================
+echo "==> [8/8] Verifying setup..."
 
 echo ""
 echo "  Incus:        $(incus --version)"
-echo "  ZFS pool:     $(zpool list -H -o name,size 2>/dev/null | head -1)"
+echo "  ZFS pools:"
+zpool list -H -o name,size 2>/dev/null | while read -r name size; do
+    echo "    $name: $size"
+done
 
 if nvidia-smi &>/dev/null; then
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)

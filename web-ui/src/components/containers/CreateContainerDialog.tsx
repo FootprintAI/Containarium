@@ -392,7 +392,18 @@ export default function CreateContainerDialog({ open, onClose, onSubmit, network
           <TextField
             label="GPU Device (Optional)"
             value={gpu}
-            onChange={(e) => setGpu(e.target.value)}
+            onChange={(e) => {
+              const newGpu = e.target.value;
+              setGpu(newGpu);
+              // Auto-select GPU stack when GPU device is specified
+              if (newGpu && !stack) {
+                setStack('gpu');
+              }
+              // Clear GPU stack if GPU device is removed
+              if (!newGpu && (stack === 'gpu' || stack === 'gpu-docker')) {
+                setStack('');
+              }
+            }}
             placeholder="e.g., 0 for first GPU, or PCI address"
             fullWidth
             disabled={success || submitting}

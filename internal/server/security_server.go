@@ -9,6 +9,7 @@ import (
 	"github.com/footprintai/containarium/internal/incus"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/grpc/metadata"
 )
 
 // SecurityServer implements the SecurityService gRPC service
@@ -17,6 +18,12 @@ type SecurityServer struct {
 	store       *security.Store
 	incusClient *incus.Client
 	scanner     *security.Scanner
+	peerPool    *PeerPool
+}
+
+// SetPeerPool sets the peer pool for including peer containers in security summaries.
+func (s *SecurityServer) SetPeerPool(pool *PeerPool) {
+	s.peerPool = pool
 }
 
 // NewSecurityServer creates a new security server
@@ -82,7 +89,6 @@ func (s *SecurityServer) GetClamavSummary(ctx context.Context, req *pb.GetClamav
 				}
 				if !scannedMap[c.Name] {
 					neverScanned++
-					// Derive username
 					username := c.Name
 					if strings.HasSuffix(c.Name, "-container") {
 						username = strings.TrimSuffix(c.Name, "-container")
@@ -93,6 +99,31 @@ func (s *SecurityServer) GetClamavSummary(ctx context.Context, req *pb.GetClamav
 						LastStatus:    "never",
 					})
 				}
+			}
+		}
+	}
+
+	// Include peer containers as "never scanned"
+	if s.peerPool != nil {
+		authToken := ""
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if vals := md.Get("authorization"); len(vals) > 0 {
+				authToken = strings.TrimPrefix(vals[0], "Bearer ")
+			}
+		}
+		peerContainers := s.peerPool.ListContainers(authToken)
+		for _, c := range peerContainers {
+			if !scannedMap[c.Name] {
+				neverScanned++
+				username := c.Name
+				if strings.HasSuffix(c.Name, "-container") {
+					username = strings.TrimSuffix(c.Name, "-container")
+				}
+				summaries = append(summaries, &pb.ClamavContainerSummary{
+					ContainerName: c.Name,
+					Username:      username,
+					LastStatus:    "never",
+				})
 			}
 		}
 	}

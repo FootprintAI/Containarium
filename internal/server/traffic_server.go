@@ -15,6 +15,7 @@ type TrafficServer struct {
 	pb.UnimplementedTrafficServiceServer
 	collector *traffic.Collector
 	eventBus  *events.Bus
+	peerPool  *PeerPool
 }
 
 // NewTrafficServer creates a new traffic server
@@ -23,6 +24,11 @@ func NewTrafficServer(collector *traffic.Collector) *TrafficServer {
 		collector: collector,
 		eventBus:  events.GetBus(),
 	}
+}
+
+// SetPeerPool sets the peer pool for forwarding traffic queries to peers.
+func (s *TrafficServer) SetPeerPool(pool *PeerPool) {
+	s.peerPool = pool
 }
 
 // GetConnections returns active connections for a container

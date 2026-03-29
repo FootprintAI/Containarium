@@ -903,7 +903,9 @@ type SystemInfo struct {
 	// CPU load average (15 minutes)
 	CpuLoad_15Min float64 `protobuf:"fixed64,17,opt,name=cpu_load_15min,json=cpuLoad15min,proto3" json:"cpu_load_15min,omitempty"`
 	// GPU information
-	Gpus          []*GPUInfo `protobuf:"bytes,18,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	Gpus []*GPUInfo `protobuf:"bytes,18,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	// Backend ID (e.g., "tunnel-fts-5900x-gpu") — set when returned from peer
+	BackendId     string `protobuf:"bytes,19,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1064,6 +1066,13 @@ func (x *SystemInfo) GetGpus() []*GPUInfo {
 	return nil
 }
 
+func (x *SystemInfo) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
 // GPUInfo represents a GPU device on the system
 type GPUInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1204,8 +1213,10 @@ func (*GetSystemInfoRequest) Descriptor() ([]byte, []int) {
 // GetSystemInfoResponse is the response from getting system information
 type GetSystemInfoResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// System information
-	Info          *SystemInfo `protobuf:"bytes,1,opt,name=info,proto3" json:"info,omitempty"`
+	// System information (local/primary backend)
+	Info *SystemInfo `protobuf:"bytes,1,opt,name=info,proto3" json:"info,omitempty"`
+	// System information from peer backends (tunnel-connected)
+	Peers         []*SystemInfo `protobuf:"bytes,2,rep,name=peers,proto3" json:"peers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1243,6 +1254,13 @@ func (*GetSystemInfoResponse) Descriptor() ([]byte, []int) {
 func (x *GetSystemInfoResponse) GetInfo() *SystemInfo {
 	if x != nil {
 		return x.Info
+	}
+	return nil
+}
+
+func (x *GetSystemInfoResponse) GetPeers() []*SystemInfo {
+	if x != nil {
+		return x.Peers
 	}
 	return nil
 }
@@ -1453,7 +1471,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xd2\x05\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xf1\x05\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -1475,7 +1493,9 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\rcpu_load_1min\x18\x0f \x01(\x01R\vcpuLoad1min\x12\"\n" +
 	"\rcpu_load_5min\x18\x10 \x01(\x01R\vcpuLoad5min\x12$\n" +
 	"\x0ecpu_load_15min\x18\x11 \x01(\x01R\fcpuLoad15min\x12,\n" +
-	"\x04gpus\x18\x12 \x03(\v2\x18.containarium.v1.GPUInfoR\x04gpus\"\x97\x02\n" +
+	"\x04gpus\x18\x12 \x03(\v2\x18.containarium.v1.GPUInfoR\x04gpus\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x13 \x01(\tR\tbackendId\"\x97\x02\n" +
 	"\aGPUInfo\x122\n" +
 	"\x06vendor\x18\x01 \x01(\x0e2\x1a.containarium.v1.GPUVendorR\x06vendor\x12/\n" +
 	"\x05model\x18\x02 \x01(\x0e2\x19.containarium.v1.GPUModelR\x05model\x12\x1d\n" +
@@ -1487,9 +1507,10 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\fcuda_version\x18\x06 \x01(\tR\vcudaVersion\x12\x1d\n" +
 	"\n" +
 	"vram_bytes\x18\a \x01(\x03R\tvramBytes\"\x16\n" +
-	"\x14GetSystemInfoRequest\"H\n" +
+	"\x14GetSystemInfoRequest\"{\n" +
 	"\x15GetSystemInfoResponse\x12/\n" +
-	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04info\"\x85\x01\n" +
+	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04info\x121\n" +
+	"\x05peers\x18\x02 \x03(\v2\x1b.containarium.v1.SystemInfoR\x05peers\"\x85\x01\n" +
 	"\vBackendInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x1c.containarium.v1.BackendTypeR\x04type\x12\x18\n" +
@@ -1583,13 +1604,14 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	0,  // 9: containarium.v1.GPUInfo.vendor:type_name -> containarium.v1.GPUVendor
 	1,  // 10: containarium.v1.GPUInfo.model:type_name -> containarium.v1.GPUModel
 	12, // 11: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
-	2,  // 12: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
-	16, // 13: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	12, // 12: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
+	2,  // 13: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
+	16, // 14: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }

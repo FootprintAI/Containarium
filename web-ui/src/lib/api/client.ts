@@ -57,6 +57,7 @@ function mapContainerState(apiState: string): string {
     'CONTAINER_STATE_STOPPED': 'Stopped',
     'CONTAINER_STATE_FROZEN': 'Frozen',
     'CONTAINER_STATE_CREATING': 'Creating',
+    'CONTAINER_STATE_PROVISIONING': 'Provisioning',
     'CONTAINER_STATE_ERROR': 'Error',
     'CONTAINER_STATE_UNKNOWN': 'Unknown',
     'CONTAINER_STATE_UNSPECIFIED': 'Unknown',
@@ -151,6 +152,17 @@ export class ContaineriumClient {
     }
     const response = await this.client.get('/system/info');
     return response.data.info || response.data;
+  }
+
+  /**
+   * Get system information including peer backends
+   */
+  async getSystemInfoWithPeers(): Promise<{ info: SystemInfo; peers: SystemInfo[] }> {
+    const response = await this.client.get('/system/info');
+    return {
+      info: response.data.info || response.data,
+      peers: response.data.peers || [],
+    };
   }
 
   /**

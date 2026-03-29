@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/incus"
+	metricsPackage "github.com/footprintai/containarium/internal/metrics"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -431,6 +432,59 @@ func (pc *PeerClient) ForwardRequest(method, path, authToken string, body []byte
 	return respBody, resp.StatusCode, nil
 }
 
+// ForwardGetMetrics fetches container metrics from a peer.
+// Returns raw JSON response body for the caller to merge.
+func (pc *PeerClient) ForwardGetMetrics(authToken string, username string) ([]byte, error) {
+	path := "/v1/metrics"
+	if username != "" {
+		path = fmt.Sprintf("/v1/metrics/%s", username)
+	}
+	body, status, err := pc.ForwardRequest("GET", path, authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward metrics to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for metrics", pc.ID, status)
+	}
+	return body, nil
+}
+
+// ForwardGetSystemInfo fetches system info from a peer.
+func (pc *PeerClient) ForwardGetSystemInfo(authToken string) ([]byte, error) {
+	body, status, err := pc.ForwardRequest("GET", "/v1/system/info", authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward system-info to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for system-info", pc.ID, status)
+	}
+	return body, nil
+}
+
+// ForwardSecuritySummary fetches security summary from a peer.
+func (pc *PeerClient) ForwardSecuritySummary(authToken string) ([]byte, error) {
+	body, status, err := pc.ForwardRequest("GET", "/v1/security/clamav-summary", authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward security summary to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for security summary", pc.ID, status)
+	}
+	return body, nil
+}
+
+// ForwardContainerTraffic fetches traffic data for a container on a peer.
+func (pc *PeerClient) ForwardContainerTraffic(authToken string, path string) ([]byte, error) {
+	body, status, err := pc.ForwardRequest("GET", path, authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward traffic to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for traffic", pc.ID, status)
+	}
+	return body, nil
+}
+
 // FindContainerPeer searches all peers for a container by username.
 // Returns the peer that has it, or nil if not found on any peer.
 func (pp *PeerPool) FindContainerPeer(username, authToken string) *PeerClient {
@@ -520,3 +574,136 @@ type byteReader []byte
 func (b byteReader) Read(p []byte) (n int, err error) {
 	return copy(p, b), io.EOF
 }
+
+// PeerMetricsFetcherAdapter adapts PeerPool to the metrics.PeerMetricsFetcher interface.
+type PeerMetricsFetcherAdapter struct {
+	Pool         *PeerPool
+	ServiceToken string // JWT token for authenticating internal requests to peers
+}
+
+// FetchPeerMetrics implements metrics.PeerMetricsFetcher.
+func (a *PeerMetricsFetcherAdapter) FetchPeerMetrics(authToken string) []peerMetricsResult {
+	var results []peerMetricsResult
+	if a.Pool == nil {
+		return results
+	}
+	// Use service token if no auth token provided
+	token := authToken
+	if token == "" {
+		token = a.ServiceToken
+	}
+	peers := a.Pool.Peers()
+	if len(peers) == 0 {
+		return results
+	}
+	for _, peer := range peers {
+		if !peer.Healthy {
+			continue
+		}
+		body, err := peer.ForwardGetMetrics(token, "")
+		if err != nil {
+			log.Printf("[peer-metrics] failed to fetch from %s: %v", peer.ID, err)
+			continue
+		}
+		// Parse the JSON response — values may be strings or numbers from gRPC-gateway
+		var resp struct {
+			Metrics []struct {
+				Name             string          `json:"name"`
+				CpuUsageSeconds  json.Number     `json:"cpuUsageSeconds"`
+				MemoryUsageBytes json.Number     `json:"memoryUsageBytes"`
+				DiskUsageBytes   json.Number     `json:"diskUsageBytes"`
+				NetworkRxBytes   json.Number     `json:"networkRxBytes"`
+				NetworkTxBytes   json.Number     `json:"networkTxBytes"`
+				ProcessCount     json.Number     `json:"processCount"`
+			} `json:"metrics"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			log.Printf("[peer-metrics] parse error from %s: %v (body: %.200s)", peer.ID, err, string(body))
+			continue
+		}
+		for _, m := range resp.Metrics {
+			cpuS, _ := m.CpuUsageSeconds.Int64()
+			memB, _ := m.MemoryUsageBytes.Int64()
+			diskB, _ := m.DiskUsageBytes.Int64()
+			netRx, _ := m.NetworkRxBytes.Int64()
+			netTx, _ := m.NetworkTxBytes.Int64()
+			procs, _ := m.ProcessCount.Int64()
+			results = append(results, peerMetricsResult{
+				ContainerName:    m.Name,
+				BackendID:        peer.ID,
+				CPUUsageSeconds:  cpuS,
+				MemoryUsageBytes: memB,
+				DiskUsageBytes:   diskB,
+				NetworkRxBytes:   netRx,
+				NetworkTxBytes:   netTx,
+				ProcessCount:     procs,
+			})
+		}
+	}
+	return results
+}
+
+// FetchPeerSystemMetrics implements metrics.PeerMetricsFetcher.
+func (a *PeerMetricsFetcherAdapter) FetchPeerSystemMetrics(authToken string) []metricsPackage.PeerSystemMetrics {
+	var results []metricsPackage.PeerSystemMetrics
+	if a.Pool == nil {
+		return results
+	}
+	token := authToken
+	if token == "" {
+		token = a.ServiceToken
+	}
+	for _, peer := range a.Pool.Peers() {
+		if !peer.Healthy {
+			continue
+		}
+		body, err := peer.ForwardGetSystemInfo(token)
+		if err != nil {
+			continue
+		}
+		var resp struct {
+			Info struct {
+				TotalCpus            json.Number `json:"totalCpus"`
+				TotalMemoryBytes     json.Number `json:"totalMemoryBytes"`
+				AvailableMemoryBytes json.Number `json:"availableMemoryBytes"`
+				TotalDiskBytes       json.Number `json:"totalDiskBytes"`
+				AvailableDiskBytes   json.Number `json:"availableDiskBytes"`
+				CpuLoad1Min          json.Number `json:"cpuLoad1min"`
+				CpuLoad5Min          json.Number `json:"cpuLoad5min"`
+				CpuLoad15Min         json.Number `json:"cpuLoad15min"`
+				ContainersRunning    json.Number `json:"containersRunning"`
+				ContainersStopped    json.Number `json:"containersStopped"`
+			} `json:"info"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			continue
+		}
+		totalCpus, _ := resp.Info.TotalCpus.Int64()
+		totalMem, _ := resp.Info.TotalMemoryBytes.Int64()
+		availMem, _ := resp.Info.AvailableMemoryBytes.Int64()
+		totalDisk, _ := resp.Info.TotalDiskBytes.Int64()
+		availDisk, _ := resp.Info.AvailableDiskBytes.Int64()
+		load1, _ := resp.Info.CpuLoad1Min.Float64()
+		load5, _ := resp.Info.CpuLoad5Min.Float64()
+		load15, _ := resp.Info.CpuLoad15Min.Float64()
+		cRunning, _ := resp.Info.ContainersRunning.Int64()
+		cStopped, _ := resp.Info.ContainersStopped.Int64()
+		results = append(results, metricsPackage.PeerSystemMetrics{
+			BackendID:         peer.ID,
+			TotalCPUs:         totalCpus,
+			TotalMemoryBytes:  totalMem,
+			UsedMemoryBytes:   totalMem - availMem,
+			TotalDiskBytes:    totalDisk,
+			UsedDiskBytes:     totalDisk - availDisk,
+			CPULoad1Min:       load1,
+			CPULoad5Min:       load5,
+			CPULoad15Min:      load15,
+			ContainersRunning: cRunning,
+			ContainersStopped: cStopped,
+		})
+	}
+	return results
+}
+
+// peerMetricsResult matches metrics.PeerMetrics to avoid circular import.
+type peerMetricsResult = metricsPackage.PeerMetrics

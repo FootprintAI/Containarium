@@ -184,6 +184,9 @@ message SystemInfo {
 
   // GPU information
   repeated GPUInfo gpus = 18;
+
+  // Backend ID (e.g., "tunnel-fts-5900x-gpu") — set when returned from peer
+  string backend_id = 19;
 }
 
 // GPU vendor enum
@@ -260,8 +263,11 @@ message GetSystemInfoRequest {}
 
 // GetSystemInfoResponse is the response from getting system information
 message GetSystemInfoResponse {
-  // System information
+  // System information (local/primary backend)
   SystemInfo info = 1;
+
+  // System information from peer backends (tunnel-connected)
+  repeated SystemInfo peers = 2;
 }
 
 // BackendType represents the type of backend instance
