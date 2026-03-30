@@ -127,6 +127,25 @@ func (s *Scanner) EnqueueOne(ctx context.Context, containerName, username string
 	return s.store.EnqueueScanJob(ctx, containerName, username)
 }
 
+// EnqueueNewContainer enqueues a scan for a newly created container after a short delay
+// to allow the container to fully boot and install packages.
+func (s *Scanner) EnqueueNewContainer(containerName string) {
+	username := containerName
+	if strings.HasSuffix(containerName, "-container") {
+		username = strings.TrimSuffix(containerName, "-container")
+	}
+	// Delay scan to allow container setup to complete
+	go func() {
+		time.Sleep(2 * time.Minute)
+		ctx := context.Background()
+		if _, err := s.store.EnqueueScanJob(ctx, containerName, username); err != nil {
+			log.Printf("[security] failed to enqueue scan for new container %s: %v", containerName, err)
+		} else {
+			log.Printf("[security] scan queued for new container %s", containerName)
+		}
+	}()
+}
+
 // startWorkers spawns count goroutines that poll the job queue and process scans.
 func (s *Scanner) startWorkers(ctx context.Context, count int) {
 	for i := 0; i < count; i++ {

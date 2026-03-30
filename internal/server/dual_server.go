@@ -995,6 +995,33 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.securityScanner != nil {
 		ds.securityScanner.Start(ctx)
 		log.Printf("Security scanner started")
+
+		// Subscribe to container creation events to auto-scan new containers
+		go func() {
+			sub := events.GetBus().Subscribe(&pb.SubscribeEventsRequest{
+				ResourceTypes: []pb.ResourceType{pb.ResourceType_RESOURCE_TYPE_CONTAINER},
+			})
+			defer events.GetBus().Unsubscribe(sub.ID)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case event, ok := <-sub.Events:
+					if !ok {
+						return
+					}
+					if event.Type == pb.EventType_EVENT_TYPE_CONTAINER_CREATED {
+						if ce := event.GetContainerEvent(); ce != nil && ce.Container != nil {
+							name := ce.Container.Name
+							// Skip core containers
+							if !strings.HasPrefix(name, "containarium-core-") {
+								ds.securityScanner.EnqueueNewContainer(name)
+							}
+						}
+					}
+				}
+			}
+		}()
 	}
 
 	// Start pentest manager if available

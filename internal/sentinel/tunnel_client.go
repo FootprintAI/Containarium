@@ -95,6 +95,12 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("yamux server init: %w", err)
 	}
+
+	// Close session when context is cancelled (enables clean shutdown)
+	go func() {
+		<-ctx.Done()
+		session.Close()
+	}()
 	defer session.Close()
 
 	log.Printf("[tunnel-client] yamux session established, serving port forwards")
@@ -142,15 +148,24 @@ func (tc *TunnelClient) handleStream(stream net.Conn) {
 	}
 	defer localConn.Close()
 
-	// Bidirectional copy
+	// Bidirectional copy — when one direction finishes, close both sides
 	done := make(chan struct{}, 2)
 	go func() {
 		io.Copy(localConn, stream)
+		// Close write side of local conn to signal EOF
+		if tc, ok := localConn.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
 		done <- struct{}{}
 	}()
 	go func() {
 		io.Copy(stream, localConn)
+		// Close write side of stream to signal EOF
+		if cs, ok := stream.(interface{ CloseWrite() error }); ok {
+			cs.CloseWrite()
+		}
 		done <- struct{}{}
 	}()
+	// Wait for first direction to finish, then close both
 	<-done
 }

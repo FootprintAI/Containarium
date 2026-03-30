@@ -257,14 +257,20 @@ func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *y
 		return
 	}
 
-	// Bidirectional copy
+	// Bidirectional copy — close write sides to propagate EOF properly
 	done := make(chan struct{}, 2)
 	go func() {
 		io.Copy(stream, localConn)
+		if cs, ok := stream.(interface{ CloseWrite() error }); ok {
+			cs.CloseWrite()
+		}
 		done <- struct{}{}
 	}()
 	go func() {
 		io.Copy(localConn, stream)
+		if tc, ok := localConn.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
 		done <- struct{}{}
 	}()
 	<-done
