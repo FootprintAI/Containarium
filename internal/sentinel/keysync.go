@@ -152,7 +152,10 @@ func (ks *KeyStore) Apply() error {
 			continue
 		}
 		akPath := filepath.Join(userDir, "authorized_keys")
-		if err := os.WriteFile(akPath, []byte(r.authorizedKeys+"\n"), 0600); err != nil {
+		// Strip blank lines and comment lines before writing — sshpiper's
+		// authorized_keys parser may stop at a blank line, causing key match failures.
+		cleanedKeys := cleanAuthorizedKeys(r.authorizedKeys)
+		if err := os.WriteFile(akPath, []byte(cleanedKeys+"\n"), 0600); err != nil {
 			log.Printf("[keysync] failed to write authorized_keys for %s: %v", r.username, err)
 			continue
 		}
@@ -312,6 +315,21 @@ func (ks *KeyStore) ensureBackendLocked(backendID, backendIP string) *backendKey
 	}
 	bk.backendIP = backendIP
 	return bk
+}
+
+// cleanAuthorizedKeys strips blank lines and comment lines from an authorized_keys
+// string. sshpiper's parser may stop at a blank line, causing key match failures
+// when the client's key appears after one.
+func cleanAuthorizedKeys(raw string) string {
+	var lines []string
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // isTunnelLoopback returns true if the IP is a tunnel loopback alias (127.0.0.x, x >= 10).

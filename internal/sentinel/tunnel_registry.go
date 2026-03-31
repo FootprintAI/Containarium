@@ -48,33 +48,32 @@ func (r *TunnelRegistry) Register(spotID string, session *yamux.Session, ports [
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// If this spotID is already registered, tear down the old one first
+	// If this spotID is already registered, reuse its loopback IP
+	// This prevents sshpiper config from going stale during reconnects
+	var localIP string
+	var octet byte
 	if old, ok := r.spots[spotID]; ok {
-		log.Printf("[tunnel-registry] spot %q reconnecting, replacing old session", spotID)
+		log.Printf("[tunnel-registry] spot %q reconnecting, reusing IP %s", spotID, old.LocalIP)
 		old.Session.Close()
-		removeLoopbackAlias(old.LocalIP)
-		delete(r.spots, spotID)
-		// Free the old IP
-		for octet, id := range r.usedIPs {
+		localIP = old.LocalIP
+		for o, id := range r.usedIPs {
 			if id == spotID {
-				delete(r.usedIPs, octet)
+				octet = o
 				break
 			}
 		}
-	}
-
-	// Find next available loopback octet
-	octet, err := r.allocateOctet(spotID)
-	if err != nil {
-		return "", err
-	}
-
-	localIP := fmt.Sprintf("127.0.0.%d", octet)
-
-	// Add loopback alias on the system
-	if err := addLoopbackAlias(localIP); err != nil {
-		delete(r.usedIPs, octet)
-		return "", fmt.Errorf("add loopback alias %s: %w", localIP, err)
+		delete(r.spots, spotID)
+	} else {
+		var err error
+		octet, err = r.allocateOctet(spotID)
+		if err != nil {
+			return "", err
+		}
+		localIP = fmt.Sprintf("127.0.0.%d", octet)
+		if err := addLoopbackAlias(localIP); err != nil {
+			delete(r.usedIPs, octet)
+			return "", fmt.Errorf("add loopback alias %s: %w", localIP, err)
+		}
 	}
 
 	externalPort := ExternalPortBase + int(octet)

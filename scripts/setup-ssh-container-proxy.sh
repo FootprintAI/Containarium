@@ -10,6 +10,8 @@
 #
 # What it sets up:
 #   1. containarium-shell wrapper (replaces nologin for containarium users)
+#      - Interactive: incus exec <container> -t -- su -l <user>
+#      - Non-interactive (ssh host "cmd"): handles -c arg and SSH_ORIGINAL_COMMAND
 #   2. Sudoers for passwordless incus exec/info
 #   3. sshd config to suppress host MOTD for containarium users
 #   4. Containarium MOTD banner
@@ -45,9 +47,19 @@ if [ "$STATE" != "RUNNING" ]; then
     exit 1
 fi
 
-# Handle SSH command execution (ssh user@host "command")
-if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-    exec sudo incus exec "$CONTAINER" --mode non-interactive -- su - "$USERNAME" -c "$SSH_ORIGINAL_COMMAND"
+# Resolve the command to run, if any.
+# Three possible invocation modes:
+#   1. SSH_ORIGINAL_COMMAND is set: ForceCommand mode
+#   2. Called as "containarium-shell -c <cmd>": sshpiper forwarded exec request;
+#      the upstream sshd invokes the user's shell as "<shell> -c <cmd>"
+#   3. No command: interactive session
+COMMAND="${SSH_ORIGINAL_COMMAND}"
+if [ -z "$COMMAND" ] && [ "$1" = "-c" ]; then
+    COMMAND="$2"
+fi
+
+if [ -n "$COMMAND" ]; then
+    exec sudo incus exec "$CONTAINER" --mode non-interactive -- su - "$USERNAME" -c "$COMMAND"
 fi
 
 # Show banner for interactive sessions
