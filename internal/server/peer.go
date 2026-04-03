@@ -397,10 +397,15 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 }
 
 // ForwardRequest forwards an arbitrary HTTP request to the peer and returns the response body.
+// GET requests use a 5s timeout to avoid blocking the UI; POST/PUT use 30s for mutations.
 func (pc *PeerClient) ForwardRequest(method, path, authToken string, body []byte) ([]byte, int, error) {
 	url := fmt.Sprintf("http://%s%s", pc.Addr, path)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	timeout := 5 * time.Second
+	if method != "GET" {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	var bodyReader io.Reader

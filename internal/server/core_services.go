@@ -655,6 +655,9 @@ name = grafana
 user = %s
 password = %s
 ssl_mode = disable
+max_open_conn = 5
+max_idle_conn = 2
+conn_max_lifetime = 14400
 
 [security]
 allow_embedding = true
@@ -1161,8 +1164,8 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 	config := incus.ContainerConfig{
 		Name:      CoreSecurityContainer,
 		Image:     "images:ubuntu/24.04",
-		CPU:       "2",
-		Memory:    "2GB",
+		CPU:       "4",
+		Memory:    "3GB",
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",

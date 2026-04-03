@@ -238,6 +238,16 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 	// Wait briefly for device to be available
 	time.Sleep(2 * time.Second)
 
+	// Verify the mount has actual content — on ZFS backends, stopped containers
+	// or missing datasets result in an empty mount that clamdscan scans instantly,
+	// producing a false "clean" with 0s duration.
+	lsOut, _, _ := s.incusClient.ExecWithOutput(SecurityContainerName, []string{
+		"ls", mountPath,
+	})
+	if strings.TrimSpace(lsOut) == "" {
+		return fmt.Errorf("mount path %s is empty — container rootfs not accessible (container may be stopped or storage backend not mounted)", mountPath)
+	}
+
 	// Run clamdscan (uses the resident clamd daemon which keeps the virus DB in
 	// memory, avoiding the expensive DB reload that clamscan performs on each
 	// invocation). Directory exclusions are configured in clamd.conf ExcludePath.

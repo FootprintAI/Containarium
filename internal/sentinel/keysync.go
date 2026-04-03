@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -118,9 +119,15 @@ func (ks *KeyStore) Apply() error {
 	seen := make(map[string]bool)
 	var routes []userRoute
 
-	// Collect from all backends — iterate deterministically by sorting is not needed
-	// since sshpiper matches by username (order doesn't affect routing correctness)
-	for _, bk := range ks.backends {
+	// Collect from all backends — sort backend IDs for deterministic iteration
+	// so the generated config is stable and doesn't cause unnecessary sshpiper restarts.
+	backendIDs := make([]string, 0, len(ks.backends))
+	for id := range ks.backends {
+		backendIDs = append(backendIDs, id)
+	}
+	sort.Strings(backendIDs)
+	for _, id := range backendIDs {
+		bk := ks.backends[id]
 		for _, u := range bk.users {
 			if seen[u.Username] {
 				continue // first backend to claim a user wins
@@ -134,6 +141,11 @@ func (ks *KeyStore) Apply() error {
 		}
 	}
 	ks.mu.RUnlock()
+
+	// Sort routes by username for deterministic config output
+	sort.Slice(routes, func(i, j int) bool {
+		return routes[i].username < routes[j].username
+	})
 
 	if len(routes) == 0 {
 		return fmt.Errorf("no users to configure")

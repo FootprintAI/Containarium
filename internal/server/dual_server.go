@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -272,7 +273,17 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						log.Printf("Warning: Failed to setup Caddy: %v. Proxy features disabled.", err)
 					} else {
 						caddyAdminURL = adminURL
-						log.Printf("Caddy ready: %s", coreServices.GetCaddyIP())
+						caddyIP := coreServices.GetCaddyIP()
+						log.Printf("Caddy ready: %s", caddyIP)
+
+						// Add DNS override so containers resolve *.baseDomain to Caddy
+						// internally instead of going through the external IP (hairpin NAT).
+						dnsOverride := fmt.Sprintf("address=/%s/%s", config.BaseDomain, caddyIP)
+						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil {
+							log.Printf("Warning: failed to set DNS override for %s: %v (%s)", config.BaseDomain, err, string(out))
+						} else {
+							log.Printf("DNS override: *.%s -> %s (internal hairpin)", config.BaseDomain, caddyIP)
+						}
 					}
 				}
 			}

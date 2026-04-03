@@ -358,10 +358,23 @@ type ScanJob struct {
 	CompletedAt   *time.Time
 }
 
-// EnqueueScanJob inserts a new pending scan job and returns its ID
+// EnqueueScanJob inserts a new pending scan job and returns its ID.
+// If the container already has a pending or running job, it skips the insert
+// and returns the existing job's ID to avoid queue bloat from repeated scan-all triggers.
 func (s *Store) EnqueueScanJob(ctx context.Context, containerName, username string) (int64, error) {
-	var id int64
+	// Check for existing pending/running job for this container
+	var existingID int64
 	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM scan_jobs WHERE container_name = $1 AND status IN ('pending', 'running') LIMIT 1`,
+		containerName,
+	).Scan(&existingID)
+	if err == nil {
+		// Already has an active job, skip
+		return existingID, nil
+	}
+
+	var id int64
+	err = s.pool.QueryRow(ctx,
 		`INSERT INTO scan_jobs (container_name, username) VALUES ($1, $2) RETURNING id`,
 		containerName, username,
 	).Scan(&id)
