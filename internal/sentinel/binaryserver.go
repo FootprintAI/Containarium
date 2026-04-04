@@ -1,8 +1,11 @@
 package sentinel
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -42,6 +45,21 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", "attachment; filename=containarium")
 		http.ServeFile(w, r, binaryPath)
+	})
+	mux.HandleFunc("/containarium/checksum", func(w http.ResponseWriter, r *http.Request) {
+		f, err := os.Open(binaryPath)
+		if err != nil {
+			http.Error(w, "binary not found", http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			http.Error(w, "checksum error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, hex.EncodeToString(h.Sum(nil)))
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

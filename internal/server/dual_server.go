@@ -1163,6 +1163,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Start auto-updater if sentinel URL is configured
+	if ds.config.SentinelURL != "" {
+		updater := NewAutoUpdater(ds.config.SentinelURL, "/usr/local/bin/containarium", 5*time.Minute)
+		go updater.Run(ctx)
+	}
+
 	// Start gRPC server
 	grpcAddr := fmt.Sprintf("%s:%d", ds.config.GRPCAddress, ds.config.GRPCPort)
 	lis, err := net.Listen("tcp", grpcAddr)
