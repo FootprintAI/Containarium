@@ -279,7 +279,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						// Add DNS override so containers resolve *.baseDomain to Caddy
 						// internally instead of going through the external IP (hairpin NAT).
 						dnsOverride := fmt.Sprintf("address=/%s/%s", config.BaseDomain, caddyIP)
-						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil {
+						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil { // #nosec G204 -- dnsOverride is constructed from trusted BaseDomain and CaddyIP config values
 							log.Printf("Warning: failed to set DNS override for %s: %v (%s)", config.BaseDomain, err, string(out))
 						} else {
 							log.Printf("DNS override: *.%s -> %s (internal hairpin)", config.BaseDomain, caddyIP)

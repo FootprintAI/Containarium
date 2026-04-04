@@ -96,7 +96,7 @@ func (u *AutoUpdater) checkAndUpdate(ctx context.Context) error {
 	}
 
 	// 6. Make executable
-	if err := os.Chmod(tmpPath, 0755); err != nil {
+	if err := os.Chmod(tmpPath, 0755); err != nil { // #nosec G302 -- executable binary needs 0755
 		os.Remove(tmpPath)
 		return fmt.Errorf("chmod: %w", err)
 	}
@@ -175,7 +175,7 @@ func (u *AutoUpdater) downloadBinary(ctx context.Context, destPath string) error
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 
-	f, err := os.Create(destPath)
+	f, err := os.Create(destPath) // #nosec G304 -- destPath is a temp file derived from trusted binaryPath config
 	if err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func (u *AutoUpdater) downloadBinary(ctx context.Context, destPath string) error
 }
 
 func checksumFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- path is the binary path from trusted config
 	if err != nil {
 		return "", err
 	}

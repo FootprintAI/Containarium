@@ -152,14 +152,14 @@ func (ks *KeyStore) Apply() error {
 	}
 
 	// Ensure directories exist
-	if err := os.MkdirAll(sshpiperUsersDir, 0755); err != nil {
+	if err := os.MkdirAll(sshpiperUsersDir, 0755); err != nil { // #nosec G301 -- sshpiper needs world-readable dirs for authorized_keys lookup
 		return fmt.Errorf("failed to create sshpiper users dir: %w", err)
 	}
 
 	// Write per-user authorized_keys
 	for _, r := range routes {
 		userDir := filepath.Join(sshpiperUsersDir, r.username)
-		if err := os.MkdirAll(userDir, 0755); err != nil {
+		if err := os.MkdirAll(userDir, 0755); err != nil { // #nosec G301 -- sshpiper requires world-readable user dirs
 			log.Printf("[keysync] failed to create dir for %s: %v", r.username, err)
 			continue
 		}
