@@ -102,6 +102,54 @@ func DeleteJumpServerAccount(username string, verbose bool) error {
 	return nil
 }
 
+// EnsureJumpServerAccount creates a host-level user with containarium-shell
+// as the login shell, enabling SSH access through sshpiper into the user's
+// Incus container. This is called automatically when a container is created.
+// It is idempotent — if the account already exists, it just ensures the shell
+// and permissions are correct.
+func EnsureJumpServerAccount(username string) error {
+	if !isValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
+
+	shellPath := "/usr/local/bin/containarium-shell"
+
+	if userExists(username) {
+		// Ensure shell is containarium-shell
+		_ = exec.Command("usermod", "-s", shellPath, username).Run()
+		return nil
+	}
+
+	// Create user with containarium-shell
+	if err := exec.Command("useradd", "-m", "-s", shellPath,
+		"-c", fmt.Sprintf("Containarium user - %s", username),
+		username).Run(); err != nil {
+		return fmt.Errorf("useradd failed: %w", err)
+	}
+
+	// Unlock account (useradd creates locked accounts, sshd rejects them)
+	_ = exec.Command("passwd", "-d", username).Run()
+
+	// Set home dir permissions (sshd requires 755 or stricter)
+	_ = os.Chmod(fmt.Sprintf("/home/%s", username), 0755)
+
+	// Create .ssh dir
+	sshDir := fmt.Sprintf("/home/%s/.ssh", username)
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("failed to create .ssh dir: %w", err)
+	}
+	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
+
+	// Sudoers entry for incus access (containarium-shell needs it)
+	sudoersEntry := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/incus\n", username)
+	sudoersPath := fmt.Sprintf("/etc/sudoers.d/containarium-%s", username)
+	if err := os.WriteFile(sudoersPath, []byte(sudoersEntry), 0440); err != nil {
+		return fmt.Errorf("failed to write sudoers: %w", err)
+	}
+
+	return nil
+}
+
 // isValidUsername checks if username contains only allowed characters
 func isValidUsername(username string) bool {
 	if len(username) == 0 || len(username) > 32 {

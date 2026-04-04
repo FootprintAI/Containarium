@@ -210,6 +210,16 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// Emit container created event
 	s.emitter.EmitContainerCreated(protoContainer)
 
+	// Create host-level jump server account so SSH via sshpiper works.
+	// This is idempotent — skips if the account already exists.
+	go func() {
+		if err := container.EnsureJumpServerAccount(req.Username); err != nil {
+			log.Printf("Warning: failed to create jump server account for %s: %v", req.Username, err)
+		} else {
+			log.Printf("Jump server account ensured for %s", req.Username)
+		}
+	}()
+
 	return &pb.CreateContainerResponse{
 		Container:  protoContainer,
 		Message:    fmt.Sprintf("Container %s created successfully", info.Name),
