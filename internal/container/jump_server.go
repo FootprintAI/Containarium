@@ -116,11 +116,13 @@ func EnsureJumpServerAccount(username string) error {
 
 	if userExists(username) {
 		// Ensure shell is containarium-shell
+		// #nosec G204 -- username validated by isValidUsername above (alphanumeric, dash, underscore only)
 		_ = exec.Command("usermod", "-s", shellPath, username).Run()
 		return nil
 	}
 
 	// Create user with containarium-shell
+	// #nosec G204 -- username validated by isValidUsername above
 	if err := exec.Command("useradd", "-m", "-s", shellPath,
 		"-c", fmt.Sprintf("Containarium user - %s", username),
 		username).Run(); err != nil {
@@ -128,22 +130,24 @@ func EnsureJumpServerAccount(username string) error {
 	}
 
 	// Unlock account (useradd creates locked accounts, sshd rejects them)
+	// #nosec G204 -- username validated by isValidUsername above
 	_ = exec.Command("passwd", "-d", username).Run()
 
 	// Set home dir permissions (sshd requires 755 or stricter)
-	_ = os.Chmod(fmt.Sprintf("/home/%s", username), 0755)
+	_ = os.Chmod(fmt.Sprintf("/home/%s", username), 0755) // #nosec G302 -- sshd requires home dir to be world-readable
 
 	// Create .ssh dir
 	sshDir := fmt.Sprintf("/home/%s/.ssh", username)
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
 		return fmt.Errorf("failed to create .ssh dir: %w", err)
 	}
+	// #nosec G204 -- username validated by isValidUsername above
 	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
 
 	// Sudoers entry for incus access (containarium-shell needs it)
 	sudoersEntry := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/incus\n", username)
 	sudoersPath := fmt.Sprintf("/etc/sudoers.d/containarium-%s", username)
-	if err := os.WriteFile(sudoersPath, []byte(sudoersEntry), 0440); err != nil {
+	if err := os.WriteFile(sudoersPath, []byte(sudoersEntry), 0440); err != nil { // #nosec G306 -- sudoers requires 0440
 		return fmt.Errorf("failed to write sudoers: %w", err)
 	}
 

@@ -80,37 +80,37 @@ func (u *AutoUpdater) checkAndUpdate(ctx context.Context) error {
 	// 4. Download new binary
 	tmpPath := u.binaryPath + ".new"
 	if err := u.downloadBinary(ctx, tmpPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("download: %w", err)
 	}
 
 	// 5. Verify downloaded binary checksum
 	dlChecksum, err := checksumFile(tmpPath)
 	if err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("verify download: %w", err)
 	}
 	if dlChecksum != remoteChecksum {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("checksum mismatch after download (got %s, want %s)", dlChecksum[:12], remoteChecksum[:12])
 	}
 
 	// 6. Make executable
 	if err := os.Chmod(tmpPath, 0755); err != nil { // #nosec G302 -- executable binary needs 0755
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("chmod: %w", err)
 	}
 
 	// 7. Replace: rename running binary to .old, move new one in place
 	oldPath := u.binaryPath + ".old"
-	os.Remove(oldPath) // ignore error
+	_ = os.Remove(oldPath)
 	if err := os.Rename(u.binaryPath, oldPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename old binary: %w", err)
 	}
 	if err := os.Rename(tmpPath, u.binaryPath); err != nil {
 		// Try to restore old binary
-		os.Rename(oldPath, u.binaryPath)
+		_ = os.Rename(oldPath, u.binaryPath)
 		return fmt.Errorf("rename new binary: %w", err)
 	}
 
@@ -121,14 +121,14 @@ func (u *AutoUpdater) checkAndUpdate(ctx context.Context) error {
 	go func() {
 		time.Sleep(1 * time.Second)
 		// Restart tunnel if it exists (peers only)
-		if exec.Command("systemctl", "is-active", "containarium-tunnel").Run() == nil {
+		if exec.Command("systemctl", "is-active", "containarium-tunnel").Run() == nil { // #nosec G204
 			log.Printf("[auto-update] restarting containarium-tunnel...")
-			exec.Command("systemctl", "restart", "containarium-tunnel").Run()
+			_ = exec.Command("systemctl", "restart", "containarium-tunnel").Run() // #nosec G204
 		}
 		// Restart daemon (this kills us)
 		log.Printf("[auto-update] restarting containarium...")
-		if err := exec.Command("systemctl", "restart", "containarium").Run(); err != nil {
-			exec.Command("systemctl", "restart", "containarium-daemon").Run()
+		if err := exec.Command("systemctl", "restart", "containarium").Run(); err != nil { // #nosec G204
+			_ = exec.Command("systemctl", "restart", "containarium-daemon").Run() // #nosec G204
 		}
 	}()
 
