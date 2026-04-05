@@ -279,7 +279,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						// Add DNS override so containers resolve *.baseDomain to Caddy
 						// internally instead of going through the external IP (hairpin NAT).
 						dnsOverride := fmt.Sprintf("address=/%s/%s", config.BaseDomain, caddyIP)
-						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil {
+						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil { // #nosec G204 -- dnsOverride is constructed from trusted BaseDomain and CaddyIP config values
 							log.Printf("Warning: failed to set DNS override for %s: %v (%s)", config.BaseDomain, err, string(out))
 						} else {
 							log.Printf("DNS override: *.%s -> %s (internal hairpin)", config.BaseDomain, caddyIP)
@@ -1162,6 +1162,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			log.Printf("Installed cgroup wrappers on %d existing container(s)", count)
 		}
 	}()
+
+	// Start auto-updater if sentinel URL is configured
+	if ds.config.SentinelURL != "" {
+		updater := NewAutoUpdater(ds.config.SentinelURL, "/usr/local/bin/containarium", 5*time.Minute)
+		go updater.Run(ctx)
+	}
 
 	// Start gRPC server
 	grpcAddr := fmt.Sprintf("%s:%d", ds.config.GRPCAddress, ds.config.GRPCPort)

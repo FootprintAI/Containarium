@@ -70,7 +70,7 @@ func (s *SecurityServer) ListClamavReports(ctx context.Context, req *pb.ListClam
 		authToken := extractAuthToken(ctx)
 		peerReports := s.fetchPeerReports(authToken, req)
 		reports = append(reports, peerReports...)
-		totalCount += int32(len(peerReports))
+		totalCount += int32(len(peerReports)) // #nosec G115 -- value bounded by container/scan count
 	}
 
 	return &pb.ListClamavReportsResponse{
@@ -205,7 +205,7 @@ func (s *SecurityServer) GetClamavSummary(ctx context.Context, req *pb.GetClamav
 
 	return &pb.GetClamavSummaryResponse{
 		Containers:             summaries,
-		TotalContainers:        int32(len(summaries)),
+		TotalContainers:        int32(len(summaries)), // #nosec G115 -- value bounded by container count
 		CleanContainers:        cleanCount,
 		InfectedContainers:     infectedCount,
 		NeverScannedContainers: neverScanned,
@@ -313,7 +313,7 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 		peerCount = s.triggerPeerScans(authToken)
 	}
 
-	totalCount := int32(count) + peerCount
+	totalCount := int32(count) + peerCount // #nosec G115 -- value bounded by container count
 	return &pb.TriggerClamavScanResponse{
 		Message:      fmt.Sprintf("%d scan jobs queued (%d local, %d on peers)", totalCount, count, peerCount),
 		ScannedCount: totalCount,
@@ -371,7 +371,7 @@ func (s *SecurityServer) GetScanStatus(ctx context.Context, req *pb.GetScanStatu
 			ContainerName: j.ContainerName,
 			Username:      j.Username,
 			Status:        j.Status,
-			RetryCount:    int32(j.RetryCount),
+			RetryCount:    int32(j.RetryCount), // #nosec G115 -- retry count is a small integer
 			ErrorMessage:  j.ErrorMessage,
 			CreatedAt:     j.CreatedAt.Format(time.RFC3339),
 			BackendId:     s.localBackendID,
