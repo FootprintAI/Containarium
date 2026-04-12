@@ -274,7 +274,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				UseEnumNumbers:  false,
 			},
 			UnmarshalOptions: protojson.UnmarshalOptions{
-				DiscardUnknown: true,
+				DiscardUnknown: false,
 			},
 		}),
 	)

@@ -236,6 +236,36 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Wait for PostgreSQL to be reachable before proceeding — services that
+	// depend on it (SecurityService, AlertService, etc.) are registered based
+	// on PostgreSQL availability at startup. If PostgreSQL is temporarily down
+	// (e.g., container restarting), we wait up to 2 minutes rather than
+	// starting with those services permanently disabled.
+	if postgresConnString != "" {
+		log.Printf("Waiting for PostgreSQL to become reachable...")
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		for {
+			pingPool, pingErr := pgxpool.New(waitCtx, postgresConnString)
+			if pingErr == nil {
+				if err := pingPool.Ping(waitCtx); err == nil {
+					pingPool.Close()
+					log.Printf("PostgreSQL is reachable")
+					break
+				}
+				pingPool.Close()
+			}
+			select {
+			case <-waitCtx.Done():
+				log.Printf("Warning: PostgreSQL not reachable after 2 minutes, proceeding anyway (some services will be disabled)")
+				goto pgWaitDone
+			case <-time.After(5 * time.Second):
+				log.Printf("  still waiting for PostgreSQL...")
+			}
+		}
+	pgWaitDone:
+		waitCancel()
+	}
+
 	// Load persisted daemon config from PostgreSQL (values saved by previous runs).
 	// CLI flags that were explicitly set always override DB values.
 	// Uses retry logic to handle post-restart races with PostgreSQL.

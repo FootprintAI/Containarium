@@ -114,8 +114,9 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	// to dial into the spot), even though the TCP connection was initiated by the spot.
 	yamuxCfg := yamux.DefaultConfig()
 	yamuxCfg.EnableKeepAlive = true
-	yamuxCfg.KeepAliveInterval = 15 * time.Second
-	yamuxCfg.ConnectionWriteTimeout = 10 * time.Second
+	// Generous timeouts so tunnel survives CPU-heavy workloads on peers
+	yamuxCfg.KeepAliveInterval = 60 * time.Second
+	yamuxCfg.ConnectionWriteTimeout = 60 * time.Second
 
 	session, err := yamux.Client(conn, yamuxCfg)
 	if err != nil {

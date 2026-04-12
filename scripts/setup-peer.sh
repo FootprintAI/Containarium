@@ -22,6 +22,7 @@ SPOT_ID=""
 NETWORK_SUBNET="10.0.3.1/24"
 TUNNEL_TOKEN="82ae3301b4650ab2d0026cf0f6a5b5b78dfcc9e022922ac23858d1609913aa7f"
 SENTINEL_ADDR="containarium.kafeido.app:443"
+SENTINEL_URL=""  # Internal URL for auto-update (auto-detected from primary)
 BINARY_SRC="/tmp/containarium"
 BINARY_DST="/usr/local/bin/containarium"
 
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
         --network-subnet) NETWORK_SUBNET="$2"; shift 2 ;;
         --tunnel-token) TUNNEL_TOKEN="$2"; shift 2 ;;
         --sentinel-addr) SENTINEL_ADDR="$2"; shift 2 ;;
+        --sentinel-url) SENTINEL_URL="$2"; shift 2 ;;
         --help|-h)
             echo "Usage: sudo $0 --spot-id <ID> [--network-subnet CIDR] [--tunnel-token TOKEN]"
             exit 0
@@ -69,6 +71,12 @@ echo "==> Installing daemon service..."
 # 3. Override daemon config for app-hosting mode
 echo "==> Configuring daemon for app-hosting mode..."
 mkdir -p /etc/systemd/system/containarium.service.d
+# Build sentinel URL flag if provided
+SENTINEL_URL_FLAG=""
+if [[ -n "$SENTINEL_URL" ]]; then
+    SENTINEL_URL_FLAG="--sentinel-url ${SENTINEL_URL}"
+fi
+
 cat > /etc/systemd/system/containarium.service.d/override.conf <<CONF
 [Service]
 ExecStart=
@@ -76,7 +84,9 @@ ExecStart=/usr/local/bin/containarium daemon \\
   --app-hosting \\
   --rest \\
   --jwt-secret-file /etc/containarium/jwt.secret \\
-  --network-subnet ${NETWORK_SUBNET}
+  --network-subnet ${NETWORK_SUBNET} ${SENTINEL_URL_FLAG}
+Restart=on-failure
+RestartSec=5s
 Environment="CONTAINARIUM_ALLOWED_ORIGINS=https://containarium.kafeido.app,http://localhost:3000,http://localhost:8080"
 CONF
 echo "  Override written: /etc/systemd/system/containarium.service.d/override.conf"
@@ -97,7 +107,7 @@ ExecStart=/usr/local/bin/containarium tunnel \\
   --token ${TUNNEL_TOKEN} \\
   --spot-id ${SPOT_ID} \\
   --ports 22,8080
-Restart=always
+Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=10s
 User=root

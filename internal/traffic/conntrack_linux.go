@@ -16,11 +16,12 @@ import (
 
 // LinuxConntrackMonitor implements ConntrackMonitor using Linux netlink
 type LinuxConntrackMonitor struct {
-	conn     *conntrack.Conn // For listening to events
-	queryMu  sync.Mutex      // Protects query connection
-	events   chan *ConntrackEvent
-	ctx      context.Context
-	cancel   context.CancelFunc
+	conn         *conntrack.Conn // For listening to events
+	queryMu      sync.Mutex      // Protects query connection
+	events       chan *ConntrackEvent
+	ctx          context.Context
+	cancel       context.CancelFunc
+	lastDropWarn time.Time // Rate-limit drop warnings
 }
 
 // NewConntrackMonitor creates a new Linux conntrack monitor
@@ -34,7 +35,7 @@ func NewConntrackMonitor() (ConntrackMonitor, error) {
 
 	m := &LinuxConntrackMonitor{
 		conn:   conn,
-		events: make(chan *ConntrackEvent, 1000),
+		events: make(chan *ConntrackEvent, 8192),
 		ctx:    ctx,
 		cancel: cancel,
 	}
@@ -47,7 +48,7 @@ func NewConntrackMonitor() (ConntrackMonitor, error) {
 
 // listen subscribes to conntrack events via netlink
 func (m *LinuxConntrackMonitor) listen() {
-	evCh := make(chan conntrack.Event, 256)
+	evCh := make(chan conntrack.Event, 8192)
 
 	// Subscribe to NEW, UPDATE, DESTROY events using netfilter.GroupsCT
 	errCh, err := m.conn.Listen(evCh, 1, netfilter.GroupsCT)
@@ -122,8 +123,12 @@ func (m *LinuxConntrackMonitor) processEvent(ev conntrack.Event) {
 	select {
 	case m.events <- event:
 	default:
-		// Channel full, drop event
-		log.Printf("Warning: conntrack event channel full, dropping event")
+		// Channel full, drop event (rate-limit warning to avoid log flood)
+		now := time.Now()
+		if now.Sub(m.lastDropWarn) > 30*time.Second {
+			m.lastDropWarn = now
+			log.Printf("Warning: conntrack event channel full, dropping events")
+		}
 	}
 }
 

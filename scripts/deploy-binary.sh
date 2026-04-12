@@ -79,6 +79,10 @@ done
 
 echo ""
 echo "=== Deploy complete ==="
-echo "  Sentinel: updated"
-echo "  Primary:  updated"
-echo "  Peers:    binary uploaded, run the printed commands with sudo"
+echo "  Sentinel: updated and restarted"
+echo "  Primary:  updated and restarted"
+echo "  Peers:    binary uploaded for immediate use"
+echo ""
+echo "  NOTE: If peers have --sentinel-url configured, they will auto-update"
+echo "        from the sentinel within 5 minutes. Otherwise, run the printed"
+echo "        commands with sudo on each peer."

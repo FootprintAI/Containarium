@@ -129,9 +129,13 @@ func EnsureJumpServerAccount(username string) error {
 		return fmt.Errorf("useradd failed: %w", err)
 	}
 
-	// Unlock account (useradd creates locked accounts, sshd rejects them)
+	// Unlock account (useradd creates locked accounts, sshd rejects them).
+	// Set password to '*' which means "no valid password" but account is not
+	// locked. This allows public key auth while preventing password login.
+	// Note: passwd -d sets an empty password which some distros reject;
+	// usermod -p '*' is the portable approach.
 	// #nosec G204 -- username validated by isValidUsername above
-	_ = exec.Command("passwd", "-d", username).Run()
+	_ = exec.Command("usermod", "-p", "*", username).Run()
 
 	// Set home dir permissions (sshd requires 755 or stricter)
 	_ = os.Chmod(fmt.Sprintf("/home/%s", username), 0755) // #nosec G302 -- sshd requires home dir to be world-readable

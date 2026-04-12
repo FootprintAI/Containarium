@@ -19,11 +19,18 @@ import (
 
 // PeerClient represents a connection to a remote containarium daemon.
 type PeerClient struct {
-	ID      string
-	Addr    string // host:port of the remote daemon's REST API
-	Healthy bool
-	client  *http.Client
-	token   string // JWT token for auth (if needed)
+	ID         string
+	Addr       string // host:port of the remote daemon's REST API
+	Healthy    bool
+	LastSeenAt time.Time // Timestamp of last successful health check
+	client     *http.Client
+	token      string // JWT token for auth (if needed)
+
+	// Cached system info from last discovery poll
+	CachedHostname       string
+	CachedOS             string
+	CachedVersion        string
+	CachedContainerCount int32
 }
 
 // PeerPool manages connections to remote containarium daemon peers.
@@ -139,8 +146,11 @@ func (p *PeerPool) discover() {
 		if existing, ok := p.peers[peer.ID]; ok {
 			existing.Addr = peerAddr
 			existing.Healthy = peer.Healthy
+			if peer.Healthy {
+				existing.LastSeenAt = time.Now()
+			}
 		} else {
-			p.peers[peer.ID] = &PeerClient{
+			pc := &PeerClient{
 				ID:      peer.ID,
 				Addr:    peerAddr,
 				Healthy: peer.Healthy,
@@ -148,6 +158,10 @@ func (p *PeerPool) discover() {
 					Timeout: 30 * time.Second,
 				},
 			}
+			if peer.Healthy {
+				pc.LastSeenAt = time.Now()
+			}
+			p.peers[peer.ID] = pc
 			log.Printf("[peers] discovered new peer: %s via %s", peer.ID, peerAddr)
 		}
 	}
@@ -159,6 +173,14 @@ func (p *PeerPool) discover() {
 			log.Printf("[peers] peer removed: %s", id)
 			delete(p.peers, id)
 		}
+	}
+
+	// Cache system info for healthy peers (best-effort, no auth needed for internal calls)
+	for _, pc := range p.peers {
+		if !pc.Healthy {
+			continue
+		}
+		go pc.refreshCachedInfo()
 	}
 }
 
@@ -304,6 +326,8 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 
 // ForwardCreateContainer forwards a create container request to a specific peer.
 func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
+	// Use camelCase field names — gRPC-gateway's protojson uses camelCase,
+	// not snake_case, when unmarshaling JSON into proto messages.
 	reqBody := map[string]interface{}{
 		"username": pbReq.Username,
 		"image":    pbReq.Image,
@@ -312,13 +336,14 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 			"memory": pbReq.Resources.GetMemory(),
 			"disk":   pbReq.Resources.GetDisk(),
 		},
-		"ssh_keys":      pbReq.SshKeys,
-		"enable_podman": pbReq.EnablePodman,
-		"stack":         pbReq.Stack,
-		"gpu":           pbReq.Gpu,
-		"static_ip":     pbReq.StaticIp,
-		"labels":        pbReq.Labels,
-		"async":         pbReq.Async,
+		"sshKeys":      pbReq.SshKeys,
+		"enablePodman": pbReq.EnablePodman,
+		"stack":        pbReq.Stack,
+		"gpu":          pbReq.Gpu,
+		"staticIp":     pbReq.StaticIp,
+		"labels":       pbReq.Labels,
+		"async":        pbReq.Async,
+		"osType":       int32(pbReq.OsType),
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -452,6 +477,29 @@ func (pc *PeerClient) ForwardGetMetrics(authToken string, username string) ([]by
 		return nil, fmt.Errorf("peer %s returned status %d for metrics", pc.ID, status)
 	}
 	return body, nil
+}
+
+// refreshCachedInfo fetches system info from a peer and caches key fields.
+func (pc *PeerClient) refreshCachedInfo() {
+	body, err := pc.ForwardGetSystemInfo("")
+	if err != nil {
+		return
+	}
+	var result struct {
+		Info struct {
+			Hostname          string `json:"hostname"`
+			OS                string `json:"os"`
+			IncusVersion      string `json:"incusVersion"`
+			ContainersRunning int32  `json:"containersRunning"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return
+	}
+	pc.CachedHostname = result.Info.Hostname
+	pc.CachedOS = result.Info.OS
+	pc.CachedContainerCount = result.Info.ContainersRunning
+	// Version is not in system info — peers report it separately or we skip it
 }
 
 // ForwardGetSystemInfo fetches system info from a peer.
@@ -749,6 +797,22 @@ func (a *PeerMetricsFetcherAdapter) FetchPeerSystemMetrics(authToken string) []m
 			CPULoad15Min:      load15,
 			ContainersRunning: cRunning,
 			ContainersStopped: cStopped,
+		})
+	}
+	return results
+}
+
+// FetchPeerHealth implements metrics.PeerMetricsFetcher.
+func (a *PeerMetricsFetcherAdapter) FetchPeerHealth() []metricsPackage.PeerBackendHealth {
+	var results []metricsPackage.PeerBackendHealth
+	if a.Pool == nil {
+		return results
+	}
+	for _, peer := range a.Pool.Peers() {
+		results = append(results, metricsPackage.PeerBackendHealth{
+			BackendID: peer.ID,
+			Healthy:   peer.Healthy,
+			LastSeen:  peer.LastSeenAt,
 		})
 	}
 	return results

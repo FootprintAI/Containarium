@@ -88,8 +88,11 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 	// from sentinel), even though the spot initiated the TCP connection.
 	yamuxCfg := yamux.DefaultConfig()
 	yamuxCfg.EnableKeepAlive = true
-	yamuxCfg.KeepAliveInterval = 15 * time.Second
-	yamuxCfg.ConnectionWriteTimeout = 10 * time.Second
+	// Use generous timeouts so the tunnel survives CPU-heavy workloads
+	// (e.g., compilation, GPU training) on the peer that can starve the
+	// keepalive goroutine for several seconds.
+	yamuxCfg.KeepAliveInterval = 60 * time.Second
+	yamuxCfg.ConnectionWriteTimeout = 60 * time.Second
 
 	session, err := yamux.Server(conn, yamuxCfg)
 	if err != nil {
