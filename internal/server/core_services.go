@@ -93,6 +93,20 @@ func NewCoreServices(incusClient *incus.Client, config CoreServicesConfig) *Core
 	}
 }
 
+// ensurePostgresRestartPolicy adds a systemd override so postgresql@16-main
+// auto-restarts on failure. Ubuntu 24.04 runs postgres via postgresql@16-main.service
+// (a template unit), not plain postgresql.service. Idempotent — safe to call repeatedly.
+func (cs *CoreServices) ensurePostgresRestartPolicy() {
+	if err := cs.incusClient.Exec(CorePostgresContainer, []string{
+		"bash", "-c",
+		"mkdir -p /etc/systemd/system/postgresql@.service.d && " +
+			"printf '[Service]\\nRestart=on-failure\\nRestartSec=5s\\n' > /etc/systemd/system/postgresql@.service.d/restart.conf && " +
+			"systemctl daemon-reload",
+	}); err != nil {
+		log.Printf("Warning: failed to set postgresql restart policy: %v", err)
+	}
+}
+
 // EnsurePostgres ensures PostgreSQL container is running and returns the connection string
 func (cs *CoreServices) EnsurePostgres(ctx context.Context) (string, error) {
 	// Check if container already exists
@@ -105,6 +119,8 @@ func (cs *CoreServices) EnsurePostgres(ctx context.Context) (string, error) {
 		if info.State == "Running" {
 			cs.postgresIP = info.IPAddress
 			log.Printf("PostgreSQL container already running at %s", cs.postgresIP)
+			// Always re-apply postgresql auto-restart override (idempotent)
+			cs.ensurePostgresRestartPolicy()
 			return cs.getPostgresConnString(), nil
 		}
 		// Container exists but not running, start it
@@ -192,6 +208,9 @@ func (cs *CoreServices) setupPostgres(ctx context.Context) error {
 			return fmt.Errorf("failed to run %v: %w", cmd, err)
 		}
 	}
+
+	// Add auto-restart policy for PostgreSQL (idempotent)
+	cs.ensurePostgresRestartPolicy()
 
 	// Start PostgreSQL
 	if err := cs.incusClient.Exec(CorePostgresContainer, []string{"systemctl", "start", "postgresql"}); err != nil {
@@ -476,6 +495,15 @@ func (cs *CoreServices) GetCaddyIP() string {
 	return cs.caddyIP
 }
 
+// updateGrafanaDashboard re-writes the dashboard JSON to pick up new panels on daemon restart.
+func (cs *CoreServices) updateGrafanaDashboard() {
+	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, "/var/lib/grafana/dashboards/overview.json", []byte(OverviewDashboard), "0644"); err != nil {
+		log.Printf("Warning: failed to update Grafana dashboard: %v", err)
+	} else {
+		log.Printf("Grafana dashboard updated")
+	}
+}
+
 // EnsureVictoriaMetrics ensures the Victoria Metrics + Grafana container is running
 func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP string) (string, error) {
 	// Check if container already exists
@@ -488,6 +516,8 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 		if info.State == "Running" {
 			cs.victoriaMetricsIP = info.IPAddress
 			log.Printf("VictoriaMetrics container already running at %s", cs.victoriaMetricsIP)
+			// Always re-provision the Grafana dashboard to pick up new panels
+			cs.updateGrafanaDashboard()
 			return cs.victoriaMetricsIP, nil
 		}
 		// Container exists but not running, start it
@@ -504,6 +534,7 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 		if err := cs.waitForVictoriaMetrics(ctx); err != nil {
 			return "", err
 		}
+		cs.updateGrafanaDashboard()
 		return cs.victoriaMetricsIP, nil
 	}
 
@@ -1165,7 +1196,7 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		Name:      CoreSecurityContainer,
 		Image:     "images:ubuntu/24.04",
 		CPU:       "4",
-		Memory:    "3GB",
+		Memory:    "4GB",
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",
@@ -1230,16 +1261,39 @@ func (cs *CoreServices) setupSecurity(ctx context.Context) error {
 		}
 	}
 
-	// Enable and start freshclam (virus database updater) and clamd (scan daemon).
-	// clamd keeps the virus DB resident in memory so clamdscan doesn't need to
-	// reload it on every scan, dramatically reducing CPU usage.
-	startCmds := [][]string{
+	// Enable and start freshclam (virus database updater).
+	for _, cmd := range [][]string{
 		{"systemctl", "enable", "clamav-freshclam"},
 		{"systemctl", "start", "clamav-freshclam"},
+	} {
+		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
+			return fmt.Errorf("failed to run %v: %w", cmd, err)
+		}
+	}
+
+	// Wait for freshclam to download virus DB before starting clamd.
+	// clamd has a systemd ConditionPathExistsGlob that fails if the DB isn't ready.
+	log.Printf("Waiting for ClamAV virus database download...")
+	dbReady := false
+	for i := 0; i < 30; i++ { // up to 5 minutes
+		out, _, _ := cs.incusClient.ExecWithOutput(CoreSecurityContainer, []string{
+			"bash", "-c", "ls /var/lib/clamav/daily.c?d /var/lib/clamav/daily.inc 2>/dev/null | head -1",
+		})
+		if strings.TrimSpace(out) != "" {
+			dbReady = true
+			break
+		}
+		time.Sleep(10 * time.Second)
+	}
+	if !dbReady {
+		log.Printf("Warning: ClamAV virus DB not ready after 5 minutes, starting clamd anyway")
+	}
+
+	// Now start clamd (virus DB should be available).
+	for _, cmd := range [][]string{
 		{"systemctl", "enable", "clamav-daemon"},
 		{"systemctl", "start", "clamav-daemon"},
-	}
-	for _, cmd := range startCmds {
+	} {
 		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
 			return fmt.Errorf("failed to run %v: %w", cmd, err)
 		}

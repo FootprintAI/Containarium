@@ -44,12 +44,21 @@ type PeerSystemMetrics struct {
 	ContainersStopped int64
 }
 
+// PeerBackendHealth represents the health status of a backend instance.
+type PeerBackendHealth struct {
+	BackendID string
+	Healthy   bool
+	LastSeen  time.Time
+}
+
 // PeerMetricsFetcher fetches container and system metrics from peer backends.
 type PeerMetricsFetcher interface {
 	// FetchPeerMetrics returns container metrics from all healthy peers.
 	FetchPeerMetrics(authToken string) []PeerMetrics
 	// FetchPeerSystemMetrics returns system metrics from all healthy peers.
 	FetchPeerSystemMetrics(authToken string) []PeerSystemMetrics
+	// FetchPeerHealth returns health status of all peer backends.
+	FetchPeerHealth() []PeerBackendHealth
 }
 
 type CollectorConfig struct {
@@ -101,6 +110,9 @@ type Collector struct {
 	// Aggregate instruments
 	containersRunning otelmetric.Int64Gauge
 	containersStopped otelmetric.Int64Gauge
+
+	// Backend health instruments
+	backendHealthy otelmetric.Int64Gauge
 
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -285,6 +297,12 @@ func (c *Collector) initInstruments() error {
 		return err
 	}
 
+	c.backendHealthy, err = meter.Int64Gauge("containarium.backend.healthy",
+		otelmetric.WithDescription("Backend health status (1=healthy, 0=unhealthy)"))
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -332,6 +350,23 @@ func (c *Collector) collect() {
 		c.systemCPULoad1m.Record(ctx, sysRes.CPULoad1Min, localAttrs)
 		c.systemCPULoad5m.Record(ctx, sysRes.CPULoad5Min, localAttrs)
 		c.systemCPULoad15m.Record(ctx, sysRes.CPULoad15Min, localAttrs)
+	}
+
+	// Record local backend health (always healthy if collecting)
+	c.backendHealthy.Record(ctx, 1, localAttrs)
+
+	// Record peer backend health
+	if c.peerFetcher != nil {
+		for _, ph := range c.peerFetcher.FetchPeerHealth() {
+			peerAttrs := otelmetric.WithAttributes(
+				attribute.String("backend.id", ph.BackendID),
+			)
+			var val int64
+			if ph.Healthy {
+				val = 1
+			}
+			c.backendHealthy.Record(ctx, val, peerAttrs)
+		}
 	}
 
 	// Collect system metrics from peers

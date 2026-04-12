@@ -53,6 +53,13 @@ export interface BackendInfo {
   type: 'local' | 'gcp' | 'tunnel';
   healthy: boolean;
   priority: number;
+  version?: string;
+  hostname?: string;
+  uptimeSeconds?: number;
+  lastSeenAt?: string;
+  os?: string;
+  containerCount?: number;
+  gpus?: Array<{ vendor?: string; modelName?: string; vramBytes?: number }>;
 }
 
 /**

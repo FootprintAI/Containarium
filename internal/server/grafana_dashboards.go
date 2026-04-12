@@ -16,48 +16,69 @@ const OverviewDashboard = `{
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
     {
-      "id": 21, "title": "Node Metrics", "type": "row",
+      "id": 30, "title": "Backend Heartbeat", "type": "row",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "collapsed": false
     },
     {
+      "id": 31, "title": "Backend Health", "type": "status-history",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 1 },
+      "targets": [{ "expr": "containarium_backend_healthy", "legendFormat": "{{ backend_id }}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "showValue": "never", "rowHeight": 0.9, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 21, "title": "Node Metrics", "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
       "id": 1, "title": "Total CPUs", "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 6 },
       "targets": [{ "expr": "sum(system_cpu_count{backend_id=~\"$backend\"})", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "blue", "value": null }] } }, "overrides": [] }
     },
     {
       "id": 2, "title": "Running", "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 6 },
       "targets": [{ "expr": "sum(containarium_containers_running{backend_id=~\"$backend\"})", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }] } }, "overrides": [] }
     },
     {
       "id": 3, "title": "Stopped", "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 6 },
       "targets": [{ "expr": "sum(containarium_containers_stopped{backend_id=~\"$backend\"})", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "orange", "value": null }] } }, "overrides": [] }
     },
     {
       "id": 4, "title": "Memory", "type": "gauge",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 6 },
       "targets": [{ "expr": "system_memory_used_bytes{backend_id=~\"$backend\"} / system_memory_total_bytes{backend_id=~\"$backend\"} * 100", "legendFormat": "{{ backend_id }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] } }, "overrides": [] }
     },
     {
       "id": 5, "title": "Disk", "type": "gauge",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 6 },
       "targets": [{ "expr": "system_disk_used_bytes{backend_id=~\"$backend\"} / system_disk_total_bytes{backend_id=~\"$backend\"} * 100", "legendFormat": "{{ backend_id }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] } }, "overrides": [] }
     },
     {
       "id": 6, "title": "CPU Load", "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 5 },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 10 },
       "targets": [
         { "expr": "system_cpu_load_1m{backend_id=~\"$backend\"}",  "legendFormat": "{{ backend_id }} 1m",  "refId": "A" },
         { "expr": "system_cpu_load_5m{backend_id=~\"$backend\"}",  "legendFormat": "{{ backend_id }} 5m",  "refId": "B" },
@@ -69,7 +90,7 @@ const OverviewDashboard = `{
     },
     {
       "id": 7, "title": "Memory Over Time", "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 5 },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 10 },
       "targets": [
         { "expr": "system_memory_used_bytes{backend_id=~\"$backend\"}",  "legendFormat": "{{ backend_id }} Used",  "refId": "A" },
         { "expr": "system_memory_total_bytes{backend_id=~\"$backend\"}", "legendFormat": "{{ backend_id }} Total", "refId": "B" }
@@ -80,12 +101,12 @@ const OverviewDashboard = `{
     },
     {
       "id": 22, "title": "Container Metrics", "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
       "collapsed": false
     },
     {
       "id": 8, "title": "Container CPU (cores)", "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 17 },
       "targets": [{ "expr": "rate(container_cpu_usage_seconds{container_name!~\"containarium-core-.*\",backend_id=~\"$backend\"}[5m])", "legendFormat": "{{ container_name }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "short" }, "overrides": [] },
@@ -93,7 +114,7 @@ const OverviewDashboard = `{
     },
     {
       "id": 9, "title": "Container Memory", "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 17 },
       "targets": [{ "expr": "container_memory_usage_bytes{container_name!~\"containarium-core-.*\",backend_id=~\"$backend\"}", "legendFormat": "{{ container_name }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
@@ -101,7 +122,7 @@ const OverviewDashboard = `{
     },
     {
       "id": 10, "title": "Container Disk", "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 23 },
       "targets": [{ "expr": "container_disk_usage_bytes{container_name!~\"containarium-core-.*\",backend_id=~\"$backend\"}", "legendFormat": "{{ container_name }}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "fieldConfig": { "defaults": { "custom": { "lineWidth": 1, "fillOpacity": 5 }, "unit": "bytes" }, "overrides": [] },
@@ -109,7 +130,7 @@ const OverviewDashboard = `{
     },
     {
       "id": 11, "title": "Container Network I/O", "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 23 },
       "targets": [
         { "expr": "container_network_rx_bytes{container_name!~\"containarium-core-.*\",backend_id=~\"$backend\"}", "legendFormat": "{{ container_name }} RX", "refId": "A" },
         { "expr": "container_network_tx_bytes{container_name!~\"containarium-core-.*\",backend_id=~\"$backend\"}", "legendFormat": "{{ container_name }} TX", "refId": "B" }
@@ -120,7 +141,7 @@ const OverviewDashboard = `{
     },
     {
       "id": 17, "title": "Alerts", "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
       "collapsed": true,
       "panels": [
         {
@@ -156,7 +177,7 @@ const OverviewDashboard = `{
     },
     {
       "id": 12, "title": "Core Infrastructure", "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
       "collapsed": true,
       "panels": [
         {

@@ -5,6 +5,7 @@ import { Box, Typography, CircularProgress, Alert, IconButton } from '@mui/mater
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { Server } from '@/src/types/server';
 import { getClient } from '@/src/lib/api/client';
+// Backend health is now displayed natively in the Grafana dashboard via containarium_backend_healthy metric
 
 interface MonitoringViewProps {
   server: Server;
