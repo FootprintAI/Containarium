@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/collaborator"
+	"github.com/footprintai/containarium/internal/ospkg"
+	"github.com/footprintai/containarium/internal/ostype"
 )
 
 // CollaboratorManager handles collaborator operations for containers
@@ -105,13 +107,21 @@ func (cm *CollaboratorManager) AddCollaborator(ownerUsername, collaboratorUserna
 
 // createCollaboratorUser creates a collaborator user inside the container
 func (cm *CollaboratorManager) createCollaboratorUser(containerName, ownerUsername, accountName, sshPublicKey string, grantSudo, grantContainerRuntime bool) error {
-	// Create user with bash shell (they need interactive access)
-	if err := cm.manager.incus.Exec(containerName, []string{
-		"adduser",
-		"--disabled-password",
-		"--gecos", fmt.Sprintf("Collaborator %s", accountName),
-		accountName,
-	}); err != nil {
+	// Detect OS family from container labels or by probing
+	info, err := cm.manager.incus.GetContainer(containerName)
+	family := ostype.Debian
+	if err == nil {
+		if osLabel, ok := info.Labels[ostype.OSTypeLabelKey]; ok {
+			family = ostype.FamilyFromLabel(osLabel)
+		} else {
+			family = ostype.DetectFamily(cm.manager.incus, containerName)
+		}
+	}
+	pkgMgr := ospkg.ForFamily(family)
+
+	// Create user (OS-aware: adduser on Debian, useradd on RHEL)
+	gecos := fmt.Sprintf("Collaborator %s", accountName)
+	if err := cm.manager.incus.Exec(containerName, pkgMgr.CreateUserCmd(accountName, gecos)); err != nil {
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 

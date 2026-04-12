@@ -3850,6 +3850,10 @@
         "backendId": {
           "type": "string",
           "title": "Backend ID this container runs on (e.g., \"gcp-spot\", \"tunnel-fts-5900x-gpu\")"
+        },
+        "osType": {
+          "$ref": "#/definitions/OSType",
+          "title": "Operating system type of the container"
         }
       },
       "title": "Container represents a complete container instance"
@@ -4025,6 +4029,10 @@
         "backendId": {
           "type": "string",
           "title": "Target backend ID for creation (empty = primary backend)"
+        },
+        "osType": {
+          "$ref": "#/definitions/OSType",
+          "title": "Operating system type (takes precedence over image when set)"
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -5221,6 +5229,18 @@
         }
       },
       "title": "NetworkTopology represents the complete network visualization"
+    },
+    "OSType": {
+      "type": "string",
+      "enum": [
+        "OS_TYPE_UNSPECIFIED",
+        "OS_TYPE_UBUNTU_2404",
+        "OS_TYPE_ROCKY_9",
+        "OS_TYPE_RHEL_9"
+      ],
+      "default": "OS_TYPE_UNSPECIFIED",
+      "description": "- OS_TYPE_UNSPECIFIED: Unspecified OS type (defaults to Ubuntu 24.04)\n - OS_TYPE_UBUNTU_2404: Ubuntu 24.04 LTS\n - OS_TYPE_ROCKY_9: Rocky Linux 9 (RHEL 9 rebuild, for dev/test)\n - OS_TYPE_RHEL_9: Red Hat Enterprise Linux 9 (for production, requires subscription)",
+      "title": "OSType represents the operating system type for a container"
     },
     "PassthroughRoute": {
       "type": "object",

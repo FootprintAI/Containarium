@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // HTTPClient wraps an HTTP connection to the containarium REST API
@@ -206,7 +207,7 @@ func (c *HTTPClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via HTTP
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -222,6 +223,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		"enablePodman": enablePodman,
 		"stack":        stack,
 		"gpu":          gpu,
+		"osType":       osType,
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", reqBody)

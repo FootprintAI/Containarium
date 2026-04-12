@@ -3,6 +3,8 @@ package container
 import (
 	"fmt"
 	"log"
+
+	"github.com/footprintai/containarium/internal/ostype"
 )
 
 // cgroupWrapperScript returns a bash wrapper script that intercepts run/create
@@ -154,7 +156,14 @@ exec $REAL_RUNC "$@"
 // injected from the LXC container.
 func (m *Manager) installDockerOCIRuntime(containerName string) error {
 	// Step 1: Ensure jq is installed (needed by the runtime script)
-	if err := m.incus.Exec(containerName, []string{"apt-get", "install", "-y", "jq"}); err != nil {
+	// Detect OS family from container labels
+	jqInstallCmd := []string{"apt-get", "install", "-y", "jq"}
+	if info, err := m.incus.GetContainer(containerName); err == nil {
+		if osLabel, ok := info.Labels[ostype.OSTypeLabelKey]; ok && ostype.FamilyFromLabel(osLabel) == ostype.RHEL {
+			jqInstallCmd = []string{"dnf", "install", "-y", "jq"}
+		}
+	}
+	if err := m.incus.Exec(containerName, jqInstallCmd); err != nil {
 		return fmt.Errorf("failed to install jq: %w", err)
 	}
 

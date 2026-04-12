@@ -1,6 +1,11 @@
 # Containarium Stack Definitions
 # These stacks define pre-configured software environments that can be
 # installed in containers during creation.
+#
+# For RHEL/Rocky Linux 9 support, stacks can include rhel_pre_install,
+# rhel_packages, and rhel_post_install fields. When running on RHEL family,
+# these override the default (Debian) fields. If not provided, the default
+# fields are used as-is (only works if the commands are OS-agnostic).
 
 # Base scripts are root-only system hardening scripts applied to every new container.
 # Unlike stacks, post_install commands run as root (not as user).
@@ -21,6 +26,9 @@ stacks:
     packages:
       - nodejs
       - npm
+    rhel_packages:
+      - nodejs
+      - npm
     post_install:
       - npm install -g yarn pnpm typescript ts-node
 
@@ -33,6 +41,10 @@ stacks:
       - python3-pip
       - python3-venv
       - python3-dev
+    rhel_packages:
+      - python3
+      - python3-pip
+      - python3-devel
     post_install:
       - pip3 install --upgrade pip
       - pip3 install virtualenv poetry pipenv
@@ -43,6 +55,8 @@ stacks:
     icon: golang
     packages:
       - golang-go
+    rhel_packages:
+      - golang
     post_install:
       - go install golang.org/x/tools/gopls@latest
       - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
@@ -65,6 +79,10 @@ stacks:
       - python3-pip
       - python3-venv
       - python3-dev
+    rhel_packages:
+      - python3
+      - python3-pip
+      - python3-devel
     post_install:
       - pip3 install --upgrade pip
       - pip3 install jupyter jupyterlab pandas numpy matplotlib scikit-learn
@@ -77,10 +95,17 @@ stacks:
       - apt-transport-https
       - ca-certificates
       - gnupg
+    rhel_packages:
+      - ca-certificates
+      - gnupg2
     post_install:
       - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
       - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
       - apt-get update && apt-get install -y kubectl
+      - curl -fsSL https://releases.hashicorp.com/terraform/1.7.0/terraform_1.7.0_linux_amd64.zip -o /tmp/terraform.zip && unzip /tmp/terraform.zip -d /usr/local/bin/ && rm /tmp/terraform.zip
+    rhel_post_install:
+      - "cat <<'REPO' > /etc/yum.repos.d/kubernetes.repo\n[kubernetes]\nname=Kubernetes\nbaseurl=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/\nenabled=1\ngpgcheck=1\ngpgkey=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key\nREPO"
+      - dnf install -y kubectl
       - curl -fsSL https://releases.hashicorp.com/terraform/1.7.0/terraform_1.7.0_linux_amd64.zip -o /tmp/terraform.zip && unzip /tmp/terraform.zip -d /usr/local/bin/ && rm /tmp/terraform.zip
 
   - id: database
@@ -91,6 +116,10 @@ stacks:
       - postgresql-client
       - mysql-client
       - redis-tools
+    rhel_packages:
+      - postgresql
+      - mysql
+      - redis
     post_install: []
 
   - id: docker
@@ -101,7 +130,14 @@ stacks:
       - "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg"
       - "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu jammy stable' > /etc/apt/sources.list.d/docker.list"
       - "apt-get update"
+    rhel_pre_install:
+      - "dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo"
     packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    rhel_packages:
       - docker-ce
       - docker-ce-cli
       - containerd.io
@@ -120,6 +156,13 @@ stacks:
       - python3-venv
       - postgresql-client
       - redis-tools
+    rhel_packages:
+      - nodejs
+      - npm
+      - python3
+      - python3-pip
+      - postgresql
+      - redis
     post_install:
       - npm install -g yarn typescript
       - pip3 install --upgrade pip virtualenv
@@ -134,7 +177,13 @@ stacks:
       # Add NVIDIA CUDA repository
       - "curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o /tmp/cuda-keyring.deb && dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb"
       - "apt-get update"
+    rhel_pre_install:
+      - "dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo"
+      - "dnf install -y nvidia-utils-570"
     packages:
+      - cuda-toolkit
+      - libcudnn9-cuda-12
+    rhel_packages:
       - cuda-toolkit
       - libcudnn9-cuda-12
     post_install:
@@ -157,7 +206,23 @@ stacks:
       - "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
       - "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list"
       - "apt-get update"
+    rhel_pre_install:
+      # NVIDIA CUDA repo
+      - "dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo"
+      - "dnf install -y nvidia-utils-570"
+      # Docker repo
+      - "dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo"
+      # NVIDIA Container Toolkit repo
+      - "curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo > /etc/yum.repos.d/nvidia-container-toolkit.repo"
     packages:
+      - cuda-toolkit
+      - libcudnn9-cuda-12
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - nvidia-container-toolkit
+    rhel_packages:
       - cuda-toolkit
       - libcudnn9-cuda-12
       - docker-ce

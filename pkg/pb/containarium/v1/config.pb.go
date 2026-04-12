@@ -260,7 +260,9 @@ type Config struct {
 	// Storage configuration
 	Storage *StorageConfig `protobuf:"bytes,6,opt,name=storage,proto3" json:"storage,omitempty"`
 	// Security configuration
-	Security      *SecurityConfig `protobuf:"bytes,7,opt,name=security,proto3" json:"security,omitempty"`
+	Security *SecurityConfig `protobuf:"bytes,7,opt,name=security,proto3" json:"security,omitempty"`
+	// Default OS type for new containers
+	DefaultOsType OSType `protobuf:"varint,8,opt,name=default_os_type,json=defaultOsType,proto3,enum=containarium.v1.OSType" json:"default_os_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -342,6 +344,13 @@ func (x *Config) GetSecurity() *SecurityConfig {
 		return x.Security
 	}
 	return nil
+}
+
+func (x *Config) GetDefaultOsType() OSType {
+	if x != nil {
+		return x.DefaultOsType
+	}
+	return OSType_OS_TYPE_UNSPECIFIED
 }
 
 // IncusConfig contains Incus-specific configuration
@@ -1425,7 +1434,7 @@ var File_containarium_v1_config_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/config.proto\x12\x0fcontainarium.v1\x1a\x1fcontainarium/v1/container.proto\"\x96\x03\n" +
+	"\x1ccontainarium/v1/config.proto\x12\x0fcontainarium.v1\x1a\x1fcontainarium/v1/container.proto\"\xd7\x03\n" +
 	"\x06Config\x122\n" +
 	"\x05incus\x18\x01 \x01(\v2\x1c.containarium.v1.IncusConfigR\x05incus\x12L\n" +
 	"\x11default_resources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\x10defaultResources\x12#\n" +
@@ -1433,7 +1442,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x16default_docker_enabled\x18\x04 \x01(\bR\x14defaultDockerEnabled\x128\n" +
 	"\anetwork\x18\x05 \x01(\v2\x1e.containarium.v1.NetworkConfigR\anetwork\x128\n" +
 	"\astorage\x18\x06 \x01(\v2\x1e.containarium.v1.StorageConfigR\astorage\x12;\n" +
-	"\bsecurity\x18\a \x01(\v2\x1f.containarium.v1.SecurityConfigR\bsecurity\"\x89\x01\n" +
+	"\bsecurity\x18\a \x01(\v2\x1f.containarium.v1.SecurityConfigR\bsecurity\x12?\n" +
+	"\x0fdefault_os_type\x18\b \x01(\x0e2\x17.containarium.v1.OSTypeR\rdefaultOsType\"\x89\x01\n" +
 	"\vIncusConfig\x12\x1f\n" +
 	"\vsocket_path\x18\x01 \x01(\tR\n" +
 	"socketPath\x12\x18\n" +
@@ -1590,6 +1600,7 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*ListBackendsRequest)(nil),   // 17: containarium.v1.ListBackendsRequest
 	(*ListBackendsResponse)(nil),  // 18: containarium.v1.ListBackendsResponse
 	(*ResourceLimits)(nil),        // 19: containarium.v1.ResourceLimits
+	(OSType)(0),                   // 20: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	4,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
@@ -1597,21 +1608,22 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	5,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	6,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	7,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	3,  // 5: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
-	3,  // 6: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
-	3,  // 7: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
-	13, // 8: containarium.v1.SystemInfo.gpus:type_name -> containarium.v1.GPUInfo
-	0,  // 9: containarium.v1.GPUInfo.vendor:type_name -> containarium.v1.GPUVendor
-	1,  // 10: containarium.v1.GPUInfo.model:type_name -> containarium.v1.GPUModel
-	12, // 11: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
-	12, // 12: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
-	2,  // 13: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
-	16, // 14: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	20, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	3,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
+	3,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
+	3,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
+	13, // 9: containarium.v1.SystemInfo.gpus:type_name -> containarium.v1.GPUInfo
+	0,  // 10: containarium.v1.GPUInfo.vendor:type_name -> containarium.v1.GPUVendor
+	1,  // 11: containarium.v1.GPUInfo.model:type_name -> containarium.v1.GPUModel
+	12, // 12: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
+	12, // 13: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
+	2,  // 14: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
+	16, // 15: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }

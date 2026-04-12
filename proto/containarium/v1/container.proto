@@ -11,6 +11,21 @@ extend google.protobuf.EnumValueOptions {
   string state_name = 50001;
 }
 
+// OSType represents the operating system type for a container
+enum OSType {
+  // Unspecified OS type (defaults to Ubuntu 24.04)
+  OS_TYPE_UNSPECIFIED = 0;
+
+  // Ubuntu 24.04 LTS
+  OS_TYPE_UBUNTU_2404 = 1;
+
+  // Rocky Linux 9 (RHEL 9 rebuild, for dev/test)
+  OS_TYPE_ROCKY_9 = 2;
+
+  // Red Hat Enterprise Linux 9 (for production, requires subscription)
+  OS_TYPE_RHEL_9 = 3;
+}
+
 // ContainerState represents the current state of a container
 enum ContainerState {
   // Unspecified state (should not be used)
@@ -108,6 +123,9 @@ message Container {
 
   // Backend ID this container runs on (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
   string backend_id = 14;
+
+  // Operating system type of the container
+  OSType os_type = 15;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -175,6 +193,9 @@ message CreateContainerRequest {
 
   // Target backend ID for creation (empty = primary backend)
   string backend_id = 11;
+
+  // Operating system type (takes precedence over image when set)
+  OSType os_type = 12;
 }
 
 // CreateContainerResponse is the response from creating a container

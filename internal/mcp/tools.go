@@ -58,6 +58,11 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "GPU device ID for passthrough (e.g., '0' for first GPU, PCI address, or empty for none)",
 					},
+					"os_type": map[string]interface{}{
+						"type":        "string",
+						"description": "Container OS type: 'ubuntu' (default), 'rocky9' (dev/test), 'rhel9' (production). Overrides image when set.",
+						"enum":        []string{"", "ubuntu", "rocky9", "rhel9"},
+					},
 				},
 				"required": []string{"username"},
 			},

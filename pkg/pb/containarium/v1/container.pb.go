@@ -22,6 +22,63 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// OSType represents the operating system type for a container
+type OSType int32
+
+const (
+	// Unspecified OS type (defaults to Ubuntu 24.04)
+	OSType_OS_TYPE_UNSPECIFIED OSType = 0
+	// Ubuntu 24.04 LTS
+	OSType_OS_TYPE_UBUNTU_2404 OSType = 1
+	// Rocky Linux 9 (RHEL 9 rebuild, for dev/test)
+	OSType_OS_TYPE_ROCKY_9 OSType = 2
+	// Red Hat Enterprise Linux 9 (for production, requires subscription)
+	OSType_OS_TYPE_RHEL_9 OSType = 3
+)
+
+// Enum value maps for OSType.
+var (
+	OSType_name = map[int32]string{
+		0: "OS_TYPE_UNSPECIFIED",
+		1: "OS_TYPE_UBUNTU_2404",
+		2: "OS_TYPE_ROCKY_9",
+		3: "OS_TYPE_RHEL_9",
+	}
+	OSType_value = map[string]int32{
+		"OS_TYPE_UNSPECIFIED": 0,
+		"OS_TYPE_UBUNTU_2404": 1,
+		"OS_TYPE_ROCKY_9":     2,
+		"OS_TYPE_RHEL_9":      3,
+	}
+)
+
+func (x OSType) Enum() *OSType {
+	p := new(OSType)
+	*p = x
+	return p
+}
+
+func (x OSType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (OSType) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_container_proto_enumTypes[0].Descriptor()
+}
+
+func (OSType) Type() protoreflect.EnumType {
+	return &file_containarium_v1_container_proto_enumTypes[0]
+}
+
+func (x OSType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use OSType.Descriptor instead.
+func (OSType) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{0}
+}
+
 // ContainerState represents the current state of a container
 type ContainerState int32
 
@@ -75,11 +132,11 @@ func (x ContainerState) String() string {
 }
 
 func (ContainerState) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_container_proto_enumTypes[0].Descriptor()
+	return file_containarium_v1_container_proto_enumTypes[1].Descriptor()
 }
 
 func (ContainerState) Type() protoreflect.EnumType {
-	return &file_containarium_v1_container_proto_enumTypes[0]
+	return &file_containarium_v1_container_proto_enumTypes[1]
 }
 
 func (x ContainerState) Number() protoreflect.EnumNumber {
@@ -88,7 +145,7 @@ func (x ContainerState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ContainerState.Descriptor instead.
 func (ContainerState) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{0}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{1}
 }
 
 // ResourceLimits defines resource constraints for a container
@@ -267,7 +324,9 @@ type Container struct {
 	// GPU device info (e.g., GPU ID or PCI address if attached)
 	GpuDevice string `protobuf:"bytes,13,opt,name=gpu_device,json=gpuDevice,proto3" json:"gpu_device,omitempty"`
 	// Backend ID this container runs on (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
-	BackendId     string `protobuf:"bytes,14,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	BackendId string `protobuf:"bytes,14,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	// Operating system type of the container
+	OsType        OSType `protobuf:"varint,15,opt,name=os_type,json=osType,proto3,enum=containarium.v1.OSType" json:"os_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -398,6 +457,13 @@ func (x *Container) GetBackendId() string {
 		return x.BackendId
 	}
 	return ""
+}
+
+func (x *Container) GetOsType() OSType {
+	if x != nil {
+		return x.OsType
+	}
+	return OSType_OS_TYPE_UNSPECIFIED
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -537,7 +603,9 @@ type CreateContainerRequest struct {
 	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
 	Gpu string `protobuf:"bytes,10,opt,name=gpu,proto3" json:"gpu,omitempty"`
 	// Target backend ID for creation (empty = primary backend)
-	BackendId     string `protobuf:"bytes,11,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	BackendId string `protobuf:"bytes,11,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	// Operating system type (takes precedence over image when set)
+	OsType        OSType `protobuf:"varint,12,opt,name=os_type,json=osType,proto3,enum=containarium.v1.OSType" json:"os_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -647,6 +715,13 @@ func (x *CreateContainerRequest) GetBackendId() string {
 		return x.BackendId
 	}
 	return ""
+}
+
+func (x *CreateContainerRequest) GetOsType() OSType {
+	if x != nil {
+		return x.OsType
+	}
+	return OSType_OS_TYPE_UNSPECIFIED
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -2533,7 +2608,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xce\x04\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\x80\x05\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -2553,7 +2628,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
 	"gpu_device\x18\r \x01(\tR\tgpuDevice\x12\x1d\n" +
 	"\n" +
-	"backend_id\x18\x0e \x01(\tR\tbackendId\x1a9\n" +
+	"backend_id\x18\x0e \x01(\tR\tbackendId\x120\n" +
+	"\aos_type\x18\x0f \x01(\x0e2\x17.containarium.v1.OSTypeR\x06osType\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
@@ -2565,7 +2641,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xcb\x03\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xfd\x03\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -2579,7 +2655,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x03gpu\x18\n" +
 	" \x01(\tR\x03gpu\x12\x1d\n" +
 	"\n" +
-	"backend_id\x18\v \x01(\tR\tbackendId\x1a9\n" +
+	"backend_id\x18\v \x01(\tR\tbackendId\x120\n" +
+	"\aos_type\x18\f \x01(\x0e2\x17.containarium.v1.OSTypeR\x06osType\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8e\x01\n" +
@@ -2704,7 +2781,12 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vgrafana_url\x18\x02 \x01(\tR\n" +
 	"grafanaUrl\x120\n" +
-	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl*\xc0\x02\n" +
+	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl*c\n" +
+	"\x06OSType\x12\x17\n" +
+	"\x13OS_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13OS_TYPE_UBUNTU_2404\x10\x01\x12\x13\n" +
+	"\x0fOS_TYPE_ROCKY_9\x10\x02\x12\x12\n" +
+	"\x0eOS_TYPE_RHEL_9\x10\x03*\xc0\x02\n" +
 	"\x0eContainerState\x12,\n" +
 	"\x1bCONTAINER_STATE_UNSPECIFIED\x10\x00\x1a\v\x8a\xb5\x18\aUnknown\x12(\n" +
 	"\x17CONTAINER_STATE_RUNNING\x10\x01\x1a\v\x8a\xb5\x18\aRunning\x12(\n" +
@@ -2729,79 +2811,82 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_container_proto_rawDescData
 }
 
-var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_containarium_v1_container_proto_goTypes = []any{
-	(ContainerState)(0),                   // 0: containarium.v1.ContainerState
-	(*ResourceLimits)(nil),                // 1: containarium.v1.ResourceLimits
-	(*NetworkInfo)(nil),                   // 2: containarium.v1.NetworkInfo
-	(*Container)(nil),                     // 3: containarium.v1.Container
-	(*ContainerMetrics)(nil),              // 4: containarium.v1.ContainerMetrics
-	(*CreateContainerRequest)(nil),        // 5: containarium.v1.CreateContainerRequest
-	(*CreateContainerResponse)(nil),       // 6: containarium.v1.CreateContainerResponse
-	(*ListContainersRequest)(nil),         // 7: containarium.v1.ListContainersRequest
-	(*ListContainersResponse)(nil),        // 8: containarium.v1.ListContainersResponse
-	(*GetContainerRequest)(nil),           // 9: containarium.v1.GetContainerRequest
-	(*GetContainerResponse)(nil),          // 10: containarium.v1.GetContainerResponse
-	(*DeleteContainerRequest)(nil),        // 11: containarium.v1.DeleteContainerRequest
-	(*DeleteContainerResponse)(nil),       // 12: containarium.v1.DeleteContainerResponse
-	(*StartContainerRequest)(nil),         // 13: containarium.v1.StartContainerRequest
-	(*StartContainerResponse)(nil),        // 14: containarium.v1.StartContainerResponse
-	(*StopContainerRequest)(nil),          // 15: containarium.v1.StopContainerRequest
-	(*StopContainerResponse)(nil),         // 16: containarium.v1.StopContainerResponse
-	(*AddSSHKeyRequest)(nil),              // 17: containarium.v1.AddSSHKeyRequest
-	(*AddSSHKeyResponse)(nil),             // 18: containarium.v1.AddSSHKeyResponse
-	(*RemoveSSHKeyRequest)(nil),           // 19: containarium.v1.RemoveSSHKeyRequest
-	(*RemoveSSHKeyResponse)(nil),          // 20: containarium.v1.RemoveSSHKeyResponse
-	(*GetMetricsRequest)(nil),             // 21: containarium.v1.GetMetricsRequest
-	(*GetMetricsResponse)(nil),            // 22: containarium.v1.GetMetricsResponse
-	(*ResizeContainerRequest)(nil),        // 23: containarium.v1.ResizeContainerRequest
-	(*ResizeContainerResponse)(nil),       // 24: containarium.v1.ResizeContainerResponse
-	(*Collaborator)(nil),                  // 25: containarium.v1.Collaborator
-	(*AddCollaboratorRequest)(nil),        // 26: containarium.v1.AddCollaboratorRequest
-	(*AddCollaboratorResponse)(nil),       // 27: containarium.v1.AddCollaboratorResponse
-	(*RemoveCollaboratorRequest)(nil),     // 28: containarium.v1.RemoveCollaboratorRequest
-	(*RemoveCollaboratorResponse)(nil),    // 29: containarium.v1.RemoveCollaboratorResponse
-	(*ListCollaboratorsRequest)(nil),      // 30: containarium.v1.ListCollaboratorsRequest
-	(*ListCollaboratorsResponse)(nil),     // 31: containarium.v1.ListCollaboratorsResponse
-	(*CleanupDiskRequest)(nil),            // 32: containarium.v1.CleanupDiskRequest
-	(*CleanupDiskResponse)(nil),           // 33: containarium.v1.CleanupDiskResponse
-	(*InstallStackRequest)(nil),           // 34: containarium.v1.InstallStackRequest
-	(*InstallStackResponse)(nil),          // 35: containarium.v1.InstallStackResponse
-	(*GetMonitoringInfoRequest)(nil),      // 36: containarium.v1.GetMonitoringInfoRequest
-	(*GetMonitoringInfoResponse)(nil),     // 37: containarium.v1.GetMonitoringInfoResponse
-	nil,                                   // 38: containarium.v1.Container.LabelsEntry
-	nil,                                   // 39: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                   // 40: containarium.v1.ListContainersRequest.LabelFilterEntry
-	(*descriptorpb.EnumValueOptions)(nil), // 41: google.protobuf.EnumValueOptions
+	(OSType)(0),                           // 0: containarium.v1.OSType
+	(ContainerState)(0),                   // 1: containarium.v1.ContainerState
+	(*ResourceLimits)(nil),                // 2: containarium.v1.ResourceLimits
+	(*NetworkInfo)(nil),                   // 3: containarium.v1.NetworkInfo
+	(*Container)(nil),                     // 4: containarium.v1.Container
+	(*ContainerMetrics)(nil),              // 5: containarium.v1.ContainerMetrics
+	(*CreateContainerRequest)(nil),        // 6: containarium.v1.CreateContainerRequest
+	(*CreateContainerResponse)(nil),       // 7: containarium.v1.CreateContainerResponse
+	(*ListContainersRequest)(nil),         // 8: containarium.v1.ListContainersRequest
+	(*ListContainersResponse)(nil),        // 9: containarium.v1.ListContainersResponse
+	(*GetContainerRequest)(nil),           // 10: containarium.v1.GetContainerRequest
+	(*GetContainerResponse)(nil),          // 11: containarium.v1.GetContainerResponse
+	(*DeleteContainerRequest)(nil),        // 12: containarium.v1.DeleteContainerRequest
+	(*DeleteContainerResponse)(nil),       // 13: containarium.v1.DeleteContainerResponse
+	(*StartContainerRequest)(nil),         // 14: containarium.v1.StartContainerRequest
+	(*StartContainerResponse)(nil),        // 15: containarium.v1.StartContainerResponse
+	(*StopContainerRequest)(nil),          // 16: containarium.v1.StopContainerRequest
+	(*StopContainerResponse)(nil),         // 17: containarium.v1.StopContainerResponse
+	(*AddSSHKeyRequest)(nil),              // 18: containarium.v1.AddSSHKeyRequest
+	(*AddSSHKeyResponse)(nil),             // 19: containarium.v1.AddSSHKeyResponse
+	(*RemoveSSHKeyRequest)(nil),           // 20: containarium.v1.RemoveSSHKeyRequest
+	(*RemoveSSHKeyResponse)(nil),          // 21: containarium.v1.RemoveSSHKeyResponse
+	(*GetMetricsRequest)(nil),             // 22: containarium.v1.GetMetricsRequest
+	(*GetMetricsResponse)(nil),            // 23: containarium.v1.GetMetricsResponse
+	(*ResizeContainerRequest)(nil),        // 24: containarium.v1.ResizeContainerRequest
+	(*ResizeContainerResponse)(nil),       // 25: containarium.v1.ResizeContainerResponse
+	(*Collaborator)(nil),                  // 26: containarium.v1.Collaborator
+	(*AddCollaboratorRequest)(nil),        // 27: containarium.v1.AddCollaboratorRequest
+	(*AddCollaboratorResponse)(nil),       // 28: containarium.v1.AddCollaboratorResponse
+	(*RemoveCollaboratorRequest)(nil),     // 29: containarium.v1.RemoveCollaboratorRequest
+	(*RemoveCollaboratorResponse)(nil),    // 30: containarium.v1.RemoveCollaboratorResponse
+	(*ListCollaboratorsRequest)(nil),      // 31: containarium.v1.ListCollaboratorsRequest
+	(*ListCollaboratorsResponse)(nil),     // 32: containarium.v1.ListCollaboratorsResponse
+	(*CleanupDiskRequest)(nil),            // 33: containarium.v1.CleanupDiskRequest
+	(*CleanupDiskResponse)(nil),           // 34: containarium.v1.CleanupDiskResponse
+	(*InstallStackRequest)(nil),           // 35: containarium.v1.InstallStackRequest
+	(*InstallStackResponse)(nil),          // 36: containarium.v1.InstallStackResponse
+	(*GetMonitoringInfoRequest)(nil),      // 37: containarium.v1.GetMonitoringInfoRequest
+	(*GetMonitoringInfoResponse)(nil),     // 38: containarium.v1.GetMonitoringInfoResponse
+	nil,                                   // 39: containarium.v1.Container.LabelsEntry
+	nil,                                   // 40: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                   // 41: containarium.v1.ListContainersRequest.LabelFilterEntry
+	(*descriptorpb.EnumValueOptions)(nil), // 42: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
-	0,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
-	1,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
-	2,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	38, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
-	1,  // 4: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	39, // 5: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
-	3,  // 6: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
-	0,  // 7: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	40, // 8: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
-	3,  // 9: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
-	3,  // 10: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
-	4,  // 11: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	3,  // 12: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
-	3,  // 13: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
-	4,  // 14: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	3,  // 15: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
-	25, // 16: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
-	25, // 17: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
-	3,  // 18: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
-	3,  // 19: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
-	41, // 20: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	20, // [20:21] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	1,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
+	2,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
+	3,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
+	39, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	0,  // 4: containarium.v1.Container.os_type:type_name -> containarium.v1.OSType
+	2,  // 5: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
+	40, // 6: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	0,  // 7: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
+	4,  // 8: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
+	1,  // 9: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
+	41, // 10: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	4,  // 11: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
+	4,  // 12: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
+	5,  // 13: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	4,  // 14: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
+	4,  // 15: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
+	5,  // 16: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	4,  // 17: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
+	26, // 18: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
+	26, // 19: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
+	4,  // 20: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
+	4,  // 21: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
+	42, // 22: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	22, // [22:23] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }
@@ -2814,7 +2899,7 @@ func file_containarium_v1_container_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   40,
 			NumExtensions: 1,
 			NumServices:   0,

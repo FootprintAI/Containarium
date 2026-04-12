@@ -21,6 +21,34 @@ type Stack struct {
 	PreInstall  []string `yaml:"pre_install" json:"preInstall"`
 	Packages    []string `yaml:"packages" json:"packages"`
 	PostInstall []string `yaml:"post_install" json:"postInstall"`
+	// RHEL-specific overrides (optional; falls back to default fields if empty)
+	RHELPreInstall  []string `yaml:"rhel_pre_install,omitempty" json:"rhelPreInstall,omitempty"`
+	RHELPackages    []string `yaml:"rhel_packages,omitempty" json:"rhelPackages,omitempty"`
+	RHELPostInstall []string `yaml:"rhel_post_install,omitempty" json:"rhelPostInstall,omitempty"`
+}
+
+// GetPreInstallForFamily returns the pre-install commands for the given OS family.
+func (s *Stack) GetPreInstallForFamily(family string) []string {
+	if family == "rhel" && len(s.RHELPreInstall) > 0 {
+		return s.RHELPreInstall
+	}
+	return s.PreInstall
+}
+
+// GetPackagesForFamily returns the packages for the given OS family.
+func (s *Stack) GetPackagesForFamily(family string) []string {
+	if family == "rhel" && len(s.RHELPackages) > 0 {
+		return s.RHELPackages
+	}
+	return s.Packages
+}
+
+// GetPostInstallForFamily returns the post-install commands for the given OS family.
+func (s *Stack) GetPostInstallForFamily(family string) []string {
+	if family == "rhel" && len(s.RHELPostInstall) > 0 {
+		return s.RHELPostInstall
+	}
+	return s.PostInstall
 }
 
 // Config holds the stack configuration

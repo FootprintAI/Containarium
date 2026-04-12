@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/internal/ospkg"
+	"github.com/footprintai/containarium/internal/ostype"
 	"github.com/footprintai/containarium/internal/stacks"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Manager handles container lifecycle operations
@@ -31,8 +34,9 @@ type CreateOptions struct {
 	EnablePodmanPrivileged bool // Full Docker support (privileged + AppArmor disabled)
 	AutoStart              bool
 	Verbose                bool
-	Stack                  string // Software stack to install (e.g., "nodejs", "python")
-	OnProvisioning         func() // Called when container is running but still provisioning (installing packages/stack)
+	Stack                  string    // Software stack to install (e.g., "nodejs", "python")
+	OSType                 pb.OSType // Operating system type for the container
+	OnProvisioning         func()    // Called when container is running but still provisioning (installing packages/stack)
 }
 
 // New creates a new container manager
@@ -58,9 +62,15 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		fmt.Println("  [1/6] Creating container...")
 	}
 
+	// Resolve image: OSType takes precedence over raw image string
+	image := opts.Image
+	if opts.OSType != pb.OSType_OS_TYPE_UNSPECIFIED {
+		image = ostype.ImageForOSType(opts.OSType)
+	}
+
 	config := incus.ContainerConfig{
 		Name:                   containerName,
-		Image:                  opts.Image,
+		Image:                  image,
 		CPU:                    opts.CPU,
 		Memory:                 opts.Memory,
 		EnableNesting:          opts.EnablePodman,
@@ -108,15 +118,17 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
-	// Set labels if provided
-	if len(opts.Labels) > 0 {
-		if opts.Verbose {
-			fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
-		}
-		if err := m.incus.SetLabels(containerName, opts.Labels); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, fmt.Errorf("failed to set labels: %w", err)
-		}
+	// Set labels (including OS type)
+	if opts.Labels == nil {
+		opts.Labels = make(map[string]string)
+	}
+	opts.Labels[ostype.OSTypeLabelKey] = ostype.LabelValue(opts.OSType)
+	if opts.Verbose {
+		fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
+	}
+	if err := m.incus.SetLabels(containerName, opts.Labels); err != nil {
+		_ = m.cleanup(containerName)
+		return nil, fmt.Errorf("failed to set labels: %w", err)
 	}
 
 	// Step 3: Create jump server account (proxy-only, no shell access)
@@ -165,7 +177,8 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		}
 	}
 
-	if err := m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.Username); err != nil {
+	family := ostype.FamilyForOSType(opts.OSType)
+	if err := m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.Username, family); err != nil {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to install packages: %w", err)
 	}
@@ -175,7 +188,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		fmt.Printf("  [6/7] Creating user: %s...\n", opts.Username)
 	}
 
-	if err := m.createUser(containerName, opts.Username); err != nil {
+	if err := m.createUser(containerName, opts.Username, family); err != nil {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
@@ -224,82 +237,69 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 }
 
 // installPackages installs required packages in the container
-func (m *Manager) installPackages(containerName string, enablePodman bool, stackID string, username string) error {
+func (m *Manager) installPackages(containerName string, enablePodman bool, stackID string, username string, family ostype.OSFamily) error {
+	pkgMgr := ospkg.ForFamily(family)
+	familyStr := string(family)
+
 	// Wait a bit for cloud-init to finish (if present)
 	time.Sleep(5 * time.Second)
 
 	// Update package lists
-	if err := m.incus.Exec(containerName, []string{"apt-get", "update"}); err != nil {
-		return fmt.Errorf("apt-get update failed: %w", err)
+	if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
+		return fmt.Errorf("package repo update failed: %w", err)
 	}
 
-	// Build package list
-	packages := []string{
-		"openssh-server",
-		"sudo",
-		"curl",
-		"git",
-		"vim",
-		"htop",
-		"net-tools",
-		"iputils-ping",
-	}
+	// Build package list from OS-specific base packages
+	packages := pkgMgr.BasePackages()
 
-	// Add Kubic repository for newer Podman versions before installing
+	// Add Podman
 	if enablePodman {
-		// Install prerequisites for adding repository
-		prereqCmd := []string{"apt-get", "install", "-y", "curl", "gpg"}
-		if err := m.incus.Exec(containerName, prereqCmd); err != nil {
-			return fmt.Errorf("failed to install prerequisites: %w", err)
-		}
+		if pkgMgr.PodmanAvailableInBaseRepos() {
+			// RHEL/Rocky: podman is in base repos, just add to package list
+			packages = append(packages, "podman")
+		} else {
+			// Debian/Ubuntu: need Kubic repo for newer Podman
+			prereqCmd := pkgMgr.InstallCmd([]string{"curl", "gpg"})
+			if err := m.incus.Exec(containerName, prereqCmd); err != nil {
+				return fmt.Errorf("failed to install prerequisites: %w", err)
+			}
 
-		// Add Kubic repository key and source (provides Podman 5.x)
-		// Using the official Podman upstream repository
-		addRepoScript := `
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_24.04/Release.key | gpg --dearmor -o /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg
-echo "deb [signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_24.04/ /" > /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list
-apt-get update
-`
-		if err := m.incus.Exec(containerName, []string{"/bin/bash", "-c", addRepoScript}); err != nil {
-			// Fall back to Ubuntu's podman if Kubic repo fails
-			log.Printf("Warning: failed to add Kubic repository, using Ubuntu's podman: %v", err)
+			repoScript := pkgMgr.PodmanRepoScript()
+			if repoScript != "" {
+				if err := m.incus.Exec(containerName, []string{"/bin/bash", "-c", repoScript}); err != nil {
+					log.Printf("Warning: failed to add Podman repository, using distro's podman: %v", err)
+				}
+			}
+			packages = append(packages, "podman")
 		}
-
-		packages = append(packages, "podman")
 	}
 
 	// Collect base script packages and run their pre-install commands
 	stackMgr := stacks.GetDefault()
 	baseScripts := stackMgr.GetAllBaseScripts()
 	for _, bs := range baseScripts {
-		for _, cmd := range bs.PreInstall {
+		for _, cmd := range bs.GetPreInstallForFamily(familyStr) {
 			cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", username)
 			_ = m.incus.Exec(containerName, []string{"bash", "-c", cmd})
 		}
-		packages = append(packages, bs.Packages...)
+		packages = append(packages, bs.GetPackagesForFamily(familyStr)...)
 	}
 
 	// Add stack-specific packages and run pre-install commands
 	if stackID != "" {
-		// Run pre-install commands as root (e.g., adding apt repositories)
-		preInstallCmds, err := stackMgr.GetPreInstallCommands(stackID)
-		if err == nil && len(preInstallCmds) > 0 {
-			for _, cmd := range preInstallCmds {
+		stack, err := stackMgr.GetStack(stackID)
+		if err == nil {
+			// Run pre-install commands as root (e.g., adding repos)
+			for _, cmd := range stack.GetPreInstallForFamily(familyStr) {
 				_ = m.incus.Exec(containerName, []string{"bash", "-c", cmd})
 			}
-		}
-
-		stackPkgs, err := stackMgr.GetPackagesForStack(stackID)
-		if err == nil && len(stackPkgs) > 0 {
-			packages = append(packages, stackPkgs...)
+			packages = append(packages, stack.GetPackagesForFamily(familyStr)...)
 		}
 	}
 
 	// Install packages
-	installCmd := append([]string{"apt-get", "install", "-y"}, packages...)
-	if err := m.incus.Exec(containerName, installCmd); err != nil {
-		return fmt.Errorf("apt-get install failed: %w", err)
+	if err := m.incus.Exec(containerName, pkgMgr.InstallCmd(packages)); err != nil {
+		return fmt.Errorf("package install failed: %w", err)
 	}
 
 	// Enable services and install podman-compose
@@ -311,28 +311,27 @@ apt-get update
 			return fmt.Errorf("failed to start podman: %w", err)
 		}
 
-		// Install podman-compose via pip (more up-to-date than apt package)
-		pipInstallCmd := []string{"apt-get", "install", "-y", "python3-pip"}
-		if err := m.incus.Exec(containerName, pipInstallCmd); err != nil {
+		// Install podman-compose via pip
+		if err := m.incus.Exec(containerName, pkgMgr.PipInstallCmd()); err != nil {
 			log.Printf("Warning: failed to install pip: %v", err)
 		} else {
-			// Install latest podman-compose via pip
 			if err := m.incus.Exec(containerName, []string{"pip3", "install", "--break-system-packages", "podman-compose"}); err != nil {
 				log.Printf("Warning: failed to install podman-compose via pip: %v", err)
 			}
 		}
 	}
 
-	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", "ssh"}); err != nil {
-		return fmt.Errorf("failed to enable ssh: %w", err)
+	sshService := pkgMgr.SSHServiceName()
+	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", sshService}); err != nil {
+		return fmt.Errorf("failed to enable %s: %w", sshService, err)
 	}
-	if err := m.incus.Exec(containerName, []string{"systemctl", "start", "ssh"}); err != nil {
-		return fmt.Errorf("failed to start ssh: %w", err)
+	if err := m.incus.Exec(containerName, []string{"systemctl", "start", sshService}); err != nil {
+		return fmt.Errorf("failed to start %s: %w", sshService, err)
 	}
 
 	// Run base scripts post-install commands as root
 	for _, bs := range baseScripts {
-		for _, cmd := range bs.PostInstall {
+		for _, cmd := range bs.GetPostInstallForFamily(familyStr) {
 			cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", username)
 			_ = m.incus.Exec(containerName, []string{"bash", "-c", cmd})
 		}
@@ -341,12 +340,10 @@ apt-get update
 	// Run stack post-install commands as the user
 	if stackID != "" {
 		stackMgr := stacks.GetDefault()
-		postInstallCmds, err := stackMgr.GetPostInstallCommands(stackID)
-		if err == nil && len(postInstallCmds) > 0 {
-			for _, cmd := range postInstallCmds {
-				// Run as the user (not root) so tools are installed in user's home
+		stack, err := stackMgr.GetStack(stackID)
+		if err == nil {
+			for _, cmd := range stack.GetPostInstallForFamily(familyStr) {
 				userCmd := []string{"su", "-", username, "-c", cmd}
-				// Ignore errors for post-install commands (some may fail on first run)
 				_ = m.incus.Exec(containerName, userCmd)
 			}
 		}
@@ -380,19 +377,16 @@ apt-get update
 }
 
 // createUser creates a user in the container with sudo access
-func (m *Manager) createUser(containerName, username string) error {
-	// Create user
-	if err := m.incus.Exec(containerName, []string{
-		"adduser",
-		"--disabled-password",
-		"--gecos", "",
-		username,
-	}); err != nil {
+func (m *Manager) createUser(containerName, username string, family ostype.OSFamily) error {
+	pkgMgr := ospkg.ForFamily(family)
+
+	// Create user (OS-aware: adduser on Debian, useradd on RHEL)
+	if err := m.incus.Exec(containerName, pkgMgr.CreateUserCmd(username, "")); err != nil {
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 
-	// Add to sudo group
-	if err := m.incus.Exec(containerName, []string{"usermod", "-aG", "sudo", username}); err != nil {
+	// Add to sudo group (OS-aware: "sudo" on Debian, "wheel" on RHEL)
+	if err := m.incus.Exec(containerName, []string{"usermod", "-aG", pkgMgr.SudoGroup(), username}); err != nil {
 		return fmt.Errorf("failed to add user to sudo: %w", err)
 	}
 
@@ -429,12 +423,17 @@ func (m *Manager) addSSHKeys(containerName, username string, sshKeys []string) e
 		return fmt.Errorf("failed to set .ssh permissions: %w", err)
 	}
 
-	// Build authorized_keys content safely (no shell involved)
+	// Build authorized_keys content safely (no shell involved).
+	// Validate each key to prevent placeholder/template strings (e.g., "YOUR_KEY")
+	// from being written as if they were valid SSH keys.
 	var keysContent strings.Builder
 	for _, key := range sshKeys {
 		key = strings.TrimSpace(key)
 		if key == "" {
 			continue
+		}
+		if err := ValidateSSHPublicKey(key); err != nil {
+			return fmt.Errorf("invalid SSH key: %w", err)
 		}
 		keysContent.WriteString(key)
 		keysContent.WriteString("\n")
@@ -683,13 +682,23 @@ func (m *Manager) InstallStack(username, stackID string) error {
 		return fmt.Errorf("unknown stack or base script: %s", stackID)
 	}
 
-	// Run apt-get update
-	if err := m.incus.Exec(containerName, []string{"apt-get", "update"}); err != nil {
-		return fmt.Errorf("apt-get update failed: %w", err)
+	// Detect OS family from container label, or probe the container
+	family := ostype.Debian
+	if osLabel, ok := info.Labels[ostype.OSTypeLabelKey]; ok {
+		family = ostype.FamilyFromLabel(osLabel)
+	} else {
+		family = ostype.DetectFamily(m.incus, containerName)
+	}
+	pkgMgr := ospkg.ForFamily(family)
+	familyStr := string(family)
+
+	// Update package repos
+	if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
+		return fmt.Errorf("package repo update failed: %w", err)
 	}
 
 	// Run pre-install commands as root
-	for _, cmd := range stack.PreInstall {
+	for _, cmd := range stack.GetPreInstallForFamily(familyStr) {
 		cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", effectiveUser)
 		if err := m.incus.Exec(containerName, []string{"bash", "-c", cmd}); err != nil {
 			log.Printf("Warning: pre-install command failed: %v", err)
@@ -697,15 +706,15 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	}
 
 	// Install packages
-	if len(stack.Packages) > 0 {
-		installCmd := append([]string{"apt-get", "install", "-y"}, stack.Packages...)
-		if err := m.incus.Exec(containerName, installCmd); err != nil {
-			return fmt.Errorf("apt-get install failed: %w", err)
+	pkgs := stack.GetPackagesForFamily(familyStr)
+	if len(pkgs) > 0 {
+		if err := m.incus.Exec(containerName, pkgMgr.InstallCmd(pkgs)); err != nil {
+			return fmt.Errorf("package install failed: %w", err)
 		}
 	}
 
 	// Run post-install commands
-	for _, cmd := range stack.PostInstall {
+	for _, cmd := range stack.GetPostInstallForFamily(familyStr) {
 		cmd = strings.ReplaceAll(cmd, "{{USERNAME}}", effectiveUser)
 		if isBaseScript {
 			// Base scripts: run as root

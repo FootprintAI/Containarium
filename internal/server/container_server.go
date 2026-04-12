@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/container"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/internal/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -93,6 +94,13 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		}
 	}
 
+	// Validate SSH keys at the API boundary to reject placeholder strings early
+	for i, key := range req.SshKeys {
+		if err := container.ValidateSSHPublicKey(key); err != nil {
+			return nil, fmt.Errorf("ssh_keys[%d]: %w", i, err)
+		}
+	}
+
 	// Build create options
 	opts := container.CreateOptions{
 		Username:               req.Username,
@@ -103,6 +111,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		EnablePodmanPrivileged: req.EnablePodman, // Enable privileged mode for proper Podman-in-LXC support
 		AutoStart:              true,
 		Stack:                  req.Stack,
+		OSType:                 req.OsType,
 	}
 
 	// Set resource limits
@@ -122,8 +131,8 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		opts.StaticIP = req.StaticIp
 	}
 
-	// Use defaults if not specified
-	if opts.Image == "" {
+	// Use defaults if not specified (os_type takes precedence in manager.go)
+	if opts.Image == "" && opts.OSType == 0 {
 		opts.Image = "images:ubuntu/24.04"
 	}
 	if opts.CPU == "" {
@@ -945,6 +954,12 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		username = info.Name[:len(info.Name)-10]
 	}
 
+	// Resolve OS type from labels
+	var osTypeEnum pb.OSType
+	if osLabel, ok := info.Labels[ostype.OSTypeLabelKey]; ok {
+		osTypeEnum = ostype.OSTypeFromLabel(osLabel)
+	}
+
 	return &pb.Container{
 		Name:     info.Name,
 		Username: username,
@@ -963,6 +978,7 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		Stack:         "",    // TODO: Get from container labels
 		GpuDevice:     info.GPU,
 		BackendId:     info.BackendID,
+		OsType:        osTypeEnum,
 	}
 }
 

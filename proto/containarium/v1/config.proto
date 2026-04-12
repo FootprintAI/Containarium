@@ -28,6 +28,9 @@ message Config {
 
   // Security configuration
   SecurityConfig security = 7;
+
+  // Default OS type for new containers
+  OSType default_os_type = 8;
 }
 
 // IncusConfig contains Incus-specific configuration
