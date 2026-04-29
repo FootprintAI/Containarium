@@ -15,6 +15,12 @@ SPOT_VM_NAME="${spot_vm_name}"
 ZONE="${zone}"
 PROJECT_ID="${project_id}"
 
+# Disable apt auto-upgrade timers — manual patching only.
+# Auto-upgrades on the e2-micro sentinel (955MB RAM, no swap) caused OOM
+# hangs when unattended-upgrades + packagekit + sshpiper ran concurrently.
+# Re-enable with: systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
 # System update (minimal)
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl fail2ban > /dev/null

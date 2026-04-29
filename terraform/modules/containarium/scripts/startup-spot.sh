@@ -66,6 +66,12 @@ echo "==> First boot detected, running full setup"
 echo "System: $(uname -a)"
 echo "Ubuntu: $(lsb_release -d | cut -f2)"
 
+# Disable apt auto-upgrade timers — manual patching only.
+# Auto-upgrades can interrupt long-running container workloads at unpredictable
+# times and stack memory pressure on top of normal usage.
+# Re-enable with: systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
 # Update system
 echo "==> Updating system packages..."
 apt-get update

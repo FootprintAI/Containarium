@@ -190,6 +190,13 @@ echo ""
 # 1. System update & essentials
 # ============================================================
 echo "==> [1/8] Updating system packages..."
+
+# Disable apt auto-upgrade timers — manual patching only.
+# GPU peers run long-lived ML workloads; surprise package upgrades that
+# restart docker / nvidia services would kill running training jobs.
+# Re-enable with: systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl wget git vim htop jq net-tools bridge-utils \
