@@ -713,9 +713,6 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 
 		output, err := cmd.CombinedOutput()
 		if err == nil {
-			// Success! Create .hushlogin to suppress host MOTD (user lands in container via containarium-shell)
-			hushPath := filepath.Join("/home", username, ".hushlogin")
-			_ = os.WriteFile(hushPath, nil, 0644)
 			fmt.Printf("       ✓ User %s created successfully\n", username)
 			return nil
 		}

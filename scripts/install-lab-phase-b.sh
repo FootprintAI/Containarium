@@ -28,7 +28,7 @@ NETWORK_SUBNET="${NETWORK_SUBNET:-10.0.4.1/24}"
 POOL="${POOL:-lab}"
 BASE_DOMAIN="${BASE_DOMAIN:-containarium-lab.kafeido.app}"
 
-echo "==> Step 1/6: Install Incus from Zabbly"
+echo "==> Step 1/8: Install Incus from Zabbly"
 if command -v incus >/dev/null 2>&1; then
     echo "    Already installed: $(incus version | head -1)"
 else
@@ -49,7 +49,7 @@ EOF
 fi
 
 echo
-echo "==> Step 2/6: Initialize Incus (default storage + network)"
+echo "==> Step 2/8: Initialize Incus (default storage + network)"
 if incus storage list -f csv 2>/dev/null | grep -q '^default,'; then
     echo "    Already initialized — storage 'default' exists"
 else
@@ -61,7 +61,7 @@ else
 fi
 
 echo
-echo "==> Step 3/6: JWT secret for the daemon's REST API"
+echo "==> Step 3/8: JWT secret for the daemon's REST API"
 if [[ ! -s /etc/containarium/jwt.secret ]]; then
     install -d -m 0700 /etc/containarium
     openssl rand -hex 32 > /etc/containarium/jwt.secret
@@ -72,7 +72,7 @@ else
 fi
 
 echo
-echo "==> Step 4/6: Install daemon systemd unit (containarium.service)"
+echo "==> Step 4/8: Install daemon systemd unit (containarium.service)"
 if ! systemctl cat containarium.service >/dev/null 2>&1; then
     /usr/local/bin/containarium service install
 fi
@@ -83,7 +83,7 @@ fi
 install -d -m 0755 /opt/containarium
 
 echo
-echo "==> Step 5/6: Drop-in override for --pool=${POOL} + --network-subnet=${NETWORK_SUBNET}"
+echo "==> Step 5/8: Drop-in override for --pool=${POOL} + --network-subnet=${NETWORK_SUBNET}"
 # Notes on flags:
 #   - --pool ${POOL}              scopes peer discovery (slice 2)
 #   - --rest                      enable HTTP/REST API on :8080
@@ -120,7 +120,68 @@ CONF
 echo "    Override written: /etc/systemd/system/containarium.service.d/lab-pool.conf"
 
 echo
-echo "==> Step 6/6: (Re)start daemon"
+echo "==> Step 6/8: Install /usr/local/bin/containarium-shell wrapper"
+# Without this wrapper, the daemon falls back to /usr/sbin/nologin when
+# creating per-container host users (see internal/container/jump_server.go
+# getUserShell()), and SSH lands at the host with "This account is
+# currently not available" instead of inside the container.
+if [[ ! -x /usr/local/bin/containarium-shell ]]; then
+    cat > /usr/local/bin/containarium-shell <<'SHELL'
+#!/bin/bash
+# containarium-shell: Proxy SSH sessions into Incus containers.
+# The user's host account uses this as its login shell; on connection it
+# re-execs into ${USERNAME}-container, dropping the user into a real shell
+# inside the container.
+USERNAME="$(whoami)"
+CONTAINER="${USERNAME}-container"
+
+if ! sudo incus info "$CONTAINER" &>/dev/null; then
+    echo "Error: Container $CONTAINER not found" >&2
+    exit 1
+fi
+
+STATE=$(sudo incus info "$CONTAINER" 2>/dev/null | grep "^Status:" | awk '{print $2}')
+if [ "$STATE" != "RUNNING" ]; then
+    echo "Error: Container $CONTAINER is not running (status: $STATE)" >&2
+    exit 1
+fi
+
+COMMAND="${SSH_ORIGINAL_COMMAND}"
+if [ -z "$COMMAND" ] && [ "$1" = "-c" ]; then
+    COMMAND="$2"
+fi
+
+if [ -n "$COMMAND" ]; then
+    exec sudo incus exec "$CONTAINER" --mode non-interactive -- su - "$USERNAME" -c "$COMMAND"
+fi
+
+exec sudo incus exec "$CONTAINER" -t -- su -l "$USERNAME"
+SHELL
+    chmod +x /usr/local/bin/containarium-shell
+    echo "    Installed /usr/local/bin/containarium-shell"
+else
+    echo "    Already installed: /usr/local/bin/containarium-shell"
+fi
+
+echo
+echo "==> Step 7/8: Install /etc/motd banner"
+# Show the Containarium banner on interactive SSH login, before the
+# containarium-shell wrapper hands off to the container.
+cat > /etc/motd <<MOTD
+   ____            _        _                 _
+  / ___|___  _ __ | |_ __ _(_)_ __   __ _ _ __(_)_   _ _ __ ___
+ | |   / _ \\| '_ \\| __/ _\` | | '_ \\ / _\` | '__| | | | | '_ \` _ \\
+ | |__| (_) | | | | || (_| | | | | | (_| | |  | | |_| | | | | | |
+  \\____\\___/|_| |_|\\__\\__,_|_|_| |_|\\__,_|_|  |_|\\__,_|_| |_| |_|
+
+  Container Platform — ${POOL} pool
+
+  Documentation: https://github.com/footprintai/Containarium
+MOTD
+echo "    /etc/motd updated for pool=${POOL}"
+
+echo
+echo "==> Step 8/8: (Re)start daemon"
 systemctl daemon-reload
 systemctl enable containarium >/dev/null
 # Use restart (not just `start`) so re-running this script picks up any
