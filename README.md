@@ -261,7 +261,7 @@ It is intentionally simple.
 ## Status
 
 - Actively used in production (GCP + bare-metal GPU nodes)
-- v0.16.0 — multi-pool architecture, GPU-by-PCI, lab pool SSH
+- v0.16.1 — multi-pool architecture, GPU-by-PCI, lab pool SSH
 - APIs stable (protobuf-defined with gRPC-gateway)
 - Contributions and feedback welcome
 

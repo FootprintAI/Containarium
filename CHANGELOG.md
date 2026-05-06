@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-05-06
+
+### Fixed
+- **Jump server account missing sudoers entry** (`internal/container/jump_server.go`): `CreateJumpServerAccount` (the path used when the daemon auto-creates a container's host user) wrote `useradd` and the SSH key but never wrote `/etc/sudoers.d/containarium-<user>`. The user's `containarium-shell` then hit a password prompt on every SSH because `sudo incus exec` had no NOPASSWD rule. `EnsureJumpServerAccount` (a separate entry point) already had the sudoers write; this brings the primary path to parity. Symptom: `ssh <user>` returned `[sudo] password for <user>:` and hung. Existing host users on running daemons stay broken until the operator writes the sudoers file manually (see `setup-peer-user.sh`) or the daemon recreates them.
+
 ## [0.16.0] - 2026-05-06
 
 ### Added
