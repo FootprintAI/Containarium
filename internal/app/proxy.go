@@ -170,6 +170,15 @@ func (p *ProxyManager) addRouteWithProtocol(subdomain, containerIP string, port 
 // ProvisionTLS provisions a TLS certificate for the given domain via Caddy's on-demand TLS
 // or by adding it to the TLS automation policy
 func (p *ProxyManager) ProvisionTLS(domain string) error {
+	// Caddy's admin API returns 400 "invalid traversal path" when you
+	// PATCH/POST a sub-path whose parent doesn't exist yet. On a fresh
+	// Caddy that's never had a TLS app configured, /config/apps/tls is
+	// `null`, so /config/apps/tls/automation/policies has no parent.
+	// Bootstrap the app first if it's missing.
+	if err := p.ensureTLSApp(); err != nil {
+		return fmt.Errorf("failed to bootstrap TLS app: %w", err)
+	}
+
 	// First, check if there's an existing automation policy we can add to
 	// Get current TLS config
 	url := fmt.Sprintf("%s/config/apps/tls/automation/policies", p.caddyAdminURL)
@@ -491,9 +500,12 @@ func (p *ProxyManager) ensureTLSApp() error {
 		return p.createTLSApp()
 	}
 
-	// Check if it's null or empty
+	// Check if it's null or empty. Caddy returns "null\n" (with trailing
+	// newline) for a missing config path, so trim whitespace before
+	// comparing.
 	body, _ := io.ReadAll(resp.Body)
-	if len(body) == 0 || string(body) == "null" {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" || trimmed == "null" {
 		return p.createTLSApp()
 	}
 

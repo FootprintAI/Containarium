@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -42,8 +43,26 @@ func deriveNetworkCIDR(ip string) string {
 	return fmt.Sprintf("%s.%s.%s.0/24", parts[0], parts[1], parts[2])
 }
 
-// SetupPortForwarding configures iptables to forward ports 80 and 443 to Caddy
-// This is required for Let's Encrypt certificate provisioning and HTTPS traffic
+// SetupPortForwarding configures iptables to forward ports 80 and 443 to Caddy.
+// Required for Let's Encrypt certificate provisioning and HTTPS traffic.
+//
+// Three iptables paths are needed:
+//
+//  1. PREROUTING DNAT — for traffic arriving on a non-loopback interface
+//     (the normal external case via the GLB).
+//  2. OUTPUT DNAT — for locally-generated traffic to 127.0.0.0/8:443.
+//     This is the path taken by tunnel-promoted primaries (slice 6/8):
+//     the tunnel client receives a yamux stream and dials 127.0.0.1:port
+//     to forward bytes locally. PREROUTING does not match local-origin
+//     packets, so OUTPUT is needed.
+//  3. POSTROUTING MASQUERADE — for return traffic.
+//
+// Plus one sysctl: net.ipv4.conf.all.route_localnet=1. By default the
+// kernel refuses to route 127.0.0.0/8 packets out a non-loopback
+// interface even after DNAT, so the tunneled-primary path silently
+// drops without this. Setting it system-wide is safe — the Linux man
+// page calls out that this is the right knob for "DNAT 127/8 to a
+// non-local address" use case.
 func (pf *PortForwarder) SetupPortForwarding() error {
 	log.Printf("Setting up port forwarding to Caddy (%s)...", pf.caddyIP)
 	log.Printf("  Excluding container network: %s", pf.networkCIDR)
@@ -53,26 +72,86 @@ func (pf *PortForwarder) SetupPortForwarding() error {
 		return fmt.Errorf("failed to enable IP forwarding: %w", err)
 	}
 
-	// Check if rules already exist to avoid duplicates
-	if pf.rulesExist() {
-		log.Printf("  Port forwarding rules already exist, skipping")
-		return nil
+	// Allow DNAT of 127.0.0.0/8 → caddyIP (required for tunneled
+	// primaries; harmless otherwise).
+	if err := pf.enableRouteLocalnet(); err != nil {
+		log.Printf("  Warning: failed to set route_localnet=1: %v (tunneled-primary loopback path may not work)", err)
 	}
 
-	// Add PREROUTING rules for ports 80 and 443
-	if err := pf.addPreRoutingRule(80); err != nil {
-		return fmt.Errorf("failed to add port 80 forwarding: %w", err)
+	// Each rule is added independently with its own existence check.
+	// An older deploy may have PREROUTING but not OUTPUT — we want to
+	// add the missing one without duplicating what's already there.
+	if err := pf.ensurePreRoutingRule(80); err != nil {
+		return fmt.Errorf("failed to add port 80 PREROUTING: %w", err)
 	}
-	if err := pf.addPreRoutingRule(443); err != nil {
-		return fmt.Errorf("failed to add port 443 forwarding: %w", err)
+	if err := pf.ensurePreRoutingRule(443); err != nil {
+		return fmt.Errorf("failed to add port 443 PREROUTING: %w", err)
 	}
-
-	// Add MASQUERADE rule for return traffic
+	if err := pf.ensureOutputRule(80); err != nil {
+		return fmt.Errorf("failed to add port 80 OUTPUT: %w", err)
+	}
+	if err := pf.ensureOutputRule(443); err != nil {
+		return fmt.Errorf("failed to add port 443 OUTPUT: %w", err)
+	}
 	if err := pf.addMasqueradeRule(); err != nil {
 		return fmt.Errorf("failed to add masquerade rule: %w", err)
 	}
 
-	log.Printf("  Port forwarding configured: 80,443 -> %s", pf.caddyIP)
+	log.Printf("  Port forwarding configured: 80,443 -> %s (PREROUTING + OUTPUT)", pf.caddyIP)
+	return nil
+}
+
+// ensurePreRoutingRule adds a PREROUTING DNAT rule if it's not already present.
+func (pf *PortForwarder) ensurePreRoutingRule(port int) error {
+	check := exec.Command("iptables", "-t", "nat", "-C", "PREROUTING",
+		"-p", "tcp", "!", "-s", pf.networkCIDR, "--dport", fmt.Sprintf("%d", port),
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
+	if check.Run() == nil {
+		return nil
+	}
+	return pf.addPreRoutingRule(port)
+}
+
+// ensureOutputRule adds an OUTPUT DNAT rule if it's not already present.
+func (pf *PortForwarder) ensureOutputRule(port int) error {
+	check := exec.Command("iptables", "-t", "nat", "-C", "OUTPUT",
+		"-p", "tcp", "-d", "127.0.0.0/8", "--dport", fmt.Sprintf("%d", port),
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
+	if check.Run() == nil {
+		return nil
+	}
+	return pf.addOutputRule(port)
+}
+
+// enableRouteLocalnet sets net.ipv4.conf.all.route_localnet=1, which is
+// required to DNAT 127.0.0.0/8 traffic out a non-loopback interface.
+// Persisted via /etc/sysctl.d/ so it survives reboots.
+func (pf *PortForwarder) enableRouteLocalnet() error {
+	cmd := exec.Command("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("sysctl failed: %w, output: %s", err, string(output))
+	}
+	// Best-effort persistence so the setting survives reboots.
+	const path = "/etc/sysctl.d/99-containarium-route-localnet.conf"
+	const body = "# containarium: required for DNAT of 127.0.0.0/8 (tunneled-primary path)\nnet.ipv4.conf.all.route_localnet = 1\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		log.Printf("  Note: could not persist sysctl to %s: %v (the runtime value is set, but it'll reset on reboot)", path, err)
+	}
+	return nil
+}
+
+// addOutputRule mirrors addPreRoutingRule but on the OUTPUT chain, so
+// locally-generated packets to 127.0.0.0/8:port get DNAT'd to the Caddy
+// container. This is the path used by tunneled-primary tunnel clients
+// (slice 6) which dial 127.0.0.1:port to forward inbound bytes.
+func (pf *PortForwarder) addOutputRule(port int) error {
+	cmd := exec.Command("iptables", "-t", "nat", "-A", "OUTPUT",
+		"-p", "tcp", "-d", "127.0.0.0/8", "--dport", fmt.Sprintf("%d", port),
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("iptables OUTPUT failed: %w, output: %s", err, string(output))
+	}
 	return nil
 }
 
@@ -97,16 +176,6 @@ func EnableConntrackAccounting() error {
 	}
 	log.Printf("Conntrack accounting enabled")
 	return nil
-}
-
-// rulesExist checks if port forwarding rules already exist
-func (pf *PortForwarder) rulesExist() bool {
-	// Check if PREROUTING rule for port 80 exists (with network CIDR exclusion)
-	cmd := exec.Command("iptables", "-t", "nat", "-C", "PREROUTING",
-		"-p", "tcp", "!", "-s", pf.networkCIDR, "--dport", "80",
-		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:80", pf.caddyIP))
-	err := cmd.Run()
-	return err == nil
 }
 
 // addPreRoutingRule adds a PREROUTING DNAT rule for the specified port
@@ -149,6 +218,10 @@ func (pf *PortForwarder) RemovePortForwarding() error {
 	pf.removePreRoutingRule(80)
 	pf.removePreRoutingRule(443)
 
+	// Remove OUTPUT rules
+	pf.removeOutputRule(80)
+	pf.removeOutputRule(443)
+
 	// Remove MASQUERADE rule
 	pf.removeMasqueradeRule()
 
@@ -159,6 +232,15 @@ func (pf *PortForwarder) RemovePortForwarding() error {
 func (pf *PortForwarder) removePreRoutingRule(port int) {
 	cmd := exec.Command("iptables", "-t", "nat", "-D", "PREROUTING",
 		"-p", "tcp", "!", "-s", pf.networkCIDR, "--dport", fmt.Sprintf("%d", port),
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
+	cmd.Run() // Ignore errors - rule might not exist
+}
+
+// removeOutputRule removes the OUTPUT-chain DNAT rule for tunneled-primary
+// loopback traffic.
+func (pf *PortForwarder) removeOutputRule(port int) {
+	cmd := exec.Command("iptables", "-t", "nat", "-D", "OUTPUT",
+		"-p", "tcp", "-d", "127.0.0.0/8", "--dport", fmt.Sprintf("%d", port),
 		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
 	cmd.Run() // Ignore errors - rule might not exist
 }

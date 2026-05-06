@@ -169,6 +169,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		if err := incusClient.InitializeInfrastructure(networkConfig); err != nil {
 			return fmt.Errorf("failed to initialize infrastructure: %w", err)
 		}
+		// EnsureNetwork is idempotent: if incusbr0 already exists with a
+		// DIFFERENT subnet (e.g., because incus was pre-initialized via
+		// `incus admin init --auto`), it does NOT overwrite. The daemon
+		// must therefore re-read the bridge's actual subnet and use that
+		// authoritatively — otherwise downstream code (HostIP for Caddy
+		// upstreams, traffic collector network filter, port forwarder)
+		// will be configured for a network that doesn't exist, causing
+		// silent 502s on inbound traffic.
+		if actual, err := incusClient.GetNetworkSubnet("incusbr0"); err == nil && actual != "" && actual != networkSubnet {
+			log.Printf("  Note: --network-subnet=%q but incusbr0 actually uses %q; using actual", networkSubnet, actual)
+			networkSubnet = actual
+		}
 		log.Printf("  Network: incusbr0 (%s)", networkSubnet)
 		storageDriver := incusClient.GetStorageDriver("default")
 		log.Printf("  Storage: default (%s)", storageDriver)

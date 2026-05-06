@@ -287,6 +287,20 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						caddyIP := coreServices.GetCaddyIP()
 						log.Printf("Caddy ready: %s", caddyIP)
 
+						// Now that Caddy exists, set up host:80/443 → caddy port
+						// forwarding. The earlier auto-detect at daemon startup
+						// (see cmd/daemon.go:199) ran BEFORE Caddy was spawned
+						// on first install, so it skipped this step. Re-running
+						// it here makes first-install work without requiring a
+						// daemon restart.
+						if network.CheckIPTablesAvailable() {
+							pf := network.NewPortForwarderWithNetwork(caddyIP, networkCIDR)
+							if err := pf.SetupPortForwarding(); err != nil {
+								log.Printf("Warning: Failed to setup port forwarding after Caddy bring-up: %v", err)
+								log.Printf("  External HTTPS for %s may not work", config.BaseDomain)
+							}
+						}
+
 						// Add DNS override so containers resolve *.baseDomain to Caddy
 						// internally instead of going through the external IP (hairpin NAT).
 						dnsOverride := fmt.Sprintf("address=/%s/%s", config.BaseDomain, caddyIP)
