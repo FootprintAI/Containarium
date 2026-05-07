@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-05-08
+
+### Fixed
+- **`containarium-shell` breaks collaborator SSH logins** (`scripts/setup-peer-user.sh`): The shell script derived the target container as `${USERNAME}-container`, so a collaborator account `voice-dev-container-test` resolved to `voice-dev-container-test-container` (nonexistent), producing `Error: Container not found` on every login. Collaborator accounts follow the `<owner>-container-<collaborator>` naming pattern; the container is `<owner>-container`. Fix: if the primary container lookup fails, strip the trailing `-<collaborator>` suffix with `${USERNAME%-*}` and retry. Regular owner accounts (`voice-dev` → `voice-dev-container`) are unaffected. Existing deployments must re-push the script to each node (GCP spot VM and peer nodes).
+
 ## [0.16.1] - 2026-05-06
 
 ### Fixed

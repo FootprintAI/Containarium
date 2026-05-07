@@ -38,6 +38,15 @@ if [[ ! -f /usr/local/bin/containarium-shell ]]; then
 USERNAME="$(whoami)"
 CONTAINER="${USERNAME}-container"
 
+# Collaborator accounts use the pattern <owner>-container-<collaborator>.
+# If the derived container doesn't exist, try stripping the collaborator suffix.
+if ! sudo incus info "$CONTAINER" &>/dev/null; then
+    STRIPPED="${USERNAME%-*}"
+    if [ "$STRIPPED" != "$USERNAME" ] && sudo incus info "$STRIPPED" &>/dev/null; then
+        CONTAINER="$STRIPPED"
+    fi
+fi
+
 if ! sudo incus info "$CONTAINER" &>/dev/null; then
     echo "Error: Container $CONTAINER not found" >&2
     exit 1
