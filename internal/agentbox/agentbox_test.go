@@ -179,13 +179,13 @@ func TestWriteFile_NoTempFileLeftOnSuccess(t *testing.T) {
 	}
 }
 
-// ----- list_dir --------------------------------------------------------
+// ----- list_directory --------------------------------------------------
 
-func TestListDir_HidesDotFilesByDefault(t *testing.T) {
+func TestListDirectory_HidesDotFilesByDefault(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "visible"), []byte("x"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, ".hidden"), []byte("x"), 0o644)
-	out, _ := callTool(t, handleListDir, map[string]interface{}{"path": dir})
+	out, _ := callTool(t, handleListDirectory, map[string]interface{}{"path": dir})
 	if !strings.Contains(out, "visible") {
 		t.Errorf("visible file missing:\n%s", out)
 	}
@@ -194,10 +194,10 @@ func TestListDir_HidesDotFilesByDefault(t *testing.T) {
 	}
 }
 
-func TestListDir_IncludeHidden(t *testing.T) {
+func TestListDirectory_IncludeHidden(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, ".rc"), []byte("x"), 0o644)
-	out, _ := callTool(t, handleListDir, map[string]interface{}{
+	out, _ := callTool(t, handleListDirectory, map[string]interface{}{
 		"path": dir, "include_hidden": true,
 	})
 	if !strings.Contains(out, ".rc") {
@@ -205,16 +205,204 @@ func TestListDir_IncludeHidden(t *testing.T) {
 	}
 }
 
-func TestListDir_ReportsType(t *testing.T) {
+func TestListDirectory_ReportsType(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, "sub"), 0o755)
 	_ = os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
-	out, _ := callTool(t, handleListDir, map[string]interface{}{"path": dir})
+	out, _ := callTool(t, handleListDirectory, map[string]interface{}{"path": dir})
 	// columns are "type\tsize\tmtime\tname"
 	if !strings.Contains(out, "d\t") {
 		t.Errorf("expected directory marker 'd':\n%s", out)
 	}
 	if !strings.Contains(out, "f\t") {
 		t.Errorf("expected file marker 'f':\n%s", out)
+	}
+}
+
+// ----- read_file head/tail --------------------------------------------
+
+func TestReadFile_HeadLines(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "log")
+	if err := os.WriteFile(p, []byte("a\nb\nc\nd\ne\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := callTool(t, handleReadFile, map[string]interface{}{
+		"path": p, "head": float64(2),
+	})
+	if !strings.Contains(out, "mode: head") {
+		t.Errorf("expected mode: head in:\n%s", out)
+	}
+	if !strings.Contains(out, "lines_returned: 2") {
+		t.Errorf("expected 2 lines returned in:\n%s", out)
+	}
+	if !strings.Contains(out, "a\nb\n") {
+		t.Errorf("expected first two lines in:\n%s", out)
+	}
+	if strings.Contains(out, "c\n") {
+		t.Errorf("third line should not appear in head=2:\n%s", out)
+	}
+}
+
+func TestReadFile_TailLines(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "log")
+	if err := os.WriteFile(p, []byte("a\nb\nc\nd\ne\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := callTool(t, handleReadFile, map[string]interface{}{
+		"path": p, "tail": float64(2),
+	})
+	if !strings.Contains(out, "mode: tail") {
+		t.Errorf("expected mode: tail in:\n%s", out)
+	}
+	if !strings.Contains(out, "lines_returned: 2") {
+		t.Errorf("expected 2 lines in:\n%s", out)
+	}
+	if !strings.Contains(out, "d\ne\n") {
+		t.Errorf("expected last two lines in:\n%s", out)
+	}
+}
+
+func TestReadFile_HeadAndTailMutuallyExclusive(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "log")
+	_ = os.WriteFile(p, []byte("x\n"), 0o644)
+	_, res := callTool(t, handleReadFile, map[string]interface{}{
+		"path": p, "head": float64(1), "tail": float64(1),
+	})
+	if !res.IsError {
+		t.Errorf("expected error when both head and tail set")
+	}
+}
+
+// ----- move_file -------------------------------------------------------
+
+func TestMoveFile_Basic(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a")
+	dst := filepath.Join(dir, "b")
+	_ = os.WriteFile(src, []byte("hello"), 0o644)
+	out, _ := callTool(t, handleMoveFile, map[string]interface{}{
+		"source": src, "destination": dst,
+	})
+	if !strings.Contains(out, "destination:") {
+		t.Errorf("expected destination in:\n%s", out)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source still exists after move")
+	}
+	if data, err := os.ReadFile(dst); err != nil || string(data) != "hello" {
+		t.Errorf("destination missing or wrong content: %v %q", err, data)
+	}
+}
+
+func TestMoveFile_CreatesParent(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a")
+	dst := filepath.Join(dir, "nested", "deep", "b")
+	_ = os.WriteFile(src, []byte("x"), 0o644)
+	_, res := callTool(t, handleMoveFile, map[string]interface{}{
+		"source": src, "destination": dst,
+	})
+	if res.IsError {
+		t.Errorf("unexpected error creating parent dirs")
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("destination not created: %v", err)
+	}
+}
+
+func TestMoveFile_SourceNotFound(t *testing.T) {
+	dir := t.TempDir()
+	_, res := callTool(t, handleMoveFile, map[string]interface{}{
+		"source":      filepath.Join(dir, "nope"),
+		"destination": filepath.Join(dir, "x"),
+	})
+	if !res.IsError {
+		t.Errorf("expected error for missing source")
+	}
+}
+
+// ----- delete_file -----------------------------------------------------
+
+func TestDeleteFile_Basic(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "victim")
+	_ = os.WriteFile(p, []byte("doomed"), 0o644)
+	out, _ := callTool(t, handleDeleteFile, map[string]interface{}{"path": p})
+	if !strings.Contains(out, "bytes_deleted: 6") {
+		t.Errorf("expected bytes_deleted: 6 in:\n%s", out)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("file still exists after delete")
+	}
+}
+
+func TestDeleteFile_RefusesDirectory(t *testing.T) {
+	_, res := callTool(t, handleDeleteFile, map[string]interface{}{"path": t.TempDir()})
+	if !res.IsError {
+		t.Errorf("expected error deleting a directory")
+	}
+}
+
+func TestDeleteFile_NotFound(t *testing.T) {
+	_, res := callTool(t, handleDeleteFile, map[string]interface{}{
+		"path": "/nonexistent/path/please-no",
+	})
+	if !res.IsError {
+		t.Errorf("expected error for missing file")
+	}
+}
+
+// ----- sandbox root (AGENTBOX_ROOT) -----------------------------------
+
+func TestSandboxRoot_RejectsOutsidePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(sandboxRootEnv, dir)
+	resetSandboxOnceForTest()
+
+	outside := filepath.Join(t.TempDir(), "evil") // different temp tree
+	_ = os.WriteFile(outside, []byte("x"), 0o644)
+
+	_, res := callTool(t, handleReadFile, map[string]interface{}{"path": outside})
+	if !res.IsError {
+		t.Errorf("expected sandbox to reject path outside AGENTBOX_ROOT")
+	}
+}
+
+func TestSandboxRoot_AcceptsInsidePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(sandboxRootEnv, dir)
+	resetSandboxOnceForTest()
+
+	inside := filepath.Join(dir, "ok.txt")
+	_ = os.WriteFile(inside, []byte("hi"), 0o644)
+
+	_, res := callTool(t, handleReadFile, map[string]interface{}{"path": inside})
+	if res.IsError {
+		t.Errorf("sandbox rejected a path inside AGENTBOX_ROOT")
+	}
+}
+
+func TestSandboxRoot_RejectsLookalikePrefix(t *testing.T) {
+	// root="/tmp/foo" must not allow "/tmp/foo-evil/x" via prefix match.
+	root := filepath.Join(t.TempDir(), "foo")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(sandboxRootEnv, root)
+	resetSandboxOnceForTest()
+
+	evil := root + "-evil"
+	if err := os.Mkdir(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(evil, "x")
+	_ = os.WriteFile(target, []byte("x"), 0o644)
+
+	_, res := callTool(t, handleReadFile, map[string]interface{}{"path": target})
+	if !res.IsError {
+		t.Errorf("sandbox accepted lookalike-prefix escape")
 	}
 }

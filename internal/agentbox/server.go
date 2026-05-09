@@ -4,10 +4,15 @@
 //
 // Tool taxonomy (v0):
 //
-//   - shell_exec    — run a shell command, capture stdout/stderr/exit code
-//   - read_file     — read a file, optionally byte-bounded
-//   - write_file    — write a file atomically
-//   - list_dir      — enumerate a directory's entries
+//   - shell_exec      — run a shell command, capture stdout/stderr/exit code
+//   - read_file       — read a file (byte range, head=N lines, or tail=N lines)
+//   - write_file      — write a file atomically
+//   - list_directory  — enumerate a directory's entries
+//   - move_file       — rename/move a file or directory
+//   - delete_file     — remove a single file (refuses directories)
+//
+// All file paths can be confined to a project root via the AGENTBOX_ROOT
+// env var; unset means no constraint.
 //
 // More tools (tail_log, provision_postgres, deploy_app, snapshot, etc.)
 // land in subsequent commits.
