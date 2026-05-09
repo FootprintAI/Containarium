@@ -168,6 +168,37 @@ func (s *Server) registerTools() {
 			},
 			Handler: handleGetSystemInfo,
 		},
+		{
+			Name: "expose_port",
+			Description: "Expose a container's port on a public hostname. Resolves the " +
+				"container's IP, then registers a domain → container:port route in the " +
+				"sentinel reverse proxy. After this completes, https://<domain>/ " +
+				"reaches the container's port. Use for the 'make it online' demo step " +
+				"after the agent has installed something listening inside the box.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Container identifier (same value used by create_container / get_container).",
+					},
+					"container_port": map[string]interface{}{
+						"type":        "integer",
+						"description": "Port the app listens on inside the container, e.g. 8080.",
+					},
+					"domain": map[string]interface{}{
+						"type":        "string",
+						"description": "Public hostname to route from, e.g. 'blog.example.com'. The sentinel must already be DNS-pointed at this hostname or a wildcard parent.",
+					},
+					"description": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional human-readable note for the route (shown in route_list).",
+					},
+				},
+				"required": []string{"username", "container_port", "domain"},
+			},
+			Handler: handleExposePort,
+		},
 	}
 }
 
@@ -363,6 +394,58 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 	return result, nil
 }
 
+func handleExposePort(client *Client, args map[string]interface{}) (string, error) {
+	username, ok := args["username"].(string)
+	if !ok || username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+	port, ok := getIntArg(args, "container_port")
+	if !ok || port <= 0 || port > 65535 {
+		return "", fmt.Errorf("container_port must be an integer in 1..65535")
+	}
+	domain := getStringArg(args, "domain", "")
+	if domain == "" {
+		return "", fmt.Errorf("domain is required")
+	}
+
+	// Resolve the container's current LAN IP. We don't trust an IP the
+	// caller might supply: if a container is recreated its IP can shift,
+	// and a stale value would cause the route to silently target nothing.
+	got, err := client.GetContainer(username)
+	if err != nil {
+		return "", fmt.Errorf("failed to look up container %q: %w", username, err)
+	}
+	if got.Container.Network == nil || got.Container.Network.IPAddress == "" {
+		return "", fmt.Errorf("container %q has no IP address yet (state: %s)",
+			username, got.Container.State)
+	}
+	ip := got.Container.Network.IPAddress
+
+	resp, err := client.AddRoute(AddRouteRequest{
+		Domain:        domain,
+		TargetIP:      ip,
+		TargetPort:    int32(port),
+		ContainerName: got.Container.Name,
+		Description:   getStringArg(args, "description", ""),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to add route: %w", err)
+	}
+
+	out := fmt.Sprintf("✅ Exposed %s:%d → %s\n\n", username, port, domain)
+	out += fmt.Sprintf("Domain:    %s\n", resp.Route.Domain)
+	out += fmt.Sprintf("Target:    %s:%d\n", resp.Route.ContainerIP, resp.Route.Port)
+	if resp.Route.ContainerName != "" {
+		out += fmt.Sprintf("Container: %s\n", resp.Route.ContainerName)
+	}
+	if resp.Message != "" {
+		out += fmt.Sprintf("\n%s", resp.Message)
+	}
+	out += "\n\nNext: confirm DNS for this hostname points at the sentinel, then\n"
+	out += fmt.Sprintf("`curl https://%s/` should reach the app inside %s.", domain, username)
+	return out, nil
+}
+
 // Helper functions
 
 func getStringArg(args map[string]interface{}, key, defaultValue string) string {
@@ -377,4 +460,23 @@ func getBoolArg(args map[string]interface{}, key string, defaultValue bool) bool
 		return val
 	}
 	return defaultValue
+}
+
+// getIntArg pulls an integer-shaped argument. JSON unmarshaling presents
+// integers as float64 by default, so we accept both. Returns ok=false when
+// the key is absent or the value is non-numeric — callers distinguish
+// "missing" from "set to zero" by inspecting ok.
+func getIntArg(args map[string]interface{}, key string) (int, bool) {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	default:
+		return 0, false
+	}
 }

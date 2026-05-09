@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -412,4 +414,127 @@ func TestToolParameterDescriptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ----- expose_port -----------------------------------------------------
+
+// TestGetIntArg tests the getIntArg helper across the JSON-decoded shapes
+// agents tend to produce (float64 from encoding/json) plus native ints.
+func TestGetIntArg(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    map[string]interface{}
+		key     string
+		want    int
+		wantOK  bool
+	}{
+		{"float64 from JSON", map[string]interface{}{"p": float64(8080)}, "p", 8080, true},
+		{"native int", map[string]interface{}{"p": 8080}, "p", 8080, true},
+		{"missing", map[string]interface{}{}, "p", 0, false},
+		{"wrong type", map[string]interface{}{"p": "8080"}, "p", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := getIntArg(tc.args, tc.key)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestExposePort_HappyPath drives the full handler against an httptest
+// server that mocks both the GetContainer lookup and the AddRoute POST.
+// This catches wiring bugs (wrong path, wrong field name) the unit-only
+// tests for getIntArg can't.
+func TestExposePort_HappyPath(t *testing.T) {
+	addRouteCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/containers/alice":
+			_, _ = w.Write([]byte(`{
+				"container": {
+					"name": "alice-container",
+					"username": "alice",
+					"state": "Running",
+					"network": {"ipAddress": "10.0.3.42"}
+				}
+			}`))
+		case r.Method == "POST" && r.URL.Path == "/v1/network/routes":
+			addRouteCalls++
+			var req AddRouteRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			// The handler must resolve the IP itself, not trust caller-supplied state.
+			assert.Equal(t, "10.0.3.42", req.TargetIP)
+			assert.Equal(t, int32(8080), req.TargetPort)
+			assert.Equal(t, "blog.example.com", req.Domain)
+			assert.Equal(t, "alice-container", req.ContainerName)
+			_, _ = w.Write([]byte(`{
+				"route": {
+					"domain": "blog.example.com",
+					"containerIp": "10.0.3.42",
+					"port": 8080,
+					"containerName": "alice-container"
+				},
+				"message": "route added"
+			}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	out, err := handleExposePort(client, map[string]interface{}{
+		"username":       "alice",
+		"container_port": float64(8080),
+		"domain":         "blog.example.com",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, addRouteCalls)
+	assert.Contains(t, out, "blog.example.com")
+	assert.Contains(t, out, "10.0.3.42:8080")
+}
+
+func TestExposePort_RejectsMissingArgs(t *testing.T) {
+	client := NewClient("http://unused", "token")
+	cases := []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"no username", map[string]interface{}{"container_port": float64(80), "domain": "x.example"}},
+		{"no port", map[string]interface{}{"username": "alice", "domain": "x.example"}},
+		{"no domain", map[string]interface{}{"username": "alice", "container_port": float64(80)}},
+		{"port out of range", map[string]interface{}{"username": "a", "container_port": float64(99999), "domain": "x.example"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := handleExposePort(client, tc.args)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestExposePort_RejectsContainerWithoutIP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Container exists but has no IP yet (e.g. still starting).
+		_, _ = w.Write([]byte(`{
+			"container": {
+				"name": "alice-container",
+				"username": "alice",
+				"state": "Stopped",
+				"network": {"ipAddress": ""}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	_, err := handleExposePort(client, map[string]interface{}{
+		"username":       "alice",
+		"container_port": float64(8080),
+		"domain":         "blog.example.com",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no IP address")
 }

@@ -375,3 +375,60 @@ func TestClientErrorHandling(t *testing.T) {
 		})
 	}
 }
+
+// TestAddRoute verifies the wire format and response handling for the
+// AddRoute method. Confirms the request body shape matches what the
+// grpc-gateway HTTP layer expects (camelCase fields).
+func TestAddRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "POST", r.Method)
+		require.Equal(t, "/v1/network/routes", r.URL.Path)
+		require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var req AddRouteRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, "blog.example.com", req.Domain)
+		assert.Equal(t, "10.0.3.42", req.TargetIP)
+		assert.Equal(t, int32(8080), req.TargetPort)
+		assert.Equal(t, "alice-container", req.ContainerName)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"route": {
+				"domain": "blog.example.com",
+				"containerIp": "10.0.3.42",
+				"port": 8080,
+				"containerName": "alice-container"
+			},
+			"message": "route added"
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	resp, err := client.AddRoute(AddRouteRequest{
+		Domain:        "blog.example.com",
+		TargetIP:      "10.0.3.42",
+		TargetPort:    8080,
+		ContainerName: "alice-container",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "blog.example.com", resp.Route.Domain)
+	assert.Equal(t, "10.0.3.42", resp.Route.ContainerIP)
+	assert.Equal(t, int32(8080), resp.Route.Port)
+	assert.Equal(t, "route added", resp.Message)
+}
+
+func TestAddRoute_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"domain already exists"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	_, err := client.AddRoute(AddRouteRequest{Domain: "x", TargetIP: "y", TargetPort: 1})
+	require.Error(t, err)
+}

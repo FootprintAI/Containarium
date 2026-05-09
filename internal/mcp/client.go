@@ -196,6 +196,23 @@ func (c *Client) GetSystemInfo() (*GetSystemInfoResponse, error) {
 	return &resp, nil
 }
 
+// AddRoute creates a domain → container:port mapping in the sentinel
+// reverse proxy. Used by the expose_port tool to make a container
+// reachable on the public internet under a chosen hostname.
+func (c *Client) AddRoute(req AddRouteRequest) (*AddRouteResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/network/routes", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp AddRouteResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &resp, nil
+}
+
 // API Request/Response types
 
 type CreateContainerRequest struct {
@@ -251,6 +268,32 @@ type GetMetricsResponse struct {
 
 type GetSystemInfoResponse struct {
 	Info SystemInfo `json:"info"`
+}
+
+// AddRouteRequest mirrors network.proto's AddRouteRequest. JSON field
+// names match the grpc-gateway HTTP shape (camelCase) so requests
+// serialized with encoding/json land at /v1/network/routes correctly.
+type AddRouteRequest struct {
+	Domain        string `json:"domain"`
+	TargetIP      string `json:"targetIp"`
+	TargetPort    int32  `json:"targetPort"`
+	ContainerName string `json:"containerName,omitempty"`
+	Description   string `json:"description,omitempty"`
+	// Protocol is "ROUTE_PROTOCOL_HTTP" by default on the server side;
+	// expose_port doesn't surface it because the demo path is HTTP.
+}
+
+type AddRouteResponse struct {
+	Route   ProxyRoute `json:"route"`
+	Message string     `json:"message,omitempty"`
+}
+
+type ProxyRoute struct {
+	Domain        string `json:"domain"`
+	ContainerIP   string `json:"containerIp"`
+	Port          int32  `json:"port"`
+	ContainerName string `json:"containerName,omitempty"`
+	Description   string `json:"description,omitempty"`
 }
 
 type Container struct {
