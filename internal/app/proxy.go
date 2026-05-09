@@ -690,6 +690,16 @@ func (p *ProxyManager) EnableProxyProtocol(trustedCIDRs []string) error {
 	return nil
 }
 
+// toAnySlice converts a []string into []interface{} for embedding into raw
+// (map[string]interface{}) Caddy config nodes that we'll re-marshal to JSON.
+func toAnySlice(in []string) []interface{} {
+	out := make([]interface{}, len(in))
+	for i, s := range in {
+		out[i] = s
+	}
+	return out
+}
+
 // getFullConfig reads the complete Caddy config as a raw map.
 func (p *ProxyManager) getFullConfig() (map[string]interface{}, error) {
 	url := fmt.Sprintf("%s/config/", p.caddyAdminURL)

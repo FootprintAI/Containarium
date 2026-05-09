@@ -2,10 +2,61 @@ package app
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+// fakeCaddy is a minimal stand-in for the Caddy admin API that simulates the
+// real semantics: GET on a config sub-path returns that sub-tree, POST /load
+// atomically replaces the whole config. This is what the manager's
+// getFullConfig + loadConfig path expects, and lets tests catch bugs that
+// only show up under real /load semantics (vs. naive PATCH-replace).
+type fakeCaddy struct {
+	config map[string]interface{}
+	loads  int
+}
+
+func newFakeCaddy(initial map[string]interface{}) *httptest.Server {
+	fc := &fakeCaddy{config: initial}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/config/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/config/")
+		path = strings.TrimSuffix(path, "/")
+		if path == "" {
+			_ = json.NewEncoder(w).Encode(fc.config)
+			return
+		}
+		var node interface{} = fc.config
+		for _, p := range strings.Split(path, "/") {
+			m, ok := node.(map[string]interface{})
+			if !ok {
+				http.Error(w, "null", http.StatusNotFound)
+				return
+			}
+			node = m[p]
+		}
+		_ = json.NewEncoder(w).Encode(node)
+	})
+	mux.HandleFunc("/load", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", http.StatusMethodNotAllowed)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var newCfg map[string]interface{}
+		if err := json.Unmarshal(body, &newCfg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		fc.config = newCfg
+		fc.loads++
+		w.WriteHeader(http.StatusOK)
+	})
+	return httptest.NewServer(mux)
+}
 
 func TestNewProxyManager(t *testing.T) {
 	pm := NewProxyManager("http://localhost:2019", "containarium.dev")
