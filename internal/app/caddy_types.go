@@ -176,43 +176,6 @@ type CaddyL4Handler struct {
 	Upstreams []CaddyL4Upstream `json:"upstreams,omitempty"`
 }
 
-// CaddyL4ProxyProtocolHandler represents layer4.handlers.proxy_protocol —
-// consumes a PROXY v2 header from the front of incoming connections and
-// rewrites conn.RemoteAddr to the parsed source. Lenient on missing PROXY
-// headers (passes through unchanged), so the same config also handles the
-// deploy-gap state where the upstream sender hasn't been switched yet.
-type CaddyL4ProxyProtocolHandler struct {
-	Handler string   `json:"handler"`           // always "proxy_protocol"
-	Allow   []string `json:"allow,omitempty"`   // CIDR list of trusted PROXY senders
-	Timeout string   `json:"timeout,omitempty"` // e.g. "5s"
-}
-
-// CaddyL4SubrouteHandler represents layer4.handlers.subroute — nests a route
-// table inside another handler chain so matchers run AFTER any preceding
-// handler (e.g. proxy_protocol) has consumed bytes.
-type CaddyL4SubrouteHandler struct {
-	Handler string        `json:"handler"` // always "subroute"
-	Routes  []interface{} `json:"routes"`  // raw to preserve unknown fields on pass-through routes
-}
-
-// CaddyL4ProxyHandler is layer4.handlers.proxy with the optional
-// ProxyProtocol option that re-emits a PROXY v1/v2 header to the upstream
-// so the next hop (e.g. Caddy srv0's listener_wrapper) can recover the
-// source. CaddyL4Handler above is the unadorned form used by routes that
-// don't need to emit PROXY.
-type CaddyL4ProxyHandler struct {
-	Handler       string            `json:"handler"`                  // always "proxy"
-	Upstreams     []CaddyL4Upstream `json:"upstreams"`
-	ProxyProtocol string            `json:"proxy_protocol,omitempty"` // "v1" or "v2"
-}
-
-// CaddyL4WrappedOuterRoute is the verified-good shape from sandbox tier 1:
-// a single outer route whose handlers are (proxy_protocol, subroute), so
-// the SNI matchers inside the subroute see post-PROXY-strip TLS bytes.
-type CaddyL4WrappedOuterRoute struct {
-	Handle []interface{} `json:"handle"` // [CaddyL4ProxyProtocolHandler, CaddyL4SubrouteHandler]
-}
-
 // CaddyL4Upstream represents an upstream for layer4 proxy
 type CaddyL4Upstream struct {
 	Dial []string `json:"dial"`
