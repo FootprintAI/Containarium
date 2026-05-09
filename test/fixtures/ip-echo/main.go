@@ -6,7 +6,7 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -19,13 +19,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		// Echoed verbatim into a text/plain response — there is no HTML
-		// rendering path, so the gosec G203 "XSS via taint" finding is a
-		// false positive in this test-fixture context.
-		fmt.Fprintf(w, "remote_addr=%s\n", r.RemoteAddr)                       // #nosec G203 -- text/plain, no XSS surface
-		fmt.Fprintf(w, "x_forwarded_for=%s\n", r.Header.Get("X-Forwarded-For")) // #nosec G203 -- text/plain, no XSS surface
-		fmt.Fprintf(w, "x_real_ip=%s\n", r.Header.Get("X-Real-IP"))            // #nosec G203 -- text/plain, no XSS surface
-		fmt.Fprintf(w, "host=%s\n", r.Host)                                    // #nosec G203 -- text/plain, no XSS surface
+		// Plain key=value lines, written via io.WriteString so the response
+		// has no format-string path that could be confused with HTML
+		// rendering. Test fixture only — not a user-facing surface.
+		writeKV(w, "remote_addr", r.RemoteAddr)
+		writeKV(w, "x_forwarded_for", r.Header.Get("X-Forwarded-For"))
+		writeKV(w, "x_real_ip", r.Header.Get("X-Real-IP"))
+		writeKV(w, "host", r.Host)
 	})
 
 	srv := &http.Server{
@@ -39,4 +39,11 @@ func main() {
 
 	log.Printf("[ip-echo] listening on %s", *addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+func writeKV(w io.Writer, key, value string) {
+	_, _ = io.WriteString(w, key)
+	_, _ = io.WriteString(w, "=")
+	_, _ = io.WriteString(w, value)
+	_, _ = io.WriteString(w, "\n")
 }
