@@ -150,9 +150,8 @@ type CaddyL4App struct {
 
 // CaddyL4Server represents a layer4 server with listeners and routes
 type CaddyL4Server struct {
-	Listen           []string               `json:"listen"`
-	ListenerWrappers []CaddyListenerWrapper `json:"listener_wrappers,omitempty"`
-	Routes           []CaddyL4Route         `json:"routes"`
+	Listen []string       `json:"listen"`
+	Routes []CaddyL4Route `json:"routes"`
 }
 
 // CaddyL4Route represents a layer4 route with match conditions and handlers
@@ -173,9 +172,8 @@ type CaddyL4TLSMatch struct {
 
 // CaddyL4Handler represents a layer4 handler (proxy or subroute)
 type CaddyL4Handler struct {
-	Handler       string            `json:"handler"`
-	Upstreams     []CaddyL4Upstream `json:"upstreams,omitempty"`
-	ProxyProtocol string            `json:"proxy_protocol,omitempty"` // "v1" or "v2" — re-emit a PROXY header to the upstream
+	Handler   string           `json:"handler"`
+	Upstreams []CaddyL4Upstream `json:"upstreams,omitempty"`
 }
 
 // CaddyL4Upstream represents an upstream for layer4 proxy
