@@ -670,34 +670,18 @@ func (p *ProxyManager) EnableProxyProtocol(trustedCIDRs []string) error {
 
 	// Set only the two fields we care about — leave listen/routes/etc intact.
 	// proxy_protocol must come before tls in the wrapper chain so the PROXY
-	// header is consumed before TLS parsing.
-	srv["listener_wrappers"] = []interface{}{
-		map[string]interface{}{
-			"wrapper": "proxy_protocol",
-			"timeout": "5s",
-			"allow":   toAnySlice(trustedCIDRs),
-		},
-		map[string]interface{}{"wrapper": "tls"},
+	// header is consumed before TLS parsing. Use the typed structs from
+	// caddy_types.go so the JSON shape is verified at compile time.
+	srv["listener_wrappers"] = []CaddyListenerWrapper{
+		{Wrapper: "proxy_protocol", Timeout: "5s", Allow: trustedCIDRs},
+		{Wrapper: "tls"},
 	}
-	srv["trusted_proxies"] = map[string]interface{}{
-		"source": "static",
-		"ranges": toAnySlice(trustedCIDRs),
-	}
+	srv["trusted_proxies"] = CaddyTrustedProxies{Source: "static", Ranges: trustedCIDRs}
 
 	if err := p.loadConfig(config); err != nil {
 		return fmt.Errorf("load config with proxy_protocol: %w", err)
 	}
 	return nil
-}
-
-// toAnySlice converts a []string into []interface{} for embedding into raw
-// (map[string]interface{}) Caddy config nodes that we'll re-marshal to JSON.
-func toAnySlice(in []string) []interface{} {
-	out := make([]interface{}, len(in))
-	for i, s := range in {
-		out[i] = s
-	}
-	return out
 }
 
 // getFullConfig reads the complete Caddy config as a raw map.
