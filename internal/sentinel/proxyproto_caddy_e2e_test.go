@@ -143,7 +143,7 @@ func TestProxyProtocolE2E_RealCaddy(t *testing.T) {
 		}
 	}()
 
-	require.NoError(t, waitForCaddyReady(ctx, caddyAdminPort), "caddy admin endpoint never came up")
+	require.NoError(t, waitForCaddyReady(ctx, caddyAdminPort, caddyHTTPSPort), "caddy never became ready")
 
 	// ---------------------------------------------------------------
 	// 4. In-process relay: TCP forwarder that prepends our PROXY v2 header
@@ -224,28 +224,47 @@ func runProxyProtoRelay(ln net.Listener, backend string) {
 	}
 }
 
-// waitForCaddyReady polls the admin endpoint until Caddy responds or the
-// context is cancelled. Caddy's /config/ endpoint is the cheapest readiness
-// probe: it returns 200 once the config is loaded.
-func waitForCaddyReady(ctx context.Context, adminPort int) error {
-	url := fmt.Sprintf("http://127.0.0.1:%d/config/", adminPort)
+// waitForCaddyReady polls until BOTH the admin endpoint and the HTTPS
+// listener are accepting connections, or the context is cancelled.
+//
+// On CI runners with cold caches, Caddy can take several seconds to
+// provision its internal CA cert and finish wiring up the HTTPS server even
+// after the admin API responds. So both probes are required: admin is the
+// "config loaded" signal, and the TCP probe on httpsPort is the "ready to
+// terminate TLS" signal.
+func waitForCaddyReady(ctx context.Context, adminPort, httpsPort int) error {
+	adminURL := fmt.Sprintf("http://127.0.0.1:%d/config/", adminPort)
+	httpsAddr := fmt.Sprintf("127.0.0.1:%d", httpsPort)
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
-	deadline := time.NewTimer(20 * time.Second)
+	deadline := time.NewTimer(45 * time.Second)
 	defer deadline.Stop()
+
+	adminOK, httpsOK := false, false
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("timeout waiting for caddy admin")
+			return fmt.Errorf("timeout waiting for caddy: admin=%v httpsListen=%v", adminOK, httpsOK)
 		case <-tick.C:
-			resp, err := http.Get(url)
-			if err == nil {
-				resp.Body.Close()
-				if resp.StatusCode == 200 {
-					return nil
+			if !adminOK {
+				if resp, err := http.Get(adminURL); err == nil {
+					resp.Body.Close()
+					if resp.StatusCode == 200 {
+						adminOK = true
+					}
 				}
+			}
+			if !httpsOK {
+				c, err := net.DialTimeout("tcp", httpsAddr, 200*time.Millisecond)
+				if err == nil {
+					c.Close()
+					httpsOK = true
+				}
+			}
+			if adminOK && httpsOK {
+				return nil
 			}
 		}
 	}
