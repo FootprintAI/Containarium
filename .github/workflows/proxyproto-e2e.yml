@@ -1,0 +1,77 @@
+name: PROXY Protocol E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-and-default-e2e:
+    name: Unit + default e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Run sentinel + app tests
+        run: go test -v -race -timeout 5m ./internal/sentinel/... ./internal/app/...
+
+  real-caddy-e2e:
+    name: Real Caddy wire-compat e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Cache built caddy binary
+        id: cache-caddy
+        uses: actions/cache@v4
+        with:
+          path: ./bin/caddy
+          # Bump the suffix to invalidate the cache when bumping Caddy.
+          key: caddy-${{ runner.os }}-amd64-v2-stable
+
+      - name: Build Caddy via xcaddy
+        if: steps.cache-caddy.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+          mkdir -p bin
+          xcaddy build --output ./bin/caddy
+
+      - name: Verify proxy_protocol module is present
+        run: |
+          set -euo pipefail
+          ./bin/caddy version
+          ./bin/caddy list-modules | grep -E '^caddy\.listeners\.proxy_protocol$' \
+            || { echo "::error::proxy_protocol listener wrapper missing from Caddy build"; exit 1; }
+
+      - name: Put built Caddy on PATH
+        run: echo "${{ github.workspace }}/bin" >> "$GITHUB_PATH"
+
+      - name: Run real-Caddy e2e
+        run: |
+          set -euo pipefail
+          which caddy
+          go test -v -timeout 5m \
+            -tags=proxyproto_real_caddy \
+            -run TestProxyProtocolE2E_RealCaddy \
+            ./internal/sentinel/...

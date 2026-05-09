@@ -38,6 +38,7 @@ type Config struct {
 	KeySyncInterval    time.Duration // interval for syncing SSH keys from backend (0 = default 2m)
 	TunnelMode         bool          // if true, the Manager waits for tunnel connections instead of resolving IP at startup
 	HybridMode         bool          // if true, GCP + tunnel backends coexist
+	ProxyProtocol      bool          // if true, prepend a PROXY v2 header to forwarded HTTPS streams so the downstream Caddy sees the real client IP
 }
 
 // Manager is the core sentinel orchestrator.
@@ -575,11 +576,41 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 			return
 		}
 		defer dst.Close()
+
+		// Optionally prepend a PROXY v2 header so the downstream Caddy can
+		// recover the real client IP (otherwise it sees the sentinel/loopback
+		// peer of the forwarded TCP stream). Must be written before any TLS
+		// bytes — peekedConn replays the ClientHello starting at the next
+		// Read on our side, but we haven't copied any of it to dst yet.
+		if m.config.ProxyProtocol {
+			if err := writeProxyHeader(dst, conn); err != nil {
+				log.Printf("[sentinel] proxy-proto: %v", err)
+				return
+			}
+		}
+
 		done := make(chan struct{}, 2)
 		go func() { io.Copy(dst, peekedConn); done <- struct{}{} }()
 		go func() { io.Copy(peekedConn, dst); done <- struct{}{} }()
 		<-done
 	}
+}
+
+// writeProxyHeader writes a PROXY v2 header to dst describing the client TCP
+// connection conn. Returns an error if either address is missing or the write
+// fails. Non-TCP addresses are skipped silently — without addresses we can't
+// build a meaningful header, but failing the connection would be worse than
+// degrading to the legacy "sentinel-as-client" behavior.
+func writeProxyHeader(dst io.Writer, conn net.Conn) error {
+	src, _ := conn.RemoteAddr().(*net.TCPAddr)
+	dstAddr, _ := conn.LocalAddr().(*net.TCPAddr)
+	if src == nil || dstAddr == nil {
+		return nil
+	}
+	if _, err := WriteProxyV2(dst, src, dstAddr); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+	return nil
 }
 
 // setHTTPSMaintenanceHandler sets the dispatch handler to serve maintenance TLS page.

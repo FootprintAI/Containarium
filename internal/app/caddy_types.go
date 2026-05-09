@@ -6,8 +6,28 @@ package app
 
 // CaddyServerConfig represents a Caddy HTTP server configuration
 type CaddyServerConfig struct {
-	Listen []string          `json:"listen"`
-	Routes []CaddyRouteTyped `json:"routes"` // No omitempty - Caddy needs empty array to exist
+	Listen           []string               `json:"listen"`
+	ListenerWrappers []CaddyListenerWrapper `json:"listener_wrappers,omitempty"`
+	Routes           []CaddyRouteTyped      `json:"routes"` // No omitempty - Caddy needs empty array to exist
+	TrustedProxies   *CaddyTrustedProxies   `json:"trusted_proxies,omitempty"`
+}
+
+// CaddyListenerWrapper represents one entry in a server's listener_wrappers
+// chain. The order matters: proxy_protocol must come before tls so the PROXY
+// header is consumed before the TLS parser runs.
+type CaddyListenerWrapper struct {
+	Wrapper string   `json:"wrapper"`           // e.g. "proxy_protocol", "tls"
+	Timeout string   `json:"timeout,omitempty"` // e.g. "5s" — only meaningful for proxy_protocol
+	Allow   []string `json:"allow,omitempty"`   // CIDR list of trusted senders for proxy_protocol
+}
+
+// CaddyTrustedProxies marks IP ranges whose forwarded IP information Caddy will
+// trust. Combined with the proxy_protocol listener wrapper, the parsed source
+// address propagates into reverse_proxy as X-Forwarded-For for upstream
+// containers.
+type CaddyTrustedProxies struct {
+	Source string   `json:"source"` // "static"
+	Ranges []string `json:"ranges"`
 }
 
 // CaddyRouteTyped represents a fully typed Caddy route configuration

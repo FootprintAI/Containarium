@@ -34,6 +34,7 @@ var (
 	sentinelKeySyncInterval    time.Duration
 	sentinelTunnelToken         string
 	sentinelTunnelTokenPolicies []string
+	sentinelProxyProtocol       bool
 )
 
 var sentinelCmd = &cobra.Command{
@@ -79,6 +80,7 @@ func init() {
 	sentinelCmd.Flags().DurationVar(&sentinelRecoveryTimeout, "recovery-timeout", 10*time.Minute, "Warn if recovery takes longer than this (0 to disable)")
 	sentinelCmd.Flags().DurationVar(&sentinelCertSyncInterval, "cert-sync-interval", 6*time.Hour, "Interval for syncing TLS certificates from backend (0 to use default 6h)")
 	sentinelCmd.Flags().DurationVar(&sentinelKeySyncInterval, "key-sync-interval", 2*time.Minute, "Interval for syncing SSH keys from backend for sshpiper (0 to use default 2m)")
+	sentinelCmd.Flags().BoolVar(&sentinelProxyProtocol, "proxy-protocol", false, "Prepend a PROXY v2 header to forwarded HTTPS streams so the backend Caddy sees the real client IP (requires Caddy with proxy_protocol listener wrapper trusting the sentinel)")
 }
 
 func runSentinel(cmd *cobra.Command, args []string) error {
@@ -130,6 +132,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 				CertSyncInterval:   sentinelCertSyncInterval,
 				KeySyncInterval:    sentinelKeySyncInterval,
 				HybridMode:         true,
+				ProxyProtocol:      sentinelProxyProtocol,
 			}
 
 			manager := sentinel.NewManager(config, gcpProvider)
@@ -201,6 +204,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			CertSyncInterval:   sentinelCertSyncInterval,
 			KeySyncInterval:    sentinelKeySyncInterval,
 			TunnelMode:         true,
+			ProxyProtocol:      sentinelProxyProtocol,
 		}
 
 		manager := sentinel.NewManager(config, provider)
@@ -261,6 +265,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		RecoveryTimeout:    sentinelRecoveryTimeout,
 		CertSyncInterval:   sentinelCertSyncInterval,
 		KeySyncInterval:    sentinelKeySyncInterval,
+		ProxyProtocol:      sentinelProxyProtocol,
 	}
 
 	manager := sentinel.NewManager(config, provider)

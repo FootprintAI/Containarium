@@ -632,6 +632,61 @@ func (p *ProxyManager) createHTTPApp() error {
 	return nil
 }
 
+// EnableProxyProtocol installs a [proxy_protocol, tls] listener_wrappers chain
+// and sets trusted_proxies on the Caddy server, so connections arriving from
+// trustedCIDRs (typically the sentinel's IP, or 127.0.0.0/8 in tunnel mode)
+// are PROXY-decoded and the real client IP propagates as X-Forwarded-For to
+// upstream containers.
+//
+// trustedCIDRs MUST NOT be empty or wildcard — an unrestricted allow list lets
+// any direct VPC client spoof its source IP via a forged PROXY header.
+//
+// This call PATCHes only the server-level listener_wrappers and trusted_proxies
+// fields; existing routes are preserved by Caddy's JSON merge semantics.
+func (p *ProxyManager) EnableProxyProtocol(trustedCIDRs []string) error {
+	if len(trustedCIDRs) == 0 {
+		return fmt.Errorf("EnableProxyProtocol: trustedCIDRs must not be empty (refusing to accept PROXY headers from any source)")
+	}
+	for _, c := range trustedCIDRs {
+		if c == "0.0.0.0/0" || c == "::/0" {
+			return fmt.Errorf("EnableProxyProtocol: refusing wildcard CIDR %q — pin to the sentinel IP or 127.0.0.0/8", c)
+		}
+	}
+
+	patch := struct {
+		ListenerWrappers []CaddyListenerWrapper `json:"listener_wrappers"`
+		TrustedProxies   *CaddyTrustedProxies   `json:"trusted_proxies"`
+	}{
+		ListenerWrappers: []CaddyListenerWrapper{
+			{Wrapper: "proxy_protocol", Timeout: "5s", Allow: trustedCIDRs},
+			{Wrapper: "tls"},
+		},
+		TrustedProxies: &CaddyTrustedProxies{Source: "static", Ranges: trustedCIDRs},
+	}
+	body, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal patch: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/config/apps/http/servers/%s", p.caddyAdminURL, p.serverName)
+	req, err := http.NewRequest("PATCH", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("apply listener_wrappers patch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy returned %d enabling proxy_protocol: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
 // createServerConfig creates the initial Caddy server configuration
 func (p *ProxyManager) createServerConfig() error {
 	config := CaddyServerConfig{

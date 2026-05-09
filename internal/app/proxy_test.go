@@ -523,3 +523,70 @@ func TestProxyManager_ListRoutes_BadRequest(t *testing.T) {
 		t.Errorf("ListRoutes() returned %d routes, want 0 on 400 response", len(routes))
 	}
 }
+
+func TestProxyManager_EnableProxyProtocol(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	pm := NewProxyManager(server.URL, "kafeido.app")
+	if err := pm.EnableProxyProtocol([]string{"10.0.0.1/32", "127.0.0.0/8"}); err != nil {
+		t.Fatalf("EnableProxyProtocol err = %v", err)
+	}
+
+	if gotMethod != "PATCH" {
+		t.Errorf("method = %q, want PATCH", gotMethod)
+	}
+	if gotPath != "/config/apps/http/servers/srv0" {
+		t.Errorf("path = %q, want /config/apps/http/servers/srv0", gotPath)
+	}
+
+	wrappers, ok := gotBody["listener_wrappers"].([]interface{})
+	if !ok || len(wrappers) != 2 {
+		t.Fatalf("listener_wrappers = %v, want 2-entry array", gotBody["listener_wrappers"])
+	}
+	first := wrappers[0].(map[string]interface{})
+	if first["wrapper"] != "proxy_protocol" {
+		t.Errorf("first wrapper = %v, want proxy_protocol", first["wrapper"])
+	}
+	allow, ok := first["allow"].([]interface{})
+	if !ok || len(allow) != 2 || allow[0] != "10.0.0.1/32" {
+		t.Errorf("allow CIDRs = %v, want [10.0.0.1/32 127.0.0.0/8]", allow)
+	}
+	second := wrappers[1].(map[string]interface{})
+	if second["wrapper"] != "tls" {
+		t.Errorf("second wrapper = %v, want tls", second["wrapper"])
+	}
+
+	tp, ok := gotBody["trusted_proxies"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("trusted_proxies missing or not an object: %v", gotBody["trusted_proxies"])
+	}
+	if tp["source"] != "static" {
+		t.Errorf("trusted_proxies.source = %v, want static", tp["source"])
+	}
+}
+
+func TestProxyManager_EnableProxyProtocol_RefusesEmpty(t *testing.T) {
+	pm := NewProxyManager("http://unreachable", "kafeido.app")
+	if err := pm.EnableProxyProtocol(nil); err == nil {
+		t.Errorf("expected error on empty CIDRs, got nil")
+	}
+}
+
+func TestProxyManager_EnableProxyProtocol_RefusesWildcard(t *testing.T) {
+	pm := NewProxyManager("http://unreachable", "kafeido.app")
+	if err := pm.EnableProxyProtocol([]string{"0.0.0.0/0"}); err == nil {
+		t.Errorf("expected error on wildcard CIDR, got nil")
+	}
+	if err := pm.EnableProxyProtocol([]string{"10.0.0.0/8", "::/0"}); err == nil {
+		t.Errorf("expected error on IPv6 wildcard CIDR, got nil")
+	}
+}
