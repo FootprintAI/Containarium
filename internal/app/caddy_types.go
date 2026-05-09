@@ -170,10 +170,15 @@ type CaddyL4TLSMatch struct {
 	SNI []string `json:"sni"`
 }
 
-// CaddyL4Handler represents a layer4 handler (proxy or subroute)
+// CaddyL4Handler represents a layer4 handler (proxy or subroute).
+// ProxyProtocol is set on the catchall's proxy handler to "v2" when the L4
+// server is in PROXY-aware mode — caddy-l4 then re-emits a PROXY v2 header
+// to the upstream HTTP server (srv0) so srv0's listener_wrapper can recover
+// the parsed source.
 type CaddyL4Handler struct {
-	Handler   string           `json:"handler"`
-	Upstreams []CaddyL4Upstream `json:"upstreams,omitempty"`
+	Handler       string            `json:"handler"`
+	Upstreams     []CaddyL4Upstream `json:"upstreams,omitempty"`
+	ProxyProtocol string            `json:"proxy_protocol,omitempty"`
 }
 
 // CaddyL4Upstream represents an upstream for layer4 proxy

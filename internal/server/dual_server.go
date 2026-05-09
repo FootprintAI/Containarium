@@ -406,6 +406,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 						// Create L4ProxyManager for TLS passthrough (SNI-based) routing
 						l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
+						if config.ProxyProtocol {
+							if err := l4ProxyManager.EnableL4ProxyProtocol(config.ProxyProtocolTrusted); err != nil {
+								log.Printf("Warning: Failed to enable PROXY protocol on caddy-l4: %v", err)
+							}
+						}
 
 						// Create RouteStore for persistent route storage
 						routeStore, err = app.NewRouteStore(context.Background(), appStore.Pool())
@@ -566,6 +571,11 @@ skipAppHosting:
 				// Create L4ProxyManager for TLS passthrough (SNI-based) routing.
 				// L4 is activated lazily by RouteSyncJob when passthrough routes exist.
 				l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
+				if config.ProxyProtocol {
+					if err := l4ProxyManager.EnableL4ProxyProtocol(config.ProxyProtocolTrusted); err != nil {
+						log.Printf("Warning: Failed to enable PROXY protocol on caddy-l4: %v", err)
+					}
+				}
 
 				syncInterval := config.RouteSyncInterval
 				if syncInterval == 0 {
