@@ -22,10 +22,10 @@ func main() {
 		// Echoed verbatim into a text/plain response — there is no HTML
 		// rendering path, so the gosec G203 "XSS via taint" finding is a
 		// false positive in this test-fixture context.
-		fmt.Fprintf(w, "remote_addr=%s\n", r.RemoteAddr)             //nolint:gosec // G203 false positive (text/plain)
-		fmt.Fprintf(w, "x_forwarded_for=%s\n", r.Header.Get("X-Forwarded-For")) //nolint:gosec // G203 false positive (text/plain)
-		fmt.Fprintf(w, "x_real_ip=%s\n", r.Header.Get("X-Real-IP"))  //nolint:gosec // G203 false positive (text/plain)
-		fmt.Fprintf(w, "host=%s\n", r.Host)                          //nolint:gosec // G203 false positive (text/plain)
+		fmt.Fprintf(w, "remote_addr=%s\n", r.RemoteAddr)                       // #nosec G203 -- text/plain, no XSS surface
+		fmt.Fprintf(w, "x_forwarded_for=%s\n", r.Header.Get("X-Forwarded-For")) // #nosec G203 -- text/plain, no XSS surface
+		fmt.Fprintf(w, "x_real_ip=%s\n", r.Header.Get("X-Real-IP"))            // #nosec G203 -- text/plain, no XSS surface
+		fmt.Fprintf(w, "host=%s\n", r.Host)                                    // #nosec G203 -- text/plain, no XSS surface
 	})
 
 	srv := &http.Server{
