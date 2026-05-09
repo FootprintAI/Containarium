@@ -100,6 +100,13 @@ type DualServerConfig struct {
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
 	AlertWebhookSecret string // HMAC-SHA256 signing secret for webhook payloads (optional)
+
+	// PROXY protocol: when true, configure Caddy with [proxy_protocol, tls]
+	// listener_wrappers and trusted_proxies so containers receive the real
+	// client IP via X-Forwarded-For. ProxyProtocolTrusted lists the CIDRs
+	// allowed to send PROXY headers (typically the sentinel's VPC IP/32).
+	ProxyProtocol        bool
+	ProxyProtocolTrusted []string
 }
 
 // DualServer runs both gRPC and HTTP/REST servers
@@ -389,6 +396,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						if err := proxyManager.EnsureServerConfig(); err != nil {
 							log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
 						}
+						if config.ProxyProtocol {
+							if err := proxyManager.EnableProxyProtocol(config.ProxyProtocolTrusted); err != nil {
+								log.Printf("Warning: Failed to enable PROXY protocol on Caddy: %v", err)
+							} else {
+								log.Printf("Caddy listener_wrappers: PROXY v2 enabled, trusted=%v", config.ProxyProtocolTrusted)
+							}
+						}
 
 						// Create L4ProxyManager for TLS passthrough (SNI-based) routing
 						l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
@@ -540,6 +554,13 @@ skipAppHosting:
 				proxyManager := app.NewProxyManager(caddyAdminURL, config.BaseDomain)
 				if err := proxyManager.EnsureServerConfig(); err != nil {
 					log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
+				}
+				if config.ProxyProtocol {
+					if err := proxyManager.EnableProxyProtocol(config.ProxyProtocolTrusted); err != nil {
+						log.Printf("Warning: Failed to enable PROXY protocol on Caddy: %v", err)
+					} else {
+						log.Printf("Caddy listener_wrappers: PROXY v2 enabled, trusted=%v", config.ProxyProtocolTrusted)
+					}
 				}
 
 				// Create L4ProxyManager for TLS passthrough (SNI-based) routing.
