@@ -105,6 +105,8 @@ func readFileBytes(path string, info os.FileInfo, args map[string]interface{}) (
 		limit = int64(v)
 	}
 
+	// #nosec G304 -- path was sanitized by validatePath; agent-box's contract
+	// is to read agent-supplied paths, optionally constrained by AGENTBOX_ROOT.
 	f, err := os.Open(path)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read_file: %v", err)), nil
@@ -133,6 +135,7 @@ func readFileHead(path string, info os.FileInfo, n int) (*mcp.CallToolResult, er
 	if n <= 0 {
 		return mcp.NewToolResultError("read_file: 'head' must be > 0"), nil
 	}
+	// #nosec G304 -- see read_file rationale; path is validatePath-sanitized.
 	f, err := os.Open(path)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read_file: %v", err)), nil
@@ -167,6 +170,7 @@ func readFileTail(path string, info os.FileInfo, n int) (*mcp.CallToolResult, er
 	// Simple impl: ring buffer of strings while scanning. Adequate for log
 	// files where N is small (<10k); a chunked-from-end seek would be
 	// faster on huge files but adds complexity we don't need yet.
+	// #nosec G304 -- see read_file rationale; path is validatePath-sanitized.
 	f, err := os.Open(path)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read_file: %v", err)), nil
@@ -251,7 +255,7 @@ func handleWriteFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return mcp.NewToolResultError(fmt.Sprintf("write_file: invalid mode %q: %v", modeStr, err)), nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write_file: mkdir parent: %v", err)), nil
 	}
 
@@ -290,9 +294,15 @@ func handleWriteFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 func parseFileMode(s string) (os.FileMode, error) {
 	s = strings.TrimPrefix(s, "0o")
 	s = strings.TrimPrefix(s, "0")
-	var n int64
+	var n uint32
 	if _, err := fmt.Sscanf(s, "%o", &n); err != nil {
 		return 0, err
+	}
+	// Cap at 12-bit POSIX mode + setuid/setgid/sticky. Anything higher
+	// is the caller asking for permission bits Go's os.FileMode reserves
+	// for symlink/directory/device flags — refuse rather than alias.
+	if n > 0o7777 {
+		return 0, fmt.Errorf("mode %q out of range (max 0o7777)", s)
 	}
 	return os.FileMode(n), nil
 }
@@ -401,7 +411,7 @@ func handleMoveFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	if _, err := os.Stat(src); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("move_file: %v", err)), nil
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("move_file: mkdir parent: %v", err)), nil
 	}
 	if err := os.Rename(src, dst); err != nil {

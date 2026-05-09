@@ -68,6 +68,10 @@ func handleShellExec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// #nosec G204 -- shell_exec's contract is to run agent-supplied shell
+	// commands; arbitrary command execution is the entire feature, not a
+	// vulnerability. Sandboxing is the operator's responsibility (run
+	// agent-box inside an LXC container with limited filesystem reach).
 	cmd := exec.CommandContext(execCtx, "/bin/sh", "-c", command)
 	if cwd != "" {
 		cmd.Dir = cwd
