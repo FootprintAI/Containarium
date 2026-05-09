@@ -155,24 +155,31 @@ func (m *L4ProxyManager) DeactivateL4() error {
 	return nil
 }
 
-// EnableL4ProxyProtocol installs a proxy_protocol listener wrapper on the L4
-// server and sets `proxy_protocol: "v2"` on every route's proxy handler. Use
-// this when the upstream HTTPS source (e.g. the sentinel) prepends a PROXY v2
-// header: caddy-l4 needs the listener wrapper to strip and parse it before
-// SNI matching can run on the underlying TLS bytes, and it needs to re-emit a
-// PROXY header when forwarding so the downstream HTTP server (Caddy srv0 or
-// any TLS-passthrough upstream that speaks PROXY) can recover the real
-// client IP.
+// EnableL4ProxyProtocol restructures the L4 server to handle a PROXY v2
+// header at the front of incoming connections. caddy-l4 has no server-level
+// listener_wrappers field (HTTP-only API), so the canonical pattern is:
 //
-// trustedCIDRs MUST NOT be empty or wildcard. The set should include both the
-// upstream sender (typically the sentinel's VPC IP) and the local CIDRs used
-// by caddy-l4 to dial its own HTTP server (loopback / ::1). Same set is fine
-// to share with the HTTP server's own EnableProxyProtocol — extra entries are
-// harmless because the wrapper only treats matching peers as PROXY-speaking.
+//   - Wrap existing routes inside a subroute under a top-level route whose
+//     match list contains the `proxy_protocol` matcher. The matcher consumes
+//     the PROXY header from the connection during match phase, so subsequent
+//     SNI matchers in the subroute see the underlying TLS bytes cleanly.
+//   - Tag every proxy handler with `proxy_protocol: "v2"` so caddy-l4
+//     re-emits a PROXY v2 header to its upstream (srv0 or gRPC LXCs)
+//     carrying the parsed real client IP.
+//   - Add a fallback top-level route with the same routes WITHOUT
+//     proxy_protocol emission, so that connections WITHOUT a PROXY header
+//     (the sentinel hasn't been flipped yet, or some other direct caller)
+//     keep flowing as before. After the sentinel flag flips, the fallback
+//     becomes dead code; before it flips, the fallback prevents a deploy-gap
+//     outage.
 //
-// Idempotent: if L4 is not active, this is a no-op (returns nil) — the
-// wrapper will be installed when L4 is activated by RouteSyncJob, provided
-// the daemon is restarted with the flag set.
+// trustedCIDRs is recorded for symmetry with the HTTP-side wrapper but is
+// only used by the matcher's allow-list once we add it.
+//
+// Idempotent: if the outer wrapper is already in place (first route's match
+// contains proxy_protocol), this is a no-op. If L4 is not active at all,
+// this returns nil silently — RouteSyncJob will activate L4 with passthrough
+// routes later, and the daemon should be restarted to re-apply on activation.
 func (m *L4ProxyManager) EnableL4ProxyProtocol(trustedCIDRs []string) error {
 	if len(trustedCIDRs) == 0 {
 		return fmt.Errorf("EnableL4ProxyProtocol: trustedCIDRs must not be empty")
@@ -200,47 +207,114 @@ func (m *L4ProxyManager) EnableL4ProxyProtocol(trustedCIDRs []string) error {
 		return fmt.Errorf("L4 server %q missing from config", L4ServerName)
 	}
 
-	// Install the listener_wrappers chain at the server level.
-	// Order matters: proxy_protocol must run before any TLS/SNI-aware matcher
-	// so SNI matching sees the underlying ClientHello, not PROXY magic bytes.
-	wrappers := []interface{}{
+	routes, _ := srv["routes"].([]interface{})
+	if len(routes) == 0 {
+		return fmt.Errorf("L4 server has no routes")
+	}
+
+	// Idempotency: if the first route already matches on proxy_protocol, skip.
+	if first, ok := routes[0].(map[string]interface{}); ok {
+		if isProxyProtocolMatchRoute(first) {
+			log.Printf("[L4ProxyManager] PROXY protocol already enabled on L4 — no change")
+			return nil
+		}
+	}
+
+	// Build proxy-protocol-aware copies of the routes (same matchers, but
+	// each proxy handler gains proxy_protocol: "v2" for outbound emission).
+	proxyAware := make([]interface{}, 0, len(routes))
+	for _, r := range routes {
+		copyRoute := deepCopyRoute(r)
+		tagProxyHandlersV2(copyRoute)
+		proxyAware = append(proxyAware, copyRoute)
+	}
+
+	wrappedRoutes := []interface{}{
+		// Outer route 1: PROXY-bearing connections.
 		map[string]interface{}{
-			"wrapper": "proxy_protocol",
-			"timeout": "5s",
-			"allow":   toAnySlice(trustedCIDRs),
+			"match": []interface{}{
+				map[string]interface{}{"proxy_protocol": map[string]interface{}{}},
+			},
+			"handle": []interface{}{
+				map[string]interface{}{
+					"handler": "subroute",
+					"routes":  proxyAware,
+				},
+			},
+		},
+		// Outer route 2: fallback for connections without a PROXY header.
+		// Mirrors the original routes verbatim so existing behavior is
+		// preserved during the deploy gap (daemon flipped, sentinel still
+		// sending raw TCP). Once the sentinel flips, this route is dead code.
+		map[string]interface{}{
+			"handle": []interface{}{
+				map[string]interface{}{
+					"handler": "subroute",
+					"routes":  routes, // original references, no proxy_protocol emission
+				},
+			},
 		},
 	}
-	srv["listener_wrappers"] = wrappers
-
-	// Walk every route and tag its `proxy` handler with proxy_protocol: "v2"
-	// so caddy-l4 emits a PROXY v2 header to its upstream carrying the parsed
-	// real client IP.
-	routes, _ := srv["routes"].([]interface{})
-	patched := 0
-	for _, r := range routes {
-		route, ok := r.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		handlers, _ := route["handle"].([]interface{})
-		for _, h := range handlers {
-			handler, ok := h.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if handler["handler"] == "proxy" {
-				handler["proxy_protocol"] = "v2"
-				patched++
-			}
-		}
-	}
+	srv["routes"] = wrappedRoutes
 
 	if err := m.loadConfig(config); err != nil {
 		return fmt.Errorf("load L4 config with proxy_protocol: %w", err)
 	}
 
-	log.Printf("[L4ProxyManager] PROXY protocol enabled: listener_wrappers + %d proxy handler(s) tagged v2, trusted=%v", patched, trustedCIDRs)
+	log.Printf("[L4ProxyManager] PROXY protocol enabled: %d routes wrapped in proxy_protocol-matched subroute (with non-PROXY fallback), trusted=%v", len(proxyAware), trustedCIDRs)
 	return nil
+}
+
+// isProxyProtocolMatchRoute reports whether a route's match list contains the
+// proxy_protocol matcher (used to detect "already wrapped" state).
+func isProxyProtocolMatchRoute(route map[string]interface{}) bool {
+	matches, ok := route["match"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, m := range matches {
+		mm, ok := m.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasPP := mm["proxy_protocol"]; hasPP {
+			return true
+		}
+	}
+	return false
+}
+
+// deepCopyRoute returns a JSON-roundtripped clone of a route so subsequent
+// mutations don't alias the original (used to keep the "proxy-aware" copy
+// independent from the fallback copy).
+func deepCopyRoute(r interface{}) map[string]interface{} {
+	b, _ := json.Marshal(r)
+	var out map[string]interface{}
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+// tagProxyHandlersV2 walks a route and adds proxy_protocol: "v2" to any
+// `proxy` handler. It also recurses into `subroute` handlers' nested routes.
+func tagProxyHandlersV2(route map[string]interface{}) {
+	handlers, _ := route["handle"].([]interface{})
+	for _, h := range handlers {
+		handler, ok := h.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch handler["handler"] {
+		case "proxy":
+			handler["proxy_protocol"] = "v2"
+		case "subroute":
+			nested, _ := handler["routes"].([]interface{})
+			for _, nr := range nested {
+				if nrm, ok := nr.(map[string]interface{}); ok {
+					tagProxyHandlersV2(nrm)
+				}
+			}
+		}
+	}
 }
 
 // toAnySlice converts a []string to []interface{} for embedding in raw config maps.

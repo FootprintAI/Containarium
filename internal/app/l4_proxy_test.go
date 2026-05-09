@@ -75,33 +75,34 @@ func TestL4ProxyManager_EnableL4ProxyProtocol_NotActive(t *testing.T) {
 	}
 }
 
-func TestL4ProxyManager_EnableL4ProxyProtocol_PatchesActive(t *testing.T) {
-	// Mimic the prod shape: 2 SNI routes + 1 catch-all, all with proxy handlers.
+func TestL4ProxyManager_EnableL4ProxyProtocol_WrapsRoutes(t *testing.T) {
+	// Mimic prod: 2 SNI routes + 1 catch-all.
+	originalRoutes := []interface{}{
+		map[string]interface{}{
+			"match": []interface{}{
+				map[string]interface{}{"tls": map[string]interface{}{"sni": []interface{}{"a.example"}}},
+			},
+			"handle": []interface{}{
+				map[string]interface{}{"handler": "proxy", "upstreams": []interface{}{
+					map[string]interface{}{"dial": []interface{}{"10.0.3.1:5000"}},
+				}},
+			},
+		},
+		map[string]interface{}{
+			"handle": []interface{}{
+				map[string]interface{}{"handler": "proxy", "upstreams": []interface{}{
+					map[string]interface{}{"dial": []interface{}{"localhost:8443"}},
+				}},
+			},
+		},
+	}
 	initial := map[string]interface{}{
 		"apps": map[string]interface{}{
 			"layer4": map[string]interface{}{
 				"servers": map[string]interface{}{
 					L4ServerName: map[string]interface{}{
 						"listen": []interface{}{":443"},
-						"routes": []interface{}{
-							map[string]interface{}{
-								"match": []interface{}{
-									map[string]interface{}{"tls": map[string]interface{}{"sni": []interface{}{"a.example"}}},
-								},
-								"handle": []interface{}{
-									map[string]interface{}{"handler": "proxy", "upstreams": []interface{}{
-										map[string]interface{}{"dial": []interface{}{"10.0.3.1:5000"}},
-									}},
-								},
-							},
-							map[string]interface{}{
-								"handle": []interface{}{
-									map[string]interface{}{"handler": "proxy", "upstreams": []interface{}{
-										map[string]interface{}{"dial": []interface{}{"localhost:8443"}},
-									}},
-								},
-							},
-						},
+						"routes": originalRoutes,
 					},
 				},
 			},
@@ -111,11 +112,11 @@ func TestL4ProxyManager_EnableL4ProxyProtocol_PatchesActive(t *testing.T) {
 	defer srv.Close()
 
 	m := NewL4ProxyManager(srv.URL)
-	if err := m.EnableL4ProxyProtocol([]string{"10.130.0.13/32", "127.0.0.0/8"}); err != nil {
+	if err := m.EnableL4ProxyProtocol([]string{"10.130.0.13/32"}); err != nil {
 		t.Fatalf("EnableL4ProxyProtocol err = %v", err)
 	}
 
-	// Re-read the loaded config and verify shape.
+	// Re-read the loaded config and verify the wrapped shape.
 	resp, err := http.Get(srv.URL + "/config/")
 	if err != nil {
 		t.Fatalf("get config: %v", err)
@@ -126,36 +127,96 @@ func TestL4ProxyManager_EnableL4ProxyProtocol_PatchesActive(t *testing.T) {
 
 	srvCfg := cfg["apps"].(map[string]interface{})["layer4"].(map[string]interface{})["servers"].(map[string]interface{})[L4ServerName].(map[string]interface{})
 
-	wrappers, ok := srvCfg["listener_wrappers"].([]interface{})
-	if !ok || len(wrappers) != 1 {
-		t.Fatalf("listener_wrappers shape wrong: %v", srvCfg["listener_wrappers"])
-	}
-	w0 := wrappers[0].(map[string]interface{})
-	if w0["wrapper"] != "proxy_protocol" {
-		t.Errorf("wrapper = %v, want proxy_protocol", w0["wrapper"])
-	}
-	allow, _ := w0["allow"].([]interface{})
-	if len(allow) != 2 || allow[0] != "10.130.0.13/32" {
-		t.Errorf("allow CIDRs = %v, want [10.130.0.13/32 127.0.0.0/8]", allow)
+	// caddy-l4 has NO server-level listener_wrappers field — must not be present.
+	if _, ok := srvCfg["listener_wrappers"]; ok {
+		t.Errorf("listener_wrappers must NOT appear at L4 server level (caddy-l4 rejects it); got %v", srvCfg["listener_wrappers"])
 	}
 
-	// Each proxy handler should have proxy_protocol = "v2".
-	routes := srvCfg["routes"].([]interface{})
-	if len(routes) != 2 {
-		t.Fatalf("expected 2 routes, got %d", len(routes))
+	outer, ok := srvCfg["routes"].([]interface{})
+	if !ok || len(outer) != 2 {
+		t.Fatalf("expected 2 outer routes (proxy_protocol-matched + fallback), got %v", srvCfg["routes"])
 	}
-	for i, r := range routes {
-		route := r.(map[string]interface{})
-		handlers := route["handle"].([]interface{})
+
+	// Outer route 0: proxy_protocol matcher + subroute with v2-tagged handlers.
+	if !isProxyProtocolMatchRoute(outer[0].(map[string]interface{})) {
+		t.Errorf("outer route 0 should have proxy_protocol matcher; got %v", outer[0])
+	}
+	subroute0 := outer[0].(map[string]interface{})["handle"].([]interface{})[0].(map[string]interface{})
+	if subroute0["handler"] != "subroute" {
+		t.Fatalf("outer 0 handler should be subroute, got %v", subroute0["handler"])
+	}
+	innerRoutes0 := subroute0["routes"].([]interface{})
+	if len(innerRoutes0) != 2 {
+		t.Fatalf("inner subroute 0 should have 2 routes, got %d", len(innerRoutes0))
+	}
+	for i, ir := range innerRoutes0 {
+		handlers := ir.(map[string]interface{})["handle"].([]interface{})
 		for _, h := range handlers {
 			handler := h.(map[string]interface{})
-			if handler["handler"] != "proxy" {
-				continue
-			}
-			if handler["proxy_protocol"] != "v2" {
-				t.Errorf("route %d proxy handler proxy_protocol = %v, want v2", i, handler["proxy_protocol"])
+			if handler["handler"] == "proxy" && handler["proxy_protocol"] != "v2" {
+				t.Errorf("inner-0 route %d proxy handler proxy_protocol=%v, want v2", i, handler["proxy_protocol"])
 			}
 		}
+	}
+
+	// Outer route 1: fallback (no match clause, original routes unmodified).
+	if _, hasMatch := outer[1].(map[string]interface{})["match"]; hasMatch {
+		t.Errorf("outer route 1 (fallback) should have no match clause")
+	}
+	subroute1 := outer[1].(map[string]interface{})["handle"].([]interface{})[0].(map[string]interface{})
+	innerRoutes1 := subroute1["routes"].([]interface{})
+	for i, ir := range innerRoutes1 {
+		handlers := ir.(map[string]interface{})["handle"].([]interface{})
+		for _, h := range handlers {
+			handler := h.(map[string]interface{})
+			if handler["handler"] == "proxy" {
+				if _, hasPP := handler["proxy_protocol"]; hasPP {
+					t.Errorf("fallback inner route %d MUST NOT have proxy_protocol set; got %v", i, handler["proxy_protocol"])
+				}
+			}
+		}
+	}
+}
+
+// Idempotency: calling EnableL4ProxyProtocol on already-wrapped routes must
+// be a no-op (no double-wrapping).
+func TestL4ProxyManager_EnableL4ProxyProtocol_Idempotent(t *testing.T) {
+	wrapped := map[string]interface{}{
+		"apps": map[string]interface{}{
+			"layer4": map[string]interface{}{
+				"servers": map[string]interface{}{
+					L4ServerName: map[string]interface{}{
+						"listen": []interface{}{":443"},
+						"routes": []interface{}{
+							map[string]interface{}{
+								"match": []interface{}{
+									map[string]interface{}{"proxy_protocol": map[string]interface{}{}},
+								},
+								"handle": []interface{}{
+									map[string]interface{}{"handler": "subroute", "routes": []interface{}{}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	srv := newFakeCaddy(wrapped)
+	defer srv.Close()
+
+	m := NewL4ProxyManager(srv.URL)
+	if err := m.EnableL4ProxyProtocol([]string{"10.130.0.13/32"}); err != nil {
+		t.Fatalf("idempotent call must not error: %v", err)
+	}
+
+	resp, _ := http.Get(srv.URL + "/config/")
+	defer resp.Body.Close()
+	var cfg map[string]interface{}
+	_ = json.NewDecoder(resp.Body).Decode(&cfg)
+	routes := cfg["apps"].(map[string]interface{})["layer4"].(map[string]interface{})["servers"].(map[string]interface{})[L4ServerName].(map[string]interface{})["routes"].([]interface{})
+	if len(routes) != 1 {
+		t.Errorf("expected route count to stay at 1 (no double-wrapping), got %d", len(routes))
 	}
 }
 
