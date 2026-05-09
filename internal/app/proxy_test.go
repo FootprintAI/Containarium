@@ -524,53 +524,82 @@ func TestProxyManager_ListRoutes_BadRequest(t *testing.T) {
 	}
 }
 
-func TestProxyManager_EnableProxyProtocol(t *testing.T) {
-	var gotPath, gotMethod string
-	var gotBody map[string]interface{}
+// TestProxyManager_EnableProxyProtocol_PreservesOtherFields is a regression
+// test for the prod-broke-everything bug: a naive `PATCH /config/.../srv0`
+// REPLACES the resource at that path, wiping listen/routes/etc. The fix is to
+// read the full config, set only the two new fields on the server map, and
+// atomically /load. The fake Caddy here mirrors the real semantics — its
+// /load endpoint accepts the entire config and is the only way to mutate
+// state — so a regression to PATCH-replace would surface as missing fields.
+func TestProxyManager_EnableProxyProtocol_PreservesOtherFields(t *testing.T) {
+	initial := map[string]interface{}{
+		"apps": map[string]interface{}{
+			"http": map[string]interface{}{
+				"servers": map[string]interface{}{
+					"srv0": map[string]interface{}{
+						"listen": []interface{}{":80", ":443"},
+						"routes": []interface{}{
+							map[string]interface{}{
+								"@id":    "wordpress.kafeido.app",
+								"match":  []interface{}{map[string]interface{}{"host": []interface{}{"wordpress.kafeido.app"}}},
+								"handle": []interface{}{map[string]interface{}{"handler": "reverse_proxy", "upstreams": []interface{}{map[string]interface{}{"dial": "10.0.3.53:8888"}}}},
+							},
+						},
+						"automatic_https": map[string]interface{}{"disable_redirects": false},
+					},
+				},
+			},
+		},
+	}
+	srv := newFakeCaddy(initial)
+	defer srv.Close()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotMethod = r.Method
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	pm := NewProxyManager(server.URL, "kafeido.app")
-	if err := pm.EnableProxyProtocol([]string{"10.0.0.1/32", "127.0.0.0/8"}); err != nil {
+	pm := NewProxyManager(srv.URL, "kafeido.app")
+	if err := pm.EnableProxyProtocol([]string{"10.130.0.13/32", "127.0.0.0/8"}); err != nil {
 		t.Fatalf("EnableProxyProtocol err = %v", err)
 	}
 
-	if gotMethod != "PATCH" {
-		t.Errorf("method = %q, want PATCH", gotMethod)
+	resp, err := http.Get(srv.URL + "/config/")
+	if err != nil {
+		t.Fatalf("get config: %v", err)
 	}
-	if gotPath != "/config/apps/http/servers/srv0" {
-		t.Errorf("path = %q, want /config/apps/http/servers/srv0", gotPath)
-	}
+	defer resp.Body.Close()
+	var cfg map[string]interface{}
+	_ = json.NewDecoder(resp.Body).Decode(&cfg)
 
-	wrappers, ok := gotBody["listener_wrappers"].([]interface{})
+	srv0 := cfg["apps"].(map[string]interface{})["http"].(map[string]interface{})["servers"].(map[string]interface{})["srv0"].(map[string]interface{})
+
+	// New fields are present and well-shaped.
+	wrappers, ok := srv0["listener_wrappers"].([]interface{})
 	if !ok || len(wrappers) != 2 {
-		t.Fatalf("listener_wrappers = %v, want 2-entry array", gotBody["listener_wrappers"])
+		t.Fatalf("listener_wrappers shape wrong: %v", srv0["listener_wrappers"])
 	}
-	first := wrappers[0].(map[string]interface{})
-	if first["wrapper"] != "proxy_protocol" {
-		t.Errorf("first wrapper = %v, want proxy_protocol", first["wrapper"])
+	if w0 := wrappers[0].(map[string]interface{}); w0["wrapper"] != "proxy_protocol" {
+		t.Errorf("first wrapper = %v, want proxy_protocol", w0["wrapper"])
 	}
-	allow, ok := first["allow"].([]interface{})
-	if !ok || len(allow) != 2 || allow[0] != "10.0.0.1/32" {
-		t.Errorf("allow CIDRs = %v, want [10.0.0.1/32 127.0.0.0/8]", allow)
+	if w1 := wrappers[1].(map[string]interface{}); w1["wrapper"] != "tls" {
+		t.Errorf("second wrapper = %v, want tls", w1["wrapper"])
 	}
-	second := wrappers[1].(map[string]interface{})
-	if second["wrapper"] != "tls" {
-		t.Errorf("second wrapper = %v, want tls", second["wrapper"])
+	tp, ok := srv0["trusted_proxies"].(map[string]interface{})
+	if !ok || tp["source"] != "static" {
+		t.Fatalf("trusted_proxies wrong: %v", srv0["trusted_proxies"])
+	}
+	tpRanges, _ := tp["ranges"].([]interface{})
+	if len(tpRanges) != 2 || tpRanges[0] != "10.130.0.13/32" {
+		t.Errorf("trusted_proxies.ranges = %v, want [10.130.0.13/32 127.0.0.0/8]", tpRanges)
 	}
 
-	tp, ok := gotBody["trusted_proxies"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("trusted_proxies missing or not an object: %v", gotBody["trusted_proxies"])
+	// THE REGRESSION CHECK — every pre-existing field must still be present.
+	listen, ok := srv0["listen"].([]interface{})
+	if !ok || len(listen) != 2 || listen[0] != ":80" || listen[1] != ":443" {
+		t.Fatalf("REGRESSION: listen was clobbered, got %v (want [:80 :443])", srv0["listen"])
 	}
-	if tp["source"] != "static" {
-		t.Errorf("trusted_proxies.source = %v, want static", tp["source"])
+	routes, ok := srv0["routes"].([]interface{})
+	if !ok || len(routes) != 1 {
+		t.Fatalf("REGRESSION: routes was clobbered, got %v", srv0["routes"])
+	}
+	if _, ok := srv0["automatic_https"]; !ok {
+		t.Errorf("REGRESSION: automatic_https field was wiped")
 	}
 }
 

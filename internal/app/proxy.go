@@ -641,8 +641,11 @@ func (p *ProxyManager) createHTTPApp() error {
 // trustedCIDRs MUST NOT be empty or wildcard — an unrestricted allow list lets
 // any direct VPC client spoof its source IP via a forged PROXY header.
 //
-// This call PATCHes only the server-level listener_wrappers and trusted_proxies
-// fields; existing routes are preserved by Caddy's JSON merge semantics.
+// Implementation: GETs the full Caddy config, sets the two new fields on the
+// HTTP server map in place (preserving listen/routes/automatic_https/etc.),
+// then atomically POSTs /load. A naive PATCH on the server path REPLACES the
+// resource at that path — that wipes everything else on the server, which is
+// exactly the regression we're avoiding here.
 func (p *ProxyManager) EnableProxyProtocol(trustedCIDRs []string) error {
 	if len(trustedCIDRs) == 0 {
 		return fmt.Errorf("EnableProxyProtocol: trustedCIDRs must not be empty (refusing to accept PROXY headers from any source)")
@@ -653,36 +656,79 @@ func (p *ProxyManager) EnableProxyProtocol(trustedCIDRs []string) error {
 		}
 	}
 
-	patch := struct {
-		ListenerWrappers []CaddyListenerWrapper `json:"listener_wrappers"`
-		TrustedProxies   *CaddyTrustedProxies   `json:"trusted_proxies"`
-	}{
-		ListenerWrappers: []CaddyListenerWrapper{
-			{Wrapper: "proxy_protocol", Timeout: "5s", Allow: trustedCIDRs},
-			{Wrapper: "tls"},
+	config, err := p.getFullConfig()
+	if err != nil {
+		return fmt.Errorf("get full config: %w", err)
+	}
+	apps := getMapField(config, "apps")
+	httpApp := getMapField(apps, "http")
+	servers := getMapField(httpApp, "servers")
+	srv := getMapField(servers, p.serverName)
+	if srv == nil {
+		return fmt.Errorf("HTTP server %q missing from config", p.serverName)
+	}
+
+	// Set only the two fields we care about — leave listen/routes/etc intact.
+	// proxy_protocol must come before tls in the wrapper chain so the PROXY
+	// header is consumed before TLS parsing.
+	srv["listener_wrappers"] = []interface{}{
+		map[string]interface{}{
+			"wrapper": "proxy_protocol",
+			"timeout": "5s",
+			"allow":   toAnySlice(trustedCIDRs),
 		},
-		TrustedProxies: &CaddyTrustedProxies{Source: "static", Ranges: trustedCIDRs},
+		map[string]interface{}{"wrapper": "tls"},
 	}
-	body, err := json.Marshal(patch)
-	if err != nil {
-		return fmt.Errorf("marshal patch: %w", err)
+	srv["trusted_proxies"] = map[string]interface{}{
+		"source": "static",
+		"ranges": toAnySlice(trustedCIDRs),
 	}
 
-	url := fmt.Sprintf("%s/config/apps/http/servers/%s", p.caddyAdminURL, p.serverName)
-	req, err := http.NewRequest("PATCH", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+	if err := p.loadConfig(config); err != nil {
+		return fmt.Errorf("load config with proxy_protocol: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	return nil
+}
 
-	resp, err := p.httpClient.Do(req)
+// getFullConfig reads the complete Caddy config as a raw map.
+func (p *ProxyManager) getFullConfig() (map[string]interface{}, error) {
+	url := fmt.Sprintf("%s/config/", p.caddyAdminURL)
+	resp, err := p.httpClient.Get(url)
 	if err != nil {
-		return fmt.Errorf("apply listener_wrappers patch: %w", err)
+		return nil, fmt.Errorf("get config: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("caddy returned %d enabling proxy_protocol: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("caddy returned %d: %s", resp.StatusCode, string(b))
+	}
+	var config map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, fmt.Errorf("decode config: %w", err)
+	}
+	return config, nil
+}
+
+// loadConfig atomically replaces the entire Caddy config via POST /load.
+func (p *ProxyManager) loadConfig(config map[string]interface{}) error {
+	body, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	url := fmt.Sprintf("%s/load", p.caddyAdminURL)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create /load request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("post /load: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy /load returned %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
 }
