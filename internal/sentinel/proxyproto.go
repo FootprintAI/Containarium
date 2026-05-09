@@ -40,6 +40,10 @@ func WriteProxyV2(w io.Writer, src, dst *net.TCPAddr) (int, error) {
 	if src == nil || dst == nil {
 		return 0, fmt.Errorf("proxyproto: nil addr (src=%v dst=%v)", src, dst)
 	}
+	if src.Port < 0 || src.Port > 0xFFFF || dst.Port < 0 || dst.Port > 0xFFFF {
+		return 0, fmt.Errorf("proxyproto: port out of TCP range (src=%d dst=%d)", src.Port, dst.Port)
+	}
+	srcPort, dstPort := uint16(src.Port), uint16(dst.Port) //nolint:gosec // bounds-checked above (G115)
 
 	srcIP4, dstIP4 := src.IP.To4(), dst.IP.To4()
 	useV4 := srcIP4 != nil && dstIP4 != nil
@@ -49,16 +53,16 @@ func WriteProxyV2(w io.Writer, src, dst *net.TCPAddr) (int, error) {
 		frame = make([]byte, 16+12)
 		copy(frame[16:20], srcIP4)
 		copy(frame[20:24], dstIP4)
-		binary.BigEndian.PutUint16(frame[24:26], uint16(src.Port))
-		binary.BigEndian.PutUint16(frame[26:28], uint16(dst.Port))
+		binary.BigEndian.PutUint16(frame[24:26], srcPort)
+		binary.BigEndian.PutUint16(frame[26:28], dstPort)
 		frame[13] = 0x11 // AF_INET + STREAM
 		binary.BigEndian.PutUint16(frame[14:16], 12)
 	} else {
 		frame = make([]byte, 16+36)
 		copy(frame[16:32], src.IP.To16())
 		copy(frame[32:48], dst.IP.To16())
-		binary.BigEndian.PutUint16(frame[48:50], uint16(src.Port))
-		binary.BigEndian.PutUint16(frame[50:52], uint16(dst.Port))
+		binary.BigEndian.PutUint16(frame[48:50], srcPort)
+		binary.BigEndian.PutUint16(frame[50:52], dstPort)
 		frame[13] = 0x21 // AF_INET6 + STREAM
 		binary.BigEndian.PutUint16(frame[14:16], 36)
 	}

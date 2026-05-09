@@ -59,7 +59,7 @@ func handle(client net.Conn, backendAddr string, proxyProto bool) {
 	}
 
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
 	<-done
 }
