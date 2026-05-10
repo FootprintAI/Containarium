@@ -1,0 +1,48 @@
+// Copy this file to terraform.tfvars (gitignored) and fill in real values.
+//
+//   cp terraform.tfvars.example terraform.tfvars
+//   $EDITOR terraform.tfvars
+//   terraform init && terraform apply
+
+// REQUIRED: GCP project to create resources in.
+project_id = "your-gcp-project-id"
+
+// REQUIRED: SSH public key for the admin user. The admin can SSH into
+// the sentinel to issue JWTs. Add multiple keys if a team is recording.
+admin_ssh_keys = {
+  admin = "ssh-ed25519 AAAAC3Nz... admin@example.com"
+}
+
+// REQUIRED: random JWT signing secret. Generate with:
+//   openssl rand -hex 32
+// Keep this secret — anyone who has it can mint admin tokens.
+jwt_secret = "REPLACE_ME_WITH_OPENSSL_RAND_HEX_32"
+
+// Optional: lock down SSH to your egress IP for the recording window.
+// "0.0.0.0/0" is fine for a quick test; tighter is better.
+allowed_ssh_sources = ["0.0.0.0/0"]
+
+// Optional: GCP region/zone. Defaults to us-central1 / us-central1-a.
+// Pick whatever's closest to where you'll record.
+// region = "us-central1"
+// zone   = "us-central1-a"
+
+// Optional but recommended: provision DNS via Cloud DNS so demo URLs
+// resolve out of the box. Leave blank to set DNS manually.
+//
+// dns_managed_zone_name is the *Terraform name* of the Cloud DNS zone
+// resource — if you created it via `gcloud dns managed-zones create
+// kafeido-app --dns-name=kafeido.app.`, the name is "kafeido-app".
+//
+// dns_zone_domain is the DNS name without the trailing dot.
+//
+// demo_subdomain is what gets prepended; the demo's exposed apps will
+// land at <app>.<demo_subdomain>.<dns_zone_domain>.
+//
+// dns_managed_zone_name = "kafeido-app"
+// dns_zone_domain       = "kafeido.app"
+// demo_subdomain        = "demo"
+
+// Optional: which release version of containarium to install. Update
+// when a new release ships and you want to re-record against it.
+// containarium_version = "0.16.4"
