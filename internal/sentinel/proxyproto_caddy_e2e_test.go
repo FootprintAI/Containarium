@@ -224,29 +224,46 @@ func runProxyProtoRelay(ln net.Listener, backend string) {
 	}
 }
 
-// waitForCaddyReady polls until BOTH the admin endpoint and the HTTPS
-// listener are accepting connections, or the context is cancelled.
+// waitForCaddyReady polls until Caddy is fully ready to terminate
+// requests through its proxy_protocol+tls listener, or the context is
+// cancelled.
 //
-// On CI runners with cold caches, Caddy can take several seconds to
-// provision its internal CA cert and finish wiring up the HTTPS server even
-// after the admin API responds. So both probes are required: admin is the
-// "config loaded" signal, and the TCP probe on httpsPort is the "ready to
-// terminate TLS" signal.
+// History: an earlier version used a plain TCP-connect probe on httpsPort
+// to signal "listener ready." That probe was a lie. Caddy's HTTPS
+// listener accepts TCP connections the moment its kernel listen socket
+// binds — well before the TLS automation has provisioned its internal
+// CA and issued a cert for "localhost." Tests racing past that probe
+// would then hit `tls: internal error` on handshake. ~10% of CI runs
+// flaked this way until we replaced the TCP probe with a real
+// end-to-end handshake.
+//
+// The current readiness probe:
+//
+//  1. Admin endpoint returns 200 — config has loaded.
+//  2. A round-trip from a fresh TCP dial → PROXY v2 header →
+//     TLS handshake to ServerName "localhost" succeeds. This proves
+//     the listener_wrappers (proxy_protocol then tls) are wired up
+//     AND the cert is provisioned and present in the TLS state machine.
+//
+// Both probes use a generous 45s deadline because cold-cache CI runners
+// have been observed to take 8–15s on cert provisioning.
 func waitForCaddyReady(ctx context.Context, adminPort, httpsPort int) error {
 	adminURL := fmt.Sprintf("http://127.0.0.1:%d/config/", adminPort)
 	httpsAddr := fmt.Sprintf("127.0.0.1:%d", httpsPort)
-	tick := time.NewTicker(100 * time.Millisecond)
+	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	deadline := time.NewTimer(45 * time.Second)
 	defer deadline.Stop()
 
-	adminOK, httpsOK := false, false
+	adminOK, tlsOK := false, false
+	var lastTLSErr error
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("timeout waiting for caddy: admin=%v httpsListen=%v", adminOK, httpsOK)
+			return fmt.Errorf("timeout waiting for caddy: admin=%v tlsHandshake=%v lastTLSErr=%v",
+				adminOK, tlsOK, lastTLSErr)
 		case <-tick.C:
 			if !adminOK {
 				if resp, err := http.Get(adminURL); err == nil {
@@ -256,18 +273,50 @@ func waitForCaddyReady(ctx context.Context, adminPort, httpsPort int) error {
 					}
 				}
 			}
-			if !httpsOK {
-				c, err := net.DialTimeout("tcp", httpsAddr, 200*time.Millisecond)
-				if err == nil {
-					c.Close()
-					httpsOK = true
+			if adminOK && !tlsOK {
+				if err := probeCaddyTLS(httpsAddr); err == nil {
+					tlsOK = true
+				} else {
+					lastTLSErr = err
 				}
 			}
-			if adminOK && httpsOK {
+			if adminOK && tlsOK {
 				return nil
 			}
 		}
 	}
+}
+
+// probeCaddyTLS performs one full PROXY-v2-then-TLS-handshake probe
+// against Caddy's HTTPS listener. Returns nil on success, the underlying
+// error on failure. Loopback-only (Caddy's listener_wrapper trusts
+// 127.0.0.0/8 in the test config), with short per-probe deadlines so a
+// stuck handshake doesn't burn the outer waitForCaddyReady budget.
+func probeCaddyTLS(httpsAddr string) error {
+	conn, err := net.DialTimeout("tcp", httpsAddr, 1*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	src := conn.LocalAddr().(*net.TCPAddr)
+	dst := conn.RemoteAddr().(*net.TCPAddr)
+	if _, err := WriteProxyV2(conn, src, dst); err != nil {
+		return fmt.Errorf("proxy header: %w", err)
+	}
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		// The probe is a liveness check, not a security check; the
+		// internal CA's cert isn't in any trust store.
+		InsecureSkipVerify: true, //nolint:gosec
+		ServerName:         "localhost",
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		return fmt.Errorf("handshake: %w", err)
+	}
+	_ = tlsConn.Close()
+	return nil
 }
 
 // testWriter adapts t.Logf so subprocess output appears in test logs.
