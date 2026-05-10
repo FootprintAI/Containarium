@@ -12,8 +12,12 @@
 //   - delete_file     — remove a single file (refuses directories)
 //   - tail_log        — watch a file for new appends, bounded by follow_seconds
 //
-// All file paths can be confined to a project root via the AGENTBOX_ROOT
-// env var; unset means no constraint.
+// File-ops tools enforce a sandbox in this order:
+//   1. AGENTBOX_ROOT env var (strict floor when set).
+//   2. MCP Roots advertised by the client via roots/list (used as the
+//      sandbox when AGENTBOX_ROOT is unset). Falls back gracefully if
+//      the client doesn't support the capability.
+//   3. Unconstrained (only when both are absent).
 //
 // More tools (provision_postgres, deploy_app, snapshot, etc.) land in
 // subsequent commits.
@@ -25,7 +29,12 @@ import "github.com/mark3labs/mcp-go/server"
 // once at startup by cmd/agent-box. Each tool is implemented in its own
 // file (shell.go, files.go, …) and registers itself via a Register*
 // function — keeping main.go declarative and the toolset easy to discover.
+//
+// The MCPServer reference is also stashed in the package so file-ops
+// handlers can call s.RequestRoots() to fetch the client's filesystem
+// roots when AGENTBOX_ROOT isn't set. See sandbox.go.
 func RegisterTools(s *server.MCPServer) {
+	mcpServer = s
 	registerShellTool(s)
 	registerFileTools(s)
 	registerTailLogTool(s)

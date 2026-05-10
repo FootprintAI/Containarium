@@ -61,13 +61,13 @@ func readFileTool() mcp.Tool {
 	)
 }
 
-func handleReadFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func handleReadFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	rawPath, ok := args["path"].(string)
 	if !ok || rawPath == "" {
 		return mcp.NewToolResultError("read_file: 'path' is required"), nil
 	}
-	path, err := validatePath(rawPath)
+	path, err := validatePathCtx(ctx, rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read_file: %v", err)), nil
 	}
@@ -232,13 +232,13 @@ func writeFileTool() mcp.Tool {
 	)
 }
 
-func handleWriteFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func handleWriteFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	rawPath, ok := args["path"].(string)
 	if !ok || rawPath == "" {
 		return mcp.NewToolResultError("write_file: 'path' is required"), nil
 	}
-	path, err := validatePath(rawPath)
+	path, err := validatePathCtx(ctx, rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write_file: %v", err)), nil
 	}
@@ -328,13 +328,13 @@ func listDirectoryTool() mcp.Tool {
 	)
 }
 
-func handleListDirectory(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func handleListDirectory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	rawPath, ok := args["path"].(string)
 	if !ok || rawPath == "" {
 		return mcp.NewToolResultError("list_directory: 'path' is required"), nil
 	}
-	path, err := validatePath(rawPath)
+	path, err := validatePathCtx(ctx, rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("list_directory: %v", err)), nil
 	}
@@ -393,18 +393,18 @@ func moveFileTool() mcp.Tool {
 	)
 }
 
-func handleMoveFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func handleMoveFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	rawSrc, _ := args["source"].(string)
 	rawDst, _ := args["destination"].(string)
 	if rawSrc == "" || rawDst == "" {
 		return mcp.NewToolResultError("move_file: 'source' and 'destination' are required"), nil
 	}
-	src, err := validatePath(rawSrc)
+	src, err := validatePathCtx(ctx, rawSrc)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("move_file: source: %v", err)), nil
 	}
-	dst, err := validatePath(rawDst)
+	dst, err := validatePathCtx(ctx, rawDst)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("move_file: destination: %v", err)), nil
 	}
@@ -439,13 +439,13 @@ func deleteFileTool() mcp.Tool {
 	)
 }
 
-func handleDeleteFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func handleDeleteFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	rawPath, _ := args["path"].(string)
 	if rawPath == "" {
 		return mcp.NewToolResultError("delete_file: 'path' is required"), nil
 	}
-	path, err := validatePath(rawPath)
+	path, err := validatePathCtx(ctx, rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("delete_file: %v", err)), nil
 	}

@@ -361,7 +361,7 @@ func TestDeleteFile_NotFound(t *testing.T) {
 func TestSandboxRoot_RejectsOutsidePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(sandboxRootEnv, dir)
-	resetSandboxOnceForTest()
+	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
 
 	outside := filepath.Join(t.TempDir(), "evil") // different temp tree
 	_ = os.WriteFile(outside, []byte("x"), 0o644)
@@ -375,7 +375,7 @@ func TestSandboxRoot_RejectsOutsidePath(t *testing.T) {
 func TestSandboxRoot_AcceptsInsidePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(sandboxRootEnv, dir)
-	resetSandboxOnceForTest()
+	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
 
 	inside := filepath.Join(dir, "ok.txt")
 	_ = os.WriteFile(inside, []byte("hi"), 0o644)
@@ -393,7 +393,7 @@ func TestSandboxRoot_RejectsLookalikePrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(sandboxRootEnv, root)
-	resetSandboxOnceForTest()
+	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
 
 	evil := root + "-evil"
 	if err := os.Mkdir(evil, 0o755); err != nil {
@@ -512,7 +512,7 @@ func TestTailLog_NotFound(t *testing.T) {
 func TestTailLog_RespectsSandboxRoot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(sandboxRootEnv, dir)
-	resetSandboxOnceForTest()
+	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
 
 	outside := filepath.Join(t.TempDir(), "log")
 	_ = os.WriteFile(outside, []byte("x"), 0o644)
@@ -523,5 +523,75 @@ func TestTailLog_RespectsSandboxRoot(t *testing.T) {
 	})
 	if !res.IsError {
 		t.Errorf("sandbox should reject path outside AGENTBOX_ROOT")
+	}
+}
+
+// ----- MCP Roots / sandbox helpers -------------------------------------
+
+func TestRootURIsToPaths_ParsesFileURIs(t *testing.T) {
+	roots := []mcp.Root{
+		{URI: "file:///home/alice/project"},
+		{URI: "file://localhost/srv/box"},
+		{URI: "https://example.com/oops"}, // non-file scheme: dropped
+		{URI: "not-a-uri-at-all"},          // unparseable: dropped
+		{URI: "file://"},                   // empty path: dropped
+	}
+	got := rootURIsToPaths(roots)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 paths, got %d: %v", len(got), got)
+	}
+	if got[0] != "/home/alice/project" {
+		t.Errorf("first path = %q, want /home/alice/project", got[0])
+	}
+	if got[1] != "/srv/box" {
+		t.Errorf("second path = %q, want /srv/box", got[1])
+	}
+}
+
+func TestPathUnderAny(t *testing.T) {
+	roots := []string{"/home/alice/project", "/srv/box"}
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"under first root", "/home/alice/project/file.txt", true},
+		{"equals first root", "/home/alice/project", true},
+		{"under second root", "/srv/box/data", true},
+		{"under no root", "/etc/passwd", false},
+		{"lookalike prefix", "/srv/box-evil/x", false},
+		{"close but no", "/home/alice/projects-other", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pathUnderAny(tc.path, roots); got != tc.want {
+				t.Errorf("pathUnderAny(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidatePathAgainstRoots(t *testing.T) {
+	cases := []struct {
+		name    string
+		path    string
+		root    string
+		wantErr bool
+	}{
+		{"no root, any path ok", "/etc/passwd", "", false},
+		{"under explicit root", "/srv/box/file", "/srv/box", false},
+		{"equals explicit root", "/srv/box", "/srv/box", false},
+		{"outside explicit root", "/etc/passwd", "/srv/box", true},
+		{"lookalike prefix rejected", "/srv/box-evil/x", "/srv/box", true},
+		{"empty path rejected", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validatePathAgainstRoots(tc.path, tc.root)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validatePathAgainstRoots(%q, %q) err=%v, wantErr=%v",
+					tc.path, tc.root, err, tc.wantErr)
+			}
+		})
 	}
 }

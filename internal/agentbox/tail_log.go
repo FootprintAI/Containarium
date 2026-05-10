@@ -66,7 +66,7 @@ func handleTailLog(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	if !ok || rawPath == "" {
 		return mcp.NewToolResultError("tail_log: 'path' is required"), nil
 	}
-	path, err := validatePath(rawPath)
+	path, err := validatePathCtx(ctx, rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("tail_log: %v", err)), nil
 	}
