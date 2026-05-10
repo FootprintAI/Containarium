@@ -13,6 +13,18 @@ output "spot_vm_name" {
   value       = module.containarium.spot_vm_name
 }
 
+// Echo the GCP coordinates so scripts can `terraform output -raw zone`
+// instead of parsing them out of other outputs.
+output "project_id" {
+  description = "GCP project ID for this deployment."
+  value       = var.project_id
+}
+
+output "zone" {
+  description = "GCP zone for this deployment."
+  value       = var.zone
+}
+
 output "demo_base_domain" {
   description = "Base hostname for the demo. Apps deployed during the demo land at <name>.<this>."
   value       = var.dns_managed_zone_name == "" ? "(set DNS manually)" : "${var.demo_subdomain}.${var.dns_zone_domain}"

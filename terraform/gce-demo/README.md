@@ -72,6 +72,20 @@ Provisions ~10 GCP resources; takes 5–10 minutes. The output prints
 a `next_steps` block with copy-paste commands for the next stage —
 read it.
 
+### 2a. Smoke-test (recommended)
+
+Before committing to the demo recording, verify the cluster actually
+works:
+
+```bash
+./scripts/smoke-test.sh
+```
+
+Four checks: SSH to sentinel, daemon running on backend, JWT issuance,
+authenticated API call. Run after every `terraform apply`. Pass
+`--expected-version=0.16.4` to fail if the daemon is on a different
+version than you expected.
+
 ### 3. Issue a demo JWT
 
 ```bash
