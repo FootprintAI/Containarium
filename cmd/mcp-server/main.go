@@ -5,9 +5,15 @@ import (
 	"os"
 
 	"github.com/footprintai/containarium/internal/mcp"
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 func main() {
+	// Log to stderr so stdout stays clean for the MCP protocol stream.
+	// Set this BEFORE LoadConfig so any config-load logging lands on
+	// stderr too (the printUsage path logs to whatever's wired up).
+	log.SetOutput(os.Stderr)
+
 	// Read configuration from environment or config file
 	config := mcp.LoadConfig()
 
@@ -27,9 +33,8 @@ func main() {
 		log.Fatalf("Failed to create MCP server: %v", err)
 	}
 
-	// Log to stderr so stdout is clean for MCP protocol
-	log.SetOutput(os.Stderr)
-	log.Printf("Starting Containarium MCP Server")
+	log.Printf("Starting Containarium MCP Server (version %s, commit %s)",
+		version.GetVersion(), version.GetCommitHash())
 	log.Printf("Server URL: %s", config.ServerURL)
 	log.Printf("Debug mode: %v", config.Debug)
 
