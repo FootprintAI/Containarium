@@ -11,6 +11,9 @@
 //   - move_file       — rename/move a file or directory
 //   - delete_file     — remove a single file (refuses directories)
 //   - tail_log        — watch a file for new appends, bounded by follow_seconds
+//   - process_start   — spawn a long-running process; output captured to a log file
+//   - process_list    — list managed processes with PID, command, liveness
+//   - process_kill    — SIGTERM (or SIGKILL with force) and reap
 //
 // File-ops tools enforce a sandbox in this order:
 //   1. AGENTBOX_ROOT env var (strict floor when set).
@@ -38,4 +41,5 @@ func RegisterTools(s *server.MCPServer) {
 	registerShellTool(s)
 	registerFileTools(s)
 	registerTailLogTool(s)
+	registerProcessTools(s)
 }
