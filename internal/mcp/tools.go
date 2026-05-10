@@ -186,6 +186,25 @@ func (s *Server) registerTools() {
 			Handler: handleListBackends,
 		},
 		{
+			Name: "get_backend",
+			Description: "Get a single backend's details by ID — same fields as list_backends " +
+				"but for one host, plus an explicit \"not found\" error when the ID doesn't " +
+				"exist. Useful when an agent has a backend ID from list_backends or from a " +
+				"container's backendId field and wants to drill down (\"is this peer healthy?\", " +
+				"\"how many containers does it have?\", \"does it have a GPU?\").",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id": map[string]interface{}{
+						"type":        "string",
+						"description": "Backend ID, as returned by list_backends or as a container's backendId field.",
+					},
+				},
+				"required": []string{"id"},
+			},
+			Handler: handleGetBackend,
+		},
+		{
 			Name: "expose_port",
 			Description: "Expose a container's port on a public hostname. Resolves the " +
 				"container's IP, then registers a domain → container:port route in the " +
@@ -422,41 +441,61 @@ func handleListBackends(client *Client, args map[string]interface{}) (string, er
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Found %d backend(s):\n\n", len(resp.Backends))
-	for _, bk := range resp.Backends {
-		health := "✓ healthy"
-		if !bk.Healthy {
-			health = "✗ unhealthy"
-		}
-		fmt.Fprintf(&b, "🖥️  %s  (%s, %s)\n", bk.ID, bk.Type, health)
-		if bk.Hostname != "" {
-			fmt.Fprintf(&b, "   Hostname:   %s\n", bk.Hostname)
-		}
-		if bk.OS != "" {
-			fmt.Fprintf(&b, "   OS:         %s\n", bk.OS)
-		}
-		if bk.Version != "" {
-			fmt.Fprintf(&b, "   Version:    %s\n", bk.Version)
-		}
-		fmt.Fprintf(&b, "   Containers: %d running\n", bk.ContainerCount)
-		if bk.UptimeSeconds > 0 {
-			fmt.Fprintf(&b, "   Uptime:     %s\n", formatUptime(bk.UptimeSeconds))
-		}
-		if bk.LastSeenAt != "" && bk.Type != "local" {
-			fmt.Fprintf(&b, "   Last seen:  %s\n", bk.LastSeenAt)
-		}
-		if len(bk.GPUs) > 0 {
-			fmt.Fprintf(&b, "   GPUs:\n")
-			for _, g := range bk.GPUs {
-				vram := ""
-				if g.VRAMBytes > 0 {
-					vram = fmt.Sprintf(" — %s VRAM", humanBytes(g.VRAMBytes))
-				}
-				fmt.Fprintf(&b, "     - %s %s%s\n", g.Vendor, g.ModelName, vram)
-			}
-		}
+	for i := range resp.Backends {
+		writeBackendDetail(&b, &resp.Backends[i])
 		b.WriteString("\n")
 	}
 	return b.String(), nil
+}
+
+func handleGetBackend(client *Client, args map[string]interface{}) (string, error) {
+	id, ok := args["id"].(string)
+	if !ok || id == "" {
+		return "", fmt.Errorf("id is required")
+	}
+	bk, err := client.GetBackend(id)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	writeBackendDetail(&b, bk)
+	return b.String(), nil
+}
+
+// writeBackendDetail renders one Backend in the same shape used by both
+// list_backends and get_backend so the agent sees a consistent format.
+func writeBackendDetail(b *strings.Builder, bk *Backend) {
+	health := "✓ healthy"
+	if !bk.Healthy {
+		health = "✗ unhealthy"
+	}
+	fmt.Fprintf(b, "🖥️  %s  (%s, %s)\n", bk.ID, bk.Type, health)
+	if bk.Hostname != "" {
+		fmt.Fprintf(b, "   Hostname:   %s\n", bk.Hostname)
+	}
+	if bk.OS != "" {
+		fmt.Fprintf(b, "   OS:         %s\n", bk.OS)
+	}
+	if bk.Version != "" {
+		fmt.Fprintf(b, "   Version:    %s\n", bk.Version)
+	}
+	fmt.Fprintf(b, "   Containers: %d running\n", bk.ContainerCount)
+	if bk.UptimeSeconds > 0 {
+		fmt.Fprintf(b, "   Uptime:     %s\n", formatUptime(bk.UptimeSeconds))
+	}
+	if bk.LastSeenAt != "" && bk.Type != "local" {
+		fmt.Fprintf(b, "   Last seen:  %s\n", bk.LastSeenAt)
+	}
+	if len(bk.GPUs) > 0 {
+		fmt.Fprintf(b, "   GPUs:\n")
+		for _, g := range bk.GPUs {
+			vram := ""
+			if g.VRAMBytes > 0 {
+				vram = fmt.Sprintf(" — %s VRAM", humanBytes(g.VRAMBytes))
+			}
+			fmt.Fprintf(b, "     - %s %s%s\n", g.Vendor, g.ModelName, vram)
+		}
+	}
 }
 
 // formatUptime converts seconds into a human string like "3d4h" or "1h30m".

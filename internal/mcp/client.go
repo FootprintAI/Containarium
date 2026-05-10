@@ -217,11 +217,6 @@ func (c *Client) AddRoute(req AddRouteRequest) (*AddRouteResponse, error) {
 // tunnel-connected peers. Used by the list_backends MCP tool so an
 // agent can reason about peer health, container counts, and GPU
 // inventory without inferring topology from container IPs.
-//
-// Note: at the time of writing, /v1/backends is served by a hand-coded
-// handler (not grpc-gateway) and does NOT require authentication. The
-// MCP client still sends its JWT — server ignores it — so the day the
-// endpoint gains auth, this client doesn't need to change.
 func (c *Client) ListBackends() (*ListBackendsResponse, error) {
 	respBody, err := c.doRequest("GET", "/v1/backends", nil)
 	if err != nil {
@@ -234,6 +229,25 @@ func (c *Client) ListBackends() (*ListBackendsResponse, error) {
 	}
 
 	return &resp, nil
+}
+
+// GetBackend returns a single backend by ID. The daemon doesn't have a
+// dedicated /v1/backends/{id} endpoint (the only path-with-id route is
+// /v1/backends/{id}/system-info, which forwards to that backend), so
+// we implement it client-side as a list-and-filter. The list is small
+// (typically a handful of peers), and this keeps the wire surface
+// stable for now — easy to swap for a dedicated endpoint later.
+func (c *Client) GetBackend(id string) (*Backend, error) {
+	resp, err := c.ListBackends()
+	if err != nil {
+		return nil, err
+	}
+	for i := range resp.Backends {
+		if resp.Backends[i].ID == id {
+			return &resp.Backends[i], nil
+		}
+	}
+	return nil, fmt.Errorf("backend %q not found", id)
 }
 
 // API Request/Response types

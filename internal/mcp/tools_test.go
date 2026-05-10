@@ -416,6 +416,48 @@ func TestToolParameterDescriptions(t *testing.T) {
 	}
 }
 
+// ----- get_backend ----------------------------------------------------
+
+func TestGetBackend_Found(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/backends", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"backends": [
+				{"id": "local-host", "type": "local", "healthy": true, "containerCount": 5},
+				{"id": "tunnel-gpu", "type": "tunnel", "healthy": true, "containerCount": 3,
+				 "gpus": [{"vendor": "NVIDIA", "modelName": "GeForce RTX 4090", "vramBytes": 25769803776}]}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	out, err := handleGetBackend(client, map[string]interface{}{"id": "tunnel-gpu"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "tunnel-gpu")
+	assert.Contains(t, out, "GeForce RTX 4090")
+	assert.NotContains(t, out, "local-host", "should only print the requested backend")
+}
+
+func TestGetBackend_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"backends":[{"id":"alpha","type":"local","healthy":true,"containerCount":0}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	_, err := handleGetBackend(client, map[string]interface{}{"id": "nope"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestGetBackend_RejectsMissingID(t *testing.T) {
+	client := NewClient("http://unused", "token")
+	_, err := handleGetBackend(client, map[string]interface{}{})
+	require.Error(t, err)
+}
+
 // ----- expose_port -----------------------------------------------------
 
 // TestGetIntArg tests the getIntArg helper across the JSON-decoded shapes
