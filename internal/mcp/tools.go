@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/footprintai/containarium/internal/expose"
 )
 
 // Tool represents an MCP tool (function)
@@ -395,55 +398,77 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 }
 
 func handleExposePort(client *Client, args map[string]interface{}) (string, error) {
-	username, ok := args["username"].(string)
-	if !ok || username == "" {
-		return "", fmt.Errorf("username is required")
-	}
-	port, ok := getIntArg(args, "container_port")
-	if !ok || port <= 0 || port > 65535 {
-		return "", fmt.Errorf("container_port must be an integer in 1..65535")
-	}
-	domain := getStringArg(args, "domain", "")
-	if domain == "" {
-		return "", fmt.Errorf("domain is required")
-	}
-
-	// Resolve the container's current LAN IP. We don't trust an IP the
-	// caller might supply: if a container is recreated its IP can shift,
-	// and a stale value would cause the route to silently target nothing.
-	got, err := client.GetContainer(username)
-	if err != nil {
-		return "", fmt.Errorf("failed to look up container %q: %w", username, err)
-	}
-	if got.Container.Network == nil || got.Container.Network.IPAddress == "" {
-		return "", fmt.Errorf("container %q has no IP address yet (state: %s)",
-			username, got.Container.State)
-	}
-	ip := got.Container.Network.IPAddress
-
-	resp, err := client.AddRoute(AddRouteRequest{
-		Domain:        domain,
-		TargetIP:      ip,
-		TargetPort:    int32(port),
-		ContainerName: got.Container.Name,
+	port, _ := getIntArg(args, "container_port")
+	res, err := expose.Run(context.Background(), &mcpExposeAdapter{c: client}, expose.Options{
+		Username:      getStringArg(args, "username", ""),
+		ContainerPort: port,
+		Domain:        getStringArg(args, "domain", ""),
 		Description:   getStringArg(args, "description", ""),
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to add route: %w", err)
+		return "", err
 	}
 
-	out := fmt.Sprintf("✅ Exposed %s:%d → %s\n\n", username, port, domain)
-	out += fmt.Sprintf("Domain:    %s\n", resp.Route.Domain)
-	out += fmt.Sprintf("Target:    %s:%d\n", resp.Route.ContainerIP, resp.Route.Port)
-	if resp.Route.ContainerName != "" {
-		out += fmt.Sprintf("Container: %s\n", resp.Route.ContainerName)
+	out := fmt.Sprintf("✅ Exposed %s:%d → %s\n\n",
+		getStringArg(args, "username", ""), port, res.Domain)
+	out += fmt.Sprintf("Domain:    %s\n", res.Domain)
+	out += fmt.Sprintf("Target:    %s:%d\n", res.ContainerIP, res.Port)
+	if res.ContainerName != "" {
+		out += fmt.Sprintf("Container: %s\n", res.ContainerName)
 	}
-	if resp.Message != "" {
-		out += fmt.Sprintf("\n%s", resp.Message)
+	if res.Message != "" {
+		out += fmt.Sprintf("\n%s", res.Message)
 	}
 	out += "\n\nNext: confirm DNS for this hostname points at the sentinel, then\n"
-	out += fmt.Sprintf("`curl https://%s/` should reach the app inside %s.", domain, username)
+	out += fmt.Sprintf("`curl https://%s/` should reach the app inside %s.",
+		res.Domain, getStringArg(args, "username", ""))
 	return out, nil
+}
+
+// mcpExposeAdapter implements expose.APIClient against this package's
+// HTTP Client. Identical responsibilities to the CLI's grpcExposeAdapter
+// in internal/cmd/expose_port.go — both transports speak through the
+// same expose.Run() so behavior can never drift.
+type mcpExposeAdapter struct{ c *Client }
+
+func (a *mcpExposeAdapter) LookupContainer(_ context.Context, username string) (string, string, string, error) {
+	got, err := a.c.GetContainer(username)
+	if err != nil {
+		return "", "", "", err
+	}
+	ip := ""
+	if got.Container.Network != nil {
+		ip = got.Container.Network.IPAddress
+	}
+	return got.Container.Name, ip, got.Container.State, nil
+}
+
+func (a *mcpExposeAdapter) CreateRoute(_ context.Context, p expose.AddRouteParams) (*expose.RouteResult, error) {
+	resp, err := a.c.AddRoute(AddRouteRequest{
+		Domain:        p.Domain,
+		TargetIP:      p.TargetIP,
+		TargetPort:    p.TargetPort,
+		ContainerName: p.ContainerName,
+		Description:   p.Description,
+	})
+	if err != nil {
+		return nil, err
+	}
+	domain := resp.Route.Domain
+	if domain == "" {
+		domain = p.Domain
+	}
+	containerName := resp.Route.ContainerName
+	if containerName == "" {
+		containerName = p.ContainerName
+	}
+	return &expose.RouteResult{
+		Domain:        domain,
+		ContainerName: containerName,
+		ContainerIP:   resp.Route.ContainerIP,
+		Port:          resp.Route.Port,
+		Message:       resp.Message,
+	}, nil
 }
 
 // Helper functions
