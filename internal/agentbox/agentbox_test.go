@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -404,5 +405,123 @@ func TestSandboxRoot_RejectsLookalikePrefix(t *testing.T) {
 	_, res := callTool(t, handleReadFile, map[string]interface{}{"path": target})
 	if !res.IsError {
 		t.Errorf("sandbox accepted lookalike-prefix escape")
+	}
+}
+
+// ----- tail_log --------------------------------------------------------
+
+func TestTailLog_DefaultStartIsEOF(t *testing.T) {
+	// Pre-existing content shouldn't be returned when start_offset is
+	// omitted — the tool defaults to "watch from now".
+	dir := t.TempDir()
+	p := filepath.Join(dir, "log")
+	if err := os.WriteFile(p, []byte("preexisting\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := callTool(t, handleTailLog, map[string]interface{}{
+		"path":           p,
+		"follow_seconds": float64(0.3), // tight window — nothing else writes
+	})
+	if !strings.Contains(out, "bytes_returned: 0") {
+		t.Errorf("expected zero bytes (default starts at EOF):\n%s", out)
+	}
+	if !strings.Contains(out, "start_offset: 12") { // len("preexisting\n")
+		t.Errorf("start_offset should be initial file size (12):\n%s", out)
+	}
+}
+
+func TestTailLog_FollowsAppendedContent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "log")
+	if err := os.WriteFile(p, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Append a line ~100ms after the call starts. The follow window
+	// is 1s, which is more than enough for the polling loop
+	// (200ms interval) to pick it up.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.WriteString("hello from a goroutine\n")
+	}()
+
+	out, _ := callTool(t, handleTailLog, map[string]interface{}{
+		"path":           p,
+		"follow_seconds": float64(1.0),
+	})
+	if !strings.Contains(out, "hello from a goroutine") {
+		t.Errorf("expected appended content in:\n%s", out)
+	}
+	if !strings.Contains(out, "bytes_returned: 23") {
+		t.Errorf("expected 23 bytes_returned in:\n%s", out)
+	}
+}
+
+func TestTailLog_StartOffsetReturnsBackfill(t *testing.T) {
+	// start_offset=0 means "include preexisting content".
+	dir := t.TempDir()
+	p := filepath.Join(dir, "log")
+	if err := os.WriteFile(p, []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := callTool(t, handleTailLog, map[string]interface{}{
+		"path":           p,
+		"start_offset":   float64(0),
+		"follow_seconds": float64(0.3),
+	})
+	if !strings.Contains(out, "line1\nline2\n") {
+		t.Errorf("expected backfilled content:\n%s", out)
+	}
+	if !strings.Contains(out, "end_offset: 12") {
+		t.Errorf("expected end_offset 12:\n%s", out)
+	}
+}
+
+func TestTailLog_RefusesDirectory(t *testing.T) {
+	_, res := callTool(t, handleTailLog, map[string]interface{}{
+		"path":           t.TempDir(),
+		"follow_seconds": float64(0.1),
+	})
+	if !res.IsError {
+		t.Errorf("expected error tailing a directory")
+	}
+}
+
+func TestTailLog_MissingPath(t *testing.T) {
+	_, res := callTool(t, handleTailLog, map[string]interface{}{})
+	if !res.IsError {
+		t.Errorf("expected error when path missing")
+	}
+}
+
+func TestTailLog_NotFound(t *testing.T) {
+	_, res := callTool(t, handleTailLog, map[string]interface{}{
+		"path":           "/nonexistent/log/please-no",
+		"follow_seconds": float64(0.1),
+	})
+	if !res.IsError {
+		t.Errorf("expected error for missing file")
+	}
+}
+
+func TestTailLog_RespectsSandboxRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(sandboxRootEnv, dir)
+	resetSandboxOnceForTest()
+
+	outside := filepath.Join(t.TempDir(), "log")
+	_ = os.WriteFile(outside, []byte("x"), 0o644)
+
+	_, res := callTool(t, handleTailLog, map[string]interface{}{
+		"path":           outside,
+		"follow_seconds": float64(0.1),
+	})
+	if !res.IsError {
+		t.Errorf("sandbox should reject path outside AGENTBOX_ROOT")
 	}
 }
