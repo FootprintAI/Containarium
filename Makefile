@@ -1,8 +1,9 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp
+.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-release
 
 # Variables
 BINARY_NAME=containarium
 MCP_BINARY_NAME=mcp-server
+AGENTBOX_BINARY_NAME=agent-box
 GIT_COMMIT?=$(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 BUILD_DIR=bin
@@ -111,6 +112,52 @@ install-mcp: build-mcp ## Install the MCP server binary to /usr/local/bin (requi
 	@echo "==> Installing $(MCP_BINARY_NAME) to /usr/local/bin..."
 	@sudo cp $(BUILD_DIR)/$(MCP_BINARY_NAME) /usr/local/bin/
 	@echo "==> Installed successfully. Configure in Claude Desktop to use it"
+
+build-agent-box: ## Build the in-the-box agent-box MCP binary
+	@echo "==> Building agent-box..."
+	@mkdir -p $(BUILD_DIR)
+	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME) cmd/agent-box/main.go
+	@echo "==> agent-box built: $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)"
+
+build-agent-box-linux: ## Build agent-box for Linux (the typical install target — agent-box runs INSIDE LXC containers)
+	@echo "==> Building agent-box for Linux..."
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@echo "==> agent-box built: $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64"
+
+build-agent-box-all: ## Build agent-box for all platforms
+	@echo "==> Building agent-box for all platforms..."
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-darwin-amd64 cmd/agent-box/main.go
+	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-darwin-arm64 cmd/agent-box/main.go
+	@echo "==> agent-box binaries built in $(BUILD_DIR)/"
+
+install-agent-box: build-agent-box ## Install agent-box to /usr/local/bin (requires sudo)
+	@echo "==> Installing $(AGENTBOX_BINARY_NAME) to /usr/local/bin..."
+	@sudo cp $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME) /usr/local/bin/
+	@echo "==> Installed. Wire it into Claude Code/Cursor with: ssh user@box agent-box"
+
+# build-release produces every release artifact for every supported
+# platform: containarium + mcp-server + agent-box, each for
+# linux/amd64, darwin/amd64, darwin/arm64. Used by the release.yml
+# workflow on v* tag pushes; safe to run locally to dry-run a release.
+build-release: build-all build-mcp-all build-agent-box-all ## Build all 9 release artifacts (3 binaries × 3 platforms) + checksums
+	@echo "==> Generating SHA256SUMS..."
+	@cd $(BUILD_DIR) && \
+	  shasum -a 256 \
+	    $(BINARY_NAME)-linux-amd64 \
+	    $(BINARY_NAME)-darwin-amd64 \
+	    $(BINARY_NAME)-darwin-arm64 \
+	    $(MCP_BINARY_NAME)-linux-amd64 \
+	    $(MCP_BINARY_NAME)-darwin-amd64 \
+	    $(MCP_BINARY_NAME)-darwin-arm64 \
+	    $(AGENTBOX_BINARY_NAME)-linux-amd64 \
+	    $(AGENTBOX_BINARY_NAME)-darwin-amd64 \
+	    $(AGENTBOX_BINARY_NAME)-darwin-arm64 \
+	    > SHA256SUMS.txt
+	@echo "==> Release artifacts ready in $(BUILD_DIR)/:"
+	@ls -1 $(BUILD_DIR)/
 
 install: build ## Install the binary to /usr/local/bin (requires sudo)
 	@echo "==> Installing $(BINARY_NAME) to /usr/local/bin..."

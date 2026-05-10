@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'   # e.g. v0.16.4
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.10'
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build all release artifacts
+        # `make build-release` builds containarium + mcp-server +
+        # agent-box for linux/amd64, darwin/amd64, darwin/arm64 and
+        # writes SHA256SUMS.txt. 9 binaries + 1 checksum file.
+        run: make build-release
+
+      - name: Create release notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Containarium ${{ github.ref_name }}
+
+          The open-source, self-hostable, agent-native sandbox.
+
+          ### Binaries
+
+          Three binaries ship in this release:
+
+          | Binary | Where it runs | What it does |
+          |---|---|---|
+          | `containarium` | The host (and your laptop, for the CLI) | The platform daemon + CLI. `create`, `list`, `expose-port`, `ssh-config`, etc. |
+          | `mcp-server` | Your laptop | The platform MCP — outside-the-box admin (create_container, list_containers, expose_port, list_backends). Wire it into Claude Code / Cursor. |
+          | `agent-box` | Inside each Containarium container | The in-the-box MCP — `shell_exec`, `read_file`, `write_file`, etc. Reached over stdio, typically via SSH. |
+
+          ### Quick install (Linux host)
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh | sudo bash
+          ```
+
+          ### Manual install (any binary, any platform)
+
+          ```bash
+          # containarium CLI / daemon (Linux x86_64 example)
+          curl -L -o /usr/local/bin/containarium \
+            https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/containarium-linux-amd64
+          chmod +x /usr/local/bin/containarium
+
+          # platform MCP (your laptop, e.g. macOS arm64)
+          curl -L -o /usr/local/bin/mcp-server \
+            https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/mcp-server-darwin-arm64
+          chmod +x /usr/local/bin/mcp-server
+
+          # agent-box (drop into your container image, Linux x86_64)
+          curl -L -o /usr/local/bin/agent-box \
+            https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/agent-box-linux-amd64
+          chmod +x /usr/local/bin/agent-box
+          ```
+
+          Verify checksums via `SHA256SUMS.txt`.
+
+          ### MCP client setup
+
+          Wire the platform MCP into Claude Code (`~/.claude.json`):
+
+          ```jsonc
+          {
+            "mcpServers": {
+              "containarium": {
+                "command": "/usr/local/bin/mcp-server",
+                "env": {
+                  "CONTAINARIUM_SERVER_URL": "http://your-host:8080",
+                  "CONTAINARIUM_JWT_TOKEN": "<your-token>"
+                }
+              }
+            }
+          }
+          ```
+
+          Wire `agent-box` for in-the-box file/shell ops:
+
+          ```jsonc
+          {
+            "mcpServers": {
+              "containarium-box": {
+                "command": "ssh",
+                "args": ["user@your-box", "agent-box"]
+              }
+            }
+          }
+          ```
+
+          See [README.md](https://github.com/footprintai/containarium#quick-start) for the full agent-native walkthrough.
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Containarium ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: |
+            bin/containarium-linux-amd64
+            bin/containarium-darwin-amd64
+            bin/containarium-darwin-arm64
+            bin/mcp-server-linux-amd64
+            bin/mcp-server-darwin-amd64
+            bin/mcp-server-darwin-arm64
+            bin/agent-box-linux-amd64
+            bin/agent-box-darwin-amd64
+            bin/agent-box-darwin-arm64
+            bin/SHA256SUMS.txt
+          draft: false
+          prerelease: false
