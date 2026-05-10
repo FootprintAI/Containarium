@@ -584,10 +584,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		log.Printf("Audit logs endpoint enabled at /v1/audit/logs")
 	}
 
-	// Backends endpoint (no auth — for web UI backend selector)
+	// Backends endpoint — JWT-authenticated, same as /v1/containers et al.
+	// Previously left open with the comment "for web UI backend selector",
+	// but the web UI never actually called this endpoint, and an
+	// unauthenticated /v1/backends leaks fleet topology (peer IDs,
+	// hostnames, GPU inventory) to anyone who can reach the gateway.
 	if gs.backendsHandler != nil {
-		httpMux.HandleFunc("/v1/backends/", gs.backendsHandler)
-		httpMux.HandleFunc("/v1/backends", gs.backendsHandler)
+		authed := gs.authMiddleware.HTTPMiddleware(http.HandlerFunc(gs.backendsHandler))
+		httpMux.Handle("/v1/backends/", authed)
+		httpMux.Handle("/v1/backends", authed)
 	}
 
 	// Cert export endpoint (no auth — only reachable within VPC)
