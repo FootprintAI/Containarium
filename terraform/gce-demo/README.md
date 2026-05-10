@@ -38,9 +38,10 @@ via Caddy's hostname routing.
 - `gcloud` CLI authenticated (`gcloud auth application-default login`)
 - An SSH key pair (one public key goes in tfvars; the private key
   stays on your laptop for sentinel access)
-- **Optional but recommended**: a Cloud DNS managed zone for a domain
-  you control. Without it, you'll have to set the wildcard A-record
-  yourself.
+- **A domain you control with DNS records you can edit.** Cloud DNS is
+  the integrated path (Terraform creates records for you); see
+  ["Without Cloud DNS"](#without-cloud-dns-godaddy-cloudflare-route-53-etc)
+  below if your domain lives on GoDaddy / Cloudflare / Route 53 / etc.
 
 ## Step-by-step
 
@@ -162,6 +163,80 @@ Most knobs are in `variables.tf`. Common changes:
 The Containarium module itself lives at `../modules/containarium/` —
 that's the actual implementation. This directory is a thin "consumer"
 on top of it tailored for the demo experience.
+
+## Without Cloud DNS (GoDaddy, Cloudflare, Route 53, etc.)
+
+If your domain isn't managed by Google Cloud DNS, leave
+`dns_managed_zone_name` and `dns_zone_domain` blank in tfvars. Run
+`terraform apply` as usual — it'll skip the DNS-record resources and
+emit `(set DNS manually)` for the `demo_base_domain` output.
+
+You then create two A records by hand on whichever provider hosts
+your domain:
+
+```
+terraform output -raw sentinel_ip
+# e.g. 34.123.45.67
+```
+
+| Type | Name (host) | Value | TTL |
+|---|---|---|---|
+| A | `*.demo` | sentinel IP | 600 |
+| A | `demo` | sentinel IP | 600 |
+
+The `*.demo` wildcard makes `anything.demo.<your-domain>` resolve to
+the sentinel — that's what makes `expose_port` work for arbitrary
+hostnames the agent picks. The plain `demo` record covers
+`demo.<your-domain>` directly so you can hit the platform API or web
+UI in a browser.
+
+### GoDaddy
+
+1. Sign in → **My Products** → your domain → **DNS** (or
+   `dcc.godaddy.com/manage/<your-domain>/dns`).
+2. **Add Record** → type `A`, name `*.demo`, value the sentinel IP,
+   TTL 600 seconds. Save.
+3. **Add Record** again → type `A`, name `demo`, same value, TTL 600.
+4. GoDaddy's UI calls out wildcard support directly (`Use * for
+   wildcards`); if it rejects `*.demo` for any reason, fall back to
+   creating one A record per app you'll demo (e.g., `blog.demo`,
+   `app.demo`) with the same IP.
+5. Note: **DNS records**, not **Forwarding** — those are different
+   tabs and "Forwarding" won't do what we need.
+
+### Cloudflare
+
+1. Sign in → your domain → **DNS** → **Records**.
+2. **Add record** → type `A`, name `*.demo`, IPv4 sentinel IP,
+   proxy status **DNS only** (the orange cloud OFF — Cloudflare's
+   proxy doesn't pass HTTP-routed domains through PROXY-protocol
+   correctly to our sentinel). TTL 5 min.
+3. Repeat for `demo` (same IP, DNS-only).
+
+### Route 53
+
+1. Open the hosted zone for your domain.
+2. **Create record** → record name `*.demo`, record type `A`, value
+   the sentinel IP, TTL 600.
+3. Repeat for `demo`.
+
+### Verify (any provider)
+
+```bash
+dig +short blog.demo.<your-domain>
+dig +short demo.<your-domain>
+# Both should return the sentinel IP.
+```
+
+Propagation: 5–60 minutes typically. If `dig` returns nothing, wait
+and retry; don't move on to the demo recording until both names
+resolve.
+
+### Tear-down
+
+After `terraform destroy`, the sentinel IP is released. Delete the
+two A records on your provider (otherwise they'll point at someone
+else's GCP IP next time someone gets that ephemeral IP).
 
 ## Troubleshooting
 
