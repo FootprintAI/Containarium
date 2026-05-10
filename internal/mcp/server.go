@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 // Server implements the MCP (Model Context Protocol) server
@@ -94,7 +96,7 @@ func (s *Server) handleInitialize(req *MCPRequest) *MCPResponse {
 			},
 			"serverInfo": map[string]interface{}{
 				"name":    "containarium-mcp-server",
-				"version": "0.1.0",
+				"version": version.GetVersion(),
 			},
 		},
 	}

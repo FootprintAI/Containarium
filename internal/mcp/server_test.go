@@ -88,10 +88,13 @@ func TestHandleInitialize(t *testing.T) {
 	assert.NotNil(t, result["serverInfo"])
 	assert.NotNil(t, result["capabilities"])
 
-	// Check server info
+	// Check server info — version comes from pkg/version (settable
+	// via ldflags). Don't assert an exact value (would have to be
+	// bumped on every release). Just confirm a non-empty version
+	// string ships back.
 	serverInfo := result["serverInfo"].(map[string]interface{})
 	assert.Equal(t, "containarium-mcp-server", serverInfo["name"])
-	assert.Equal(t, "0.1.0", serverInfo["version"])
+	assert.NotEmpty(t, serverInfo["version"], "serverInfo.version must be set from pkg/version")
 }
 
 // TestHandleToolsList tests the tools/list method
