@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -594,4 +595,177 @@ func TestValidatePathAgainstRoots(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ----- process_* -------------------------------------------------------
+
+// killAllAndReset kills every registered process and clears the registry.
+// Tests register this via t.Cleanup so a panicked test can't leak a
+// running sleep into the suite.
+func killAllAndReset(t *testing.T) {
+	t.Helper()
+	processRegistryMu.Lock()
+	pids := make([]int, 0, len(processRegistry))
+	for _, mp := range processRegistry {
+		pids = append(pids, mp.PID)
+	}
+	processRegistryMu.Unlock()
+	for _, pid := range pids {
+		_ = killProcessGroup(pid, 9) // SIGKILL
+	}
+	resetProcessRegistryForTest()
+}
+
+// killProcessGroup is a thin wrapper used only by killAllAndReset.
+// In production the real handleProcessKill does the kill; this is a
+// best-effort cleanup so tests don't leak.
+func killProcessGroup(pid int, sig int) error {
+	// Best-effort; ignore error in cleanup.
+	return syscall.Kill(-pid, syscall.Signal(sig))
+}
+
+func TestProcessStart_AutoGeneratesName(t *testing.T) {
+	t.Cleanup(func() { killAllAndReset(t) })
+	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 5",
+	})
+	if !strings.Contains(out, "name: proc-") {
+		t.Errorf("expected auto-generated name beginning with 'proc-':\n%s", out)
+	}
+	if !strings.Contains(out, "pid: ") {
+		t.Errorf("expected pid line:\n%s", out)
+	}
+}
+
+func TestProcessStart_RespectsExplicitName(t *testing.T) {
+	t.Cleanup(func() { killAllAndReset(t) })
+	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 5",
+		"name":    "test-server",
+	})
+	if !strings.Contains(out, "name: test-server\n") {
+		t.Errorf("expected explicit name preserved:\n%s", out)
+	}
+}
+
+func TestProcessStart_RejectsDuplicateName(t *testing.T) {
+	t.Cleanup(func() { killAllAndReset(t) })
+	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 5",
+		"name":    "dup",
+	})
+	_, res := callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 5",
+		"name":    "dup",
+	})
+	if !res.IsError {
+		t.Errorf("expected error on duplicate name")
+	}
+}
+
+func TestProcessStart_RejectsMissingCommand(t *testing.T) {
+	_, res := callTool(t, handleProcessStart, map[string]interface{}{})
+	if !res.IsError {
+		t.Errorf("expected error when command missing")
+	}
+}
+
+func TestProcessList_ShowsRegisteredProcesses(t *testing.T) {
+	t.Cleanup(func() { killAllAndReset(t) })
+	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 5",
+		"name":    "alpha",
+	})
+	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 5",
+		"name":    "beta",
+	})
+	out, _ := callTool(t, handleProcessList, map[string]interface{}{})
+	if !strings.Contains(out, "Found 2 process(es)") {
+		t.Errorf("expected 2 processes:\n%s", out)
+	}
+	if !strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
+		t.Errorf("expected both names in list:\n%s", out)
+	}
+}
+
+func TestProcessList_EmptyWhenNothingRegistered(t *testing.T) {
+	resetProcessRegistryForTest()
+	out, _ := callTool(t, handleProcessList, map[string]interface{}{})
+	if !strings.Contains(out, "No background processes registered") {
+		t.Errorf("expected empty-state message:\n%s", out)
+	}
+}
+
+func TestProcessKill_RemovesFromRegistry(t *testing.T) {
+	t.Cleanup(func() { killAllAndReset(t) })
+	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 30",
+		"name":    "kill-me",
+	})
+	out, _ := callTool(t, handleProcessKill, map[string]interface{}{
+		"name": "kill-me",
+	})
+	if !strings.Contains(out, "signal: SIGTERM") {
+		t.Errorf("expected SIGTERM in output:\n%s", out)
+	}
+	// Verify removal
+	listOut, _ := callTool(t, handleProcessList, map[string]interface{}{})
+	if strings.Contains(listOut, "kill-me") {
+		t.Errorf("process should be gone from list after kill:\n%s", listOut)
+	}
+}
+
+func TestProcessKill_ForceUsesSIGKILL(t *testing.T) {
+	t.Cleanup(func() { killAllAndReset(t) })
+	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "sleep 30",
+		"name":    "stubborn",
+	})
+	out, _ := callTool(t, handleProcessKill, map[string]interface{}{
+		"name":  "stubborn",
+		"force": true,
+	})
+	if !strings.Contains(out, "signal: SIGKILL") {
+		t.Errorf("expected SIGKILL in output:\n%s", out)
+	}
+}
+
+func TestProcessKill_RejectsUnknownName(t *testing.T) {
+	resetProcessRegistryForTest()
+	_, res := callTool(t, handleProcessKill, map[string]interface{}{
+		"name": "no-such-thing",
+	})
+	if !res.IsError {
+		t.Errorf("expected error for unknown name")
+	}
+}
+
+func TestProcessStart_CapturesStdoutToLog(t *testing.T) {
+	t.Cleanup(func() { killAllAndReset(t) })
+	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
+		"command": "echo 'hello from process'; sleep 5",
+		"name":    "logged",
+	})
+	// Pull log_path from output
+	var logPath string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "log_path: ") {
+			logPath = strings.TrimPrefix(line, "log_path: ")
+			break
+		}
+	}
+	if logPath == "" {
+		t.Fatalf("no log_path in output:\n%s", out)
+	}
+	// Wait briefly for the echo to land in the log
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(logPath)
+		if err == nil && strings.Contains(string(data), "hello from process") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("log file %s never contained 'hello from process'", logPath)
 }
