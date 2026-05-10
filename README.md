@@ -1,2957 +1,632 @@
 # Containarium
 
-Run hundreds of isolated development environments on a single VM.
-Built with Incus (LXC/QEMU), SSH jump hosts, and cloud-native automation.
-
-🚫 No Kubernetes
-🚫 No VM-per-user
-✅ Fast, cheap, isolated Linux environments (Ubuntu, Rocky/RHEL 9)
-✅ Windows Server VMs with RDP access
-✅ GPU passthrough for ML/AI workloads
-✅ Multi-backend: GCP spot VMs + bare-metal GPU nodes
-
-### Container Management
-![Container Dashboard](docs/screenshots/dashboard-container.png)
-
-### Container List View
-![Container List](docs/screenshots/dashboard-container-listview.png)
-
-### App Hosting
-![Apps Dashboard](docs/screenshots/dashboard-app.png)
-
-### Network Topology
-![Network Topology](docs/screenshots/dashboard-network.png)
-
-### Traffic Monitoring
-![Traffic Monitor](docs/screenshots/dashboard-traffic.png)
-
-### Monitoring Dashboard
-![Monitoring Dashboard](docs/screenshots/dashboard-monitoring.png)
-
-### Alerts
-![Alerts](docs/screenshots/dashboard-alert.png)
-
-### Audit Logs
-![Audit Logs](docs/screenshots/dashboard-audit.png)
-
-### GPU Node (Multi-Backend)
-![GPU Node](docs/screenshots/dashboard-gpu.png)
-
-### Security Scanning
-![Security Scanning](docs/screenshots/dashboard-security.png)
-
-🌐 **Live Demo:** [https://containarium.kafeido.app/webui/demo](https://containarium.kafeido.app/webui/demo)
-
-## Quick Start
-
-### Web UI
-
-Access the web-based dashboard at `http://your-server:50051/webui/`
-
-**Features:**
-- Multi-server management with tabs
-- Real-time container metrics (CPU, Memory, Disk)
-- Container lifecycle management
-- Browser-based terminal access
-- Client-side SSH key generation
-
-### Authentication
-
-Containarium uses JWT tokens for API authentication. Tokens are generated via CLI only (not exposed via API).
-
-**Generate a token:**
-```bash
-# On the server running containarium daemon
-containarium token generate \
-  --username admin \
-  --roles admin \
-  --expiry 720h \
-  --secret-file /etc/containarium/jwt.secret
-
-# Or with inline secret (for testing)
-containarium token generate \
-  --username admin \
-  --roles admin \
-  --expiry 24h \
-  --secret 'your-jwt-secret'
-```
-
-**Token options:**
-| Flag | Description |
-|------|-------------|
-| `--username` | Username for the token (required) |
-| `--roles` | Comma-separated roles (default: user) |
-| `--expiry` | Token validity (e.g., 24h, 720h, 0 for no expiry) |
-| `--secret` | JWT secret key |
-| `--secret-file` | Path to file containing JWT secret |
-
-**Use the token:**
-```bash
-# REST API
-curl -H "Authorization: Bearer <token>" http://localhost:50051/v1/containers
-
-# Web UI: Click "Add Server" and paste the token
-```
-
-## Why Containarium?
-
-Most teams still provision one VM per developer for SSH-based development.
-
-That approach is:
-
-💸 Expensive
-
-🐢 Slow to provision
-
-🧱 Wasteful (idle CPU, memory, disk)
-
-Containarium replaces that model with multi-tenant system containers (LXC):
-
-One VM → many isolated Linux environments → massive cost savings
-
-In real deployments, this reduces infrastructure costs by up to 90%.
-
-## What It Does
-
-Containarium is a multi-backend development environment platform that:
-
-- Hosts many isolated environments on cloud VMs and bare-metal GPU nodes
-- Gives each user SSH access to their own container
-- Supports multiple OS types: **Ubuntu 24.04**, **Rocky Linux 9** (dev), **RHEL 9** (production)
-- Runs **Windows Server VMs** with RDP access via QEMU/KVM
-- Provides **GPU passthrough** (NVIDIA) for ML/AI workloads
-- Keeps containers persistent, even across VM restarts and spot preemptions
-- Managed via CLI, REST API, gRPC, Web UI, and MCP (Claude Desktop)
-
-Each container behaves like a lightweight VM:
-
-- Full Linux OS (or Windows Server VM)
-- User accounts with SSH access
-- Docker/Podman support with nested containers
-- GPU passthrough for CUDA workloads
-- Pre-configured software stacks (Node.js, Python, Go, Rust, GPU/CUDA, Android, Docker, etc.)
-
-## Architecture (High Level)
+**The open-source, self-hostable, agent-native sandbox.**
+Bring your own agent — Cursor, Claude Code, OpenCode, your own MCP client.
+We run the box.
 
 ```
-Developer Laptop
-      |
-      |  ssh / https
-      v
-+---------------------------+
-|   Sentinel (e2-micro)     |  sshpiper + reverse proxy
-+---------------------------+
-       |          |          |
-       v          v          v
-  +---------+ +---------+ +---------+
-  | GCP Spot| | GPU Node| | GPU Node|
-  | VM      | | (tunnel)| | (tunnel)|
-  +---------+ +---------+ +---------+
-  | LXC x19 | | LXC x5  | | LXC x4  |
-  | Caddy   | | RTX 4090| | RTX 3090|
-  | ZFS     | | ZFS     | | ZFS     |
-  +---------+ +---------+ +---------+
+agent: "create me a sandbox called 'blog'"           → containarium create
+agent: "wire up SSH so I can reach it"               → containarium ssh-config sync
+agent: "install Caddy on :8080 inside the box"       → shell_exec (via agent-box MCP)
+agent: "expose that on blog.example.com"             → containarium expose-port
+
+curl https://blog.example.com → hello world
 ```
 
-## Key Features
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.25-00ADD8.svg)](go.mod)
 
-🚀 Fast Provisioning
+🌐 **Live demo:** [containarium.kafeido.app/webui/demo](https://containarium.kafeido.app/webui/demo)
 
-- Create a full Linux environment in seconds
-- Pre-configured stacks: Node.js, Python, Go, Rust, Data Science, DevOps, Docker, GPU/CUDA, Android, Full Stack
-- Multi-OS: Ubuntu 24.04, Rocky Linux 9, RHEL 9
+---
 
-🔐 Strong Isolation
+## Why "agent-native"?
 
-- Unprivileged LXC containers
-- Separate users, filesystems, and processes
-- SSH jump host with sshpiper (username-based routing)
-- ClamAV + Trivy security scanning across all backends
+AI agents are increasingly the primary user of dev infrastructure. They
+want to build, install, deploy, and verify — not on the human's laptop
+(too noisy, too risky, too local) but on a sandbox that's:
 
-💾 Persistent Storage
+- **Persistent**: state survives between agent runs.
+- **Isolated**: a misbehaving install doesn't touch your machine.
+- **Real**: a full Linux environment with `systemd`, real networking,
+  and the ability to host things on the open internet.
+- **Driven by structured tools**: not by an agent typing commands into a
+  TTY hoping nothing scrolls off-screen, but by MCP — typed,
+  bounded, safe.
 
-- Containers survive:
-  - VM restarts
-  - Spot/preemptible instance termination
-- Backed by ZFS persistent disks with compression
+That's the box Containarium gives you. It runs as a self-hosted
+single-host platform (one VM → many isolated LXC containers), exposes
+its admin surface over MCP, and ships a second MCP server that lives
+*inside* the container so the agent can `shell_exec` and edit files
+directly.
 
-🖥️ Multi-Backend Architecture
+You bring the agent. We run the box.
 
-- **GCP Spot VMs**: Cost-effective cloud backends
-- **Bare-metal GPU nodes**: RTX 3090, RTX 4090, etc. connected via tunnel
-- **Windows Server VMs**: QEMU/KVM with RDP access
-- Containers from all backends appear in a single unified dashboard
-- **Multi-pool**: One sentinel can front multiple isolated clusters (e.g., `containarium-prod.example.com` and `containarium-lab.example.com`), each with its own primary VM and peers — see [docs/MULTI-POOL.md](docs/MULTI-POOL.md)
-- See [docs/WINDOWS-VM-SETUP.md](docs/WINDOWS-VM-SETUP.md) for Windows VMs
+---
 
-🛡️ Sentinel HA (Spot Instance Recovery)
+## Quick start
 
-- One tiny always-on VM (e2-micro, free tier) monitors all backends
-- Detects preemption in ~10s, serves maintenance page instantly
-- Restarts spot VMs automatically — ~85s total recovery
-- Routes SSH via sshpiper, HTTP via reverse proxy
-- See [docs/SENTINEL-DESIGN.md](docs/SENTINEL-DESIGN.md) for the full design
-
-📊 Monitoring & Observability
-
-- Backend heartbeat dashboard (Grafana status-history panel)
-- Per-container metrics: CPU, memory, disk, network
-- VictoriaMetrics + Grafana auto-provisioned
-- Custom alert rules with webhook notifications
-
-⚙️ Simple Management
-
-- Single Go binary for all components
-- Web UI with real-time updates (SSE)
-- REST API + gRPC + MCP (Claude Desktop integration)
-- Terraform for infrastructure provisioning
-
-💰 Cost Efficient
-
-Example (illustrative):
-
-| Setup | Monthly Cost |
-|-------|--------------|
-| 50 VMs (1 per user) | $$$$ |
-| 1 VM + 50 LXC containers | $$ |
-
-## Why LXC (Not Docker, Not Kubernetes)
-
-Containarium uses LXC system containers because:
-
-- Each container runs a full Linux OS
-- Better fit for:
-  - SSH-based workflows
-  - Long-running dev environments
-  - "Feels like a VM" usage
-
-This is not:
-
-- A Kubernetes cluster
-- An application container platform
-
-It is intentionally simple.
-
-## Use Cases
-
-👩‍💻 Shared developer environments (Linux + Windows)
-
-🧑‍🎓 Education, bootcamps, workshops
-
-🧪 AI / ML experimentation with GPU passthrough
-
-📱 Android app development (headless CI or Android Studio via VNC)
-
-🧑‍💼 Intern or contractor onboarding
-
-🏢 Cost-sensitive enterprises with SSH workflows
-
-🔒 Security-scanned environments (ClamAV + Trivy)
-
-## How It's Different
-
-| Tool | What It Optimizes For |
-|------|----------------------|
-| Kubernetes | Application orchestration |
-| Docker | App packaging |
-| Proxmox | General virtualization |
-| Codespaces | Browser IDEs |
-| Containarium | Cheap, fast, SSH-based dev environments |
-
-## Status
-
-- Actively used in production (GCP + bare-metal GPU nodes)
-- v0.16.1 — multi-pool architecture, GPU-by-PCI, lab pool SSH
-- APIs stable (protobuf-defined with gRPC-gateway)
-- Contributions and feedback welcome
-
-## Getting Started
-
-⚠️ Currently optimized for Linux hosts and cloud VMs.
-
-### System Requirements
-
-**Host System (runs on Ubuntu, containers can be any supported OS):**
-- Ubuntu 24.04 LTS (Noble) or later
-- **Incus 6.19 or later** (required for Docker build support)
-  - Ubuntu 24.04 default repos ship Incus 6.0.0 which has AppArmor bug ([CVE-2025-52881](https://ubuntu.com/security/CVE-2025-52881))
-  - This bug breaks Docker builds in unprivileged containers
-  - **Solution**: Use [Zabbly Incus repository](https://pkgs.zabbly.com/) for latest stable builds
-- ZFS kernel module (for disk quotas)
-- Kernel modules: `overlay`, `br_netfilter`, `nf_nat` (for Docker in containers)
-
-**Quick Incus Installation (6.19+):**
-```bash
-# Add Zabbly repository (recommended)
-curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
-echo 'deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable noble main' | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list
-sudo apt update
-sudo apt install incus incus-tools incus-client
-
-# Verify version
-incus --version  # Should show 6.19 or later
-```
-
-### Quick Start
-
-**Option 1: Manual Installation (Recommended for getting started)**
-
-One-command installation on Ubuntu:
+### 1. Self-host on a fresh Ubuntu VM (5 minutes)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh \
+  | sudo bash
 ```
 
-This installs Containarium, Incus, and all dependencies. See [`hacks/README.md`](hacks/README.md) for details.
+That installs Containarium + Incus + dependencies, starts the daemon,
+and gives you a working API at `http://localhost:8080`.
 
-**Option 2: Terraform Deployment (Recommended for production)**
-
-Deploy to GCE with full infrastructure automation:
+### 2. Create your first box
 
 ```bash
-cd terraform/gce
-terraform init
-terraform apply
+sudo containarium create alice --ssh-key ~/.ssh/id_ed25519.pub
+sudo containarium list
 ```
 
-See [`terraform/gce/README.md`](terraform/gce/README.md) for configuration options.
-
-**After Installation:**
-
-1. Start the daemon: `sudo systemctl start containarium`
-2. Create containers:
-   ```bash
-   # Ubuntu (default)
-   sudo containarium create alice --ssh-key ~/.ssh/id_ed25519.pub
-
-   # Rocky Linux 9 (dev/test)
-   sudo containarium create bob --ssh-key ~/.ssh/id_ed25519.pub --os-type rocky9
-
-   # With GPU and software stack
-   sudo containarium create ml-dev --ssh-key ~/.ssh/id_ed25519.pub --gpu 0 --stack gpu
-   ```
-3. Connect via SSH: `ssh alice@container-ip`
-4. Web UI: `http://your-server:8080/webui/`
-5. REST API: `http://your-server:8080/swagger-ui/`
-
-👉 See `docs/` for detailed setup instructions.
-
-## API Access
-
-Containarium provides two APIs for maximum flexibility:
-
-### gRPC API (Port 50051)
-
-For programmatic access and the CLI tool. Uses mTLS for authentication.
+### 3. Wire up SSH so `ssh alice` just works
 
 ```bash
-# Start daemon with mTLS
-containarium daemon --mtls
-
-# Use CLI
-containarium list
-containarium create --username john
+containarium ssh-config sync
+# Adds entries to ~/.containarium/ssh_config.
+# Then add ONE line to ~/.ssh/config:
+#     Include ~/.containarium/ssh_config
+ssh alice  # connects through the sentinel
 ```
 
-### REST API (Port 8080)
+### 4. Point your agent at the box
 
-For HTTP/JSON access, webhooks, and web UIs. Uses Bearer token authentication.
+In `~/.cursor/mcp.json` or `~/.claude.json`:
 
-```bash
-# Start daemon with REST API
-containarium daemon --rest
-
-# The daemon will auto-generate and display a JWT secret on startup
-```
-
-**JWT Secret Configuration (Priority Order):**
-
-1. **Environment Variable** (Production - Recommended)
-   ```bash
-   export CONTAINARIUM_JWT_SECRET="your-secret-key"
-   containarium daemon --rest
-   ```
-
-2. **Secret File** (Production)
-   ```bash
-   # Generate secret
-   openssl rand -base64 32 > /etc/containarium/jwt.secret
-   chmod 600 /etc/containarium/jwt.secret
-
-   # Start daemon
-   containarium daemon --rest --jwt-secret-file /etc/containarium/jwt.secret
-   ```
-
-3. **Command-line Flag** (Testing)
-   ```bash
-   containarium daemon --rest --jwt-secret "test-secret"
-   ```
-
-4. **Auto-Generated** (Development)
-   ```bash
-   # Just start the daemon - it will generate and print a random secret
-   containarium daemon --rest
-
-   # Output includes:
-   # ═══════════════════════════════════════════════════════════════
-   #   🔐 JWT Secret (Auto-Generated)
-   # ═══════════════════════════════════════════════════════════════
-   #   Kx8jP7yN2wR5vT9mQ3hF6nL4sZ1aE0uC8bV5gX2wY4pM7kR=
-   # ...
-   ```
-
-**Generate API Token:**
-
-```bash
-# Using generated/configured secret
-TOKEN=$(containarium token generate \
-  --username admin \
-  --roles admin \
-  --expiry 720h \
-  --secret "your-jwt-secret")
-```
-
-**Use REST API:**
-
-```bash
-# Set token
-export TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-# List containers
-curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/v1/containers
-
-# Create container
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "johndoe",
-    "resources": {
-      "cpu": "4",
-      "memory": "8GB",
-      "disk": "100GB"
-    },
-    "osType": "OS_TYPE_UBUNTU_2404",
-    "enablePodman": true,
-    "stack": "nodejs",
-    "async": true
-  }' \
-  http://localhost:8080/v1/containers
-
-# Get container details
-curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/v1/containers/johndoe
-
-# Delete container
-curl -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/v1/containers/johndoe
-```
-
-### MCP Integration (Claude Desktop)
-
-**NEW!** Control Containarium directly from Claude Desktop using natural language:
-
-```bash
-# Build and install MCP server
-make build-mcp
-make install-mcp
-
-# Generate JWT token for MCP
-containarium token generate \
-  --username mcp-client \
-  --roles admin \
-  --expiry 8760h \
-  --secret-file /etc/containarium/jwt.secret
-```
-
-**Configure Claude Desktop** (`~/.config/claude/claude_desktop_config.json`):
-```json
+```jsonc
 {
   "mcpServers": {
-    "containarium": {
-      "command": "/usr/local/bin/mcp-server",
-      "env": {
-        "CONTAINARIUM_SERVER_URL": "http://localhost:8080",
-        "CONTAINARIUM_JWT_TOKEN": "your-jwt-token"
-      }
+    "containarium-box": {
+      "command": "ssh",
+      "args": ["alice", "agent-box"]
     }
   }
 }
 ```
 
-**Use Claude to manage containers:**
-- "Create a container for alice with 8GB memory"
-- "List all running containers"
-- "Show metrics for bob's container"
-- "Delete charlie's container"
+Now Claude Code, Cursor, or any MCP-speaking agent can call
+`shell_exec`, `read_file`, `write_file`, `list_directory`,
+`move_file`, `delete_file` directly inside Alice's container.
 
-👉 See [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md) for complete guide.
+### 5. Make it reachable on a public hostname
 
-### Interactive API Documentation
+```bash
+containarium expose-port alice \
+  --container-port 8080 \
+  --domain blog.example.com
+```
 
-Swagger UI is available at: `http://localhost:8080/swagger-ui/`
+Caddy on the sentinel terminates TLS for `blog.example.com` and
+forwards to `alice-container:8080`. `curl https://blog.example.com`
+hits whatever Alice has serving on port 8080.
 
-Features:
-- Interactive API testing
-- Complete endpoint documentation
-- Request/response examples
-- Built-in authentication testing
+---
 
-### Available REST Endpoints
+## The four primitives
 
-**Containers:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/containers` | Create a new container |
-| `GET` | `/v1/containers` | List all containers (all backends) |
-| `GET` | `/v1/containers/{username}` | Get container details |
-| `DELETE` | `/v1/containers/{username}` | Delete a container |
-| `POST` | `/v1/containers/{username}/start` | Start a container |
-| `POST` | `/v1/containers/{username}/stop` | Stop a container |
-| `PUT` | `/v1/containers/{username}/resize` | Resize CPU/memory/disk |
-| `POST` | `/v1/containers/{username}/install-stack` | Install software stack |
-| `POST` | `/v1/containers/{username}/cleanup-disk` | Free disk space |
+Every action in Containarium has a CLI verb (canonical) AND an MCP tool
+(thin wrapper that delegates to the same Go function). See
+[CLAUDE.md](CLAUDE.md) for the convention.
 
-**Collaborators:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/containers/{username}/collaborators` | Add collaborator |
-| `DELETE` | `/v1/containers/{username}/collaborators/{collaborator}` | Remove collaborator |
-| `GET` | `/v1/containers/{username}/collaborators` | List collaborators |
+### `agent-box` — in-the-box MCP server
 
-**System & Monitoring:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/v1/system/info` | System info (all backends) |
-| `GET` | `/v1/system/monitoring` | Grafana/VictoriaMetrics URLs |
-| `GET` | `/v1/metrics` | Container metrics |
-| `GET` | `/v1/backends` | List backends with health status |
+Runs inside every container. Reached over stdio (typically wrapped by
+SSH on the client side). Exposes Linux-native operations:
 
-**Security:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/v1/security/clamav-summary` | ClamAV scan summary |
-| `GET` | `/v1/security/clamav-reports` | Scan reports |
-| `POST` | `/v1/security/clamav-scan` | Trigger security scan |
+| Tool | What it does |
+|---|---|
+| `shell_exec` | Run a shell command, capture stdout/stderr/exit, bounded by timeout (default 30s, max 10min) and 256 KiB output cap |
+| `read_file` | Byte range OR `head=N` lines OR `tail=N` lines |
+| `write_file` | Atomic write with `mkdirp` (temp + rename) |
+| `list_directory` | Type/size/mtime, hidden filtering |
+| `move_file` | Atomic rename with `mkdirp` on destination |
+| `delete_file` | Single-file remove (refuses directories so recursive deletes go via `shell_exec` where blast radius is explicit) |
 
-**Alerts:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/alerts` | Create alert rule |
-| `GET` | `/v1/alerts` | List alert rules |
-| `PUT` | `/v1/system/alerting` | Update webhook config |
+Optional sandbox: when `AGENTBOX_ROOT` is set, every file-ops path is
+resolved against that root with a boundary-aware prefix check. Default
+unset = no constraint. See
+[`internal/agentbox/`](internal/agentbox/) for the Go implementation.
 
-## Documentation
+### `mcp-server` — platform MCP server
 
-| Guide | Description |
-|-------|-------------|
-| [SENTINEL-DESIGN.md](docs/SENTINEL-DESIGN.md) | Sentinel HA architecture |
-| [WINDOWS-VM-SETUP.md](docs/WINDOWS-VM-SETUP.md) | Windows Server VM with RDP access |
-| [ANDROID-DEV-SETUP.md](docs/ANDROID-DEV-SETUP.md) | Android development environment (headless + GUI) |
-| [KUBEFLOW-SETUP.md](docs/KUBEFLOW-SETUP.md) | Kind + Kubeflow Pipelines for ML workflows |
-| [CROSS-PEER-FILE-TRANSFER.md](docs/CROSS-PEER-FILE-TRANSFER.md) | Transfer large files between peer containers |
-| [ALERTING-SETUP.md](docs/ALERTING-SETUP.md) | Alert rules, webhooks (Zulip/Slack), troubleshooting |
-| [MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md) | Claude Desktop MCP integration |
+Runs on the host. Exposes outside-the-box admin operations:
+`create_container`, `list_containers`, `delete_container`,
+`start_container`, `stop_container`, `expose_port`, `get_metrics`,
+`get_system_info`. See [`cmd/mcp-server/`](cmd/mcp-server/).
 
-## Philosophy
+### `containarium` CLI
 
-Containarium follows the same principle as Footprint-AI's platform:
+Same surface as the platform MCP, plus deeper administration. Top-level
+verbs:
 
-**Do more with less compute.**
+```
+containarium create        Create a new container
+containarium list          List all containers
+containarium delete        Delete a container
+containarium expose-port   Expose container:port on a public hostname
+containarium ssh-config    Generate self-contained ssh_config
+containarium route         Manage proxy routes (low-level)
+containarium passthrough   Manage TCP/UDP passthrough rules
+containarium token         Issue JWT tokens for the API
+containarium info          System info
+containarium version       Print version
+```
 
-- Less idle.
-- Less waste.
-- Less cost.
+Run `containarium <verb> --help` for full options.
+
+### Sentinel — sshpiper + Caddy + PROXY-protocol
+
+The sentinel is a tiny always-on VM (e2-micro on GCP free tier works)
+that:
+
+- Receives SSH on port 22 (sshpiper routes to the right backend by
+  username).
+- Receives HTTPS on 443 (Caddy with TLS-passthrough or
+  PROXY-protocol-aware forwarding to backend Caddy).
+- Survives spot-VM termination on the backend with a maintenance page.
+- Holds the static IP / DNS A-record so backends can be ephemeral.
+
+See [docs/SENTINEL-DESIGN.md](docs/SENTINEL-DESIGN.md) for the full
+design.
+
+---
+
+## Architecture
+
+```
+        Agent (Cursor / Claude Code / OpenCode)
+                  |
+                  | MCP over stdio
+                  v
+              ssh user@box  → sshpiper → agent-box (in container)
+                  |
+                  | HTTPS
+                  v
+        Sentinel (e2-micro, always-on)
+        ├── sshpiper (port 22)            : routes by username
+        └── Caddy + PROXY-protocol (443)  : routes by hostname
+                  |
+                  v
+        +---------------------------+
+        | Backend VM (spot or       |
+        | bare-metal GPU node)      |
+        |                           |
+        |  Incus (LXC) ── containers
+        |    ├── alice-container    : SSH + agent-box stdio MCP
+        |    ├── bob-container      : SSH + agent-box stdio MCP
+        |    └── ...                : ZFS-backed persistent storage
+        |                           |
+        |  Caddy (per-backend)      : TLS termination
+        |  Containarium daemon      : container lifecycle, metrics
+        +---------------------------+
+```
+
+A single sentinel can front multiple backend VMs — a "pool" — and a
+single deployment can run multiple pools (each isolated). See
+[docs/MULTI-POOL.md](docs/MULTI-POOL.md).
+
+---
+
+## How it's different
+
+### vs. SaaS-only sandboxes (e2b, Modal, Replit)
+
+These give you sandboxes for AI agents, but only as hosted SaaS:
+
+- **Self-hostability**: Containarium runs on your own infrastructure
+  (a $5 VM, your homelab, your enterprise data center). e2b, Modal,
+  and Replit are SaaS-only — your code, your data, and your customers
+  go through their compute.
+- **License**: Apache 2.0, no CLA. Fork it, sell it, run it.
+- **Surface**: full Linux containers with `systemd`, real network
+  namespaces, GPU passthrough. Not a process-per-call sandbox.
+- **Transport**: MCP-native from day one, not a custom SDK with MCP
+  bolted on.
+
+### vs. dev environment platforms (Codespaces, Gitpod, Coder)
+
+Those are persistent IDEs. Containarium is a persistent **box** —
+agent-driven, not developer-driven, no IDE assumption, SSH-as-the-API:
+
+- Containarium environments are reached by SSH and MCP. Any IDE works
+  (Vim, JetBrains Remote, VS Code Remote, Cursor's remote dev — your
+  call).
+- Cost: no per-hour billing in the OSS path. Self-host costs are just
+  your underlying VM.
+- Persistence: containers survive indefinitely; Codespaces auto-delete
+  after inactivity.
+
+### vs. application container platforms (Docker, Kubernetes)
+
+LXC is a **system** container, not an application container. Each
+container has `systemd`, a real init, real users, real package managers,
+real `sudo`. You can run Docker *inside* a Containarium container; the
+reverse isn't really a thing.
+
+If your agent is going to `apt install` half a Linux distro, edit
+config files in `/etc`, run a database, and reboot — LXC is the right
+shape. If your agent runs a single Python process, Docker or Modal is
+fine.
+
+---
+
+## What's in the box
+
+Beyond the agent-native primitives, Containarium ships:
+
+### Multi-OS
+
+- **Ubuntu 24.04 LTS** (default)
+- **Rocky Linux 9** (dev/test)
+- **RHEL 9** (production)
+- **Windows Server VMs** via QEMU/KVM with RDP — see
+  [docs/WINDOWS-VM-SETUP.md](docs/WINDOWS-VM-SETUP.md)
+
+### GPU passthrough
+
+For ML/AI agent workflows. Works with NVIDIA RTX 3090, RTX 4090, and
+similar. PCI-level passthrough so the container sees the GPU directly.
+Tested on bare-metal GPU nodes connected to the sentinel via tunnel.
+
+### Multi-backend
+
+A single sentinel can front:
+
+- **GCP spot VMs**: cost-effective cloud backends with auto-recovery
+  on preemption.
+- **Bare-metal GPU nodes**: any Linux box you can SSH to; reaches the
+  sentinel via outbound tunnel.
+- **Windows VMs**: live alongside Linux backends.
+
+All containers from all backends appear in a single unified API.
+
+### Web UI
+
+A basic dashboard at `/webui/` for users who'd rather not type CLI:
+container list, lifecycle controls, metrics, browser-based terminal.
+Polished UI is intentionally a cloud-product concern — the OSS web UI
+is functional, not opinionated.
+
+### Persistent storage (ZFS)
+
+Containers survive VM restarts and spot termination. ZFS handles
+compression, snapshots (daily by default, 30-day retention), and
+checksums.
+
+### Sentinel HA
+
+The sentinel itself is e2-micro (free tier). It:
+
+- Detects spot preemption in ~10s, serves a maintenance page.
+- Restarts spot VMs automatically (~85s total recovery).
+- Holds the static IP, so DNS doesn't change as backends rotate.
+
+### Monitoring & observability
+
+VictoriaMetrics + Grafana auto-provisioned. Per-container CPU,
+memory, disk, network. Alerting via webhooks. SSH audit logs per
+user.
+
+### Security primitives
+
+- **Unprivileged LXC containers**: container root ≠ host root.
+- **Per-user proxy accounts**: `/usr/sbin/nologin` on the sentinel,
+  users can only proxy through to their container.
+- **fail2ban per-user**: an attack on Alice's account doesn't ban
+  Bob.
+- **ClamAV + Trivy** scanning across all backends.
+- **AppArmor profiles** per container.
+- **AGENTBOX_ROOT sandbox** to constrain agent-box file ops at runtime.
+
+---
+
+## CLI reference (essentials)
+
+### Container lifecycle
+
+```bash
+# Create (Ubuntu 24.04, default)
+containarium create alice --ssh-key ~/.ssh/id_ed25519.pub
+
+# Create with options
+containarium create ml-dev \
+  --ssh-key ~/.ssh/id_ed25519.pub \
+  --gpu 0 \
+  --stack gpu \
+  --memory 16GB \
+  --cpu 4
+
+# Lifecycle
+containarium list
+containarium info
+containarium start alice
+containarium stop alice
+containarium delete alice
+```
+
+### Networking
+
+```bash
+# Expose a container port on a public hostname
+containarium expose-port alice \
+  --container-port 8080 \
+  --domain blog.example.com
+
+# Lower-level route management
+containarium route add api.example.com --target 10.0.3.42:3000
+containarium route list
+containarium route delete api.example.com
+
+# Raw TCP/UDP passthrough (no TLS termination)
+containarium passthrough add --port 50051 \
+  --target-ip 10.0.3.150 --target-port 50051
+```
+
+### SSH config
+
+```bash
+# Print to stdout (preview)
+containarium ssh-config show
+
+# Write to ~/.containarium/ssh_config (one-line `Include` to wire in)
+containarium ssh-config sync
+containarium ssh-config sync --sentinel sentinel.example.com  # via sentinel
+containarium ssh-config sync --identity ~/.ssh/containarium_ed25519
+```
+
+### Authentication
+
+```bash
+# Issue a JWT token (CLI-only; never exposed via API)
+containarium token generate \
+  --username admin \
+  --roles admin \
+  --expiry 720h \
+  --secret-file /etc/containarium/jwt.secret
+
+# Use it
+curl -H "Authorization: Bearer <token>" http://localhost:8080/v1/containers
+```
+
+---
+
+## Deployment
+
+### Manual install (recommended for getting started)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh \
+  | sudo bash
+```
+
+See [`hacks/README.md`](hacks/README.md) for what the script does.
+
+### Terraform (recommended for production)
+
+```bash
+cd terraform/gce
+cp examples/single-server-spot.tfvars terraform.tfvars
+vim terraform.tfvars   # set project_id, admin_ssh_keys, allowed_ssh_sources
+terraform init
+terraform apply
+```
+
+See [`terraform/gce/README.md`](terraform/gce/README.md) for variables.
+
+### System requirements
+
+- **Host OS**: Ubuntu 24.04 LTS or later (containers can be any
+  supported OS).
+- **Incus 6.19+** required for Docker-in-LXC support. Ubuntu 24.04's
+  default repos ship 6.0.0 which has an AppArmor bug
+  ([CVE-2025-52881](https://ubuntu.com/security/CVE-2025-52881));
+  use the [Zabbly Incus repository](https://pkgs.zabbly.com/) for
+  current builds.
+- **ZFS kernel module** (for disk quotas).
+- Kernel modules: `overlay`, `br_netfilter`, `nf_nat` (Docker in
+  containers needs these).
+
+```bash
+# Quick Incus install via Zabbly
+curl -fsSL https://pkgs.zabbly.com/key.asc | \
+  sudo gpg --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
+echo 'deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] \
+  https://pkgs.zabbly.com/incus/stable noble main' | \
+  sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list
+sudo apt update
+sudo apt install incus incus-tools incus-client
+incus --version  # 6.19 or later
+```
+
+---
+
+## API
+
+Containarium exposes:
+
+- **REST API** at `http://localhost:8080` (gRPC-gateway over the gRPC
+  service, JWT auth)
+- **gRPC** at `:50051` (mTLS, primarily used by the CLI)
+- **Two MCP servers**: `mcp-server` (platform) and `agent-box`
+  (in-the-box)
+
+OpenAPI / Swagger UI at
+`http://localhost:8080/swagger-ui/`.
+
+Token-issuance is **CLI-only** by design; the daemon does not have an
+"issue token via API" endpoint, because if it did, anyone with API
+access could mint admin tokens.
+
+---
+
+## Hardening notes
+
+### SSH key hygiene
+
+- Each user gets their own keypair. **Never** share keys between users
+  — sharing breaks revocation, audit, and per-user fail2ban.
+- The same key can authenticate to both the sentinel proxy account and
+  the container. That's the supported flow: simpler for users, no
+  security loss because the proxy account is `nologin` and only routes
+  through.
+- To rotate: user generates a new key, admin replaces the
+  `authorized_keys` content in the container.
+
+### Agent-box sandbox
+
+If you're running an untrusted agent, set `AGENTBOX_ROOT` to a project
+directory:
+
+```bash
+# In the container
+export AGENTBOX_ROOT=/srv/project
+agent-box   # all file ops now constrained to /srv/project
+```
+
+`shell_exec` is intentionally not constrained beyond the LXC container
+boundary itself — by design, that's the tool's contract. If you need
+tighter isolation, run agent-box in a more restrictive container (e.g.
+nested LXC, or chroot the user account further).
+
+### Network
+
+- Backend VMs have **no public IP** by default; they reach out via
+  Cloud NAT and accept inbound only via sshpiper.
+- Sentinel allowlist: configure `allowed_ssh_sources` in Terraform
+  (or firewall rules manually) to lock down who can hit port 22.
+
+---
+
+## Comparison FAQ
+
+**Why not Docker / Podman?**
+Docker is for application containers. Containarium uses LXC system
+containers — full Linux OS per container, real `systemd`, native SSH,
+Docker-in-LXC works, persistent filesystem. If your agent will
+`apt install` and reboot, you want LXC.
+
+**Why not Kubernetes?**
+K8s orchestrates application containers across many nodes.
+Containarium runs many full Linux environments on one (or a few)
+nodes. Different shape, different problem.
+
+**Why not Vagrant?**
+Vagrant orchestrates VMs on a developer's local machine. Containarium
+hosts environments on shared remote infrastructure for many agents.
+
+**Why not Dev Containers / VS Code Remote Containers?**
+Dev Containers are project-scoped, IDE-coupled, single-developer.
+Containarium gives many users (or many of one user's agents) their own
+persistent boxes on shared infrastructure, IDE-agnostic.
+
+**Why not Codespaces / Gitpod?**
+Browser-IDE-as-a-Service, per-hour billed, vendor-locked. Containarium
+is self-hosted, persistent, SSH/MCP-based, no per-hour billing in OSS.
+
+**Why not e2b / Modal / Daytona?**
+Closest peers — sandboxes for AI agents. They're SaaS-only and
+typically optimize for short-lived, process-per-call execution.
+Containarium is self-hostable, MCP-native, and gives you full
+persistent Linux boxes. Pick e2b if you want hosted-only and
+ephemeral; pick Containarium if you want self-hosted, persistent,
+and your data on your infra.
+
+**Why LXC at all?**
+- Each container runs a full Linux OS with `systemd`.
+- SSH access is first-class.
+- Docker-in-LXC works (vs. fragile Docker-in-Docker).
+- Real persistent filesystem, real users, real `sudo`.
+- "Feels like a VM" for the agent — same surface area as a managed
+  cloud VM, fraction of the resource cost.
+
+---
+
+## Use cases
+
+- **AI-agent sandboxes** (the lead): Cursor, Claude Code, Cline,
+  OpenCode, custom agents — all reach the same MCP surface.
+- **Shared developer environments**: many developers, one host, SSH
+  jump server with per-user isolation.
+- **ML / GPU experimentation**: GPU passthrough into LXC.
+- **Education, bootcamps, workshops**: per-student isolated Linux
+  with no per-student VM.
+- **CI / build infrastructure**: long-lived build hosts that keep
+  caches warm across runs.
+- **Demo / testing infrastructure**: spin up a real Linux env, test,
+  tear down.
+
+---
+
+## Status
+
+- **Production-deployed** on GCP (multi-region) and bare-metal GPU
+  nodes.
+- **APIs are stable** (protobuf-defined with gRPC-gateway).
+- **Apache 2.0**, no CLA, accepting community PRs.
+- Active maintenance: see commit history on `main` and recent
+  releases.
+
+---
+
+## Roadmap
+
+The OSS roadmap is driven by the
+[Containarium-cloud](https://github.com/FootprintAI/Containarium-cloud)
+private repo (private because it carries cloud-product context that we
+don't lead with publicly). Public-facing OSS items:
+
+- **Q2 2026 (in flight)**: agent-box MCP, ssh-config CLI,
+  expose-port CLI, demo recording.
+- **Q3 2026**: agent-box tier-2 (MCP Roots, background process
+  management), demo-driven docs and examples.
+- **Q4 2026**: OSS v1.0 cut — stable API surface, contribution
+  guide.
+
+If you want to drive an item, open an issue or PR — community work is
+welcome and we triage weekly.
+
+---
+
+## Contributing
+
+- Read [CLAUDE.md](CLAUDE.md) for the CLI-first principle (every new
+  platform action lands as `containarium <verb>` first; MCP wraps it).
+- Check [existing issues and PRs](https://github.com/footprintai/Containarium/issues).
+- Add tests for new features.
+- Update docs if user-visible behavior changes.
+
+No CLA. Apache 2.0 means you can use, modify, and redistribute. We
+welcome PRs that align with the project's positioning and reject
+those that don't (e.g. "let me add multi-tenancy to the OSS daemon"
+goes into the cloud repo discussion, not here).
+
+---
 
 ## License
 
-Apache 2.0
-
-## About Footprint-AI
-
-Containarium is an open-source project by Footprint-AI, focused on resource-efficient computing for modern development and AI workloads.
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 ---
 
-## 📊 Detailed Architecture Design
-
-### Overview
-
-Containarium provides a multi-layer architecture combining cloud infrastructure, container management, and secure access:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Users (SSH / HTTP / gRPC)                      │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│               Sentinel VM (e2-micro, always-on)                  │
-│               • Owns static public IP                            │
-│               • iptables DNAT → spot VMs (normal)                │
-│               • Maintenance page + status (preemption)           │
-│               • Auto-restarts spot VMs on preemption             │
-│               • TLS cert sync for valid HTTPS                    │
-│               • Mgmt SSH: port 2222                              │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ VPC internal
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-│ Spot VM 1        │ │ Spot VM 2        │ │ Spot VM N        │
-│ • Incus + ZFS    │ │ • Incus + ZFS    │ │ • Incus + ZFS    │
-│ • Caddy (TLS)    │ │ • Caddy (TLS)    │ │ • Caddy (TLS)    │
-│ • Containarium   │ │ • Containarium   │ │ • Containarium   │
-│ • No external IP │ │ • No external IP │ │ • No external IP │
-└────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
-         ▼                    ▼                    ▼
-  Persistent Disk      Persistent Disk      Persistent Disk
-  (ZFS pool)           (ZFS pool)           (ZFS pool)
-    50 containers        50 containers        50 containers
-```
-
-### Architecture Layers
-
-#### 1. **Infrastructure Layer** (Terraform + GCE)
-- **Compute**: Spot instances with persistent disks
-- **Storage**: ZFS on dedicated persistent disks (survives termination)
-- **Network**: VPC with firewall rules, Cloud NAT for spot VM outbound
-- **HA**: Single sentinel VM monitors multiple spot VMs, auto-restarts on preemption (~85s recovery), serves maintenance page during outage. See [docs/SENTINEL-DESIGN.md](docs/SENTINEL-DESIGN.md)
-
-#### 2. **Container Layer** (Incus + LXC)
-- **Runtime**: Unprivileged LXC containers
-- **Storage**: ZFS with compression (lz4) and quotas
-- **Network**: Bridge networking with isolated namespaces
-- **Security**: AppArmor profiles, resource limits
-
-#### 3. **Management Layer** (Containarium CLI + REST API)
-- **Language**: Go with Protobuf contracts
-- **Operations**: Create, delete, list, info, resize, export
-- **APIs**:
-  - Local CLI (default)
-  - gRPC daemon with mTLS (port 50051)
-  - REST/HTTP API with JWT auth (port 8080)
-  - Interactive Swagger UI for REST API
-- **Automation**: Automated container lifecycle
-
-#### 4. **Access Layer** (SSH)
-- **Jump Server**: SSH bastion host
-- **ProxyJump**: Transparent container access
-- **Authentication**: SSH key-based only
-- **Isolation**: Per-user containers
-
-### Component Interaction
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ User Machine                                                 │
-│                                                              │
-│  $ ssh my-dev                                               │
-│      │                                                       │
-│      └─→ ProxyJump via Jump Server                         │
-│             │                                                │
-│             └─→ SSH to Container IP (10.0.3.x)             │
-│                    │                                         │
-│                    └─→ User in isolated Ubuntu container    │
-│                           with Docker installed             │
-└─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│ Terraform Workflow                                           │
-│                                                              │
-│  terraform apply                                            │
-│      │                                                       │
-│      ├─→ Create GCE instances (spot + persistent disk)     │
-│      ├─→ Configure ZFS on persistent disk                  │
-│      ├─→ Install Incus from official repo                  │
-│      ├─→ Setup firewall rules                              │
-│      └─→ Optional: Deploy containarium daemon              │
-└─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│ Containarium CLI Workflow                                    │
-│                                                              │
-│  containarium create alice --ssh-key ~/.ssh/alice.pub       │
-│      │                                                       │
-│      ├─→ Generate container profile (ZFS quota, limits)    │
-│      ├─→ Launch Incus container (Ubuntu 24.04)             │
-│      ├─→ Configure networking (get IP from pool)           │
-│      ├─→ Inject SSH key for user                           │
-│      ├─→ Install Docker and dev tools                      │
-│      └─→ Return container IP and SSH command               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Deployment Topologies
-
-#### Single Server — no HA (20-50 users, dev/testing)
-
-```
-Internet
-   │
-   ▼
-┌─────────────────────────────────┐
-│ GCE Spot Instance               │
-│ • n2-standard-8 (32GB RAM)      │
-│ • 100GB boot + 100GB data disk  │
-│ • ZFS pool on data disk         │
-│ • 50 containers @ 500MB each    │
-└─────────────────────────────────┘
-
-Cost: $98/month | $1.96/user
-Availability: ~99% (auto-restart only, ~9min downtime on preemption)
-```
-
-#### Single Server with Sentinel HA (20-50 users, production recommended)
-
-```
-Internet
-   │
-   ▼
-┌─────────────────────────────────┐
-│ Sentinel VM (e2-micro, free)    │  Owns static IP
-│ • sshpiper on :22 (SSH proxy)  │  Port 2222: management SSH
-│ • failtoban (brute-force ban)   │  Port 8888: binary server
-│ • iptables DNAT (:80,:443,etc)  │
-│ • TLS cert + SSH key sync       │
-│ • Maintenance page on preempt   │
-└───────────────┬─────────────────┘
-                │ VPC internal
-                ▼
-┌─────────────────────────────────┐
-│ Spot VM (c3d-highmem-8)         │  No external IP
-│ • Caddy reverse proxy           │  Cloud NAT for outbound
-│ • Containarium daemon           │
-│ • 50 containers @ 500MB each    │
-│ • ZFS on persistent disk        │
-└─────────────────────────────────┘
-
-Cost: ~$98/month | Recovery: ~85s
-Availability: ~99.5% (auto-restart + maintenance page)
-```
-
-#### Horizontal Scaling (100-250 users)
-
-```
-                    Load Balancer
-                    (SSH / HTTP)
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  Sentinel VM         │  e2-micro (free tier)
-              │  • sshpiper on :22   │  Monitors all spot VMs
-              │  • DNAT (non-SSH)    │  Auto-restarts on preemption
-              └──────────┬───────────┘
-                         │ VPC internal
-          ┌──────────────┼──────────────┐
-          ▼              ▼              ▼
-     Spot VM-1      Spot VM-2      Spot VM-3
-     (50 users)     (50 users)     (50 users)
-          │              │              │
-          ▼              ▼              ▼
-    Persistent-1   Persistent-2   Persistent-3
-    (500GB ZFS)    (500GB ZFS)    (500GB ZFS)
-
-Cost: ~$312/month | $2.08/user (150 users)
-Sentinel VM: free (e2-micro free tier)
-Availability: ~99.5% (auto-restart + maintenance page per spot VM)
-```
-
-One sentinel monitors all spot VMs in the cluster. Each spot VM is independently monitored — if one is preempted, the sentinel auto-restarts it while the others continue serving. The sentinel owns the static public IP and routes traffic to the appropriate spot VM.
-
-### Data Flow
-
-#### Container Creation Flow
-
-```
-1. User: containarium create alice --ssh-key alice.pub
-2. CLI: Read SSH public key from file
-3. CLI: Call Incus API to launch container
-4. Incus: Pull Ubuntu 24.04 image (cached after first use)
-5. Incus: Create ZFS dataset with quota (default 20GB)
-6. Incus: Assign IP from pool (10.0.3.x)
-7. CLI: Wait for container network ready
-8. CLI: Inject SSH key into container
-9. CLI: Install Docker and dev tools
-10. CLI: Return IP and connection info
-```
-
-#### SSH Connection Flow
-
-Containarium supports two SSH connection methods. The choice depends on whether the sentinel can reach the container's IP directly.
-
-**Method 1: Direct via sshpiper (recommended)**
-
-The simplest setup — sshpiper on the sentinel routes by username and `containarium-shell` on the backend host proxies into the container. Works regardless of network topology since the sentinel only needs to reach the backend host, not the container IP:
-
-```
-~/.ssh/config:
-  Host my-dev
-      HostName containarium.example.com   ← sentinel address
-      User alice                           ← username = routing key
-      IdentityFile ~/.ssh/containarium
-
-Flow:
-1. User: ssh my-dev
-2. SSH: Connect to sentinel:22 (sshpiper)
-3. sshpiper: Match username "alice", route to backend host
-4. Host sshd: Authenticate sentinel upstream key
-5. containarium-shell: sudo incus exec alice-container -- su -l alice
-6. User: Interactive shell in container
-   (If auth fails 20x → sshpiper bans client IP for 1h)
-```
-
-**Method 2: ProxyJump with container IP**
-
-Uses the sentinel as a TCP tunnel to reach the container's sshd directly. Requires that the container IP (on the Incus bridge) is routable from the sentinel — this only works when the backend host is on the same network (e.g., same VPC). Does **not** work when the backend is behind a firewall, NAT, or connected via tunnel:
-
-```
-~/.ssh/config:
-  Host containarium-jump
-      HostName containarium.example.com
-      User alice
-      IdentityFile ~/.ssh/containarium
-
-  Host my-dev
-      HostName 10.0.3.100                 ← container IP on Incus bridge
-      User alice
-      IdentityFile ~/.ssh/containarium
-      ProxyJump containarium-jump
-
-Flow:
-1. User: ssh my-dev
-2. SSH: ProxyJump through sentinel:22 (sshpiper)
-3. sshpiper: TCP-forward to backend host
-4. Backend host: Forward TCP to container IP (10.0.3.100:22)
-5. Container sshd: Authenticate alice's key
-6. User: Shell access in container
-```
-
-**Method Comparison:**
-
-| | Method 1 (Direct) | Method 2 (ProxyJump) |
-|---|---|---|
-| Config complexity | Simple (1 Host entry) | Requires jump host + container IP |
-| Same-network backends | Yes | Yes |
-| Firewalled/NAT backends | Yes | No (container IP not routable) |
-| `ssh host "command"` | Interactive shell only | Full command execution |
-| Container IP needed | No | Yes |
-
-**Security Architecture:**
-- **Separate accounts**: Each user has their own account on the backend host
-- **containarium-shell**: Login shell proxies into the user's container via `incus exec` (no host shell access)
-- **Same key**: Users use one key for both sentinel auth and container access
-- **Admin isolation**: Only admin can access host shell directly
-- **Audit trail**: Each user's connections logged separately
-- **DDoS protection**: sshpiper failtoban bans IPs after 3 failed auth attempts for 1h
-- **Zero trust**: Users cannot see other containers or inspect the host system
-
-#### Spot Instance Recovery Flow
-
-```
-1. GCE: Spot instance terminated (preemption)
-2. GCE: Persistent disk detached (data preserved)
-3. GCE: Instance restarts (within 5 minutes)
-4. Startup: Mount persistent disk to /var/lib/incus
-5. Startup: Import existing ZFS pool (incus-pool)
-6. Incus: Auto-start containers (boot.autostart=true)
-7. Total downtime: 2-5 minutes
-8. Data: 100% preserved
-```
-
-## 🎯 Use Cases
-
-- **Development Teams**: Isolated dev environments for each developer (100+ users)
-- **Training & Education**: Spin up temporary environments for students
-- **CI/CD Runners**: Ephemeral build and test environments
-- **Testing**: Isolated test environments with Docker support
-- **Multi-Tenancy**: Safe isolation between users, teams, or projects
-
-## 💰 Cost Comparison
-
-| Users | Traditional VMs | Containarium | Savings |
-|-------|----------------|-------------|---------|
-| 50 | $1,250/mo | **$98/mo** | **92%** |
-| 150 | $3,750/mo | **$312/mo** | **92%** |
-| 250 | $6,250/mo | **$508/mo** | **92%** |
-
-**How?**
-- LXC containers: 10x more density than VMs
-- Spot instances: 76% cheaper than regular VMs
-- Persistent disks: Survive spot termination
-- Single infrastructure: No VM-per-user overhead
-
-## 📦 Quick Start
-
-### 1. Deploy Infrastructure
-
-Choose your deployment size:
-
-**Small Team (20-50 users)**:
-```bash
-cd terraform/gce
-cp examples/single-server-spot.tfvars terraform.tfvars
-vim terraform.tfvars  # Add your project_id and SSH keys
-terraform init
-terraform apply
-```
-
-**Medium Team (100-150 users)**:
-```bash
-cp examples/horizontal-scaling-3-servers.tfvars terraform.tfvars
-vim terraform.tfvars  # Configure
-terraform apply
-```
-
-**Large Team (200-250 users)**:
-```bash
-cp examples/horizontal-scaling-5-servers.tfvars terraform.tfvars
-terraform apply
-```
-
-### 2. Build and Deploy CLI
-
-**Option A: Deploy for Local Mode (SSH to server)**
-```bash
-# Build containarium CLI for Linux
-make build-linux
-
-# Copy to jump server(s)
-scp bin/containarium-linux-amd64 admin@<jump-server-ip>:/tmp/
-ssh admin@<jump-server-ip>
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
-```
-
-**Option B: Setup for Remote Mode (Run from anywhere)**
-```bash
-# Build containarium for your platform
-make build  # macOS/Linux on your laptop
-
-# Deploy binary to server
-scp bin/containarium-linux-amd64 admin@<jump-server-ip>:/tmp/
-ssh admin@<jump-server-ip>
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
-
-# Install systemd service (generates JWT secret, writes service file, starts daemon)
-sudo containarium service install
-
-# The daemon auto-detects PostgreSQL and Caddy from Incus containers,
-# and loads persisted config (base-domain, ports) from PostgreSQL.
-# After VM recreation, just re-run the two commands above.
-```
-
-### 3. Create Containers
-
-**Option A: Local Mode (SSH to server)**
-```bash
-# SSH to jump server
-ssh admin@<jump-server-ip>
-
-# Create container for a user
-sudo containarium create alice --ssh-key ~/.ssh/alice.pub
-
-# Output:
-# ✓ Creating container for user: alice
-# ✓ [1/7] Creating container...
-# ✓ [2/7] Starting container...
-# ✓ [3/7] Creating jump server account (proxy-only)...
-#   ✓ Jump server account created: alice (no shell access, proxy-only)
-# ✓ [4/7] Waiting for network...
-#   Container IP: 10.0.3.100
-# ✓ [5/7] Installing Docker, SSH, and tools...
-# ✓ [6/7] Creating user: alice...
-# ✓ [7/7] Adding SSH keys (including jump server key for ProxyJump)...
-# ✓ Container alice-container created successfully!
-#
-# Container Details:
-#   Name: alice-container
-#   User: alice
-#   IP: 10.0.3.100
-#   Disk: 50GB
-#   Auto-start: enabled
-#
-# Jump Server Account (Secure Multi-Tenant):
-#   Username: alice
-#   Shell: /usr/sbin/nologin (proxy-only, no shell access)
-#   SSH ProxyJump: enabled
-#
-# SSH Access (via ProxyJump):
-#   ssh alice-dev  # (after SSH config setup)
-
-# List containers
-sudo containarium list
-# +------------------+---------+----------------------+------+-----------+
-# | NAME             | STATE   | IPV4                 | TYPE | SNAPSHOTS |
-# +------------------+---------+----------------------+------+-----------+
-# | alice-container  | RUNNING | 10.0.3.100 (eth0)    | C    | 0         |
-# +------------------+---------+----------------------+------+-----------+
-```
-
-**Option B: Remote Mode (from your laptop)**
-```bash
-# No SSH required - direct gRPC call with mTLS
-containarium create alice --ssh-key ~/.ssh/alice.pub \
-    --server 35.229.246.67:50051 \
-    --certs-dir ~/.config/containarium/certs \
-    --cpu 4 --memory 8GB -v
-
-# List containers remotely
-containarium list \
-    --server 35.229.246.67:50051 \
-    --certs-dir ~/.config/containarium/certs
-
-# Export SSH config remotely (run on server)
-ssh admin@<jump-server-ip>
-sudo containarium export alice --jump-ip 35.229.246.67 >> ~/.ssh/config
-```
-
-### 4. Setup SSH Keys for Users
-
-Each user needs their own SSH key pair for container access.
-
-**User generates SSH key (on their local machine):**
-
-```bash
-# Generate new SSH key pair
-ssh-keygen -t ed25519 -C "alice@company.com" -f ~/.ssh/containarium_alice
-
-# Output:
-# ~/.ssh/containarium_alice      (private key - keep secret!)
-# ~/.ssh/containarium_alice.pub  (public key - share with admin)
-```
-
-**Admin creates container with user's public key:**
-
-```bash
-# User sends their public key to admin
-# Admin receives: alice_id_ed25519.pub
-
-# SSH to jump server
-ssh admin@<jump-server-ip>
-
-# Create container with user's public key
-sudo containarium create alice --ssh-key /path/to/alice_id_ed25519.pub
-
-# Or if key is on admin's local machine, copy it first:
-scp alice_id_ed25519.pub admin@<jump-server-ip>:/tmp/
-ssh admin@<jump-server-ip>
-sudo containarium create alice --ssh-key /tmp/alice_id_ed25519.pub
-```
-
-### 5. User Access (SSH ProxyJump) - Secure Multi-Tenant Architecture
-
-**Containarium implements a secure proxy-only jump server architecture:**
-
-#### Security Model
-- ✅ Each user has a **separate jump server account** with `/usr/sbin/nologin` shell
-- ✅ Jump server accounts are **proxy-only** (no direct shell access)
-- ✅ SSH ProxyJump works transparently through the jump server
-- ✅ Users cannot access jump server data or see other users
-- ✅ Automatic jump server account creation when container is created
-- ✅ Jump server accounts deleted when container is deleted
-
-#### Architecture Flow
-```
-User's Laptop                Jump Server                Container
-     │                            │                         │
-     │   SSH to alice-jump       │                         │
-     ├──────────────────────────>│ (alice account:       │
-     │   (ProxyJump)              │  /usr/sbin/nologin)   │
-     │                            │  ┌─> Blocks shell     │
-     │                            │  └─> Allows proxy     │
-     │                            │         │              │
-     │                            │         │  SSH forward │
-     │                            │         └─────────────>│
-     │                                                      │
-     │   Direct SSH to container (10.0.3.100)             │
-     │<────────────────────────────────────────────────────┘
-```
-
-**Users configure SSH on their local machine:**
-
-Add to `~/.ssh/config`:
-
-```ssh-config
-# Jump server (proxy-only account - NO shell access)
-Host containarium-jump
-    HostName <jump-server-ip>
-    User alice  # Each user has their own jump account
-    IdentityFile ~/.ssh/containarium_alice
-
-# Your dev container
-Host alice-dev
-    HostName 10.0.3.100
-    User alice
-    IdentityFile ~/.ssh/containarium_alice
-    ProxyJump containarium-jump
-    StrictHostKeyChecking accept-new
-```
-
-**Test the setup:**
-```bash
-# This will FAIL (proxy-only account - no shell)
-ssh containarium-jump
-# Output: "This account is currently not available."
-
-# This WORKS (ProxyJump to container)
-ssh alice-dev
-# Output: alice@alice-container:~$
-```
-
-**Connect:**
-```bash
-ssh my-dev
-# Alice is now in her Ubuntu container with Docker!
-
-# First connection will ask to verify host key:
-# The authenticity of host '10.0.3.100 (<no hostip for proxy command>)' can't be established.
-# ED25519 key fingerprint is SHA256:...
-# Are you sure you want to continue connecting (yes/no)? yes
-```
-
-### 6. Managing SSH Keys in Containers
-
-#### Add Additional SSH Keys (After Container Creation)
-
-```bash
-# Method 1: Using incus exec
-sudo incus exec alice-container -- bash -c "echo 'ssh-ed25519 AAAA...' >> /home/alice/.ssh/authorized_keys"
-
-# Method 2: Using incus file push
-echo 'ssh-ed25519 AAAA...' > /tmp/new_key.pub
-sudo incus file push /tmp/new_key.pub alice-container/home/alice/.ssh/authorized_keys --mode 0600 --uid 1000 --gid 1000
-
-# Method 3: SSH into container and add manually
-ssh alice@10.0.3.100   # (from jump server)
-echo 'ssh-ed25519 AAAA...' >> ~/.ssh/authorized_keys
-```
-
-#### Replace SSH Key
-
-```bash
-# Overwrite authorized_keys with new key
-echo 'ssh-ed25519 NEW_KEY_AAAA...' | sudo incus exec alice-container -- \
-  tee /home/alice/.ssh/authorized_keys > /dev/null
-
-# Set correct permissions
-sudo incus exec alice-container -- chown alice:alice /home/alice/.ssh/authorized_keys
-sudo incus exec alice-container -- chmod 600 /home/alice/.ssh/authorized_keys
-```
-
-#### Remove SSH Key
-
-```bash
-# Edit authorized_keys file
-sudo incus exec alice-container -- bash -c \
-  "sed -i '/alice@old-laptop/d' /home/alice/.ssh/authorized_keys"
-```
-
-#### View Current SSH Keys
-
-```bash
-# List all authorized keys for a user
-sudo incus exec alice-container -- cat /home/alice/.ssh/authorized_keys
-```
-
-## 🏗️ Project Structure
-
-```
-Containarium/
-├── proto/                   # Protobuf contracts (type-safe)
-│   └── containarium/v1/
-│       ├── container.proto  # Container operations
-│       └── config.proto     # System configuration
-│
-├── cmd/containarium/        # CLI entry point
-├── internal/
-│   ├── cmd/                 # CLI commands (create, list, delete, info)
-│   ├── container/           # Container management logic
-│   ├── incus/               # Incus API wrapper
-│   └── ssh/                 # SSH key management
-│
-├── terraform/
-│   ├── gce/                 # GCP deployment
-│   │   ├── main.tf          # Main infrastructure
-│   │   ├── horizontal-scaling.tf # Multi-server setup
-│   │   ├── spot-instance.tf # Spot VM + persistent disk
-│   │   ├── examples/        # Ready-to-use configurations
-│   │   └── scripts/         # Startup scripts
-│   └── embed/               # Terraform file embedding for tests
-│       ├── terraform.go     # go:embed declarations
-│       └── README.md        # Embedding documentation
-│
-├── test/integration/        # E2E tests
-│   ├── e2e_terraform_test.go # Terraform-based E2E tests
-│   ├── e2e_reboot_test.go   # gcloud-based E2E tests
-│   ├── TERRAFORM-E2E.md     # Terraform testing guide
-│   └── E2E-README.md        # gcloud testing guide
-│
-├── docs/                    # Documentation
-│   ├── HORIZONTAL-SCALING-QUICKSTART.md
-│   ├── SSH-JUMP-SERVER-SETUP.md
-│   └── SPOT-INSTANCES-AND-SCALING.md
-│
-├── Makefile                 # Build automation
-└── IMPLEMENTATION-PLAN.md   # Detailed roadmap
-```
-
-## 🛠️ Development
-
-### Build Commands
-
-```bash
-# Show all commands
-make help
-
-# Build for current platform
-make build
-
-# Build for Linux (deployment)
-make build-linux
-
-# Generate protobuf code
-make proto
-
-# Run tests
-make test
-
-# Run E2E tests (requires GCP credentials)
-export GCP_PROJECT=your-project-id
-make test-e2e
-
-# Lint and format
-make lint fmt
-```
-
-### Local Testing
-
-```bash
-# Build and run locally
-make run-local
-
-# Test commands
-./bin/containarium create alice
-./bin/containarium list
-./bin/containarium info alice
-```
-
-## 🧪 Testing Architecture
-
-Containarium uses a comprehensive testing strategy with real infrastructure validation:
-
-### E2E Testing with Terraform
-
-The E2E test suite leverages the same Terraform configuration used for production deployments:
-
-```
-test/integration/
-├── e2e_terraform_test.go    # Terraform-based E2E tests
-├── e2e_reboot_test.go       # Alternative gcloud-based tests
-├── TERRAFORM-E2E.md         # Terraform E2E documentation
-└── E2E-README.md            # gcloud E2E documentation
-
-terraform/embed/
-├── terraform.go             # Embeds Terraform files (go:embed)
-└── README.md                # Embedding documentation
-```
-
-**Key Features:**
-- ✅ **go:embed Integration**: Terraform files embedded in test binary for portability
-- ✅ **ZFS Persistence**: Verifies data survives spot instance reboots
-- ✅ **No Hardcoded Values**: All configuration from Terraform outputs
-- ✅ **Reproducible**: Same Terraform config as production
-- ✅ **Automatic Cleanup**: Infrastructure destroyed after tests
-
-**Running E2E Tests:**
-
-```bash
-# Set GCP project
-export GCP_PROJECT=your-gcp-project-id
-
-# Run full E2E test (25-30 min)
-make test-e2e
-
-# Test workflow:
-# 1. Deploy infrastructure with Terraform
-# 2. Wait for instance ready
-# 3. Verify ZFS setup
-# 4. Create container with test data
-# 5. Reboot instance (stop/start)
-# 6. Verify data persisted
-# 7. Cleanup infrastructure
-```
-
-**Test Reports:**
-- Creates temporary Terraform workspace
-- Verifies ZFS pool status
-- Validates container quota enforcement
-- Confirms data persistence across reboots
-
-See [test/integration/TERRAFORM-E2E.md](test/integration/TERRAFORM-E2E.md) for detailed documentation.
-
-## 🔒 Security: Audit Logging & Intrusion Prevention
-
-### Audit Logging
-
-With separate user accounts, every SSH connection is logged with the actual username:
-
-**SSH Audit Logs** (`/var/log/auth.log`):
-```bash
-# Alice connects to her container
-Jan 10 14:23:15 jump-server sshd[12345]: Accepted publickey for alice from 203.0.113.10
-Jan 10 14:23:15 jump-server sshd[12345]: pam_unix(sshd:session): session opened for user alice
-
-# Bob connects to his container
-Jan 10 14:25:32 jump-server sshd[12346]: Accepted publickey for bob from 203.0.113.11
-Jan 10 14:25:32 jump-server sshd[12346]: pam_unix(sshd:session): session opened for user bob
-
-# Failed login attempt
-Jan 10 14:30:01 jump-server sshd[12347]: Failed publickey for charlie from 203.0.113.12
-Jan 10 14:30:05 jump-server sshd[12348]: Failed publickey for charlie from 203.0.113.12
-Jan 10 14:30:09 jump-server sshd[12349]: Failed publickey for charlie from 203.0.113.12
-```
-
-**View Audit Logs:**
-
-```bash
-# SSH to jump server as admin
-ssh admin@<jump-server-ip>
-
-# View all SSH connections
-sudo journalctl -u sshd -f
-
-# View connections for specific user
-sudo journalctl -u sshd | grep "for alice"
-
-# View failed login attempts
-sudo journalctl -u sshd | grep "Failed"
-
-# View connections from specific IP
-sudo journalctl -u sshd | grep "from 203.0.113.10"
-
-# Export logs for security audit
-sudo journalctl -u sshd --since "2025-01-01" --until "2025-01-31" > ssh-audit-jan-2025.log
-```
-
-### Brute-Force Protection
-
-#### With Sentinel HA: sshpiper failtoban (recommended)
-
-When using the sentinel architecture, SSH brute-force protection is handled by [sshpiper](https://github.com/tg123/sshpiper)'s built-in `failtoban` plugin on the sentinel VM:
-
-- sshpiper sits on port 22 and sees **real client IPs** (not the sentinel's IP)
-- After 3 failed SSH auth attempts, the client IP is banned for 1 hour
-- No configuration needed — set up automatically by the startup script
-
-```bash
-# Check sshpiper status (on sentinel, port 2222)
-gcloud compute ssh <sentinel-vm> --tunnel-through-iap --ssh-flag="-p 2222"
-systemctl status sshpiper
-journalctl -u sshpiper | grep "banned"
-```
-
-> **Why not iptables DNAT + fail2ban?** The previous approach forwarded port 22 via iptables DNAT with MASQUERADE. The spot VM only saw connections from the sentinel's IP, so fail2ban would ban the sentinel itself — blocking **all** SSH users. sshpiper operates at SSH protocol level (L7), correctly identifying individual attackers.
-
-#### Without Sentinel: fail2ban (single VM)
-
-### fail2ban Configuration
-
-Automatically block brute force attacks and unauthorized access attempts:
-
-**Install fail2ban** (added to startup script):
-
-```bash
-# Automatically installed by Terraform startup script
-sudo apt install -y fail2ban
-```
-
-**Configure fail2ban for SSH** (`/etc/fail2ban/jail.d/sshd.conf`):
-
-```ini
-[sshd]
-enabled = true
-port = 22
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 3          # Block after 3 failed attempts
-findtime = 600        # Within 10 minutes
-bantime = 3600        # Ban for 1 hour
-banaction = iptables-multiport
-```
-
-**Monitor fail2ban:**
-
-```bash
-# Check fail2ban status
-sudo fail2ban-client status
-
-# Check SSH jail status
-sudo fail2ban-client status sshd
-
-# Output:
-# Status for the jail: sshd
-# |- Filter
-# |  |- Currently failed:  2
-# |  |- Total failed:      15
-# |  `- File list:         /var/log/auth.log
-# `- Actions
-#    |- Currently banned:  1
-#    |- Total banned:      3
-#    `- Banned IP list:    203.0.113.12
-
-# View banned IPs
-sudo fail2ban-client get sshd banip
-
-# Unban IP manually (if needed)
-sudo fail2ban-client set sshd unbanip 203.0.113.12
-```
-
-**fail2ban Logs:**
-
-```bash
-# View fail2ban activity
-sudo tail -f /var/log/fail2ban.log
-
-# Example output:
-# 2025-01-10 14:30:15,123 fail2ban.filter  [12345]: INFO    [sshd] Found 203.0.113.12 - 2025-01-10 14:30:09
-# 2025-01-10 14:30:20,456 fail2ban.actions [12346]: NOTICE  [sshd] Ban 203.0.113.12
-# 2025-01-10 15:30:20,789 fail2ban.actions [12347]: NOTICE  [sshd] Unban 203.0.113.12
-```
-
-### Security Monitoring Dashboard
-
-**Create monitoring script** (`/usr/local/bin/security-monitor.sh`):
-
-```bash
-#!/bin/bash
-
-echo "=== Containarium Security Status ==="
-echo ""
-
-echo "📊 Active SSH Sessions:"
-who
-echo ""
-
-echo "🚫 Banned IPs (fail2ban):"
-sudo fail2ban-client status sshd | grep "Banned IP"
-echo ""
-
-echo "⚠️  Recent Failed Login Attempts:"
-sudo journalctl -u sshd --since "1 hour ago" | grep "Failed" | tail -10
-echo ""
-
-echo "✅ Successful Logins (last hour):"
-sudo journalctl -u sshd --since "1 hour ago" | grep "Accepted publickey" | tail -10
-echo ""
-
-echo "👥 Unique Users Connected Today:"
-sudo journalctl -u sshd --since "today" | grep "Accepted publickey" | \
-  awk '{print $9}' | sort -u
-```
-
-**Run monitoring:**
-
-```bash
-# Make executable
-sudo chmod +x /usr/local/bin/security-monitor.sh
-
-# Run manually
-sudo /usr/local/bin/security-monitor.sh
-
-# Add to cron for daily reports
-echo "0 9 * * * /usr/local/bin/security-monitor.sh | mail -s 'Daily Security Report' admin@company.com" | sudo crontab -
-```
-
-### Per-User Connection Tracking
-
-Since each user has their own account, you can track:
-
-**User-specific metrics:**
-
-```bash
-# Count connections per user
-sudo journalctl -u sshd --since "today" | grep "Accepted publickey" | \
-  awk '{print $9}' | sort | uniq -c | sort -rn
-
-# Output:
-#  45 alice
-#  32 bob
-#  18 charlie
-#   5 david
-
-# View all of Alice's connections
-sudo journalctl -u sshd | grep "for alice" | grep "Accepted publickey"
-
-# Find when Bob last connected
-sudo journalctl -u sshd | grep "for bob" | grep "Accepted publickey" | tail -1
-```
-
-### DDoS Protection Benefits
-
-With separate accounts, DDoS attacks are isolated:
-
-**Scenario: Alice's laptop is compromised and spams connections**
-
-```bash
-# fail2ban detects excessive failed attempts from alice's IP
-2025-01-10 15:00:00 fail2ban.filter [12345]: INFO [sshd] Found alice from 203.0.113.10
-2025-01-10 15:00:05 fail2ban.filter [12346]: INFO [sshd] Found alice from 203.0.113.10
-2025-01-10 15:00:10 fail2ban.filter [12347]: INFO [sshd] Found alice from 203.0.113.10
-2025-01-10 15:00:15 fail2ban.actions [12348]: NOTICE [sshd] Ban 203.0.113.10
-
-# Result:
-# ✅ Alice's IP is banned (her laptop is blocked)
-# ✅ Bob, Charlie, and other users are NOT affected
-# ✅ Service continues for everyone else
-# ✅ Admin can investigate Alice's account specifically
-```
-
-**Without separate accounts (everyone uses 'admin'):**
-```bash
-# ❌ Can't tell which user is causing the issue
-# ❌ Banning the IP might affect legitimate users behind NAT
-# ❌ No per-user accountability
-```
-
-### Compliance & Security Audits
-
-Export security logs for compliance:
-
-```bash
-# Export all SSH activity for user 'alice' in January
-sudo journalctl -u sshd --since "2025-01-01" --until "2025-02-01" | \
-  grep "for alice" > alice-ssh-audit-jan-2025.log
-
-# Export all failed login attempts
-sudo journalctl -u sshd --since "2025-01-01" --until "2025-02-01" | \
-  grep "Failed" > failed-logins-jan-2025.log
-
-# Export fail2ban bans
-sudo fail2ban-client get sshd banhistory > ban-history-jan-2025.log
-```
-
-### Best Practices
-
-1. **Regular Log Reviews**: Check logs weekly for suspicious activity
-2. **fail2ban Tuning**: Adjust `maxretry` and `bantime` based on your security needs
-3. **Alert on Anomalies**: Set up alerts for unusual patterns (100+ connections from one user)
-4. **Log Retention**: Keep logs for at least 90 days for compliance
-5. **Separate Admin Access**: Never use user accounts for admin tasks
-6. **Monitor fail2ban**: Ensure fail2ban service is always running
-
-## 👥 User Onboarding Workflow
-
-Complete end-to-end workflow for adding a new user:
-
-### Step 1: User Generates SSH Key Pair
-
-**User (on their local machine):**
-
-```bash
-# Generate SSH key pair
-ssh-keygen -t ed25519 -C "alice@company.com" -f ~/.ssh/containarium_alice
-
-# Output:
-# Generating public/private ed25519 key pair.
-# Enter passphrase (empty for no passphrase): [optional]
-# Your identification has been saved in ~/.ssh/containarium_alice
-# Your public key has been saved in ~/.ssh/containarium_alice.pub
-
-# View and copy public key to send to admin
-cat ~/.ssh/containarium_alice.pub
-# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJqL+XYZ... alice@company.com
-```
-
-### Step 2: Admin Creates Container
-
-**Admin receives public key and creates container:**
-
-```bash
-# Save user's public key to file
-echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJqL... alice@company.com' > /tmp/alice.pub
-
-# SSH to jump server
-ssh admin@<jump-server-ip>
-
-# Create container with user's public key
-# This automatically:
-#   1. Creates jump server account for alice (proxy-only, no shell)
-#   2. Creates alice-container with SSH access
-#   3. Sets up SSH keys for both
-sudo containarium create alice --ssh-key /tmp/alice.pub
-
-# Output:
-# ✓ Creating jump server account: alice (proxy-only)
-# ✓ Creating container for user: alice
-# ✓ Container started: alice-container
-# ✓ IP Address: 10.0.3.100
-# ✓ Installing Docker and dev tools
-# ✓ Container alice-container created successfully!
-#
-# ✓ Jump server account: alice@35.229.246.67 (proxy-only, no shell)
-# ✓ Container access: alice@10.0.3.100
-#
-# Send this to user:
-#   Jump Server: 35.229.246.67 (user: alice)
-#   Container IP: 10.0.3.100
-#   Username: alice
-
-# Enable auto-start for spot instance recovery
-sudo incus config set alice-container boot.autostart true
-```
-
-### Step 3: Admin Sends Connection Info to User
-
-**Method 1: Export SSH Config (Recommended)**
-
-```bash
-# Admin exports SSH configuration
-sudo containarium export alice --jump-ip 35.229.246.67 --key ~/.ssh/containarium_alice > alice-ssh-config.txt
-
-# Send alice-ssh-config.txt to user via email/Slack
-```
-
-**Method 2: Manual SSH Config**
-
-**Admin sends to user via email/Slack:**
-
-```
-Your development container is ready!
-
-Jump Server IP: 35.229.246.67
-Your Username: alice (for both jump server and container)
-Container IP: 10.0.3.100
-
-Add this to your ~/.ssh/config:
-
-Host containarium-jump
-    HostName 35.229.246.67
-    User alice                              # ← Your own username!
-    IdentityFile ~/.ssh/containarium_alice
-
-Host alice-dev
-    HostName 10.0.3.100
-    User alice                              # ← Same username
-    IdentityFile ~/.ssh/containarium_alice  # ← Same key
-    ProxyJump containarium-jump
-
-Then connect with: ssh alice-dev
-
-Note: Your jump server account is proxy-only (no shell access).
-You can only access your container, not the jump server itself.
-```
-
-### Step 4: User Configures SSH and Connects
-
-**User (on their local machine):**
-
-**Method 1: Using Exported Config (Recommended)**
-
-```bash
-# Add exported config to your SSH config
-cat alice-ssh-config.txt >> ~/.ssh/config
-
-# Connect to container
-ssh alice-dev
-
-# You're now in your container!
-alice@alice-container:~$ docker run hello-world
-alice@alice-container:~$ sudo apt install vim git tmux
-```
-
-**Method 2: Manual Configuration**
-
-```bash
-# Add to ~/.ssh/config
-vim ~/.ssh/config
-
-# Paste the configuration provided by admin
-
-# Connect to container
-ssh alice-dev
-
-# First time: verify host key
-# The authenticity of host '10.0.3.100' can't be established.
-# ED25519 key fingerprint is SHA256:...
-# Are you sure you want to continue connecting (yes/no)? yes
-
-# You're now in your container!
-alice@alice-container:~$ docker run hello-world
-alice@alice-container:~$ sudo apt install vim git tmux
-```
-
-### Step 5: User Adds Additional Devices (Optional)
-
-**User wants to access from second laptop:**
-
-```bash
-# On second laptop, generate new key
-ssh-keygen -t ed25519 -C "alice@home-laptop" -f ~/.ssh/containarium_alice_home
-
-# Send new public key to admin
-cat ~/.ssh/containarium_alice_home.pub
-```
-
-**Admin adds second key:**
-
-```bash
-# Add second key to container (keeps existing keys)
-NEW_KEY='ssh-ed25519 AAAAC3... alice@home-laptop'
-sudo incus exec alice-container -- bash -c \
-  "echo '$NEW_KEY' >> /home/alice/.ssh/authorized_keys"
-```
-
-**User can now connect from both laptops!**
-
-## 📚 CLI Command Reference
-
-Containarium provides a simple, intuitive CLI for container management.
-
-### Unified Binary Architecture
-
-**Containarium uses a single binary that operates in two modes:**
-
-#### 🖥️ **Local Mode** (Direct Incus Access)
-```bash
-# Execute directly on the jump server (requires sudo)
-sudo containarium create alice --ssh-key ~/.ssh/alice.pub
-sudo containarium list
-sudo containarium delete bob
-```
-- ✅ Direct Incus API access via Unix socket
-- ✅ No daemon required
-- ✅ Fastest execution
-- ❌ Must be run on the server
-- ❌ Requires sudo/root privileges
-
-#### 🌐 **Remote Mode** (gRPC + mTLS)
-```bash
-# Execute from anywhere (laptop, CI/CD, etc.)
-containarium create alice --ssh-key ~/.ssh/alice.pub \
-    --server 35.229.246.67:50051 \
-    --certs-dir ~/.config/containarium/certs
-
-containarium list --server 35.229.246.67:50051 \
-    --certs-dir ~/.config/containarium/certs
-```
-- ✅ Remote execution from any machine
-- ✅ Secure mTLS authentication
-- ✅ No SSH required
-- ✅ Perfect for automation/CI/CD
-- ❌ Requires daemon running on server
-- ❌ Requires certificate setup
-
-#### 🔄 **Daemon Mode** (Server Component)
-```bash
-# Install systemd service (writes service file, generates JWT secret, starts daemon)
-sudo containarium service install
-
-# Or manage manually
-sudo systemctl start containarium
-sudo systemctl status containarium
-sudo journalctl -u containarium -f
-```
-- Self-bootstraps: auto-detects PostgreSQL and Caddy from Incus containers
-- Persists config (base-domain, ports) in PostgreSQL — survives VM recreation
-- Only needs `--rest --jwt-secret-file` in the service file; everything else is auto-detected or loaded from DB
-- Listens on port 50051 (gRPC) + port 8080 (REST/HTTP)
-- Automatically started via systemd
-
-### Certificate Setup for Remote Mode
-
-**Generate mTLS certificates:**
-```bash
-# On server: Generate server and client certificates
-containarium cert generate \
-    --server-ip 35.229.246.67 \
-    --output-dir /etc/containarium/certs
-
-# Copy client certificates to local machine
-scp admin@35.229.246.67:/etc/containarium/certs/{ca.crt,client.crt,client.key} \
-    ~/.config/containarium/certs/
-```
-
-**Verify connection:**
-```bash
-# Test remote connection
-containarium list \
-    --server 35.229.246.67:50051 \
-    --certs-dir ~/.config/containarium/certs
-```
-
-### Basic Commands
-
-#### Create Container
-
-```bash
-# Basic usage
-sudo containarium create <username> --ssh-key <path-to-public-key>
-
-# Example
-sudo containarium create alice --ssh-key ~/.ssh/alice.pub
-
-# With custom disk quota
-sudo containarium create bob --ssh-key ~/.ssh/bob.pub --disk-quota 50GB
-
-# With a pre-configured software stack
-sudo containarium create alice --ssh-key ~/.ssh/alice.pub --stack nodejs
-sudo containarium create bob --ssh-key ~/.ssh/bob.pub --stack docker
-
-# Enable auto-start on boot
-sudo containarium create charlie --ssh-key ~/.ssh/charlie.pub --autostart
-```
-
-**Output:**
-```
-✓ Creating container for user: alice
-✓ Launching Ubuntu 24.04 container
-✓ Container started: alice-container
-✓ IP Address: 10.0.3.100
-✓ Installing Docker and dev tools
-✓ Configuring SSH access
-✓ Container alice-container created successfully!
-
-Container Details:
-  Name: alice-container
-  User: alice
-  IP: 10.0.3.100
-  Disk Quota: 20GB (ZFS)
-  SSH: ssh alice@10.0.3.100
-```
-
-**Available Software Stacks (`--stack`):**
-
-| Stack | Description |
-|-------|-------------|
-| `nodejs` | Node.js LTS, npm, yarn, pnpm, TypeScript |
-| `python` | Python 3, pip, virtualenv, poetry |
-| `golang` | Go, gopls, golangci-lint |
-| `rust` | Rust toolchain via rustup |
-| `docker` | Docker CE, docker-compose-plugin |
-| `datascience` | Python, Jupyter, pandas, numpy, scikit-learn |
-| `devops` | kubectl, Terraform |
-| `database` | PostgreSQL, MySQL, Redis CLI clients |
-| `fullstack` | Node.js + Python + database clients |
-
-#### List Containers
-
-```bash
-# List all containers
-sudo containarium list
-
-# Example output
-NAME              STATUS    IP            QUOTA   AUTOSTART
-alice-container   Running   10.0.3.100    20GB    Yes
-bob-container     Running   10.0.3.101    50GB    Yes
-charlie-container Stopped   -             20GB    No
-```
-
-#### Get Container Info
-
-```bash
-# Get detailed information
-sudo containarium info alice
-
-# Example output
-Container: alice-container
-Status: Running
-User: alice
-IP Address: 10.0.3.100
-Disk Quota: 20GB
-Disk Used: 4.2GB (21%)
-Memory: 512MB / 2GB
-CPU Usage: 5%
-Uptime: 3 days
-Auto-start: Enabled
-```
-
-#### Delete Container
-
-```bash
-# Delete container (with confirmation)
-sudo containarium delete alice
-
-# Force delete (no confirmation)
-sudo containarium delete bob --force
-
-# Delete with data backup
-sudo containarium delete charlie --backup
-```
-
-#### Resize Container
-
-Dynamically adjust container resources (CPU, memory, disk) **without any downtime**. All changes take effect immediately without restarting the container.
-
-```bash
-# Resize CPU only
-sudo containarium resize alice --cpu 4
-
-# Resize memory only
-sudo containarium resize alice --memory 8GB
-
-# Resize disk only
-sudo containarium resize alice --disk 100GB
-
-# Resize all three at once
-sudo containarium resize alice --cpu 4 --memory 8GB --disk 100GB
-
-# With verbose output
-sudo containarium resize alice --cpu 8 --memory 16GB -v
-```
-
-**Advanced CPU Options:**
-
-```bash
-# Set specific number of cores
-sudo containarium resize alice --cpu 4
-
-# Set CPU range (flexible allocation)
-sudo containarium resize alice --cpu 2-4
-
-# Pin to specific CPU cores (performance)
-sudo containarium resize alice --cpu 0-3
-```
-
-**Memory Formats:**
-
-```bash
-# Gigabytes
-sudo containarium resize alice --memory 8GB
-
-# Megabytes
-sudo containarium resize alice --memory 4096MB
-
-# Gibibytes (binary)
-sudo containarium resize alice --memory 8GiB
-```
-
-**Important Notes:**
-
-- **CPU**: Always safe to increase or decrease. Supports over-provisioning (4-8x).
-- **Memory**: Safe to increase. Check current usage before decreasing to avoid OOM kills.
-- **Disk**: Can only increase (cannot shrink below current usage).
-- All changes are instant with no container restart required.
-
-**Verbose Output Example:**
-
-```bash
-$ sudo containarium resize alice --cpu 4 --memory 8GB -v
-Resizing container: alice-container
-  Setting CPU limit: 4
-  Setting memory limit: 8GB
-  ✓ Resources updated successfully (no restart required)
-
-✓ Container alice-container resized successfully!
-
-Updated configuration:
-  CPU:    4
-  Memory: 8GB
-```
-
-#### Export SSH Configuration
-
-```bash
-# Export to stdout (copy/paste to ~/.ssh/config)
-sudo containarium export alice --jump-ip 35.229.246.67
-
-# Export to file
-sudo containarium export alice --jump-ip 35.229.246.67 --output ~/.ssh/config.d/containarium-alice
-
-# With custom SSH key path
-sudo containarium export alice --jump-ip 35.229.246.67 --key ~/.ssh/containarium_alice
-
-# Append directly to SSH config
-sudo containarium export alice --jump-ip 35.229.246.67 >> ~/.ssh/config
-```
-
-**Output:**
-```
-# Containarium SSH Configuration
-# User: alice
-# Generated: 2026-01-10 08:43:18
-
-# Jump server (GCE instance with proxy-only account)
-Host containarium-jump
-    HostName 35.229.246.67
-    User alice
-    IdentityFile ~/.ssh/containarium_alice
-    # No shell access - proxy-only account
-
-# User's development container
-Host alice-dev
-    HostName 10.0.3.100
-    User alice
-    IdentityFile ~/.ssh/containarium_alice
-    ProxyJump containarium-jump
-```
-
-**Usage:**
-```bash
-# After exporting, connect with:
-ssh alice-dev
-```
-
-### SSH Key Management
-
-#### Generate SSH Keys for Users
-
-```bash
-# User generates their own key pair
-ssh-keygen -t ed25519 -C "user@company.com" -f ~/.ssh/containarium
-
-# Output files:
-# ~/.ssh/containarium      (private - never share!)
-# ~/.ssh/containarium.pub  (public - give to admin)
-
-# View public key (to send to admin)
-cat ~/.ssh/containarium.pub
-```
-
-#### Create Container with Custom SSH Key
-
-```bash
-# Method 1: Admin has key file locally
-sudo containarium create alice --ssh-key /path/to/alice.pub
-
-# Method 2: Admin receives key via secure channel
-# User sends their public key:
-cat ~/.ssh/containarium.pub
-# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJqL... alice@company.com
-
-# Admin creates container with key inline
-echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJqL... alice@company.com' > /tmp/alice.pub
-sudo containarium create alice --ssh-key /tmp/alice.pub
-
-# Method 3: Multiple users with different keys
-sudo containarium create alice --ssh-key /tmp/alice.pub
-sudo containarium create bob --ssh-key /tmp/bob.pub
-sudo containarium create charlie --ssh-key /tmp/charlie.pub
-```
-
-#### Add SSH Key to Existing Container
-
-```bash
-# Add additional key (keep existing keys)
-NEW_KEY='ssh-ed25519 AAAAC3... user@laptop'
-sudo incus exec alice-container -- bash -c \
-  "echo '$NEW_KEY' >> /home/alice/.ssh/authorized_keys"
-
-# Verify key was added
-sudo incus exec alice-container -- cat /home/alice/.ssh/authorized_keys
-```
-
-#### Replace SSH Key
-
-```bash
-# Replace all keys with new key
-NEW_KEY='ssh-ed25519 AAAAC3... alice@new-laptop'
-echo "$NEW_KEY" | sudo incus exec alice-container -- \
-  tee /home/alice/.ssh/authorized_keys > /dev/null
-
-# Fix permissions
-sudo incus exec alice-container -- chown alice:alice /home/alice/.ssh/authorized_keys
-sudo incus exec alice-container -- chmod 600 /home/alice/.ssh/authorized_keys
-```
-
-#### Manage Multiple SSH Keys per User
-
-```bash
-# Add work laptop key
-WORK_KEY='ssh-ed25519 AAAAC3... alice@work-laptop'
-sudo incus exec alice-container -- bash -c \
-  "echo '$WORK_KEY' >> /home/alice/.ssh/authorized_keys"
-
-# Add home laptop key
-HOME_KEY='ssh-ed25519 AAAAC3... alice@home-laptop'
-sudo incus exec alice-container -- bash -c \
-  "echo '$HOME_KEY' >> /home/alice/.ssh/authorized_keys"
-
-# View all keys
-sudo incus exec alice-container -- cat /home/alice/.ssh/authorized_keys
-# ssh-ed25519 AAAAC3... alice@work-laptop
-# ssh-ed25519 AAAAC3... alice@home-laptop
-```
-
-#### Remove Specific SSH Key
-
-```bash
-# Remove key by comment (last part of key)
-sudo incus exec alice-container -- bash -c \
-  "sed -i '/alice@old-laptop/d' /home/alice/.ssh/authorized_keys"
-
-# Remove key by fingerprint pattern
-sudo incus exec alice-container -- bash -c \
-  "sed -i '/AAAAC3NzaC1lZDI1NTE5AAAAIAbc123/d' /home/alice/.ssh/authorized_keys"
-```
-
-#### Troubleshoot SSH Key Issues
-
-```bash
-# Check authorized_keys permissions
-sudo incus exec alice-container -- ls -la /home/alice/.ssh/
-# Should show:
-# drwx------ 2 alice alice 4096 ... .ssh
-# -rw------- 1 alice alice  123 ... authorized_keys
-
-# Fix permissions if wrong
-sudo incus exec alice-container -- chown -R alice:alice /home/alice/.ssh
-sudo incus exec alice-container -- chmod 700 /home/alice/.ssh
-sudo incus exec alice-container -- chmod 600 /home/alice/.ssh/authorized_keys
-
-# Test SSH from jump server
-ssh -v alice@10.0.3.100
-# -v shows verbose output for debugging
-
-# Check SSH logs in container
-sudo incus exec alice-container -- tail -f /var/log/auth.log
-```
-
-### Collaborator Management
-
-Add collaborators to containers so multiple users can share a development environment.
-
-#### Add a Collaborator
-
-```bash
-# Basic: collaborator gets restricted access (sudo su - owner only)
-sudo containarium collaborator add alice bob --ssh-key ~/.ssh/bob.pub
-
-# Grant full sudo access
-sudo containarium collaborator add alice bob --ssh-key ~/.ssh/bob.pub --sudo
-
-# Grant container runtime access (docker/podman groups)
-sudo containarium collaborator add alice bob --ssh-key ~/.ssh/bob.pub --container-runtime
-
-# Both permissions
-sudo containarium collaborator add alice carol --ssh-key ~/.ssh/carol.pub --sudo --container-runtime
-```
-
-**Permission levels:**
-
-| Flag | Effect |
-|------|--------|
-| *(default)* | Can only `sudo su - <owner>` with session logging |
-| `--sudo` | Full `NOPASSWD: ALL` sudo access with session logging |
-| `--container-runtime` | Added to docker and podman groups |
-
-#### List Collaborators
-
-```bash
-sudo containarium collaborator list alice
-```
-
-#### Remove a Collaborator
-
-```bash
-sudo containarium collaborator remove alice bob
-```
-
-### Advanced Operations
-
-#### Using Incus Directly
-
-```bash
-# Execute command in container
-sudo incus exec alice-container -- df -h
-
-# Shell into container
-sudo incus exec alice-container -- su - alice
-
-# View container logs
-sudo incus console alice-container --show-log
-
-# Snapshot container
-sudo incus snapshot alice-container snap1
-
-# Restore snapshot
-sudo incus restore alice-container snap1
-
-# Copy container
-sudo incus copy alice-container alice-backup
-```
-
-#### Resource Management
-
-```bash
-# Set memory limit
-sudo incus config set alice-container limits.memory 4GB
-
-# Set CPU limit
-sudo incus config set alice-container limits.cpu 2
-
-# View container metrics
-sudo incus info alice-container
-
-# Resize disk quota
-sudo containarium resize alice --disk-quota 100GB
-```
-
-### Terraform Commands
-
-#### Deploy Infrastructure
-
-```bash
-cd terraform/gce
-
-# Initialize Terraform
-terraform init
-
-# Preview changes
-terraform plan
-
-# Deploy infrastructure
-terraform apply
-
-# Deploy with custom variables
-terraform apply -var-file=examples/horizontal-scaling-3-servers.tfvars
-
-# Show outputs
-terraform output
-
-# Get specific output
-terraform output jump_server_ip
-```
-
-#### Manage Infrastructure
-
-```bash
-# Update infrastructure
-terraform apply
-
-# Destroy specific resource
-terraform destroy -target=google_compute_instance.jump_server_spot[0]
-
-# Destroy everything
-terraform destroy
-
-# Import existing resource
-terraform import google_compute_instance.jump_server projects/my-project/zones/us-central1-a/instances/my-instance
-
-# Refresh state
-terraform refresh
-```
-
-### Maintenance Commands
-
-#### Backup and Recovery
-
-```bash
-# Backup ZFS pool
-sudo zfs snapshot incus-pool@backup-$(date +%Y%m%d)
-
-# List snapshots
-sudo zfs list -t snapshot
-
-# Rollback to snapshot
-sudo zfs rollback incus-pool@backup-20240115
-
-# Export container
-sudo incus export alice-container alice-backup.tar.gz
-
-# Import container
-sudo incus import alice-backup.tar.gz
-```
-
-#### Monitoring
-
-```bash
-# Check ZFS pool status
-sudo zpool status
-
-# Check disk usage
-sudo zfs list
-
-# Check container resource usage
-sudo incus list --columns ns4mDcup
-
-# View system load
-htop
-
-# Check Incus daemon status
-sudo systemctl status incus
-```
-
-#### Troubleshooting
-
-##### Common Issues
-
-**1. "cannot lock /etc/passwd" Error**
-
-This occurs when `google_guest_agent` is managing users while Containarium tries to create jump server accounts.
-
-**Solution**: Containarium includes automatic retry logic with exponential backoff:
-- ✅ Pre-checks for lock files before attempting
-- ✅ 6 retry attempts with exponential backoff (500ms → 30s)
-- ✅ Jitter to prevent thundering herd
-- ✅ Smart error detection (only retries lock errors)
-
-If retries are exhausted, check agent activity:
-```bash
-# Check what google_guest_agent is doing
-sudo journalctl -u google-guest-agent --since "5 minutes ago" | grep -E "account|user|Updating"
-
-# Temporarily disable account management (if needed)
-sudo systemctl stop google-guest-agent
-sudo containarium create alice --ssh-key ~/.ssh/alice.pub
-sudo systemctl start google-guest-agent
-
-# Or wait and retry - agent usually releases lock within 30-60 seconds
-```
-
-**2. Container Network Issues**
-
-```bash
-# View Incus logs
-sudo journalctl -u incus -f
-
-# Check container network
-sudo incus network list
-sudo incus network show incusbr0
-
-# Restart Incus daemon
-sudo systemctl restart incus
-```
-
-**3. Infrastructure Issues**
-
-```bash
-# Check startup script logs (GCE)
-gcloud compute instances get-serial-port-output <instance-name> --zone=<zone>
-
-# Verify ZFS health
-sudo zpool scrub incus-pool
-sudo zpool status -v
-```
-
-### Daemon Management
-
-**Install, check, and manage the daemon:**
-```bash
-# Install systemd service (first time or after VM recreation)
-sudo containarium service install
-
-# View daemon status
-sudo containarium service status
-# or: sudo systemctl status containarium
-
-# View daemon logs
-sudo journalctl -u containarium -f
-
-# Restart daemon
-sudo systemctl restart containarium
-
-# Uninstall service
-sudo containarium service uninstall
-```
-
-**Direct gRPC testing with grpcurl:**
-```bash
-# Install grpcurl if needed
-go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
-
-# List services (with mTLS)
-grpcurl -cacert /etc/containarium/certs/ca.crt \
-    -cert /etc/containarium/certs/client.crt \
-    -key /etc/containarium/certs/client.key \
-    35.229.246.67:50051 list
-
-# Create container via gRPC (with mTLS)
-grpcurl -cacert /etc/containarium/certs/ca.crt \
-    -cert /etc/containarium/certs/client.crt \
-    -key /etc/containarium/certs/client.key \
-    -d '{"username": "alice", "ssh_keys": ["ssh-ed25519 AAA..."]}' \
-    35.229.246.67:50051 containarium.v1.ContainerService/CreateContainer
-```
-
-### Batch Operations
-
-```bash
-# Create multiple containers
-for user in alice bob charlie; do
-  sudo containarium create $user --ssh-key ~/.ssh/${user}.pub
-done
-
-# Enable autostart for all containers
-sudo incus list --format csv -c n | while read name; do
-  sudo incus config set $name boot.autostart true
-done
-
-# Snapshot all containers
-for container in $(sudo incus list --format csv -c n); do
-  sudo incus snapshot $container "backup-$(date +%Y%m%d)"
-done
-```
-
-## 🌩️ Infrastructure Deployment
-
-### Single Server (Development)
-
-```hcl
-# terraform.tfvars
-use_spot_instance    = true   # 76% cheaper
-use_persistent_disk  = true   # Survives restarts
-machine_type         = "n2-standard-8"  # 32GB RAM, 50 users
-```
-
-### Horizontal Scaling (Production)
-
-```hcl
-# terraform.tfvars
-enable_horizontal_scaling = true
-jump_server_count         = 3        # 3 independent servers
-enable_load_balancer      = true     # SSH load balancing
-use_spot_instance         = true
-```
-
-Deploy:
-```bash
-cd terraform/gce
-terraform init
-terraform plan
-terraform apply
-```
-
-## 📖 Documentation
-
-### Essential Guides
-- **[Deployment Guide](docs/DEPLOYMENT-GUIDE.md)** - **START HERE!** Complete workflow from zero to running containers
-- **[Production Deployment](PRODUCTION-DEPLOYMENT.md)** - **PRODUCTION READY!** Remote state, secrets management, CI/CD
-- [Horizontal Scaling Quick Start](docs/HORIZONTAL-SCALING-QUICKSTART.md) - Deploy 3-5 jump servers
-- [SSH Jump Server Setup](docs/SSH-JUMP-SERVER-SETUP.md) - SSH configuration guide
-
-### Advanced Topics
-- [Spot Instances & Scaling](docs/SPOT-INSTANCES-AND-SCALING.md) - Cost optimization
-- [Horizontal Scaling Architecture](docs/HORIZONTAL-SCALING-ARCHITECTURE.md) - Scaling strategies
-- [Terraform GCE README](terraform/gce/README.md) - Deployment details
-- [Implementation Plan](IMPLEMENTATION-PLAN.md) - Architecture & roadmap
-- [Testing Architecture](test/integration/TERRAFORM-E2E.md) - E2E testing with Terraform
-
-## 💡 Why Containarium?
-
-### Traditional Approach (Wasteful)
-
-```
-❌ Create 1 GCE VM per user
-❌ Each VM: 2-4GB RAM (most unused)
-❌ Cost: $25-50/month per user
-❌ Slow: 30-60 seconds to provision
-❌ Unmanageable: 50+ VMs to maintain
-```
-
-### Containarium Approach (Efficient)
-
-```
-✅ 1 GCE VM hosts 50 containers
-✅ Each container: 100-500MB RAM (efficient)
-✅ Cost: $1.96-2.08/month per user
-✅ Fast: <60 seconds to provision
-✅ Scalable: Add servers as you grow
-✅ Resilient: Spot instances + persistent storage
-```
-
-## 📊 Resource Efficiency
-
-| Metric | VM-per-User | Containarium | Improvement |
-|--------|-------------|--------------|-------------|
-| Memory/User | 2-4 GB | 100-500 MB | **10x** |
-| Startup Time | 30-60s | 2-5s | **12x** |
-| Density | 2-3/host | 150/host | **50x** |
-| Cost (50 users) | $1,250/mo | $98/mo | **92% savings** |
-
-## 🔐 Security Features
-
-### Access Control
-- **Separate User Accounts**: Each user has proxy-only account on jump server
-- **No Shell Access**: User accounts use `/usr/sbin/nologin` (cannot execute commands on jump server)
-- **SSH Key Auth**: Password authentication disabled globally
-- **Per-User Isolation**: Users can only access their own containers
-- **Admin Separation**: Only admin account has jump server shell access
-
-### Container Security
-- **Unprivileged Containers**: Container root ≠ host root (UID mapping)
-- **Resource Limits**: CPU, memory, disk quotas per container
-- **Network Isolation**: Separate network namespace per container
-- **AppArmor Profiles**: Additional security layer per container
-
-### Network Security
-- **Firewall Rules**: Restrict SSH access to known IPs
-- **fail2ban Integration**: Auto-block brute force attacks per user account
-- **DDoS Protection**: Per-account rate limiting
-- **Private Container IPs**: Only jump server has public IP
-
-### Audit & Monitoring
-- **SSH Audit Logging**: Track all connections by user account
-- **Per-User Logs**: Separate logs for each user (alice@jump → container)
-- **Container Access Logs**: Track who accessed which container and when
-- **Security Event Alerts**: Monitor for suspicious activity
-
-### Data Protection
-- **Persistent Disk Encryption**: Data encrypted at rest
-- **Automated Backups**: Daily snapshots with 30-day retention
-- **ZFS Checksums**: Detect data corruption automatically
-
-## 🚀 Deployment Options
-
-| Configuration | Users | Servers | Cost/Month | Use Case |
-|--------------|-------|---------|-----------|----------|
-| **Dev/Test** | 20-50 | 1 spot | $98 | Development, testing |
-| **Small Team** | 50-100 | 1 regular | $242 | Production, small team |
-| **Medium Team** | 100-150 | 3 spot | $312 | Production, medium team |
-| **Large Team** | 200-250 | 5 spot | $508 | Production, large team |
-| **Enterprise** | 500+ | 10+ or cluster | Custom | Enterprise scale |
-
-## 🗺️ Roadmap
-
-### Completed
-
-- [x] **Phase 1**: Protobuf contracts - Type-safe gRPC contracts for container operations
-- [x] **Phase 2**: Go CLI framework - Full-featured CLI with create, delete, list, info, resize commands
-- [x] **Phase 3**: Terraform GCE deployment - Single-server and horizontal scaling configurations
-- [x] **Phase 4**: Spot instances + persistent disk - ZFS-backed storage surviving spot termination
-- [x] **Phase 5**: Horizontal scaling with load balancer - Multi-server SSH load balancing
-- [x] **Phase 6**: Container management (Incus integration) - Complete LXC container lifecycle management
-- [x] **Phase 7**: End-to-end testing - Terraform-based E2E tests with ZFS persistence validation
-- [x] **Phase 8**: gRPC daemon with mTLS - Remote container management with mutual TLS authentication
-- [x] **Phase 9**: Secure multi-tenant architecture - Proxy-only jump server accounts, per-user isolation
-- [x] **Phase 10**: Production deployment guides - Complete documentation for production deployments
-
-### In Progress
-
-- [ ] **Phase 11**: Monitoring & observability - Metrics, alerts, and dashboards for production systems
-- [ ] **Phase 12**: Automated backup & disaster recovery - Scheduled snapshots and recovery procedures
-
-### Planned
-
-- [ ] **Phase 13**: AWS support - Terraform modules for AWS EC2 deployment
-- [ ] **Phase 14**: Azure support - Terraform modules for Azure VM deployment
-- [ ] **Phase 15**: Web UI dashboard - Browser-based container management interface
-- [ ] **Phase 16**: Container templates - Pre-configured environments (ML, web dev, data science)
-- [ ] **Phase 17**: Resource usage analytics - Per-user and per-container cost tracking
-- [ ] **Phase 18**: Auto-scaling - Dynamic server provisioning based on demand
-
-## 🎯 Production Features
-
-### Spot Instance Auto-Recovery
-
-Containers automatically restart when spot instances recover:
-
-```bash
-# Spot VM terminated → Containers stop
-# VM restarts → Containers auto-start (boot.autostart=true)
-# Downtime: 2-5 minutes
-# Data: Preserved on persistent disk
-```
-
-### Daily Backups
-
-```bash
-# Automatic snapshots enabled by default
-enable_disk_snapshots = true
-
-# 30-day retention
-# Point-in-time recovery available
-```
-
-### Load Balancing
-
-```bash
-# SSH traffic distributed across healthy servers
-# Session affinity keeps users on same server
-# Health checks on port 22
-```
-
-## ❓ FAQ
-
-### SSH Key Management
-
-**Q: Can multiple users share the same SSH key?**
-
-A: **No, never!** Each user must have their own SSH key pair. Sharing keys:
-- Violates security best practices
-- Makes it impossible to revoke access for one user
-- Prevents audit logging of who accessed what
-- Creates compliance issues
-
-**Q: What's the difference between admin and user accounts?**
-
-A: Containarium uses **separate user accounts** for security:
-- **Admin account**: Full access to jump server shell, can manage containers
-- **User accounts**: Proxy-only (no shell), can only connect to their container
-
-Example:
-```
-/home/admin/.ssh/authorized_keys    (admin - full shell access)
-/home/alice/.ssh/authorized_keys    (alice - proxy only, /usr/sbin/nologin)
-/home/bob/.ssh/authorized_keys      (bob - proxy only, /usr/sbin/nologin)
-```
-
-**Q: Can I use the same key for both jump server and my container?**
-
-A: **Yes, and that's the recommended approach!** Each user has ONE key that works for both:
-- Simpler for users (one key to manage)
-- Same key authenticates to jump server account (proxy-only)
-- Same key authenticates to container (full access)
-- Users cannot access jump server shell (secured by `/usr/sbin/nologin`)
-- Admin can still track per-user activity in logs
-
-**Q: How do I rotate SSH keys?**
-
-A:
-```bash
-# User generates new key
-ssh-keygen -t ed25519 -C "alice@company.com" -f ~/.ssh/containarium_alice_new
-
-# Admin replaces old key with new key
-NEW_KEY='ssh-ed25519 AAAAC3... alice@new-laptop'
-echo "$NEW_KEY" | sudo incus exec alice-container -- \
-  tee /home/alice/.ssh/authorized_keys > /dev/null
-```
-
-**Q: Can users access the jump server itself?**
-
-A: **No!** User accounts are configured with `/usr/sbin/nologin`:
-- Users can proxy through jump server to their container
-- Users CANNOT get a shell on the jump server
-- Users CANNOT see other containers or system processes
-- Users CANNOT inspect other users' data
-- Only admin has shell access to jump server
-
-**Q: Can one user access another user's container?**
-
-A: **No!** Each user only has SSH keys for their own container. Users cannot:
-- Access other users' containers (no SSH keys for them)
-- Become admin on the jump server (no shell access)
-- See other users' data or processes (isolated)
-- Execute commands on jump server (nologin shell)
-
-**Q: How does fail2ban protect against attacks?**
-
-A: With separate user accounts, fail2ban provides granular protection:
-- **Per-user banning**: If alice's IP attacks, only alice is blocked
-- **Other users unaffected**: bob, charlie continue working normally
-- **Audit trail**: Logs show which user account was targeted
-- **DDoS isolation**: Attacks on one user don't impact others
-- **Automatic recovery**: Banned IPs are unbanned after timeout
-
-**Q: Why is separate user accounts more secure than shared admin?**
-
-A: Shared admin account (everyone uses `admin`) has serious flaws:
-
-❌ **Without separate accounts:**
-- All users can execute commands on jump server
-- All users can see all containers (`incus list`)
-- All users can inspect system processes (`ps aux`)
-- All users can spy on other users
-- Logs show only "admin" - can't tell who did what
-- Banning one attacker affects all users
-
-✅ **With separate accounts (our design):**
-- Users cannot execute commands (nologin shell)
-- Users cannot see other containers
-- Users cannot inspect system
-- Each user's activity logged separately
-- Per-user banning without affecting others
-- Follows principle of least privilege
-
-**Q: What happens if I lose my SSH private key?**
-
-A: You'll need to:
-1. Generate a new SSH key pair
-2. Send new public key to admin
-3. Admin updates your container with new key
-4. Old key is automatically invalid
-
-**Q: Can I have different keys for work laptop and home laptop?**
-
-A: **Yes!** You can have multiple public keys in your container:
-
-```bash
-# Admin adds second key for same user
-sudo incus exec alice-container -- bash -c \
-  "echo 'ssh-ed25519 AAAAC3... alice@home-laptop' >> /home/alice/.ssh/authorized_keys"
-```
-
-### How is Containarium different from...
-
-**Q: Why not just use Docker or Podman?**
-
-A: Docker and Podman are **application containers** — they package and run a single process or service. Containarium uses LXC **system containers**, which behave like lightweight VMs:
-
-| | Docker / Podman | Containarium (LXC) |
-|---|---|---|
-| Designed for | Running apps / microservices | Running full Linux environments |
-| Init system | No (single process) | Yes (`systemd`) |
-| SSH access | Possible but hacky | Native, first-class |
-| Run Docker inside | Docker-in-Docker (fragile) | Works natively |
-| Persistent state | Volumes, ephemeral by default | Full persistent filesystem |
-| User accounts | Not really | Real Linux users with `sudo` |
-| Multi-tenant SSH | Not a use case | Built-in with jump server isolation |
-
-If your developers need "a Linux box with SSH, Docker, and their own home directory," that's exactly what Containarium provides — and Docker/Podman don't.
-
-**Q: Why not Dev Containers / VS Code Remote Containers?**
-
-A: Dev Containers are great for single-developer, project-scoped environments tied to VS Code. Containarium solves a different problem:
-
-- **Dev Containers**: One container per project, developer runs it locally or in Codespaces, tightly coupled to VS Code
-- **Containarium**: One persistent environment per developer on shared infrastructure, editor-agnostic (SSH into it with anything)
-
-Use Dev Containers when each developer has their own machine and wants reproducible project setups. Use Containarium when you need to host many developers on shared infrastructure at low cost.
-
-**Q: Why not GitHub Codespaces or Gitpod?**
-
-A: Codespaces and Gitpod are cloud-hosted, browser-based IDEs. They're excellent but:
-
-- **Cost**: $0.18-0.36/hour per environment. A developer working 8h/day costs $30-60/month. Containarium costs ~$2/user/month.
-- **Vendor lock-in**: Tied to GitHub (Codespaces) or Gitpod's platform
-- **IDE choice**: Primarily browser-based or VS Code. Containarium is SSH-based — use any editor (Vim, Emacs, Neovim, JetBrains via remote, VS Code via SSH, etc.)
-- **Persistence**: Codespaces auto-delete after inactivity. Containarium environments persist indefinitely.
-- **Docker/systemd**: Limited in Codespaces. Full support in Containarium.
-
-Containarium is for teams that want self-hosted, persistent, SSH-based environments without per-hour billing.
-
-**Q: Why not Jetify Devbox?**
-
-A: [Devbox](https://github.com/jetify-com/devbox) creates isolated, reproducible dev environments using Nix packages. It's a local tool that runs on the developer's own machine.
-
-- **Devbox**: Local package isolation (like a better virtualenv for everything). No VMs, no containers, no SSH. Developer needs their own machine.
-- **Containarium**: Remote, multi-tenant Linux environments on shared infrastructure. Developer only needs an SSH client.
-
-They solve different problems. Devbox is great for "I want reproducible local toolchains." Containarium is for "I need to give 50 developers each their own Linux box without buying 50 machines."
-
-**Q: Why not Vagrant?**
-
-A: Vagrant provisions full VMs (via VirtualBox, VMware, etc.). Compared to Containarium:
-
-- **Density**: Vagrant runs 2-4 VMs per host. Containarium runs 50+ containers per host.
-- **Startup**: Vagrant VMs take 30-60 seconds. LXC containers start in 2-5 seconds.
-- **Resources**: Each Vagrant VM needs 1-4GB RAM. Each LXC container uses 100-500MB.
-- **Use case**: Vagrant is for local development. Containarium is for centralized, multi-tenant hosting.
-
-**Q: Why not Proxmox?**
-
-A: Proxmox is a full virtualization platform (KVM VMs + LXC containers). It's powerful but general-purpose. Containarium is opinionated:
-
-- **Proxmox**: General-purpose hypervisor with a web UI. You manage everything yourself — networking, storage, user access, SSH.
-- **Containarium**: Purpose-built for developer environments. Handles SSH jump server setup, per-user isolation, Docker-in-container, ZFS quotas, and spot instance recovery out of the box.
-
-If you need general virtualization, use Proxmox. If you specifically need cheap, fast, SSH-based dev environments with multi-tenant isolation, Containarium does it with less setup.
-
-### General Questions
-
-**Q: What happens when a spot instance is terminated?**
-
-A: Containers automatically restart:
-1. Spot instance terminated (by GCP)
-2. Persistent disk preserved (data safe)
-3. Instance restarts within ~5 minutes
-4. Containers auto-start (`boot.autostart=true`)
-5. Users can reconnect
-6. **Downtime**: 2-5 minutes
-7. **Data loss**: None
-
-**Q: How many containers can fit on one server?**
-
-A: Depends on machine type:
-- **e2-standard-2** (8GB RAM): 10-15 containers
-- **n2-standard-4** (16GB RAM): 20-30 containers
-- **n2-standard-8** (32GB RAM): 40-60 containers
-
-Each container uses ~100-500MB RAM depending on workload.
-
-**Q: Can containers run Docker?**
-
-A: **Yes!** Each container has Docker pre-installed and working.
-
-```bash
-# Inside your container
-docker run hello-world
-docker-compose up -d
-docker build -t myapp .  # Docker builds work with Incus 6.19+
-```
-
-**Important:** Requires Incus 6.19 or later on the host. Earlier versions (including Ubuntu 24.04's default Incus 6.0.0) have an AppArmor bug ([CVE-2025-52881](https://ubuntu.com/security/CVE-2025-52881)) that breaks Docker builds in unprivileged containers. Use the [Zabbly Incus repository](https://pkgs.zabbly.com/) for latest stable builds.
-
-**Q: Is my data backed up?**
-
-A: If you enabled snapshots:
-```hcl
-# In terraform.tfvars
-enable_disk_snapshots = true
-```
-
-Automatic daily snapshots with 30-day retention.
-
-**Q: Can I resize my container's disk quota?**
-
-A: Yes:
-```bash
-# Increase quota to 50GB
-sudo containarium resize alice --disk-quota 50GB
-```
-
-**Q: How do I install software in my container?**
-
-A:
-```bash
-# SSH to your container
-ssh my-dev
-
-# Install packages as usual
-sudo apt update
-sudo apt install vim git tmux htop
-
-# Or use Docker
-docker run -it ubuntu bash
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-
-1. Read the [Implementation Plan](IMPLEMENTATION-PLAN.md)
-2. Check existing issues and PRs
-3. Follow the existing code style
-4. Add tests for new features
-5. Update documentation
-
-## 📄 License
-
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Incus](https://linuxcontainers.org/incus/) - Modern LXC container manager
-- [sshpiper](https://github.com/tg123/sshpiper) - SSH reverse proxy with failtoban plugin
-- [Protocol Buffers](https://protobuf.dev/) - Type-safe data contracts
-- [Cobra](https://cobra.dev/) - Powerful CLI framework
-- [Terraform](https://terraform.io/) - Infrastructure as Code
-
-## 📞 Support & Contact
-
-- **Documentation**: See [docs/](docs/) directory
-- **Issues**: [GitHub Issues](https://github.com/footprintai/Containarium/issues)
-- **Organization**: [FootprintAI](https://github.com/footprintai)
-
-## ⚡ Quick Links
-
-- 📘 [Horizontal Scaling Guide](docs/HORIZONTAL-SCALING-QUICKSTART.md)
-- 🔧 [SSH Setup Guide](docs/SSH-JUMP-SERVER-SETUP.md)
-- 💰 [Cost & Scaling Strategies](docs/SPOT-INSTANCES-AND-SCALING.md)
-- 🏗️ [Implementation Plan](IMPLEMENTATION-PLAN.md)
-- 🌩️ [Terraform Examples](terraform/gce/examples/)
-
-## 🌟 Getting Started in 10 Minutes
-
-### Step 1: Deploy Infrastructure (3-5 min)
-
-```bash
-# Clone repo
-git clone https://github.com/footprintai/Containarium.git
-cd Containarium/terraform/gce
-
-# Choose your size and configure
-cp examples/single-server-spot.tfvars terraform.tfvars
-vim terraform.tfvars  # Add: project_id, admin_ssh_keys, allowed_ssh_sources
-
-# Deploy to GCP
-terraform init
-terraform apply  # Creates VM with Incus pre-installed
-
-# Save the jump server IP from output!
-```
-
-### Step 2: Install Containarium CLI (2 min, one-time)
-
-```bash
-# Build for Linux
-cd ../..
-make build-linux
-
-# Copy to jump server
-scp bin/containarium-linux-amd64 admin@<jump-server-ip>:/tmp/
-
-# SSH and install
-ssh admin@<jump-server-ip>
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
-exit
-```
-
-### Step 3: Create Containers (1 min per user)
-
-**Each user must generate their own SSH key pair first:**
-
-```bash
-# User generates their key (on their local machine)
-ssh-keygen -t ed25519 -C "alice@company.com" -f ~/.ssh/containarium_alice
-# User sends public key file to admin: ~/.ssh/containarium_alice.pub
-```
-
-**Admin creates containers with users' public keys:**
-
-```bash
-# SSH to jump server
-ssh admin@<jump-server-ip>
-
-# Save users' public keys (received from users)
-echo 'ssh-ed25519 AAAAC3... alice@company.com' > /tmp/alice.pub
-echo 'ssh-ed25519 AAAAC3... bob@company.com' > /tmp/bob.pub
-
-# Create containers with users' keys
-sudo containarium create alice --ssh-key /tmp/alice.pub --image images:ubuntu/24.04
-sudo containarium create bob --ssh-key /tmp/bob.pub --image images:ubuntu/24.04
-sudo containarium create charlie --ssh-key /tmp/charlie.pub --image images:ubuntu/24.04
-
-# Output:
-# ✓ Container alice-container created successfully!
-# ✓ Jump server account: alice (proxy-only, no shell access)
-# IP Address: 10.0.3.166
-
-# Enable auto-start (survive spot instance restarts)
-sudo incus config set alice-container boot.autostart true
-sudo incus config set bob-container boot.autostart true
-sudo incus config set charlie-container boot.autostart true
-
-# Export SSH configs for users
-sudo containarium export alice --jump-ip <jump-server-ip> > alice-ssh-config.txt
-sudo containarium export bob --jump-ip <jump-server-ip> > bob-ssh-config.txt
-sudo containarium export charlie --jump-ip <jump-server-ip> > charlie-ssh-config.txt
-
-# Send config files to users
-# List all containers
-sudo containarium list
-```
-
-### Step 4: Users Connect
-
-**Admin sends exported SSH config to each user:**
-- Send `alice-ssh-config.txt` to Alice
-- Send `bob-ssh-config.txt` to Bob
-- Send `charlie-ssh-config.txt` to Charlie
-
-**Users add to their `~/.ssh/config`:**
-
-```bash
-# Alice on her laptop
-cat alice-ssh-config.txt >> ~/.ssh/config
-
-# Connect!
-ssh alice-dev
-# Alice is now in her Ubuntu container with Docker!
-docker run hello-world
-```
-
-**Done! 🎉**
-
-**See [Deployment Guide](docs/DEPLOYMENT-GUIDE.md) for complete details.**
+## Acknowledgments
+
+- [Incus](https://linuxcontainers.org/incus/) — modern LXC manager.
+- [sshpiper](https://github.com/tg123/sshpiper) — SSH reverse proxy.
+- [mcp-go](https://github.com/mark3labs/mcp-go) — Go MCP server library.
+- [Caddy](https://caddyserver.com/) — TLS / reverse proxy with
+  PROXY-protocol support.
+- [Cobra](https://cobra.dev/) — CLI framework.
+- [Terraform](https://terraform.io/) — infrastructure as code.
 
 ---
 
-**Made with ❤️ by the FootprintAI team**
+## Support
 
-**Save 92% on cloud costs. Deploy in 5 minutes. Scale to 250+ users.**
+- **Documentation**: [docs/](docs/) directory.
+- **Issues**: [GitHub Issues](https://github.com/footprintai/Containarium/issues).
+- **Live demo**: [containarium.kafeido.app/webui/demo](https://containarium.kafeido.app/webui/demo).
+- **Organization**: [FootprintAI](https://github.com/footprintai).
