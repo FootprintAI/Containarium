@@ -106,6 +106,9 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("process_start: mkdir %s: %v", processLogDir, err)), nil
 	}
 	logPath := filepath.Join(processLogDir, sanitizeName(name)+".log")
+	// #nosec G304 -- sanitizeName strips every char outside [A-Za-z0-9_.-],
+	// so logPath is always /tmp/agent-box/<safe>.log. Path traversal is
+	// not reachable from this construction.
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("process_start: open log %s: %v", logPath, err)), nil
