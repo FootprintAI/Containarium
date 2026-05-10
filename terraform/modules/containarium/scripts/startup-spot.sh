@@ -162,12 +162,16 @@ if [ "$USE_PERSISTENT_DISK" = "true" ]; then
     fi
 fi
 
-# Remove pre-installed Incus (if any) to avoid conflicts with Zabbly repo
-# Ubuntu 24.04 may have Incus 6.0.0 from default repos which conflicts
+# Remove pre-installed Incus (if any) to avoid conflicts with Zabbly repo.
+# Ubuntu 24.04 ships incus-tools 6.0.0 in the default repos which conflicts
+# with Zabbly's incus-base 6.19+. The previous detection regex
+# (`^ii.*incus `) only matched the exact `incus` binary, missing
+# default-installed packages like incus-tools / incus-client. Widened
+# to `^ii  incus` so any incus-* package triggers the cleanup.
 echo "==> Checking for pre-installed Incus..."
-if dpkg -l | grep -q "^ii.*incus " && ! grep -q zabbly /etc/apt/sources.list.d/*.list 2>/dev/null; then
-    echo "Removing pre-installed Incus (will reinstall from Zabbly)..."
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y incus incus-client incus-tools 2>/dev/null || true
+if dpkg -l | grep -qE "^ii  incus" && ! grep -q zabbly /etc/apt/sources.list.d/*.list 2>/dev/null; then
+    echo "Removing pre-installed Incus packages (will reinstall from Zabbly)..."
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y incus incus-base incus-client incus-tools 2>/dev/null || true
     echo "✓ Pre-installed Incus removed"
 fi
 
@@ -185,13 +189,23 @@ if [ ! -f /etc/apt/sources.list.d/zabbly-incus-stable.list ]; then
     echo "✓ Zabbly repository added"
 fi
 
-# Install or upgrade Incus
+# Install or upgrade Incus.
+#
+# Only request `incus` itself. Older versions of this script also asked
+# for `incus-tools` and `incus-client`, but those were the Ubuntu-style
+# names — the Zabbly 6.19+ repo subsumes them into `incus-base` and
+# the meta-package `incus`. Asking for `incus-tools` by name forces
+# apt to pull Ubuntu's 6.0.0-1ubuntu0.3 from the default repo, which
+# Breaks Zabbly's incus-base 6.19+ and produces:
+#   incus-base : Breaks: incus-tools but 6.0.0-1ubuntu0.3 is to be installed
+#   E: Unable to correct problems, you have held broken packages.
+# Just ask for `incus`; apt resolves the deps through Zabbly cleanly.
 if [ -n "$INCUS_VERSION" ]; then
     echo "Installing Incus version: $INCUS_VERSION"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y incus="$INCUS_VERSION" incus-tools incus-client
+    DEBIAN_FRONTEND=noninteractive apt-get install -y incus="$INCUS_VERSION"
 else
     echo "Installing latest stable Incus (6.19+)..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y incus incus-tools incus-client
+    DEBIAN_FRONTEND=noninteractive apt-get install -y incus
 fi
 
 # Verify Incus installation and version
@@ -342,6 +356,22 @@ elif [ ! -f /var/lib/incus/.initialized ]; then
     # ==========================================================================
     # Initialize with ZFS storage if using persistent disk
     if [ "$USE_PERSISTENT_DISK" = "true" ] && zpool list incus-pool &>/dev/null; then
+        # Clean up any stale incus-pool/containers dataset from a previous
+        # failed init. Without this, `incus admin init --preseed` fails:
+        #   Error: Failed to create storage pool "default": Provided ZFS pool
+        #   (or dataset) isn't empty
+        # when a prior install crashed after creating the dataset but before
+        # finishing init (e.g., apt failure on a different package). We're
+        # safe to destroy here because the recovery branch above already ran
+        # — if real container data existed, ZFS_HAS_DATA would be true and
+        # we'd be in that branch, not here.
+        if zfs list incus-pool/containers &>/dev/null; then
+            echo "==> Found stale incus-pool/containers from a failed prior init; cleaning up..."
+            zfs destroy -r incus-pool/containers || {
+                echo "⚠ Could not destroy stale dataset; init will likely fail"
+            }
+        fi
+
         # Initialize with ZFS storage pool
         cat <<EOF | incus admin init --preseed
 config: {}
