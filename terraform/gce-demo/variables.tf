@@ -24,9 +24,9 @@ variable "instance_name" {
 }
 
 variable "machine_type" {
-  description = "GCE machine type for the spot backend VM. e2-medium is enough for the demo container plus Incus overhead."
+  description = "GCE machine type for the spot backend VM. e2-standard-2 (2 vCPU, 8 GB) is enough for the demo container plus Incus overhead. Note: the upstream module's regex rejects shared-core types (e2-medium / e2-small / e2-micro)."
   type        = string
-  default     = "e2-medium"
+  default     = "e2-standard-2"
 }
 
 // Versioning ----------------------------------------------------------

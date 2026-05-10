@@ -31,6 +31,15 @@ provider "google" {
   zone    = var.zone
 }
 
+// Derive the GitHub release URL when an explicit override isn't given.
+// The startup script otherwise has no source for the binary on a fresh
+// install (no file provisioner, no sentinel binary server set up yet).
+locals {
+  containarium_binary_url = var.containarium_binary_url != "" ? var.containarium_binary_url : (
+    "https://github.com/footprintai/Containarium/releases/download/v${var.containarium_version}/containarium-linux-amd64"
+  )
+}
+
 module "containarium" {
   source = "../modules/containarium"
 
@@ -61,16 +70,20 @@ module "containarium" {
   // Daemon
   enable_containarium_daemon = true
   containarium_version       = var.containarium_version
-  containarium_binary_url    = var.containarium_binary_url
+  containarium_binary_url    = local.containarium_binary_url
 
   // Access
   admin_ssh_keys      = var.admin_ssh_keys
   allowed_ssh_sources = var.allowed_ssh_sources
   jwt_secret          = var.jwt_secret
 
-  // Networking — no external IP on the spot VM by default; Cloud NAT
-  // handles outbound. The sentinel owns the external IP and DNS A-record.
-  spot_vm_external_ip = false
+  // Networking — for the demo we give the backend a public IP so apt
+  // can reach Ubuntu repos and the daemon binary download works without
+  // provisioning Cloud NAT separately. Production deploys typically run
+  // with spot_vm_external_ip=false + a separately-provisioned Cloud NAT
+  // (see footprintai-prod), but that's out of scope for a 15-min
+  // self-contained demo apply. ~$3/month extra for the static IP.
+  spot_vm_external_ip = true
   enable_iap_firewall = true
 
   labels = merge({
