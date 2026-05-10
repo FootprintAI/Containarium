@@ -20,6 +20,13 @@ jobs:
         with:
           go-version: '1.25.10'
 
+      - name: Install buf
+        # `make build-release` transitively runs `make proto`, which
+        # needs the buf CLI. Ubuntu runners don't have it preinstalled.
+        # The .pb.go files are already committed, but the dep chain
+        # still triggers buf generate; installing it satisfies that.
+        run: go install github.com/bufbuild/buf/cmd/buf@latest
+
       - name: Get version from tag
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
