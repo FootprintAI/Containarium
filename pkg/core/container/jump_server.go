@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // Note: As of Go 1.20, rand is automatically seeded
@@ -203,17 +201,11 @@ func UserExists(username string) bool {
 	return userExists(username)
 }
 
-// ExtractSSHKeyFromContainer extracts the SSH public key from inside a container
-// The key is read from /home/{username}/.ssh/authorized_keys inside the container
-func ExtractSSHKeyFromContainer(containerName, username string, verbose bool) (string, error) {
-	// Create Incus client
-	client, err := incus.New()
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to Incus: %w", err)
-	}
-
+// ExtractSSHKey extracts the SSH public key from inside a container.
+// The key is read from /home/{username}/.ssh/authorized_keys inside the container.
+func (m *Manager) ExtractSSHKey(containerName, username string, verbose bool) (string, error) {
 	// Check if container is running
-	info, err := client.GetContainer(containerName)
+	info, err := m.incus.GetContainer(containerName)
 	if err != nil {
 		return "", fmt.Errorf("container not found: %w", err)
 	}
@@ -224,7 +216,7 @@ func ExtractSSHKeyFromContainer(containerName, username string, verbose bool) (s
 		if verbose {
 			fmt.Printf("       Starting container %s to extract SSH key...\n", containerName)
 		}
-		if err := client.StartContainer(containerName); err != nil {
+		if err := m.incus.StartContainer(containerName); err != nil {
 			return "", fmt.Errorf("failed to start container: %w", err)
 		}
 		wasStarted = true
@@ -239,17 +231,17 @@ func ExtractSSHKeyFromContainer(containerName, username string, verbose bool) (s
 		fmt.Printf("       Reading SSH key from %s:%s\n", containerName, authorizedKeysPath)
 	}
 
-	keyContent, err := client.ReadFile(containerName, authorizedKeysPath)
+	keyContent, err := m.incus.ReadFile(containerName, authorizedKeysPath)
 	if err != nil {
 		// Try root's authorized_keys as fallback
 		if verbose {
 			fmt.Printf("       Primary path failed, trying /root/.ssh/authorized_keys...\n")
 		}
-		keyContent, err = client.ReadFile(containerName, "/root/.ssh/authorized_keys")
+		keyContent, err = m.incus.ReadFile(containerName, "/root/.ssh/authorized_keys")
 		if err != nil {
 			// Stop container if we started it
 			if wasStarted {
-				_ = client.StopContainer(containerName, false)
+				_ = m.incus.StopContainer(containerName, false)
 			}
 			return "", fmt.Errorf("could not read SSH key from container: %w", err)
 		}
@@ -260,7 +252,7 @@ func ExtractSSHKeyFromContainer(containerName, username string, verbose bool) (s
 		if verbose {
 			fmt.Printf("       Stopping container %s...\n", containerName)
 		}
-		_ = client.StopContainer(containerName, false)
+		_ = m.incus.StopContainer(containerName, false)
 	}
 
 	// Parse the authorized_keys file - get the first valid SSH key

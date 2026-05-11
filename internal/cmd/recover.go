@@ -408,7 +408,7 @@ func syncSSHAccounts() error {
 		}
 
 		// Extract SSH key
-		sshKey, err := container.ExtractSSHKeyFromContainer(c.Name, username, false)
+		sshKey, err := mgr.ExtractSSHKey(c.Name, username, false)
 		if err != nil || sshKey == "" {
 			failed++
 			continue

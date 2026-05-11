@@ -66,7 +66,7 @@ type CoreServicesConfig struct {
 
 // CoreServices manages the core infrastructure containers (PostgreSQL, Caddy, VictoriaMetrics+Grafana)
 type CoreServices struct {
-	incusClient        *incus.Client
+	incusClient        incus.Backend
 	config             CoreServicesConfig
 	postgresIP         string
 	caddyIP            string
@@ -74,7 +74,7 @@ type CoreServices struct {
 }
 
 // NewCoreServices creates a new core services manager
-func NewCoreServices(incusClient *incus.Client, config CoreServicesConfig) *CoreServices {
+func NewCoreServices(incusClient incus.Backend, config CoreServicesConfig) *CoreServices {
 	if config.PostgresUser == "" {
 		config.PostgresUser = DefaultPostgresUser
 	}

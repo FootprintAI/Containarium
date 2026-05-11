@@ -95,7 +95,7 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 		}
 
 		// Extract SSH key from container
-		sshKey, err := container.ExtractSSHKeyFromContainer(c.Name, username, verbose)
+		sshKey, err := mgr.ExtractSSHKey(c.Name, username, verbose)
 		if err != nil {
 			fmt.Printf("  ⚠ Failed to extract SSH key: %v\n", err)
 			failed++

@@ -47,6 +47,8 @@ type Backend interface {
 	// Config & devices
 	SetConfig(containerName, key, value string) error
 	SetDeviceSize(containerName, deviceName, size string) error
+	UpdateContainerConfig(name, key, value string) error
+	GetRawInstance(name string) (map[string]string, string, error)
 	ResolveGPUInputToPCI(input string) (string, error)
 	CleanupDisk(containerName string) (string, int64, error)
 

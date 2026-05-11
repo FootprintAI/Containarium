@@ -38,6 +38,8 @@ type MockBackend struct {
 	SetDeviceSizeFunc        func(containerName, deviceName, size string) error
 	ResolveGPUInputToPCIFunc func(input string) (string, error)
 	CleanupDiskFunc          func(containerName string) (string, int64, error)
+	UpdateContainerConfigFunc func(name, key, value string) error
+	GetRawInstanceFunc       func(name string) (map[string]string, string, error)
 	AddLabelFunc             func(containerName, key, value string) error
 	RemoveLabelFunc          func(containerName, key string) error
 	GetLabelsFunc            func(containerName string) (map[string]string, error)
@@ -227,6 +229,20 @@ func (m *MockBackend) GetContainerMetrics(name string) (*incus.ContainerMetrics,
 		return m.GetContainerMetricsFunc(name)
 	}
 	return nil, nil
+}
+
+func (m *MockBackend) UpdateContainerConfig(name, key, value string) error {
+	if m.UpdateContainerConfigFunc != nil {
+		return m.UpdateContainerConfigFunc(name, key, value)
+	}
+	return nil
+}
+
+func (m *MockBackend) GetRawInstance(name string) (map[string]string, string, error) {
+	if m.GetRawInstanceFunc != nil {
+		return m.GetRawInstanceFunc(name)
+	}
+	return nil, "", nil
 }
 
 // Compile-time assertion that *MockBackend satisfies incus.Backend.
