@@ -29,16 +29,36 @@ type Client struct {
 // Backend is the interface satisfied by *Client. Consumers depend on it (or a
 // narrower subset declared at the call site) so they can be mocked in tests.
 type Backend interface {
+	// Lifecycle
 	CreateContainer(config ContainerConfig) error
 	StartContainer(name string) error
 	StopContainer(name string, force bool) error
 	DeleteContainer(name string) error
 	GetContainer(name string) (*ContainerInfo, error)
+	ListContainers() ([]ContainerInfo, error)
+	WaitForNetwork(containerName string, timeout time.Duration) (string, error)
+
+	// Exec & file I/O
 	Exec(containerName string, command []string) error
 	ExecWithOutput(containerName string, command []string) (string, string, error)
 	WriteFile(containerName, path string, content []byte, mode string) error
 	ReadFile(containerName, path string) ([]byte, error)
-	WaitForNetwork(containerName string, timeout time.Duration) (string, error)
+
+	// Config & devices
+	SetConfig(containerName, key, value string) error
+	SetDeviceSize(containerName, deviceName, size string) error
+	ResolveGPUInputToPCI(input string) (string, error)
+	CleanupDisk(containerName string) (string, int64, error)
+
+	// Labels
+	AddLabel(containerName, key, value string) error
+	RemoveLabel(containerName, key string) error
+	GetLabels(containerName string) (map[string]string, error)
+	SetLabels(containerName string, labels map[string]string) error
+
+	// Server info & metrics
+	GetServerInfo() (*api.Server, error)
+	GetContainerMetrics(name string) (*ContainerMetrics, error)
 }
 
 // DiskDevice represents a disk device configuration
