@@ -1243,6 +1243,39 @@
         ]
       }
     },
+    "/v1/containers/{username}/debug": {
+      "get": {
+        "summary": "Debug a container's SSH path",
+        "description": "Inspects backend-local state for the container: container runtime state, host /etc/passwd entry, whether the shell wrapper exists, and recent sshd journal lines matching the username. Returns a structured diagnosis with likely_cause and ordered next_actions for the caller to apply.",
+        "operationId": "ContainerService_DebugContainer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DebugContainerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container to debug",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Containers"
+        ]
+      }
+    },
     "/v1/containers/{username}/install-stack": {
       "post": {
         "summary": "Install a software stack on a container",
@@ -4172,6 +4205,46 @@
         }
       },
       "title": "DNSRecord represents a DNS record"
+    },
+    "DebugContainerResponse": {
+      "type": "object",
+      "properties": {
+        "containerState": {
+          "type": "string",
+          "title": "Container runtime state from the daemon's view\n(\"running\", \"stopped\", \"missing\", \"error: \u003creason\u003e\")"
+        },
+        "hostUserExists": {
+          "type": "boolean",
+          "title": "Whether a host-level Linux user with this username exists"
+        },
+        "hostUserShell": {
+          "type": "string",
+          "title": "The shell column from /etc/passwd for this user (empty if no user)"
+        },
+        "hostUserShellExists": {
+          "type": "boolean",
+          "title": "Whether the shell file in host_user_shell actually exists \u0026 is executable"
+        },
+        "recentSshdRejections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Last N sshd journal lines mentioning this username (rejections, accepts)"
+        },
+        "likelyCause": {
+          "type": "string",
+          "title": "One-line human-readable diagnosis of the most likely cause"
+        },
+        "nextActions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Ordered concrete remediation steps the caller can take"
+        }
+      },
+      "title": "DebugContainerResponse is the structured diagnostic report"
     },
     "DeleteAlertRuleResponse": {
       "type": "object",

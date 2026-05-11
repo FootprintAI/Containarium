@@ -123,6 +123,36 @@ func (s *Server) registerTools() {
 			Handler: handleGetContainer,
 		},
 		{
+			Name: "debug_container",
+			Description: "Diagnose why SSH to a container is failing. Call this BEFORE " +
+				"reporting an SSH failure to the user — it surfaces host-side state " +
+				"the agent can't see (whether the Linux user account exists on the " +
+				"backend, whether the user's shell file resolves, recent sshd journal " +
+				"lines mentioning the user) and returns a likely_cause plus an ordered " +
+				"next_actions list.\n\n" +
+				"Typical failure modes this catches:\n" +
+				"  - Container missing or stopped (start it or recreate)\n" +
+				"  - Host user account missing (daemon never created or it was wiped)\n" +
+				"  - Host user's shell points at a file that doesn't exist on the\n" +
+				"    backend — sshd rejects every login\n" +
+				"  - sshd journal lines with a concrete \"User X not allowed because\n" +
+				"    …\" reason\n\n" +
+				"Returns a JSON object with: containerState, hostUserExists, hostUserShell, " +
+				"hostUserShellExists, recentSshdRejections, likelyCause, nextActions. " +
+				"Read-only — no side effects.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container to debug",
+					},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleDebugContainer,
+		},
+		{
 			Name:        "delete_container",
 			Description: "Delete a container permanently",
 			InputSchema: map[string]interface{}{
@@ -441,6 +471,25 @@ func handleGetContainer(client *Client, args map[string]interface{}) (string, er
 	}
 
 	// Pretty print as JSON
+	jsonData, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	return string(jsonData), nil
+}
+
+func handleDebugContainer(client *Client, args map[string]interface{}) (string, error) {
+	username, ok := args["username"].(string)
+	if !ok || username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+
+	resp, err := client.DebugContainer(username)
+	if err != nil {
+		return "", fmt.Errorf("failed to debug container: %w", err)
+	}
+
 	jsonData, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal response: %w", err)

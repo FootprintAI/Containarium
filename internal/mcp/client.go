@@ -121,6 +121,23 @@ func (c *Client) GetContainer(username string) (*GetContainerResponse, error) {
 	return &resp, nil
 }
 
+// DebugContainer returns a diagnostic report for a container's SSH path.
+// One layer deeper than the agent's raw ssh error — surfaces host-side
+// state the agent can't see directly (user account, shell file, sshd logs).
+func (c *Client) DebugContainer(username string) (*DebugContainerResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/containers/"+username+"/debug", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp DebugContainerResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &resp, nil
+}
+
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(username string, force bool) (*DeleteContainerResponse, error) {
 	path := fmt.Sprintf("/v1/containers/%s?force=%v", username, force)
@@ -291,6 +308,16 @@ type ListContainersResponse struct {
 type GetContainerResponse struct {
 	Container Container         `json:"container"`
 	Metrics   *ContainerMetrics `json:"metrics,omitempty"`
+}
+
+type DebugContainerResponse struct {
+	ContainerState         string   `json:"containerState"`
+	HostUserExists         bool     `json:"hostUserExists"`
+	HostUserShell          string   `json:"hostUserShell"`
+	HostUserShellExists    bool     `json:"hostUserShellExists"`
+	RecentSshdRejections   []string `json:"recentSshdRejections"`
+	LikelyCause            string   `json:"likelyCause"`
+	NextActions            []string `json:"nextActions"`
 }
 
 type DeleteContainerResponse struct {
