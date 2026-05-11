@@ -94,6 +94,18 @@ func (m *mockIncusClient) Exec(containerName string, command []string) error {
 	return m.execErr
 }
 
+func (m *mockIncusClient) ExecWithOutput(containerName string, command []string) (string, string, error) {
+	return "", "", m.execErr
+}
+
+func (m *mockIncusClient) WriteFile(containerName, path string, content []byte, mode string) error {
+	return nil
+}
+
+func (m *mockIncusClient) ReadFile(containerName, path string) ([]byte, error) {
+	return nil, nil
+}
+
 func TestNew(t *testing.T) {
 	mockClient := newMockIncusClient()
 

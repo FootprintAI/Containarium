@@ -26,6 +26,21 @@ type Client struct {
 	server incus.InstanceServer
 }
 
+// Backend is the interface satisfied by *Client. Consumers depend on it (or a
+// narrower subset declared at the call site) so they can be mocked in tests.
+type Backend interface {
+	CreateContainer(config ContainerConfig) error
+	StartContainer(name string) error
+	StopContainer(name string, force bool) error
+	DeleteContainer(name string) error
+	GetContainer(name string) (*ContainerInfo, error)
+	Exec(containerName string, command []string) error
+	ExecWithOutput(containerName string, command []string) (string, string, error)
+	WriteFile(containerName, path string, content []byte, mode string) error
+	ReadFile(containerName, path string) ([]byte, error)
+	WaitForNetwork(containerName string, timeout time.Duration) (string, error)
+}
+
 // DiskDevice represents a disk device configuration
 type DiskDevice struct {
 	Path string // Mount path (e.g., "/")

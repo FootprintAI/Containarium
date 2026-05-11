@@ -9,17 +9,6 @@ import (
 	"github.com/footprintai/containarium/internal/incus"
 )
 
-// IncusClient is an interface for the incus client to enable testing
-type IncusClient interface {
-	CreateContainer(config incus.ContainerConfig) error
-	StartContainer(name string) error
-	StopContainer(name string, force bool) error
-	DeleteContainer(name string) error
-	GetContainer(name string) (*incus.ContainerInfo, error)
-	WaitForNetwork(name string, timeout time.Duration) (string, error)
-	Exec(containerName string, command []string) error
-}
-
 const (
 	// CoreContainerName is the name of the internal system container
 	CoreContainerName = "_containarium-core"
@@ -93,7 +82,7 @@ volumes:
 
 // Manager manages the _containarium-core internal system container
 type Manager struct {
-	incusClient IncusClient
+	incusClient incus.Backend
 	coreIP      string
 	password    string
 }
@@ -113,7 +102,7 @@ type Config struct {
 }
 
 // New creates a new core manager
-func New(incusClient IncusClient, password string) *Manager {
+func New(incusClient incus.Backend, password string) *Manager {
 	if password == "" {
 		password = "changeme"
 	}

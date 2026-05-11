@@ -6,12 +6,13 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/app/buildpack"
+	"github.com/footprintai/containarium/internal/incus"
 	v1 "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Builder handles container image builds inside user containers using Podman
 type Builder struct {
-	incusClient IncusClient
+	incusClient incus.Backend
 	detector    *buildpack.Detector
 }
 
@@ -36,7 +37,7 @@ type BuildResult struct {
 }
 
 // NewBuilder creates a new app builder
-func NewBuilder(incusClient IncusClient, detector *buildpack.Detector) *Builder {
+func NewBuilder(incusClient incus.Backend, detector *buildpack.Detector) *Builder {
 	return &Builder{
 		incusClient: incusClient,
 		detector:    detector,
