@@ -27,16 +27,20 @@ func (s *Server) registerTools() {
 			Name: "create_container",
 			Description: "Create a new LXC container under a username. Returns the container's " +
 				"name, IP address, and resources.\n\n" +
-				"IMPORTANT — pass `ssh_keys` containing the operator's public SSH key (read " +
-				"from `~/.ssh/id_ed25519.pub` or similar). Without it the new container has " +
-				"no SSH access and you won't be able to install software inside.\n\n" +
+				"SSH key handling: if you OMIT `ssh_keys`, an ephemeral ed25519 keypair is " +
+				"generated client-side. The public half is installed on the container; the " +
+				"private half comes back in this tool's response. Save it to " +
+				"`~/.containarium/keys/<username>` with mode 0600 — that's the standard " +
+				"path expected by the rest of the workflow. If you pass `ssh_keys`, those " +
+				"are used as-is and no ephemeral key is generated (useful when reusing an " +
+				"operator's existing key for SSH alias convenience).\n\n" +
 				"AFTER creation, to operate inside the container:\n" +
-				"  1. Use the Bash tool to wire SSH (one-time per session):\n" +
-				"     containarium ssh-config sync --server $CONTAINARIUM_SERVER_URL --token $CONTAINARIUM_JWT_TOKEN\n" +
-				"  2. Add `Include ~/.containarium/ssh_config` to `~/.ssh/config` if not present.\n" +
-				"  3. `ssh <username>` reaches the container via the sentinel's sshpiper.\n" +
+				"  1. Save the ephemeral private key (if generated) to ~/.containarium/keys/<name>.\n" +
+				"  2. Run `containarium ssh-config sync --server $CONTAINARIUM_SERVER_URL --token $CONTAINARIUM_JWT_TOKEN` to wire the SSH alias.\n" +
+				"  3. Add `Include ~/.containarium/ssh_config` to `~/.ssh/config` if not present.\n" +
+				"  4. `ssh -i ~/.containarium/keys/<name> <name>` reaches the container.\n" +
 				"     Use it via Bash to apt install, write files, start services.\n" +
-				"  4. Call expose_port to make a container port reachable on a public hostname.",
+				"  5. Call expose_port to make a container port reachable on a public hostname.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -276,13 +280,28 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		GPU:          getStringArg(args, "gpu", ""),
 	}
 
-	// Handle SSH keys
-	if sshKeys, ok := args["ssh_keys"].([]interface{}); ok {
+	// Handle SSH keys. If the caller passes ssh_keys explicitly we use
+	// them as-is. If they don't, we generate an ephemeral ed25519
+	// keypair CLIENT-SIDE (the private key never travels the network)
+	// and return it in the response. This is the common case for
+	// agent-driven workflows: the agent doesn't have to know about
+	// local file paths or the operator's existing keys.
+	var ephemeralPrivKey []byte
+	if sshKeys, ok := args["ssh_keys"].([]interface{}); ok && len(sshKeys) > 0 {
 		for _, key := range sshKeys {
 			if keyStr, ok := key.(string); ok {
 				req.SSHKeys = append(req.SSHKeys, keyStr)
 			}
 		}
+	} else {
+		pubKey, privKey, err := generateEphemeralSSHKey(
+			fmt.Sprintf("containarium-%s ephemeral key", username),
+		)
+		if err != nil {
+			return "", fmt.Errorf("generate ephemeral ssh key: %w", err)
+		}
+		req.SSHKeys = []string{pubKey}
+		ephemeralPrivKey = privKey
 	}
 
 	resp, err := client.CreateContainer(req)
@@ -303,6 +322,20 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		result += fmt.Sprintf("Disk: %s\n", resp.Container.Resources.Disk)
 	}
 	result += fmt.Sprintf("\n%s", resp.Message)
+
+	if ephemeralPrivKey != nil {
+		result += "\n\n--- EPHEMERAL SSH PRIVATE KEY ---\n"
+		result += "Caller did not provide ssh_keys, so an ed25519 keypair was\n"
+		result += "generated locally. The public half is already on the container;\n"
+		result += "save the private half below to a file with mode 0600 and use it\n"
+		result += "to SSH in.\n\n"
+		result += "Suggested save path:\n"
+		result += fmt.Sprintf("  ~/.containarium/keys/%s\n\n", resp.Container.Username)
+		result += "Then to SSH in:\n"
+		result += fmt.Sprintf("  ssh -i ~/.containarium/keys/%s %s@<sentinel-host>\n", resp.Container.Username, resp.Container.Username)
+		result += "(or run `containarium ssh-config sync` and `ssh " + resp.Container.Username + "` directly)\n\n"
+		result += string(ephemeralPrivKey)
+	}
 
 	return result, nil
 }
