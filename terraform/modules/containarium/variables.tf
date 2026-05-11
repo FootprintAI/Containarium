@@ -74,6 +74,27 @@ variable "boot_disk_type" {
 }
 
 # -----------------------------------------------------------------------------
+# Encryption (CMEK)
+# -----------------------------------------------------------------------------
+
+variable "kms_key_self_link" {
+  description = <<-EOT
+    Optional customer-managed KMS key for encrypting the backend and sentinel
+    disks (boot + attached data disk). Provide a full self_link, e.g.
+    "projects/<project>/locations/<region>/keyRings/<ring>/cryptoKeys/<key>".
+
+    Default empty string keeps Google-managed encryption (the GCE default).
+    Set this for compliance-bound deployments that need customer-managed keys.
+
+    The compute service account on the project must have
+    roles/cloudkms.cryptoKeyEncrypterDecrypter on the named key before apply
+    succeeds, otherwise disk creation fails with a permission error.
+  EOT
+  type        = string
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
 # Networking
 # -----------------------------------------------------------------------------
 

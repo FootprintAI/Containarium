@@ -106,6 +106,7 @@ resource "google_compute_instance" "jump_server" {
   tags = var.instance_tags
 
   boot_disk {
+    kms_key_self_link = var.kms_key_self_link == "" ? null : var.kms_key_self_link
     initialize_params {
       image = var.os_image
       size  = var.boot_disk_size
