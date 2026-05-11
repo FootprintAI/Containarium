@@ -24,6 +24,13 @@ resource "google_compute_disk" "incus_data" {
     }
   )
 
+  dynamic "disk_encryption_key" {
+    for_each = var.kms_key_self_link == "" ? [] : [1]
+    content {
+      kms_key_self_link = var.kms_key_self_link
+    }
+  }
+
   lifecycle {
     prevent_destroy = true
   }
@@ -92,7 +99,8 @@ resource "google_compute_instance" "jump_server_spot" {
   }
 
   boot_disk {
-    auto_delete = true
+    auto_delete       = true
+    kms_key_self_link = var.kms_key_self_link == "" ? null : var.kms_key_self_link
     initialize_params {
       image = var.os_image
       size  = var.boot_disk_size

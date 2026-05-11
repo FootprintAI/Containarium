@@ -13,6 +13,7 @@ import (
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // HTTPClient wraps an HTTP connection to the containarium REST API
@@ -296,6 +297,33 @@ func (c *HTTPClient) GetContainer(username string) (*incus.ContainerInfo, error)
 
 	info := containerToIncusInfo(result.Container)
 	return &info, nil
+}
+
+// DebugContainer returns a diagnostic report for a container's SSH path.
+func (c *HTTPClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/debug", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to debug container: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("debug container request failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	out := &pb.DebugContainerResponse{}
+	if err := protojson.Unmarshal(body, out); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return out, nil
 }
 
 // GetSystemInfo gets system information via HTTP

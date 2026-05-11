@@ -228,6 +228,18 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	return info, nil
 }
 
+// DebugContainer returns a diagnostic report for a container's SSH path.
+func (c *GRPCClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.DebugContainer(ctx, &pb.DebugContainerRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("failed to debug container: %w", err)
+	}
+	return resp, nil
+}
+
 // InstallStack installs a stack or base script on a running container via gRPC
 func (c *GRPCClient) InstallStack(username, stackID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

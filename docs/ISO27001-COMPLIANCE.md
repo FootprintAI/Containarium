@@ -91,7 +91,7 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | A.8.21 | Security of network services | Present | mTLS for gRPC (`internal/mtls/`), auto TLS via Caddy/ACME (`internal/hosting/`), IAP support | Well implemented |
 | A.8.22 | Segregation of networks | Present | Containers on Incus bridge (10.0.3.0/24), jump host architecture, GCP firewall segmentation | Well implemented |
 | A.8.23 | Web filtering | Missing | No egress filtering for containers | Needs: container egress rules |
-| A.8.24 | Use of cryptography | Present | TLS 1.2+, mTLS, HMAC-SHA256 JWT, SSH ed25519 keys, ACME cert management | Well implemented |
+| A.8.24 | Use of cryptography | Partial | TLS 1.2+, mTLS, HMAC-SHA256 JWT, SSH ed25519 keys, ACME cert management. At-rest posture documented in `SECURITY-ENCRYPTION-AT-REST.md` — GCP PD encryption by default, CMEK opt-in via the terraform module's `kms_key_self_link`. | Gap: per-tenant encryption keys not implemented (cloud product Q4 2026) |
 | A.8.25 | Secure development lifecycle | Present | `Makefile` with lint/test/race detection, gosec SAST in CI with SARIF upload (`.github/workflows/security.yml`) | — |
 | A.8.26 | Application security requirements | Missing | No documented security requirements | Needs: security requirements spec |
 | A.8.27 | Secure system architecture | Partial | Architecture docs: `SENTINEL-DESIGN.md`, `SSH-JUMP-SERVER-SETUP.md` | Gap: no formal threat model |

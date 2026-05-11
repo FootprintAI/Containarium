@@ -88,6 +88,19 @@ service ContainerService {
     };
   }
 
+  // DebugContainer reports diagnostic information about a container's
+  // SSH path: state, host user, shell, recent sshd rejections.
+  rpc DebugContainer(DebugContainerRequest) returns (DebugContainerResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/debug"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Debug a container's SSH path";
+      description: "Inspects backend-local state for the container: container runtime state, host /etc/passwd entry, whether the shell wrapper exists, and recent sshd journal lines matching the username. Returns a structured diagnosis with likely_cause and ordered next_actions for the caller to apply.";
+      tags: "Containers";
+    };
+  }
+
   // DeleteContainer deletes a container
   rpc DeleteContainer(DeleteContainerRequest) returns (DeleteContainerResponse) {
     option (google.api.http) = {

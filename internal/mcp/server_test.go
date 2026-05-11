@@ -21,7 +21,7 @@ func TestServerCreation(t *testing.T) {
 	assert.NotNil(t, server)
 	assert.Equal(t, config, server.config)
 	assert.NotNil(t, server.client)
-	assert.Len(t, server.tools, 12, "Should have 12 tools registered")
+	assert.Len(t, server.tools, 13, "Should have 13 tools registered")
 }
 
 // TestServerTools tests tool registration
@@ -125,7 +125,7 @@ func TestHandleToolsList(t *testing.T) {
 
 	tools, ok := result["tools"].([]map[string]interface{})
 	require.True(t, ok)
-	assert.Len(t, tools, 12)
+	assert.Len(t, tools, 13)
 
 	// Check first tool structure
 	firstTool := tools[0]
@@ -315,7 +315,7 @@ func TestToolDescriptions(t *testing.T) {
 			// create_container, expose_port) are valuable for agents
 			// and run >500 chars by design.
 			assert.Greater(t, len(tool.Description), 10, "Description should be descriptive")
-			assert.Less(t, len(tool.Description), 1500, "Description should be concise")
+			assert.Less(t, len(tool.Description), 2000, "Description should be concise")
 		})
 	}
 }

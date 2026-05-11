@@ -272,6 +272,47 @@ message GetContainerResponse {
   ContainerMetrics metrics = 2;
 }
 
+// DebugContainerRequest is the request to debug a container's SSH path
+message DebugContainerRequest {
+  // Username of the container to debug
+  string username = 1;
+}
+
+// DebugContainerResponse is the structured diagnostic report
+message DebugContainerResponse {
+  // Container runtime state from the daemon's view
+  // ("running", "stopped", "missing", "error: <reason>")
+  string container_state = 1;
+
+  // Whether a host-level Linux user with this username exists
+  bool host_user_exists = 2;
+
+  // The shell column from /etc/passwd for this user (empty if no user)
+  string host_user_shell = 3;
+
+  // Whether the shell file in host_user_shell actually exists & is executable
+  bool host_user_shell_exists = 4;
+
+  // Last N sshd journal lines mentioning this username (rejections, accepts)
+  repeated string recent_sshd_rejections = 5;
+
+  // One-line human-readable diagnosis of the most likely cause
+  string likely_cause = 6;
+
+  // Ordered concrete remediation steps the caller can take
+  repeated string next_actions = 7;
+
+  // Public source repository for the daemon serving this report. Agents
+  // can clone or webfetch this to grep for the exact code path that
+  // generated a symptom — useful when the structured fields are
+  // inconclusive (likely_cause == "no obvious host-side problem"…).
+  string source_repo = 8;
+
+  // Daemon version (containarium binary) that generated this report.
+  // Pair with source_repo to read code at the exact commit/tag.
+  string daemon_version = 9;
+}
+
 // DeleteContainerRequest is the request to delete a container
 message DeleteContainerRequest {
   // Username of the container to delete

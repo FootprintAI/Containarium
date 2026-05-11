@@ -31,6 +31,74 @@ agents). Building CLI-first means:
 matching `containarium <verb>` subcommand. If you spot one, file a
 follow-up to add the CLI counterpart.
 
+## API: protobuf contract first, grpc-gateway for REST
+
+The API is defined in `proto/containarium/v1/*.proto` *first*. Everything
+else — gRPC server stubs, the HTTP/REST shim, the OpenAPI swagger doc,
+the typed client — is **generated** from those protos via `make proto`
+(which runs `buf generate`).
+
+When adding a new endpoint:
+
+1. Add the RPC + request/response messages in `.proto`.
+2. Annotate the RPC with `(google.api.http)` for the REST verb+path
+   mapping and `(grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation)`
+   for the swagger description.
+3. `make proto` to regenerate `pkg/pb/`, the `.pb.gw.go` gateway shim,
+   and `api/swagger/containarium.swagger.json`.
+4. Implement the gRPC method in `internal/server/`.
+5. Wire the typed client method in `internal/client/{grpc.go, http.go}`.
+
+**Why:** one contract drives three consumers (gRPC clients, REST/HTTP
+clients via grpc-gateway, and the OpenAPI viewer) — they cannot drift
+because they all regenerate from the same source. The MCP server
+(which speaks REST through grpc-gateway) gets every new endpoint for
+free. The CLI adds a thin cobra subcommand that calls the generated
+client.
+
+**Anti-pattern:** writing a hand-rolled `net/http` handler under
+`internal/gateway/` for a new customer-facing endpoint. A handful of
+legacy or internal-only endpoints (e.g. `/healthz`,
+`/authorized-keys/sentinel`) live in the gateway directly — those
+predate the convention or are infrastructure plumbing not in the
+product contract. For anything an external caller, the CLI, or the
+MCP server should hit, go through proto.
+
+## Strong typing — use the type system, not strings
+
+A corollary of proto-first: when proto already gives us typed
+primitives, use them.
+
+- **Protobuf enums over magic strings.** If a field's value is "must
+  be one of X, Y, Z," it's an enum. Define the enum in `.proto`,
+  regenerate, and let the Go code use typed constants. Example: an
+  `os_type` field that accepts `ubuntu | rocky9 | rhel9` becomes a
+  `OSType` enum on the proto and `pb.OSType_*` constants in Go —
+  not a `string` parameter with a comment listing the allowed values.
+
+- **Well-defined Go structs over `map[string]interface{}`.** Every
+  wire payload deserves a named struct with explicit fields. The only
+  legitimate uses of `map[string]interface{}` are at the type-erasing
+  boundary — the MCP JSON-RPC tool-arguments shape, generic gRPC
+  `google.protobuf.Any` codecs, configuration files with truly unknown
+  schemas. Convenience to avoid writing a 5-line struct is not a
+  legitimate use.
+
+**Why:** dynamic typing pushes correctness checks to runtime, where
+they show up as `expected string, got float64` inside a test (best
+case) or in a customer's log (worst case). Static typing pushes them
+to the compiler, which catches them before code review. The cost is
+the struct definition; the saving is the bug-hunt months later.
+
+**Anti-pattern signs:**
+- A string field with a comment listing the allowed values.
+- A function that takes `map[string]interface{}` and pulls fields out
+  by name with type assertions.
+- Tests that assert on `result["foo"].(string)` instead of `result.Foo`.
+
+When you spot one on the way past, fix it. The cost is small; the debt
+compounds.
+
 ## Two MCP servers, distinct surfaces
 
 - `cmd/mcp-server/` — **platform** MCP. Outside-the-box admin

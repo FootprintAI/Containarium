@@ -33,7 +33,8 @@ resource "google_compute_instance" "sentinel" {
   }
 
   boot_disk {
-    auto_delete = true
+    auto_delete       = true
+    kms_key_self_link = var.kms_key_self_link == "" ? null : var.kms_key_self_link
     initialize_params {
       image = var.os_image
       size  = var.sentinel_boot_disk_size

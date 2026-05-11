@@ -38,8 +38,13 @@ func (s *Server) registerTools() {
 				"  1. Save the ephemeral private key (if generated) via Bash to\n" +
 				"     ~/.containarium/keys/<name> with mode 0600.\n" +
 				"  2. The tool response includes a ready-to-paste ssh command:\n" +
-				"       ssh -i ~/.containarium/keys/<name> <name>@<sentinel-host>\n" +
+				"       ssh -i ~/.containarium/keys/<name> \\\n" +
+				"           -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \\\n" +
+				"           <name>@<sentinel-host>\n" +
 				"     Use Bash to run it. No edits to ~/.ssh/config required.\n" +
+				"     IdentitiesOnly=yes is REQUIRED — without it, ssh offers every\n" +
+				"     identity in ~/.ssh/, each of which sshpiper's failtoban counts\n" +
+				"     as a failed attempt. One careless ssh can burn the IP's ban quota.\n" +
 				"  3. Inside the container, apt install / write files / start services.\n" +
 				"  4. Call `expose_port` to make a container port reachable on a public hostname.\n\n" +
 				"Optional convenience (skip if you don't want to touch ~/.ssh/config):\n" +
@@ -116,6 +121,38 @@ func (s *Server) registerTools() {
 				"required": []string{"username"},
 			},
 			Handler: handleGetContainer,
+		},
+		{
+			Name: "debug_container",
+			Description: "Diagnose why SSH to a container is failing. Call this BEFORE " +
+				"reporting an SSH failure to the user — it surfaces host-side state " +
+				"the agent can't see (whether the Linux user account exists on the " +
+				"backend, whether the user's shell file resolves, recent sshd journal " +
+				"lines mentioning the user) and returns a likely_cause plus an ordered " +
+				"next_actions list.\n\n" +
+				"Typical failure modes this catches:\n" +
+				"  - Container missing or stopped (start it or recreate)\n" +
+				"  - Host user account missing (daemon never created or it was wiped)\n" +
+				"  - Host user's shell points at a file that doesn't exist on the\n" +
+				"    backend — sshd rejects every login\n" +
+				"  - sshd journal lines with a concrete \"User X not allowed because\n" +
+				"    …\" reason\n\n" +
+				"Returns a JSON object with: containerState, hostUserExists, hostUserShell, " +
+				"hostUserShellExists, recentSshdRejections, likelyCause, nextActions, " +
+				"sourceRepo, daemonVersion. When the structured fields are inconclusive, " +
+				"use sourceRepo + daemonVersion to fetch the daemon's source and dig " +
+				"deeper (grep internal/sentinel/, pkg/core/, etc.). Read-only — no side effects.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container to debug",
+					},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleDebugContainer,
 		},
 		{
 			Name:        "delete_container",
@@ -378,8 +415,14 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		if sentinelHost == "" {
 			sentinelHost = "<sentinel-host>"
 		}
-		result += fmt.Sprintf("  ssh -i ~/.containarium/keys/%s %s@%s\n\n",
+		result += fmt.Sprintf("  ssh -i ~/.containarium/keys/%s \\\n"+
+			"      -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \\\n"+
+			"      %s@%s\n\n",
 			resp.Container.Username, resp.Container.Username, sentinelHost)
+		result += "IdentitiesOnly=yes is REQUIRED — without it ssh offers every key in\n"
+		result += "~/.ssh/, and sshpiper's failtoban counts each rejected offer toward\n"
+		result += "the ban quota. Workstations with several keys can get banned on a\n"
+		result += "single ssh attempt.\n\n"
 		if client.SentinelHost == "" {
 			result += "(Sentinel host not configured — set CONTAINARIUM_SENTINEL_HOST in the\n"
 			result += "MCP server's env, or call sync_ssh_config for an alias-based setup.)\n\n"
@@ -430,6 +473,25 @@ func handleGetContainer(client *Client, args map[string]interface{}) (string, er
 	}
 
 	// Pretty print as JSON
+	jsonData, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	return string(jsonData), nil
+}
+
+func handleDebugContainer(client *Client, args map[string]interface{}) (string, error) {
+	username, ok := args["username"].(string)
+	if !ok || username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+
+	resp, err := client.DebugContainer(username)
+	if err != nil {
+		return "", fmt.Errorf("failed to debug container: %w", err)
+	}
+
 	jsonData, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal response: %w", err)
