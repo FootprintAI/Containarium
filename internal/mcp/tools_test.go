@@ -376,7 +376,7 @@ func TestToolDescriptionQuality(t *testing.T) {
 			// for agents to learn affordances from the tool list itself —
 			// so the upper bound is generous.
 			assert.GreaterOrEqual(t, len(desc), 20, "Description too short")
-			assert.LessOrEqual(t, len(desc), 2000, "Description too long")
+			assert.LessOrEqual(t, len(desc), 1500, "Description too long")
 
 			// Description should not contain TODO or placeholders
 			assert.NotContains(t, desc, "TODO")

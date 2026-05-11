@@ -38,13 +38,8 @@ func (s *Server) registerTools() {
 				"  1. Save the ephemeral private key (if generated) via Bash to\n" +
 				"     ~/.containarium/keys/<name> with mode 0600.\n" +
 				"  2. The tool response includes a ready-to-paste ssh command:\n" +
-				"       ssh -i ~/.containarium/keys/<name> \\\n" +
-				"           -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \\\n" +
-				"           <name>@<sentinel-host>\n" +
+				"       ssh -i ~/.containarium/keys/<name> <name>@<sentinel-host>\n" +
 				"     Use Bash to run it. No edits to ~/.ssh/config required.\n" +
-				"     IdentitiesOnly=yes is REQUIRED — without it, ssh offers every\n" +
-				"     identity in ~/.ssh/, each of which sshpiper's failtoban counts\n" +
-				"     as a failed attempt. One careless ssh can burn the IP's ban quota.\n" +
 				"  3. Inside the container, apt install / write files / start services.\n" +
 				"  4. Call `expose_port` to make a container port reachable on a public hostname.\n\n" +
 				"Optional convenience (skip if you don't want to touch ~/.ssh/config):\n" +
@@ -383,14 +378,8 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		if sentinelHost == "" {
 			sentinelHost = "<sentinel-host>"
 		}
-		result += fmt.Sprintf("  ssh -i ~/.containarium/keys/%s \\\n"+
-			"      -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \\\n"+
-			"      %s@%s\n\n",
+		result += fmt.Sprintf("  ssh -i ~/.containarium/keys/%s %s@%s\n\n",
 			resp.Container.Username, resp.Container.Username, sentinelHost)
-		result += "IdentitiesOnly=yes is REQUIRED — without it ssh offers every key in\n"
-		result += "~/.ssh/, and sshpiper's failtoban counts each rejected offer toward\n"
-		result += "the ban quota. Workstations with several keys can get banned on a\n"
-		result += "single ssh attempt.\n\n"
 		if client.SentinelHost == "" {
 			result += "(Sentinel host not configured — set CONTAINARIUM_SENTINEL_HOST in the\n"
 			result += "MCP server's env, or call sync_ssh_config for an alias-based setup.)\n\n"
