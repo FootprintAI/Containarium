@@ -851,28 +851,6 @@ func (c *Client) FindContainerByRole(role Role) (*ContainerInfo, error) {
 	return nil, fmt.Errorf("no running container found with role %s", role)
 }
 
-// FindCoreContainers returns all containers with a "core-*" role, sorted by
-// boot priority (highest first). Used to discover which containers must be
-// healthy before the daemon proceeds.
-func (c *Client) FindCoreContainers() ([]ContainerInfo, error) {
-	containers, err := c.ListContainers()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	var core []ContainerInfo
-	for _, ct := range containers {
-		inst, _, err := c.server.GetInstance(ct.Name)
-		if err != nil {
-			continue
-		}
-		if r := inst.Config[RoleKey]; strings.HasPrefix(r, "core-") {
-			core = append(core, ct)
-		}
-	}
-	return core, nil
-}
-
 // UpdateContainerConfig sets a single config key on a container.
 func (c *Client) UpdateContainerConfig(name, key, value string) error {
 	inst, etag, err := c.server.GetInstance(name)
@@ -885,15 +863,6 @@ func (c *Client) UpdateContainerConfig(name, key, value string) error {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
 	return op.Wait()
-}
-
-// HasRole checks whether a container has a role label set (any core-* role).
-func (c *Client) HasRole(name string) bool {
-	inst, _, err := c.server.GetInstance(name)
-	if err != nil {
-		return false
-	}
-	return inst.Config[RoleKey] != ""
 }
 
 // GetRawInstance returns the raw config map for a container.
