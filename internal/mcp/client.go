@@ -311,13 +311,15 @@ type GetContainerResponse struct {
 }
 
 type DebugContainerResponse struct {
-	ContainerState         string   `json:"containerState"`
-	HostUserExists         bool     `json:"hostUserExists"`
-	HostUserShell          string   `json:"hostUserShell"`
-	HostUserShellExists    bool     `json:"hostUserShellExists"`
-	RecentSshdRejections   []string `json:"recentSshdRejections"`
-	LikelyCause            string   `json:"likelyCause"`
-	NextActions            []string `json:"nextActions"`
+	ContainerState       string   `json:"containerState"`
+	HostUserExists       bool     `json:"hostUserExists"`
+	HostUserShell        string   `json:"hostUserShell"`
+	HostUserShellExists  bool     `json:"hostUserShellExists"`
+	RecentSshdRejections []string `json:"recentSshdRejections"`
+	LikelyCause          string   `json:"likelyCause"`
+	NextActions          []string `json:"nextActions"`
+	SourceRepo           string   `json:"sourceRepo,omitempty"`
+	DaemonVersion        string   `json:"daemonVersion,omitempty"`
 }
 
 type DeleteContainerResponse struct {

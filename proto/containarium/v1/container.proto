@@ -301,6 +301,16 @@ message DebugContainerResponse {
 
   // Ordered concrete remediation steps the caller can take
   repeated string next_actions = 7;
+
+  // Public source repository for the daemon serving this report. Agents
+  // can clone or webfetch this to grep for the exact code path that
+  // generated a symptom — useful when the structured fields are
+  // inconclusive (likely_cause == "no obvious host-side problem"…).
+  string source_repo = 8;
+
+  // Daemon version (containarium binary) that generated this report.
+  // Pair with source_repo to read code at the exact commit/tag.
+  string daemon_version = 9;
 }
 
 // DeleteContainerRequest is the request to delete a container

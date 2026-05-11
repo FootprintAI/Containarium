@@ -10,7 +10,13 @@ import (
 	"strings"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 )
+
+// SourceRepo is the public source repository for this daemon. Surfaced in
+// DebugContainer responses so an agent can grep the code that produced a
+// given symptom when the structured fields are inconclusive.
+const SourceRepo = "https://github.com/FootprintAI/Containarium"
 
 // DebugContainer inspects backend-local state for a container's SSH path and
 // returns a structured diagnostic with a likely_cause and next_actions list.
@@ -43,6 +49,9 @@ func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugConta
 	resp.RecentSshdRejections = recentSshdLines(req.Username, 8)
 
 	resp.LikelyCause, resp.NextActions = diagnose(req.Username, resp)
+
+	resp.SourceRepo = SourceRepo
+	resp.DaemonVersion = version.GetVersion()
 
 	return resp, nil
 }
@@ -231,6 +240,7 @@ func diagnose(username string, r *pb.DebugContainerResponse) (string, []string) 
 			"verify the user appears in the sentinel's /etc/sshpiper/users/<user>/ (sshpiper sync is on a 2 min interval)",
 			"verify your laptop IP is not in the sentinel's failtoban ban table",
 			"retry with: ssh -i <key> -o IdentitiesOnly=yes <user>@<sentinel-host>",
+			"for deeper investigation, see source_repo + daemon_version in this report — grep internal/sentinel/ for the keysync code path",
 		}
 }
 

@@ -138,8 +138,10 @@ func (s *Server) registerTools() {
 				"  - sshd journal lines with a concrete \"User X not allowed because\n" +
 				"    …\" reason\n\n" +
 				"Returns a JSON object with: containerState, hostUserExists, hostUserShell, " +
-				"hostUserShellExists, recentSshdRejections, likelyCause, nextActions. " +
-				"Read-only — no side effects.",
+				"hostUserShellExists, recentSshdRejections, likelyCause, nextActions, " +
+				"sourceRepo, daemonVersion. When the structured fields are inconclusive, " +
+				"use sourceRepo + daemonVersion to fetch the daemon's source and dig " +
+				"deeper (grep internal/sentinel/, pkg/core/, etc.). Read-only — no side effects.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

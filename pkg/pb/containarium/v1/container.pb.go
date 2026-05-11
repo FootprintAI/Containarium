@@ -1162,7 +1162,15 @@ type DebugContainerResponse struct {
 	// One-line human-readable diagnosis of the most likely cause
 	LikelyCause string `protobuf:"bytes,6,opt,name=likely_cause,json=likelyCause,proto3" json:"likely_cause,omitempty"`
 	// Ordered concrete remediation steps the caller can take
-	NextActions   []string `protobuf:"bytes,7,rep,name=next_actions,json=nextActions,proto3" json:"next_actions,omitempty"`
+	NextActions []string `protobuf:"bytes,7,rep,name=next_actions,json=nextActions,proto3" json:"next_actions,omitempty"`
+	// Public source repository for the daemon serving this report. Agents
+	// can clone or webfetch this to grep for the exact code path that
+	// generated a symptom — useful when the structured fields are
+	// inconclusive (likely_cause == "no obvious host-side problem"…).
+	SourceRepo string `protobuf:"bytes,8,opt,name=source_repo,json=sourceRepo,proto3" json:"source_repo,omitempty"`
+	// Daemon version (containarium binary) that generated this report.
+	// Pair with source_repo to read code at the exact commit/tag.
+	DaemonVersion string `protobuf:"bytes,9,opt,name=daemon_version,json=daemonVersion,proto3" json:"daemon_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1244,6 +1252,20 @@ func (x *DebugContainerResponse) GetNextActions() []string {
 		return x.NextActions
 	}
 	return nil
+}
+
+func (x *DebugContainerResponse) GetSourceRepo() string {
+	if x != nil {
+		return x.SourceRepo
+	}
+	return ""
+}
+
+func (x *DebugContainerResponse) GetDaemonVersion() string {
+	if x != nil {
+		return x.DaemonVersion
+	}
+	return ""
 }
 
 // DeleteContainerRequest is the request to delete a container
@@ -3184,7 +3206,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12;\n" +
 	"\ametrics\x18\x02 \x01(\v2!.containarium.v1.ContainerMetricsR\ametrics\"3\n" +
 	"\x15DebugContainerRequest\x12\x1a\n" +
-	"\busername\x18\x01 \x01(\tR\busername\"\xc4\x02\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"\x8c\x03\n" +
 	"\x16DebugContainerResponse\x12'\n" +
 	"\x0fcontainer_state\x18\x01 \x01(\tR\x0econtainerState\x12(\n" +
 	"\x10host_user_exists\x18\x02 \x01(\bR\x0ehostUserExists\x12&\n" +
@@ -3192,7 +3214,10 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x16host_user_shell_exists\x18\x04 \x01(\bR\x13hostUserShellExists\x124\n" +
 	"\x16recent_sshd_rejections\x18\x05 \x03(\tR\x14recentSshdRejections\x12!\n" +
 	"\flikely_cause\x18\x06 \x01(\tR\vlikelyCause\x12!\n" +
-	"\fnext_actions\x18\a \x03(\tR\vnextActions\"J\n" +
+	"\fnext_actions\x18\a \x03(\tR\vnextActions\x12\x1f\n" +
+	"\vsource_repo\x18\b \x01(\tR\n" +
+	"sourceRepo\x12%\n" +
+	"\x0edaemon_version\x18\t \x01(\tR\rdaemonVersion\"J\n" +
 	"\x16DeleteContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\"Z\n" +

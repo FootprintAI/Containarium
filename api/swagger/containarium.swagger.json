@@ -4242,6 +4242,14 @@
             "type": "string"
           },
           "title": "Ordered concrete remediation steps the caller can take"
+        },
+        "sourceRepo": {
+          "type": "string",
+          "description": "Public source repository for the daemon serving this report. Agents\ncan clone or webfetch this to grep for the exact code path that\ngenerated a symptom — useful when the structured fields are\ninconclusive (likely_cause == \"no obvious host-side problem\"…)."
+        },
+        "daemonVersion": {
+          "type": "string",
+          "description": "Daemon version (containarium binary) that generated this report.\nPair with source_repo to read code at the exact commit/tag."
         }
       },
       "title": "DebugContainerResponse is the structured diagnostic report"

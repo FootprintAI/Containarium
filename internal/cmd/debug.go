@@ -106,6 +106,17 @@ func printDebugReportHuman(username string, r *pb.DebugContainerResponse) {
 			fmt.Printf("  %d. %s\n", i+1, action)
 		}
 	}
+
+	if r.SourceRepo != "" || r.DaemonVersion != "" {
+		fmt.Println()
+		fmt.Println("For deeper investigation:")
+		if r.SourceRepo != "" {
+			fmt.Printf("  Source:  %s\n", r.SourceRepo)
+		}
+		if r.DaemonVersion != "" {
+			fmt.Printf("  Daemon:  %s\n", r.DaemonVersion)
+		}
+	}
 }
 
 func valueOrDash(s string) string {

@@ -61,7 +61,7 @@ func TestDiagnose(t *testing.T) {
 				HostUserShellExists: true,
 			},
 			wantCause:    "no obvious host-side problem",
-			wantActionCt: 3,
+			wantActionCt: 4,
 		},
 		{
 			name: "sshd accepted publickey recently",
