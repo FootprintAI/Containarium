@@ -15,7 +15,13 @@ var (
 	ErrPassthroughNotFound = errors.New("passthrough route not found")
 )
 
-// PassthroughRecord represents a passthrough route stored in PostgreSQL (source of truth)
+// PassthroughRecord is the persistence view of a passthrough route: the
+// runtime fields (port/IP/protocol/etc., the same shape as PassthroughRoute
+// in portforward.go) plus DB metadata (ID, creator, timestamps). The Store
+// interface persists PassthroughRecord values; the sync job reads them and
+// projects them into PassthroughRoute values to drive iptables.
+//
+// PostgreSQL is the source of truth; iptables is the runtime mirror.
 type PassthroughRecord struct {
 	ID            string
 	ExternalPort  int

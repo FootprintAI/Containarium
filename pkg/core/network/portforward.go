@@ -262,7 +262,13 @@ func CheckIPTablesAvailable() bool {
 	return strings.Contains(string(output), "iptables")
 }
 
-// PassthroughRoute represents a TCP/UDP port forwarding rule
+// PassthroughRoute is the runtime view of a passthrough route: the minimum
+// data the iptables layer needs to forward packets. It does NOT carry
+// persistence metadata (ID, creator, timestamps); for the durable, DB-backed
+// view see PassthroughRecord in passthrough_store.go.
+//
+// The sync job projects PassthroughRecord values from the Store into
+// PassthroughRoute values to drive iptables.
 type PassthroughRoute struct {
 	ExternalPort  int
 	TargetIP      string
