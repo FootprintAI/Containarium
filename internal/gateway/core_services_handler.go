@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // CoreServicesHandler handles core infrastructure service queries.

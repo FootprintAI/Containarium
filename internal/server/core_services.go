@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
-	"github.com/footprintai/containarium/internal/stacks"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/stacks"
 )
 
 const (

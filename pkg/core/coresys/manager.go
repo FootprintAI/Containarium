@@ -1,12 +1,12 @@
-package core
+package coresys
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"github.com/footprintai/containarium/internal/container"
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 const (

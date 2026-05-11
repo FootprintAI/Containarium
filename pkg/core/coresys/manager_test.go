@@ -1,11 +1,11 @@
-package core
+package coresys
 
 import (
 	"context"
 	"testing"
 
-	"github.com/footprintai/containarium/internal/incus"
-	"github.com/footprintai/containarium/internal/incus/incustest"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 )
 
 func TestNew(t *testing.T) {

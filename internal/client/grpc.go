@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/internal/mtls"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"

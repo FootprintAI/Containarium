@@ -5,7 +5,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/footprintai/containarium/internal/network"
+	"github.com/footprintai/containarium/pkg/core/network"
 	"github.com/spf13/cobra"
 )
 

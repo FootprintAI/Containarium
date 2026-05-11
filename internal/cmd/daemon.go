@@ -19,10 +19,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/app"
-	"github.com/footprintai/containarium/internal/container"
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/internal/mtls"
-	"github.com/footprintai/containarium/internal/network"
+	"github.com/footprintai/containarium/pkg/core/network"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/spf13/cobra"
 )

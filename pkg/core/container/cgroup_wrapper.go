@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/footprintai/containarium/internal/ostype"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 )
 
 // cgroupWrapperScript returns a bash wrapper script that intercepts run/create

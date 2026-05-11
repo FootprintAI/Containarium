@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/footprintai/containarium/internal/container"
+	"github.com/footprintai/containarium/pkg/core/container"
 )
 
 // LabelHandler handles label operations

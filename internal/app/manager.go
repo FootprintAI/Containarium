@@ -14,8 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/app/buildpack"
-	"github.com/footprintai/containarium/internal/container"
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	v1 "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 

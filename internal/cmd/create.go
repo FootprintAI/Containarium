@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/internal/container"
-	"github.com/footprintai/containarium/internal/incus"
-	"github.com/footprintai/containarium/internal/ostype"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )

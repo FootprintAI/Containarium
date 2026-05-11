@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	metricsPackage "github.com/footprintai/containarium/internal/metrics"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/app/buildpack"
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	v1 "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 

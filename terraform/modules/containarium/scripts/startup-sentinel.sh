@@ -108,8 +108,8 @@ ExecStart=/usr/local/bin/sshpiperd \
   --config /etc/sshpiper/config.yaml \
   -- \
   failtoban \
-  --max-failures 20 \
-  --ban-duration 1h
+  --max-failures 100 \
+  --ban-duration 5m
 Restart=always
 RestartSec=5
 

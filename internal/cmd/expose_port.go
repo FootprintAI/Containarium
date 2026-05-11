@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/internal/expose"
+	"github.com/footprintai/containarium/pkg/core/expose"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +25,7 @@ https://<domain>/ reaches the container.
 This is a friendlier wrapper around 'containarium route add' that
 auto-resolves the container's IP from its name. Both this command and
 the platform MCP's expose_port tool delegate to the same Go function
-in internal/expose so the behavior can never drift.
+in pkg/core/expose so the behavior can never drift.
 
 Example:
   containarium expose-port alice \

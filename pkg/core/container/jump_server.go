@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // Note: As of Go 1.20, rand is automatically seeded

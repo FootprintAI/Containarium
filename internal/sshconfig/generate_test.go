@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 func TestGenerate_DirectMode(t *testing.T) {

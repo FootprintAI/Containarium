@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // SSHCollector periodically reads auth.log from containers to capture SSH login events.

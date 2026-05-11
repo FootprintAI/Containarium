@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/collaborator"
-	"github.com/footprintai/containarium/internal/container"
+	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/spf13/cobra"
 )
 

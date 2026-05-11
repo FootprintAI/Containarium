@@ -66,7 +66,7 @@ func TestSSHKeyInjectionPrevention(t *testing.T) {
 	}
 
 	t.Log("SSH key injection protection implemented via incus.WriteFile() API")
-	t.Log("See internal/container/manager.go:addSSHKeys()")
+	t.Log("See pkg/core/container/manager.go:addSSHKeys()")
 }
 
 // TestSudoersInjectionPrevention tests that malicious usernames cannot

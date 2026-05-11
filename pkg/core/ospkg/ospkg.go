@@ -1,7 +1,7 @@
 package ospkg
 
 import (
-	"github.com/footprintai/containarium/internal/ostype"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 )
 
 // PackageManager abstracts OS-specific package management and user operations.

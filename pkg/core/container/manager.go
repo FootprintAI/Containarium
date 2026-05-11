@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
-	"github.com/footprintai/containarium/internal/ospkg"
-	"github.com/footprintai/containarium/internal/ostype"
-	"github.com/footprintai/containarium/internal/stacks"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ospkg"
+	"github.com/footprintai/containarium/pkg/core/ostype"
+	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 )

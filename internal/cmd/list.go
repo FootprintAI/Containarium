@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/internal/container"
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/spf13/cobra"
 )
 

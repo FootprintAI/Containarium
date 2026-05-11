@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // Options controls how Host blocks are rendered. The two routing modes

@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/footprintai/containarium/internal/incus"
-	"github.com/footprintai/containarium/internal/network"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/network"
 	"github.com/spf13/cobra"
 )
 

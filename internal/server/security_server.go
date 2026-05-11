@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/protobuf/encoding/protojson"

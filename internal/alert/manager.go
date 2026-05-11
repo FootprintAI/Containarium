@@ -6,7 +6,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // Manager handles syncing alert rules from the database to vmalert inside

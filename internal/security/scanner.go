@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // maxConcurrentScans limits parallel ClamAV scans to avoid overloading the

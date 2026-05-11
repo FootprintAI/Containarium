@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/collaborator"
-	"github.com/footprintai/containarium/internal/ospkg"
-	"github.com/footprintai/containarium/internal/ostype"
+	"github.com/footprintai/containarium/pkg/core/ospkg"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 )
 
 // CollaboratorManager handles collaborator operations for containers

@@ -4,7 +4,7 @@ package incustest
 import (
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/lxc/incus/v6/shared/api"
 )
 

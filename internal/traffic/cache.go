@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/footprintai/containarium/internal/incus"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // ContainerCache maps IP addresses to container names
