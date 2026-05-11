@@ -632,6 +632,68 @@ else
     echo "✓ JWT secret already exists"
 fi
 
+# Install containarium-shell wrapper so sshd accepts logins for container
+# users. The daemon creates host accounts with shell=containarium-shell;
+# without this file present, sshd rejects every login with
+# "User X not allowed because shell /usr/local/bin/containarium-shell does
+# not exist". Mirrors scripts/setup-ssh-container-proxy.sh; keep in sync.
+echo "==> Installing containarium-shell wrapper..."
+cat > /usr/local/bin/containarium-shell <<'SHELLEOF'
+#!/bin/bash
+# containarium-shell: Proxy SSH sessions into Incus containers
+
+USERNAME="$(whoami)"
+CONTAINER="$${USERNAME}-container"
+
+if ! sudo incus info "$CONTAINER" &>/dev/null; then
+    echo "Error: Container $CONTAINER not found" >&2
+    exit 1
+fi
+
+STATE=$(sudo incus info "$CONTAINER" 2>/dev/null | grep "^Status:" | awk '{print $2}')
+if [ "$STATE" != "RUNNING" ]; then
+    echo "Error: Container $CONTAINER is not running (status: $STATE)" >&2
+    exit 1
+fi
+
+# Three invocation modes: SSH_ORIGINAL_COMMAND set, -c <cmd> arg, or
+# interactive.
+COMMAND="$${SSH_ORIGINAL_COMMAND}"
+if [ -z "$COMMAND" ] && [ "$1" = "-c" ]; then
+    COMMAND="$2"
+fi
+
+if [ -n "$COMMAND" ]; then
+    exec sudo incus exec "$CONTAINER" --mode non-interactive -- su - "$USERNAME" -c "$COMMAND"
+fi
+
+exec sudo incus exec "$CONTAINER" -t -- su -l "$USERNAME"
+SHELLEOF
+chmod 755 /usr/local/bin/containarium-shell
+
+# /etc/shells gate: sshd refuses any user whose shell is not listed here.
+if ! grep -qxF /usr/local/bin/containarium-shell /etc/shells 2>/dev/null; then
+    echo /usr/local/bin/containarium-shell >> /etc/shells
+fi
+
+# Sudoers for passwordless `incus exec/info`.
+cat > /etc/sudoers.d/containarium-incus <<'SUDOEOF'
+ALL ALL=(root) NOPASSWD: /usr/bin/incus exec *, /usr/bin/incus info *
+SUDOEOF
+chmod 0440 /etc/sudoers.d/containarium-incus
+
+# Suppress host MOTD for container users (admin users keep theirs).
+SSHD_DROPIN=/etc/ssh/sshd_config.d/containarium-motd.conf
+if [ -d /etc/ssh/sshd_config.d ]; then
+    cat > "$SSHD_DROPIN" <<'SSHDEOF'
+Match User *,!ubuntu,!root
+    PrintMotd no
+    PrintLastLog no
+SSHDEOF
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+fi
+echo "✓ containarium-shell wrapper installed"
+
 # Install systemd service via the binary's built-in command if available,
 # otherwise create the service file directly.
 echo "==> Installing Containarium systemd service..."
