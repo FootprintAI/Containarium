@@ -51,7 +51,7 @@ jobs:
 
       - name: Cache built caddy binary
         id: cache-caddy
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ./bin/caddy
           # Bump the suffix to invalidate the cache when bumping Caddy.
