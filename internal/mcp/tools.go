@@ -47,6 +47,21 @@ func (s *Server) registerTools() {
 				"     as a failed attempt. One careless ssh can burn the IP's ban quota.\n" +
 				"  3. Inside the container, apt install / write files / start services.\n" +
 				"  4. Call `expose_port` to make a container port reachable on a public hostname.\n\n" +
+				"Shipping your own code into the container (instead of just apt-installing\n" +
+				"things): use one of the dedicated transfer tools rather than scp-ing by\n" +
+				"hand. They reuse the SSH path above and handle the failtoban / shell-stack\n" +
+				"quirks for you.\n" +
+				"  - `push`: git-style. Ships committed history; delta on subsequent calls\n" +
+				"    via `git bundle`. Refuses on dirty tree unless `include_wip=true`.\n" +
+				"    Use when you've committed locally and want commit-by-commit shipping.\n" +
+				"  - `sync`: rsync-style. Mirrors the working directory including .git/,\n" +
+				"    uncommitted modifications, untracked files. Delta on subsequent calls\n" +
+				"    via content-hash diff. Use when you want the container to reflect\n" +
+				"    your local state right now, WIP and all.\n\n" +
+				"Diagnostic: if SSH or the workflow fails, call `debug_container` BEFORE\n" +
+				"reporting the failure. It surfaces host-side state the agent can't see\n" +
+				"(user account presence, shell wrapper, recent sshd journal lines) and\n" +
+				"returns a likely_cause + ordered next_actions.\n\n" +
 				"Optional convenience (skip if you don't want to touch ~/.ssh/config):\n" +
 				"  Call the `sync_ssh_config` MCP tool to generate a self-contained\n" +
 				"  ssh_config file and Include line. After that, `ssh <name>` works directly.",
