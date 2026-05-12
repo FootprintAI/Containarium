@@ -263,6 +263,113 @@ func (s *Server) registerTools() {
 			Handler: handleGetBackend,
 		},
 		{
+			Name: "push",
+			Description: "Push committed git history from a local repository into a container, " +
+				"via the same SSH path you'd use to ssh in directly.\n\n" +
+				"Ships only the delta since the last push to this user (tracked in " +
+				"`.git/containarium-state.json` in the local repo). Uses `git bundle` as " +
+				"the wire format — git's pack-protocol-level delta compression, atomic " +
+				"per-call.\n\n" +
+				"This is the *commit-only* mode. Working-tree changes that aren't committed " +
+				"DO NOT ship by default — if the working tree has uncommitted or untracked " +
+				"files, the tool refuses with a clear error. Pass `include_wip=true` to " +
+				"auto-create a WIP commit, push, and rewind the local repo afterwards.\n\n" +
+				"If you want to mirror the entire local state (uncommitted changes + " +
+				"untracked files + stash refs) without commit ceremony, use the `sync` " +
+				"tool instead.\n\n" +
+				"On first push to a given `<username>`, the tool initializes a fresh git " +
+				"repo at the remote path; subsequent pushes fast-forward (or force) the " +
+				"branch and check it out.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Container username (same value used by create_container).",
+					},
+					"local_path": map[string]interface{}{
+						"type":        "string",
+						"description": "Local git repo path (default: current working directory).",
+					},
+					"branch": map[string]interface{}{
+						"type":        "string",
+						"description": "Branch to push (default: current HEAD branch).",
+					},
+					"remote_path": map[string]interface{}{
+						"type":        "string",
+						"description": "Destination directory inside the container (default: ~/work).",
+					},
+					"include_wip": map[string]interface{}{
+						"type":        "boolean",
+						"description": "If true and the working tree is dirty, auto-create a WIP commit, push, then rewind the local repo. Default false (refuse on dirty tree).",
+					},
+					"sentinel": map[string]interface{}{
+						"type":        "string",
+						"description": "Sentinel SSH host override. Default uses CONTAINARIUM_SENTINEL_HOST env.",
+					},
+					"key_path": map[string]interface{}{
+						"type":        "string",
+						"description": "SSH private key path override. Default ~/.containarium/keys/<username>.",
+					},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handlePush,
+		},
+		{
+			Name: "sync",
+			Description: "Mirror a local directory into a container — rsync-style, but using " +
+				"a one-shot content-hash diff + tar so it works through Containarium's " +
+				"shell stack without needing rsync's bidirectional protocol.\n\n" +
+				"Carries everything in the working tree: committed history, uncommitted " +
+				"modifications, untracked files, stash refs (because `.git/` is part of " +
+				"the working directory). Subsequent calls ship only the content-hash delta.\n\n" +
+				"This is the *mirror* mode. Use it when you want the container to exactly " +
+				"reflect your local state including WIP. If you want commit-only semantics " +
+				"(atomic per commit, refuses on dirty tree), use `push` instead.\n\n" +
+				"By default, files that exist on the remote but not locally are LEFT in " +
+				"place. Pass `delete=true` for true rsync --delete semantics.\n\n" +
+				"Default excludes (substring match): node_modules/, .terraform/, " +
+				"__pycache__/, .pytest_cache/, .venv/, venv/, .DS_Store, .idea/, .vscode/. " +
+				"Pass an `exclude` array to add to (not replace) the defaults.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Container username (same value used by create_container).",
+					},
+					"local_path": map[string]interface{}{
+						"type":        "string",
+						"description": "Local directory to mirror (default: current working directory).",
+					},
+					"remote_path": map[string]interface{}{
+						"type":        "string",
+						"description": "Destination directory inside the container (default: ~/work).",
+					},
+					"delete": map[string]interface{}{
+						"type":        "boolean",
+						"description": "If true, remove files on the remote that don't exist locally (rsync --delete semantics). Default false.",
+					},
+					"exclude": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]string{"type": "string"},
+						"description": "Additional exclude patterns (substring match), added to the sensible defaults.",
+					},
+					"sentinel": map[string]interface{}{
+						"type":        "string",
+						"description": "Sentinel SSH host override. Default uses CONTAINARIUM_SENTINEL_HOST env.",
+					},
+					"key_path": map[string]interface{}{
+						"type":        "string",
+						"description": "SSH private key path override. Default ~/.containarium/keys/<username>.",
+					},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleSync,
+		},
+		{
 			Name: "sync_ssh_config",
 			Description: "Generate a self-contained ssh_config covering every reachable container " +
 				"and write it to ~/.containarium/ssh_config. After this call, `ssh <username>` " +
