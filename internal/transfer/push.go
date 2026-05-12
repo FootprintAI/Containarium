@@ -219,6 +219,8 @@ func shipBundle(opt PushOptions, bundlePath, branch string) error {
 	)
 
 	args := append(opt.sshBaseArgs(), opt.sshTarget(), script)
+	// #nosec G204 -- argv to ssh, not shell-evaluated locally; remote
+	// script's variables are shQuote'd.
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdin = f
 	cmd.Stderr = io.Discard
@@ -257,7 +259,11 @@ func makeWIPCommit(repo string) (string, error) {
 // runGit runs a git command in repo and returns combined stdout (caller
 // trims). Errors include stderr for easier debugging.
 func runGit(repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	// args are package-internal git subcommands + values pre-validated
+	// elsewhere in this file (branch name from git rev-parse, bundle path
+	// from os.TempDir). git treats each argv element as one argument, not
+	// shell-evaluated.
+	cmd := exec.Command("git", args...) // #nosec G204 -- argv to git, not shell-evaluated.
 	cmd.Dir = repo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

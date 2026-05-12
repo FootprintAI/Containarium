@@ -134,7 +134,11 @@ func Sync(opt SyncOptions) (*SyncResult, error) {
 	)
 
 	args := append(opt.sshBaseArgs(), opt.sshTarget(), remoteScript)
-	cmd := exec.Command("ssh", args...)
+	// args is built from package-internal values + caller-supplied paths
+	// that pass through shQuote, then handed to ssh as argv (not shell-
+	// evaluated locally). Username/host appear only as one argv element
+	// to ssh. Safe by construction.
+	cmd := exec.Command("ssh", args...) // #nosec G204 -- argv to ssh, not shell-evaluated locally; remote script's variables are shQuote'd.
 	cmd.Stdin = &tarbuf
 	cmd.Stderr = io.Discard
 	if opt.Verbose {
@@ -195,6 +199,8 @@ func readRemoteManifest(opt SyncOptions) (*manifest, error) {
 
 	args := append(opt.sshBaseArgs(), opt.sshTarget(), script)
 	var out bytes.Buffer
+	// #nosec G204 -- argv to ssh, not shell-evaluated locally; remote
+	// script's variables are shQuote'd.
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
