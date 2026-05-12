@@ -24,6 +24,12 @@ type SyncOptions struct {
 
 // DefaultSyncExcludes is the noise filter applied when SyncOptions.Excludes
 // is empty. Substring match, not glob.
+//
+// .env* is excluded by default because env files are per-environment
+// secrets — clobbering a container's .env with a laptop's .env is a
+// classic footgun (surfaced 2026-05-12 via agent feedback). If a caller
+// genuinely wants to ship env files they can pass Excludes explicitly
+// to override.
 var DefaultSyncExcludes = []string{
 	"node_modules/",
 	".terraform/",
@@ -34,6 +40,9 @@ var DefaultSyncExcludes = []string{
 	".DS_Store",
 	".idea/",
 	".vscode/",
+	".env",
+	".env.",
+	".envrc",
 }
 
 // SyncResult summarizes what changed.

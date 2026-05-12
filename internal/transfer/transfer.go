@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Options carries the inputs both Push and Sync need.
@@ -90,6 +91,17 @@ func (o *Options) resolve() error {
 	}
 	if o.RemotePath == "" {
 		o.RemotePath = "/home/" + o.Username + "/work"
+	}
+	// Expand a leading "~/" or bare "~" into /home/<Username>/. The remote
+	// shell only expands `~` outside of quotes, but our remote scripts
+	// shQuote every path → the tilde survives literally, and we end up
+	// creating a directory called "~" in the user's cwd. Substitute here
+	// so callers can write "~/work" and have it mean what they expect.
+	switch {
+	case o.RemotePath == "~":
+		o.RemotePath = "/home/" + o.Username
+	case strings.HasPrefix(o.RemotePath, "~/"):
+		o.RemotePath = "/home/" + o.Username + "/" + strings.TrimPrefix(o.RemotePath, "~/")
 	}
 	return nil
 }
