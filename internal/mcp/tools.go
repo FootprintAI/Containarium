@@ -385,6 +385,101 @@ func (s *Server) registerTools() {
 			Handler: handleSync,
 		},
 		{
+			Name: "security_scan",
+			Description: "Run a security scan on a container. Triggers one or more of the daemon's " +
+				"three scanner subsystems: ClamAV (malware in container files), pentest " +
+				"(CVE-style vulnerabilities in installed packages), ZAP (web-app DAST against " +
+				"any exposed HTTP services).\n\n" +
+				"This is a one-shot operator-invoked action — call it when you suspect or " +
+				"need to confirm a container's security posture. The scans run asynchronously " +
+				"on the daemon; this tool returns once the trigger is accepted. After waiting " +
+				"(see `pollHint` in the response), call `security_findings` to read results.\n\n" +
+				"Typical durations:\n" +
+				"  - clamav: seconds (file walk + signature match)\n" +
+				"  - pentest: tens of seconds (per-target probe)\n" +
+				"  - zap: minutes (active spider + attack passes)\n\n" +
+				"For continuous/scheduled scanning, the cloud product offers a hosted " +
+				"security-patch agent (see the cloud roadmap). This OSS tool is the one-shot " +
+				"BYOA equivalent.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Container username (same value used by create_container).",
+					},
+					"kind": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"clamav", "pentest", "zap", "all"},
+						"description": "Which scanner(s) to run. Default 'all' triggers all three.",
+					},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleSecurityScan,
+		},
+		{
+			Name: "security_findings",
+			Description: "List security findings for a container, normalized across the three " +
+				"scanner subsystems (ClamAV, pentest, ZAP). Returns a single shape per finding " +
+				"so the agent doesn't have to branch on scanner internals:\n" +
+				"  - kind:          'clamav' | 'pentest' | 'zap'\n" +
+				"  - id:            daemon-side row ID; pass to security_remediate\n" +
+				"  - severity:      'critical' | 'high' | 'medium' | 'low' | 'info'\n" +
+				"  - title:         short description\n" +
+				"  - description:   detail (optional)\n" +
+				"  - containerName: which container the finding pertains to\n" +
+				"  - target:        URL/IP:port for pentest+ZAP (optional)\n" +
+				"  - fixAvailable:  true → `security_remediate` can act on this row.\n\n" +
+				"Today only pentest findings have `fixAvailable=true` (the daemon's " +
+				"`RemediatePentestFinding` runs a package upgrade). ClamAV findings need " +
+				"a quarantine workflow; ZAP findings need web-app code fixes — neither has " +
+				"an auto-fix path yet. Filter to one scanner with `kind`.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Container username.",
+					},
+					"kind": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"clamav", "pentest", "zap", "all"},
+						"description": "Restrict to one scanner. Default 'all' merges results.",
+					},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleSecurityFindings,
+		},
+		{
+			Name: "security_remediate",
+			Description: "Attempt to auto-fix a security finding. Currently only works on " +
+				"pentest-kind findings where `fixAvailable=true` (the daemon's " +
+				"`RemediatePentestFinding` runs a package upgrade). ClamAV and ZAP findings " +
+				"return an error here — they need different fix workflows that don't exist " +
+				"yet.\n\n" +
+				"This is a one-shot, operator-confirmed action. Do NOT chain " +
+				"`security_scan → security_findings → security_remediate` autonomously " +
+				"without user confirmation — surface the findings to the user first, let " +
+				"them decide which to fix.\n\n" +
+				"Returns `success`, `packageName`, `oldVersion`, `newVersion` on a successful " +
+				"package upgrade. A failed remediate doesn't put the finding into a wedged " +
+				"state — the same finding can be remediated again after fixing the underlying " +
+				"reason (locked package, missing apt index, etc.).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"finding_id": map[string]interface{}{
+						"type":        "integer",
+						"description": "Finding ID from security_findings (`id` field).",
+					},
+				},
+				"required": []string{"finding_id"},
+			},
+			Handler: handleSecurityRemediate,
+		},
+		{
 			Name: "sync_ssh_config",
 			Description: "Generate a self-contained ssh_config covering every reachable container " +
 				"and write it to ~/.containarium/ssh_config. After this call, `ssh <username>` " +

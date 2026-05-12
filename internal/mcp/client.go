@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -274,6 +275,237 @@ func (c *Client) GetBackend(id string) (*Backend, error) {
 		}
 	}
 	return nil, fmt.Errorf("backend %q not found", id)
+}
+
+// TriggerSecurityScan posts to the daemon's scan-trigger endpoints. For
+// kind="all" it runs the three trigger endpoints sequentially and rolls
+// up the queued counts. Errors from individual triggers are collected
+// but don't abort the others — a partial scan is better than none.
+func (c *Client) TriggerSecurityScan(kind, containerName, username string) (*SecurityScanResponse, error) {
+	kinds := []string{kind}
+	if kind == scanKindAll {
+		kinds = []string{scanKindClamav, scanKindPentest, scanKindZap}
+	}
+
+	type triggerOk struct {
+		Message      string `json:"message"`
+		ScannedCount int    `json:"scannedCount"`
+	}
+
+	var msgs []string
+	var totalQueued int
+	for _, k := range kinds {
+		var path string
+		var body interface{}
+		switch k {
+		case scanKindClamav:
+			path = "/v1/security/clamav-scan"
+			body = map[string]string{"containerName": containerName}
+		case scanKindPentest:
+			path = "/v1/pentest/scan"
+			body = map[string]string{"username": username}
+		case scanKindZap:
+			path = "/v1/zap/scan"
+			body = map[string]string{"username": username}
+		}
+		respBody, err := c.doRequest("POST", path, body)
+		if err != nil {
+			msgs = append(msgs, fmt.Sprintf("%s: error: %v", k, err))
+			continue
+		}
+		var resp triggerOk
+		_ = json.Unmarshal(respBody, &resp)
+		if resp.Message != "" {
+			msgs = append(msgs, fmt.Sprintf("%s: %s", k, resp.Message))
+		} else {
+			msgs = append(msgs, fmt.Sprintf("%s: triggered", k))
+		}
+		totalQueued += resp.ScannedCount
+		if resp.ScannedCount == 0 {
+			totalQueued++ // some triggers don't return a count
+		}
+	}
+
+	poll := "Call security_findings in ~30s for ClamAV/pentest; ZAP runs minutes."
+	if kind == scanKindClamav {
+		poll = "ClamAV is fast — call security_findings in ~5s."
+	}
+	if kind == scanKindZap {
+		poll = "ZAP can take 1-5 minutes. Call security_findings periodically."
+	}
+	return &SecurityScanResponse{
+		Kind:     kind,
+		Message:  strings.Join(msgs, "; "),
+		Queued:   totalQueued,
+		PollHint: poll,
+	}, nil
+}
+
+// ListSecurityFindings fetches findings from one or all scanner kinds and
+// normalizes them into the unified SecurityFinding shape.
+func (c *Client) ListSecurityFindings(kind, containerName string) ([]SecurityFinding, error) {
+	kinds := []string{kind}
+	if kind == scanKindAll {
+		kinds = []string{scanKindClamav, scanKindPentest, scanKindZap}
+	}
+
+	var out []SecurityFinding
+	for _, k := range kinds {
+		rows, err := c.listOneScanner(k, containerName)
+		if err != nil {
+			// Per-scanner failures shouldn't abort the others — surface
+			// them as a synthetic "info" row so the agent sees why.
+			out = append(out, SecurityFinding{
+				Kind:        k,
+				Severity:    "info",
+				Title:       fmt.Sprintf("scanner %s unreachable", k),
+				Description: err.Error(),
+			})
+			continue
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
+}
+
+// listOneScanner pulls + normalizes findings from one scanner.
+func (c *Client) listOneScanner(kind, containerName string) ([]SecurityFinding, error) {
+	switch kind {
+	case scanKindClamav:
+		path := "/v1/security/clamav-reports?containerName=" + containerName
+		body, err := c.doRequest("GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Reports []struct {
+				ID            int64  `json:"id"`
+				ContainerName string `json:"containerName"`
+				Status        string `json:"status"`
+				FindingsCount int    `json:"findingsCount"`
+				Findings      string `json:"findings"`
+			} `json:"reports"`
+		}
+		_ = json.Unmarshal(body, &resp)
+		var out []SecurityFinding
+		for _, r := range resp.Reports {
+			if r.Status != "infected" || r.FindingsCount == 0 {
+				continue
+			}
+			out = append(out, SecurityFinding{
+				Kind:          scanKindClamav,
+				ID:            r.ID,
+				Severity:      "critical", // infected = critical by default
+				Title:         fmt.Sprintf("ClamAV found %d infected file(s)", r.FindingsCount),
+				Description:   r.Findings,
+				ContainerName: r.ContainerName,
+				FixAvailable:  false, // ClamAV findings require quarantine workflow, not auto-fix
+			})
+		}
+		return out, nil
+
+	case scanKindPentest:
+		path := "/v1/pentest/findings?containerName=" + containerName
+		body, err := c.doRequest("GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Findings []struct {
+				ID                int64  `json:"id"`
+				Severity          string `json:"severity"`
+				Title             string `json:"title"`
+				Description       string `json:"description"`
+				Target            string `json:"target"`
+				RemediationActive bool   `json:"remediationActive"`
+				Suppressed        bool   `json:"suppressed"`
+			} `json:"findings"`
+		}
+		_ = json.Unmarshal(body, &resp)
+		var out []SecurityFinding
+		for _, f := range resp.Findings {
+			if f.Suppressed {
+				continue
+			}
+			out = append(out, SecurityFinding{
+				Kind:         scanKindPentest,
+				ID:           f.ID,
+				Severity:     f.Severity,
+				Title:        f.Title,
+				Description:  f.Description,
+				Target:       f.Target,
+				FixAvailable: true, // pentest is the one kind RemediatePentestFinding can act on
+			})
+		}
+		return out, nil
+
+	case scanKindZap:
+		path := "/v1/zap/alerts?containerName=" + containerName
+		body, err := c.doRequest("GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Alerts []struct {
+				ID          int64  `json:"id"`
+				AlertName   string `json:"alertName"`
+				Risk        string `json:"risk"`
+				Description string `json:"description"`
+				URL         string `json:"url"`
+				Suppressed  bool   `json:"suppressed"`
+			} `json:"alerts"`
+		}
+		_ = json.Unmarshal(body, &resp)
+		var out []SecurityFinding
+		for _, a := range resp.Alerts {
+			if a.Suppressed {
+				continue
+			}
+			out = append(out, SecurityFinding{
+				Kind:         scanKindZap,
+				ID:           a.ID,
+				Severity:     normalizeZapRisk(a.Risk),
+				Title:        a.AlertName,
+				Description:  a.Description,
+				Target:       a.URL,
+				FixAvailable: false, // ZAP findings need web-app code fixes; no auto-remediation today
+			})
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("unknown kind: %s", kind)
+}
+
+// normalizeZapRisk maps ZAP's "high|medium|low|informational" onto our
+// shared severity set.
+func normalizeZapRisk(r string) string {
+	switch strings.ToLower(r) {
+	case "high":
+		return "high"
+	case "medium":
+		return "medium"
+	case "low":
+		return "low"
+	case "informational", "info":
+		return "info"
+	}
+	return "info"
+}
+
+// RemediateSecurityFinding calls the daemon's RemediatePentestFinding
+// RPC. Only valid for pentest findings; ClamAV/ZAP findings are
+// rejected with FixAvailable=false at security_findings time.
+func (c *Client) RemediateSecurityFinding(findingID int64) (*SecurityRemediateResponse, error) {
+	path := fmt.Sprintf("/v1/pentest/findings/%d/remediate", findingID)
+	body, err := c.doRequest("POST", path, struct{}{})
+	if err != nil {
+		return nil, err
+	}
+	var resp SecurityRemediateResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse remediate response: %w", err)
+	}
+	return &resp, nil
 }
 
 // API Request/Response types
