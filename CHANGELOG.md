@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.7] - 2026-05-14
+
+### Fixed
+
+- **Sentinel simple-proxy mode: real client IP via userspace PROXY v2 forwarder** ([#161](https://github.com/FootprintAI/Containarium/pull/161)) — `--proxy-protocol` was a no-op in simple-proxy deployments (single GCP spot VM behind the sentinel, e.g. the demo cluster). Those deployments use kernel iptables DNAT, which can't inject a PROXY v2 frame, so the downstream Caddy saw the post-MASQUERADE bridge gateway IP (`10.0.3.1`) instead of the real client IP. Now when `--proxy-protocol` is set on the sentinel and ConnMux isn't owning `:443` (i.e. tunnel/multi-pool modes that already had PROXY v2 via the SNI router), the sentinel spins up a userspace TCP forwarder on `:80`/`:443` that dials the backend and prepends a PROXY v2 header. Lab/prod (ConnMux path) behavior is unchanged.
+- **MCP `create_container`: auto-save ephemeral private key** ([#160](https://github.com/FootprintAI/Containarium/pull/160)) — when the agent omits `ssh_keys`, the MCP server generates an ed25519 keypair locally, installs the public half on the container, and returns the private half in the response. It now also writes the key to `$CONTAINARIUM_KEYS_DIR` (default `$HOME/.containarium/keys/<username>`) with mode 0600 itself, so the agent no longer has to remember the save step — losing it between the create call and the next ssh/push/sync call was a real failure mode (the daemon doesn't keep a copy server-side).
+
 ## [0.16.6] - 2026-05-13
 
 ### Fixed
