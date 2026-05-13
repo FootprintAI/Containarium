@@ -72,6 +72,13 @@ type Manager struct {
 	// Tunnel/hybrid mode: ConnMux-based HTTPS handling
 	httpsDispatch  *dispatchListener // from ConnMux, dispatches to proxy or maintenance
 
+	// Simple-proxy mode (no ConnMux): userspace TCP forwarder used when
+	// --proxy-protocol is set, so connections to :80/:443 traverse a Go
+	// process that can prepend a PROXY v2 header instead of going through
+	// kernel iptables DNAT (which can't inject headers and therefore
+	// destroys the real client IP via MASQUERADE).
+	userspaceFwd *userspaceForwarder
+
 	// Recovery tracking
 	outageStart    time.Time // when the current outage began
 	lastPreemption time.Time // when the last preemption event was detected
@@ -468,7 +475,29 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 		m.startHTTPSProxy(backend.IP)
 	}
 
-	// Enable iptables forwarding to the primary backend
+	// Simple-proxy mode with --proxy-protocol: route :80/:443 through a
+	// userspace TCP forwarder that prepends a PROXY v2 header. Kernel
+	// iptables DNAT can't inject the frame, so without this path the
+	// downstream Caddy never sees the real client IP. Only applies in
+	// non-ConnMux mode — ConnMux already emits PROXY v2 via the SNI
+	// router for its own :443 traffic.
+	if m.config.ProxyProtocol && m.httpsDispatch == nil {
+		userspacePorts := []int{m.config.HTTPPort, m.config.HTTPSPort}
+		forwardedPorts = excludePort(forwardedPorts, m.config.HTTPPort)
+		forwardedPorts = excludePort(forwardedPorts, m.config.HTTPSPort)
+
+		fwd := newUserspaceForwarder(true)
+		if err := fwd.start(backend.IP, userspacePorts); err != nil {
+			fwd.stop()
+			return fmt.Errorf("userspace forwarder: %w", err)
+		}
+		m.userspaceFwd = fwd
+		log.Printf("[sentinel] userspace forwarder active for ports %v → %s (PROXY v2 enabled)",
+			userspacePorts, backend.IP)
+	}
+
+	// Enable iptables forwarding for any remaining ports (everything
+	// except the ones owned by ConnMux or the userspace forwarder).
 	if err := enableForwarding(backend.IP, forwardedPorts); err != nil {
 		return err
 	}
@@ -482,6 +511,14 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 func (m *Manager) switchToMaintenance() error {
 	if err := disableForwarding(); err != nil {
 		log.Printf("[sentinel] warning: failed to disable forwarding: %v", err)
+	}
+
+	// Tear down the userspace forwarder if it was running. Safe to call
+	// even when it wasn't started — stop() on an empty listener list is
+	// a no-op.
+	if m.userspaceFwd != nil {
+		m.userspaceFwd.stop()
+		m.userspaceFwd = nil
 	}
 
 	m.mu.Lock()
