@@ -4,10 +4,75 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/footprintai/containarium/pkg/core/expose"
 )
+
+// ephemeralKeyDir returns the directory the MCP server writes ephemeral
+// private keys to. Defaults to $HOME/.containarium/keys. Overridable via
+// CONTAINARIUM_KEYS_DIR for operators who want a non-default location.
+// Returns "" if no usable directory can be determined (HOME unset and no
+// override) — the caller should treat that as "skip the file write".
+func ephemeralKeyDir() string {
+	if d := os.Getenv("CONTAINARIUM_KEYS_DIR"); d != "" {
+		return d
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".containarium", "keys")
+}
+
+// saveEphemeralPrivateKey writes the freshly-minted private key to disk so
+// the operator doesn't have to lift it out of the tool response. Returns
+// the path it wrote to on success, or an error describing why it didn't.
+// On any error the caller should keep showing the key text in the response
+// so the agent at least has the option to save it itself.
+func saveEphemeralPrivateKey(username string, key []byte) (string, error) {
+	dir := ephemeralKeyDir()
+	if dir == "" {
+		return "", fmt.Errorf("no key directory available (HOME and CONTAINARIUM_KEYS_DIR both unset)")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, username)
+	// Write atomically: create at a temp name in the same dir, chmod, then
+	// rename. Avoids leaving a half-written 0600 file under the username
+	// path if the write is interrupted, and avoids ever leaving the key
+	// readable to other users on the filesystem.
+	f, err := os.CreateTemp(dir, "."+username+".tmp.*")
+	if err != nil {
+		return "", fmt.Errorf("create temp in %s: %w", dir, err)
+	}
+	tmpPath := f.Name()
+	// Best-effort cleanup if anything below fails before the rename.
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("chmod 0600 on %s: %w", tmpPath, err)
+	}
+	if _, err := f.Write(key); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("write key bytes: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return "", fmt.Errorf("rename %s -> %s: %w", tmpPath, path, err)
+	}
+	tmpPath = "" // rename consumed it
+	return path, nil
+}
 
 // Tool represents an MCP tool (function)
 type Tool struct {
@@ -29,14 +94,15 @@ func (s *Server) registerTools() {
 				"name, IP address, and resources.\n\n" +
 				"SSH key handling: if you OMIT `ssh_keys`, an ephemeral ed25519 keypair is " +
 				"generated client-side. The public half is installed on the container; the " +
-				"private half comes back in this tool's response. Save it to " +
-				"`~/.containarium/keys/<username>` with mode 0600 — that's the standard " +
-				"path expected by the rest of the workflow. If you pass `ssh_keys`, those " +
-				"are used as-is and no ephemeral key is generated (useful when reusing an " +
+				"private half is auto-saved to `~/.containarium/keys/<username>` with mode " +
+				"0600 by this MCP server itself (no agent action required) and ALSO echoed " +
+				"into the tool response as a fallback. If you pass `ssh_keys`, those are " +
+				"used as-is and no ephemeral key is generated (useful when reusing an " +
 				"operator's existing key for SSH alias convenience).\n\n" +
 				"AFTER creation, to operate inside the container (simplest path):\n" +
-				"  1. Save the ephemeral private key (if generated) via Bash to\n" +
-				"     ~/.containarium/keys/<name> with mode 0600.\n" +
+				"  1. The private key is already on disk at ~/.containarium/keys/<name>.\n" +
+				"     (Only act on the key text in the response if the response says auto-\n" +
+				"     save failed.)\n" +
 				"  2. The tool response includes a ready-to-paste ssh command:\n" +
 				"       ssh -i ~/.containarium/keys/<name> \\\n" +
 				"           -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \\\n" +
@@ -664,14 +730,27 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 	result += fmt.Sprintf("\n%s", resp.Message)
 
 	if ephemeralPrivKey != nil {
+		// Write the key to the local filesystem ourselves rather than
+		// asking the agent to do it. The agent could forget the save step
+		// (or its context could be compacted between create_container and
+		// the next ssh call), at which point the key is gone — the daemon
+		// never stores a copy. Doing the write here makes "container
+		// created" and "key on disk" a single atomic-from-the-caller's-
+		// perspective operation.
+		savedPath, saveErr := saveEphemeralPrivateKey(resp.Container.Username, ephemeralPrivKey)
+
 		result += "\n\n--- EPHEMERAL SSH PRIVATE KEY ---\n"
 		result += "Caller did not provide ssh_keys, so an ed25519 keypair was\n"
-		result += "generated locally. The public half is already on the container;\n"
-		result += "save the private half below to a file with mode 0600 and use it\n"
-		result += "to SSH in.\n\n"
-		result += "Suggested save path:\n"
-		result += fmt.Sprintf("  ~/.containarium/keys/%s\n\n", resp.Container.Username)
-		result += "Then to SSH in:\n"
+		result += "generated locally. The public half is already on the container.\n\n"
+		if saveErr == nil {
+			result += fmt.Sprintf("✅ Private key saved: %s (mode 0600)\n\n", savedPath)
+		} else {
+			result += fmt.Sprintf("⚠️  Could not auto-save the private key: %v\n", saveErr)
+			result += "    Save the key text below to a file with mode 0600 yourself.\n\n"
+			result += "Suggested save path:\n"
+			result += fmt.Sprintf("  ~/.containarium/keys/%s\n\n", resp.Container.Username)
+		}
+		result += "To SSH in:\n"
 		sentinelHost := client.SentinelHost
 		if sentinelHost == "" {
 			sentinelHost = "<sentinel-host>"
@@ -688,6 +767,9 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 			result += "(Sentinel host not configured — set CONTAINARIUM_SENTINEL_HOST in the\n"
 			result += "MCP server's env, or call sync_ssh_config for an alias-based setup.)\n\n"
 		}
+		// Include the key text regardless of save outcome — even on success
+		// it's useful for one-off copy to other machines (vendor laptop,
+		// CI runner, etc.) without re-exporting from the auto-saved file.
 		result += string(ephemeralPrivKey)
 	}
 
