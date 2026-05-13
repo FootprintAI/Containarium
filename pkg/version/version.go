@@ -8,7 +8,7 @@ import (
 
 var (
 	// Version is the semantic version - UPDATE THIS MANUALLY for releases
-	Version = "0.16.5"
+	Version = "0.16.6"
 
 	// GitCommit is the git commit hash (set by build flag via ldflags)
 	GitCommit = ""

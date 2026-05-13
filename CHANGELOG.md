@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.6] - 2026-05-13
+
+### Fixed
+
+- **`ensureHTTPApp` no longer 409s on every daemon startup** ([#157](https://github.com/FootprintAI/Containarium/pull/157)) — `ensureHTTPApp` strict-decoded the Caddy `/config/apps/http` response into the typed `CaddyHTTPApp`, whose `Handle []CaddyHandler` is an interface slice that `encoding/json` cannot unmarshal into. On every daemon startup where Caddy already had a non-empty http app the decode failed, the code fell through to a PUT that returned `409 key already exists: http`, and the daemon silently lost every Caddy update that depended on `EnsureServerConfig` having succeeded — notably the TLS subject + `srv0` route for a newly-connected tunnel-promoted pool primary. Probe with `map[string]json.RawMessage` instead.
+
 ## [0.16.5] - 2026-05-12
 
 This release lands the **MCP-first agent dev loop**: an agent (Claude Code, Cursor, Cline, …) can now create a container, ship code into it via real `git push`, expose it on a public hostname, run security scans, and diagnose failures — all through tools that share Go entry points with their CLI counterparts. Plus the `pkg/core` extraction that makes the cloud-daemon (separate repo) possible.
