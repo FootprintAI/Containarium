@@ -227,9 +227,12 @@ On tunnel disconnect, the primary entry is removed automatically (`UnregisterByB
      --public-hostname containarium-lab.kafeido.app \
      --public-aliases lab-api.kafeido.app,lab-grafana.kafeido.app \
      --public-port 443 \
+     --proxy-protocol --proxy-protocol-trusted=127.0.0.0/8 \
      ...other flags...
    ```
    `--public-aliases` lists every hostname the primary's Caddy serves *besides* the primary's own subdomain (app domains, custom hostnames). The sentinel routes any of these to this primary by SNI.
+
+   `--proxy-protocol --proxy-protocol-trusted=127.0.0.0/8` is required when the sentinel itself runs with `--proxy-protocol` (the prod sentinel does). The sentinel's SNI router writes a PROXY v2 frame before the TLS bytes; without the matching flag on the primary, the primary's Caddy mis-parses the frame and the first TLS handshake fails silently with no log on either end. See [`PROXY-PROTOCOL.md` → Troubleshooting](PROXY-PROTOCOL.md#tls-handshake-fails-silently-for-a-tunnel-promoted-pool-primary). Trusted is `127.0.0.0/8` because the tunnel client forwards bytes from local loopback.
 4. **Register peers** with the matching pool tag:
    ```
    sudo bash setup-peer.sh --spot-id host-a --pool lab ...

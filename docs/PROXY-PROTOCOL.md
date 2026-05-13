@@ -230,6 +230,65 @@ The `trusted_proxies` setting is what makes Caddy's `reverse_proxy` populate
 this, the wrapper would correctly set `RemoteAddr` but `reverse_proxy` would
 fall back to the raw TCP peer (loopback) for the XFF value.
 
+## Troubleshooting
+
+### TLS handshake fails silently for a tunnel-promoted pool primary
+
+**Symptom.** A new pool primary (`containarium daemon --pool X --app-hosting --base-domain X.example.com` paired with a `containarium tunnel ... --pool X --public-hostname X.example.com --public-port 443` on the same box) registers cleanly — `/v1/backends` lists it healthy, `/sentinel/primaries` has the right hostname — but `curl https://X.example.com/` fails the TLS handshake:
+
+```
+curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to X.example.com:443
+```
+
+Probing the primary's Caddy directly *on the primary's box* succeeds and serves the right Let's Encrypt cert:
+
+```
+$ echo | openssl s_client -servername X.example.com -connect 127.0.0.1:443
+...
+subject=CN=X.example.com
+issuer=C=US, O=Let's Encrypt, CN=...
+Verify return code: 0 (ok)
+```
+
+So the cert and Caddy are fine — the failure is between sentinel and primary's Caddy.
+
+**Cause.** When the sentinel runs with `--proxy-protocol` (which the prod sentinel does), the SNI router writes a PROXY v2 frame before forwarding the TLS bytes (`internal/sentinel/manager.go`, `buildSNIRoutingHandler` → `writeProxyHeader`). The tunnel client on the primary side forwards the bytes verbatim to `localhost:443`, including the PROXY frame. If the primary's daemon is **not** started with `--proxy-protocol`, its Caddy has no `proxy_protocol` listener_wrapper, interprets the PROXY framing as TLS bytes, and closes the connection. Neither side logs anything useful: the sentinel sees `read 1566 bytes, wrote 0`; the primary's Caddy never logs because TLS handshake never starts.
+
+**Fix.** Start the primary's daemon with `--proxy-protocol --proxy-protocol-trusted=127.0.0.0/8`. The tunnel client's local connection is on loopback, so trusting `127.0.0.0/8` is correct and tight. In systemd:
+
+```ini
+# /etc/systemd/system/containarium.service.d/override.conf
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/containarium daemon --pool X --rest --jwt-secret-file /etc/containarium/jwt.secret \
+  --app-hosting --base-domain X.example.com \
+  --proxy-protocol --proxy-protocol-trusted=127.0.0.0/8
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart containarium.service
+```
+
+Successful startup logs:
+
+```
+Caddy listener_wrappers: PROXY v2 enabled, trusted=[127.0.0.0/8]
+[L4ProxyManager] PROXY protocol configured (allow=[127.0.0.0/8]); ...
+Management route ensured: X.example.com -> <primary-ip>:8080
+```
+
+After restart, `curl https://X.example.com/` should return HTTP 404 (daemon's "no app for /" passthrough) within a second, served with the real Let's Encrypt cert.
+
+**Why this trap exists.** The sentinel-side PROXY flag is per-deployment policy; the primary-side flag is per-primary configuration. There is no handshake between them that detects mismatch, so the first request silently fails. Until that's fixed in code, every tunnel-promoted primary stood up against a PROXY-enabled sentinel needs the matching flag.
+
+### `Failed to ensure Caddy server config: ... 409 key already exists: http` on every daemon startup
+
+**Symptom.** `journalctl -u containarium.service` shows this warning every time the daemon starts; subsequent daemon-driven Caddy updates appear to do nothing.
+
+**Cause.** Bug in `ProxyManager.ensureHTTPApp` before v0.16.6 — strict-decoded the Caddy config into a typed struct that transitively held an interface slice. `encoding/json` cannot decode into interfaces, so the decode failed, the code fell through to a PUT that 409'd because the http app already existed, and `EnsureServerConfig` returned an error. The daemon kept running, but updates that assumed `EnsureServerConfig` had succeeded were silently lost.
+
+**Fix.** Upgrade to v0.16.6 or later. The fix is in [#157](https://github.com/FootprintAI/Containarium/pull/157).
+
 ## History
 
 | PR | Summary |
