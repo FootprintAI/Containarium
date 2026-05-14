@@ -152,6 +152,45 @@ service ContainerService {
     };
   }
 
+  // MoveContainer migrates a container from the local daemon (source)
+  // to a peer daemon (target) using pre-copy snapshot + delta refresh.
+  // Three phases: (1) initial snapshot copy while source keeps running,
+  // (2) iterative delta refreshes to shrink the dirty set, (3) brief
+  // stop + final delta + start-on-target + route swap. Downtime is
+  // sub-second on quiet workloads with ZFS/btrfs storage; minutes
+  // for active workloads on dir-pool. Prereq: incus remotes
+  // configured both ways between the source and target VMs.
+  rpc MoveContainer(MoveContainerRequest) returns (MoveContainerResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/move"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Migrate container to peer daemon";
+      description: "Pre-copy snapshot-based migration to a peer daemon. Sub-second downtime on ZFS/btrfs storage with low write rate; up to minutes on dir-pool or active workloads. Caller must have incus remotes configured both directions between the source and target hosts.";
+      tags: "Container Operations";
+    };
+  }
+
+  // AdoptMigratedContainer is the destination-side helper RPC called by
+  // a peer's MoveContainer after `incus copy` has pushed the LXC to
+  // this daemon. It registers the container with this daemon's state
+  // (host user, route record at the new IP) so the LXC is fully
+  // operational under Containarium's API surface, then returns the
+  // container's new local IP for the caller to wire into the route
+  // store cutover. Internal use only — operators don't call this.
+  rpc AdoptMigratedContainer(AdoptMigratedContainerRequest) returns (AdoptMigratedContainerResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/adopt"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Adopt a migrated container (internal)";
+      description: "Called by the source daemon during MoveContainer after the LXC has been Incus-copied to this host. Registers the container's host-side accounts and route record so it's fully under Containarium's control. Not intended for direct operator use.";
+      tags: "Container Operations";
+    };
+  }
+
   // AddSSHKey adds an SSH public key to a container
   rpc AddSSHKey(AddSSHKeyRequest) returns (AddSSHKeyResponse) {
     option (google.api.http) = {

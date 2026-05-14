@@ -618,3 +618,91 @@ message GetMonitoringInfoResponse {
   // Victoria Metrics URL for metrics API
   string victoria_metrics_url = 3;
 }
+
+// MoveContainerRequest is the source-side request to migrate a
+// container to a peer daemon.
+message MoveContainerRequest {
+  // Username of the container to move (required). Must exist on the
+  // local daemon — moving a container the caller doesn't own returns
+  // PermissionDenied.
+  string username = 1;
+
+  // Target backend ID — the peer daemon to migrate to. Must appear in
+  // the source daemon's PeerPool. Trying to move to the local backend
+  // is a no-op error.
+  string target_backend_id = 2;
+
+  // Maximum pre-copy delta iterations before forcing the cutover.
+  // Each iteration copies the delta since the previous snapshot; with
+  // each iteration the dirty set should shrink, reducing the final
+  // cutover downtime. Range [0, 10]. Zero disables iterative delta
+  // and goes straight to stop + full copy. Default 3.
+  int32 max_iterations = 3;
+
+  // If a delta iteration completes in less than this many seconds,
+  // the caller decides the dirty set is small enough — skip remaining
+  // iterations and go straight to cutover. Range [1, 60]. Default 5.
+  int32 delta_threshold_seconds = 4;
+
+  // When true, attempt CRIU-based live migration via `incus move
+  // --stateful` — preserves process memory state and open sockets,
+  // sub-second downtime even on active workloads. Requires CRIU
+  // installed on both source and target, and is not supported for
+  // containers running podman/docker-in-LXC. Defaults to false
+  // (stop-and-copy) which is more reliable.
+  bool stateful = 5;
+}
+
+// MoveContainerResponse summarizes the migration outcome.
+message MoveContainerResponse {
+  // Human-readable success message.
+  string message = 1;
+
+  // The container's new IP address on the target daemon, after start.
+  string new_ip_address = 2;
+
+  // Backend the container now lives on (target_backend_id from req).
+  string target_backend_id = 3;
+
+  // Total iterations performed (initial copy + N deltas + final).
+  // Helpful for tuning max_iterations on subsequent moves of similar
+  // workloads.
+  int32 iterations_run = 4;
+
+  // Total wall-clock seconds the container was unreachable during the
+  // cutover (between stop on source and start on target with route
+  // updated). With pre-copy + ZFS this should be < 5s; on dir-pool or
+  // active workloads it may be tens of seconds. -1 if stateful=true
+  // succeeded and there was no observable downtime.
+  int32 downtime_seconds = 5;
+}
+
+// AdoptMigratedContainerRequest is sent by the source daemon's
+// MoveContainer to the destination daemon AFTER `incus copy` has
+// completed and the LXC exists on the destination's incusd. The
+// destination then registers the container with its own Containarium
+// state (host user account, route record at the new IP).
+//
+// Internal use only — exposed via REST for daemon-to-daemon coordination
+// over the same PeerPool channel used by other forwarding RPCs.
+message AdoptMigratedContainerRequest {
+  // Username of the migrated container.
+  string username = 1;
+
+  // The source daemon's record of which routes belonged to this
+  // container, so the destination can recreate them at its own
+  // container IP. Each entry is "<full-domain>|<port>|<protocol>".
+  // Empty for stateless containers with no exposed ports.
+  repeated string source_routes = 2;
+}
+
+// AdoptMigratedContainerResponse confirms the destination registered
+// the container and returns its IP for the source's route swap.
+message AdoptMigratedContainerResponse {
+  // Success message.
+  string message = 1;
+
+  // The migrated container's new IP address on the destination's
+  // incusbr0. The source uses this for the final route store update.
+  string new_ip_address = 2;
+}

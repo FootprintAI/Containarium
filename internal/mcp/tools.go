@@ -236,6 +236,47 @@ func (s *Server) registerTools() {
 			Handler: handleDebugContainer,
 		},
 		{
+			Name: "move_container",
+			Description: "Migrate a container from this daemon to a peer daemon using " +
+				"pre-copy snapshot + delta refresh. The container's hostname, ACME cert, " +
+				"persistent disk state, and user accounts all transfer. Process memory " +
+				"state is NOT preserved (use stateful=true if CRIU is configured on " +
+				"both ends, which is rare in practice).\n\n" +
+				"Downtime is sub-second on ZFS/btrfs storage with low write rate; " +
+				"potentially minutes on dir-pool or highly active workloads. The route " +
+				"store target_ip swap propagates to Caddy within ~5 seconds.\n\n" +
+				"Prereqs: the target backend must be visible in /v1/backends, and the " +
+				"source's incusd must have the target configured as an `incus remote` " +
+				"(remote name == target_backend_id by convention).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container to migrate",
+					},
+					"target_backend_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Backend ID of the destination daemon (look it up in list_backends)",
+					},
+					"max_iterations": map[string]interface{}{
+						"type":        "integer",
+						"description": "Max delta-refresh iterations [0..10], default 3. Each iteration shrinks the dirty set; lower = faster migration but bigger final delta.",
+					},
+					"delta_threshold_seconds": map[string]interface{}{
+						"type":        "integer",
+						"description": "If a delta iteration completes in less than this many seconds, skip remaining iterations and cut over. Default 5.",
+					},
+					"stateful": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Attempt CRIU-based live migration (preserves process state). Requires CRIU on both ends, doesn't work with podman/docker-in-LXC. Default false.",
+					},
+				},
+				"required": []string{"username", "target_backend_id"},
+			},
+			Handler: handleMoveContainer,
+		},
+		{
 			Name:        "delete_container",
 			Description: "Delete a container permanently",
 			InputSchema: map[string]interface{}{

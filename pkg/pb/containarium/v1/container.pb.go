@@ -3087,6 +3087,314 @@ func (x *GetMonitoringInfoResponse) GetVictoriaMetricsUrl() string {
 	return ""
 }
 
+// MoveContainerRequest is the source-side request to migrate a
+// container to a peer daemon.
+type MoveContainerRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Username of the container to move (required). Must exist on the
+	// local daemon — moving a container the caller doesn't own returns
+	// PermissionDenied.
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// Target backend ID — the peer daemon to migrate to. Must appear in
+	// the source daemon's PeerPool. Trying to move to the local backend
+	// is a no-op error.
+	TargetBackendId string `protobuf:"bytes,2,opt,name=target_backend_id,json=targetBackendId,proto3" json:"target_backend_id,omitempty"`
+	// Maximum pre-copy delta iterations before forcing the cutover.
+	// Each iteration copies the delta since the previous snapshot; with
+	// each iteration the dirty set should shrink, reducing the final
+	// cutover downtime. Range [0, 10]. Zero disables iterative delta
+	// and goes straight to stop + full copy. Default 3.
+	MaxIterations int32 `protobuf:"varint,3,opt,name=max_iterations,json=maxIterations,proto3" json:"max_iterations,omitempty"`
+	// If a delta iteration completes in less than this many seconds,
+	// the caller decides the dirty set is small enough — skip remaining
+	// iterations and go straight to cutover. Range [1, 60]. Default 5.
+	DeltaThresholdSeconds int32 `protobuf:"varint,4,opt,name=delta_threshold_seconds,json=deltaThresholdSeconds,proto3" json:"delta_threshold_seconds,omitempty"`
+	// When true, attempt CRIU-based live migration via `incus move
+	// --stateful` — preserves process memory state and open sockets,
+	// sub-second downtime even on active workloads. Requires CRIU
+	// installed on both source and target, and is not supported for
+	// containers running podman/docker-in-LXC. Defaults to false
+	// (stop-and-copy) which is more reliable.
+	Stateful      bool `protobuf:"varint,5,opt,name=stateful,proto3" json:"stateful,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MoveContainerRequest) Reset() {
+	*x = MoveContainerRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MoveContainerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MoveContainerRequest) ProtoMessage() {}
+
+func (x *MoveContainerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MoveContainerRequest.ProtoReflect.Descriptor instead.
+func (*MoveContainerRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *MoveContainerRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *MoveContainerRequest) GetTargetBackendId() string {
+	if x != nil {
+		return x.TargetBackendId
+	}
+	return ""
+}
+
+func (x *MoveContainerRequest) GetMaxIterations() int32 {
+	if x != nil {
+		return x.MaxIterations
+	}
+	return 0
+}
+
+func (x *MoveContainerRequest) GetDeltaThresholdSeconds() int32 {
+	if x != nil {
+		return x.DeltaThresholdSeconds
+	}
+	return 0
+}
+
+func (x *MoveContainerRequest) GetStateful() bool {
+	if x != nil {
+		return x.Stateful
+	}
+	return false
+}
+
+// MoveContainerResponse summarizes the migration outcome.
+type MoveContainerResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Human-readable success message.
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// The container's new IP address on the target daemon, after start.
+	NewIpAddress string `protobuf:"bytes,2,opt,name=new_ip_address,json=newIpAddress,proto3" json:"new_ip_address,omitempty"`
+	// Backend the container now lives on (target_backend_id from req).
+	TargetBackendId string `protobuf:"bytes,3,opt,name=target_backend_id,json=targetBackendId,proto3" json:"target_backend_id,omitempty"`
+	// Total iterations performed (initial copy + N deltas + final).
+	// Helpful for tuning max_iterations on subsequent moves of similar
+	// workloads.
+	IterationsRun int32 `protobuf:"varint,4,opt,name=iterations_run,json=iterationsRun,proto3" json:"iterations_run,omitempty"`
+	// Total wall-clock seconds the container was unreachable during the
+	// cutover (between stop on source and start on target with route
+	// updated). With pre-copy + ZFS this should be < 5s; on dir-pool or
+	// active workloads it may be tens of seconds. -1 if stateful=true
+	// succeeded and there was no observable downtime.
+	DowntimeSeconds int32 `protobuf:"varint,5,opt,name=downtime_seconds,json=downtimeSeconds,proto3" json:"downtime_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *MoveContainerResponse) Reset() {
+	*x = MoveContainerResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MoveContainerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MoveContainerResponse) ProtoMessage() {}
+
+func (x *MoveContainerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MoveContainerResponse.ProtoReflect.Descriptor instead.
+func (*MoveContainerResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *MoveContainerResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *MoveContainerResponse) GetNewIpAddress() string {
+	if x != nil {
+		return x.NewIpAddress
+	}
+	return ""
+}
+
+func (x *MoveContainerResponse) GetTargetBackendId() string {
+	if x != nil {
+		return x.TargetBackendId
+	}
+	return ""
+}
+
+func (x *MoveContainerResponse) GetIterationsRun() int32 {
+	if x != nil {
+		return x.IterationsRun
+	}
+	return 0
+}
+
+func (x *MoveContainerResponse) GetDowntimeSeconds() int32 {
+	if x != nil {
+		return x.DowntimeSeconds
+	}
+	return 0
+}
+
+// AdoptMigratedContainerRequest is sent by the source daemon's
+// MoveContainer to the destination daemon AFTER `incus copy` has
+// completed and the LXC exists on the destination's incusd. The
+// destination then registers the container with its own Containarium
+// state (host user account, route record at the new IP).
+//
+// Internal use only — exposed via REST for daemon-to-daemon coordination
+// over the same PeerPool channel used by other forwarding RPCs.
+type AdoptMigratedContainerRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Username of the migrated container.
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// The source daemon's record of which routes belonged to this
+	// container, so the destination can recreate them at its own
+	// container IP. Each entry is "<full-domain>|<port>|<protocol>".
+	// Empty for stateless containers with no exposed ports.
+	SourceRoutes  []string `protobuf:"bytes,2,rep,name=source_routes,json=sourceRoutes,proto3" json:"source_routes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdoptMigratedContainerRequest) Reset() {
+	*x = AdoptMigratedContainerRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdoptMigratedContainerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdoptMigratedContainerRequest) ProtoMessage() {}
+
+func (x *AdoptMigratedContainerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdoptMigratedContainerRequest.ProtoReflect.Descriptor instead.
+func (*AdoptMigratedContainerRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *AdoptMigratedContainerRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *AdoptMigratedContainerRequest) GetSourceRoutes() []string {
+	if x != nil {
+		return x.SourceRoutes
+	}
+	return nil
+}
+
+// AdoptMigratedContainerResponse confirms the destination registered
+// the container and returns its IP for the source's route swap.
+type AdoptMigratedContainerResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Success message.
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// The migrated container's new IP address on the destination's
+	// incusbr0. The source uses this for the final route store update.
+	NewIpAddress  string `protobuf:"bytes,2,opt,name=new_ip_address,json=newIpAddress,proto3" json:"new_ip_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdoptMigratedContainerResponse) Reset() {
+	*x = AdoptMigratedContainerResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdoptMigratedContainerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdoptMigratedContainerResponse) ProtoMessage() {}
+
+func (x *AdoptMigratedContainerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdoptMigratedContainerResponse.ProtoReflect.Descriptor instead.
+func (*AdoptMigratedContainerResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *AdoptMigratedContainerResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *AdoptMigratedContainerResponse) GetNewIpAddress() string {
+	if x != nil {
+		return x.NewIpAddress
+	}
+	return ""
+}
+
 var file_containarium_v1_container_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.EnumValueOptions)(nil),
@@ -3334,7 +3642,25 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vgrafana_url\x18\x02 \x01(\tR\n" +
 	"grafanaUrl\x120\n" +
-	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl*}\n" +
+	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl\"\xd9\x01\n" +
+	"\x14MoveContainerRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12*\n" +
+	"\x11target_backend_id\x18\x02 \x01(\tR\x0ftargetBackendId\x12%\n" +
+	"\x0emax_iterations\x18\x03 \x01(\x05R\rmaxIterations\x126\n" +
+	"\x17delta_threshold_seconds\x18\x04 \x01(\x05R\x15deltaThresholdSeconds\x12\x1a\n" +
+	"\bstateful\x18\x05 \x01(\bR\bstateful\"\xd5\x01\n" +
+	"\x15MoveContainerResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12$\n" +
+	"\x0enew_ip_address\x18\x02 \x01(\tR\fnewIpAddress\x12*\n" +
+	"\x11target_backend_id\x18\x03 \x01(\tR\x0ftargetBackendId\x12%\n" +
+	"\x0eiterations_run\x18\x04 \x01(\x05R\riterationsRun\x12)\n" +
+	"\x10downtime_seconds\x18\x05 \x01(\x05R\x0fdowntimeSeconds\"`\n" +
+	"\x1dAdoptMigratedContainerRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12#\n" +
+	"\rsource_routes\x18\x02 \x03(\tR\fsourceRoutes\"`\n" +
+	"\x1eAdoptMigratedContainerResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12$\n" +
+	"\x0enew_ip_address\x18\x02 \x01(\tR\fnewIpAddress*}\n" +
 	"\x06OSType\x12\x17\n" +
 	"\x13OS_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13OS_TYPE_UBUNTU_2404\x10\x01\x12\x13\n" +
@@ -3370,74 +3696,78 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
 var file_containarium_v1_container_proto_goTypes = []any{
-	(OSType)(0),                           // 0: containarium.v1.OSType
-	(AccessType)(0),                       // 1: containarium.v1.AccessType
-	(ContainerState)(0),                   // 2: containarium.v1.ContainerState
-	(*ResourceLimits)(nil),                // 3: containarium.v1.ResourceLimits
-	(*NetworkInfo)(nil),                   // 4: containarium.v1.NetworkInfo
-	(*Container)(nil),                     // 5: containarium.v1.Container
-	(*ContainerMetrics)(nil),              // 6: containarium.v1.ContainerMetrics
-	(*CreateContainerRequest)(nil),        // 7: containarium.v1.CreateContainerRequest
-	(*CreateContainerResponse)(nil),       // 8: containarium.v1.CreateContainerResponse
-	(*ListContainersRequest)(nil),         // 9: containarium.v1.ListContainersRequest
-	(*ListContainersResponse)(nil),        // 10: containarium.v1.ListContainersResponse
-	(*GetContainerRequest)(nil),           // 11: containarium.v1.GetContainerRequest
-	(*GetContainerResponse)(nil),          // 12: containarium.v1.GetContainerResponse
-	(*DebugContainerRequest)(nil),         // 13: containarium.v1.DebugContainerRequest
-	(*DebugContainerResponse)(nil),        // 14: containarium.v1.DebugContainerResponse
-	(*DeleteContainerRequest)(nil),        // 15: containarium.v1.DeleteContainerRequest
-	(*DeleteContainerResponse)(nil),       // 16: containarium.v1.DeleteContainerResponse
-	(*StartContainerRequest)(nil),         // 17: containarium.v1.StartContainerRequest
-	(*StartContainerResponse)(nil),        // 18: containarium.v1.StartContainerResponse
-	(*StopContainerRequest)(nil),          // 19: containarium.v1.StopContainerRequest
-	(*StopContainerResponse)(nil),         // 20: containarium.v1.StopContainerResponse
-	(*AddSSHKeyRequest)(nil),              // 21: containarium.v1.AddSSHKeyRequest
-	(*AddSSHKeyResponse)(nil),             // 22: containarium.v1.AddSSHKeyResponse
-	(*RemoveSSHKeyRequest)(nil),           // 23: containarium.v1.RemoveSSHKeyRequest
-	(*RemoveSSHKeyResponse)(nil),          // 24: containarium.v1.RemoveSSHKeyResponse
-	(*GetMetricsRequest)(nil),             // 25: containarium.v1.GetMetricsRequest
-	(*GetMetricsResponse)(nil),            // 26: containarium.v1.GetMetricsResponse
-	(*ResizeContainerRequest)(nil),        // 27: containarium.v1.ResizeContainerRequest
-	(*ResizeContainerResponse)(nil),       // 28: containarium.v1.ResizeContainerResponse
-	(*Collaborator)(nil),                  // 29: containarium.v1.Collaborator
-	(*AddCollaboratorRequest)(nil),        // 30: containarium.v1.AddCollaboratorRequest
-	(*AddCollaboratorResponse)(nil),       // 31: containarium.v1.AddCollaboratorResponse
-	(*RemoveCollaboratorRequest)(nil),     // 32: containarium.v1.RemoveCollaboratorRequest
-	(*RemoveCollaboratorResponse)(nil),    // 33: containarium.v1.RemoveCollaboratorResponse
-	(*ListCollaboratorsRequest)(nil),      // 34: containarium.v1.ListCollaboratorsRequest
-	(*ListCollaboratorsResponse)(nil),     // 35: containarium.v1.ListCollaboratorsResponse
-	(*CleanupDiskRequest)(nil),            // 36: containarium.v1.CleanupDiskRequest
-	(*CleanupDiskResponse)(nil),           // 37: containarium.v1.CleanupDiskResponse
-	(*InstallStackRequest)(nil),           // 38: containarium.v1.InstallStackRequest
-	(*InstallStackResponse)(nil),          // 39: containarium.v1.InstallStackResponse
-	(*StackParameter)(nil),                // 40: containarium.v1.StackParameter
-	(*StackInfo)(nil),                     // 41: containarium.v1.StackInfo
-	(*ListStacksRequest)(nil),             // 42: containarium.v1.ListStacksRequest
-	(*ListStacksResponse)(nil),            // 43: containarium.v1.ListStacksResponse
-	(*GetMonitoringInfoRequest)(nil),      // 44: containarium.v1.GetMonitoringInfoRequest
-	(*GetMonitoringInfoResponse)(nil),     // 45: containarium.v1.GetMonitoringInfoResponse
-	nil,                                   // 46: containarium.v1.Container.LabelsEntry
-	nil,                                   // 47: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                   // 48: containarium.v1.CreateContainerRequest.StackParametersEntry
-	nil,                                   // 49: containarium.v1.ListContainersRequest.LabelFilterEntry
-	(*descriptorpb.EnumValueOptions)(nil), // 50: google.protobuf.EnumValueOptions
+	(OSType)(0),                            // 0: containarium.v1.OSType
+	(AccessType)(0),                        // 1: containarium.v1.AccessType
+	(ContainerState)(0),                    // 2: containarium.v1.ContainerState
+	(*ResourceLimits)(nil),                 // 3: containarium.v1.ResourceLimits
+	(*NetworkInfo)(nil),                    // 4: containarium.v1.NetworkInfo
+	(*Container)(nil),                      // 5: containarium.v1.Container
+	(*ContainerMetrics)(nil),               // 6: containarium.v1.ContainerMetrics
+	(*CreateContainerRequest)(nil),         // 7: containarium.v1.CreateContainerRequest
+	(*CreateContainerResponse)(nil),        // 8: containarium.v1.CreateContainerResponse
+	(*ListContainersRequest)(nil),          // 9: containarium.v1.ListContainersRequest
+	(*ListContainersResponse)(nil),         // 10: containarium.v1.ListContainersResponse
+	(*GetContainerRequest)(nil),            // 11: containarium.v1.GetContainerRequest
+	(*GetContainerResponse)(nil),           // 12: containarium.v1.GetContainerResponse
+	(*DebugContainerRequest)(nil),          // 13: containarium.v1.DebugContainerRequest
+	(*DebugContainerResponse)(nil),         // 14: containarium.v1.DebugContainerResponse
+	(*DeleteContainerRequest)(nil),         // 15: containarium.v1.DeleteContainerRequest
+	(*DeleteContainerResponse)(nil),        // 16: containarium.v1.DeleteContainerResponse
+	(*StartContainerRequest)(nil),          // 17: containarium.v1.StartContainerRequest
+	(*StartContainerResponse)(nil),         // 18: containarium.v1.StartContainerResponse
+	(*StopContainerRequest)(nil),           // 19: containarium.v1.StopContainerRequest
+	(*StopContainerResponse)(nil),          // 20: containarium.v1.StopContainerResponse
+	(*AddSSHKeyRequest)(nil),               // 21: containarium.v1.AddSSHKeyRequest
+	(*AddSSHKeyResponse)(nil),              // 22: containarium.v1.AddSSHKeyResponse
+	(*RemoveSSHKeyRequest)(nil),            // 23: containarium.v1.RemoveSSHKeyRequest
+	(*RemoveSSHKeyResponse)(nil),           // 24: containarium.v1.RemoveSSHKeyResponse
+	(*GetMetricsRequest)(nil),              // 25: containarium.v1.GetMetricsRequest
+	(*GetMetricsResponse)(nil),             // 26: containarium.v1.GetMetricsResponse
+	(*ResizeContainerRequest)(nil),         // 27: containarium.v1.ResizeContainerRequest
+	(*ResizeContainerResponse)(nil),        // 28: containarium.v1.ResizeContainerResponse
+	(*Collaborator)(nil),                   // 29: containarium.v1.Collaborator
+	(*AddCollaboratorRequest)(nil),         // 30: containarium.v1.AddCollaboratorRequest
+	(*AddCollaboratorResponse)(nil),        // 31: containarium.v1.AddCollaboratorResponse
+	(*RemoveCollaboratorRequest)(nil),      // 32: containarium.v1.RemoveCollaboratorRequest
+	(*RemoveCollaboratorResponse)(nil),     // 33: containarium.v1.RemoveCollaboratorResponse
+	(*ListCollaboratorsRequest)(nil),       // 34: containarium.v1.ListCollaboratorsRequest
+	(*ListCollaboratorsResponse)(nil),      // 35: containarium.v1.ListCollaboratorsResponse
+	(*CleanupDiskRequest)(nil),             // 36: containarium.v1.CleanupDiskRequest
+	(*CleanupDiskResponse)(nil),            // 37: containarium.v1.CleanupDiskResponse
+	(*InstallStackRequest)(nil),            // 38: containarium.v1.InstallStackRequest
+	(*InstallStackResponse)(nil),           // 39: containarium.v1.InstallStackResponse
+	(*StackParameter)(nil),                 // 40: containarium.v1.StackParameter
+	(*StackInfo)(nil),                      // 41: containarium.v1.StackInfo
+	(*ListStacksRequest)(nil),              // 42: containarium.v1.ListStacksRequest
+	(*ListStacksResponse)(nil),             // 43: containarium.v1.ListStacksResponse
+	(*GetMonitoringInfoRequest)(nil),       // 44: containarium.v1.GetMonitoringInfoRequest
+	(*GetMonitoringInfoResponse)(nil),      // 45: containarium.v1.GetMonitoringInfoResponse
+	(*MoveContainerRequest)(nil),           // 46: containarium.v1.MoveContainerRequest
+	(*MoveContainerResponse)(nil),          // 47: containarium.v1.MoveContainerResponse
+	(*AdoptMigratedContainerRequest)(nil),  // 48: containarium.v1.AdoptMigratedContainerRequest
+	(*AdoptMigratedContainerResponse)(nil), // 49: containarium.v1.AdoptMigratedContainerResponse
+	nil,                                    // 50: containarium.v1.Container.LabelsEntry
+	nil,                                    // 51: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                    // 52: containarium.v1.CreateContainerRequest.StackParametersEntry
+	nil,                                    // 53: containarium.v1.ListContainersRequest.LabelFilterEntry
+	(*descriptorpb.EnumValueOptions)(nil),  // 54: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
 	2,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
 	3,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
 	4,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	46, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	50, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
 	0,  // 4: containarium.v1.Container.os_type:type_name -> containarium.v1.OSType
 	1,  // 5: containarium.v1.Container.access_type:type_name -> containarium.v1.AccessType
 	3,  // 6: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	47, // 7: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	51, // 7: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
 	0,  // 8: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
-	48, // 9: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
+	52, // 9: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
 	5,  // 10: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
 	2,  // 11: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	49, // 12: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	53, // 12: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
 	5,  // 13: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
 	5,  // 14: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
 	6,  // 15: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
@@ -3451,7 +3781,7 @@ var file_containarium_v1_container_proto_depIdxs = []int32{
 	5,  // 23: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
 	40, // 24: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
 	41, // 25: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
-	50, // 26: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	54, // 26: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
 	27, // [27:27] is the sub-list for method output_type
 	27, // [27:27] is the sub-list for method input_type
 	27, // [27:27] is the sub-list for extension type_name
@@ -3470,7 +3800,7 @@ func file_containarium_v1_container_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   47,
+			NumMessages:   51,
 			NumExtensions: 1,
 			NumServices:   0,
 		},

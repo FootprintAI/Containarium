@@ -1159,6 +1159,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.peerPool.StartDiscovery(ctx)
 		ds.containerServer.SetPeerPool(ds.peerPool)
 
+		// Migration runner: shells out to `incus snapshot/copy/...`.
+		// Only useful in conjunction with peerPool (you can't migrate
+		// to a peer you can't discover), so wire it in the same block.
+		ds.containerServer.SetMigrationRunner(&incus.ExecRunner{})
+
 		// Wire peer pool into traffic server for peer container queries
 		if ds.trafficServer != nil {
 			ds.trafficServer.SetPeerPool(ds.peerPool)

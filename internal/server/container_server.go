@@ -59,6 +59,11 @@ type ContainerServer struct {
 	// owned, so deleting an LXC actually deletes the public hostname too.
 	routeStore           *app.RouteStore
 	proxyManager         *app.ProxyManager
+
+	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
+	// MoveContainer migration flow. Nil on daemons that don't support
+	// migration (MoveContainer returns "not configured" then).
+	moveRunner           incus.MigrationRunner
 	// Guacamole integration for Windows VM RDP access
 	guacamoleClient      *guacamole.Client
 	guacamoleUser        string // Guacamole admin username
@@ -784,6 +789,72 @@ func (s *ContainerServer) ListStacks(ctx context.Context, req *pb.ListStacksRequ
 	}
 
 	return &pb.ListStacksResponse{Stacks: out}, nil
+}
+
+// AdoptMigratedContainer is the destination-side helper called by a
+// peer's MoveContainer after the LXC has been `incus copy`'d to this
+// daemon. The LXC exists on this host's incusd but Containarium
+// doesn't know about it yet — no host user, no shell wrapper, no
+// route record. This RPC fills that in and returns the container's
+// new local IP for the source to use in its route store cutover.
+//
+// Idempotent on retry: if the host user already exists,
+// EnsureJumpServerAccount is a no-op; starting an already-running
+// container is a no-op; etc. So a transient network failure
+// mid-adoption can be safely re-driven.
+func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.AdoptMigratedContainerRequest) (*pb.AdoptMigratedContainerResponse, error) {
+	if req.Username == "" {
+		return nil, fmt.Errorf("username is required")
+	}
+
+	containerName := fmt.Sprintf("%s-container", req.Username)
+
+	// Host-side jump-server account. EnsureJumpServerAccount handles
+	// the idempotent case so re-running this RPC won't error.
+	if err := container.EnsureJumpServerAccount(req.Username); err != nil {
+		return nil, fmt.Errorf("ensure jump server account: %w", err)
+	}
+
+	// Start the container — the source already pushed the LXC's
+	// filesystem state. Idempotent if already running.
+	if s.moveRunner != nil {
+		if err := s.moveRunner.Start(containerName); err != nil {
+			return nil, fmt.Errorf("start adopted container: %w", err)
+		}
+	}
+
+	// Get the new IP. The container manager's Get() reads from incus.
+	info, err := s.manager.Get(req.Username)
+	if err != nil {
+		return nil, fmt.Errorf("get adopted container info: %w", err)
+	}
+	newIP := ""
+	if info != nil {
+		newIP = info.IPAddress
+	}
+	if newIP == "" {
+		return nil, fmt.Errorf("adopted container has no IP address yet (still initializing?)")
+	}
+
+	// Note: we deliberately do NOT create matching route store rows
+	// here. The source-side orchestrator owns the route lifecycle —
+	// it updates the existing route rows' target_ip after we return
+	// the new IP. This keeps the source of truth on one side and
+	// avoids a transient "route exists on both sides at different
+	// IPs" window.
+	//
+	// req.SourceRoutes is accepted (and logged) for forward
+	// compatibility: if a future variant of the protocol wants the
+	// destination to be authoritative over its own route store, the
+	// data is already on the wire.
+	if len(req.SourceRoutes) > 0 {
+		log.Printf("[adopt] %s arriving with %d source routes (source owns the swap)", req.Username, len(req.SourceRoutes))
+	}
+
+	return &pb.AdoptMigratedContainerResponse{
+		Message:      fmt.Sprintf("Container %s adopted, ready at %s", req.Username, newIP),
+		NewIpAddress: newIP,
+	}, nil
 }
 
 // AddSSHKey appends an SSH public key to the user's host-side
