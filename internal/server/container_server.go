@@ -786,7 +786,20 @@ func (s *ContainerServer) ListStacks(ctx context.Context, req *pb.ListStacksRequ
 	return &pb.ListStacksResponse{Stacks: out}, nil
 }
 
-// AddSSHKey adds an SSH key to a container
+// AddSSHKey appends an SSH public key to the user's host-side
+// authorized_keys file (/home/<username>/.ssh/authorized_keys).
+//
+// Scope note: this writes the host-side file, not the LXC-internal
+// one. That's the file sshpiper's keysync (running on the sentinel)
+// reads from via /authorized-keys to authenticate inbound SSH. Adding
+// only inside the LXC would not let anyone SSH in via the sentinel.
+//
+// The intended use case is recovery after a lost ephemeral key: an
+// agent or operator generates a fresh keypair locally, calls this RPC
+// with the public half, and within ~2 minutes (next sentinel keysync
+// tick) the new key is live for SSH access.
+//
+// Idempotent — a key already present is a no-op success.
 func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyRequest) (*pb.AddSSHKeyResponse, error) {
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
@@ -795,11 +808,26 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 		return nil, fmt.Errorf("ssh_public_key is required")
 	}
 
-	// TODO: Implement SSH key management
-	return nil, fmt.Errorf("not implemented yet")
+	if err := container.AddAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
+		return nil, fmt.Errorf("add authorized key: %w", err)
+	}
+
+	total, err := container.CountAuthorizedKeys(req.Username)
+	if err != nil {
+		// Counting failed but the add succeeded — return success with
+		// zero so the caller still knows the add went through.
+		log.Printf("[add-ssh-key] count after add failed for %s: %v", req.Username, err)
+		total = 0
+	}
+
+	return &pb.AddSSHKeyResponse{
+		Message:   fmt.Sprintf("SSH key added for %s (sentinel keysync will propagate within ~2m)", req.Username),
+		TotalKeys: total,
+	}, nil
 }
 
-// RemoveSSHKey removes an SSH key from a container
+// RemoveSSHKey removes a specific SSH public key from the user's
+// host-side authorized_keys file. No-op if the key isn't present.
 func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKeyRequest) (*pb.RemoveSSHKeyResponse, error) {
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
@@ -808,8 +836,20 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		return nil, fmt.Errorf("ssh_public_key is required")
 	}
 
-	// TODO: Implement SSH key management
-	return nil, fmt.Errorf("not implemented yet")
+	if err := container.RemoveAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
+		return nil, fmt.Errorf("remove authorized key: %w", err)
+	}
+
+	total, err := container.CountAuthorizedKeys(req.Username)
+	if err != nil {
+		log.Printf("[remove-ssh-key] count after remove failed for %s: %v", req.Username, err)
+		total = 0
+	}
+
+	return &pb.RemoveSSHKeyResponse{
+		Message:   fmt.Sprintf("SSH key removed for %s", req.Username),
+		TotalKeys: total,
+	}, nil
 }
 
 // GetMetrics gets runtime metrics for containers

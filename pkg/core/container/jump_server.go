@@ -923,3 +923,201 @@ func disableGuestAgentAccountsDaemon(configPath string, _ bool) error {
 
 	return nil
 }
+
+// authorizedKeysHomeRoot is the host's home-directory root. Overridable
+// in tests so the authorized_keys helpers don't touch the real /home.
+// Production callers should never set this — they want /home.
+var authorizedKeysHomeRoot = "/home"
+
+// authorizedKeysUserExists wraps userExists so tests can opt out of the
+// "is this username a real host user?" check (test-side users don't
+// exist in the OS's passwd database). Production stays bound to
+// userExists — invalid usernames should be rejected.
+var authorizedKeysUserExists = userExists
+
+// AddAuthorizedKey appends a single SSH public key to the host-side
+// /home/<username>/.ssh/authorized_keys, creating the directory + file
+// with correct ownership and 0600 mode if missing. Idempotent —
+// returns nil without changes if the exact key is already present.
+//
+// Scope note: this writes the HOST-side keys file (consumed by the
+// sentinel's sshpiper keysync via /authorized-keys), not the
+// container-internal authorized_keys. For the demo / prod sshpiper
+// architecture, that's the right scope — sshpiper terminates the
+// client SSH session at the sentinel using these keys, then opens a
+// downstream connection to the backend host using its own upstream
+// key. Adding to the container-internal file would have no effect on
+// who can SSH in via sshpiper.
+func AddAuthorizedKey(username, pubKey string) error {
+	if !isValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
+	pubKey = strings.TrimSpace(pubKey)
+	if pubKey == "" {
+		return fmt.Errorf("empty public key")
+	}
+	if err := ValidateSSHPublicKey(pubKey); err != nil {
+		return fmt.Errorf("invalid public key: %w", err)
+	}
+	if !authorizedKeysUserExists(username) {
+		return fmt.Errorf("host user %q does not exist (was the container created?)", username)
+	}
+
+	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
+	akPath := filepath.Join(sshDir, "authorized_keys")
+
+	// Ensure .ssh exists with 0700.
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", sshDir, err)
+	}
+
+	// Read existing content (file may not exist yet).
+	var existing []byte
+	if b, err := os.ReadFile(akPath); err == nil {
+		existing = b
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", akPath, err)
+	}
+
+	// Idempotency: skip if exact key is already a line.
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == pubKey {
+			return nil
+		}
+	}
+
+	// Append + ensure trailing newline.
+	var buf strings.Builder
+	buf.Write(existing)
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		buf.WriteString("\n")
+	}
+	buf.WriteString(pubKey)
+	buf.WriteString("\n")
+
+	// Atomic write: temp file in same dir + rename.
+	tmp, err := os.CreateTemp(sshDir, ".authorized_keys.tmp.*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod tmp: %w", err)
+	}
+	if _, err := tmp.WriteString(buf.String()); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, akPath); err != nil {
+		return fmt.Errorf("rename tmp -> %s: %w", akPath, err)
+	}
+
+	// Best-effort chown so sshd reads the file as the user (it normally
+	// does, but if we created the file as root, the ownership matters
+	// for some configurations). Errors are non-fatal — sshd reads as
+	// root and the mode is 0600, so the worst case is a slightly
+	// surprising owner the operator may want to fix manually.
+	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
+
+	return nil
+}
+
+// RemoveAuthorizedKey strips a single SSH public key from the host-side
+// /home/<username>/.ssh/authorized_keys. No-op (returns nil) if the
+// key isn't there. Pairs with AddAuthorizedKey for the
+// container-server's add/remove RPCs.
+func RemoveAuthorizedKey(username, pubKey string) error {
+	if !isValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
+	pubKey = strings.TrimSpace(pubKey)
+	if pubKey == "" {
+		return fmt.Errorf("empty public key")
+	}
+	if !authorizedKeysUserExists(username) {
+		return fmt.Errorf("host user %q does not exist", username)
+	}
+
+	akPath := filepath.Join(authorizedKeysHomeRoot, username, ".ssh", "authorized_keys")
+	existing, err := os.ReadFile(akPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", akPath, err)
+	}
+
+	var out strings.Builder
+	changed := false
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == pubKey {
+			changed = true
+			continue
+		}
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
+	if !changed {
+		return nil
+	}
+
+	// Trim the extra trailing newline our reconstruction adds when the
+	// input had no terminating newline. Easier than tracking it.
+	result := strings.TrimRight(out.String(), "\n") + "\n"
+	if strings.TrimSpace(result) == "" {
+		result = ""
+	}
+
+	sshDir := filepath.Dir(akPath)
+	tmp, err := os.CreateTemp(sshDir, ".authorized_keys.tmp.*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod tmp: %w", err)
+	}
+	if _, err := tmp.WriteString(result); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, akPath); err != nil {
+		return fmt.Errorf("rename tmp -> %s: %w", akPath, err)
+	}
+	return nil
+}
+
+// CountAuthorizedKeys returns how many non-empty lines are in the
+// host-side authorized_keys file for the user. Used by AddSSHKeyResponse
+// so the caller can show "you now have N keys" feedback.
+func CountAuthorizedKeys(username string) (int32, error) {
+	if !isValidUsername(username) {
+		return 0, fmt.Errorf("invalid username: %s", username)
+	}
+	akPath := filepath.Join(authorizedKeysHomeRoot, username, ".ssh", "authorized_keys")
+	b, err := os.ReadFile(akPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read %s: %w", akPath, err)
+	}
+	n := int32(0)
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n, nil
+}
