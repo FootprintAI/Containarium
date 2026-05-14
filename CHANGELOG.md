@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.8] - 2026-05-14
+
+This release is a punch-list of robustness fixes — six bug fixes / small features that collectively close several silent-failure modes in the container lifecycle, MCP surface, and telemetry path. Everything in here came out of yesterday's demo-recording session and the cleanup that followed; each item was reproduced live before being fixed.
+
+### Fixed
+
+- **`--network=host` for rootless podman in `app deploy`** ([#166](https://github.com/FootprintAI/Containarium/pull/166)) — `runContainer` switched from `-p <port>:<port>` to `--network=host`. Rootless podman publishes `-p` ports only in the user's slirp4netns namespace, invisible to the LXC's main netns where Caddy lives, producing 502s on the public hostname. `--network=host` makes the bound port reachable on the LXC's eth0 directly. Trade-off: one-app-per-LXC port isolation, which matches Containarium's actual deployment model.
+
+- **`DeleteContainer` cascade cleanup** ([#167](https://github.com/FootprintAI/Containarium/pull/167)) — deleting a container used to remove the LXC and leave six other resources orphaned: route store row, Caddy srv0 route (resurrected by `RouteSyncJob`'s 5s tick), Caddy TLS automation subject, host-side Linux user account, `/home/<user>` dir, and the sshpiper entry (auto-reaped). The cascade now runs inside `DeleteContainer`: route store first (so the sync job doesn't fight it), then TLS subject, then `userdel --remove`. sshpiper config reaps on the next keysync (2 min). Closes the "public hostname still 502s after delete" bug.
+
+- **`AddSSHKey` / `RemoveSSHKey` RPCs no longer return "not implemented yet"** ([#168](https://github.com/FootprintAI/Containarium/pull/168)) — the proto declared `POST /v1/containers/{username}/ssh-keys` and `DELETE /v1/containers/{username}/ssh-keys/{ssh_public_key}` and both returned 500. The intended recovery path when an ephemeral key was lost (generate new key, POST the public half, ssh in) was unreachable. New helpers in `pkg/core/container` write the host-side `/home/<user>/.ssh/authorized_keys` atomically (temp + rename, 0600 mode, idempotent). Sentinel keysync propagates the new key within ~2 minutes.
+
+- **MCP tool error surfacing** ([#157, prior release](https://github.com/FootprintAI/Containarium/pull/157)) — task #62 was already shipped; bookkeeping closed it this release. Tool execution errors now appear in both `message` and `data` fields of the JSON-RPC error response so clients that render only the top-level `message` field (Claude Code) see the actual diagnostic instead of a generic "Tool execution failed."
+
+- **Conntrack event channel no longer saturates** ([#170](https://github.com/FootprintAI/Containarium/pull/170)) — the Linux conntrack monitor was subscribing to NEW + UPDATE + DESTROY groups. The kernel emits UPDATE events ~1Hz per active connection plus on every TCP state transition, so even tens of connections produce thousands of events per second, filling the 8192-buffered channel within seconds. Now subscribes only to NEW + DESTROY — interim byte counts come from `Snapshot()` on demand, final byte counts arrive with DESTROY. ~100x reduction in event volume.
+
+### Added
+
+- **`CONTAINARIUM_JWT_TOKEN_FILE` for restart-free token rotation** ([#169](https://github.com/FootprintAI/Containarium/pull/169)) — alternative to `CONTAINARIUM_JWT_TOKEN`. When set, the MCP server's Client re-reads the file on every API request, so rotating the token is `mv newtoken oldpath` — no MCP process restart required. Empty/missing file surfaces a pre-flight error rather than sending an empty Bearer to the server. Long-running MCP clients (Claude Code, Cursor, etc.) now survive operator-side token rotation without manual intervention.
+
 ## [0.16.7] - 2026-05-14
 
 ### Fixed
