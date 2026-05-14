@@ -46,12 +46,30 @@ func NewConntrackMonitor() (ConntrackMonitor, error) {
 	return m, nil
 }
 
-// listen subscribes to conntrack events via netlink
+// listen subscribes to conntrack events via netlink.
+//
+// We deliberately skip GroupCTUpdate. The kernel emits UPDATE events
+// for every accounting tick (~1Hz per active connection) and every TCP
+// state transition (SYN → ESTABLISHED → CLOSE_WAIT → ...), so a single
+// long-lived connection can generate tens to hundreds of events. On a
+// lab box with low flow count we still saw the 8192-buffered event
+// channel saturate from update floods alone — verified during the
+// daemon-on-lab investigation on 2026-05-13 (#63).
+//
+// The downstream collector only really needs to know "connection
+// started" (to attribute it to a container) and "connection ended"
+// (to capture final byte counts for accounting). Interim byte counts
+// for active connections are available via Snapshot() on demand.
+// Skipping UPDATE drops the event volume by ~100x in typical
+// workloads without losing observability.
 func (m *LinuxConntrackMonitor) listen() {
 	evCh := make(chan conntrack.Event, 8192)
 
-	// Subscribe to NEW, UPDATE, DESTROY events using netfilter.GroupsCT
-	errCh, err := m.conn.Listen(evCh, 1, netfilter.GroupsCT)
+	groups := []netfilter.NetlinkGroup{
+		netfilter.GroupCTNew,
+		netfilter.GroupCTDestroy,
+	}
+	errCh, err := m.conn.Listen(evCh, 1, groups)
 	if err != nil {
 		log.Printf("Failed to listen to conntrack events: %v", err)
 		return
