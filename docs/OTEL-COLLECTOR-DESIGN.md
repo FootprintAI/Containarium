@@ -1,6 +1,6 @@
 # Application OpenTelemetry collection — design
 
-**Status:** Draft
+**Status:** Approved
 **Last updated:** 2026-05-14
 **Related:** [`internal/metrics/otel.go`](../internal/metrics/otel.go) (daemon-side metrics this design extends), [`docs/MULTI-POOL.md`](MULTI-POOL.md) (multi-VM aggregation pattern this builds on).
 
@@ -17,6 +17,7 @@ This doc designs a per-container, opt-in path for application-emitted OTel that 
 **Goals**
 
 - Apps inside containers can emit OTel metrics with **zero platform-specific code** — any vanilla OTel SDK call works, env vars do the routing.
+- **Prometheus `/metrics` scrape compatibility** — legacy apps that expose `/metrics` instead of pushing OTLP get scraped by the collector and forwarded to VictoriaMetrics through the same pipeline. No second backend.
 - App-emitted telemetry is a **per-container opt-in feature** — `containarium create alice --monitoring` enables it; the default is off. Tenants choose, operators don't get surprised.
 - Per-container attribution is **enforced at the collector**, not trusted from the client (a misbehaving container can't claim `container.id=other-tenant`).
 - Failure modes are bounded — a downed collector or a misbehaving app does not affect other tenants or the platform daemon.
@@ -24,7 +25,7 @@ This doc designs a per-container, opt-in path for application-emitted OTel that 
 
 **Non-goals (for v1)**
 
-- Tracing and logs storage backends (Tempo, Loki) — proto/wire path is there; backends added when an actual user asks.
+- **Tracing and logs — no receivers, no pipelines, no backends.** The collector config declares only `metrics` pipelines. Tempo / Loki / the trace+log OTLP receivers are all deferred to v2 (see "v2 TODO" below). Apps that emit traces via `OTEL_EXPORTER_OTLP_ENDPOINT` will get `404` from the collector — that's fine, the SDK buffers + drops without crashing the app.
 - Operator-tunable per-tenant rate limits / quotas (the cardinality guard is the only protection in v1).
 - Cross-VM metric query federation beyond what PeerPool already does for daemon metrics.
 - Hosted "Containarium-managed" external endpoint — everything stays inside the VM.
@@ -134,6 +135,21 @@ receivers:
       http:        # :4318
       grpc:        # :4317
 
+  # Prometheus scrape compatibility for legacy apps that expose
+  # /metrics instead of pushing OTLP. The daemon writes the target
+  # list (every monitoring=true container's :<scrape-port>/metrics
+  # endpoint, populated from a per-container annotation) and the
+  # collector reloads via filewatcher. The same anti-spoofing rule
+  # applies: container.id is rewritten from the source IP, not
+  # trusted from the metric labels. Off when the target list is
+  # empty (no scrape-enabled containers).
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: containarium-apps
+          file_sd_configs:
+            - files: [/var/lib/containarium/prometheus_targets.json]
+
 processors:
   # Anti-spoofing: regardless of what container.id the client claimed,
   # rewrite it from the source IP. iptables + bridge guarantee the
@@ -168,9 +184,13 @@ exporters:
 service:
   pipelines:
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, prometheus]
       processors: [attributes/identity, transform, batch]
       exporters: [otlphttp]
+    # NO traces or logs pipelines in v1. Apps emitting OTLP traces
+    # / logs to this endpoint will get 404 — SDK buffers and drops
+    # without crashing the app. v2 will add the receivers + Tempo
+    # / Loki exporters.
 ```
 
 **Provisioning.** Add a new entry to the daemon's core-services bring-up (same place `containarium-core-victoriametrics` lives today). Same lifecycle as the existing core containers — created once at first `--app-hosting` startup, idempotent on re-run.
@@ -244,13 +264,27 @@ Ping-pong migration (A → B → A) re-stamps with the current VM's collector IP
 - **Integration (spoof):** emit OTLP with `container.id=other-tenant`; verify the collector overwrites to the real source.
 - **Integration (migration):** `MoveContainer` a `monitoring=true` container from VM1 → VM2; verify env vars now point at VM2's collector; verify metrics emitted post-migration land in VM2's VictoriaMetrics, not VM1's.
 
-## Open questions for decision
+## Resolved decisions
 
-1. **Default value of `--monitoring`.** Off matches the spirit of "platform doesn't move data unless told to" and avoids privacy surprise. Operators wanting blanket-enable can pass `--default-monitoring=true` to the daemon to flip the default. Recommendation: `false`. Pending decision.
-2. **Static IP range for the collector container.** Convention is to let Incus DHCP-assign and pin. Need to confirm Incus's static-IP reservation behaves cleanly in our incusbr0 setup.
-3. **Accept Prometheus `/metrics` scrape too?** Some legacy apps don't speak OTLP. Adding a `prometheus` receiver is one config line and a list of scrape targets. Mild bloat but probably worth it for compatibility.
-4. **PII at the cardinality-guard layer** — drop `user_email` by default? It's the most common PII label that ends up in metrics. Defensible default but opinionated. The current draft drops it.
-5. **Trace/log path placeholders** — should v1 ship the collector config with `traces` and `logs` pipelines already declared but with no exporters, so adding Tempo/Loki later is one-line? Or wait until those backends are actually wanted?
+| # | Decision | Rationale |
+|---|---|---|
+| 1 | `--monitoring` defaults to **`false`** (per-container opt-in). Operators wanting blanket-enable can pass `--default-monitoring=true` to the daemon to flip the default. | "Platform doesn't move data unless told to." Avoids surprise telemetry from prototype workloads. |
+| 2 | Collector container uses **Incus DHCP-assigned IP, pinned** via Incus's static-reservation feature. Verified in v1 install script. | Stable target for env-var injection across VM restarts; no manual IP allocation. |
+| 3 | **Prometheus `/metrics` scrape compatibility is in v1.** The collector config declares a `prometheus` receiver that file-discovers targets from `/var/lib/containarium/prometheus_targets.json`. | Legacy apps that expose `/metrics` instead of pushing OTLP work without app-side changes. Adding the receiver is cheap. |
+| 4 | **PII labels are dropped by default** at the cardinality-guard layer. Default drop-list: `request_id`, `trace_id`, `user_email`, `session_id`, `correlation_id`. Operators can extend or override via `--otel-drop-labels=...`. | Defensible defaults beat permissive defaults for tenant data flowing through shared infra. |
+| 5 | **v1 ships metrics only — no trace/log pipelines, even as placeholders.** Empty pipeline scaffolding would still require explainer code paths in the collector. Cleaner to add the receivers + Tempo/Loki exporters together when v2 picks them up. | Smaller v1 surface; v2 doesn't inherit broken half-built pipelines. |
+
+## v2 TODO
+
+When a real user needs them, layer these on:
+
+- **Traces pipeline** — add `otlp` traces receiver to the collector config; add Tempo container as a new core-services entry; add `otlphttp` traces exporter targeting Tempo. ~1 day.
+- **Logs pipeline** — same shape: add `otlp` logs receiver; add Loki container; add `otlphttp` logs exporter. (Or use Vector/Fluent Bit for log shipping if Loki proves heavy.) ~1 day.
+- **Per-tenant rate limits / quotas** — extend the cardinality guard with a `limit` processor keyed on `container.id`. Operators set per-tenant ingestion budgets. ~1 day.
+- **`ToggleMonitoring` RPC** — live-enable / live-disable on an existing container without recreate. Requires an env-var update + container restart. ~½ day.
+- **Cross-VM Grafana data source federation** — query unified view across all peer VMs without each one needing its own dashboard URL. Reuses PeerPool. ~1-2 days.
+
+These are tracked in the project task list; this doc gets a follow-up edit when any of them ship.
 
 ## Phased rollout
 
@@ -271,3 +305,4 @@ Ping-pong migration (A → B → A) re-stamps with the current VM's collector IP
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-14 | hsinhoyeh, drafted in chat | Initial draft. v1 design with per-container `--monitoring` opt-in, single-VM collector container, source-IP-based identity attribution, cardinality guard. Status: Draft. |
+| 2026-05-14 | hsinhoyeh | Resolved all 5 open questions: monitoring defaults off, Incus-pinned static IP, Prometheus scrape in v1, PII drop-list default-on, traces/logs deferred to v2 (no placeholders). Status: Draft → Approved. |
