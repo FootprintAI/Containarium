@@ -592,6 +592,13 @@ type CreateContainerRequest struct {
 	Image        string            `json:"image,omitempty"`
 	EnablePodman bool              `json:"enablePodman,omitempty"`
 	GPU          string            `json:"gpu,omitempty"`
+
+	// Monitoring opts the container into application-emitted
+	// OpenTelemetry. When true, the daemon stamps the LXC with
+	// OTEL_EXPORTER_OTLP_ENDPOINT etc., pointing at the core
+	// collector. Default false (opt-in). See
+	// docs/OTEL-COLLECTOR-DESIGN.md for the full design.
+	Monitoring bool `json:"monitoring,omitempty"`
 }
 
 type ResourceLimits struct {

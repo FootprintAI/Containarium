@@ -64,6 +64,15 @@ type ContainerServer struct {
 	// MoveContainer migration flow. Nil on daemons that don't support
 	// migration (MoveContainer returns "not configured" then).
 	moveRunner           incus.MigrationRunner
+
+	// otelCollectorEndpoint is the OTLP/HTTP URL of this daemon's
+	// core OTel collector LXC (e.g. "http://10.0.3.142:4318").
+	// Stamped into containers created with monitoring=true so the
+	// SDK inside ships telemetry without app-side config. Empty
+	// means the daemon was started without OTel app-monitoring
+	// support; create_container with monitoring=true will log a
+	// warning and skip the env-var injection.
+	otelCollectorEndpoint string
 	// Guacamole integration for Windows VM RDP access
 	guacamoleClient      *guacamole.Client
 	guacamoleUser        string // Guacamole admin username
@@ -130,6 +139,16 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		Stack:                  req.Stack,
 		StackParameters:        req.StackParameters,
 		OSType:                 req.OsType,
+		// OTel app-monitoring opt-in. The daemon-level collector
+		// endpoint is configured at startup via --otel-collector-
+		// endpoint (or auto-discovered from the core OTel collector
+		// LXC; configured by DualServer). BackendID lets the
+		// collector tag emissions with the originating VM for
+		// cross-VM Grafana queries. Both are no-ops when
+		// req.Monitoring is false.
+		Monitoring:             req.Monitoring,
+		OTelCollectorEndpoint:  s.otelCollectorEndpoint,
+		BackendID:              s.localBackendID(),
 	}
 
 	// Set resource limits
@@ -815,6 +834,32 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 		return nil, fmt.Errorf("ensure jump server account: %w", err)
 	}
 
+	// OTel env-var re-stamping. If the migrated container had
+	// monitoring=true on the source, the OTEL_* env vars are still
+	// pointing at the SOURCE daemon's collector IP — which is unreachable
+	// (or wrong tenant!) from this destination. Re-stamp them with our
+	// local collector endpoint before starting the container, so the
+	// SDK inside picks up the new endpoint on its first batch flush.
+	//
+	// Reading MonitoringEnabled from the just-arrived LXC's Incus config
+	// is reliable: the env vars themselves are the source of truth, and
+	// `incus copy` preserves them, so if the source had monitoring on,
+	// OTEL_EXPORTER_OTLP_ENDPOINT is non-empty in the destination's
+	// config map right now (just pointing at the wrong place).
+	if s.otelCollectorEndpoint != "" {
+		if info, _ := s.manager.Get(req.Username); info != nil && info.MonitoringEnabled {
+			envVars := container.OTelEnvVarsForMigration(
+				req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint,
+			)
+			for k, v := range envVars {
+				if err := s.manager.SetEnv(containerName, k, v); err != nil {
+					log.Printf("[adopt] failed to re-stamp %s on %s: %v (continuing — partial OTel beats none)", k, containerName, err)
+				}
+			}
+			log.Printf("[adopt] re-stamped OTel env vars on %s for destination collector", containerName)
+		}
+	}
+
 	// Start the container — the source already pushed the LXC's
 	// filesystem state. Idempotent if already running.
 	if s.moveRunner != nil {
@@ -1233,15 +1278,16 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		Network: &pb.NetworkInfo{
 			IpAddress: info.IPAddress,
 		},
-		Labels:        info.Labels,
-		CreatedAt:     info.CreatedAt.Unix(),
-		PodmanEnabled: true,  // TODO: Get from container config
-		Stack:         "",    // TODO: Get from container labels
-		GpuDevice:     info.GPU,
-		BackendId:     info.BackendID,
-		OsType:        osTypeEnum,
-		AccessType:    accessType,
-		RdpAddress:    rdpAddress,
+		Labels:            info.Labels,
+		CreatedAt:         info.CreatedAt.Unix(),
+		PodmanEnabled:     true,  // TODO: Get from container config
+		Stack:             "",    // TODO: Get from container labels
+		GpuDevice:         info.GPU,
+		BackendId:         info.BackendID,
+		OsType:            osTypeEnum,
+		AccessType:        accessType,
+		RdpAddress:        rdpAddress,
+		MonitoringEnabled: info.MonitoringEnabled,
 	}
 }
 
@@ -1269,6 +1315,31 @@ func extractAuthToken(ctx context.Context) string {
 // SetPeerPool sets the peer pool for multi-backend support
 func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 	s.peerPool = pool
+}
+
+// SetOTelCollectorEndpoint wires the OTLP/HTTP URL of this daemon's
+// core OTel collector LXC. Stamped into containers created with
+// monitoring=true. DualServer calls this after the collector
+// container is provisioned (or after looking up its IP if it
+// already exists). Empty string disables app-monitoring injection
+// for new containers — they'll log a warning and skip stamping.
+func (s *ContainerServer) SetOTelCollectorEndpoint(endpoint string) {
+	s.otelCollectorEndpoint = endpoint
+}
+
+// localBackendID returns this daemon's backend ID for stamping into
+// OTEL_RESOURCE_ATTRIBUTES. Falls back to "local" if the peer pool
+// isn't configured (single-host deployments) — that way single-host
+// metrics still have a well-known label rather than an empty string,
+// keeping Grafana queries simpler.
+func (s *ContainerServer) localBackendID() string {
+	if s.peerPool == nil {
+		return "local"
+	}
+	if id := s.peerPool.LocalBackendID(); id != "" {
+		return id
+	}
+	return "local"
 }
 
 // SetRouteCleanupDeps wires the route store + proxy manager so

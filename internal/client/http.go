@@ -208,7 +208,7 @@ func (c *HTTPClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via HTTP
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -225,6 +225,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		"stack":        stack,
 		"gpu":          gpu,
 		"osType":       osType,
+		"monitoring":   monitoring,
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", reqBody)

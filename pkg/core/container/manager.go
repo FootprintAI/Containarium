@@ -42,6 +42,25 @@ type CreateOptions struct {
 	OSType                 pb.OSType // Operating system type for the container
 	OnProvisioning         func()    // Called when container is running but still provisioning (installing packages/stack)
 	RDPPassword            string    // Generated RDP password for Windows VMs (output, set by Create)
+
+	// Monitoring toggles application-emitted OpenTelemetry. When
+	// true, the container is created with OTEL_EXPORTER_OTLP_ENDPOINT
+	// and related env vars pointing at the core OTel collector LXC,
+	// so any OTel SDK inside ships telemetry without app-side config.
+	// Default false; see docs/OTEL-COLLECTOR-DESIGN.md.
+	Monitoring bool
+
+	// OTelCollectorEndpoint is the collector's OTLP/HTTP endpoint
+	// (e.g. "http://10.0.3.142:4318"). Only used when Monitoring=true.
+	// Empty + Monitoring=true is logged as a warning and treated as
+	// "don't inject env vars" — the collector isn't running on this
+	// daemon, so injecting a dead endpoint helps no one.
+	OTelCollectorEndpoint string
+
+	// BackendID is this daemon's backend ID, stamped into
+	// OTEL_RESOURCE_ATTRIBUTES so cross-VM dashboards can filter by
+	// the VM that emitted the metric. Only used when Monitoring=true.
+	BackendID string
 }
 
 // New creates a new container manager backed by a real Incus client.
@@ -89,6 +108,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		EnableNesting:          opts.EnablePodman,
 		EnablePodmanPrivileged: opts.EnablePodmanPrivileged,
 		AutoStart:              opts.AutoStart,
+		Env:                    otelEnvVars(opts, containerName),
 	}
 
 	// Windows VMs: set instance type and enforce minimum resources
@@ -615,6 +635,22 @@ func (m *Manager) List() ([]incus.ContainerInfo, error) {
 }
 
 // Get gets information about a specific container
+// SetEnv sets an environment variable on an existing container.
+// Thin wrapper over the incus client's SetEnv so callers in the
+// internal/server layer don't need to import the incus package
+// directly. Used by AdoptMigratedContainer to re-stamp OTel env
+// vars at the destination's collector IP after a migration.
+func (m *Manager) SetEnv(containerName, key, value string) error {
+	// The Backend interface used in tests doesn't expose SetEnv, so
+	// we type-assert to the concrete client. Tests using the mock
+	// backend won't exercise this path (AdoptMigratedContainer is
+	// not in the unit test surface today).
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.SetEnv(containerName, key, value)
+	}
+	return fmt.Errorf("SetEnv not supported on this incus backend (mock?)")
+}
+
 func (m *Manager) Get(username string) (*incus.ContainerInfo, error) {
 	containerName := username + "-container"
 	return m.incus.GetContainer(containerName)

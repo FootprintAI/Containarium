@@ -144,6 +144,14 @@ message Container {
 
   // RDP connection address (e.g., "10.100.0.50:3389") — populated for Windows VMs
   string rdp_address = 17;
+
+  // Whether application-emitted OpenTelemetry is enabled for this
+  // container (mirrors the --monitoring flag passed at creation).
+  // When true, the LXC has OTEL_EXPORTER_OTLP_ENDPOINT and related
+  // env vars stamped on it. Read-only — set at create time;
+  // changing requires recreate (a ToggleMonitoring RPC may come
+  // later, but doesn't exist in v1).
+  bool monitoring_enabled = 18;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -219,6 +227,17 @@ message CreateContainerRequest {
   // (CONTAINARIUM_STACK_<key>). Set by the web UI's Create Container form
   // based on the selected stack's declared parameters. Optional.
   map<string, string> stack_parameters = 13;
+
+  // Enable application-emitted OpenTelemetry. When true, the daemon
+  // stamps the container with OTEL_EXPORTER_OTLP_ENDPOINT and
+  // related env vars pointing at the core OTel collector, so any
+  // OTel SDK inside the container ships telemetry to the platform's
+  // VictoriaMetrics without app-side configuration. Default false —
+  // opt-in matches the "platform doesn't move data unless told to"
+  // principle and avoids surprise telemetry from prototype
+  // workloads. The daemon's own cgroup-level metrics for the
+  // container are independent of this flag and continue regardless.
+  bool monitoring = 14;
 }
 
 // CreateContainerResponse is the response from creating a container

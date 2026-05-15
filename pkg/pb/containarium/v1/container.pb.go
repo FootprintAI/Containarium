@@ -383,9 +383,16 @@ type Container struct {
 	// How to connect to this instance (SSH for Linux, RDP for Windows)
 	AccessType AccessType `protobuf:"varint,16,opt,name=access_type,json=accessType,proto3,enum=containarium.v1.AccessType" json:"access_type,omitempty"`
 	// RDP connection address (e.g., "10.100.0.50:3389") — populated for Windows VMs
-	RdpAddress    string `protobuf:"bytes,17,opt,name=rdp_address,json=rdpAddress,proto3" json:"rdp_address,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RdpAddress string `protobuf:"bytes,17,opt,name=rdp_address,json=rdpAddress,proto3" json:"rdp_address,omitempty"`
+	// Whether application-emitted OpenTelemetry is enabled for this
+	// container (mirrors the --monitoring flag passed at creation).
+	// When true, the LXC has OTEL_EXPORTER_OTLP_ENDPOINT and related
+	// env vars stamped on it. Read-only — set at create time;
+	// changing requires recreate (a ToggleMonitoring RPC may come
+	// later, but doesn't exist in v1).
+	MonitoringEnabled bool `protobuf:"varint,18,opt,name=monitoring_enabled,json=monitoringEnabled,proto3" json:"monitoring_enabled,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Container) Reset() {
@@ -537,6 +544,13 @@ func (x *Container) GetRdpAddress() string {
 	return ""
 }
 
+func (x *Container) GetMonitoringEnabled() bool {
+	if x != nil {
+		return x.MonitoringEnabled
+	}
+	return false
+}
+
 // ContainerMetrics contains runtime metrics for a container
 type ContainerMetrics struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -681,8 +695,18 @@ type CreateContainerRequest struct {
 	// (CONTAINARIUM_STACK_<key>). Set by the web UI's Create Container form
 	// based on the selected stack's declared parameters. Optional.
 	StackParameters map[string]string `protobuf:"bytes,13,rep,name=stack_parameters,json=stackParameters,proto3" json:"stack_parameters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Enable application-emitted OpenTelemetry. When true, the daemon
+	// stamps the container with OTEL_EXPORTER_OTLP_ENDPOINT and
+	// related env vars pointing at the core OTel collector, so any
+	// OTel SDK inside the container ships telemetry to the platform's
+	// VictoriaMetrics without app-side configuration. Default false —
+	// opt-in matches the "platform doesn't move data unless told to"
+	// principle and avoids surprise telemetry from prototype
+	// workloads. The daemon's own cgroup-level metrics for the
+	// container are independent of this flag and continue regardless.
+	Monitoring    bool `protobuf:"varint,14,opt,name=monitoring,proto3" json:"monitoring,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateContainerRequest) Reset() {
@@ -804,6 +828,13 @@ func (x *CreateContainerRequest) GetStackParameters() map[string]string {
 		return x.StackParameters
 	}
 	return nil
+}
+
+func (x *CreateContainerRequest) GetMonitoring() bool {
+	if x != nil {
+		return x.Monitoring
+	}
+	return false
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -3428,7 +3459,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xdf\x05\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\x8e\x06\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -3453,7 +3484,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vaccess_type\x18\x10 \x01(\x0e2\x1b.containarium.v1.AccessTypeR\n" +
 	"accessType\x12\x1f\n" +
 	"\vrdp_address\x18\x11 \x01(\tR\n" +
-	"rdpAddress\x1a9\n" +
+	"rdpAddress\x12-\n" +
+	"\x12monitoring_enabled\x18\x12 \x01(\bR\x11monitoringEnabled\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
@@ -3465,7 +3497,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xaa\x05\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xca\x05\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -3481,7 +3513,10 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
 	"backend_id\x18\v \x01(\tR\tbackendId\x120\n" +
 	"\aos_type\x18\f \x01(\x0e2\x17.containarium.v1.OSTypeR\x06osType\x12g\n" +
-	"\x10stack_parameters\x18\r \x03(\v2<.containarium.v1.CreateContainerRequest.StackParametersEntryR\x0fstackParameters\x1a9\n" +
+	"\x10stack_parameters\x18\r \x03(\v2<.containarium.v1.CreateContainerRequest.StackParametersEntryR\x0fstackParameters\x12\x1e\n" +
+	"\n" +
+	"monitoring\x18\x0e \x01(\bR\n" +
+	"monitoring\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +

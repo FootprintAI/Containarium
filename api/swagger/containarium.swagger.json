@@ -1202,6 +1202,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/adopt": {
+      "post": {
+        "summary": "Adopt a migrated container (internal)",
+        "description": "Called by the source daemon during MoveContainer after the LXC has been Incus-copied to this host. Registers the container's host-side accounts and route record so it's fully under Containarium's control. Not intended for direct operator use.",
+        "operationId": "ContainerService_AdoptMigratedContainer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AdoptMigratedContainerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the migrated container.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AdoptMigratedContainerBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/cleanup-disk": {
       "post": {
         "summary": "Clean up container disk space",
@@ -1309,6 +1350,47 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/InstallStackBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
+    "/v1/containers/{username}/move": {
+      "post": {
+        "summary": "Migrate container to peer daemon",
+        "description": "Pre-copy snapshot-based migration to a peer daemon. Sub-second downtime on ZFS/btrfs storage with low write rate; up to minutes on dir-pool or active workloads. Caller must have incus remotes configured both directions between the source and target hosts.",
+        "operationId": "ContainerService_MoveContainer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/MoveContainerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container to move (required). Must exist on the\nlocal daemon — moving a container the caller doesn't own returns\nPermissionDenied.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MoveContainerBody"
             }
           }
         ],
@@ -3356,6 +3438,33 @@
       },
       "title": "AddSSHKeyResponse is the response from adding an SSH key"
     },
+    "AdoptMigratedContainerBody": {
+      "type": "object",
+      "properties": {
+        "sourceRoutes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The source daemon's record of which routes belonged to this\ncontainer, so the destination can recreate them at its own\ncontainer IP. Each entry is \"\u003cfull-domain\u003e|\u003cport\u003e|\u003cprotocol\u003e\".\nEmpty for stateless containers with no exposed ports."
+        }
+      },
+      "description": "AdoptMigratedContainerRequest is sent by the source daemon's\nMoveContainer to the destination daemon AFTER `incus copy` has\ncompleted and the LXC exists on the destination's incusd. The\ndestination then registers the container with its own Containarium\nstate (host user account, route record at the new IP).\n\nInternal use only — exposed via REST for daemon-to-daemon coordination\nover the same PeerPool channel used by other forwarding RPCs."
+    },
+    "AdoptMigratedContainerResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Success message."
+        },
+        "newIpAddress": {
+          "type": "string",
+          "description": "The migrated container's new IP address on the destination's\nincusbr0. The source uses this for the final route store update."
+        }
+      },
+      "description": "AdoptMigratedContainerResponse confirms the destination registered\nthe container and returns its IP for the source's route swap."
+    },
     "AlertRule": {
       "type": "object",
       "properties": {
@@ -3971,6 +4080,10 @@
         "rdpAddress": {
           "type": "string",
           "title": "RDP connection address (e.g., \"10.100.0.50:3389\") — populated for Windows VMs"
+        },
+        "monitoringEnabled": {
+          "type": "boolean",
+          "description": "Whether application-emitted OpenTelemetry is enabled for this\ncontainer (mirrors the --monitoring flag passed at creation).\nWhen true, the LXC has OTEL_EXPORTER_OTLP_ENDPOINT and related\nenv vars stamped on it. Read-only — set at create time;\nchanging requires recreate (a ToggleMonitoring RPC may come\nlater, but doesn't exist in v1)."
         }
       },
       "title": "Container represents a complete container instance"
@@ -4157,6 +4270,10 @@
             "type": "string"
           },
           "description": "Stack parameters — passed to install scripts as env vars\n(CONTAINARIUM_STACK_\u003ckey\u003e). Set by the web UI's Create Container form\nbased on the selected stack's declared parameters. Optional."
+        },
+        "monitoring": {
+          "type": "boolean",
+          "description": "Enable application-emitted OpenTelemetry. When true, the daemon\nstamps the container with OTEL_EXPORTER_OTLP_ENDPOINT and\nrelated env vars pointing at the core OTel collector, so any\nOTel SDK inside the container ships telemetry to the platform's\nVictoriaMetrics without app-side configuration. Default false —\nopt-in matches the \"platform doesn't move data unless told to\"\nprinciple and avoids surprise telemetry from prototype\nworkloads. The daemon's own cgroup-level metrics for the\ncontainer are independent of this flag and continue regardless."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -5264,6 +5381,58 @@
         }
       },
       "title": "MetricsEvent contains metrics update data"
+    },
+    "MoveContainerBody": {
+      "type": "object",
+      "properties": {
+        "targetBackendId": {
+          "type": "string",
+          "description": "Target backend ID — the peer daemon to migrate to. Must appear in\nthe source daemon's PeerPool. Trying to move to the local backend\nis a no-op error."
+        },
+        "maxIterations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum pre-copy delta iterations before forcing the cutover.\nEach iteration copies the delta since the previous snapshot; with\neach iteration the dirty set should shrink, reducing the final\ncutover downtime. Range [0, 10]. Zero disables iterative delta\nand goes straight to stop + full copy. Default 3."
+        },
+        "deltaThresholdSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "If a delta iteration completes in less than this many seconds,\nthe caller decides the dirty set is small enough — skip remaining\niterations and go straight to cutover. Range [1, 60]. Default 5."
+        },
+        "stateful": {
+          "type": "boolean",
+          "description": "When true, attempt CRIU-based live migration via `incus move\n--stateful` — preserves process memory state and open sockets,\nsub-second downtime even on active workloads. Requires CRIU\ninstalled on both source and target, and is not supported for\ncontainers running podman/docker-in-LXC. Defaults to false\n(stop-and-copy) which is more reliable."
+        }
+      },
+      "description": "MoveContainerRequest is the source-side request to migrate a\ncontainer to a peer daemon."
+    },
+    "MoveContainerResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Human-readable success message."
+        },
+        "newIpAddress": {
+          "type": "string",
+          "description": "The container's new IP address on the target daemon, after start."
+        },
+        "targetBackendId": {
+          "type": "string",
+          "description": "Backend the container now lives on (target_backend_id from req)."
+        },
+        "iterationsRun": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Total iterations performed (initial copy + N deltas + final).\nHelpful for tuning max_iterations on subsequent moves of similar\nworkloads."
+        },
+        "downtimeSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Total wall-clock seconds the container was unreachable during the\ncutover (between stop on source and start on target with route\nupdated). With pre-copy + ZFS this should be \u003c 5s; on dir-pool or\nactive workloads it may be tens of seconds. -1 if stateful=true\nsucceeded and there was no observable downtime."
+        }
+      },
+      "description": "MoveContainerResponse summarizes the migration outcome."
     },
     "NetworkACL": {
       "type": "object",

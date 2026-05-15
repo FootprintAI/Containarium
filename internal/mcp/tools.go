@@ -172,6 +172,10 @@ func (s *Server) registerTools() {
 						"description": "Container OS type: 'ubuntu' (default), 'rocky9' (dev/test), 'rhel9' (production). Overrides image when set.",
 						"enum":        []string{"", "ubuntu", "rocky9", "rhel9"},
 					},
+					"monitoring": map[string]interface{}{
+						"type": "boolean",
+						"description": "Opt the container into application-emitted OpenTelemetry. When true, the daemon stamps the LXC with OTEL_EXPORTER_OTLP_ENDPOINT (and related env vars) pointing at the platform's core OTel collector, so any OTel SDK inside the container ships telemetry without app-side configuration. Default false. The daemon's own cgroup-level metrics for the container (CPU/mem/disk/net) are independent of this flag and continue for every container regardless.",
+					},
 				},
 				"required": []string{"username"},
 			},
@@ -725,6 +729,7 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		Image:        getStringArg(args, "image", "images:ubuntu/24.04"),
 		EnablePodman: getBoolArg(args, "enable_podman", true),
 		GPU:          getStringArg(args, "gpu", ""),
+		Monitoring:   getBoolArg(args, "monitoring", false),
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use

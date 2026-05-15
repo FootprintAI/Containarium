@@ -208,6 +208,14 @@ type ContainerConfig struct {
 	EnableNesting          bool
 	EnablePodmanPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
 	AutoStart              bool
+
+	// Env is a map of environment variables to set inside the
+	// container, equivalent to `incus config set <name>
+	// environment.<KEY> <value>`. Visible to every shell session and
+	// to systemd-managed processes. Used today for the OTel
+	// app-monitoring opt-in (OTEL_EXPORTER_OTLP_ENDPOINT etc.) and
+	// can host other platform-injected env vars going forward.
+	Env map[string]string
 }
 
 // LabelPrefix is the prefix used for storing labels in Incus container config
@@ -249,6 +257,13 @@ type ContainerInfo struct {
 	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
 	CreatedAt    time.Time
 	BackendID    string // Backend this container runs on (populated by PeerPool fan-out)
+
+	// MonitoringEnabled is true when the container has OTel
+	// env vars stamped (OTEL_EXPORTER_OTLP_ENDPOINT non-empty in
+	// the Incus environment config). Derived at read-time from
+	// the Incus config map rather than tracked as a separate
+	// flag — single source of truth.
+	MonitoringEnabled bool
 }
 
 // ContainerMetrics holds runtime metrics for a container
@@ -386,6 +401,13 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 		req.Config["boot.autostart"] = "true"
 	}
 
+	// Environment variables — Incus stores these as `environment.<KEY>`
+	// entries in the config map. Visible to login shells and to
+	// systemd-managed processes inside the container.
+	for k, v := range config.Env {
+		req.Config["environment."+k] = v
+	}
+
 	// Device configuration
 	req.Devices = make(map[string]map[string]string)
 
@@ -495,12 +517,13 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 		}
 
 		info := ContainerInfo{
-			Name:         inst.Name,
-			State:        inst.Status,
-			InstanceType: inst.Type,
-			CreatedAt:    inst.CreatedAt,
-			Labels:       extractLabelsFromConfig(inst.Config),
-			Role:         Role(inst.Config[RoleKey]),
+			Name:              inst.Name,
+			State:             inst.Status,
+			InstanceType:      inst.Type,
+			CreatedAt:         inst.CreatedAt,
+			Labels:            extractLabelsFromConfig(inst.Config),
+			Role:              Role(inst.Config[RoleKey]),
+			MonitoringEnabled: inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		}
 
 		// Get CPU and memory limits from config
@@ -619,11 +642,12 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 	}
 
 	info := &ContainerInfo{
-		Name:      inst.Name,
-		State:     inst.Status,
-		CreatedAt: inst.CreatedAt,
-		Labels:    extractLabelsFromConfig(inst.Config),
-		Role:      Role(inst.Config[RoleKey]),
+		Name:              inst.Name,
+		State:             inst.Status,
+		CreatedAt:         inst.CreatedAt,
+		Labels:            extractLabelsFromConfig(inst.Config),
+		Role:              Role(inst.Config[RoleKey]),
+		MonitoringEnabled: inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 	}
 
 	// Get resource limits
@@ -1008,6 +1032,14 @@ func getCPULoadAvg() (load1, load5, load15 float64, err error) {
 }
 
 // SetConfig sets a configuration key for a container (e.g., limits.cpu, limits.memory)
+// SetEnv sets an environment variable on an existing container. Thin
+// wrapper over SetConfig with the `environment.` key prefix; used by
+// migration adoption to re-stamp OTel env vars at the destination's
+// collector IP. Idempotent on retry.
+func (c *Client) SetEnv(containerName, key, value string) error {
+	return c.SetConfig(containerName, "environment."+key, value)
+}
+
 func (c *Client) SetConfig(containerName, key, value string) error {
 	// Get current container configuration
 	inst, etag, err := c.server.GetInstance(containerName)
