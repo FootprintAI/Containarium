@@ -10,12 +10,16 @@
 #   5. Kernel modules and sysctl for containers
 #
 # Usage:
-#   sudo ./setup-gpu-host.sh [--skip-reboot] [--yes] [--data-disk DISK] [--backup-disks DISK1,DISK2]
+#   sudo ./setup-gpu-host.sh [--skip-reboot] [--yes] [--data-disk DISK] [--backup-disks DISK1,DISK2] [--zfs-encryption-keyfile PATH]
 #
 # Disk layout (auto-detected if not specified):
-#   --data-disk     Fastest unused disk for container storage (e.g., nvme0n1)
-#   --backup-disks  Rotational disks for ZFS mirror backup pool (e.g., sda,sdb)
-#   --yes           Skip confirmation prompt (for automation)
+#   --data-disk                 Fastest unused disk for container storage (e.g., nvme0n1)
+#   --backup-disks              Rotational disks for ZFS mirror backup pool (e.g., sda,sdb)
+#   --yes                       Skip confirmation prompt (for automation)
+#   --zfs-encryption-keyfile    Enable ZFS native encryption on the main pool, reading a 32-byte raw key
+#                               from the given path. The keyfile is generated on first run if missing.
+#                               Operators MUST back this file up off-host — loss = unrecoverable pool.
+#                               See docs/SECURITY-ENCRYPTION-AT-REST.md.
 #   If no unused disks are found, falls back to file-backed 50GB pool.
 #
 # After running, reboot the machine if the NVIDIA driver was freshly installed.
@@ -40,14 +44,16 @@ SKIP_REBOOT=false
 AUTO_YES=false
 DATA_DISK=""
 BACKUP_DISKS=""
+ZFS_ENCRYPTION_KEYFILE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-reboot) SKIP_REBOOT=true; shift ;;
         --yes|-y) AUTO_YES=true; shift ;;
         --data-disk) DATA_DISK="$2"; shift 2 ;;
         --backup-disks) BACKUP_DISKS="$2"; shift 2 ;;
+        --zfs-encryption-keyfile) ZFS_ENCRYPTION_KEYFILE="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: sudo $0 [--skip-reboot] [--yes] [--data-disk DISK] [--backup-disks DISK1,DISK2]"
+            echo "Usage: sudo $0 [--skip-reboot] [--yes] [--data-disk DISK] [--backup-disks DISK1,DISK2] [--zfs-encryption-keyfile PATH]"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -299,6 +305,25 @@ if ! command -v zpool &>/dev/null; then
 fi
 
 if [ ! -f /var/lib/incus/.initialized ]; then
+    # ZFS native encryption is opt-in via --zfs-encryption-keyfile.
+    # The keyfile lives on the boot disk (separate from the data
+    # disk holding the encrypted pool). Loss of the keyfile makes
+    # the pool unrecoverable — operators MUST back it up off-host.
+    # See docs/SECURITY-ENCRYPTION-AT-REST.md.
+    ENCRYPT_OPTS=()
+    if [ -n "$ZFS_ENCRYPTION_KEYFILE" ]; then
+        mkdir -p "$(dirname "$ZFS_ENCRYPTION_KEYFILE")"
+        if [ ! -f "$ZFS_ENCRYPTION_KEYFILE" ]; then
+            echo "  Generating ZFS encryption keyfile at $ZFS_ENCRYPTION_KEYFILE"
+            dd if=/dev/urandom of="$ZFS_ENCRYPTION_KEYFILE" bs=32 count=1 status=none
+            chmod 0400 "$ZFS_ENCRYPTION_KEYFILE"
+            echo "  WARNING: back up $ZFS_ENCRYPTION_KEYFILE off-host. Loss = unrecoverable pool."
+        else
+            echo "  Reusing existing ZFS encryption keyfile at $ZFS_ENCRYPTION_KEYFILE"
+        fi
+        ENCRYPT_OPTS=(-O encryption=on -O keyformat=raw -O keylocation="file://$ZFS_ENCRYPTION_KEYFILE")
+    fi
+
     # --- Main storage pool (incus-local) ---
     if ! zpool list incus-local &>/dev/null; then
         if [ -n "$DATA_DISK" ]; then
@@ -319,9 +344,14 @@ if [ ! -f /var/lib/incus/.initialized ]; then
                 -O atime=off \
                 -O xattr=sa \
                 -O recordsize=128k \
+                "${ENCRYPT_OPTS[@]}" \
                 -m /var/lib/incus/storage \
                 incus-local "$DISK_PATH"
-            echo "  ZFS pool created on $DISK_PATH ($(lsblk -n -o SIZE "$DISK_PATH" | head -1))"
+            if [ ${#ENCRYPT_OPTS[@]} -gt 0 ]; then
+                echo "  ZFS pool created on $DISK_PATH with native encryption ($(lsblk -n -o SIZE "$DISK_PATH" | head -1))"
+            else
+                echo "  ZFS pool created on $DISK_PATH ($(lsblk -n -o SIZE "$DISK_PATH" | head -1))"
+            fi
         else
             # Fallback: file-backed pool
             mkdir -p /var/lib/incus/disks
@@ -331,9 +361,14 @@ if [ ! -f /var/lib/incus/.initialized ]; then
                 -O compression=lz4 \
                 -O atime=off \
                 -O xattr=sa \
+                "${ENCRYPT_OPTS[@]}" \
                 -m /var/lib/incus/storage \
                 incus-local /var/lib/incus/disks/incus.img
-            echo "  ZFS pool created (file-backed, 50GB)"
+            if [ ${#ENCRYPT_OPTS[@]} -gt 0 ]; then
+                echo "  ZFS pool created (file-backed, 50GB, encrypted)"
+            else
+                echo "  ZFS pool created (file-backed, 50GB)"
+            fi
         fi
         zfs create incus-local/containers
     fi

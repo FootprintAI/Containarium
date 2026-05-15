@@ -23,6 +23,13 @@ ENABLE_MONITORING="${enable_monitoring}"
 USE_PERSISTENT_DISK="${use_persistent_disk}"
 FAIL2BAN_WHITELIST="${fail2ban_whitelist_cidr}"
 JWT_SECRET="${jwt_secret}"
+# When non-empty, the data-disk ZFS pool is created with native
+# encryption=on, keyformat=raw, keylocation=file://$ZFS_ENCRYPTION_KEYFILE.
+# The keyfile is generated on first boot if missing (32 random bytes,
+# chmod 0400). Lost keyfile = lost pool — operators MUST back this up
+# off-host. See docs/SECURITY-ENCRYPTION-AT-REST.md for the full
+# custody story.
+ZFS_ENCRYPTION_KEYFILE="${zfs_encryption_keyfile}"
 
 # ==========================================================================
 # FAST PATH: If this is a restart (not first boot), skip software install.
@@ -240,6 +247,25 @@ if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -d "/mnt/incus-data" ]; then
     DISK_DEVICE="/dev/disk/by-id/google-incus-data"
     ZFS_POOL="incus-pool"
 
+    # ZFS native encryption is opt-in via ZFS_ENCRYPTION_KEYFILE.
+    # The keyfile lives on the boot disk (so an attacker who exfils
+    # only the data disk can't decrypt); GCP CMEK on the boot disk
+    # still applies independently. Defense in depth, not a silver
+    # bullet — see docs/SECURITY-ENCRYPTION-AT-REST.md.
+    ENCRYPT_OPTS=""
+    if [ -n "$ZFS_ENCRYPTION_KEYFILE" ]; then
+        mkdir -p "$(dirname "$ZFS_ENCRYPTION_KEYFILE")"
+        if [ ! -f "$ZFS_ENCRYPTION_KEYFILE" ]; then
+            echo "==> Generating ZFS encryption keyfile at $ZFS_ENCRYPTION_KEYFILE"
+            dd if=/dev/urandom of="$ZFS_ENCRYPTION_KEYFILE" bs=32 count=1 status=none
+            chmod 0400 "$ZFS_ENCRYPTION_KEYFILE"
+            echo "==> WARNING: back up $ZFS_ENCRYPTION_KEYFILE off-host. Loss = unrecoverable pool."
+        else
+            echo "==> Reusing existing ZFS encryption keyfile at $ZFS_ENCRYPTION_KEYFILE"
+        fi
+        ENCRYPT_OPTS="-O encryption=on -O keyformat=raw -O keylocation=file://$ZFS_ENCRYPTION_KEYFILE"
+    fi
+
     if ! zpool list "$ZFS_POOL" &>/dev/null; then
         echo "Creating ZFS pool on persistent disk..."
 
@@ -248,6 +274,13 @@ if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -d "/mnt/incus-data" ]; then
             echo "Importing existing ZFS pool..."
             # Use -f to force import (handles cases where pool was last used by different system)
             zpool import -f "$ZFS_POOL"
+            # If encryption was enabled at create time, the
+            # keyfile-backed key auto-loads via keylocation=file://;
+            # explicit load is a no-op but defensive against pools
+            # imported from a different ZFS_ENCRYPTION_KEYFILE path.
+            if [ -n "$ZFS_ENCRYPTION_KEYFILE" ] && zfs get -H -o value encryption "$ZFS_POOL" 2>/dev/null | grep -qv '^off$'; then
+                zfs load-key -L "file://$ZFS_ENCRYPTION_KEYFILE" "$ZFS_POOL" 2>/dev/null || true
+            fi
             echo "✓ ZFS pool imported"
         else
             # Create new ZFS pool
@@ -257,10 +290,15 @@ if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -d "/mnt/incus-data" ]; then
                 -O atime=off \
                 -O xattr=sa \
                 -O dnodesize=auto \
+                $ENCRYPT_OPTS \
                 -m /mnt/incus-data/zfs \
                 "$ZFS_POOL" "$DISK_DEVICE"
 
-            echo "✓ ZFS pool created with compression enabled"
+            if [ -n "$ENCRYPT_OPTS" ]; then
+                echo "✓ ZFS pool created with compression + native encryption"
+            else
+                echo "✓ ZFS pool created with compression enabled"
+            fi
         fi
 
         # Create dataset for Incus containers

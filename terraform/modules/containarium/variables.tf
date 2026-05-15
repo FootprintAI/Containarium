@@ -345,3 +345,9 @@ variable "proxy_protocol_trusted_cidrs" {
   type        = list(string)
   default     = []
 }
+
+variable "zfs_encryption_keyfile" {
+  description = "Absolute path on the backend VM for the ZFS native encryption keyfile (e.g. /etc/containarium/zfs.key). When non-empty, the data-disk ZFS pool is created with encryption=on and reads the 32-byte raw key from this path on every boot. The keyfile is generated automatically on first boot if missing. Operators MUST back this file up off-host — losing it makes the pool unrecoverable. Empty (default) = no ZFS-layer encryption, relies on PD/CMEK only. See docs/SECURITY-ENCRYPTION-AT-REST.md."
+  type        = string
+  default     = ""
+}

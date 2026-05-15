@@ -26,10 +26,11 @@ container data itself — protection comes from the underlying disk layer
   physical disks. If the operator did not configure LUKS, dm-crypt,
   or ZFS native encryption on the underlying storage themselves, the
   data is plaintext on disk. See "Self-hoster options" below.
-- **ZFS pool on the backend** (`incus-pool/containers/...`). The pool
-  is created without `encryption=on`. All container datasets are
-  plaintext at the ZFS layer; only the underlying disk encryption
-  protects them.
+- **ZFS pool on the backend** (`incus-pool/containers/...`) — by
+  default. The pool is created without `encryption=on` unless the
+  operator opts in by setting `zfs_encryption_keyfile` (terraform)
+  or `--zfs-encryption-keyfile` (bare-metal). See "Self-hoster
+  options" below for the opt-in path.
 - **Container memory, swap, and tmpfs** — at-rest encryption protects
   cold disk; live memory and swap are not in scope here. Standard
   Linux memory hardening (kernel ASLR, etc.) applies.
@@ -97,22 +98,82 @@ If you're self-hosting and want per-container encryption today, see
 ## Self-hoster options
 
 If you run Containarium on bare-metal or want stronger isolation than
-the GCP default, the OSS code paths don't get in your way — these are
-operator concerns, configured outside Containarium:
+the GCP default, the OSS install scripts now have first-class
+support for ZFS native encryption on the data pool. Other layers
+remain operator concerns:
 
 - **LUKS / dm-crypt** on the data disk before ZFS is created on top.
   Standard Linux distro tooling; Containarium doesn't care about the
   layer beneath the ZFS pool.
-- **ZFS native encryption** on the pool: create the pool with
-  `zpool create incus-pool -O encryption=on -O keyformat=passphrase ...`
-  and load the key at boot. The daemon expects the pool to be mounted
-  and writable by the time it starts; key custody is your problem.
+- **ZFS native encryption** on the pool — supported by the install
+  scripts via a keyfile flag (see next section).
 - **Hardware encryption** (TCG Opal SEDs, BitLocker on Windows) —
   transparent to Containarium.
 
-None of these are documented in the install scripts because they're
-operator policy, not platform feature. The platform does not assume
-any particular at-rest encryption layer.
+### Pool-level ZFS native encryption (operator-managed keyfile)
+
+Both install paths accept an opt-in flag that creates the `incus-pool`
+(GCE) or `incus-local` (bare-metal) data pool with `encryption=on`,
+`keyformat=raw`, and `keylocation=file://<path>`. Every container
+dataset inherits encryption from the parent pool. The daemon doesn't
+need to know — the kernel decrypts transparently as long as the key
+is loaded.
+
+**GCE (terraform module):**
+
+```hcl
+module "containarium" {
+  source                  = "../modules/containarium"
+  zfs_encryption_keyfile  = "/etc/containarium/zfs.key"
+  # ... other variables ...
+}
+```
+
+**Bare-metal:**
+
+```bash
+sudo ./scripts/setup-gpu-host.sh \
+  --data-disk nvme0n1 \
+  --zfs-encryption-keyfile /etc/containarium/zfs.key
+```
+
+On first boot the install script generates a random 32-byte keyfile
+(`dd if=/dev/urandom bs=32 count=1`, chmod `0400`). On subsequent
+boots ZFS reads the keyfile via `keylocation=file://`, so the pool
+mounts automatically with no operator intervention.
+
+**Threat model and limits.** The keyfile lives on the **boot disk**;
+the encrypted pool lives on the **data disk**. This protects:
+
+- Disk replacement / RMA — pulling the data disk and reading it on
+  another host yields ciphertext.
+- Cloud snapshot exfiltration of *only* the data PD.
+- Lost / stolen bare-metal data disks.
+
+It does **not** protect against:
+
+- Full-VM exfiltration (attacker gets both boot and data disks).
+- A privileged process on the running host — the kernel sees plaintext.
+- Memory / swap (out of scope for at-rest encryption).
+
+Pair with GCP CMEK on the boot disk (the `kms_key_self_link`
+variable) for defense in depth: an attacker now needs the GCP key
+to read the boot disk *and* the keyfile to decrypt the data disk.
+
+**Operator responsibilities — read before enabling:**
+
+- **Back the keyfile up off-host.** Losing it makes the pool
+  unrecoverable; ZFS does not store the key anywhere else.
+- **Restrict access** to the keyfile (`chmod 0400`, root-owned;
+  the install script enforces this on creation but won't fix it
+  later).
+- **Rotate** by destroying + recreating the pool (in-place rekeying
+  via `zfs change-key` is supported but operationally tricky;
+  out-of-scope here).
+- **Don't enable on an existing pool.** ZFS native encryption is a
+  pool-creation-time setting; flipping it later requires destroying
+  the pool. The install scripts skip the encryption block when the
+  pool already exists.
 
 ## Answering vendor security questionnaires
 
@@ -126,7 +187,7 @@ any particular at-rest encryption layer.
 | Key rotation? | Manual (re-`terraform apply -replace`). Automatic rotation is a cloud-product feature, not in OSS. |
 | What about backups? | GCP disk snapshots inherit the source disk's encryption. If you use CMEK on the live disks, snapshots use CMEK. |
 | Are memory or swap encrypted? | No. At-rest scope is cold disk only. |
-| What's not encrypted? | Bare-metal peer disks (unless operator-configured); ZFS pool itself (only the underlying PD is encrypted). |
+| What's not encrypted? | Bare-metal peer disks (unless operator opts into `--zfs-encryption-keyfile`); ZFS pool itself by default (operator opt-in via `zfs_encryption_keyfile` terraform variable or the bare-metal flag). |
 
 ## References
 
