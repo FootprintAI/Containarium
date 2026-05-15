@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.9] - 2026-05-15
+
+This release lands **application-emitted OpenTelemetry** (per-container opt-in, metrics-only v1) and **pool-level ZFS native encryption** for self-hosters. Together they close two long-standing observability + at-rest-encryption gaps; both are off-by-default so existing deployments inherit current behavior.
+
+### Added
+
+- **Per-container `--monitoring` flag for OTel app telemetry** ([#175](https://github.com/FootprintAI/Containarium/pull/175)) — `containarium create alice --monitoring` (or `monitoring: true` over MCP/proto) stamps `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_PROTOCOL`, and `OTEL_RESOURCE_ATTRIBUTES` (container.id, backend.id) into the new LXC's environment via Incus `environment.*` config keys. Apps that pull in any OTel SDK auto-discover the endpoint and start emitting; apps without an SDK ignore the vars. Default off — opt-in per container. `AdoptMigratedContainer` re-stamps env vars after `MoveContainer` so migrated containers point at the destination VM's collector.
+
+- **Core OTel collector LXC + cardinality guard + IP map** ([#176](https://github.com/FootprintAI/Containarium/pull/176)) — new `containarium-core-otelcollector` LXC running `otelcol-contrib v0.110.0` is provisioned alongside VictoriaMetrics on daemon startup. Boot priority 75, 1GB ZFS reservation, OTLP/HTTP :4318 + gRPC :4317 receivers, `otlphttp` exporter to local VM at `:8428/opentelemetry`. Anti-spoofing via `attributes/identity` processor stamping `source.ip` from `client.address`. Cardinality guard drops a default PII list (`request_id`, `trace_id`, `user_email`, `session_id`, `correlation_id`); operators extend via new `--otel-drop-labels=a,b,c` daemon flag. Daemon pushes `/var/lib/containarium/container_ips.json` to the collector on every container create/delete/adopt (v1 maintains the JSON; v2 will materialize `container.id` once a custom processor or auto-regenerated OTTL lands). Full design at `docs/OTEL-COLLECTOR-DESIGN.md`.
+
+- **Pool-level ZFS native encryption (opt-in)** ([#177](https://github.com/FootprintAI/Containarium/pull/177)) — both install paths accept an optional keyfile flag that creates the data ZFS pool with `encryption=on`, `keyformat=raw`, `keylocation=file://<path>`. Every container dataset inherits encryption from the parent pool; the daemon needs no code change. GCE: new `zfs_encryption_keyfile` terraform module variable. Bare-metal: new `--zfs-encryption-keyfile PATH` flag on `setup-gpu-host.sh`. The keyfile auto-generates on first run (32 random bytes, `chmod 0400`), with a loud "back it up off-host" warning. Combine with GCP CMEK on the boot disk for defense in depth. Per-container/per-tenant encryption stays deferred to cloud multi-tenancy work; `docs/ZFS-PER-CONTAINER-ENCRYPTION-DESIGN.md` ([#178](https://github.com/FootprintAI/Containarium/pull/178), [#179](https://github.com/FootprintAI/Containarium/pull/179)) is Approved and waiting for that to land.
+
+### Documentation
+
+- **OTel collector design** ([#173](https://github.com/FootprintAI/Containarium/pull/173), [#174](https://github.com/FootprintAI/Containarium/pull/174)) — `docs/OTEL-COLLECTOR-DESIGN.md` documents the metrics-only v1 (per-container `--monitoring`, anti-spoofing via `attributes/identity`, cardinality guard, source-IP attribution v1/v2 split). Status: Approved with all 5 open questions resolved.
+- **Per-container ZFS encryption design** ([#178](https://github.com/FootprintAI/Containarium/pull/178), [#179](https://github.com/FootprintAI/Containarium/pull/179)) — `docs/ZFS-PER-CONTAINER-ENCRYPTION-DESIGN.md` captures the deferred multi-tenancy path: `KeyProvider` interface, per-tenant `encryptionroot` model, five daemon lifecycle hooks, `MoveContainer` integration with `KeyRef` migration metadata. Status: Approved, blocked on cloud multi-tenancy.
+
 ## [0.16.8] - 2026-05-14
 
 This release is a punch-list of robustness fixes — six bug fixes / small features that collectively close several silent-failure modes in the container lifecycle, MCP surface, and telemetry path. Everything in here came out of yesterday's demo-recording session and the cleanup that followed; each item was reproduced live before being fixed.
