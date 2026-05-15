@@ -71,6 +71,7 @@ type CoreServices struct {
 	postgresIP         string
 	caddyIP            string
 	victoriaMetricsIP  string
+	otelCollectorIP    string
 }
 
 // NewCoreServices creates a new core services manager

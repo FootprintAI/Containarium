@@ -76,6 +76,12 @@ type DualServerConfig struct {
 	// VictoriaMetrics URL (auto-detected or provided)
 	VictoriaMetricsURL string
 
+	// OTelDropLabels are operator-supplied attribute keys that the
+	// app-side OTel collector drops in addition to the built-in
+	// PII/cardinality defaults (see DefaultOTelDropLabels). Empty
+	// means "defaults only."
+	OTelDropLabels []string
+
 	// Host IP (extracted from network CIDR, e.g., "10.100.0.1")
 	HostIP string
 
@@ -370,6 +376,33 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					log.Printf("Warning: Failed to setup alerting: %v. Alerting disabled.", err)
 				} else {
 					log.Printf("Alerting ready (vmalert + Alertmanager)")
+				}
+			}
+
+			// Setup the app-side OTel collector. Brings up
+			// otelcol-contrib as a core LXC, points its OTLP
+			// exporter at the local VictoriaMetrics, and wires the
+			// resulting OTLP/HTTP endpoint into ContainerServer so
+			// new monitoring=true containers get OTEL_*
+			// env-stamping (see PR #175). Only runs when VM is
+			// available — without a sink there's nothing for the
+			// collector to forward to.
+			if victoriaMetricsURL != "" && coreServices != nil {
+				vmIP := coreServices.GetVictoriaMetricsIP()
+				if vmIP == "" {
+					if pgInfo, err := incusClient.FindContainerByRole(incus.RoleVictoriaMetrics); err == nil {
+						vmIP = pgInfo.IPAddress
+					}
+				}
+				if vmIP != "" {
+					if _, err := coreServices.EnsureOTelCollector(context.Background(), vmIP, config.OTelDropLabels); err != nil {
+						log.Printf("Warning: Failed to setup OTel collector: %v. App-emitted telemetry disabled.", err)
+					} else {
+						endpoint := coreServices.GetOTelCollectorEndpoint()
+						containerServer.SetOTelCollectorEndpoint(endpoint)
+						containerServer.SetCoreServices(coreServices)
+						log.Printf("OTel collector ready: %s (drop-labels=%v)", endpoint, config.OTelDropLabels)
+					}
 				}
 			}
 

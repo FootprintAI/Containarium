@@ -236,6 +236,7 @@ const (
 	RoleVictoriaMetrics   Role = "core-victoriametrics"
 	RoleSecurity          Role = "core-security"
 	RoleGuacamole         Role = "core-guacamole"
+	RoleOTelCollector     Role = "core-otelcollector"
 )
 
 // IsCoreRole returns true if the role represents a core container.

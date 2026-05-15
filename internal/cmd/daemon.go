@@ -57,6 +57,8 @@ var (
 
 	proxyProtocol        bool
 	proxyProtocolTrusted []string
+
+	otelDropLabels []string
 )
 
 var daemonCmd = &cobra.Command{
@@ -141,6 +143,9 @@ func init() {
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
 	daemonCmd.Flags().IntVar(&publicPort, "public-port", 443, "Public TLS port the sentinel forwards to (default 443)")
+
+	// OTel collector settings
+	daemonCmd.Flags().StringSliceVar(&otelDropLabels, "otel-drop-labels", nil, "Extra attribute keys (comma-separated) the app-side OTel collector drops on top of the built-in PII/cardinality defaults (request_id, trace_id, user_email, session_id, correlation_id).")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -463,6 +468,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		PublicPort:           publicPort,
 		ProxyProtocol:        proxyProtocol,
 		ProxyProtocolTrusted: proxyProtocolTrusted,
+		OTelDropLabels:       otelDropLabels,
 	}
 
 	// Create dual server

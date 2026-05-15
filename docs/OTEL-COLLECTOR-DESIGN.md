@@ -220,6 +220,14 @@ The collector's `attributes/identity` processor needs to know which source IP co
 
 This is simpler than the alternative (collector polls daemon's `/v1/containers` over the REST API) because there's no auth dependency between the collector and the daemon — the collector just reads a file. Risk: file goes stale if daemon crashes between write and reality; acceptable for v1, monitored via the daemon's own health check.
 
+**v1 implementation note (added during build-out):** the upstream OTel `attributes` processor does not actually support filewatched JSON lookups out of the box. v1 therefore ships in two stages:
+
+- The collector's `attributes/identity` processor stamps `source.ip` from `client.address` — the anti-spoofing security boundary stays intact and unforgeable.
+- The daemon still writes `/var/lib/containarium/container_ips.json` into the collector LXC on every lifecycle event, but the collector does not consume it yet.
+- v2 will either add a small custom lookup processor or auto-regenerate the `transform` processor's OTTL statements (`set(attributes["container.id"], "alice") where attributes["source.ip"] == "10.0.3.42"`) and SIGHUP the collector. Both approaches use the JSON file v1 is already maintaining as the source of truth.
+
+This keeps v1 functional (operators correlate via `source.ip` joined to the daemon's own cgroup-metric stream, which carries both name and IP) without inventing a fictional collector feature.
+
 ### 5. Cardinality guard defaults
 
 The `transform` processor drops a hard-coded list of high-cardinality labels by default:
@@ -306,3 +314,4 @@ These are tracked in the project task list; this doc gets a follow-up edit when 
 |---|---|---|
 | 2026-05-14 | hsinhoyeh, drafted in chat | Initial draft. v1 design with per-container `--monitoring` opt-in, single-VM collector container, source-IP-based identity attribution, cardinality guard. Status: Draft. |
 | 2026-05-14 | hsinhoyeh | Resolved all 5 open questions: monitoring defaults off, Incus-pinned static IP, Prometheus scrape in v1, PII drop-list default-on, traces/logs deferred to v2 (no placeholders). Status: Draft → Approved. |
+| 2026-05-15 | hsinhoyeh | Implementation note in §4: v1 stamps `source.ip` (anti-spoofing boundary), still maintains `container_ips.json`; v2 will materialize `container.id` via a custom processor or regenerated OTTL. Avoids inventing a filewatched-attributes feature OTel doesn't ship. |

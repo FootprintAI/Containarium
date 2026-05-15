@@ -224,6 +224,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 			// Emit event on success
 			if err == nil && info != nil {
+				s.refreshContainerIPMap()
 				s.emitter.EmitContainerCreated(toProtoContainer(info))
 			}
 		}()
@@ -249,6 +250,10 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
+
+	// Refresh the collector's IP map so the new container's
+	// app-emitted OTLP is attributed correctly. Best-effort.
+	s.refreshContainerIPMap()
 
 	// Convert to protobuf
 	protoContainer := toProtoContainer(info)
@@ -500,6 +505,10 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 
 	// Emit container deleted event
 	s.emitter.EmitContainerDeleted(containerName)
+
+	// Refresh the collector's IP map so the deleted container's IP
+	// is no longer claimed in source-IP attribution.
+	s.refreshContainerIPMap()
 
 	return &pb.DeleteContainerResponse{
 		Message:       fmt.Sprintf("Container for user %s deleted successfully", req.Username),
@@ -880,6 +889,12 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 	if newIP == "" {
 		return nil, fmt.Errorf("adopted container has no IP address yet (still initializing?)")
 	}
+
+	// The adopted container now lives on this VM under a new IP —
+	// refresh the local collector's IP map so its OTLP traffic is
+	// attributed correctly. The source VM will refresh its own map
+	// when it deletes/cleans the migrated-out shell.
+	s.refreshContainerIPMap()
 
 	// Note: we deliberately do NOT create matching route store rows
 	// here. The source-side orchestrator owns the route lifecycle —
@@ -1325,6 +1340,46 @@ func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 // for new containers — they'll log a warning and skip stamping.
 func (s *ContainerServer) SetOTelCollectorEndpoint(endpoint string) {
 	s.otelCollectorEndpoint = endpoint
+}
+
+// SetCoreServices wires the CoreServices manager used by
+// refreshContainerIPMap to push source-IP attribution updates into
+// the collector LXC. Called from dual_server.go alongside
+// SetOTelCollectorEndpoint after the collector is ensured. Separate
+// setter from SetAlertManager because the alerting path is optional
+// and we want OTel attribution to work even on daemons started
+// without --alert-webhook-url.
+func (s *ContainerServer) SetCoreServices(cs *CoreServices) {
+	s.coreServices = cs
+}
+
+// refreshContainerIPMap rebuilds the source-IP → container-name map
+// and pushes it into the collector LXC. Best-effort: errors are
+// logged but never bubbled up — a stale IP map degrades source-IP
+// attribution but does not justify failing a container create/delete.
+//
+// Skips entirely when coreServices is nil (standalone mode) or the
+// collector isn't provisioned yet. Core containers are excluded —
+// their telemetry never carries app-emitted resource attributes.
+func (s *ContainerServer) refreshContainerIPMap() {
+	if s.coreServices == nil || s.coreServices.GetOTelCollectorIP() == "" {
+		return
+	}
+	infos, err := s.manager.List()
+	if err != nil {
+		log.Printf("Warning: failed to list containers for IP map refresh: %v", err)
+		return
+	}
+	ipMap := make(map[string]string, len(infos))
+	for _, c := range infos {
+		if c.Role.IsCoreRole() || c.IPAddress == "" {
+			continue
+		}
+		ipMap[c.IPAddress] = c.Name
+	}
+	if err := s.coreServices.WriteContainerIPMap(ipMap); err != nil {
+		log.Printf("Warning: failed to push container IP map to collector: %v", err)
+	}
 }
 
 // localBackendID returns this daemon's backend ID for stamping into
