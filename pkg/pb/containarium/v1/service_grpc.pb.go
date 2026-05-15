@@ -29,6 +29,7 @@ const (
 	ContainerService_ResizeContainer_FullMethodName        = "/containarium.v1.ContainerService/ResizeContainer"
 	ContainerService_MoveContainer_FullMethodName          = "/containarium.v1.ContainerService/MoveContainer"
 	ContainerService_AdoptMigratedContainer_FullMethodName = "/containarium.v1.ContainerService/AdoptMigratedContainer"
+	ContainerService_ToggleMonitoring_FullMethodName       = "/containarium.v1.ContainerService/ToggleMonitoring"
 	ContainerService_AddSSHKey_FullMethodName              = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_RemoveSSHKey_FullMethodName           = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_AddCollaborator_FullMethodName        = "/containarium.v1.ContainerService/AddCollaborator"
@@ -92,6 +93,18 @@ type ContainerServiceClient interface {
 	// container's new local IP for the caller to wire into the route
 	// store cutover. Internal use only — operators don't call this.
 	AdoptMigratedContainer(ctx context.Context, in *AdoptMigratedContainerRequest, opts ...grpc.CallOption) (*AdoptMigratedContainerResponse, error)
+	// ToggleMonitoring enables or disables application-emitted OTel
+	// on an existing container without recreate. When enabling, the
+	// daemon stamps OTEL_EXPORTER_OTLP_ENDPOINT and related env vars
+	// pointing at this VM's core OTel collector LXC, then restarts
+	// the container so the new env reaches the app process. When
+	// disabling, the four OTEL_* env vars are unset and the container
+	// is restarted so the SDK falls back to its built-in "no endpoint,
+	// buffer + drop" behavior. Requires the daemon to be wired with
+	// a collector endpoint (--otel-collector-endpoint or auto-ensured
+	// core collector); without one, enabling fails with
+	// FAILED_PRECONDITION rather than silently writing dead env vars.
+	ToggleMonitoring(ctx context.Context, in *ToggleMonitoringRequest, opts ...grpc.CallOption) (*ToggleMonitoringResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -240,6 +253,16 @@ func (c *containerServiceClient) AdoptMigratedContainer(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AdoptMigratedContainerResponse)
 	err := c.cc.Invoke(ctx, ContainerService_AdoptMigratedContainer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ToggleMonitoring(ctx context.Context, in *ToggleMonitoringRequest, opts ...grpc.CallOption) (*ToggleMonitoringResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ToggleMonitoringResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ToggleMonitoring_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -496,6 +519,18 @@ type ContainerServiceServer interface {
 	// container's new local IP for the caller to wire into the route
 	// store cutover. Internal use only — operators don't call this.
 	AdoptMigratedContainer(context.Context, *AdoptMigratedContainerRequest) (*AdoptMigratedContainerResponse, error)
+	// ToggleMonitoring enables or disables application-emitted OTel
+	// on an existing container without recreate. When enabling, the
+	// daemon stamps OTEL_EXPORTER_OTLP_ENDPOINT and related env vars
+	// pointing at this VM's core OTel collector LXC, then restarts
+	// the container so the new env reaches the app process. When
+	// disabling, the four OTEL_* env vars are unset and the container
+	// is restarted so the SDK falls back to its built-in "no endpoint,
+	// buffer + drop" behavior. Requires the daemon to be wired with
+	// a collector endpoint (--otel-collector-endpoint or auto-ensured
+	// core collector); without one, enabling fails with
+	// FAILED_PRECONDITION rather than silently writing dead env vars.
+	ToggleMonitoring(context.Context, *ToggleMonitoringRequest) (*ToggleMonitoringResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -579,6 +614,9 @@ func (UnimplementedContainerServiceServer) MoveContainer(context.Context, *MoveC
 }
 func (UnimplementedContainerServiceServer) AdoptMigratedContainer(context.Context, *AdoptMigratedContainerRequest) (*AdoptMigratedContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AdoptMigratedContainer not implemented")
+}
+func (UnimplementedContainerServiceServer) ToggleMonitoring(context.Context, *ToggleMonitoringRequest) (*ToggleMonitoringResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ToggleMonitoring not implemented")
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
@@ -840,6 +878,24 @@ func _ContainerService_AdoptMigratedContainer_Handler(srv interface{}, ctx conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).AdoptMigratedContainer(ctx, req.(*AdoptMigratedContainerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ToggleMonitoring_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ToggleMonitoringRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ToggleMonitoring(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ToggleMonitoring_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ToggleMonitoring(ctx, req.(*ToggleMonitoringRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1268,6 +1324,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AdoptMigratedContainer",
 			Handler:    _ContainerService_AdoptMigratedContainer_Handler,
+		},
+		{
+			MethodName: "ToggleMonitoring",
+			Handler:    _ContainerService_ToggleMonitoring_Handler,
 		},
 		{
 			MethodName: "AddSSHKey",

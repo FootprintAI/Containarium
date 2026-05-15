@@ -174,6 +174,24 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	return info, nil
 }
 
+// ToggleMonitoring enables / disables OTel app telemetry on an
+// existing container. Returns the new monitoring_enabled state and
+// a human-readable summary of what changed.
+func (c *GRPCClient) ToggleMonitoring(username string, enabled bool) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req := &pb.ToggleMonitoringRequest{
+		Username: username,
+		Enabled:  enabled,
+	}
+	resp, err := c.client.ToggleMonitoring(ctx, req)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to toggle monitoring: %w", err)
+	}
+	return resp.Message, resp.MonitoringEnabled, nil
+}
+
 // DeleteContainer deletes a container via gRPC
 func (c *GRPCClient) DeleteContainer(username string, force bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

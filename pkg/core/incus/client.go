@@ -1041,6 +1041,30 @@ func (c *Client) SetEnv(containerName, key, value string) error {
 	return c.SetConfig(containerName, "environment."+key, value)
 }
 
+// UnsetEnv removes an environment variable from a container's Incus
+// config (i.e. deletes the `environment.<KEY>` config key entirely
+// rather than setting it to empty). Idempotent — missing keys are
+// not an error. Used by ToggleMonitoring's disable path so the SDK
+// inside the container sees an absent OTEL_EXPORTER_OTLP_ENDPOINT
+// (which makes it fall back to no-endpoint defaults) rather than
+// the literal empty string (which some SDKs treat as a misconfig).
+func (c *Client) UnsetEnv(containerName, key string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+	configKey := "environment." + key
+	if _, present := inst.Config[configKey]; !present {
+		return nil
+	}
+	delete(inst.Config, configKey)
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container config: %w", err)
+	}
+	return op.Wait()
+}
+
 func (c *Client) SetConfig(containerName, key, value string) error {
 	// Get current container configuration
 	inst, etag, err := c.server.GetInstance(containerName)

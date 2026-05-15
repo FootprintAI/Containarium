@@ -29,7 +29,7 @@ This doc designs a per-container, opt-in path for application-emitted OTel that 
 - Operator-tunable per-tenant rate limits / quotas (the cardinality guard is the only protection in v1).
 - Cross-VM metric query federation beyond what PeerPool already does for daemon metrics.
 - Hosted "Containarium-managed" external endpoint — everything stays inside the VM.
-- A `ToggleMonitoring` RPC for live-flipping the flag on an existing container. Operators can recreate or hand-edit the LXC env.
+- ~~A `ToggleMonitoring` RPC for live-flipping the flag on an existing container.~~ **Shipped 2026-05-15.** `containarium monitoring enable|disable <username>` (CLI) / `toggle_monitoring` (MCP) / `POST /v1/containers/{username}/monitoring` (REST). Stamps or unsets OTEL_* env vars and restarts the container.
 
 ## Architecture
 
@@ -289,7 +289,7 @@ When a real user needs them, layer these on:
 - **Traces pipeline** — add `otlp` traces receiver to the collector config; add Tempo container as a new core-services entry; add `otlphttp` traces exporter targeting Tempo. ~1 day.
 - **Logs pipeline** — same shape: add `otlp` logs receiver; add Loki container; add `otlphttp` logs exporter. (Or use Vector/Fluent Bit for log shipping if Loki proves heavy.) ~1 day.
 - **Per-tenant rate limits / quotas** — extend the cardinality guard with a `limit` processor keyed on `container.id`. Operators set per-tenant ingestion budgets. ~1 day.
-- **`ToggleMonitoring` RPC** — live-enable / live-disable on an existing container without recreate. Requires an env-var update + container restart. ~½ day.
+- ~~**`ToggleMonitoring` RPC**~~ — **Shipped 2026-05-15.** See above.
 - **Cross-VM Grafana data source federation** — query unified view across all peer VMs without each one needing its own dashboard URL. Reuses PeerPool. ~1-2 days.
 
 These are tracked in the project task list; this doc gets a follow-up edit when any of them ship.
