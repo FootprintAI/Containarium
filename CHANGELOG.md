@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.10] - 2026-05-15
+
+Small follow-on to v0.16.9. Closes the `ToggleMonitoring` v2 TODO from the approved OTel design so operators can retrofit OTel onto containers that were created before `--monitoring` existed.
+
+### Added
+
+- **`ToggleMonitoring` RPC for live OTel enable/disable** ([#181](https://github.com/FootprintAI/Containarium/pull/181)) — `containarium monitoring enable|disable <username>` (CLI) / `toggle_monitoring` (MCP) / `POST /v1/containers/{username}/monitoring` (REST). Stamps the four `OTEL_*` env vars onto the LXC's Incus config and restarts the container so the new env reaches the app process. Disable path uses a new `incus.Client.UnsetEnv` that deletes the keys rather than setting empty strings (some OTel SDKs flag empty `OTEL_EXPORTER_OTLP_ENDPOINT` as misconfig). Refuses core containers. Use this to retrofit monitoring onto exposed-port containers created before v0.16.9.
+
 ## [0.16.9] - 2026-05-15
 
 This release lands **application-emitted OpenTelemetry** (per-container opt-in, metrics-only v1) and **pool-level ZFS native encryption** for self-hosters. Together they close two long-standing observability + at-rest-encryption gaps; both are off-by-default so existing deployments inherit current behavior.
