@@ -1,6 +1,6 @@
 # Per-container ZFS native encryption — design
 
-**Status:** Draft
+**Status:** Approved
 **Last updated:** 2026-05-15
 **Related:**
 - [`docs/SECURITY-ENCRYPTION-AT-REST.md`](SECURITY-ENCRYPTION-AT-REST.md) — current encryption posture and pool-level encryption (shipped 2026-05-15 in [PR #177](https://github.com/FootprintAI/Containarium/pull/177))
@@ -176,15 +176,15 @@ None of this lives in OSS. OSS ships only:
 - The `FileKeyProvider` reference impl.
 - The five lifecycle hooks.
 
-## Open questions
+## Resolved decisions
 
-| # | Question | Why it matters | Proposed answer |
-|---|---|---|---|
-| 1 | Where does the daemon get the `tenantID` for the `KeyProvider.Wrap` call? | Multi-tenancy isn't in OSS proto. Cloud-only would add `tenant_id` to the proto, OSS would default to `"default"`. | Add `tenant_id string` to `CreateContainerRequest` proto. OSS daemon validates `tenant_id == ""` or `tenant_id == "default"` and rejects other values until multi-tenancy lands. Cloud daemon accepts any non-empty `tenant_id`. |
-| 2 | What happens to a `monitoring=true encrypted=true` container's OTel? | OTel metrics ship from inside the container — out of scope for at-rest encryption, but the collector receives plaintext over the network from a "private" tenant. | Acceptable: OTel signals are tenant-scoped metadata (CPU, error counts), not the encrypted data itself. Document it. |
-| 3 | Should `pre-snapshot` block on KMS reachability, or skip if KMS is down? | ZFS allows snapshots without the key loaded, but inspecting requires it. | Allow the snapshot creation, surface a `KEY_UNAVAILABLE` warning on the container's status. Reading the snapshot later fails predictably. |
-| 4 | Cross-cloud-provider migration (GCP → AWS) needs a re-wrap step. | An AWS-side KeyProvider can't resolve a `kms://projects/.../...` ref. | Out of scope for v1. Document. Future work: a "rewrap" RPC on the source that produces a destination-provider-flavored KeyRef before MoveContainer kicks off. |
-| 5 | Key rotation cadence — daemon-driven, or control-plane-driven? | KMS keys typically auto-rotate (GCP KMS: 90d); the daemon needs to either re-wrap container datasets on rotation or live with ciphertext-under-old-key. | Control-plane-driven. The cloud product schedules per-tenant rotation maintenance windows, stops containers, calls a new `RewrapContainer` RPC the daemon exposes, restarts containers. OSS doesn't need this in v1. |
+| # | Decision | Rationale |
+|---|---|---|
+| 1 | **Add `tenant_id string` to `CreateContainerRequest`** proto. OSS daemon validates `tenant_id == ""` or `tenant_id == "default"` and rejects other values until multi-tenancy lands; cloud daemon accepts any non-empty value. | Forward-compatible with multi-tenancy without making OSS pretend it already has tenancy. The shape of the proto stays stable across the OSS → cloud transition. |
+| 2 | **`monitoring=true encrypted=true` is acceptable as-is**, no extra mitigation needed. Document the limitation. | OTel metrics ship tenant-scoped *metadata* (CPU, error counts, latency histograms), not the encrypted dataset itself. The encryption guarantee is at-rest on cold disk; live container telemetry is by definition emitted by the running tenant. |
+| 3 | **`pre-snapshot` allows snapshot creation when KMS is down**, surfaces a `KEY_UNAVAILABLE` warning on the container's status, and lets the inspection-time read fail predictably. | ZFS doesn't require the key to create a snapshot — only to read its contents. Blocking on KMS reachability for snapshot creation would mean a transient KMS outage suppresses the backup window. Predictable read-time failure is the safer trade-off. |
+| 4 | **Cross-cloud-provider migration (GCP → AWS) is out of scope for v1.** Document. Future work: a `RewrapContainer` RPC the source calls before `MoveContainer` to produce a destination-flavored `KeyRef`. | A migration with a re-wrap step is materially different from a same-provider migration (key material crosses provider boundaries). Designing it as a v1 feature would block the simpler same-provider path on a thornier security review. |
+| 5 | **Key rotation is control-plane-driven.** The cloud product schedules per-tenant rotation maintenance windows, stops containers, calls a new `RewrapContainer` RPC on the daemon, restarts containers. OSS doesn't ship a rotation scheduler in v1. | Rotation cadence is a tenant-policy concern (90d, 1y, on-incident) that varies by org. The cloud control plane already owns the per-tenant policy database; co-locating the rotation scheduler there avoids duplicating that state in the daemon. |
 
 ## Phased rollout
 
@@ -208,3 +208,4 @@ None of this lives in OSS. OSS ships only:
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-15 | hsinhoyeh, drafted with Claude | Initial draft. Per-tenant ZFS native encryption design with pluggable KeyProvider, five lifecycle hooks, in-memory key cache, MoveContainer integration. Status: Draft. |
+| 2026-05-15 | hsinhoyeh | Resolved all 5 open questions: tenant_id added to proto with OSS validation, OTel-while-encrypted accepted, snapshot-while-KMS-down allows + warns, cross-cloud migration deferred, rotation control-plane-driven. Status: Draft → Approved. |
