@@ -1358,6 +1358,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/monitoring": {
+      "post": {
+        "summary": "Enable or disable OTel monitoring on a container",
+        "description": "Live-flip OTEL_EXPORTER_OTLP_ENDPOINT and related env vars on an existing container and restart it so the change reaches the app. Use this to retrofit monitoring onto containers created before --monitoring was wired into create_container.",
+        "operationId": "ContainerService_ToggleMonitoring",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ToggleMonitoringResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ToggleMonitoringBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/move": {
       "post": {
         "summary": "Migrate container to peer daemon",
@@ -6458,6 +6499,30 @@
         }
       },
       "title": "TestWebhookResponse returns the result of the test"
+    },
+    "ToggleMonitoringBody": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Desired state. true → stamp env vars + restart. false → unset\nenv vars + restart so the SDK falls back to its buffer+drop\ndefault."
+        }
+      },
+      "description": "ToggleMonitoringRequest enables / disables OTel app telemetry on\nan existing container. The four OTEL_* env vars are stamped (or\nunset) and the container is restarted so the new env reaches the\napp process."
+    },
+    "ToggleMonitoringResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary of what changed (e.g. \"monitoring\nenabled — container restarted\")."
+        },
+        "monitoringEnabled": {
+          "type": "boolean",
+          "description": "The effective monitoring_enabled state of the container after\nthe toggle (mirrors Container.monitoring_enabled in subsequent\nGetContainer responses)."
+        }
+      },
+      "description": "ToggleMonitoringResponse reports the new monitoring state."
     },
     "TrafficAggregate": {
       "type": "object",

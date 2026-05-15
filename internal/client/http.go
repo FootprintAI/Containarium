@@ -246,6 +246,44 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 	return &info, nil
 }
 
+// ToggleMonitoring enables / disables OTel app telemetry on an
+// existing container via HTTP. Returns (message, monitoring_enabled, error).
+func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/monitoring", url.PathEscape(username))
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return "", false, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return "", false, fmt.Errorf("toggle monitoring: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return "", false, fmt.Errorf("%s", errResp.Error)
+		}
+		return "", false, fmt.Errorf("toggle monitoring: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Message           string `json:"message"`
+		MonitoringEnabled bool   `json:"monitoring_enabled"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "", false, fmt.Errorf("decode response: %w", err)
+	}
+	return result.Message, result.MonitoringEnabled, nil
+}
+
 // DeleteContainer deletes a container via HTTP
 func (c *HTTPClient) DeleteContainer(username string, force bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -281,6 +281,25 @@ func (s *Server) registerTools() {
 			Handler: handleMoveContainer,
 		},
 		{
+			Name:        "toggle_monitoring",
+			Description: "Enable or disable application-emitted OpenTelemetry on an existing container without recreating it. When enabling, the daemon stamps OTEL_EXPORTER_OTLP_ENDPOINT + related env vars and restarts the container so the app picks them up. Use this to retrofit monitoring onto containers created before --monitoring was wired in. Requires the daemon to have an OTel collector endpoint configured.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container",
+					},
+					"enabled": map[string]interface{}{
+						"type":        "boolean",
+						"description": "true to enable monitoring (stamp OTEL_* env + restart), false to disable (unset OTEL_* env + restart)",
+					},
+				},
+				"required": []string{"username", "enabled"},
+			},
+			Handler: handleToggleMonitoring,
+		},
+		{
 			Name:        "delete_container",
 			Description: "Delete a container permanently",
 			InputSchema: map[string]interface{}{
@@ -887,6 +906,23 @@ func handleDebugContainer(client *Client, args map[string]interface{}) (string, 
 	}
 
 	return string(jsonData), nil
+}
+
+func handleToggleMonitoring(client *Client, args map[string]interface{}) (string, error) {
+	username, ok := args["username"].(string)
+	if !ok || username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+	enabled, ok := args["enabled"].(bool)
+	if !ok {
+		return "", fmt.Errorf("enabled (bool) is required")
+	}
+
+	resp, err := client.ToggleMonitoring(username, enabled)
+	if err != nil {
+		return "", fmt.Errorf("failed to toggle monitoring: %w", err)
+	}
+	return fmt.Sprintf("✅ %s (monitoring_enabled=%v)", resp.Message, resp.MonitoringEnabled), nil
 }
 
 func handleDeleteContainer(client *Client, args map[string]interface{}) (string, error) {

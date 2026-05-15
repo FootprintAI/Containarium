@@ -184,6 +184,25 @@ func (c *Client) DebugContainer(username string) (*DebugContainerResponse, error
 	return &resp, nil
 }
 
+// ToggleMonitoring enables / disables OTel app telemetry on an
+// existing container. Returns the response with message +
+// monitoring_enabled state.
+func (c *Client) ToggleMonitoring(username string, enabled bool) (*ToggleMonitoringResponse, error) {
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	respBody, err := c.doRequest("POST", fmt.Sprintf("/v1/containers/%s/monitoring", username), body)
+	if err != nil {
+		return nil, err
+	}
+	var resp ToggleMonitoringResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(username string, force bool) (*DeleteContainerResponse, error) {
 	path := fmt.Sprintf("/v1/containers/%s?force=%v", username, force)
@@ -638,6 +657,11 @@ type DebugContainerResponse struct {
 type DeleteContainerResponse struct {
 	Message       string `json:"message"`
 	ContainerName string `json:"containerName"`
+}
+
+type ToggleMonitoringResponse struct {
+	Message           string `json:"message"`
+	MonitoringEnabled bool   `json:"monitoring_enabled"`
 }
 
 type StartContainerResponse struct {

@@ -386,6 +386,32 @@ message StopContainerResponse {
   Container container = 2;
 }
 
+// ToggleMonitoringRequest enables / disables OTel app telemetry on
+// an existing container. The four OTEL_* env vars are stamped (or
+// unset) and the container is restarted so the new env reaches the
+// app process.
+message ToggleMonitoringRequest {
+  // Username of the container.
+  string username = 1;
+
+  // Desired state. true → stamp env vars + restart. false → unset
+  // env vars + restart so the SDK falls back to its buffer+drop
+  // default.
+  bool enabled = 2;
+}
+
+// ToggleMonitoringResponse reports the new monitoring state.
+message ToggleMonitoringResponse {
+  // Operator-facing summary of what changed (e.g. "monitoring
+  // enabled — container restarted").
+  string message = 1;
+
+  // The effective monitoring_enabled state of the container after
+  // the toggle (mirrors Container.monitoring_enabled in subsequent
+  // GetContainer responses).
+  bool monitoring_enabled = 2;
+}
+
 // AddSSHKeyRequest is the request to add an SSH key to a container
 message AddSSHKeyRequest {
   // Username of the container

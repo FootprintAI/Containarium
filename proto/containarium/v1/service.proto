@@ -191,6 +191,29 @@ service ContainerService {
     };
   }
 
+  // ToggleMonitoring enables or disables application-emitted OTel
+  // on an existing container without recreate. When enabling, the
+  // daemon stamps OTEL_EXPORTER_OTLP_ENDPOINT and related env vars
+  // pointing at this VM's core OTel collector LXC, then restarts
+  // the container so the new env reaches the app process. When
+  // disabling, the four OTEL_* env vars are unset and the container
+  // is restarted so the SDK falls back to its built-in "no endpoint,
+  // buffer + drop" behavior. Requires the daemon to be wired with
+  // a collector endpoint (--otel-collector-endpoint or auto-ensured
+  // core collector); without one, enabling fails with
+  // FAILED_PRECONDITION rather than silently writing dead env vars.
+  rpc ToggleMonitoring(ToggleMonitoringRequest) returns (ToggleMonitoringResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/monitoring"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Enable or disable OTel monitoring on a container";
+      description: "Live-flip OTEL_EXPORTER_OTLP_ENDPOINT and related env vars on an existing container and restart it so the change reaches the app. Use this to retrofit monitoring onto containers created before --monitoring was wired into create_container.";
+      tags: "Container Operations";
+    };
+  }
+
   // AddSSHKey adds an SSH public key to a container
   rpc AddSSHKey(AddSSHKeyRequest) returns (AddSSHKeyResponse) {
     option (google.api.http) = {

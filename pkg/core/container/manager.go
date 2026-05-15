@@ -651,6 +651,18 @@ func (m *Manager) SetEnv(containerName, key, value string) error {
 	return fmt.Errorf("SetEnv not supported on this incus backend (mock?)")
 }
 
+// UnsetEnv removes an environment variable from an existing
+// container's Incus config (deletes the key rather than setting it
+// to empty — empty-string OTEL_* vars are treated as misconfigured
+// by some SDKs, so absence is the right "disabled" representation).
+// Idempotent. Used by ToggleMonitoring's disable path.
+func (m *Manager) UnsetEnv(containerName, key string) error {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.UnsetEnv(containerName, key)
+	}
+	return fmt.Errorf("UnsetEnv not supported on this incus backend (mock?)")
+}
+
 func (m *Manager) Get(username string) (*incus.ContainerInfo, error) {
 	containerName := username + "-container"
 	return m.incus.GetContainer(containerName)

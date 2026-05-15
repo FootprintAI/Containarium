@@ -18,7 +18,9 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -914,6 +916,101 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 	return &pb.AdoptMigratedContainerResponse{
 		Message:      fmt.Sprintf("Container %s adopted, ready at %s", req.Username, newIP),
 		NewIpAddress: newIP,
+	}, nil
+}
+
+// otelEnvKeys lists the four environment variables the toggle
+// path stamps / unsets. Centralized so a future change to the env
+// var set is one edit, not two.
+var otelEnvKeys = []string{
+	"OTEL_EXPORTER_OTLP_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_PROTOCOL",
+	"OTEL_SERVICE_NAME",
+	"OTEL_RESOURCE_ATTRIBUTES",
+}
+
+// ToggleMonitoring enables / disables app-emitted OTel on an existing
+// container without recreating it. Per the OTel design doc's v2 TODO.
+//
+// Enable path: requires the daemon to have a collector endpoint
+// configured (FailedPrecondition if not). Stamps the four OTEL_*
+// env vars via incus config-update, then stops + starts the LXC so
+// the env reaches the app process — env-var changes don't take
+// effect on a running container's processes.
+//
+// Disable path: deletes the four OTEL_* env keys from the LXC's
+// Incus config (so the SDK falls back to its no-endpoint defaults
+// rather than seeing literal empty strings, which some SDKs flag
+// as misconfig), then stops + starts the LXC.
+//
+// Core containers are refused — they don't run user code and don't
+// need app-emitted telemetry.
+func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMonitoringRequest) (*pb.ToggleMonitoringResponse, error) {
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+
+	info, err := s.manager.Get(req.Username)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", req.Username, err)
+	}
+	if info.Role.IsCoreRole() {
+		return nil, status.Errorf(codes.InvalidArgument, "container %s is a core container; monitoring is for user containers only", info.Name)
+	}
+
+	containerName := info.Name
+
+	if req.Enabled {
+		if s.otelCollectorEndpoint == "" {
+			return nil, status.Error(codes.FailedPrecondition, "OTel collector endpoint is not configured on this daemon; cannot enable monitoring")
+		}
+		envVars := container.OTelEnvVarsForMigration(
+			req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint,
+		)
+		for k, v := range envVars {
+			if err := s.manager.SetEnv(containerName, k, v); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to stamp %s: %v", k, err)
+			}
+		}
+	} else {
+		for _, k := range otelEnvKeys {
+			if err := s.manager.UnsetEnv(containerName, k); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to unset %s: %v", k, err)
+			}
+		}
+	}
+
+	// Restart so the new env reaches the app. The container was
+	// running before — we ignore stop errors (LXC might be already
+	// stopped, in which case stop is a no-op).
+	wasRunning := info.State == "Running"
+	if wasRunning {
+		if err := s.manager.Stop(req.Username, false); err != nil {
+			log.Printf("[togglemonitor] %s stop returned %v (continuing)", containerName, err)
+		}
+		if err := s.manager.Start(req.Username); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to start container after env update: %v", err)
+		}
+	}
+
+	// Refresh the collector's IP map — the container may have a
+	// new IP after restart, and we want source-IP attribution to
+	// stay accurate.
+	s.refreshContainerIPMap()
+
+	msg := "monitoring disabled"
+	if req.Enabled {
+		msg = "monitoring enabled"
+	}
+	if wasRunning {
+		msg += " — container restarted"
+	} else {
+		msg += " — container was stopped; new env takes effect on next start"
+	}
+
+	return &pb.ToggleMonitoringResponse{
+		Message:           msg,
+		MonitoringEnabled: req.Enabled,
 	}, nil
 }
 
