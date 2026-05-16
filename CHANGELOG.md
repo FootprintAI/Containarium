@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.11] - 2026-05-16
+
+Lands the **platform sidecar pattern** as designed in [#185](https://github.com/FootprintAI/Containarium/pull/185) / [#186](https://github.com/FootprintAI/Containarium/pull/186): a small set of platform-published Docker images tenants compose into their LXC's stack to layer cross-cutting concerns (telemetry today; logs / scanning / audit next). The OTel sidecar is the first instance — tenants who'd had to plumb `OTEL_*` env passthrough across every compose service can now drop in a sidecar reference and let it stamp identity automatically.
+
+This release also tags the first sidecar image release: `ghcr.io/footprintai/containarium-otel-sidecar:v0.16.11`. Image versions track the Containarium project version — daemon and sidecars move together.
+
+### Added
+
+- **`containarium-otel-sidecar` Docker image + GH Actions build pipeline** ([#187](https://github.com/FootprintAI/Containarium/pull/187)) — `sidecars/otel-sidecar/` directory ships a Debian-slim Dockerfile that wraps `otelcol-contrib v0.110.0` (matches the central collector). Entrypoint validates the four required identity env vars (`CONTAINARIUM_CONTAINER_ID`, `CONTAINARIUM_BACKEND_ID`, `CONTAINARIUM_TENANT_ID`, `OTEL_EXPORTER_OTLP_ENDPOINT`) and fail-closes with a docs-link message if any are missing. Baked-in config uses the `resource` processor to `upsert` platform-controlled `container.id`/`backend.id` (overrides app-claimed values for anti-spoofing) and `insert` tenant-overridable `service.namespace`/`service.version`. `.github/workflows/sidecars.yml` triggers on every `v*` tag and publishes three tags per release: `:v0.16.11` (immutable), `:v0.16` (minor moving), `:latest-stable`.
+
+- **Daemon stamps split `CONTAINARIUM_*` env vars alongside `OTEL_RESOURCE_ATTRIBUTES`** ([#187](https://github.com/FootprintAI/Containarium/pull/187)) — `pkg/core/container/otel.go` now writes three additional env keys (`CONTAINARIUM_CONTAINER_ID`, `CONTAINARIUM_BACKEND_ID`, `CONTAINARIUM_TENANT_ID`) on `--monitoring=true` LXCs. The split form feeds the sidecar's compose `${VAR}` interpolation; the legacy comma form keeps non-sidecar apps (native LXC processes, agent-box, etc.) working unchanged. `ToggleMonitoring disable` cleans both forms.
+
+- **`containarium sidecar otel compose <username>` CLI** ([#188](https://github.com/FootprintAI/Containarium/pull/188)) — prints a ready-to-paste docker-compose snippet that adds the OTel sidecar to the named LXC's stack. Output uses `${VAR}` interpolation against the LXC's env (not hardcoded values) so it stays in sync as Containarium re-stamps via ToggleMonitoring / MoveContainer; current literal values appear as inline comments for verification. Read-only — never writes to tenant files (decision P2 of the platform-sidecar design). Image tag in the output tracks the project version.
+
+### Documentation
+
+- **Platform sidecar pattern** ([#185](https://github.com/FootprintAI/Containarium/pull/185), [#186](https://github.com/FootprintAI/Containarium/pull/186)) — `docs/PLATFORM-SIDECAR-DESIGN.md` (Approved) establishes the generic primitive: image contract (read identity from env, share netns/filesystem with target, fail-closed on missing identity), naming convention, GHCR registry, version-tracking-project policy, CVE response calendar. `log-sidecar` / `scanner-sidecar` / `audit-sidecar` follow this contract when shipped.
+- **OTel sidecar image** ([#186](https://github.com/FootprintAI/Containarium/pull/186)) — `docs/OTEL-AGENT-RELAY-DESIGN.md` (Approved). Rewritten from the rejected "Containarium installs systemd unit inside each LXC" v0 draft to the docker-compose-sidecar form. Documents the baked-in config, override semantics, and lifecycle.
+
 ## [0.16.10] - 2026-05-15
 
 Small follow-on to v0.16.9. Closes the `ToggleMonitoring` v2 TODO from the approved OTel design so operators can retrofit OTel onto containers that were created before `--monitoring` existed.
