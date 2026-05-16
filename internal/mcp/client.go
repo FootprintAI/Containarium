@@ -226,6 +226,77 @@ func (c *Client) ResizeContainer(username, cpu, memory, disk string) (*ResizeCon
 	return &resp, nil
 }
 
+// SetSecret creates or updates a tenant secret. Idempotent —
+// repeated calls with the same (username, name) bump the version.
+func (c *Client) SetSecret(username, name, value string) (*SecretResponse, error) {
+	body, err := json.Marshal(map[string]string{
+		"username": username, "name": name, "value": value,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	respBody, err := c.doRequest("POST", "/v1/secrets", body)
+	if err != nil {
+		return nil, err
+	}
+	var resp SecretResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetSecret reads a single secret's plaintext value.
+func (c *Client) GetSecret(username, name string) (string, error) {
+	respBody, err := c.doRequest("GET", fmt.Sprintf("/v1/secrets/%s/%s", username, name), nil)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
+	}
+	return resp.Value, nil
+}
+
+// ListSecrets returns metadata for every tenant secret.
+func (c *Client) ListSecrets(username string) ([]map[string]interface{}, error) {
+	respBody, err := c.doRequest("GET", fmt.Sprintf("/v1/secrets/%s", username), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Secrets []map[string]interface{} `json:"secrets"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return resp.Secrets, nil
+}
+
+// DeleteSecret removes a tenant secret.
+func (c *Client) DeleteSecret(username, name string) error {
+	if _, err := c.doRequest("DELETE", fmt.Sprintf("/v1/secrets/%s/%s", username, name), nil); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RefreshSecrets re-stamps env vars on the LXC.
+func (c *Client) RefreshSecrets(username string) (*RefreshSecretsResponse, error) {
+	respBody, err := c.doRequest("POST", fmt.Sprintf("/v1/secrets/%s/refresh", username), []byte("{}"))
+	if err != nil {
+		return nil, err
+	}
+	var resp RefreshSecretsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &resp, nil
+}
+
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(username string, force bool) (*DeleteContainerResponse, error) {
 	path := fmt.Sprintf("/v1/containers/%s?force=%v", username, force)
@@ -690,6 +761,16 @@ type ToggleMonitoringResponse struct {
 type ResizeContainerResponse struct {
 	Message   string    `json:"message"`
 	Container Container `json:"container"`
+}
+
+type SecretResponse struct {
+	Message string                 `json:"message"`
+	Secret  map[string]interface{} `json:"secret"`
+}
+
+type RefreshSecretsResponse struct {
+	Message string `json:"message"`
+	Stamped int32  `json:"stamped"`
 }
 
 type StartContainerResponse struct {
