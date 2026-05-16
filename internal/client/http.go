@@ -102,16 +102,17 @@ func parseResponse[T any](resp *http.Response) (*T, error) {
 
 // Container response types matching the protobuf JSON output
 type containerResponse struct {
-	Name          string            `json:"name"`
-	Username      string            `json:"username"`
-	State         string            `json:"state"`
-	Resources     *resourceLimits   `json:"resources"`
-	Network       *networkInfo      `json:"network"`
-	CreatedAt     string            `json:"createdAt"`
-	Labels        map[string]string `json:"labels"`
-	Image         string            `json:"image"`
-	PodmanEnabled bool              `json:"dockerEnabled"`
-	GpuDevice     string            `json:"gpuDevice"`
+	Name              string            `json:"name"`
+	Username          string            `json:"username"`
+	State             string            `json:"state"`
+	Resources         *resourceLimits   `json:"resources"`
+	Network           *networkInfo      `json:"network"`
+	CreatedAt         string            `json:"createdAt"`
+	Labels            map[string]string `json:"labels"`
+	Image             string            `json:"image"`
+	PodmanEnabled     bool              `json:"dockerEnabled"`
+	GpuDevice         string            `json:"gpuDevice"`
+	MonitoringEnabled bool              `json:"monitoringEnabled"`
 }
 
 type resourceLimits struct {
@@ -157,9 +158,10 @@ type systemInfo struct {
 // containerToIncusInfo converts API response to incus.ContainerInfo
 func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
-		Name:   c.Name,
-		State:  c.State,
-		Labels: c.Labels,
+		Name:              c.Name,
+		State:             c.State,
+		Labels:            c.Labels,
+		MonitoringEnabled: c.MonitoringEnabled,
 	}
 
 	if c.Network != nil {

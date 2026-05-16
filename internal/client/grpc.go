@@ -99,8 +99,9 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	var containers []incus.ContainerInfo
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:  container.Name,
-			State: container.State.String(),
+			Name:              container.Name,
+			State:             container.State.String(),
+			MonitoringEnabled: container.MonitoringEnabled,
 		}
 
 		// Get IP address from network info

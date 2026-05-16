@@ -162,12 +162,15 @@ func runList(cmd *cobra.Command, args []string) error {
 }
 
 func printTableFormat(containers []interface{}, running, stopped int, withLabels bool) {
+	// MON column: ✓ when the container has app-emitted OTel
+	// stamped in (environment.OTEL_EXPORTER_OTLP_ENDPOINT
+	// non-empty). 3-char column keeps the table compact.
 	if withLabels {
-		fmt.Printf("%-25s %-12s %-20s %-15s %s\n", "CONTAINER NAME", "STATUS", "IP ADDRESS", "CPU/MEMORY", "LABELS")
-		fmt.Printf("%-25s %-12s %-20s %-15s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), strings.Repeat("-", 20), strings.Repeat("-", 15), strings.Repeat("-", 30))
+		fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", "CONTAINER NAME", "STATUS", "MON", "IP ADDRESS", "CPU/MEMORY", "LABELS")
+		fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", strings.Repeat("-", 20), strings.Repeat("-", 15), strings.Repeat("-", 30))
 	} else {
-		fmt.Printf("%-25s %-12s %-20s %-15s\n", "CONTAINER NAME", "STATUS", "IP ADDRESS", "CPU/MEMORY")
-		fmt.Printf("%-25s %-12s %-20s %-15s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), strings.Repeat("-", 20), strings.Repeat("-", 15))
+		fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", "CONTAINER NAME", "STATUS", "MON", "IP ADDRESS", "CPU/MEMORY")
+		fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", strings.Repeat("-", 25), strings.Repeat("-", 12), "---", strings.Repeat("-", 20), strings.Repeat("-", 15))
 	}
 
 	if len(containers) == 0 {
@@ -175,6 +178,7 @@ func printTableFormat(containers []interface{}, running, stopped int, withLabels
 		return
 	}
 
+	monCount := 0
 	for _, item := range containers {
 		c := item.(incus.ContainerInfo)
 		ip := c.IPAddress
@@ -187,16 +191,22 @@ func printTableFormat(containers []interface{}, running, stopped int, withLabels
 			resources = "-"
 		}
 
+		mon := "-"
+		if c.MonitoringEnabled {
+			mon = "✓"
+			monCount++
+		}
+
 		if withLabels {
 			labelStr := formatLabels(c.Labels)
-			fmt.Printf("%-25s %-12s %-20s %-15s %s\n", c.Name, c.State, ip, resources, labelStr)
+			fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", c.Name, c.State, mon, ip, resources, labelStr)
 		} else {
-			fmt.Printf("%-25s %-12s %-20s %-15s\n", c.Name, c.State, ip, resources)
+			fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", c.Name, c.State, mon, ip, resources)
 		}
 	}
 
 	fmt.Println()
-	fmt.Printf("Total: %d containers (%d running, %d stopped)\n", len(containers), running, stopped)
+	fmt.Printf("Total: %d containers (%d running, %d stopped, %d monitored)\n", len(containers), running, stopped, monCount)
 }
 
 // formatLabels formats labels as a comma-separated string
@@ -249,6 +259,7 @@ func printYAMLFormat(containers []interface{}) {
 		fmt.Printf("  - name: %s\n", c.Name)
 		fmt.Printf("    state: %s\n", c.State)
 		fmt.Printf("    ip_address: %s\n", c.IPAddress)
+		fmt.Printf("    monitoring_enabled: %t\n", c.MonitoringEnabled)
 		if c.CPU != "" {
 			fmt.Printf("    cpu: %s\n", c.CPU)
 		}
