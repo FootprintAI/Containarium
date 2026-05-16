@@ -1,4 +1,4 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-release
+.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-release sidecar-build-otel
 
 # Variables
 BINARY_NAME=containarium
@@ -137,6 +137,20 @@ install-agent-box: build-agent-box ## Install agent-box to /usr/local/bin (requi
 	@echo "==> Installing $(AGENTBOX_BINARY_NAME) to /usr/local/bin..."
 	@sudo cp $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME) /usr/local/bin/
 	@echo "==> Installed. Wire it into Claude Code/Cursor with: ssh user@box agent-box"
+
+# Sidecar image build. Per docs/PLATFORM-SIDECAR-DESIGN.md, sidecar
+# images live at ghcr.io/footprintai/containarium-*-sidecar; on
+# FootprintAI's GitHub org public-package visibility is admin-locked,
+# so for now operators build the image themselves from the bundled
+# source. The tag tracks pkg/version.Version (decision P4).
+sidecar-build-otel: ## Build the otel-sidecar Docker image locally (tag = pkg/version)
+	$(eval SIDECAR_VERSION := $(shell grep '^[[:space:]]*Version = ' pkg/version/version.go | head -1 | sed -E 's/.*"([^"]+)".*/\1/'))
+	@echo "==> Building containarium-otel-sidecar:v$(SIDECAR_VERSION) from sidecars/otel-sidecar/..."
+	@docker build \
+		--tag containarium-otel-sidecar:v$(SIDECAR_VERSION) \
+		--tag containarium-otel-sidecar:latest \
+		sidecars/otel-sidecar/
+	@echo "==> Built. The compose snippet from \`containarium sidecar otel compose <user>\` references this tag."
 
 # build-release produces every release artifact for every supported
 # platform: containarium + mcp-server + agent-box, each for
