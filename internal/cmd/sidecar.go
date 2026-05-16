@@ -129,17 +129,6 @@ func renderOTelComposeSnippet(in otelComposeInputs) string {
 # which Containarium stamps via --monitoring; the values shown in
 # comments below are what's currently stamped on this LXC.
 #
-# IMPORTANT — build the image first.
-# The platform sidecar registry (ghcr.io/footprintai/containarium-otel-sidecar)
-# is currently org-private on FootprintAI's GHCR (admin-locked
-# visibility), so the snippet below references a local image tag.
-# From a checkout of footprintai/Containarium, build it once with:
-#
-#   make sidecar-build-otel
-#
-# That produces a local `+"`containarium-otel-sidecar:%s`"+` image the
-# compose service below uses. Re-run on every Containarium upgrade.
-#
 # Reference the sidecar from each app service that should emit
 # telemetry via:
 #
@@ -155,7 +144,7 @@ func renderOTelComposeSnippet(in otelComposeInputs) string {
 
 services:
   %s:
-    image: containarium-otel-sidecar:%s
+    image: ghcr.io/footprintai/containarium-otel-sidecar:%s
     restart: unless-stopped
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}    # currently: %s
@@ -174,7 +163,6 @@ services:
       start_period: 5s
 `,
 		in.Username,
-		in.ImageTag,                       // build-step hint shows tag
 		in.ServiceName, in.ServiceName,
 		in.ServiceName,
 		in.ImageTag,

@@ -116,9 +116,7 @@ The convention is documentation, not enforced. Compose's `network_mode: "service
 
 ## Image registry and versioning
 
-Containarium-published sidecars live at `ghcr.io/footprintai/containarium-<purpose>-sidecar`. **Sidecar image versions track the Containarium project version** rather than maintaining independent semver — one release number per Containarium release covers daemon + every sidecar.
-
-> **Status note (2026-05-16):** GHCR public-package visibility is admin-locked on FootprintAI's GitHub org, so the GHCR-pushed images are not currently anonymously pullable. Operators build the image locally from `sidecars/otel-sidecar/` (see [OTel sidecar design § build](OTEL-AGENT-RELAY-DESIGN.md)). The `make sidecar-build-otel` target produces `containarium-otel-sidecar:vX.Y.Z` matching the local `pkg/version`. The GHCR pipeline keeps running so authenticated org users (and a future public flip) work without code changes.
+Containarium-published sidecars live at `ghcr.io/footprintai/containarium-<purpose>-sidecar`. **Sidecar image versions track the Containarium project version** rather than maintaining independent semver — one release number per Containarium release covers daemon + every sidecar. Packages are public on GHCR; tenants `docker pull` without auth.
 
 For Containarium `v0.16.10`, each published sidecar gets three tags:
 

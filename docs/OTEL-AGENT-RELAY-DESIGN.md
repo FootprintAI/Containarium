@@ -17,7 +17,7 @@ This doc specifies the `containarium/otel-sidecar` Docker image — the first in
 
 ## Image contract
 
-`ghcr.io/footprintai/containarium-otel-sidecar:vX.Y.Z` is a thin wrapper over `otelcol-contrib`. The GHCR push runs on every release tag, but the package is currently org-private (see [platform-sidecar status note](PLATFORM-SIDECAR-DESIGN.md#image-registry-and-versioning)) — operators run `make sidecar-build-otel` from a checkout to produce the same image locally tagged `containarium-otel-sidecar:vX.Y.Z`. The compose snippet `containarium sidecar otel compose <username>` prints references the local tag form and reminds the operator to run the build target.
+`ghcr.io/footprintai/containarium-otel-sidecar:vX.Y.Z` is a thin wrapper over `otelcol-contrib`. The GHCR push runs on every release tag; the package is public, so tenants `docker pull` without auth. The compose snippet from `containarium sidecar otel compose <username>` references the GHCR path directly. The `make sidecar-build-otel` target stays for dev-loop iteration (build the image locally without round-tripping through CI).
 
 - **Base image:** the upstream `otel/opentelemetry-collector-contrib:0.110.0` (or whichever the central collector is also pinned to).
 - **Listening ports:** `0.0.0.0:4318` (OTLP/HTTP), `0.0.0.0:4317` (OTLP/gRPC), `0.0.0.0:13133` (health check).

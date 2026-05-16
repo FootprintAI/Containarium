@@ -17,11 +17,8 @@ func TestRenderOTelComposeSnippet_AllFieldsRendered(t *testing.T) {
 	})
 
 	mustContain := []string{
-		// Local image tag (GHCR is org-private; operator builds locally
-		// via `make sidecar-build-otel`).
-		"image: containarium-otel-sidecar:v0.16.11",
-		// Build-step reminder so operators know to run the make target.
-		"make sidecar-build-otel",
+		// GHCR image tag (public package; tenants `docker pull` directly).
+		"image: ghcr.io/footprintai/containarium-otel-sidecar:v0.16.11",
 		// Service name composed from username
 		"alice-otel:",
 		// network_mode hint references the same service name
@@ -64,7 +61,7 @@ func TestRenderOTelComposeSnippet_DoesNotLeakHardcodedTenantInImage(t *testing.T
 		// service-name baked in.
 		t.Errorf("image name should not include tenant; got snippet:\n%s", got)
 	}
-	if !strings.Contains(got, "image: containarium-otel-sidecar:v0.16.11") {
-		t.Errorf("expected canonical local image name, got:\n%s", got)
+	if !strings.Contains(got, "image: ghcr.io/footprintai/containarium-otel-sidecar:v0.16.11") {
+		t.Errorf("expected canonical GHCR image name, got:\n%s", got)
 	}
 }
