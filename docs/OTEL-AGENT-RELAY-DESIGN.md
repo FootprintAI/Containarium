@@ -1,7 +1,7 @@
 # OTel sidecar image — design
 
-**Status:** Draft
-**Last updated:** 2026-05-16 (pivoted from "LXC-level systemd relay" to "docker-compose sidecar")
+**Status:** Approved
+**Last updated:** 2026-05-16 (pivoted from "LXC-level systemd relay" to "docker-compose sidecar"; open questions resolved)
 **Related:**
 - [`docs/PLATFORM-SIDECAR-DESIGN.md`](PLATFORM-SIDECAR-DESIGN.md) — the generic platform-sidecar pattern this is the first instance of. **Read this first.**
 - [`docs/OTEL-COLLECTOR-DESIGN.md`](OTEL-COLLECTOR-DESIGN.md) — the central gateway this sidecar forwards to.
@@ -162,18 +162,18 @@ Most failure modes are inherited from the [platform sidecar pattern](PLATFORM-SI
 | Two sidecars in one LXC point at different central collectors | Shouldn't happen — `OTEL_EXPORTER_OTLP_ENDPOINT` comes from the LXC env, single source. | Documented; if tenant hand-edits compose to point at a different collector, that's their choice. |
 | Sidecar's container.id env doesn't match the LXC's actual container name | Tenant edited the env in compose. Sidecar still works but `container.id` is whatever they wrote. | Documented; the sidecar trusts its env. Operators can audit via `docker compose config`. |
 
-## Open questions
+## Resolved decisions
 
-These are the OTel-sidecar-specific ones. The cross-cutting platform questions are in [platform-sidecar-design](PLATFORM-SIDECAR-DESIGN.md#open-questions).
+OTel-sidecar-specific. Cross-cutting platform decisions are in [platform-sidecar-design](PLATFORM-SIDECAR-DESIGN.md#resolved-decisions).
 
-| # | Question | Why it matters | Proposed answer |
-|---|---|---|---|
-| 1 | Image base: `otel/opentelemetry-collector-contrib` or custom-built `otel/builder`? | The contrib image is ~280MB; a custom minimal builder image with only the components we need is closer to 30MB. Pull-time-per-LXC matters when sidecars proliferate. | Contrib for v1 (less ceremony); switch to a custom-built minimal collector for v2 once we know what receivers/processors/exporters we actually need. |
-| 2 | OTLP/gRPC receiver: ship or skip? | Some OTel SDKs default to gRPC. HTTP is simpler in compose. | Ship both. gRPC is "free" in the contrib image; tenants pick one. |
-| 3 | `service.namespace` insert vs upsert? | If we insert (only-if-absent), apps can override per-service. If we upsert, apps can't claim a different namespace. | Insert. Apps overriding `service.namespace` to e.g. group services into "auth" / "payment" / "infra" is a legit use case. |
-| 4 | Should the sidecar also pin `service.version` from a compose env? | Useful for canary / rollback metric breakdowns. | Yes, as `service.version` `insert` from `${SERVICE_VERSION}` env. Tenant sets per service; sidecar doesn't override. |
-| 5 | What happens on `OTEL_RESOURCE_ATTRIBUTES` env unset but the three `CONTAINARIUM_*` envs set? | Backward compat: today's LXC env stamps `OTEL_RESOURCE_ATTRIBUTES` as the comma string; the sidecar wants three split values. | Daemon adds the three `CONTAINARIUM_*` env stamps alongside the existing `OTEL_RESOURCE_ATTRIBUTES`. Sidecar reads only the `CONTAINARIUM_*` ones; the comma string stays for non-sidecar apps that read it directly. |
-| 6 | Health-check endpoint exposure | Should the sidecar expose `:13133` to the tenant's other containers, or keep it internal? | Expose. Operators want to curl it from neighboring containers when debugging. |
+| # | Decision | Rationale |
+|---|---|---|
+| 1 | **Image base for v1 is `otel/opentelemetry-collector-contrib`** (~280MB). v2 may switch to a custom-built minimal collector (~30MB) once the receiver/processor/exporter set stabilizes. | Less ceremony; we already vendor contrib for the central collector. Pull-bandwidth concerns are real but secondary until sidecars proliferate. |
+| 2 | **Ship both OTLP/HTTP and OTLP/gRPC receivers.** | gRPC is free in the contrib image; some OTel SDKs default to it. Tenants pick the protocol that fits their app. |
+| 3 | **`service.namespace` uses `insert` action** (only-if-absent). Apps can override per-service. | Grouping services into namespaces (`payment`, `auth`, `infra`) is a legit cross-cutting concern apps should control. Platform identity is `container.id` / `backend.id`; `service.namespace` is tenant-organizational. |
+| 4 | **`service.version` is `insert` from `${SERVICE_VERSION}` env.** Tenant sets per service in their compose; sidecar doesn't override. | Useful for canary / rollback breakdowns. Tenant-owned signal — sidecar shouldn't claim authority over what version their app is. |
+| 5 | **Daemon stamps the three `CONTAINARIUM_*` env vars alongside the existing `OTEL_RESOURCE_ATTRIBUTES`** (no replacement; both formats coexist). Sidecar reads the split form; non-sidecar apps that read `OTEL_RESOURCE_ATTRIBUTES` directly keep working. | Backward compat with v0.16.9 deployments. The OTel config language can't split a comma-separated string at config-load time, so splitting at the daemon is the practical move. |
+| 6 | **Health-check endpoint `:13133` is exposed** (binds `0.0.0.0:13133`), reachable from neighboring containers in the LXC. | Operators want to curl it from a debug container when investigating telemetry issues. The endpoint exposes only collector internals (queue depths, send failures), not tenant data. |
 
 ## Phased rollout
 
@@ -197,3 +197,4 @@ These phases nest under the [platform sidecar phased rollout](PLATFORM-SIDECAR-D
 |---|---|---|
 | 2026-05-16 | hsinhoyeh, drafted with Claude | Initial draft: per-LXC `otelcol-contrib` as a systemd unit installed by Containarium during `--monitoring` lifecycle hooks. Status: Draft. |
 | 2026-05-16 | hsinhoyeh, redrafted with Claude | Pivot from "platform installs systemd unit in LXC" to "platform publishes a docker sidecar image, tenant composes it in." Scope narrowed to the `containarium/otel-sidecar:v1` image specifically; generic platform pattern moved to `PLATFORM-SIDECAR-DESIGN.md`. Status: still Draft, now scoped. |
+| 2026-05-16 | hsinhoyeh | Resolved all 6 OTel-sidecar-specific open questions: contrib base for v1, ship both OTLP receivers, `service.namespace` `insert`, `service.version` `insert` from env, daemon stamps both old `OTEL_RESOURCE_ATTRIBUTES` AND new split `CONTAINARIUM_*` envs (backward compat), expose `:13133` health endpoint. Sidecar image versions track the Containarium project version per [[platform-sidecar-design]] decision #4. Status: Draft → Approved. |

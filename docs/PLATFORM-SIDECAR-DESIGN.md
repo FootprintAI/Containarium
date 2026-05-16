@@ -1,6 +1,6 @@
 # Platform sidecar pattern — design
 
-**Status:** Draft
+**Status:** Approved
 **Last updated:** 2026-05-16
 **Related:**
 - [`docs/OTEL-AGENT-RELAY-DESIGN.md`](OTEL-AGENT-RELAY-DESIGN.md) — the first concrete sidecar (OTel collector); now scoped to the `containarium/otel-sidecar` image
@@ -116,13 +116,15 @@ The convention is documentation, not enforced. Compose's `network_mode: "service
 
 ## Image registry and versioning
 
-Containarium-published sidecars live at `ghcr.io/footprintai/containarium-<purpose>-sidecar`. Image tags are immutable semver:
+Containarium-published sidecars live at `ghcr.io/footprintai/containarium-<purpose>-sidecar`. **Sidecar image versions track the Containarium project version** rather than maintaining independent semver — one release number per Containarium release covers daemon + every sidecar.
 
-- `:v1.2.3` — the canonical, pin-recommended tag.
-- `:v1` — moves with the latest v1.x.y, for tenants who want minor-version auto-update.
-- `:latest` — published but explicitly **not recommended** for compose; documented as "for ad-hoc local testing only."
+For Containarium `v0.16.10`, each published sidecar gets three tags:
 
-Each sidecar's GitHub release page documents the upstream version baked in (e.g. `otel-sidecar:v1.2.3` baked on `otelcol-contrib v0.110.0`). Tenants pin their compose to the sidecar version; we don't promise wire-compat between major sidecar versions but minor versions are backwards-compatible.
+- `:v0.16.10` — immutable, points at the exact build associated with that Containarium release. Pin here for paranoid stability.
+- `:v0.16` — moves with the latest `v0.16.X` release in the minor series. Recommended for compose; inherits security patches automatically.
+- `:latest-stable` — moves with the latest tagged Containarium release. Useful for local testing; not recommended for production compose.
+
+Each sidecar's GitHub release page documents the upstream binary version baked in (e.g. `containarium-otel-sidecar:v0.16.10` is built on `otelcol-contrib v0.110.0`). Operators inheriting a Containarium release inherit its sidecars — no separate compatibility matrix to manage.
 
 ## Future sidecars sketched
 
@@ -158,16 +160,16 @@ For reference, the trade-offs we considered (and rejected for v1):
 
 The LXC-level relay was rejected because it requires Containarium to install/manage processes inside tenant LXCs — an unwanted dependency direction. The sidecar pattern flips it: tenants choose what platform components they want, Containarium just publishes the images and stamps the identity env.
 
-## Open questions
+## Resolved decisions
 
-| # | Question | Why it matters | Proposed answer |
-|---|---|---|---|
-| 1 | Image registry: GHCR vs DockerHub vs Containarium-owned? | Pull bandwidth, supply-chain trust, mirror policy. | GHCR (`ghcr.io/footprintai/...`) — same registry as the main Containarium release artifacts; supports signed image attestations natively. |
-| 2 | Should the platform offer a `containarium sidecar list/install` CLI subcommand that prints suggested compose snippets? | Discoverability — tenants shouldn't have to grep docs to know what sidecars exist. | Yes, ship `containarium sidecar <name> compose` that prints a ready-to-paste compose block customized for the requesting LXC's identity. Tenant copies into their compose. No platform write to tenant files. |
-| 3 | How does the sidecar contract handle non-monitoring sidecars (log, scanner)? Same `--monitoring` gate or a separate flag set? | Telemetry is gated on `--monitoring`; what about logs/scanning? | One flag per concern (`--monitoring`, `--log-shipping`, `--audit-capture`). Each flag stamps the relevant env vars. Sidecars fail closed if their identity env is unset, so accidentally adding a `log-sidecar` to a `--monitoring=true --log-shipping=false` LXC errors clearly. |
-| 4 | Sidecar version pinning: minor-version moving tag (`:v1`) or strict semver (`:v1.2.3`)? | Tenants want stability AND security updates. | Both published; docs recommend `:v1` for stability + security-update inheritance, `:v1.2.3` for paranoid pinning. |
-| 5 | What about LXCs that don't run docker (rare today but possible)? | Native-binary LXCs (e.g. `argus-dev`) can't compose a sidecar. | They keep using the LXC-env stamping path (today's behavior). Sidecar pattern is a superset for docker LXCs, not a replacement for everything. |
-| 6 | Sidecar image vulnerability response. Who patches and when? | If `otelcol-contrib` has a CVE, do we rebuild and re-tag immediately? | Yes — Containarium maintains a "sidecar release calendar" tied to upstream CVE feeds. Auto-rebuild and re-push on upstream security release. Tenants on `:v1` pick it up automatically; tenants on `:v1.2.3` need to manually bump (we document the timeline). |
+| # | Decision | Rationale |
+|---|---|---|
+| 1 | **Image registry is GHCR** (`ghcr.io/footprintai/containarium-<name>-sidecar`). | Same registry as the main Containarium release artifacts; supports signed image attestations natively; no new vendor dependency. |
+| 2 | **`containarium sidecar <name> compose <username>` CLI subcommand** that prints a ready-to-paste compose block customized for the requesting LXC's identity. Tenant copies into their compose. **No platform write to tenant files.** | Discoverability without intrusion. Tenants who want it grab the snippet; the platform never modifies tenant artifacts. |
+| 3 | **One gating flag per cross-cutting concern** (`--monitoring`, `--log-shipping`, `--audit-capture`, ...). Each stamps the relevant identity env on the LXC. Sidecars fail closed if their required env is unset. | Lets tenants opt-in granularly. A `log-sidecar` added to a `--monitoring=true --log-shipping=false` LXC errors clearly at compose-up. |
+| 4 | **Sidecar image versions track the Containarium project version**, not independent semver. Each Containarium release (`v0.16.10`, `v0.17.0`, ...) produces matching sidecar tags. Moving tags `:latest-stable` and `:v0.16` (the minor-series moving tag) also published. | One number to remember per release. Daemon and sidecars move together — no compat matrix to maintain across decoupled release streams. Operators inheriting a Containarium release inherit its sidecars. |
+| 5 | **Non-docker LXCs keep using the LXC-env stamping path** (today's behavior). Sidecar pattern is a *superset* for docker LXCs, not a replacement. | Backward-compatible. Native-binary LXCs (`argus-dev`, etc.) can't `network_mode: service:...` because they have no compose; they read OTEL_* from the LXC env directly, same as v0.16.9 shipped. |
+| 6 | **Containarium maintains a sidecar release calendar tied to upstream CVE feeds.** Auto-rebuild and re-push on upstream security release; tenants on `:v0.16` (moving) pick it up automatically; tenants on `:v0.16.10` (immutable) manually bump per the documented timeline. | Security updates inheritable without daemon redeploy. Pinned-version users get explicit timeline rather than silent regressions. |
 
 ## Phased rollout
 
@@ -188,3 +190,4 @@ The LXC-level relay was rejected because it requires Containarium to install/man
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-16 | hsinhoyeh, drafted with Claude | Initial draft. Platform sidecar pattern as the model for cross-cutting concerns (telemetry, log, scanner, audit). OTel sidecar is the first instance. Replaces the prior "LXC-level relay" design. Status: Draft. |
+| 2026-05-16 | hsinhoyeh | Resolved all 6 open questions: GHCR registry, `containarium sidecar ... compose` CLI for discovery, per-concern gating flags, **sidecar versions track the Containarium project release version** (single number for daemon + sidecars), non-docker LXCs keep the legacy env path, CVE-driven auto-rebuild calendar. Status: Draft → Approved. |
