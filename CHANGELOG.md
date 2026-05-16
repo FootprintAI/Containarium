@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.12] - 2026-05-16
+
+Two unrelated fills:
+
+- **Sidecar image local-build stopgap** while GHCR is org-private — `make sidecar-build-otel` plus an updated compose-snippet preamble so operators aren't blocked on the registry-visibility change.
+- **`ResizeContainer` end-to-end** — server has had it since v0.16.4; this release wires the client wrappers, replaces the remote-CLI stub with a real call, and adds the `resize_container` MCP tool. Tenants can now hot-resize CPU / memory / disk on a running container via CLI or MCP without an SSH-to-the-backend ritual.
+
+### Added
+
+- **`make sidecar-build-otel`** ([#190](https://github.com/FootprintAI/Containarium/pull/190)) — builds the otel-sidecar Docker image locally from `sidecars/otel-sidecar/`, tag matching `pkg/version`. The compose snippet `containarium sidecar otel compose <user>` now references the local tag (`containarium-otel-sidecar:vX.Y.Z`) and reminds the operator to run the make target. GHCR pipeline keeps running for authenticated org users + a future public flip.
+- **`resize_container` MCP tool** + remote-CLI implementation + gRPC/HTTP client wrappers ([#191](https://github.com/FootprintAI/Containarium/pull/191)) — `containarium resize alice --memory 8GB --server …` (or the equivalent MCP call) now actually hot-resizes the container instead of returning "not yet implemented" with an SSH suggestion. At least one of `--cpu` / `--memory` / `--disk` is required; disk can only grow (server rejects shrinks). MCP tool count bumped 21 → 22.
+
 ## [0.16.11] - 2026-05-16
 
 Lands the **platform sidecar pattern** as designed in [#185](https://github.com/FootprintAI/Containarium/pull/185) / [#186](https://github.com/FootprintAI/Containarium/pull/186): a small set of platform-published Docker images tenants compose into their LXC's stack to layer cross-cutting concerns (telemetry today; logs / scanning / audit next). The OTel sidecar is the first instance — tenants who'd had to plumb `OTEL_*` env passthrough across every compose service can now drop in a sidecar reference and let it stamp identity automatically.
