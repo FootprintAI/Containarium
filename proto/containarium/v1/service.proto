@@ -7,6 +7,7 @@ import "containarium/v1/config.proto";
 import "containarium/v1/app.proto";
 import "containarium/v1/network.proto";
 import "containarium/v1/alert.proto";
+import "containarium/v1/secrets.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
@@ -476,6 +477,78 @@ service ContainerService {
       summary: "List webhook deliveries";
       description: "Returns the history of webhook delivery attempts including success/failure status, HTTP codes, and timing.";
       tags: "Alerts";
+    };
+  }
+
+  // SetSecret creates or updates a tenant secret. Idempotent —
+  // repeated calls with the same (username, name) bump the version
+  // and replace the value. See docs/SECRETS-MANAGEMENT-DESIGN.md.
+  rpc SetSecret(SetSecretRequest) returns (SetSecretResponse) {
+    option (google.api.http) = {
+      post: "/v1/secrets"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create or update a tenant secret";
+      description: "Encrypts the value with the daemon's master key and stores it in Postgres. Idempotent: same (username, name) bumps version. The value is never logged. Name must match ^[A-Z_][A-Z0-9_]*$ up to 128 chars; value max 64 KiB.";
+      tags: "Secrets";
+    };
+  }
+
+  // GetSecret reads a single secret's plaintext value. Always
+  // audit-logged. Admin JWT required (v1).
+  rpc GetSecret(GetSecretRequest) returns (GetSecretResponse) {
+    option (google.api.http) = {
+      get: "/v1/secrets/{username}/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Read a single tenant secret";
+      description: "Returns the decrypted plaintext value. Audit-logged. Caller's responsibility to keep the value safe once it's on the wire.";
+      tags: "Secrets";
+    };
+  }
+
+  // ListSecrets enumerates a tenant's secrets, metadata only —
+  // names + versions + timestamps. Never returns values.
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse) {
+    option (google.api.http) = {
+      get: "/v1/secrets/{username}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List tenant secrets (metadata only)";
+      description: "Returns name/version/timestamp tuples. Values are only readable via GetSecret per-name (audit-logged).";
+      tags: "Secrets";
+    };
+  }
+
+  // DeleteSecret removes a secret. Does not auto-clean env-var
+  // stamps on running containers — caller invokes RefreshSecrets
+  // separately if needed.
+  rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse) {
+    option (google.api.http) = {
+      delete: "/v1/secrets/{username}/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a tenant secret";
+      description: "Removes the secret from Postgres. Does NOT cascade to env-var stamps on running containers — call RefreshSecrets to re-stamp without restarting.";
+      tags: "Secrets";
+    };
+  }
+
+  // RefreshSecrets re-stamps the LXC's environment.<NAME> config
+  // keys from the current secret-store state for the tenant.
+  // Running processes don't pick up the new env (POSIX semantics);
+  // useful after rotation when the next exec'd process should see
+  // the new value without a full container restart.
+  rpc RefreshSecrets(RefreshSecretsRequest) returns (RefreshSecretsResponse) {
+    option (google.api.http) = {
+      post: "/v1/secrets/{username}/refresh"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Re-stamp tenant secrets into the LXC env";
+      description: "Reads all of the tenant's secrets from the DB, decrypts, and updates the LXC's environment.<NAME> config keys to match. Running processes keep their old env (POSIX); new execs see the refreshed values.";
+      tags: "Secrets";
     };
   }
 }

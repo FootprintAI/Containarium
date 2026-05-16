@@ -51,6 +51,11 @@ const (
 	ContainerService_UpdateAlertingConfig_FullMethodName   = "/containarium.v1.ContainerService/UpdateAlertingConfig"
 	ContainerService_TestWebhook_FullMethodName            = "/containarium.v1.ContainerService/TestWebhook"
 	ContainerService_ListWebhookDeliveries_FullMethodName  = "/containarium.v1.ContainerService/ListWebhookDeliveries"
+	ContainerService_SetSecret_FullMethodName              = "/containarium.v1.ContainerService/SetSecret"
+	ContainerService_GetSecret_FullMethodName              = "/containarium.v1.ContainerService/GetSecret"
+	ContainerService_ListSecrets_FullMethodName            = "/containarium.v1.ContainerService/ListSecrets"
+	ContainerService_DeleteSecret_FullMethodName           = "/containarium.v1.ContainerService/DeleteSecret"
+	ContainerService_RefreshSecrets_FullMethodName         = "/containarium.v1.ContainerService/RefreshSecrets"
 )
 
 // ContainerServiceClient is the client API for ContainerService service.
@@ -149,6 +154,26 @@ type ContainerServiceClient interface {
 	TestWebhook(ctx context.Context, in *TestWebhookRequest, opts ...grpc.CallOption) (*TestWebhookResponse, error)
 	// ListWebhookDeliveries lists webhook delivery history
 	ListWebhookDeliveries(ctx context.Context, in *ListWebhookDeliveriesRequest, opts ...grpc.CallOption) (*ListWebhookDeliveriesResponse, error)
+	// SetSecret creates or updates a tenant secret. Idempotent —
+	// repeated calls with the same (username, name) bump the version
+	// and replace the value. See docs/SECRETS-MANAGEMENT-DESIGN.md.
+	SetSecret(ctx context.Context, in *SetSecretRequest, opts ...grpc.CallOption) (*SetSecretResponse, error)
+	// GetSecret reads a single secret's plaintext value. Always
+	// audit-logged. Admin JWT required (v1).
+	GetSecret(ctx context.Context, in *GetSecretRequest, opts ...grpc.CallOption) (*GetSecretResponse, error)
+	// ListSecrets enumerates a tenant's secrets, metadata only —
+	// names + versions + timestamps. Never returns values.
+	ListSecrets(ctx context.Context, in *ListSecretsRequest, opts ...grpc.CallOption) (*ListSecretsResponse, error)
+	// DeleteSecret removes a secret. Does not auto-clean env-var
+	// stamps on running containers — caller invokes RefreshSecrets
+	// separately if needed.
+	DeleteSecret(ctx context.Context, in *DeleteSecretRequest, opts ...grpc.CallOption) (*DeleteSecretResponse, error)
+	// RefreshSecrets re-stamps the LXC's environment.<NAME> config
+	// keys from the current secret-store state for the tenant.
+	// Running processes don't pick up the new env (POSIX semantics);
+	// useful after rotation when the next exec'd process should see
+	// the new value without a full container restart.
+	RefreshSecrets(ctx context.Context, in *RefreshSecretsRequest, opts ...grpc.CallOption) (*RefreshSecretsResponse, error)
 }
 
 type containerServiceClient struct {
@@ -479,6 +504,56 @@ func (c *containerServiceClient) ListWebhookDeliveries(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *containerServiceClient) SetSecret(ctx context.Context, in *SetSecretRequest, opts ...grpc.CallOption) (*SetSecretResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetSecretResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetSecret_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetSecret(ctx context.Context, in *GetSecretRequest, opts ...grpc.CallOption) (*GetSecretResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSecretResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetSecret_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListSecrets(ctx context.Context, in *ListSecretsRequest, opts ...grpc.CallOption) (*ListSecretsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSecretsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListSecrets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) DeleteSecret(ctx context.Context, in *DeleteSecretRequest, opts ...grpc.CallOption) (*DeleteSecretResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteSecretResponse)
+	err := c.cc.Invoke(ctx, ContainerService_DeleteSecret_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) RefreshSecrets(ctx context.Context, in *RefreshSecretsRequest, opts ...grpc.CallOption) (*RefreshSecretsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshSecretsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_RefreshSecrets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ContainerServiceServer is the server API for ContainerService service.
 // All implementations must embed UnimplementedContainerServiceServer
 // for forward compatibility.
@@ -575,6 +650,26 @@ type ContainerServiceServer interface {
 	TestWebhook(context.Context, *TestWebhookRequest) (*TestWebhookResponse, error)
 	// ListWebhookDeliveries lists webhook delivery history
 	ListWebhookDeliveries(context.Context, *ListWebhookDeliveriesRequest) (*ListWebhookDeliveriesResponse, error)
+	// SetSecret creates or updates a tenant secret. Idempotent —
+	// repeated calls with the same (username, name) bump the version
+	// and replace the value. See docs/SECRETS-MANAGEMENT-DESIGN.md.
+	SetSecret(context.Context, *SetSecretRequest) (*SetSecretResponse, error)
+	// GetSecret reads a single secret's plaintext value. Always
+	// audit-logged. Admin JWT required (v1).
+	GetSecret(context.Context, *GetSecretRequest) (*GetSecretResponse, error)
+	// ListSecrets enumerates a tenant's secrets, metadata only —
+	// names + versions + timestamps. Never returns values.
+	ListSecrets(context.Context, *ListSecretsRequest) (*ListSecretsResponse, error)
+	// DeleteSecret removes a secret. Does not auto-clean env-var
+	// stamps on running containers — caller invokes RefreshSecrets
+	// separately if needed.
+	DeleteSecret(context.Context, *DeleteSecretRequest) (*DeleteSecretResponse, error)
+	// RefreshSecrets re-stamps the LXC's environment.<NAME> config
+	// keys from the current secret-store state for the tenant.
+	// Running processes don't pick up the new env (POSIX semantics);
+	// useful after rotation when the next exec'd process should see
+	// the new value without a full container restart.
+	RefreshSecrets(context.Context, *RefreshSecretsRequest) (*RefreshSecretsResponse, error)
 	mustEmbedUnimplementedContainerServiceServer()
 }
 
@@ -680,6 +775,21 @@ func (UnimplementedContainerServiceServer) TestWebhook(context.Context, *TestWeb
 }
 func (UnimplementedContainerServiceServer) ListWebhookDeliveries(context.Context, *ListWebhookDeliveriesRequest) (*ListWebhookDeliveriesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWebhookDeliveries not implemented")
+}
+func (UnimplementedContainerServiceServer) SetSecret(context.Context, *SetSecretRequest) (*SetSecretResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSecret not implemented")
+}
+func (UnimplementedContainerServiceServer) GetSecret(context.Context, *GetSecretRequest) (*GetSecretResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSecret not implemented")
+}
+func (UnimplementedContainerServiceServer) ListSecrets(context.Context, *ListSecretsRequest) (*ListSecretsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSecrets not implemented")
+}
+func (UnimplementedContainerServiceServer) DeleteSecret(context.Context, *DeleteSecretRequest) (*DeleteSecretResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteSecret not implemented")
+}
+func (UnimplementedContainerServiceServer) RefreshSecrets(context.Context, *RefreshSecretsRequest) (*RefreshSecretsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RefreshSecrets not implemented")
 }
 func (UnimplementedContainerServiceServer) mustEmbedUnimplementedContainerServiceServer() {}
 func (UnimplementedContainerServiceServer) testEmbeddedByValue()                          {}
@@ -1278,6 +1388,96 @@ func _ContainerService_ListWebhookDeliveries_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_SetSecret_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSecretRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetSecret(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetSecret_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetSecret(ctx, req.(*SetSecretRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetSecret_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSecretRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetSecret(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetSecret_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetSecret(ctx, req.(*GetSecretRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListSecrets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSecretsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListSecrets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListSecrets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListSecrets(ctx, req.(*ListSecretsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_DeleteSecret_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteSecretRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).DeleteSecret(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_DeleteSecret_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).DeleteSecret(ctx, req.(*DeleteSecretRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_RefreshSecrets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshSecretsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).RefreshSecrets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_RefreshSecrets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).RefreshSecrets(ctx, req.(*RefreshSecretsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ContainerService_ServiceDesc is the grpc.ServiceDesc for ContainerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1412,6 +1612,26 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListWebhookDeliveries",
 			Handler:    _ContainerService_ListWebhookDeliveries_Handler,
+		},
+		{
+			MethodName: "SetSecret",
+			Handler:    _ContainerService_SetSecret_Handler,
+		},
+		{
+			MethodName: "GetSecret",
+			Handler:    _ContainerService_GetSecret_Handler,
+		},
+		{
+			MethodName: "ListSecrets",
+			Handler:    _ContainerService_ListSecrets_Handler,
+		},
+		{
+			MethodName: "DeleteSecret",
+			Handler:    _ContainerService_DeleteSecret_Handler,
+		},
+		{
+			MethodName: "RefreshSecrets",
+			Handler:    _ContainerService_RefreshSecrets_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -2504,6 +2504,188 @@
         ]
       }
     },
+    "/v1/secrets": {
+      "post": {
+        "summary": "Create or update a tenant secret",
+        "description": "Encrypts the value with the daemon's master key and stores it in Postgres. Idempotent: same (username, name) bumps version. The value is never logged. Name must match ^[A-Z_][A-Z0-9_]*$ up to 128 chars; value max 64 KiB.",
+        "operationId": "ContainerService_SetSecret",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetSecretResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "SetSecretRequest creates or updates a tenant secret. Idempotent —\nrepeated calls with the same (username, name) bump the version and\nreplace the value.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetSecretRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ]
+      }
+    },
+    "/v1/secrets/{username}": {
+      "get": {
+        "summary": "List tenant secrets (metadata only)",
+        "description": "Returns name/version/timestamp tuples. Values are only readable via GetSecret per-name (audit-logged).",
+        "operationId": "ContainerService_ListSecrets",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListSecretsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username (tenant) whose secrets to list.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ]
+      }
+    },
+    "/v1/secrets/{username}/refresh": {
+      "post": {
+        "summary": "Re-stamp tenant secrets into the LXC env",
+        "description": "Reads all of the tenant's secrets from the DB, decrypts, and updates the LXC's environment.\u003cNAME\u003e config keys to match. Running processes keep their old env (POSIX); new execs see the refreshed values.",
+        "operationId": "ContainerService_RefreshSecrets",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RefreshSecretsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RefreshSecretsBody"
+            }
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ]
+      }
+    },
+    "/v1/secrets/{username}/{name}": {
+      "get": {
+        "summary": "Read a single tenant secret",
+        "description": "Returns the decrypted plaintext value. Audit-logged. Caller's responsibility to keep the value safe once it's on the wire.",
+        "operationId": "ContainerService_GetSecret",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSecretResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a tenant secret",
+        "description": "Removes the secret from Postgres. Does NOT cascade to env-var stamps on running containers — call RefreshSecrets to re-stamp without restarting.",
+        "operationId": "ContainerService_DeleteSecret",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteSecretResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ]
+      }
+    },
     "/v1/security/clamav-reports": {
       "get": {
         "summary": "List ClamAV scan reports",
@@ -4457,6 +4639,14 @@
         }
       }
     },
+    "DeleteSecretResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "DeployAppRequest": {
       "type": "object",
       "properties": {
@@ -4974,6 +5164,18 @@
         }
       }
     },
+    "GetSecretResponse": {
+      "type": "object",
+      "properties": {
+        "secret": {
+          "$ref": "#/definitions/SecretMetadata"
+        },
+        "value": {
+          "type": "string",
+          "description": "The decrypted plaintext value. Caller's responsibility to keep\nsafe — once it's on the wire, the daemon's encryption guarantee\nends."
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -5344,6 +5546,18 @@
         "totalCount": {
           "type": "integer",
           "format": "int32"
+        }
+      }
+    },
+    "ListSecretsResponse": {
+      "type": "object",
+      "properties": {
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/SecretMetadata"
+          }
         }
       }
     },
@@ -5979,6 +6193,23 @@
         }
       }
     },
+    "RefreshSecretsBody": {
+      "type": "object",
+      "description": "RefreshSecretsRequest re-stamps the LXC's environment.\u003cNAME\u003e\nconfig keys from the current secret DB state for the tenant. Used\nafter rotation when the operator wants the next process exec'd in\nthe LXC to see the new value without restarting the container.\n\nRunning processes in the container do NOT pick up the new env\n(Linux environments are inherited at fork time, not refreshed).\nFor that, the tenant restarts the container or starts a new\nprocess."
+    },
+    "RefreshSecretsResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "stamped": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Count of env vars actually stamped (matches the number of\nsecrets owned by the tenant at refresh time)."
+        }
+      }
+    },
     "RemediatePentestFindingBody": {
       "type": "object",
       "description": "RemediatePentestFindingRequest requests remediation of a Trivy finding by\nupgrading the OS package that contains the vulnerable binary."
@@ -6189,6 +6420,63 @@
         }
       },
       "title": "ScanJob represents a queued ClamAV scan job"
+    },
+    "SecretMetadata": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Username (tenant) that owns the secret."
+        },
+        "name": {
+          "type": "string",
+          "description": "Secret name. Matches `^[A-Z_][A-Z0-9_]*$` (Linux env-var convention,\nup to 128 chars)."
+        },
+        "version": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Monotonic version that bumps on every SetSecret for the same\n(username, name). Useful for rotation diagnostics (\"LXC env says\nversion=3, DB says version=4 → restart needed\")."
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "RFC3339 timestamps."
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
+    },
+    "SetSecretRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Username (tenant) that owns the secret."
+        },
+        "name": {
+          "type": "string",
+          "description": "Secret name. Server enforces ^[A-Z_][A-Z0-9_]*$ + 128 char max\n(per docs/SECRETS-MANAGEMENT-DESIGN.md decision #1)."
+        },
+        "value": {
+          "type": "string",
+          "description": "Plaintext value the daemon will encrypt with its master key\nbefore persisting. Server enforces a 64 KiB hard cap\n(decision #2). Never logged."
+        }
+      },
+      "description": "SetSecretRequest creates or updates a tenant secret. Idempotent —\nrepeated calls with the same (username, name) bump the version and\nreplace the value."
+    },
+    "SetSecretResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary (\"created\" / \"updated to version N\")."
+        },
+        "secret": {
+          "$ref": "#/definitions/SecretMetadata",
+          "description": "Resulting metadata after the write."
+        }
+      }
     },
     "StackInfo": {
       "type": "object",
