@@ -284,6 +284,47 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	return result.Message, result.MonitoringEnabled, nil
 }
 
+// ResizeContainer changes a container's CPU / memory / disk via HTTP.
+// Empty string for any field means "no change". Disk can only grow.
+func (c *HTTPClient) ResizeContainer(username, cpu, memory, disk string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/resize", url.PathEscape(username))
+	body, err := json.Marshal(map[string]string{
+		"cpu":    cpu,
+		"memory": memory,
+		"disk":   disk,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPut, path, body)
+	if err != nil {
+		return "", fmt.Errorf("resize container: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return "", fmt.Errorf("%s", errResp.Error)
+		}
+		return "", fmt.Errorf("resize container: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	return result.Message, nil
+}
+
 // DeleteContainer deletes a container via HTTP
 func (c *HTTPClient) DeleteContainer(username string, force bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

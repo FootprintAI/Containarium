@@ -203,6 +203,29 @@ func (c *Client) ToggleMonitoring(username string, enabled bool) (*ToggleMonitor
 	return &resp, nil
 }
 
+// ResizeContainer changes a container's CPU / memory / disk
+// allocation. Empty string for any field means "no change"; disk
+// can only grow (server rejects shrinks).
+func (c *Client) ResizeContainer(username, cpu, memory, disk string) (*ResizeContainerResponse, error) {
+	body, err := json.Marshal(map[string]string{
+		"cpu":    cpu,
+		"memory": memory,
+		"disk":   disk,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	respBody, err := c.doRequest("PUT", fmt.Sprintf("/v1/containers/%s/resize", username), body)
+	if err != nil {
+		return nil, err
+	}
+	var resp ResizeContainerResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // DeleteContainer deletes a container
 func (c *Client) DeleteContainer(username string, force bool) (*DeleteContainerResponse, error) {
 	path := fmt.Sprintf("/v1/containers/%s?force=%v", username, force)
@@ -662,6 +685,11 @@ type DeleteContainerResponse struct {
 type ToggleMonitoringResponse struct {
 	Message           string `json:"message"`
 	MonitoringEnabled bool   `json:"monitoring_enabled"`
+}
+
+type ResizeContainerResponse struct {
+	Message   string    `json:"message"`
+	Container Container `json:"container"`
 }
 
 type StartContainerResponse struct {

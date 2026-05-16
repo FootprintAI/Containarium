@@ -210,6 +210,26 @@ func (c *GRPCClient) DeleteContainer(username string, force bool) error {
 	return nil
 }
 
+// ResizeContainer changes a container's CPU / memory / disk via gRPC.
+// Empty string for any field means "no change". Disk can only grow —
+// the server rejects shrinks.
+func (c *GRPCClient) ResizeContainer(username, cpu, memory, disk string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req := &pb.ResizeContainerRequest{
+		Username: username,
+		Cpu:      cpu,
+		Memory:   memory,
+		Disk:     disk,
+	}
+	resp, err := c.client.ResizeContainer(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to resize container: %w", err)
+	}
+	return resp.Message, nil
+}
+
 // GetContainer gets information about a specific container via gRPC
 func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -281,6 +281,33 @@ func (s *Server) registerTools() {
 			Handler: handleMoveContainer,
 		},
 		{
+			Name:        "resize_container",
+			Description: "Change a container's CPU / memory / disk allocation in place. At least one of cpu, memory, or disk must be provided; the others default to no change. Disk can only grow — the server rejects shrinks. The container stays running (no restart needed for CPU/memory; disk resize is online via ZFS).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container to resize",
+					},
+					"cpu": map[string]interface{}{
+						"type":        "string",
+						"description": "New CPU limit (e.g. \"4\" for 4 cores, \"2-4\" for a range). Empty/omitted = no change.",
+					},
+					"memory": map[string]interface{}{
+						"type":        "string",
+						"description": "New memory limit (e.g. \"8GB\", \"4096MB\"). Empty/omitted = no change.",
+					},
+					"disk": map[string]interface{}{
+						"type":        "string",
+						"description": "New disk size (e.g. \"100GB\"). Can only grow — shrinks are rejected. Empty/omitted = no change.",
+					},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleResizeContainer,
+		},
+		{
 			Name:        "toggle_monitoring",
 			Description: "Enable or disable application-emitted OpenTelemetry on an existing container without recreating it. When enabling, the daemon stamps OTEL_EXPORTER_OTLP_ENDPOINT + related env vars and restarts the container so the app picks them up. Use this to retrofit monitoring onto containers created before --monitoring was wired in. Requires the daemon to have an OTel collector endpoint configured.",
 			InputSchema: map[string]interface{}{
@@ -906,6 +933,25 @@ func handleDebugContainer(client *Client, args map[string]interface{}) (string, 
 	}
 
 	return string(jsonData), nil
+}
+
+func handleResizeContainer(client *Client, args map[string]interface{}) (string, error) {
+	username, ok := args["username"].(string)
+	if !ok || username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+	cpu, _ := args["cpu"].(string)
+	memory, _ := args["memory"].(string)
+	disk, _ := args["disk"].(string)
+	if cpu == "" && memory == "" && disk == "" {
+		return "", fmt.Errorf("at least one of cpu, memory, or disk must be provided")
+	}
+
+	resp, err := client.ResizeContainer(username, cpu, memory, disk)
+	if err != nil {
+		return "", fmt.Errorf("failed to resize container: %w", err)
+	}
+	return fmt.Sprintf("✅ %s", resp.Message), nil
 }
 
 func handleToggleMonitoring(client *Client, args map[string]interface{}) (string, error) {

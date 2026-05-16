@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/spf13/cobra"
 )
@@ -117,10 +118,30 @@ func runResizeLocal(username, containerName string) error {
 }
 
 func runResizeRemote(username, containerName string) error {
-	// TODO: Implement remote resize via gRPC
-	// For now, return not implemented error
-	return fmt.Errorf("remote resize not yet implemented - please resize on the server directly:\n" +
-		"  ssh admin@%s\n" +
-		"  sudo containarium resize %s --cpu %s --memory %s --disk %s",
-		serverAddr, username, newCPU, newMemory, newDisk)
+	var msg string
+	var err error
+
+	if httpMode {
+		httpClient, herr := client.NewHTTPClient(serverAddr, authToken)
+		if herr != nil {
+			return herr
+		}
+		defer httpClient.Close()
+		msg, err = httpClient.ResizeContainer(username, newCPU, newMemory, newDisk)
+	} else {
+		grpcClient, gerr := client.NewGRPCClient(serverAddr, certsDir, insecure)
+		if gerr != nil {
+			return gerr
+		}
+		defer grpcClient.Close()
+		msg, err = grpcClient.ResizeContainer(username, newCPU, newMemory, newDisk)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✓ Container %s resized\n", containerName)
+	if msg != "" {
+		fmt.Println(msg)
+	}
+	return nil
 }
