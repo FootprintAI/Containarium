@@ -308,6 +308,70 @@ func (s *Server) registerTools() {
 			Handler: handleResizeContainer,
 		},
 		{
+			Name:        "set_secret",
+			Description: "Create or update a tenant secret stored encrypted (AES-256-GCM) on the daemon. The value will be stamped as environment.<NAME> on the LXC on next CreateContainer / StartContainer / refresh_secrets. Idempotent — repeated calls bump the version and replace the value. Names must be uppercase env-var-style (^[A-Z_][A-Z0-9_]*$, max 128 chars); values capped at 64 KiB.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{"type": "string", "description": "Tenant username owning the secret"},
+					"name":     map[string]interface{}{"type": "string", "description": "Env-var-style name (uppercase + digits + underscore, e.g. OPENAI_API_KEY)"},
+					"value":    map[string]interface{}{"type": "string", "description": "Plaintext value; the daemon encrypts before persisting"},
+				},
+				"required": []string{"username", "name", "value"},
+			},
+			Handler: handleSetSecret,
+		},
+		{
+			Name:        "get_secret",
+			Description: "Read a single tenant secret's plaintext value. Always audit-logged. Use this to verify what you just wrote or to hand a value to a script via stdout — be mindful where the output goes.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{"type": "string", "description": "Tenant username"},
+					"name":     map[string]interface{}{"type": "string", "description": "Secret name"},
+				},
+				"required": []string{"username", "name"},
+			},
+			Handler: handleGetSecret,
+		},
+		{
+			Name:        "list_secrets",
+			Description: "List a tenant's secret names + versions + timestamps. Never returns the plaintext values — use get_secret per-name for that (audit-logged separately).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{"type": "string", "description": "Tenant username"},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleListSecrets,
+		},
+		{
+			Name:        "delete_secret",
+			Description: "Remove a tenant secret from the store. Does NOT cascade to env-var stamps on running containers — call refresh_secrets separately if the deletion should reach the next exec without a container restart.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{"type": "string", "description": "Tenant username"},
+					"name":     map[string]interface{}{"type": "string", "description": "Secret name"},
+				},
+				"required": []string{"username", "name"},
+			},
+			Handler: handleDeleteSecret,
+		},
+		{
+			Name:        "refresh_secrets",
+			Description: "Re-stamp env vars on the LXC from the current secret-store state. Useful after rotation when the next exec'd process should see the new value without a full container restart. Running processes keep their old env (POSIX inherit-at-fork); new execs see the refresh.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{"type": "string", "description": "Tenant username"},
+				},
+				"required": []string{"username"},
+			},
+			Handler: handleRefreshSecrets,
+		},
+		{
 			Name:        "toggle_monitoring",
 			Description: "Enable or disable application-emitted OpenTelemetry on an existing container without recreating it. When enabling, the daemon stamps OTEL_EXPORTER_OTLP_ENDPOINT + related env vars and restarts the container so the app picks them up. Use this to retrofit monitoring onto containers created before --monitoring was wired in. Requires the daemon to have an OTel collector endpoint configured.",
 			InputSchema: map[string]interface{}{
@@ -933,6 +997,76 @@ func handleDebugContainer(client *Client, args map[string]interface{}) (string, 
 	}
 
 	return string(jsonData), nil
+}
+
+func handleSetSecret(client *Client, args map[string]interface{}) (string, error) {
+	username, _ := args["username"].(string)
+	name, _ := args["name"].(string)
+	value, _ := args["value"].(string)
+	if username == "" || name == "" {
+		return "", fmt.Errorf("username and name are required")
+	}
+	resp, err := client.SetSecret(username, name, value)
+	if err != nil {
+		return "", fmt.Errorf("failed to set secret: %w", err)
+	}
+	return fmt.Sprintf("✅ %s", resp.Message), nil
+}
+
+func handleGetSecret(client *Client, args map[string]interface{}) (string, error) {
+	username, _ := args["username"].(string)
+	name, _ := args["name"].(string)
+	if username == "" || name == "" {
+		return "", fmt.Errorf("username and name are required")
+	}
+	value, err := client.GetSecret(username, name)
+	if err != nil {
+		return "", fmt.Errorf("failed to get secret: %w", err)
+	}
+	return value, nil
+}
+
+func handleListSecrets(client *Client, args map[string]interface{}) (string, error) {
+	username, _ := args["username"].(string)
+	if username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+	list, err := client.ListSecrets(username)
+	if err != nil {
+		return "", fmt.Errorf("failed to list secrets: %w", err)
+	}
+	if len(list) == 0 {
+		return fmt.Sprintf("(no secrets for %s)", username), nil
+	}
+	b, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal: %w", err)
+	}
+	return string(b), nil
+}
+
+func handleDeleteSecret(client *Client, args map[string]interface{}) (string, error) {
+	username, _ := args["username"].(string)
+	name, _ := args["name"].(string)
+	if username == "" || name == "" {
+		return "", fmt.Errorf("username and name are required")
+	}
+	if err := client.DeleteSecret(username, name); err != nil {
+		return "", fmt.Errorf("failed to delete secret: %w", err)
+	}
+	return fmt.Sprintf("✅ secret %s deleted", name), nil
+}
+
+func handleRefreshSecrets(client *Client, args map[string]interface{}) (string, error) {
+	username, _ := args["username"].(string)
+	if username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+	resp, err := client.RefreshSecrets(username)
+	if err != nil {
+		return "", fmt.Errorf("failed to refresh secrets: %w", err)
+	}
+	return fmt.Sprintf("✅ %s", resp.Message), nil
 }
 
 func handleResizeContainer(client *Client, args map[string]interface{}) (string, error) {

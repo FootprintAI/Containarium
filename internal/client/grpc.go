@@ -210,6 +210,70 @@ func (c *GRPCClient) DeleteContainer(username string, force bool) error {
 	return nil
 }
 
+// SetSecret creates or updates a tenant secret via gRPC. Idempotent —
+// repeated calls with the same (username, name) bump the version.
+func (c *GRPCClient) SetSecret(username, name, value string) (*pb.SecretMetadata, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.SetSecret(ctx, &pb.SetSecretRequest{
+		Username: username, Name: name, Value: value,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("set secret: %w", err)
+	}
+	return resp.Secret, resp.Message, nil
+}
+
+// GetSecret reads a single secret's plaintext value via gRPC.
+func (c *GRPCClient) GetSecret(username, name string) (*pb.SecretMetadata, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.GetSecret(ctx, &pb.GetSecretRequest{
+		Username: username, Name: name,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("get secret: %w", err)
+	}
+	return resp.Secret, resp.Value, nil
+}
+
+// ListSecrets returns metadata for every secret owned by the tenant.
+func (c *GRPCClient) ListSecrets(username string) ([]*pb.SecretMetadata, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.ListSecrets(ctx, &pb.ListSecretsRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("list secrets: %w", err)
+	}
+	return resp.Secrets, nil
+}
+
+// DeleteSecret removes a tenant secret via gRPC.
+func (c *GRPCClient) DeleteSecret(username, name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.DeleteSecret(ctx, &pb.DeleteSecretRequest{
+		Username: username, Name: name,
+	})
+	if err != nil {
+		return "", fmt.Errorf("delete secret: %w", err)
+	}
+	return resp.Message, nil
+}
+
+// RefreshSecrets re-stamps the LXC's env from the current secret DB
+// state for the tenant. Running processes keep their old env; new
+// execs see the refreshed values.
+func (c *GRPCClient) RefreshSecrets(username string) (string, int32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.RefreshSecrets(ctx, &pb.RefreshSecretsRequest{Username: username})
+	if err != nil {
+		return "", 0, fmt.Errorf("refresh secrets: %w", err)
+	}
+	return resp.Message, resp.Stamped, nil
+}
+
 // ResizeContainer changes a container's CPU / memory / disk via gRPC.
 // Empty string for any field means "no change". Disk can only grow —
 // the server rejects shrinks.

@@ -284,6 +284,127 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	return result.Message, result.MonitoringEnabled, nil
 }
 
+// SetSecret creates or updates a tenant secret via HTTP.
+func (c *HTTPClient) SetSecret(username, name, value string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body, _ := json.Marshal(map[string]string{
+		"username": username,
+		"name":     name,
+		"value":    value,
+	})
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/secrets", body)
+	if err != nil {
+		return "", fmt.Errorf("set secret: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", parseErr(b, resp.StatusCode, "set secret")
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(b, &result)
+	return result.Message, nil
+}
+
+// GetSecret reads a single secret's plaintext value via HTTP.
+func (c *HTTPClient) GetSecret(username, name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path := fmt.Sprintf("/v1/secrets/%s/%s", url.PathEscape(username), url.PathEscape(name))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", fmt.Errorf("get secret: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", parseErr(b, resp.StatusCode, "get secret")
+	}
+	var result struct {
+		Value string `json:"value"`
+	}
+	_ = json.Unmarshal(b, &result)
+	return result.Value, nil
+}
+
+// ListSecrets returns metadata for every secret owned by the tenant.
+// Each entry is the name/version/timestamps tuple — values are only
+// readable via GetSecret per-name.
+func (c *HTTPClient) ListSecrets(username string) ([]map[string]interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path := fmt.Sprintf("/v1/secrets/%s", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list secrets: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, parseErr(b, resp.StatusCode, "list secrets")
+	}
+	var result struct {
+		Secrets []map[string]interface{} `json:"secrets"`
+	}
+	_ = json.Unmarshal(b, &result)
+	return result.Secrets, nil
+}
+
+// DeleteSecret removes a tenant secret via HTTP.
+func (c *HTTPClient) DeleteSecret(username, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path := fmt.Sprintf("/v1/secrets/%s/%s", url.PathEscape(username), url.PathEscape(name))
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return fmt.Errorf("delete secret: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return parseErr(b, resp.StatusCode, "delete secret")
+	}
+	return nil
+}
+
+// RefreshSecrets re-stamps the tenant's secrets into the LXC env.
+func (c *HTTPClient) RefreshSecrets(username string) (string, int32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path := fmt.Sprintf("/v1/secrets/%s/refresh", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodPost, path, []byte("{}"))
+	if err != nil {
+		return "", 0, fmt.Errorf("refresh secrets: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", 0, parseErr(b, resp.StatusCode, "refresh secrets")
+	}
+	var result struct {
+		Message string `json:"message"`
+		Stamped int32  `json:"stamped"`
+	}
+	_ = json.Unmarshal(b, &result)
+	return result.Message, result.Stamped, nil
+}
+
+// parseErr is a tiny helper used across the secrets HTTP methods to
+// surface the server's structured error body (`{"error":"..."}`)
+// when present, falling back to the status code otherwise.
+func parseErr(body []byte, status int, op string) error {
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
+		return fmt.Errorf("%s", errResp.Error)
+	}
+	return fmt.Errorf("%s: status %d", op, status)
+}
+
 // ResizeContainer changes a container's CPU / memory / disk via HTTP.
 // Empty string for any field means "no change". Disk can only grow.
 func (c *HTTPClient) ResizeContainer(username, cpu, memory, disk string) (string, error) {
