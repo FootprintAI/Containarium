@@ -1,6 +1,6 @@
 # Secrets management — design
 
-**Status:** Draft
+**Status:** Approved
 **Last updated:** 2026-05-16
 **Related:**
 - [`docs/SECURITY-ENCRYPTION-AT-REST.md`](SECURITY-ENCRYPTION-AT-REST.md) — encryption posture this builds on
@@ -211,16 +211,16 @@ v2: a shared-backend mode (HashiCorp Vault, GCP KMS Secret Manager, etc.) makes 
 - **Audit pipeline**: structured events to the planned `audit-sidecar`; SOC 2 / ISO 27001-ready evidence collection.
 - **Rotation policies**: cloud schedules rotation maintenance windows by tenant policy.
 
-## Open questions
+## Resolved decisions
 
-| # | Question | Why it matters | Proposed answer |
-|---|---|---|---|
-| 1 | Secret name charset / validation? | Names become Incus env-config keys; Linux env vars are uppercase ASCII + digits + `_`. | Enforce `^[A-Z_][A-Z0-9_]*$` at the API layer, max length 128. Reject everything else with InvalidArgument. |
-| 2 | Max secret value size? | TLS cert blobs and SSH keys are bigger than typical API keys but still bounded; Postgres BYTEA holds gigabytes, Incus env-config keys cap somewhere ~1MB. | 64 KiB hard cap in v1. Big enough for any reasonable cert/key; small enough to keep Incus env config sane. |
-| 3 | Should `GetSecret` require an LXC-bound caller token (only the matching container can read its own secrets) or an admin-bound JWT? | Tenant ergonomics vs. defense in depth. | Admin-JWT in v1 (same auth model as every other Containarium API). Per-LXC tokens are v2; they need a separate identity rollout. |
-| 4 | What happens to secrets when the container is deleted? | Secrets in Postgres are tenant-scoped, not container-scoped — they survive container recreate by design. | Survive. `containarium secrets delete` is the explicit way to remove them. Deleting an LXC does NOT cascade-clean secrets. |
-| 5 | First-install keyfile generation: auto or operator-prompted? | Same trade-off as ZFS keyfile (PR #177). | Auto-generate on first start if missing (32 bytes from `crypto/rand`, mode 0400). Log a loud warning telling the operator to back it up. |
-| 6 | Secrets exposed to MCP `get_secret` — gate on a flag, or always? | Some operators want agent-write-only secrets ("the agent can rotate but never read"). | v1: always exposed. v2: a per-secret `read_via_api: bool` flag covers the write-only-rotation case. |
+| # | Decision | Rationale |
+|---|---|---|
+| 1 | **Secret names match `^[A-Z_][A-Z0-9_]*$`** (Linux env-var convention), max length 128. Non-conforming names rejected at the API layer with `InvalidArgument`. | Keeps the daemon's `incus config set environment.<NAME>` path safe and makes compose `${VAR}` interpolation predictable. Operators / agents that try `my-key` get a clear error rather than a silent stamp into a key Incus accepts but compose can't reference. |
+| 2 | **64 KiB hard cap on secret value size.** | Big enough for any reasonable TLS cert / SSH key / OAuth blob; small enough that Incus env-config stays sane (Incus tolerates ~1 MiB but performance degrades). Surfaces "you're misusing this for blob storage" early. |
+| 3 | **`GetSecret` requires an admin JWT in v1** — same auth model as every other Containarium API. Per-LXC identity tokens land in v2 once we have a coherent identity story (mint / rotate / revoke / kernel-bound delivery). | Per-LXC tokens are a significant identity rollout; tying secrets to admin auth in v1 keeps the surface coherent with the rest of the daemon. v2 narrows the read surface to "container `alice` can read `alice`'s secrets and nothing else." |
+| 4 | **Secrets survive container deletion.** They're tenant-scoped, not container-scoped. `containarium secrets delete` is the explicit removal path; deleting an LXC does NOT cascade-clean secrets. | A tenant who deletes + recreates `alice-container` expects their `OPENAI_API_KEY` to still be there — secrets are per-tenant capital. Explicit deletion via the API matches the "no surprise destructive side-effects" principle in the rest of Containarium. |
+| 5 | **Auto-generate the master keyfile** (32 bytes from `crypto/rand`, mode 0400, root-owned) on first daemon start if missing. Log a loud "back this up off-host" warning. | Same pattern as the ZFS keyfile from #177; operators already understand the flow. Prompt-mode would block automated install scripts and add no real value. |
+| 6 | **MCP `get_secret` always exposed in v1.** A per-secret `read_via_api: bool` flag for the write-only-rotation case lands in v2. | If the agent can `set_secret` (rotate), it must also be able to `get_secret` to verify what it wrote. Gating reads from agents in v1 would force them through a side-channel; v2 adds the flag for operators who want strict "write-only by agents" semantics. |
 
 ## Phased rollout
 
@@ -243,3 +243,4 @@ v2: a shared-backend mode (HashiCorp Vault, GCP KMS Secret Manager, etc.) makes 
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-16 | hsinhoyeh, drafted with Claude | Initial draft. Daemon-managed secrets API with file-based master key, AES-256-GCM in Postgres, env-var stamping at container start, per-container scope. Status: Draft. |
+| 2026-05-16 | hsinhoyeh | Resolved all 6 open questions: env-var-style name validation, 64 KiB value cap, admin JWT auth in v1 (per-LXC tokens deferred to v2), secrets survive container delete, auto-generate keyfile on first start, MCP `get_secret` always exposed (per-secret read_via_api flag in v2). Status: Draft → Approved. |
