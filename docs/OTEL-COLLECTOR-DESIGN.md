@@ -195,6 +195,42 @@ service:
 
 **Provisioning.** Add a new entry to the daemon's core-services bring-up (same place `containarium-core-victoriametrics` lives today). Same lifecycle as the existing core containers — created once at first `--app-hosting` startup, idempotent on re-run.
 
+### Operator note: docker-in-LXC needs explicit passthrough
+
+The four `OTEL_*` env vars are stamped on the **LXC** via Incus's `environment.*` config keys. Processes started directly under the LXC's PID 1 (systemd unit, login shell, agent-box) inherit them automatically. But many Containarium deployments run a Docker daemon **inside** the LXC and launch the actual app processes as docker containers — and docker does **not** inherit its host's env into containers by default.
+
+For docker-in-LXC services, the app's docker run / compose definition needs to pass the vars through explicitly. Two ergonomic patterns:
+
+**docker-compose (recommended for stacks):**
+
+```yaml
+services:
+  app:
+    image: my-app:latest
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-app}   # override per-service if you want finer granularity
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES}
+```
+
+The `${VAR}` form reads from the docker-compose process's environment (which is the LXC's env, since compose runs as PID-N inside the LXC). No hardcoded values — the LXC's stamped vars flow through automatically and re-stamp correctly across MoveContainer.
+
+**docker run:**
+
+```bash
+docker run \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT \
+  -e OTEL_EXPORTER_OTLP_PROTOCOL \
+  -e OTEL_SERVICE_NAME \
+  -e OTEL_RESOURCE_ATTRIBUTES \
+  my-app:latest
+```
+
+The `-e NAME` (no `=value`) form tells docker to copy that var from the host shell environment into the container, which is exactly what we want.
+
+**`OTEL_SERVICE_NAME` per docker service.** The LXC-level `OTEL_SERVICE_NAME` is the tenant's username (e.g. `wordpress`). Multi-service stacks usually want a finer-grained service name (`wordpress-web`, `wordpress-db`, …). Either override in compose (`environment.OTEL_SERVICE_NAME: wordpress-web`) or let the app set it via SDK API. The collector uses `source.ip` for anti-spoofing regardless of what `service.name` the app claims, so customizing `OTEL_SERVICE_NAME` per docker service is safe.
+
 ### 3. Env-var injection on `create_container`
 
 **Variables set on every new container WITH `monitoring=true`:**
