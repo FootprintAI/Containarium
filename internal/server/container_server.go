@@ -919,14 +919,21 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 	}, nil
 }
 
-// otelEnvKeys lists the four environment variables the toggle
-// path stamps / unsets. Centralized so a future change to the env
-// var set is one edit, not two.
+// otelEnvKeys lists the environment variables the toggle path
+// stamps / unsets. Includes both the legacy OTEL_* form (read by
+// OTel SDKs auto-discovering) and the split CONTAINARIUM_* form
+// (read by the platform sidecar's compose interpolation). Both
+// shapes have to be unset on disable so the LXC's env is fully
+// clean afterward; otherwise a leftover CONTAINARIUM_CONTAINER_ID
+// would still appear in `printenv` and confuse audit / debug.
 var otelEnvKeys = []string{
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_PROTOCOL",
 	"OTEL_SERVICE_NAME",
 	"OTEL_RESOURCE_ATTRIBUTES",
+	"CONTAINARIUM_CONTAINER_ID",
+	"CONTAINARIUM_BACKEND_ID",
+	"CONTAINARIUM_TENANT_ID",
 }
 
 // ToggleMonitoring enables / disables app-emitted OTel on an existing

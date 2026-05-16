@@ -1,0 +1,63 @@
+# containarium-otel-sidecar collector config
+#
+# Per docs/OTEL-AGENT-RELAY-DESIGN.md. The resource processor stamps
+# platform-controlled identity attributes (container.id, backend.id)
+# from the CONTAINARIUM_* env vars Containarium puts on the LXC. The
+# entrypoint script validates those env vars before this config is
+# loaded.
+#
+# OTLP/HTTP + OTLP/gRPC receivers because some SDKs default to gRPC
+# (decision O2).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Override app-claimed identity. The whole point of the sidecar.
+  resource:
+    attributes:
+      # Platform-controlled; upsert overrides whatever the app set.
+      - key: container.id
+        value: ${env:CONTAINARIUM_CONTAINER_ID}
+        action: upsert
+      - key: backend.id
+        value: ${env:CONTAINARIUM_BACKEND_ID}
+        action: upsert
+      # Tenant-organizational; insert only if the app didn't already
+      # set service.namespace (decision O3 — apps can override).
+      - key: service.namespace
+        value: ${env:CONTAINARIUM_TENANT_ID}
+        action: insert
+      # Tenant-controlled version label (decision O4).
+      - key: service.version
+        value: ${env:SERVICE_VERSION}
+        action: insert
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+extensions:
+  health_check:
+    # Exposed on 0.0.0.0 so neighboring containers in the LXC can
+    # curl it for debug (decision O6). Returns collector internals
+    # only, no tenant data.
+    endpoint: 0.0.0.0:13133
+
+exporters:
+  otlphttp:
+    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+    tls:
+      insecure: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlphttp]
