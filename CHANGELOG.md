@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sidecar image is now public on GHCR** ([#193](https://github.com/FootprintAI/Containarium/pull/193)) — `ghcr.io/footprintai/containarium-otel-sidecar:vX.Y.Z` is anonymously pullable. The compose snippet from `containarium sidecar otel compose <user>` references GHCR directly again (no local-build step). `make sidecar-build-otel` stays for dev iteration.
+- **Platform sidecar pattern design** ([#185](https://github.com/FootprintAI/Containarium/pull/185), [#186](https://github.com/FootprintAI/Containarium/pull/186)) — `docs/PLATFORM-SIDECAR-DESIGN.md` (Approved) establishes the generic primitive: image contract, naming convention, GHCR registry, version-tracking-project policy. `log-sidecar` / `scanner-sidecar` / `audit-sidecar` follow this contract when shipped.
+- **Per-LXC OTel sidecar design** ([#184](https://github.com/FootprintAI/Containarium/pull/184), [#186](https://github.com/FootprintAI/Containarium/pull/186)) — `docs/OTEL-AGENT-RELAY-DESIGN.md` (Approved). Pivoted from "Containarium installs systemd unit inside each LXC" to "Containarium publishes containarium/otel-sidecar; tenants compose it in." Closes the docker-in-LXC env-passthrough gap discovered while rolling `--monitoring` to prod ([#183](https://github.com/FootprintAI/Containarium/pull/183)).
+- **Secrets management design** ([#194](https://github.com/FootprintAI/Containarium/pull/194), [#195](https://github.com/FootprintAI/Containarium/pull/195)) — `docs/SECRETS-MANAGEMENT-DESIGN.md` (Approved). Daemon-managed tenant-secrets API: file-based master key (same custody pattern as the ZFS keyfile), AES-256-GCM in Postgres, env-var stamping at container start, per-container scope, CLI + MCP from day one. Implementation in progress: phase 1 (proto + crypto) shipped in [#196](https://github.com/FootprintAI/Containarium/pull/196), phase 2 (Postgres store) in [#197](https://github.com/FootprintAI/Containarium/pull/197).
+- **Per-container ZFS encryption design** ([#178](https://github.com/FootprintAI/Containarium/pull/178), [#179](https://github.com/FootprintAI/Containarium/pull/179)) — `docs/ZFS-PER-CONTAINER-ENCRYPTION-DESIGN.md` (Approved). Per-tenant `encryptionroot` model with pluggable `KeyProvider` (FileKeyProvider for OSS, KMS/Vault for cloud); five lifecycle hooks. Blocked on the cloud-side multi-tenancy work.
+- **Prod rollout of `--monitoring`** on api / facelabor / pes / voicegpt / wordpress containers (operator action 2026-05-16, captured in memory). All five services are docker-in-LXC, so the LXC env is stamped but per-service docker passthrough is still up to the team.
+
 ## [0.16.12] - 2026-05-16
 
 Two unrelated fills:

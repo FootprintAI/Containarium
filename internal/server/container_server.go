@@ -11,6 +11,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
@@ -66,6 +67,13 @@ type ContainerServer struct {
 	// MoveContainer migration flow. Nil on daemons that don't support
 	// migration (MoveContainer returns "not configured" then).
 	moveRunner           incus.MigrationRunner
+
+	// secretsStore is the tenant-secrets backend. Nil on daemons
+	// that don't have Postgres wired up (--standalone); the
+	// SecretsService RPCs return Unavailable in that case.
+	// CreateContainer / StartContainer call LoadAllForUser to
+	// stamp environment.<NAME>=<value> at LXC start time.
+	secretsStore         *secrets.Store
 
 	// otelCollectorEndpoint is the OTLP/HTTP URL of this daemon's
 	// core OTel collector LXC (e.g. "http://10.0.3.142:4318").
@@ -251,6 +259,17 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	info, err := s.manager.Create(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
+
+	// Stamp tenant secrets into the LXC's env (best-effort — a
+	// failure here doesn't fail the create; secrets can always be
+	// retried via RefreshSecrets).
+	if s.secretsStore != nil {
+		if n, err := s.stampSecretsOnLXC(ctx, req.Username); err != nil {
+			log.Printf("[secrets] failed to stamp on %s: %v (continuing)", info.Name, err)
+		} else if n > 0 {
+			log.Printf("[secrets] stamped %d secret(s) on %s at create time", n, info.Name)
+		}
 	}
 
 	// Refresh the collector's IP map so the new container's
@@ -594,6 +613,18 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 			}
 		}
 		return nil, fmt.Errorf("failed to start container: %w", err)
+	}
+
+	// Re-stamp tenant secrets from the current DB state. Picks up
+	// any rotations that happened while the container was stopped;
+	// existing processes won't see the change (POSIX inherit-at-fork),
+	// but new execs will.
+	if s.secretsStore != nil {
+		if n, err := s.stampSecretsOnLXC(ctx, req.Username); err != nil {
+			log.Printf("[secrets] failed to re-stamp on start of %s-container: %v (continuing)", req.Username, err)
+		} else if n > 0 {
+			log.Printf("[secrets] re-stamped %d secret(s) on %s-container at start time", n, req.Username)
+		}
 	}
 
 	info, err := s.manager.Get(req.Username)

@@ -33,6 +33,8 @@ import (
 	"github.com/footprintai/containarium/pkg/core/network"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/security"
+	secretsstore "github.com/footprintai/containarium/internal/secrets"
+	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/internal/traffic"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -402,6 +404,35 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						containerServer.SetOTelCollectorEndpoint(endpoint)
 						containerServer.SetCoreServices(coreServices)
 						log.Printf("OTel collector ready: %s (drop-labels=%v)", endpoint, config.OTelDropLabels)
+					}
+				}
+			}
+
+			// Set up the tenant secrets store. Mirrors the
+			// app-store path: shares Postgres but holds its own
+			// pgxpool. Failure here only disables the secrets
+			// API; the rest of the daemon keeps running.
+			if secretsPool, secretsErr := connectToPostgres(postgresConnString, 5, 3*time.Second); secretsErr != nil {
+				log.Printf("Warning: Failed to connect to Postgres for secrets store: %v", secretsErr)
+			} else {
+				key, created, kerr := corecryptosecrets.LoadOrCreateMasterKey("/etc/containarium/secrets.key")
+				if kerr != nil {
+					log.Printf("Warning: Failed to load secrets master key: %v. Secrets disabled.", kerr)
+					secretsPool.Close()
+				} else {
+					if created {
+						log.Printf("[secrets] NEW MASTER KEY generated at /etc/containarium/secrets.key — back this up off-host, losing it means every stored secret is unrecoverable ciphertext")
+					}
+					cipher, cerr := corecryptosecrets.NewCipher(key)
+					if cerr != nil {
+						log.Printf("Warning: Failed to construct secrets cipher: %v. Secrets disabled.", cerr)
+						secretsPool.Close()
+					} else if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher); serr != nil {
+						log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)
+						secretsPool.Close()
+					} else {
+						containerServer.SetSecretsStore(store)
+						log.Printf("Secrets store ready (file-keyed, AES-256-GCM)")
 					}
 				}
 			}
