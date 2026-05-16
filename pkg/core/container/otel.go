@@ -23,6 +23,18 @@ import (
 // tell apart "monitoring off" from "monitoring on with zero vars."
 // The Incus config-map merge code treats both the same in practice,
 // but tests assert on the distinction.
+//
+// Two parallel env-var formats are stamped:
+//
+//   - The legacy OTEL_RESOURCE_ATTRIBUTES comma-string (for apps that
+//     read it directly via the OTel SDK env-discovery path).
+//   - Split CONTAINARIUM_CONTAINER_ID / CONTAINARIUM_BACKEND_ID /
+//     CONTAINARIUM_TENANT_ID for the platform-sidecar config language
+//     (otelcol's ${env:VAR} reference can't parse comma strings).
+//
+// Both forms encode the same information; see
+// docs/PLATFORM-SIDECAR-DESIGN.md decision #5 and
+// docs/OTEL-AGENT-RELAY-DESIGN.md decision #5.
 func otelEnvVars(opts CreateOptions, containerName string) map[string]string {
 	if !opts.Monitoring {
 		return nil
@@ -31,24 +43,7 @@ func otelEnvVars(opts CreateOptions, containerName string) map[string]string {
 		log.Printf("[otel] container %s requested monitoring=true but daemon has no collector endpoint configured; skipping env-var injection", containerName)
 		return nil
 	}
-
-	// OTEL_RESOURCE_ATTRIBUTES is the canonical way to attach
-	// resource-scoped labels that the receiving collector will see
-	// on every metric / span / log emitted by this app. We stamp
-	// container.id (so the collector's anti-spoofing processor can
-	// verify against source IP) and backend.id (so cross-VM
-	// Grafana dashboards can group by daemon).
-	resourceAttrs := strings.Join([]string{
-		"container.id=" + containerName,
-		"backend.id=" + opts.BackendID,
-	}, ",")
-
-	return map[string]string{
-		"OTEL_EXPORTER_OTLP_ENDPOINT": opts.OTelCollectorEndpoint,
-		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-		"OTEL_SERVICE_NAME":           opts.Username,
-		"OTEL_RESOURCE_ATTRIBUTES":    resourceAttrs,
-	}
+	return buildOTelEnvMap(opts.Username, containerName, opts.BackendID, opts.OTelCollectorEndpoint)
 }
 
 // OTelEnvVarsForMigration returns the same env-var set as
@@ -65,14 +60,39 @@ func OTelEnvVarsForMigration(username, containerName, backendID, collectorEndpoi
 	if collectorEndpoint == "" {
 		return nil
 	}
+	return buildOTelEnvMap(username, containerName, backendID, collectorEndpoint)
+}
+
+// buildOTelEnvMap is the single source of truth for what
+// monitoring-related env vars get stamped on a container. Both the
+// create-time and migration-time entry points return the same shape.
+//
+// OTEL_RESOURCE_ATTRIBUTES is the canonical comma-encoded form that
+// any OTel SDK auto-discovers. The three CONTAINARIUM_* keys are the
+// split form the platform sidecar's baked-in otelcol config reads
+// via ${env:CONTAINARIUM_CONTAINER_ID} etc. Keeping both means:
+//
+//   - Apps running directly in the LXC (non-docker) pick up the
+//     OTel SDK auto-config from OTEL_RESOURCE_ATTRIBUTES with no
+//     extra work.
+//   - The OTel sidecar (docker-compose service inside the LXC) reads
+//     the split form via `${VAR}` compose-interpolation, since the
+//     interpolation runs at compose-up time and feeds the env into
+//     the sidecar container.
+func buildOTelEnvMap(username, containerName, backendID, collectorEndpoint string) map[string]string {
 	resourceAttrs := strings.Join([]string{
 		"container.id=" + containerName,
 		"backend.id=" + backendID,
 	}, ",")
 	return map[string]string{
+		// Legacy / auto-discovered form
 		"OTEL_EXPORTER_OTLP_ENDPOINT": collectorEndpoint,
 		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
 		"OTEL_SERVICE_NAME":           username,
 		"OTEL_RESOURCE_ATTRIBUTES":    resourceAttrs,
+		// Split form for sidecar compose-interpolation
+		"CONTAINARIUM_CONTAINER_ID": containerName,
+		"CONTAINARIUM_BACKEND_ID":   backendID,
+		"CONTAINARIUM_TENANT_ID":    username,
 	}
 }

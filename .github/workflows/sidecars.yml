@@ -1,0 +1,66 @@
+name: Build sidecar images
+
+# Triggered by the same Containarium release tags as the binary
+# release workflow. Per docs/PLATFORM-SIDECAR-DESIGN.md decision #4,
+# sidecar image versions track the Containarium project release —
+# every v*.*.* tag publishes matching sidecar tags.
+on:
+  push:
+    tags:
+      - 'v*'   # e.g. v0.16.11
+
+permissions:
+  contents: read
+  packages: write   # for GHCR push
+
+jobs:
+  otel-sidecar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          # Strip the leading 'v' from the tag to get e.g. 0.16.10
+          version="${GITHUB_REF#refs/tags/v}"
+          # Derive the minor-series moving tag: 0.16.10 -> v0.16
+          minor="v$(echo "$version" | cut -d. -f1-2)"
+
+          base="ghcr.io/footprintai/containarium-otel-sidecar"
+
+          {
+            echo "image=${base}"
+            echo "version=v${version}"
+            echo "minor=${minor}"
+            echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push otel-sidecar
+        uses: docker/build-push-action@v6
+        with:
+          context: ./sidecars/otel-sidecar
+          file: ./sidecars/otel-sidecar/Dockerfile
+          # linux/amd64 only for v1 — bare-metal peers may want arm64
+          # later but our prod fleet is amd64 today.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # Build provenance + SBOM are GHA-default for buildx push;
+          # explicit so it's reviewable.
+          provenance: true
+          sbom: true
