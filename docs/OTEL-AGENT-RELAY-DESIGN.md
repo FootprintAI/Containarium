@@ -1,202 +1,199 @@
-# Per-LXC OTel agent relay — design
+# OTel sidecar image — design
 
 **Status:** Draft
-**Last updated:** 2026-05-16
+**Last updated:** 2026-05-16 (pivoted from "LXC-level systemd relay" to "docker-compose sidecar")
 **Related:**
-- [`docs/OTEL-COLLECTOR-DESIGN.md`](OTEL-COLLECTOR-DESIGN.md) — the central VictoriaMetrics-backed collector this relay forwards to (the "gateway" in OTel agent/gateway terminology)
-- [`docs/OTEL-COLLECTOR-DESIGN.md#operator-note-docker-in-lxc-needs-explicit-passthrough`](OTEL-COLLECTOR-DESIGN.md#operator-note-docker-in-lxc-needs-explicit-passthrough) — the docker-in-LXC gap this design replaces
+- [`docs/PLATFORM-SIDECAR-DESIGN.md`](PLATFORM-SIDECAR-DESIGN.md) — the generic platform-sidecar pattern this is the first instance of. **Read this first.**
+- [`docs/OTEL-COLLECTOR-DESIGN.md`](OTEL-COLLECTOR-DESIGN.md) — the central gateway this sidecar forwards to.
 
 ## Context
 
-Containerium's app-emitted OTel design (shipped v0.16.9 + v0.16.10) stamps `OTEL_EXPORTER_OTLP_ENDPOINT` and three other env vars onto a `--monitoring=true` LXC. Processes launched **directly** under the LXC's PID 1 inherit them automatically. But the majority of real production deployments run a **docker daemon inside the LXC** and launch the actual app processes as docker containers — and docker doesn't inherit its host's env into containers by default. We documented the operator-side passthrough patterns (compose `${VAR}` interpolation, `docker run -e NAME`), but that's developer-side plumbing for every team and every compose file.
+This doc specifies the `containarium/otel-sidecar` Docker image — the first instance of the [platform sidecar pattern](PLATFORM-SIDECAR-DESIGN.md). The platform-pattern doc covers the registry, identity contract, naming, lifecycle, and why we picked the docker-compose sidecar shape over the rejected "systemd unit in LXC" approach. This doc covers only what's specific to telemetry:
 
-This doc designs the platform-side alternative: a fluentd-style **agent relay** that Containarium installs inside each `--monitoring=true` LXC. Apps inside docker emit OTLP to a stable local endpoint; the relay rewrites resource attributes from the LXC's env and forwards to the central collector. Zero compose changes for the tenant; full identity stamping is platform-controlled and unforgeable.
+- What the OTel sidecar's baked-in config looks like.
+- How it overrides app-claimed identity attributes (`container.id`, `backend.id`).
+- How it exports to the central `containarium-core-otelcollector` LXC.
+- The OTel-specific failure cases.
 
-## Goals / non-goals
+## Image contract
 
-**Goals**
+`ghcr.io/footprintai/containarium-otel-sidecar:v1` is a thin wrapper over `otelcol-contrib`:
 
-- Apps running inside docker containers emit OTLP with **zero compose changes** — point at a well-known local endpoint, get correct backend.id / container.id labels for free.
-- Per-tenant identity is **platform-stamped**, not app-claimed — the relay overrides container.id and backend.id resource attributes regardless of what the app sent. (Anti-spoofing at the resource-attribute layer; complements the existing source-IP processor at the gateway.)
-- Same `--monitoring` per-container opt-in shape — no new flag, no new tenant decision.
-- `ToggleMonitoring enable/disable` and `MoveContainer` lifecycles cleanly install / uninstall / re-stamp the relay.
-- No memory regression on `--monitoring=false` LXCs (the relay isn't installed at all there).
+- **Base image:** the upstream `otel/opentelemetry-collector-contrib:0.110.0` (or whichever the central collector is also pinned to).
+- **Listening ports:** `0.0.0.0:4318` (OTLP/HTTP), `0.0.0.0:4317` (OTLP/gRPC), `0.0.0.0:13133` (health check).
+- **Required env vars at start:**
+  - `OTEL_EXPORTER_OTLP_ENDPOINT` — central collector URL, e.g. `http://10.0.3.112:4318`.
+  - `OTEL_RESOURCE_ATTRIBUTES` — the platform-stamped `container.id=<lxc-name>,backend.id=<host>` string.
+  - `OTEL_SERVICE_NAME` — the tenant's per-service name (e.g. `payment-api`). Owned by the tenant; the sidecar passes it through.
+- **Fail-closed startup:** missing any of the first two → log + exit non-zero. The third defaults to the LXC's username if unset.
 
-**Non-goals (for v1)**
+## Baked-in config
 
-- Tracing and logs. Same scope as the central collector — metrics-only v1; v2 adds trace + log receivers when needed.
-- Bare-metal peers (`fts-5900x`, `fts-13700k`). Those run their daemons outside the Incus LXC model; they need a separate "host-level OTel collector" plan that this doc doesn't cover.
-- Non-monitoring LXCs. Relay only exists when `--monitoring=true`.
-- Per-docker-container override of `OTEL_SERVICE_NAME`. Apps that set their own `service.name` keep it; we don't try to map `<docker-container-name> → <service.name>` automatically (out of scope, app-side concern).
-- Replacing the existing operator-side compose / run patterns. The compose `${VAR}` form still works; teams that have it wired up already don't have to switch. The relay is an additive opt-in.
-
-## Architecture
-
-```
-┌────────── inside one Containarium user LXC (monitoring=true) ────────────┐
-│                                                                          │
-│   docker0 (172.17.0.1/16) — also br-XXXX named bridges per compose       │
-│                                                                          │
-│   ┌───────────────────────────┐   ① app emits OTLP/HTTP to                │
-│   │ docker container          │      172.17.0.1:4318 (or another bridge   │
-│   │ (the tenant's app)        │      gateway; all reach the relay)         │
-│   │                           │                                          │
-│   │ no OTEL_* env set in      │   ② OTLP/HTTP                              │
-│   │ compose — points at       │──────────────────────┐                   │
-│   │ stable local relay        │                      ▼                   │
-│   └───────────────────────────┘   ┌────────────────────────────────────┐ │
-│                                   │  otel-relay (systemd, in this LXC) │ │
-│                                   │                                    │ │
-│                                   │  receivers: otlp http/grpc :4318/  │ │
-│                                   │                              :4317 │ │
-│                                   │                                    │ │
-│                                   │  processors:                       │ │
-│                                   │    - resource (upsert from         │ │
-│                                   │      OTEL_RESOURCE_ATTRIBUTES,     │ │
-│                                   │      overrides app-claimed         │ │
-│                                   │      container.id / backend.id)    │ │
-│                                   │    - batch                         │ │
-│                                   │                                    │ │
-│                                   │  exporters: otlphttp →             │ │
-│                                   │    http://<core-collector>:4318    │ │
-│                                   └────────────────┬───────────────────┘ │
-│                                                    │ ③ OTLP/HTTP         │
-└────────────────────────────────────────────────────┼─────────────────────┘
-                                                     │ (cross-LXC over
-                                                     │  incusbr0)
-                                                     ▼
-                       ┌────────────────────────────────────────────────┐
-                       │  containarium-core-otelcollector (central LXC) │
-                       │                                                │
-                       │  unchanged from v0.16.9:                       │
-                       │    attributes/identity (source.ip anti-spoof)  │
-                       │    transform (PII drop-list)                   │
-                       │    batch                                       │
-                       │    otlphttp → VictoriaMetrics                  │
-                       └────────────────────────────────────────────────┘
-```
-
-Two layers of anti-spoofing now apply:
-
-- **Resource-attribute layer (new):** the per-LXC relay overrides `container.id` and `backend.id` with values from the LXC's env. A misbehaving app inside docker can't claim to be another tenant by setting those in its SDK config.
-- **Network layer (existing):** the central collector's `attributes/identity` processor stamps `source.ip` from `client.address`. Even if a tenant somehow tampered with their relay, the gateway still sees the relay's LXC IP, not the impersonated tenant's.
-
-## Detailed design
-
-### 1. Binary choice — `otelcol-contrib`
-
-v1 reuses `otelcol-contrib` (already vendored for the central collector) rather than a custom Go relay. Reasoning:
-
-- Same operational model — same systemd unit shape, same config format, same upstream-supported release artifacts. No new "Containarium-specific binary" the team has to maintain.
-- Memory cost is ~30–50MB resident per relay. For our typical LXC count (~17 in prod) and prod boxes (c3d-highmem-8, 64GB RAM), that's a rounding error. If it ever stops being a rounding error we can drop in a 5MB custom Go relay later — the wire protocol is OTLP either way.
-
-v2 may swap for a smaller binary if memory pressure shows up on small bare-metal hosts.
-
-### 2. Relay placement and lifecycle
-
-The relay runs as a systemd unit **inside** the user LXC, owned by Containarium (root). Lifecycle hooks:
-
-| Containarium event | Relay action |
-|---|---|
-| `create_container --monitoring=true` | Install `otelcol-contrib` binary + write config + write `otel-relay.service` unit + `systemctl enable --now otel-relay` |
-| `toggle_monitoring enable` | Same as create-with-monitoring (idempotent — skips install if already present) |
-| `toggle_monitoring disable` | `systemctl stop otel-relay && systemctl disable otel-relay`; leave the binary/config in place (next enable is faster). Do not delete the binary — the operator can disable monitoring without re-incurring an 80MB download on next enable. |
-| `AdoptMigratedContainer` (with monitoring) | Same as toggle-enable; the relay's config is regenerated against the destination's collector IP. |
-| `delete_container` | The whole LXC goes away; the relay disappears with it. No special cleanup needed. |
-
-Trade-off note: putting the relay binary on every monitoring LXC adds ~80MB of disk per LXC. We accept it; disk is cheap and operationally simpler than network-mounting a shared binary.
-
-### 3. Listening address — `0.0.0.0:4318`
-
-The relay binds OTLP/HTTP on `0.0.0.0:4318` and OTLP/gRPC on `0.0.0.0:4317`. This makes it reachable from any docker bridge inside the LXC — `docker0` (172.17.0.1), named compose bridges (`br-XXXX` at 172.18.0.1, 172.19.0.1, …), and `--network=host` containers (localhost). Tenants don't have to know which bridge their compose created.
-
-For apps: set `OTEL_EXPORTER_OTLP_ENDPOINT=http://172.17.0.1:4318` in compose, or use the standard `host.docker.internal:host-gateway` mapping if the team already wires it. We'll document the `172.17.0.1` form because every docker installation has docker0 by default.
-
-### 4. The resource processor
-
-The relay's `resource` processor stamps these on every metric, **overriding** what the app may have set:
+The image ships a `config.yaml` baked at `/etc/otelcol-contrib/config.yaml`. The collector reads env vars from `${env:VAR_NAME}` references — same shape as the central collector's config.
 
 ```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
 processors:
+  # The whole point of the sidecar: override app-claimed identity
+  # attributes with the platform-stamped values. `upsert` writes the
+  # key whether or not the app already set it.
   resource:
     attributes:
       - key: container.id
-        value: ${LXC_CONTAINER_ID}
+        value: ${env:CONTAINARIUM_CONTAINER_ID}
         action: upsert
       - key: backend.id
-        value: ${LXC_BACKEND_ID}
+        value: ${env:CONTAINARIUM_BACKEND_ID}
         action: upsert
-      # service.namespace inserted (not upsert) — sets a default but
-      # doesn't clobber an app-provided value
+      # service.namespace defaults to the LXC's tenant ID but the
+      # app can override per-service via OTEL_SERVICE_NAME in its
+      # own compose env.
       - key: service.namespace
-        value: ${LXC_USERNAME}
-        action: insert
-```
+        value: ${env:CONTAINARIUM_TENANT_ID}
+        action: insert  # only-if-absent
 
-`upsert` for the platform-controlled keys, `insert` (only-if-absent) for `service.namespace`. `service.name` is never touched — apps own it, fine-grained per docker service.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
 
-The `LXC_*` placeholders are env vars Containarium stamps on the relay's systemd unit when it installs (not on the LXC's general environment). Three explicit vars rather than parsing `OTEL_RESOURCE_ATTRIBUTES` so the config is readable.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
 
-### 5. Exporter — same shape as the gateway
-
-```yaml
 exporters:
   otlphttp:
-    endpoint: http://${CORE_COLLECTOR_IP}:4318
+    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
     tls:
       insecure: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlphttp]
 ```
 
-`CORE_COLLECTOR_IP` is templated into the config at install time. On `AdoptMigratedContainer` we rewrite the config with the destination's collector IP and `systemctl restart otel-relay`.
+Notes:
 
-### 6. Compatibility with the existing env-stamp path
+- We use new env names (`CONTAINARIUM_CONTAINER_ID` / `CONTAINARIUM_BACKEND_ID` / `CONTAINARIUM_TENANT_ID`) rather than parsing `OTEL_RESOURCE_ATTRIBUTES` because the OTel config language can't split a comma-separated string at config-load time. Containarium's LXC env stamping populates all four (`OTEL_RESOURCE_ATTRIBUTES` + the three `CONTAINARIUM_*` keys) when `--monitoring=true`, so compose interpolation gets them for free.
+- No traces / logs pipeline — same scope as the central collector. v2.
+- No Prometheus scraping in the sidecar. The central collector handles scrape compatibility for legacy `/metrics` apps. The sidecar is OTLP-only; that's its whole job.
 
-The existing LXC-env approach (`OTEL_EXPORTER_OTLP_ENDPOINT`, etc.) stays in place. Two reasons:
+## Compose usage (canonical example)
 
-- LXC-level processes that aren't running in docker (systemd unit, native binary, agent-box) still need the env to know where to emit. The relay is *for* docker; non-docker processes don't need it.
-- The relay reads `LXC_CONTAINER_ID` / `LXC_BACKEND_ID` from its own systemd unit env, which Containarium populates from the same source (the LXC's resource-attribute string). Single source of truth.
+```yaml
+services:
+  payment-api:
+    image: my-payment-api:v1.2
+    # Share network namespace with the sidecar — app reaches it at
+    # localhost:4318 with no special compose plumbing.
+    network_mode: "service:payment-api-otel"
+    depends_on:
+      payment-api-otel:
+        condition: service_healthy
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+      OTEL_SERVICE_NAME: payment-api
+      # OTEL_RESOURCE_ATTRIBUTES intentionally unset — the sidecar
+      # overrides it anyway, and any value the app sets is dropped.
 
-If a tenant wants to disable the relay but keep LXC-level OTel env (e.g. an LXC with only native processes), that's not a configuration we expose. Either both or neither — keeps the operator model simple.
+  payment-api-otel:
+    image: ghcr.io/footprintai/containarium-otel-sidecar:v1
+    restart: unless-stopped
+    environment:
+      # ${VAR} interpolation reads from the LXC env Containarium
+      # stamps when --monitoring=true. Tenant doesn't fill in any
+      # values — they're auto-resolved.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+      CONTAINARIUM_CONTAINER_ID: ${CONTAINARIUM_CONTAINER_ID}
+      CONTAINARIUM_BACKEND_ID: ${CONTAINARIUM_BACKEND_ID}
+      CONTAINARIUM_TENANT_ID: ${CONTAINARIUM_TENANT_ID}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+```
+
+`containarium sidecar otel compose <username>` will print this snippet pre-filled for the requesting LXC, so the tenant copy-pastes one command's output rather than reading docs.
+
+## Identity override semantics
+
+The sidecar's `resource` processor uses two different actions:
+
+| Attribute | Action | Why |
+|---|---|---|
+| `container.id` | `upsert` | Platform owns this. If the app set it, replace. |
+| `backend.id` | `upsert` | Same. |
+| `service.namespace` | `insert` | Default it from the tenant ID, but allow app override (per-service grouping like `payment` vs `auth`). |
+| `service.name` | (not touched) | App-owned. The app sets it via `OTEL_SERVICE_NAME` env or SDK API. |
+
+This composes with the central collector's existing `attributes/identity` processor (which stamps `source.ip` from the connecting IP). Two layers of platform-controlled identity, each at a different scope:
+
+- **Sidecar layer**: `container.id` / `backend.id` from the LXC's env. Defends against "app in container A claims to be container B" if both apps are in the same LXC.
+- **Central layer**: `source.ip` from the TCP source address. Defends against "container A talks to a different VM's collector and tries to forge `source.ip`" — incusbr0's iptables guarantees the source IP is real.
+
+## Why this beats the LXC-level systemd relay
+
+The prior Draft of this doc proposed installing `otelcol-contrib` as a systemd unit inside each `--monitoring=true` LXC, lifecycle-managed by Containarium. That approach had three problems the sidecar pattern fixes:
+
+1. **Platform reaching into tenant LXC.** The systemd relay was a Containarium-owned process the tenant couldn't see in `docker compose ps`. Operations surprises ("why is there a random otelcol-contrib eating 50MB?") were inevitable. With the sidecar, it's *in the compose file* — operators see it like any other service.
+2. **Lifecycle coupling to RPCs.** Install/uninstall hooks on `CreateContainer --monitoring`, `ToggleMonitoring enable`, `ToggleMonitoring disable`, `AdoptMigratedContainer`. Each hook was a shell-exec into the LXC, with its own failure modes. The sidecar pivot removes all of those — lifecycle is `docker compose up/down`, owned entirely by the tenant.
+3. **No per-service identity.** One systemd unit per LXC means all services share the same `container.id` namespace. Sidecars give each app its own collector instance with its own platform-stamped identity, so a 4-service compose stack actually has 4 well-attributed metric streams instead of one mixed stream.
 
 ## Failure modes
 
+Most failure modes are inherited from the [platform sidecar pattern](PLATFORM-SIDECAR-DESIGN.md#failure-modes). OTel-specific:
+
 | Failure | Effect | Mitigation |
 |---|---|---|
-| Relay crashes | `systemctl Restart=always` brings it back in <5s. Apps see connection-refused during the gap → OTel SDK buffers + drops, same as if the gateway were briefly down. | Restart policy plus operator alert on `otelcol-contrib` unit being inactive for >30s. |
-| Relay binary missing on toggle-enable | `systemctl enable` fails; toggle returns Internal error before stamping env vars. | Install is idempotent; if the binary went missing, next enable re-downloads. |
-| App emits before relay starts (cold start) | First few seconds of metrics lost; SDK retries usually succeed. | Acceptable — same as any agent collector pattern. |
-| Central collector unreachable | Relay buffers per its `batch` processor, then drops. | Operator alert via `otelcol_exporter_send_failed_total` on the relay (scrape the relay's `:13133` metrics endpoint). |
-| `MoveContainer` mid-flight: source's relay still up, destination's not yet | App's OTLP traffic continues hitting the source's relay (still resolvable via LXC's IP for a moment). After cutover, app connects to destination's relay. | The brief overlap stamps `container.id` correctly either way (both relays know the tenant). Worst case is a few seconds of duplicate metrics. |
-| Operator manually mutates the relay's config inside the LXC | Containarium's next install/restart overwrites it without warning. | Documented; operators shouldn't hand-edit per-LXC platform files. Same posture as `/etc/caddy/Caddyfile` on the core Caddy LXC. |
-| Tenant runs `--network=host` docker | Container shares LXC netns; can hit relay at `localhost:4318`. | Document; works out of the box. |
-| Tenant uses `iptables -A OUTPUT -j DROP` to firewall inside docker | They block their own metrics. | Out of scope. |
+| Central collector unreachable | `otlphttp` exporter buffers per `batch` config, then drops with backoff. App SDKs don't notice (they POST 200 from the local sidecar). | Surface via `otelcol_exporter_send_failed_total` on the sidecar's `:13133` health endpoint. |
+| App sends 100k metrics/sec | `batch` processor caps; back-pressure flows back to the app's OTLP-HTTP POST. SDK applies its own buffering / drop policy. | Future: add a `memory_limiter` processor to the sidecar config. |
+| Two sidecars in one LXC point at different central collectors | Shouldn't happen — `OTEL_EXPORTER_OTLP_ENDPOINT` comes from the LXC env, single source. | Documented; if tenant hand-edits compose to point at a different collector, that's their choice. |
+| Sidecar's container.id env doesn't match the LXC's actual container name | Tenant edited the env in compose. Sidecar still works but `container.id` is whatever they wrote. | Documented; the sidecar trusts its env. Operators can audit via `docker compose config`. |
 
 ## Open questions
 
+These are the OTel-sidecar-specific ones. The cross-cutting platform questions are in [platform-sidecar-design](PLATFORM-SIDECAR-DESIGN.md#open-questions).
+
 | # | Question | Why it matters | Proposed answer |
 |---|---|---|---|
-| 1 | **Relay binary on disk: per-LXC copy or shared mount?** | Per-LXC means ~80MB × N LXCs. Shared mount (via Incus shared disk device) is one copy but introduces a tight coupling between Containarium upgrades and tenant LXC reboots. | Per-LXC copy. Disk is cheap; tight coupling is operationally risky. Revisit if a deployment has hundreds of monitoring LXCs. |
-| 2 | **Default `OTEL_EXPORTER_OTLP_ENDPOINT` in compose docs: `172.17.0.1:4318` or `host.docker.internal:4318`?** | Both work if the bridge is set up right; `host.docker.internal` needs `extra_hosts` in compose, `172.17.0.1` doesn't. | Document `172.17.0.1:4318` as the default. Mention `host.docker.internal` as an alternative for teams already using it. |
-| 3 | **What about LXCs running Podman instead of docker?** | The `pes` and `ccu*` containers on prod use Containarium's podman-in-LXC path. Podman's network model is different from docker's; whether the relay is reachable at the same address needs verification. | v1: support docker only. Document podman-in-LXC as a follow-up. Podman rootless uses `slirp4netns` which gives `10.0.2.2` as the host gateway — different recipe but same idea. |
-| 4 | **Authentication between relay and central collector?** | Today the central collector accepts any OTLP on `:4318` without auth (it relies on network isolation via `incusbr0`). Relay → collector is the same VPC + bridge, so same trust model — but should we add a token? | v1 no auth (matches existing posture). v2 may add per-relay mTLS if cross-VM relays appear. |
-| 5 | **Should the relay listen on Unix socket too?** | A bind-mounted Unix socket would let apps hit the relay without any IP plumbing, more portable than a bridge gateway IP. | v1: TCP-only on `0.0.0.0:4318`. The Unix-socket path requires per-tenant compose changes (`-v /run/otel.sock:...`) which defeats the "zero compose changes" goal. Revisit if a real use case emerges. |
+| 1 | Image base: `otel/opentelemetry-collector-contrib` or custom-built `otel/builder`? | The contrib image is ~280MB; a custom minimal builder image with only the components we need is closer to 30MB. Pull-time-per-LXC matters when sidecars proliferate. | Contrib for v1 (less ceremony); switch to a custom-built minimal collector for v2 once we know what receivers/processors/exporters we actually need. |
+| 2 | OTLP/gRPC receiver: ship or skip? | Some OTel SDKs default to gRPC. HTTP is simpler in compose. | Ship both. gRPC is "free" in the contrib image; tenants pick one. |
+| 3 | `service.namespace` insert vs upsert? | If we insert (only-if-absent), apps can override per-service. If we upsert, apps can't claim a different namespace. | Insert. Apps overriding `service.namespace` to e.g. group services into "auth" / "payment" / "infra" is a legit use case. |
+| 4 | Should the sidecar also pin `service.version` from a compose env? | Useful for canary / rollback metric breakdowns. | Yes, as `service.version` `insert` from `${SERVICE_VERSION}` env. Tenant sets per service; sidecar doesn't override. |
+| 5 | What happens on `OTEL_RESOURCE_ATTRIBUTES` env unset but the three `CONTAINARIUM_*` envs set? | Backward compat: today's LXC env stamps `OTEL_RESOURCE_ATTRIBUTES` as the comma string; the sidecar wants three split values. | Daemon adds the three `CONTAINARIUM_*` env stamps alongside the existing `OTEL_RESOURCE_ATTRIBUTES`. Sidecar reads only the `CONTAINARIUM_*` ones; the comma string stays for non-sidecar apps that read it directly. |
+| 6 | Health-check endpoint exposure | Should the sidecar expose `:13133` to the tenant's other containers, or keep it internal? | Expose. Operators want to curl it from neighboring containers when debugging. |
 
 ## Phased rollout
 
+These phases nest under the [platform sidecar phased rollout](PLATFORM-SIDECAR-DESIGN.md#phased-rollout):
+
 | Phase | Scope | Effort |
 |---|---|---|
-| **0. RFC accepted** | this doc + decisions on the 5 open questions | (you) |
-| **1. Bake the relay config generator** | Pure function `BuildRelayConfig(containerID, backendID, username, coreCollectorIP) string`; unit-tested without touching real systemd. | ~½ day |
-| **2. Install/uninstall hooks** | `installAgentRelay(containerName)` / `uninstallAgentRelay(containerName)` wrappers around `incus exec` calls (download binary, write config + unit, enable/disable). Idempotent. | ~1 day |
-| **3. Wire into lifecycle paths** | CreateContainer with `--monitoring`, ToggleMonitoring enable/disable, AdoptMigratedContainer. | ~½ day |
-| **4. Update OTel design doc** | Replace the "Operator note: docker-in-LXC needs explicit passthrough" section with a pointer to this design; add the relay as a documented layer. | ~½ day |
-| **5. Tests** | Unit (config generator) + integration (toggle enable inserts unit; toggle disable removes it; AdoptMigratedContainer rewrites endpoint). | ~1 day |
-| **6. Backfill on existing prod monitoring=true LXCs** | One-shot script that installs the relay on the 5 prod services (api, facelabor, pes, voicegpt, wordpress) without flipping `--monitoring` (which is already true). | ~½ day |
+| **1. Image repo + Dockerfile** | `containarium-sidecars/otel-sidecar/Dockerfile`; bakes config + entrypoint script that validates env. | ~½ day |
+| **2. GH Actions for build + sign + push to GHCR** | Reuse the main Containarium release workflow shape. Pinned to `:v1.0.0`. | ~½ day |
+| **3. Smoke test on prod's devbox** | `docker run` the image locally pointing at the prod collector; verify OTLP forward + identity override. | ~½ day |
+| **4. `containarium sidecar otel compose <username>` CLI subcommand** | Prints the ready-to-paste compose block for the named LXC. | ~½ day |
+| **5. Daemon stamps the three `CONTAINARIUM_*` env vars** | Update `pkg/core/container/otel.go` to set them alongside existing `OTEL_*`. | ~½ day |
+| **6. Update OTEL-COLLECTOR-DESIGN.md** | Replace the "docker-passthrough" section with: "the recommended path is the otel-sidecar; legacy compose-env passthrough is still supported." | ~½ day |
+| **7. Roll out to prod's 5 monitoring=true services** | Tenant-side compose updates. Containarium just publishes the image. | (per service) |
 
-**Total: ~4 days.** Phases 1–5 are OSS; phase 6 is operator work specific to our prod deployment.
+**Total: ~2.5 days OSS + image build** to ship the OTel sidecar v1.
 
 ## History
 
 | Date | Author | Change |
 |---|---|---|
-| 2026-05-16 | hsinhoyeh, drafted with Claude | Initial draft. Fluentd-style agent relay inside each `--monitoring=true` LXC; reuses `otelcol-contrib` to avoid a new binary; platform-stamps resource attributes to extend anti-spoofing into the docker-in-LXC case. Status: Draft. |
+| 2026-05-16 | hsinhoyeh, drafted with Claude | Initial draft: per-LXC `otelcol-contrib` as a systemd unit installed by Containarium during `--monitoring` lifecycle hooks. Status: Draft. |
+| 2026-05-16 | hsinhoyeh, redrafted with Claude | Pivot from "platform installs systemd unit in LXC" to "platform publishes a docker sidecar image, tenant composes it in." Scope narrowed to the `containarium/otel-sidecar:v1` image specifically; generic platform pattern moved to `PLATFORM-SIDECAR-DESIGN.md`. Status: still Draft, now scoped. |
