@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Per-container disk usage on the `dir` storage backend** — `containarium list`, MCP `get_metrics`, and the OTel collector all reported 0 B for disk usage on hosts that init Incus with the `dir` driver (e.g. lab boxes without a zpool). Incus only fills `state.Disk["root"].Usage` when the backend has filesystem-level quota accounting (zfs / btrfs); on dir backends the field stays empty and there was no fallback. `GetContainerMetrics` now walks the container's rootfs (`/var/lib/incus/storage-pools/<pool>/containers/<name>/rootfs`, same path `du -bs` would) and reports the sum. The walk runs only when Incus's native value is zero, so zfs / btrfs hosts pay nothing.
+
 ## [0.16.13] - 2026-05-16
 
 Ships the **tenant secrets management API** end-to-end (CLI + MCP + REST + gRPC), plus the documentation Approvals that landed alongside it.

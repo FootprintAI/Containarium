@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -1187,9 +1189,23 @@ func (c *Client) GetContainerMetrics(name string) (*ContainerMetrics, error) {
 		metrics.MemoryLimitBytes = state.Memory.UsagePeak
 	}
 
-	// Disk usage (root filesystem)
-	if rootDisk, ok := state.Disk["root"]; ok {
+	// Disk usage (root filesystem). The ZFS / btrfs backends report
+	// usage via state.Disk["root"].Usage natively. The "dir" backend
+	// — used on lab boxes that don't have a zpool — leaves that
+	// field at zero because the host filesystem has no per-container
+	// quota accounting. Without a fallback, every dir-backed deploy
+	// would show 0 B for disk usage in `list`, MCP `get_metrics`,
+	// and the OTel collector, which is misleading enough that
+	// operators stop trusting the field entirely. Walking the
+	// container's rootfs gives us the same number `du -bs` would
+	// (it IS what du does), at a cost that's acceptable for the
+	// list-containers cardinality we expect.
+	if rootDisk, ok := state.Disk["root"]; ok && rootDisk.Usage > 0 {
 		metrics.DiskUsageBytes = rootDisk.Usage
+	} else if rootfs := c.containerRootfsPath(name); rootfs != "" {
+		if bytes, err := dirSize(rootfs); err == nil {
+			metrics.DiskUsageBytes = bytes
+		}
 	}
 
 	// Network usage (sum all interfaces except lo)
@@ -1667,4 +1683,79 @@ func MatchLabels(containerLabels, filter map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// containerRootfsPath resolves the on-disk rootfs directory for the
+// named container so dirSize can walk it. Returns "" when the path
+// can't be resolved or doesn't exist — callers treat empty as "skip
+// the fallback."
+//
+// Conventional layout (matches incus's "dir" + "zfs" mount layout):
+//
+//	<pool_source>/containers/<name>/rootfs
+//
+// When the pool has no explicit source config (the typical dir-
+// backend case) we fall back to incus's hard-coded default of
+// /var/lib/incus/storage-pools/<pool>.
+func (c *Client) containerRootfsPath(containerName string) string {
+	inst, _, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return ""
+	}
+	pool := ""
+	if rootDev, ok := inst.ExpandedDevices["root"]; ok {
+		pool = rootDev["pool"]
+	}
+	if pool == "" {
+		pool = "default"
+	}
+	poolCfg, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return ""
+	}
+	path := buildContainerRootfsPath(pool, poolCfg.Config["source"], containerName)
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
+}
+
+// buildContainerRootfsPath is the pure path-construction half of
+// containerRootfsPath — separated so it's easy to test without an
+// Incus server. The poolSource argument matches the value Incus
+// stores under `Config["source"]` on a storage pool; an absolute
+// path is used as-is, anything else falls through to the conventional
+// /var/lib/incus/storage-pools/<pool> default.
+func buildContainerRootfsPath(pool, poolSource, containerName string) string {
+	base := poolSource
+	if !filepath.IsAbs(base) {
+		base = filepath.Join("/var/lib/incus/storage-pools", pool)
+	}
+	return filepath.Join(base, "containers", containerName, "rootfs")
+}
+
+// dirSize returns the cumulative size of regular files under root.
+// Skips directories, symlinks, sockets, and unreadable entries —
+// matches `du -bs` semantics for the metric we surface. Used as a
+// fallback when Incus's per-container disk-usage field is zero
+// (dir backend has no quota accounting; see GetContainerMetrics).
+func dirSize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// Unreadable entry — skip rather than abort. A best-
+			// effort metric is more useful than no metric.
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
