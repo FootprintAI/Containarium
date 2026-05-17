@@ -109,6 +109,15 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		return nil, fmt.Errorf("username is required")
 	}
 
+	// Pool resolution — if a pool is requested, either validate that
+	// the explicit backend_id belongs to that pool, or pick any
+	// healthy backend in the pool when backend_id is empty.
+	if req.Pool != "" {
+		if err := s.resolvePoolPlacement(req); err != nil {
+			return nil, err
+		}
+	}
+
 	// Route to peer if backend_id specifies a remote backend
 	if req.BackendId != "" && s.peerPool != nil {
 		localID := s.peerPool.LocalBackendID()
@@ -278,6 +287,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 	// Convert to protobuf
 	protoContainer := toProtoContainer(info)
+	protoContainer.Pool = s.resolvePool(protoContainer.BackendId)
 
 	// Emit container created event
 	s.emitter.EmitContainerCreated(protoContainer)
@@ -380,7 +390,9 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 	// Convert to protobuf
 	var protoContainers []*pb.Container
 	for i := range filtered {
-		protoContainers = append(protoContainers, toProtoContainer(&filtered[i]))
+		pc := toProtoContainer(&filtered[i])
+		pc.Pool = s.resolvePool(pc.BackendId)
+		protoContainers = append(protoContainers, pc)
 	}
 
 	// Add containers from peer backends
@@ -388,7 +400,9 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		authToken := extractAuthToken(ctx)
 		peerContainers := s.peerPool.ListContainers(authToken)
 		for i := range peerContainers {
-			protoContainers = append(protoContainers, toProtoContainer(&peerContainers[i]))
+			pc := toProtoContainer(&peerContainers[i])
+			pc.Pool = s.resolvePool(pc.BackendId)
+			protoContainers = append(protoContainers, pc)
 		}
 	}
 
@@ -447,6 +461,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 			for _, pc := range peerContainers {
 				if pc.Name == containerName {
 					proto := toProtoContainer(&pc)
+					proto.Pool = s.resolvePool(proto.BackendId)
 					return &pb.GetContainerResponse{
 						Container: proto,
 					}, nil
@@ -470,8 +485,10 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 		s.pendingMu.Unlock()
 	}
 
+	protoInfo := toProtoContainer(info)
+	protoInfo.Pool = s.resolvePool(protoInfo.BackendId)
 	return &pb.GetContainerResponse{
-		Container: toProtoContainer(info),
+		Container: protoInfo,
 		// TODO: Add metrics
 	}, nil
 }
@@ -1530,6 +1547,56 @@ func (s *ContainerServer) localBackendID() string {
 		return id
 	}
 	return "local"
+}
+
+// resolvePool returns the pool tag for the given backend_id. The local
+// backend's pool comes from the PeerPool's --pool configuration;
+// remote backends carry the tag they registered with the sentinel.
+// Returns "" when the peer pool isn't configured or the backend is
+// unknown.
+func (s *ContainerServer) resolvePool(backendID string) string {
+	if s.peerPool == nil {
+		return ""
+	}
+	if backendID == "" || backendID == s.peerPool.LocalBackendID() {
+		return s.peerPool.LocalPool()
+	}
+	if peer := s.peerPool.Get(backendID); peer != nil {
+		return peer.Pool
+	}
+	return ""
+}
+
+// resolvePoolPlacement validates or assigns req.BackendId based on
+// req.Pool. Called only when req.Pool is non-empty. When backend_id
+// is already set, it must belong to the requested pool. When empty,
+// any healthy backend in the pool (including the local one) is a
+// valid placement; the first healthy candidate wins. Returns an
+// error if no eligible backend can be found.
+func (s *ContainerServer) resolvePoolPlacement(req *pb.CreateContainerRequest) error {
+	if s.peerPool == nil {
+		return fmt.Errorf("pool=%q requested but peer pool is not configured on this daemon", req.Pool)
+	}
+
+	if req.BackendId != "" {
+		actual := s.resolvePool(req.BackendId)
+		if actual != req.Pool {
+			return fmt.Errorf("backend %q is in pool %q, not %q", req.BackendId, actual, req.Pool)
+		}
+		return nil
+	}
+
+	// No explicit backend_id — find a candidate in the requested pool.
+	if s.peerPool.LocalPool() == req.Pool {
+		req.BackendId = s.peerPool.LocalBackendID()
+		return nil
+	}
+	candidates := s.peerPool.HealthyPeersInPool(req.Pool)
+	if len(candidates) == 0 {
+		return fmt.Errorf("no healthy backend found in pool %q", req.Pool)
+	}
+	req.BackendId = candidates[0].ID
+	return nil
 }
 
 // SetRouteCleanupDeps wires the route store + proxy manager so

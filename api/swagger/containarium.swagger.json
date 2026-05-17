@@ -4307,6 +4307,10 @@
         "monitoringEnabled": {
           "type": "boolean",
           "description": "Whether application-emitted OpenTelemetry is enabled for this\ncontainer (mirrors the --monitoring flag passed at creation).\nWhen true, the LXC has OTEL_EXPORTER_OTLP_ENDPOINT and related\nenv vars stamped on it. Read-only — set at create time;\nchanging requires recreate (a ToggleMonitoring RPC may come\nlater, but doesn't exist in v1)."
+        },
+        "pool": {
+          "type": "string",
+          "description": "Pool tag of the backend hosting this container (e.g., \"prod\",\n\"demo\", \"lab\"). Mirrors the peer's --pool registration tag and\nis the discriminator used for placement and per-pool routing\n(such as base-domain selection). Empty for untagged backends."
         }
       },
       "title": "Container represents a complete container instance"
@@ -4497,6 +4501,10 @@
         "monitoring": {
           "type": "boolean",
           "description": "Enable application-emitted OpenTelemetry. When true, the daemon\nstamps the container with OTEL_EXPORTER_OTLP_ENDPOINT and\nrelated env vars pointing at the core OTel collector, so any\nOTel SDK inside the container ships telemetry to the platform's\nVictoriaMetrics without app-side configuration. Default false —\nopt-in matches the \"platform doesn't move data unless told to\"\nprinciple and avoids surprise telemetry from prototype\nworkloads. The daemon's own cgroup-level metrics for the\ncontainer are independent of this flag and continue regardless."
+        },
+        "pool": {
+          "type": "string",
+          "title": "Pool selector — when set and backend_id is empty, the daemon\npicks any healthy peer tagged with this pool"
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"

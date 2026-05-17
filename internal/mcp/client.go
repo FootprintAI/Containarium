@@ -712,6 +712,17 @@ type CreateContainerRequest struct {
 	// collector. Default false (opt-in). See
 	// docs/OTEL-COLLECTOR-DESIGN.md for the full design.
 	Monitoring bool `json:"monitoring,omitempty"`
+
+	// Pool selects placement by pool tag. When set with an empty
+	// BackendID, the daemon picks any healthy backend in the pool.
+	// When set with BackendID, the daemon validates that BackendID
+	// belongs to this pool.
+	Pool string `json:"pool,omitempty"`
+
+	// BackendID pins the container to a specific peer. Use Pool
+	// when any backend in a group will do; use BackendID for an
+	// exact placement.
+	BackendID string `json:"backendId,omitempty"`
 }
 
 type ResourceLimits struct {
@@ -875,6 +886,8 @@ type Container struct {
 	Labels        map[string]string `json:"labels,omitempty"`
 	Image         string            `json:"image,omitempty"`
 	PodmanEnabled bool              `json:"podmanEnabled"`
+	BackendID     string            `json:"backendId,omitempty"`
+	Pool          string            `json:"pool,omitempty"`
 }
 
 type NetworkInfo struct {

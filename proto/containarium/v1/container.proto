@@ -152,6 +152,12 @@ message Container {
   // changing requires recreate (a ToggleMonitoring RPC may come
   // later, but doesn't exist in v1).
   bool monitoring_enabled = 18;
+
+  // Pool tag of the backend hosting this container (e.g., "prod",
+  // "demo", "lab"). Mirrors the peer's --pool registration tag and
+  // is the discriminator used for placement and per-pool routing
+  // (such as base-domain selection). Empty for untagged backends.
+  string pool = 19;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -238,6 +244,13 @@ message CreateContainerRequest {
   // workloads. The daemon's own cgroup-level metrics for the
   // container are independent of this flag and continue regardless.
   bool monitoring = 14;
+
+  // Pool selector — when set and backend_id is empty, the daemon
+  // picks any healthy peer tagged with this pool (--pool=<name> on
+  // the peer's daemon). When both pool and backend_id are set, the
+  // chosen backend_id must belong to this pool or the request is
+  // rejected. Empty means "untagged backends only" (legacy behavior).
+  string pool = 15;
 }
 
 // CreateContainerResponse is the response from creating a container

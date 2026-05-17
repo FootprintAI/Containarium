@@ -391,8 +391,13 @@ type Container struct {
 	// changing requires recreate (a ToggleMonitoring RPC may come
 	// later, but doesn't exist in v1).
 	MonitoringEnabled bool `protobuf:"varint,18,opt,name=monitoring_enabled,json=monitoringEnabled,proto3" json:"monitoring_enabled,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Pool tag of the backend hosting this container (e.g., "prod",
+	// "demo", "lab"). Mirrors the peer's --pool registration tag and
+	// is the discriminator used for placement and per-pool routing
+	// (such as base-domain selection). Empty for untagged backends.
+	Pool          string `protobuf:"bytes,19,opt,name=pool,proto3" json:"pool,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Container) Reset() {
@@ -551,6 +556,13 @@ func (x *Container) GetMonitoringEnabled() bool {
 	return false
 }
 
+func (x *Container) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
+}
+
 // ContainerMetrics contains runtime metrics for a container
 type ContainerMetrics struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -704,7 +716,13 @@ type CreateContainerRequest struct {
 	// principle and avoids surprise telemetry from prototype
 	// workloads. The daemon's own cgroup-level metrics for the
 	// container are independent of this flag and continue regardless.
-	Monitoring    bool `protobuf:"varint,14,opt,name=monitoring,proto3" json:"monitoring,omitempty"`
+	Monitoring bool `protobuf:"varint,14,opt,name=monitoring,proto3" json:"monitoring,omitempty"`
+	// Pool selector — when set and backend_id is empty, the daemon
+	// picks any healthy peer tagged with this pool (--pool=<name> on
+	// the peer's daemon). When both pool and backend_id are set, the
+	// chosen backend_id must belong to this pool or the request is
+	// rejected. Empty means "untagged backends only" (legacy behavior).
+	Pool          string `protobuf:"bytes,15,opt,name=pool,proto3" json:"pool,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -835,6 +853,13 @@ func (x *CreateContainerRequest) GetMonitoring() bool {
 		return x.Monitoring
 	}
 	return false
+}
+
+func (x *CreateContainerRequest) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -3577,7 +3602,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\x8e\x06\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xa2\x06\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -3603,7 +3628,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"accessType\x12\x1f\n" +
 	"\vrdp_address\x18\x11 \x01(\tR\n" +
 	"rdpAddress\x12-\n" +
-	"\x12monitoring_enabled\x18\x12 \x01(\bR\x11monitoringEnabled\x1a9\n" +
+	"\x12monitoring_enabled\x18\x12 \x01(\bR\x11monitoringEnabled\x12\x12\n" +
+	"\x04pool\x18\x13 \x01(\tR\x04pool\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
@@ -3615,7 +3641,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xca\x05\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xde\x05\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -3634,7 +3660,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10stack_parameters\x18\r \x03(\v2<.containarium.v1.CreateContainerRequest.StackParametersEntryR\x0fstackParameters\x12\x1e\n" +
 	"\n" +
 	"monitoring\x18\x0e \x01(\bR\n" +
-	"monitoring\x1a9\n" +
+	"monitoring\x12\x12\n" +
+	"\x04pool\x18\x0f \x01(\tR\x04pool\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +

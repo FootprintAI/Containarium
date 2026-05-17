@@ -22,6 +22,7 @@ import (
 type PeerClient struct {
 	ID         string
 	Addr       string // host:port of the remote daemon's REST API
+	Pool       string // pool tag from the peer's --pool registration (empty if untagged)
 	Healthy    bool
 	LastSeenAt time.Time // Timestamp of last successful health check
 	client     *http.Client
@@ -128,6 +129,7 @@ func (p *PeerPool) discover() {
 		Peers []struct {
 			ID        string `json:"id"`
 			ProxyPath string `json:"proxy_path"`
+			Pool      string `json:"pool,omitempty"`
 			Healthy   bool   `json:"healthy"`
 		} `json:"peers"`
 	}
@@ -155,6 +157,7 @@ func (p *PeerPool) discover() {
 
 		if existing, ok := p.peers[peer.ID]; ok {
 			existing.Addr = peerAddr
+			existing.Pool = peer.Pool
 			existing.Healthy = peer.Healthy
 			if peer.Healthy {
 				existing.LastSeenAt = time.Now()
@@ -163,6 +166,7 @@ func (p *PeerPool) discover() {
 			pc := &PeerClient{
 				ID:      peer.ID,
 				Addr:    peerAddr,
+				Pool:    peer.Pool,
 				Healthy: peer.Healthy,
 				client: &http.Client{
 					Timeout: 30 * time.Second,
@@ -172,7 +176,7 @@ func (p *PeerPool) discover() {
 				pc.LastSeenAt = time.Now()
 			}
 			p.peers[peer.ID] = pc
-			log.Printf("[peers] discovered new peer: %s via %s", peer.ID, peerAddr)
+			log.Printf("[peers] discovered new peer: %s pool=%q via %s", peer.ID, peer.Pool, peerAddr)
 		}
 	}
 
@@ -199,12 +203,38 @@ func (p *PeerPool) LocalBackendID() string {
 	return p.localBackendID
 }
 
+// LocalPool returns the pool tag this daemon's PeerPool was configured
+// with. The local backend is considered a member of this pool for the
+// purpose of pool-scoped placement decisions.
+func (p *PeerPool) LocalPool() string {
+	return p.pool
+}
+
 // Peers returns all current peers.
 func (p *PeerPool) Peers() []*PeerClient {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	result := make([]*PeerClient, 0, len(p.peers))
 	for _, peer := range p.peers {
+		result = append(result, peer)
+	}
+	return result
+}
+
+// HealthyPeersInPool returns healthy peers tagged with the given pool.
+// An empty pool argument matches peers whose Pool tag is also empty
+// (legacy untagged behavior).
+func (p *PeerPool) HealthyPeersInPool(pool string) []*PeerClient {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	result := make([]*PeerClient, 0, len(p.peers))
+	for _, peer := range p.peers {
+		if peer.Pool != pool {
+			continue
+		}
+		if !peer.Healthy {
+			continue
+		}
 		result = append(result, peer)
 	}
 	return result

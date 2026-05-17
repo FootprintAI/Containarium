@@ -176,6 +176,14 @@ func (s *Server) registerTools() {
 						"type": "boolean",
 						"description": "Opt the container into application-emitted OpenTelemetry. When true, the daemon stamps the LXC with OTEL_EXPORTER_OTLP_ENDPOINT (and related env vars) pointing at the platform's core OTel collector, so any OTel SDK inside the container ships telemetry without app-side configuration. Default false. The daemon's own cgroup-level metrics for the container (CPU/mem/disk/net) are independent of this flag and continue for every container regardless.",
 					},
+					"pool": map[string]interface{}{
+						"type":        "string",
+						"description": "Place the container on any healthy backend tagged with this pool (e.g., 'demo', 'lab', 'prod'). When omitted, the request lands on the primary/local backend. Use list_backends to see available pools. Mutually exclusive with backend_id unless the chosen backend is already in this pool (the daemon validates consistency).",
+					},
+					"backend_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Place the container on a specific backend by ID (e.g., 'tunnel-fts-5900x-gpu'). Look up valid IDs via list_backends. Use pool instead when any backend in a pool will do.",
+					},
 				},
 				"required": []string{"username"},
 			},
@@ -840,6 +848,8 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		EnablePodman: getBoolArg(args, "enable_podman", true),
 		GPU:          getStringArg(args, "gpu", ""),
 		Monitoring:   getBoolArg(args, "monitoring", false),
+		Pool:         getStringArg(args, "pool", ""),
+		BackendID:    getStringArg(args, "backend_id", ""),
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use

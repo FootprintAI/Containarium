@@ -127,7 +127,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
 
@@ -145,6 +145,8 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Gpu:          gpu,
 		OsType:       osType,
 		Monitoring:   monitoring,
+		Pool:         pool,
+		BackendId:    backendID,
 	}
 
 	resp, err := c.client.CreateContainer(ctx, req)
