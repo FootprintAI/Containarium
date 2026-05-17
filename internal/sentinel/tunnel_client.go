@@ -23,9 +23,10 @@ type TunnelClient struct {
 	// When PublicHostname is set, the sentinel auto-registers this tunnel
 	// as the primary for its pool. Saves the daemon from needing direct
 	// HTTP access to /sentinel/primaries.
-	PublicHostname string
-	PublicAliases  []string
-	PublicPort     int
+	PublicHostname   string
+	PublicAliases    []string
+	PublicBaseDomain string // suffix-match anchor; see docs/PER-POOL-BASE-DOMAIN.md
+	PublicPort       int
 }
 
 // Run connects to the sentinel and serves tunnel traffic.
@@ -73,13 +74,14 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 
 	// Send handshake
 	hs := &TunnelHandshake{
-		Token:          tc.Token,
-		SpotID:         tc.SpotID,
-		Ports:          tc.Ports,
-		Pool:           tc.Pool,
-		PublicHostname: tc.PublicHostname,
-		PublicAliases:  tc.PublicAliases,
-		PublicPort:     tc.PublicPort,
+		Token:            tc.Token,
+		SpotID:           tc.SpotID,
+		Ports:            tc.Ports,
+		Pool:             tc.Pool,
+		PublicHostname:   tc.PublicHostname,
+		PublicAliases:    tc.PublicAliases,
+		PublicBaseDomain: tc.PublicBaseDomain,
+		PublicPort:       tc.PublicPort,
 	}
 	if err := writeHandshake(conn, hs); err != nil {
 		return fmt.Errorf("write handshake: %w", err)

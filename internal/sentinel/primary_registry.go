@@ -1,6 +1,7 @@
 package sentinel
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +15,13 @@ type Primary struct {
 	Pool          Pool      `json:"pool"`
 	Hostname      string    `json:"hostname"` // primary's own subdomain (e.g. containarium-prod.kafeido.app)
 	Aliases       []string  `json:"aliases,omitempty"` // additional hostnames the primary's Caddy routes (e.g. api.kafeido.app, voice.kafeido.app)
+	// BaseDomain anchors suffix routing: any inbound SNI of the form
+	// "<anything>.<BaseDomain>" routes to this primary, so containers
+	// that get an ad-hoc subdomain via expose_port don't need to be
+	// re-registered as aliases. Empty (the default) disables suffix
+	// matching for this primary — exact Hostname/Aliases still work.
+	// See docs/PER-POOL-BASE-DOMAIN.md.
+	BaseDomain    string    `json:"base_domain,omitempty"`
 	IP            string    `json:"ip"`       // primary's reachable IP (typically internal VPC IP)
 	Port          int       `json:"port"`     // HTTPS port on the primary (typically 443)
 	BackendID     string    `json:"backend_id,omitempty"`
@@ -49,6 +57,7 @@ func (r *PrimaryRegistry) Register(p Primary) *Primary {
 		// Update fields that can change, keep original RegisteredAt
 		existing.Hostname = p.Hostname
 		existing.Aliases = p.Aliases
+		existing.BaseDomain = p.BaseDomain
 		existing.IP = p.IP
 		existing.Port = p.Port
 		existing.BackendID = p.BackendID
@@ -154,6 +163,54 @@ func (r *PrimaryRegistry) LookupByHostname(hostname string) *Primary {
 		}
 	}
 	return nil
+}
+
+// LookupByBaseDomainSuffix returns the primary whose BaseDomain is the
+// longest proper DNS suffix of hostname (i.e. hostname is of the form
+// "<sub>.<BaseDomain>"). The base domain itself is NOT a match — only
+// strict sub-hostnames — so a primary's BaseDomain can equal another
+// primary's Hostname without colliding here. Returns nil when no
+// primary's BaseDomain qualifies or when two primaries tie on suffix
+// length (ambiguity is a misconfiguration; fail closed rather than
+// pick one arbitrarily). Stale entries are skipped.
+//
+// Used by the SNI router after LookupByHostname misses, to route
+// ad-hoc container subdomains (e.g. blog.containarium.dev) without
+// each one being pre-registered as an alias.
+func (r *PrimaryRegistry) LookupByBaseDomainSuffix(hostname string) *Primary {
+	if hostname == "" {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	now := r.now()
+
+	var best *Primary
+	bestLen := 0
+	tie := false
+	for _, p := range r.primaries {
+		if r.isStale(p, now) {
+			continue
+		}
+		if p.BaseDomain == "" {
+			continue
+		}
+		if !strings.HasSuffix(hostname, "."+p.BaseDomain) {
+			continue
+		}
+		switch {
+		case len(p.BaseDomain) > bestLen:
+			best = p
+			bestLen = len(p.BaseDomain)
+			tie = false
+		case len(p.BaseDomain) == bestLen && best != nil && p != best:
+			tie = true
+		}
+	}
+	if tie {
+		return nil
+	}
+	return best
 }
 
 // All returns a snapshot of registered primaries. Stale entries are excluded

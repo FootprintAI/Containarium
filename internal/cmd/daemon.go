@@ -53,6 +53,7 @@ var (
 	pool               string
 	publicHostname     string
 	publicAliases      []string
+	publicBaseDomain   string
 	publicPort         int
 
 	proxyProtocol        bool
@@ -140,6 +141,7 @@ func init() {
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. containarium-prod.kafeido.app); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.kafeido.app,voice.kafeido.app); the sentinel SNI router treats these as aliases of --public-hostname")
+	daemonCmd.Flags().StringVar(&publicBaseDomain, "public-base-domain", "", "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Defaults to --base-domain when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
 	daemonCmd.Flags().IntVar(&publicPort, "public-port", 443, "Public TLS port the sentinel forwards to (default 443)")
@@ -465,6 +467,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		Pool:                 pool,
 		PublicHostname:       publicHostname,
 		PublicAliases:        publicAliases,
+		PublicBaseDomain:     resolvePublicBaseDomain(publicBaseDomain, baseDomain),
 		PublicPort:           publicPort,
 		ProxyProtocol:        proxyProtocol,
 		ProxyProtocolTrusted: proxyProtocolTrusted,
@@ -694,6 +697,19 @@ func waitForCoreContainers(incusClient *incus.Client, timeout time.Duration) err
 
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// resolvePublicBaseDomain returns the value to advertise to the
+// sentinel for suffix-match routing. When the operator passed
+// --public-base-domain explicitly, that wins; otherwise the value
+// falls back to --base-domain, which is already the suffix the
+// backend's own Caddy serves containers under. Empty in both cases
+// means suffix matching is disabled for this primary.
+func resolvePublicBaseDomain(public, base string) string {
+	if public != "" {
+		return public
+	}
+	return base
 }
 
 // saveRecoveryConfigToPersistentStorage saves recovery config to persistent disk

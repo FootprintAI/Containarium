@@ -24,12 +24,13 @@ const primaryHeartbeatInterval = primaryRegisterTTL / 3
 // PrimaryRegisterConfig describes the inputs needed to advertise a primary
 // daemon to the sentinel registry.
 type PrimaryRegisterConfig struct {
-	SentinelURL    string   // e.g. http://10.128.0.5:8888
-	Pool           string   // pool name (must match peers' --pool)
-	PublicHostname string   // primary's own subdomain (e.g. containarium-prod.kafeido.app)
-	PublicAliases  []string // additional hostnames the primary's Caddy serves (e.g. api.kafeido.app, voice.kafeido.app)
-	Port           int      // public HTTPS port (typically 443 or 8443)
-	BackendID      string   // optional; for ops visibility in /sentinel/primaries
+	SentinelURL      string   // e.g. http://10.128.0.5:8888
+	Pool             string   // pool name (must match peers' --pool)
+	PublicHostname   string   // primary's own subdomain (e.g. containarium-prod.kafeido.app)
+	PublicAliases    []string // additional hostnames the primary's Caddy serves (e.g. api.kafeido.app, voice.kafeido.app)
+	PublicBaseDomain string   // suffix-match anchor: <anything>.<PublicBaseDomain> routes here (e.g. "containarium.dev")
+	Port             int      // public HTTPS port (typically 443 or 8443)
+	BackendID        string   // optional; for ops visibility in /sentinel/primaries
 }
 
 // runPrimaryRegistration registers with the sentinel, sends periodic
@@ -50,11 +51,12 @@ func runPrimaryRegistration(ctx context.Context, cfg PrimaryRegisterConfig) {
 	heartbeatURL := base + "/sentinel/primaries/" + cfg.Pool
 
 	body := map[string]any{
-		"pool":       cfg.Pool,
-		"hostname":   cfg.PublicHostname,
-		"aliases":    cfg.PublicAliases,
-		"port":       cfg.Port,
-		"backend_id": cfg.BackendID,
+		"pool":        cfg.Pool,
+		"hostname":    cfg.PublicHostname,
+		"aliases":     cfg.PublicAliases,
+		"base_domain": cfg.PublicBaseDomain,
+		"port":        cfg.Port,
+		"backend_id":  cfg.BackendID,
 		// IP intentionally omitted — sentinel infers from RemoteAddr.
 	}
 
@@ -64,7 +66,7 @@ func runPrimaryRegistration(ctx context.Context, cfg PrimaryRegisterConfig) {
 	if err := postJSON(ctx, client, registerURL, body); err != nil {
 		log.Printf("[primary-register] initial registration failed: %v (will retry)", err)
 	} else {
-		log.Printf("[primary-register] registered: pool=%q hostname=%q aliases=%v port=%d", cfg.Pool, cfg.PublicHostname, cfg.PublicAliases, cfg.Port)
+		log.Printf("[primary-register] registered: pool=%q hostname=%q aliases=%v base_domain=%q port=%d", cfg.Pool, cfg.PublicHostname, cfg.PublicAliases, cfg.PublicBaseDomain, cfg.Port)
 	}
 
 	go func() {

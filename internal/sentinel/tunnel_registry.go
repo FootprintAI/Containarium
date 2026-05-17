@@ -29,9 +29,10 @@ type TunnelSpot struct {
 	// Primary self-registration via handshake (slice 6). Non-empty
 	// PublicHostname promotes this tunnel into a primary registry entry on
 	// connect; cleared on disconnect.
-	PublicHostname string
-	PublicAliases  []string
-	PublicPort     int
+	PublicHostname   string
+	PublicAliases    []string
+	PublicBaseDomain string
+	PublicPort       int
 }
 
 // TunnelRegistry tracks connected tunnel clients and assigns loopback aliases.
@@ -93,16 +94,17 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 	externalPort := ExternalPortBase + int(octet)
 
 	spot := &TunnelSpot{
-		ID:             spotID,
-		Session:        session,
-		LocalIP:        localIP,
-		ExternalPort:   externalPort,
-		Ports:          hs.Ports,
-		Pool:           hs.Pool,
-		PublicHostname: hs.PublicHostname,
-		PublicAliases:  hs.PublicAliases,
-		PublicPort:     hs.PublicPort,
-		Connected:      time.Now(),
+		ID:               spotID,
+		Session:          session,
+		LocalIP:          localIP,
+		ExternalPort:     externalPort,
+		Ports:            hs.Ports,
+		Pool:             hs.Pool,
+		PublicHostname:   hs.PublicHostname,
+		PublicAliases:    hs.PublicAliases,
+		PublicBaseDomain: hs.PublicBaseDomain,
+		PublicPort:       hs.PublicPort,
+		Connected:        time.Now(),
 	}
 	r.spots[spotID] = spot
 

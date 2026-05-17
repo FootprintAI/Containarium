@@ -101,9 +101,10 @@ type DualServerConfig struct {
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
-	PublicHostname string   // primary's own subdomain (e.g. containarium-prod.kafeido.app)
-	PublicAliases  []string // additional hostnames the primary's Caddy serves (e.g. api.kafeido.app, voice.kafeido.app)
-	PublicPort     int      // TLS port the sentinel forwards to (typically 443)
+	PublicHostname   string   // primary's own subdomain (e.g. containarium-prod.kafeido.app)
+	PublicAliases    []string // additional hostnames the primary's Caddy serves (e.g. api.kafeido.app, voice.kafeido.app)
+	PublicBaseDomain string   // suffix-match anchor advertised to the sentinel; <anything>.<PublicBaseDomain> routes here (see docs/PER-POOL-BASE-DOMAIN.md)
+	PublicPort       int      // TLS port the sentinel forwards to (typically 443)
 
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
@@ -1210,12 +1211,13 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 func (ds *DualServer) Start(ctx context.Context) error {
 	// Register this primary with the sentinel (no-op if --public-hostname is unset).
 	runPrimaryRegistration(ctx, PrimaryRegisterConfig{
-		SentinelURL:    ds.config.SentinelURL,
-		Pool:           ds.config.Pool,
-		PublicHostname: ds.config.PublicHostname,
-		PublicAliases:  ds.config.PublicAliases,
-		Port:           ds.config.PublicPort,
-		BackendID:      ds.config.LocalBackendID,
+		SentinelURL:      ds.config.SentinelURL,
+		Pool:             ds.config.Pool,
+		PublicHostname:   ds.config.PublicHostname,
+		PublicAliases:    ds.config.PublicAliases,
+		PublicBaseDomain: ds.config.PublicBaseDomain,
+		Port:             ds.config.PublicPort,
+		BackendID:        ds.config.LocalBackendID,
 	})
 
 	// Start peer discovery for multi-backend support

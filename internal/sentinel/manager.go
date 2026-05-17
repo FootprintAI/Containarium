@@ -210,7 +210,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				return
 			}
 			stored := m.primaries.Register(p)
-			log.Printf("[sentinel] primary registered: pool=%q host=%q ip=%s:%d", stored.Pool, stored.Hostname, stored.IP, stored.Port)
+			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domain=%q ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomain, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(stored)
 
@@ -572,13 +572,18 @@ func (m *Manager) startHTTPSProxy(backendIP string) {
 // registered for that hostname, falling back to fallbackTarget on miss.
 //
 // Routing precedence:
-//  1. Primary with BackendID set (tunnel-promoted) → open a yamux stream
-//     directly to the primary's PublicPort via the tunnel registry. This
-//     avoids needing a sentinel-side TCP listener on the primary's port,
-//     which would collide with the sentinel's own ConnMux on :443.
-//  2. Primary without BackendID (in-VPC primary) → TCP-dial Primary.IP:Port.
-//  3. SNI doesn't match any primary → TCP-dial fallbackTarget (legacy
-//     single-backend behavior).
+//  1. Exact Hostname/Alias match (LookupByHostname).
+//  2. BaseDomain suffix match (LookupByBaseDomainSuffix) — routes ad-hoc
+//     container subdomains like "blog.containarium.dev" to whichever
+//     primary registered BaseDomain="containarium.dev". See
+//     docs/PER-POOL-BASE-DOMAIN.md.
+//  3. No primary match → TCP-dial fallbackTarget (legacy single-backend
+//     behavior).
+//
+// Inside each match path, the dial target depends on whether the primary
+// is tunnel-promoted: BackendID set → yamux stream via the tunnel
+// registry (avoids a sentinel-side TCP listener that would collide with
+// ConnMux on :443); BackendID empty → TCP dial to Primary.IP:Port.
 func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 	return func(conn net.Conn) {
 		defer conn.Close()
@@ -593,7 +598,11 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 			err error
 		)
 		if peekErr == nil && sni != "" {
-			if p := m.primaries.LookupByHostname(sni); p != nil {
+			p := m.primaries.LookupByHostname(sni)
+			if p == nil {
+				p = m.primaries.LookupByBaseDomainSuffix(sni)
+			}
+			if p != nil {
 				if p.BackendID != "" && m.tunnelRegistry != nil {
 					// Tunnel-promoted primary: yamux directly.
 					spotID := strings.TrimPrefix(p.BackendID, "tunnel-")
@@ -832,12 +841,13 @@ func (m *Manager) OnTunnelConnect(spot *TunnelSpot) {
 	// primary's hostname/aliases through the tunnel.
 	if spot.PublicHostname != "" && spot.PublicPort != 0 && m.primaries != nil {
 		m.primaries.Register(Primary{
-			Pool:      spot.Pool,
-			Hostname:  spot.PublicHostname,
-			Aliases:   spot.PublicAliases,
-			IP:        spot.LocalIP,
-			Port:      spot.PublicPort,
-			BackendID: b.ID,
+			Pool:       spot.Pool,
+			Hostname:   spot.PublicHostname,
+			Aliases:    spot.PublicAliases,
+			BaseDomain: spot.PublicBaseDomain,
+			IP:         spot.LocalIP,
+			Port:       spot.PublicPort,
+			BackendID:  b.ID,
 		})
 		log.Printf("[sentinel] tunnel-promoted primary: pool=%q hostname=%q aliases=%v -> %s:%d",
 			spot.Pool, spot.PublicHostname, spot.PublicAliases, spot.LocalIP, spot.PublicPort)
