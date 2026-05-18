@@ -50,9 +50,12 @@ echo "==> Binary: $BINARY ($BINARY_SIZE)"
 echo "==> Uploading to sentinel..."
 gcloud compute scp "$BINARY" "$SENTINEL_VM:/tmp/containarium" \
     --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap --scp-flag="-P 2222"
+# Sentinel daemon holds /usr/local/bin/containarium open, so a plain `cp`
+# fails with "Text file busy". Stop the service before copying, mirroring
+# the primary-VM pattern below.
 gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap --ssh-flag="-p 2222" \
-    --command="sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl restart containarium-sentinel"
+    --command="sudo systemctl stop containarium-sentinel && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start containarium-sentinel"
 echo "  Sentinel updated and restarted"
 
 # 3. Deploy on primary
