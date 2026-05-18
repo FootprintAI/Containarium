@@ -480,6 +480,101 @@ func TestAddRoute_ServerError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestToggleAutoSleep_WirePayload locks the on-wire request shape
+// (POST, path, JSON field names) and verifies the response decoded
+// from the daemon's gateway flows back through the typed struct.
+func TestToggleAutoSleep_WirePayload(t *testing.T) {
+	var captured map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/v1/containers/alice/auto-sleep", r.URL.Path)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		_, _ = w.Write([]byte(`{"message":"auto-sleep enabled at 30m","autoSleepEnabled":true,"idleThresholdMinutes":30}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	resp, err := c.ToggleAutoSleep("alice", true, 30)
+	require.NoError(t, err)
+
+	// Field names must match the snake_case the grpc-gateway shim
+	// accepts on input — gateway auto-converts both spellings on
+	// decode, but locking snake_case here matches the literal client
+	// body and guards against accidental camelCase rewrites that
+	// older gateway builds reject.
+	assert.Equal(t, true, captured["enabled"])
+	assert.EqualValues(t, 30, captured["idle_threshold_minutes"])
+	// Response decode round-trips the camelCase JSON cleanly.
+	assert.True(t, resp.AutoSleepEnabled)
+	assert.Equal(t, int32(30), resp.IdleThresholdMinutes)
+}
+
+// TestToggleAutoSleep_WirePayload_DisableOmitsThreshold — disable
+// path still carries idle_threshold_minutes as 0 (Go zero value) over
+// the wire; the daemon ignores it when enabled=false.
+func TestToggleAutoSleep_WirePayload_DisableOmitsThreshold(t *testing.T) {
+	var captured map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		_, _ = w.Write([]byte(`{"message":"auto-sleep disabled","autoSleepEnabled":false,"idleThresholdMinutes":15}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	_, err := c.ToggleAutoSleep("alice", false, 0)
+	require.NoError(t, err)
+	assert.Equal(t, false, captured["enabled"])
+	assert.EqualValues(t, 0, captured["idle_threshold_minutes"])
+}
+
+// TestStartContainer_WirePayload_WaitForReady — verify the new
+// waitForReady arg ships on the wire. Lock the JSON field name so a
+// later refactor doesn't silently break daemons expecting the
+// gateway-decoded request.
+func TestStartContainer_WirePayload_WaitForReady(t *testing.T) {
+	tests := []struct {
+		name              string
+		waitForReady      bool
+		wantWaitForReady  bool
+	}{
+		{"waitForReady=true", true, true},
+		{"waitForReady=false", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "POST", r.Method)
+				assert.Equal(t, "/v1/containers/alice/start", r.URL.Path)
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+				_, _ = w.Write([]byte(`{"message":"started","container":{"name":"alice-container","state":"Running"},"readyTimedOut":false}`))
+			}))
+			defer srv.Close()
+
+			c := NewClient(srv.URL, "tok")
+			resp, err := c.StartContainer("alice", tt.waitForReady)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantWaitForReady, captured["wait_for_ready"])
+			assert.False(t, resp.ReadyTimedOut)
+		})
+	}
+}
+
+// TestStartContainer_DecodesReadyTimedOut — when the daemon reports
+// ready_timed_out=true, the typed response struct must carry it
+// through so the MCP handler can show the warning emoji.
+func TestStartContainer_DecodesReadyTimedOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":"timed out","container":{"name":"alice-container","state":"Running"},"readyTimedOut":true}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	resp, err := c.StartContainer("alice", true)
+	require.NoError(t, err)
+	assert.True(t, resp.ReadyTimedOut)
+}
+
 // TestTriggerSecurityScan_WirePayloads locks the wire body for each
 // scanner kind. All three protos now accept a container_name field,
 // and the MCP always operates on one container, so all three bodies
