@@ -566,7 +566,9 @@ func (c *Client) listOneScanner(kind, containerName string) ([]SecurityFinding, 
 		}
 		var resp struct {
 			Reports []struct {
-				ID            int64  `json:"id"`
+				// grpc-gateway emits int64 as a JSON string — see the
+				// pentest comment below for why this matters.
+				ID            int64  `json:"id,string"`
 				ContainerName string `json:"containerName"`
 				Status        string `json:"status"`
 				FindingsCount int    `json:"findingsCount"`
@@ -592,20 +594,25 @@ func (c *Client) listOneScanner(kind, containerName string) ([]SecurityFinding, 
 		return out, nil
 
 	case scanKindPentest:
-		path := "/v1/pentest/findings?containerName=" + containerName
-		body, err := c.doRequest("GET", path, nil)
+		// The pentest proto has no container_name filter, so we pull
+		// all findings and filter client-side on the target prefix.
+		// Sending ?containerName= would just be ignored by grpc-gateway.
+		body, err := c.doRequest("GET", "/v1/pentest/findings", nil)
 		if err != nil {
 			return nil, err
 		}
 		var resp struct {
 			Findings []struct {
-				ID                int64  `json:"id"`
-				Severity          string `json:"severity"`
-				Title             string `json:"title"`
-				Description       string `json:"description"`
-				Target            string `json:"target"`
-				RemediationActive bool   `json:"remediationActive"`
-				Suppressed        bool   `json:"suppressed"`
+				// grpc-gateway emits proto int64 as a JSON string per
+				// protojson spec — without `,string` this silently
+				// decodes to 0, which breaks RemediatePentestFinding.
+				ID          int64  `json:"id,string"`
+				Category    string `json:"category"`
+				Severity    string `json:"severity"`
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				Target      string `json:"target"`
+				Suppressed  bool   `json:"suppressed"`
 			} `json:"findings"`
 		}
 		_ = json.Unmarshal(body, &resp)
@@ -614,27 +621,42 @@ func (c *Client) listOneScanner(kind, containerName string) ([]SecurityFinding, 
 			if f.Suppressed {
 				continue
 			}
+			// Trivy findings encode container in their target as
+			// "<container> (path/to/binary)". Domain-level findings
+			// (SPF, missing CSP, etc.) don't belong to any container,
+			// so they're intentionally absent from per-container queries.
+			if !strings.HasPrefix(f.Target, containerName+" ") {
+				continue
+			}
 			out = append(out, SecurityFinding{
-				Kind:         scanKindPentest,
-				ID:           f.ID,
-				Severity:     f.Severity,
-				Title:        f.Title,
-				Description:  f.Description,
-				Target:       f.Target,
-				FixAvailable: true, // pentest is the one kind RemediatePentestFinding can act on
+				Kind:        scanKindPentest,
+				ID:          f.ID,
+				Severity:    f.Severity,
+				Title:       f.Title,
+				Description: f.Description,
+				Target:      f.Target,
+				// Only trivy findings have an auto-fix path —
+				// RemediatePentestFinding refuses other categories.
+				FixAvailable: f.Category == "trivy",
 			})
 		}
 		return out, nil
 
 	case scanKindZap:
-		path := "/v1/zap/alerts?containerName=" + containerName
-		body, err := c.doRequest("GET", path, nil)
+		// ZAP proto has no container_name filter either; same
+		// client-side filter pattern as pentest. We match alerts whose
+		// URL contains the container name as a hostname-ish prefix —
+		// ZAP scans by URL, so the linkage to a container is via the
+		// hostname the scan was pointed at.
+		body, err := c.doRequest("GET", "/v1/zap/alerts", nil)
 		if err != nil {
 			return nil, err
 		}
 		var resp struct {
 			Alerts []struct {
-				ID          int64  `json:"id"`
+				// See the pentest comment on `,string` — int64 over
+				// protojson arrives as a JSON string.
+				ID          int64  `json:"id,string"`
 				AlertName   string `json:"alertName"`
 				Risk        string `json:"risk"`
 				Description string `json:"description"`
@@ -646,6 +668,9 @@ func (c *Client) listOneScanner(kind, containerName string) ([]SecurityFinding, 
 		var out []SecurityFinding
 		for _, a := range resp.Alerts {
 			if a.Suppressed {
+				continue
+			}
+			if !strings.Contains(a.URL, containerName) {
 				continue
 			}
 			out = append(out, SecurityFinding{
