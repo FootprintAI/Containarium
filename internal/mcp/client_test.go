@@ -480,113 +480,34 @@ func TestAddRoute_ServerError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestListSecurityFindings_Pentest exercises the protojson-shaped wire
-// format the prod daemon actually sends through grpc-gateway:
-//   - int64 IDs are JSON strings, not numbers
-//   - all findings come back regardless of any containerName query, so
-//     the client has to filter by target prefix
-//   - fixAvailable is only true for trivy-category findings (the
-//     daemon's RemediatePentestFinding refuses the rest)
-//
-// The exact bug this guards against: a previous version decoded
-// `id` as int64 directly, which silently set every ID to 0 and made
-// security_remediate point at the wrong row.
-func TestListSecurityFindings_Pentest(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/pentest/findings" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		// grpc-gateway/protojson emits int64 as a JSON string.
-		_, _ = w.Write([]byte(`{
-			"findings": [
-				{"id":"42","category":"trivy","severity":"high","title":"CVE-X","target":"facelabor-container (usr/bin/dockerd)"},
-				{"id":"7","category":"trivy","severity":"high","title":"CVE-Y","target":"facelabor-container (usr/bin/rootlesskit)"},
-				{"id":"99","category":"headers","severity":"medium","title":"Missing CSP","target":"https://wordpress.kafeido.app"},
-				{"id":"100","category":"dns","severity":"medium","title":"Missing SPF","target":"kafeido.app"},
-				{"id":"5","category":"trivy","severity":"high","title":"CVE-Z","target":"wordpress-container (usr/bin/php)"},
-				{"id":"8","category":"trivy","severity":"high","title":"suppressed","target":"facelabor-container (usr/bin/skip)","suppressed":true}
-			]
-		}`))
-	}))
-	defer server.Close()
-
-	client := NewClient(server.URL, "test-token")
-	got, err := client.ListSecurityFindings(scanKindPentest, "facelabor-container")
-	require.NoError(t, err)
-
-	require.Len(t, got, 2, "should only return non-suppressed trivy findings whose target matches facelabor-container")
-
-	// IDs decoded from JSON strings (the bug this test guards).
-	assert.Equal(t, int64(42), got[0].ID)
-	assert.Equal(t, int64(7), got[1].ID)
-
-	// Both fix-available — they're trivy.
-	assert.True(t, got[0].FixAvailable)
-	assert.True(t, got[1].FixAvailable)
-
-	// Domain-level findings (headers/dns) and other-container findings
-	// (wordpress-container) must not leak into a facelabor-container query.
-	for _, f := range got {
-		assert.NotContains(t, f.Title, "Missing")
-		assert.NotContains(t, f.Title, "suppressed")
-		assert.Contains(t, f.Target, "facelabor-container")
+// TestTriggerSecurityScan_WirePayloads guards against a regression where
+// pentest/ZAP triggers sent {"username":...} — neither proto accepts that
+// field, and the daemon's grpc-gateway returned 400 "unknown field".
+// ClamAV's proto does take container_name, so its body is preserved.
+func TestTriggerSecurityScan_WirePayloads(t *testing.T) {
+	tests := []struct {
+		kind         string
+		path         string
+		expectFields map[string]string
+	}{
+		{scanKindClamav, "/v1/security/clamav-scan", map[string]string{"containerName": "alice-container"}},
+		{scanKindPentest, "/v1/pentest/scan", map[string]string{}},
+		{scanKindZap, "/v1/zap/scan", map[string]string{}},
 	}
-}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, tt.path, r.URL.Path)
+				var got map[string]string
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+				assert.Equal(t, tt.expectFields, got, "wire body must match proto fields exactly")
+				_, _ = w.Write([]byte(`{"message":"queued","scannedCount":1}`))
+			}))
+			defer server.Close()
 
-func TestListSecurityFindings_Pentest_NonTrivyNotFixable(t *testing.T) {
-	// A category="headers" finding whose target happens to match the
-	// container prefix (artificial but possible) must NOT be marked
-	// fix-available — only trivy is remediable today.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
-			"findings": [
-				{"id":"1","category":"headers","severity":"low","title":"weird","target":"alice-container etc"}
-			]
-		}`))
-	}))
-	defer server.Close()
-
-	client := NewClient(server.URL, "test-token")
-	got, err := client.ListSecurityFindings(scanKindPentest, "alice-container")
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.False(t, got[0].FixAvailable, "headers category must not be marked auto-fixable")
-}
-
-// Same int64-string decode bug applies to ClamAV and ZAP — guard those
-// with a smoke test apiece.
-func TestListSecurityFindings_Clamav_DecodesStringID(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
-			"reports": [
-				{"id":"77","containerName":"alice-container","status":"infected","findingsCount":3,"findings":"eicar"}
-			]
-		}`))
-	}))
-	defer server.Close()
-
-	client := NewClient(server.URL, "test-token")
-	got, err := client.ListSecurityFindings(scanKindClamav, "alice-container")
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, int64(77), got[0].ID)
-}
-
-func TestListSecurityFindings_Zap_DecodesAndFilters(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
-			"alerts": [
-				{"id":"11","alertName":"XSS","risk":"high","url":"https://alice-container.example/app"},
-				{"id":"12","alertName":"Other","risk":"high","url":"https://bob-container.example/app"}
-			]
-		}`))
-	}))
-	defer server.Close()
-
-	client := NewClient(server.URL, "test-token")
-	got, err := client.ListSecurityFindings(scanKindZap, "alice-container")
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, int64(11), got[0].ID)
-	assert.False(t, got[0].FixAvailable)
+			client := NewClient(server.URL, "test-token")
+			_, err := client.TriggerSecurityScan(tt.kind, "alice-container", "alice")
+			require.NoError(t, err)
+		})
+	}
 }

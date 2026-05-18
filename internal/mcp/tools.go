@@ -632,6 +632,10 @@ func (s *Server) registerTools() {
 				"three scanner subsystems: ClamAV (malware in container files), pentest " +
 				"(CVE-style vulnerabilities in installed packages), ZAP (web-app DAST against " +
 				"any exposed HTTP services).\n\n" +
+				"Scope caveat: only ClamAV honors the `username` argument and scans just that " +
+				"one container. Pentest and ZAP run cluster-wide regardless of `username` — " +
+				"the daemon's TriggerPentestScanRequest/TriggerZapScanRequest protos take no " +
+				"container filter today. Use kind=clamav if you need a single-container scan.\n\n" +
 				"This is a one-shot operator-invoked action — call it when you suspect or " +
 				"need to confirm a container's security posture. The scans run asynchronously " +
 				"on the daemon; this tool returns once the trigger is accepted. After waiting " +

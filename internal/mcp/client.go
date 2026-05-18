@@ -489,11 +489,16 @@ func (c *Client) TriggerSecurityScan(kind, containerName, username string) (*Sec
 			path = "/v1/security/clamav-scan"
 			body = map[string]string{"containerName": containerName}
 		case scanKindPentest:
+			// Pentest scans are cluster-wide on the daemon —
+			// TriggerPentestScanRequest has no container/user field.
+			// Sending {"username":...} 400s with "unknown field" because
+			// the gateway's protojson validator rejects it.
 			path = "/v1/pentest/scan"
-			body = map[string]string{"username": username}
+			body = map[string]string{}
 		case scanKindZap:
+			// Same as pentest — TriggerZapScanRequest has no fields.
 			path = "/v1/zap/scan"
-			body = map[string]string{"username": username}
+			body = map[string]string{}
 		}
 		respBody, err := c.doRequest("POST", path, body)
 		if err != nil {
