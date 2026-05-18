@@ -62,7 +62,7 @@ type ContainerServer struct {
 	// the daemon was started without --app-hosting). Used by DeleteContainer
 	// to cascade-remove the routes / TLS-automation subjects a container
 	// owned, so deleting an LXC actually deletes the public hostname too.
-	routeStore           *app.RouteStore
+	routeStore           routeLister
 	proxyManager         *app.ProxyManager
 
 	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
