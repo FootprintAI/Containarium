@@ -49,6 +49,16 @@ func (s *Store) Close() {
 	}
 }
 
+// Pool exposes the underlying pgx pool for callers that need to issue
+// custom queries (e.g. the autosleep package's LastNetworkActivity probe
+// over traffic_connections). Returns nil if the store wasn't initialized.
+func (s *Store) Pool() *pgxpool.Pool {
+	if s == nil {
+		return nil
+	}
+	return s.pool
+}
+
 // initSchema creates the database schema if it doesn't exist
 func (s *Store) initSchema(ctx context.Context) error {
 	schema := `

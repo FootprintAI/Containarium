@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/autosleep"
 	"github.com/footprintai/containarium/internal/collaborator"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/internal/events"
@@ -151,6 +152,7 @@ type DualServer struct {
 	zapManager            *zapscanner.Manager
 	zapStore              *zapscanner.Store
 	peerPool              *PeerPool
+	autoSleepManager      *autosleep.Manager
 	startTime             time.Time
 }
 
@@ -994,7 +996,7 @@ skipAppHosting:
 		})
 	}
 
-	return &DualServer{
+	ds := &DualServer{
 		config:             config,
 		grpcServer:         grpcServer,
 		containerServer:    containerServer,
@@ -1027,7 +1029,11 @@ skipAppHosting:
 		zapStore:             zapStore,
 		peerPool:             NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		startTime:            time.Now(),
-	}, nil
+	}
+
+	// Auto-sleep ticker is constructed in Start() once the traffic
+	// collector has finalized its store wiring.
+	return ds, nil
 }
 
 // Start starts both gRPC and HTTP servers
@@ -1255,6 +1261,29 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start auto-sleep ticker. Always-on by daemon policy; per-container
+	// opt-in (AutoSleepEnabled) gates real stop behavior. Wired here so
+	// the traffic collector's store, finalized during NewDualServer's
+	// app-hosting block, can feed network-activity signals if present.
+	if incusClient, err := incus.New(); err != nil {
+		log.Printf("[autosleep] incus client unavailable: %v (ticker disabled)", err)
+	} else {
+		var trafficSrc autosleep.TrafficSource
+		if ds.trafficCollector != nil {
+			if store := ds.trafficCollector.GetStore(); store != nil {
+				if pool := store.Pool(); pool != nil {
+					trafficSrc = autosleep.NewTrafficStoreAdapter(pool)
+				}
+			}
+		}
+		var auditAdapter autosleep.AuditLogger
+		if ds.auditStore != nil {
+			auditAdapter = &autosleep.AuditStoreAdapter{Store: ds.auditStore}
+		}
+		ds.autoSleepManager = autosleep.NewManager(incusClient, trafficSrc, ds.containerServer, auditAdapter, autosleep.Options{})
+		ds.autoSleepManager.Start(ctx)
+	}
+
 	// Start OTel metrics collector if available
 	if ds.metricsCollector != nil {
 		// Wire peer metrics fetcher so peer container metrics are pushed to VictoriaMetrics
@@ -1439,6 +1468,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.passthroughSyncJob != nil {
 			ds.passthroughSyncJob.Stop()
+		}
+		if ds.autoSleepManager != nil {
+			ds.autoSleepManager.Stop()
 		}
 		if ds.trafficCollector != nil {
 			ds.trafficCollector.Stop()
