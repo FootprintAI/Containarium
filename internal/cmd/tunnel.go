@@ -18,10 +18,10 @@ var (
 	tunnelSpotID         string
 	tunnelPorts          string
 	tunnelPool           string
-	tunnelPublicHostname   string
-	tunnelPublicAliases    []string
-	tunnelPublicBaseDomain string
-	tunnelPublicPort       int
+	tunnelPublicHostname    string
+	tunnelPublicAliases     []string
+	tunnelPublicBaseDomains []string
+	tunnelPublicPort        int
 )
 
 var tunnelCmd = &cobra.Command{
@@ -52,8 +52,8 @@ func init() {
 	tunnelCmd.Flags().StringVar(&tunnelPorts, "ports", "22,80,443,3389,8080", "Comma-separated local ports to expose through the tunnel")
 	tunnelCmd.Flags().StringVar(&tunnelPool, "pool", "", "Pool name to register this peer in (optional; empty = unpooled)")
 	tunnelCmd.Flags().StringVar(&tunnelPublicHostname, "public-hostname", "", "If set, sentinel registers this tunnel as the primary for its pool, serving the named hostname (requires --pool and --public-port)")
-	tunnelCmd.Flags().StringSliceVar(&tunnelPublicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.kafeido.app,voice.kafeido.app)")
-	tunnelCmd.Flags().StringVar(&tunnelPublicBaseDomain, "public-base-domain", "", "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes through this tunnel without each subdomain being a registered alias. See docs/PER-POOL-BASE-DOMAIN.md.")
+	tunnelCmd.Flags().StringSliceVar(&tunnelPublicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com)")
+	tunnelCmd.Flags().StringSliceVar(&tunnelPublicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes through this tunnel without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend. See docs/PER-POOL-BASE-DOMAIN.md.")
 	tunnelCmd.Flags().IntVar(&tunnelPublicPort, "public-port", 0, "Public TLS port the sentinel forwards to via this tunnel (typically 443; required with --public-hostname)")
 }
 
@@ -91,15 +91,15 @@ func runTunnel(cmd *cobra.Command, args []string) error {
 	}()
 
 	client := &sentinel.TunnelClient{
-		SentinelAddr:     tunnelSentinelAddr,
-		Token:            token,
-		SpotID:           tunnelSpotID,
-		Ports:            ports,
-		Pool:             sentinel.Pool(tunnelPool),
-		PublicHostname:   tunnelPublicHostname,
-		PublicAliases:    tunnelPublicAliases,
-		PublicBaseDomain: tunnelPublicBaseDomain,
-		PublicPort:       tunnelPublicPort,
+		SentinelAddr:      tunnelSentinelAddr,
+		Token:             token,
+		SpotID:            tunnelSpotID,
+		Ports:             ports,
+		Pool:              sentinel.Pool(tunnelPool),
+		PublicHostname:    tunnelPublicHostname,
+		PublicAliases:     tunnelPublicAliases,
+		PublicBaseDomains: tunnelPublicBaseDomains,
+		PublicPort:        tunnelPublicPort,
 	}
 
 	log.Printf("[tunnel] connecting to sentinel at %s as %q (ports: %v, pool: %q, primary_host: %q)", tunnelSentinelAddr, tunnelSpotID, ports, tunnelPool, tunnelPublicHostname)

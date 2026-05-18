@@ -93,10 +93,10 @@ type TunnelHandshake struct {
 	// pointing at the tunnel's loopback alias on the sentinel side. This
 	// avoids the daemon needing direct HTTP access to /sentinel/primaries
 	// from networks that can only reach the sentinel via the tunnel.
-	PublicHostname   string   `json:"public_hostname,omitempty"`
-	PublicAliases    []string `json:"public_aliases,omitempty"`
-	PublicBaseDomain string   `json:"public_base_domain,omitempty"`
-	PublicPort       int      `json:"public_port,omitempty"`
+	PublicHostname    string   `json:"public_hostname,omitempty"`
+	PublicAliases     []string `json:"public_aliases,omitempty"`
+	PublicBaseDomains []string `json:"public_base_domains,omitempty"`
+	PublicPort        int      `json:"public_port,omitempty"`
 }
 
 // TunnelHandshakeResponse is sent by the sentinel back to the spot after

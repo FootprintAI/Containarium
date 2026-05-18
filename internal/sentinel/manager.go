@@ -210,7 +210,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				return
 			}
 			stored := m.primaries.Register(p)
-			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domain=%q ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomain, stored.IP, stored.Port)
+			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%v ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(stored)
 
@@ -841,16 +841,16 @@ func (m *Manager) OnTunnelConnect(spot *TunnelSpot) {
 	// primary's hostname/aliases through the tunnel.
 	if spot.PublicHostname != "" && spot.PublicPort != 0 && m.primaries != nil {
 		m.primaries.Register(Primary{
-			Pool:       spot.Pool,
-			Hostname:   spot.PublicHostname,
-			Aliases:    spot.PublicAliases,
-			BaseDomain: spot.PublicBaseDomain,
-			IP:         spot.LocalIP,
-			Port:       spot.PublicPort,
-			BackendID:  b.ID,
+			Pool:        spot.Pool,
+			Hostname:    spot.PublicHostname,
+			Aliases:     spot.PublicAliases,
+			BaseDomains: spot.PublicBaseDomains,
+			IP:          spot.LocalIP,
+			Port:        spot.PublicPort,
+			BackendID:   b.ID,
 		})
-		log.Printf("[sentinel] tunnel-promoted primary: pool=%q hostname=%q aliases=%v -> %s:%d",
-			spot.Pool, spot.PublicHostname, spot.PublicAliases, spot.LocalIP, spot.PublicPort)
+		log.Printf("[sentinel] tunnel-promoted primary: pool=%q hostname=%q aliases=%v base_domains=%v -> %s:%d",
+			spot.Pool, spot.PublicHostname, spot.PublicAliases, spot.PublicBaseDomains, spot.LocalIP, spot.PublicPort)
 	}
 
 	// Start sync loops for this tunnel backend

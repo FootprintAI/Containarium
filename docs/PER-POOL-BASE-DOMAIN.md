@@ -1,131 +1,177 @@
-# Per-Pool Base Domain (Design)
+# Per-Pool Base Domain Routing
 
-**Status**: Draft — not yet implemented.
-**Depends on**: [MULTI-POOL.md](MULTI-POOL.md), [APP-HOSTING.md](APP-HOSTING.md).
-**Drives**: serving multiple base domains (e.g. `kafeido.app` and `containarium.dev`) from a single sentinel without per-container alias bookkeeping.
+**Status**: Shipped. Single-domain support landed in #205 (Phase 3); multi-domain support in #207 (Phase 3b).
+**Related**: [MULTI-POOL.md](MULTI-POOL.md), [APP-HOSTING.md](APP-HOSTING.md), [CUTOVER-DEMO-INTO-PROD-SENTINEL.md](CUTOVER-DEMO-INTO-PROD-SENTINEL.md), [PLAN-DEMO-CONTAINER-MIGRATION.md](PLAN-DEMO-CONTAINER-MIGRATION.md).
+**Enables**: serving multiple base domains (e.g. `example.com` and `example.org`) from a single sentinel without per-container alias bookkeeping; one backend hosting workloads under multiple parent domains.
 
 ## Problem
 
-Today, every app hostname a pool's Caddy serves must appear in that primary's `--public-aliases` ([MULTI-POOL.md:178](MULTI-POOL.md#app-domain-routing-via-aliases)). The sentinel's SNI router does exact-match against `Primary.Hostname` plus the alias list ([primary_registry.go:139-156](../internal/sentinel/primary_registry.go)) and falls back to the legacy single-backend forwarder on miss ([manager.go:608-611](../internal/sentinel/manager.go)).
+Before this work, every app hostname a pool's Caddy served had to appear in that primary's `--public-aliases` ([MULTI-POOL.md:178](MULTI-POOL.md#app-domain-routing-via-aliases)). The sentinel's SNI router did exact-match against `Primary.Hostname` plus the alias list and fell back to the legacy single-backend forwarder on miss.
 
-That works when app domains are a small fixed set (`api.kafeido.app`, `voice.kafeido.app`, …) registered once at primary startup. It breaks when:
+That worked when app domains were a small fixed set (`api.example.com`, `voice.example.com`, …) registered once at primary startup. It broke when:
 
-- **Containers create their own subdomains dynamically.** `expose_port blog` on the demo backend produces `blog.containarium.dev`. The container exists; the Caddy route exists on the backend; the cert ACMEs fine. But the sentinel doesn't know that name → demo-backend, so the SNI peek misses and falls back to the wrong backend.
-- **A single sentinel needs to serve two or more base domains.** Today prod's sentinel handles `*.kafeido.app` purely by the fallback path (single registered backend == prod). Adding `containarium.dev` for the demo backend means the fallback can no longer be "the one backend" — different SNI suffixes need to go to different backends.
+- **Containers create their own subdomains dynamically.** `expose_port blog` on the demo backend produces `blog.example.org`. The container exists; the Caddy route exists on the backend; the cert ACMEs fine. But the sentinel didn't know that name → demo-backend, so the SNI peek missed and fell back to the wrong backend.
+- **A single sentinel needs to serve two or more base domains.** Prod's sentinel handled `*.example.com` purely by the fallback path (single registered backend == prod). Adding `example.org` for the demo backend meant the fallback could no longer be "the one backend" — different SNI suffixes needed to go to different backends.
+- **A single backend needs to host workloads under multiple parent domains.** The lab-hosts-demo pattern: the lab backend serves both `*.lab.example.com` (its own pool's workloads) and `*.demo.example.org` (migrated demo workloads). This is the Phase 4 / B2 path in [PLAN-DEMO-CONTAINER-MIGRATION.md](PLAN-DEMO-CONTAINER-MIGRATION.md).
 
-The workaround (register every container's hostname as an alias and update on every `expose_port`) is doable but ugly: it'd require a sentinel-API round-trip on every route mutation, with all the cache-invalidation pain that implies.
+The exact-alias workaround was doable for fixed app domains but doesn't scale to either dynamic subdomains or multi-tenant backends.
 
-## Proposal
+## Design
 
-Add a **per-primary base domain** that the SNI router uses for **suffix matching** after exact-alias matching fails and before the legacy fallback.
+A per-primary **list of base domains** that the SNI router uses for **suffix matching** after exact-alias matching fails and before the legacy fallback.
 
-### Registry change
-
-`Primary` gains a `BaseDomain` field, populated from a new `--public-base-domain` daemon flag (default empty == legacy behavior):
+### Registry
 
 ```go
 type Primary struct {
-    Pool       Pool      `json:"pool"`
-    Hostname   string    `json:"hostname"`
-    Aliases    []string  `json:"aliases,omitempty"`
-    BaseDomain string    `json:"base_domain,omitempty"` // NEW: suffix-match anchor
-    IP         string    `json:"ip"`
-    Port       int       `json:"port"`
-    BackendID  string    `json:"backend_id,omitempty"`
+    Pool        Pool     `json:"pool"`
+    Hostname    string   `json:"hostname"`
+    Aliases     []string `json:"aliases,omitempty"`
+    BaseDomains []string `json:"base_domains,omitempty"` // suffix-match anchors
+    IP          string   `json:"ip"`
+    Port        int      `json:"port"`
+    BackendID   string   `json:"backend_id,omitempty"`
     ...
 }
 ```
 
-New lookup method:
+Lookup method:
 
 ```go
-// LookupByBaseDomainSuffix returns the primary whose BaseDomain is a
-// proper DNS suffix of hostname. Returns nil if no primary matches or
-// if multiple primaries match (ambiguity is a configuration error;
-// fail closed rather than pick arbitrarily).
+// LookupByBaseDomainSuffix returns the primary whose BaseDomains contain
+// the longest proper DNS suffix of hostname. A primary may advertise
+// multiple base domains; each is considered independently. Returns nil
+// when no primary qualifies or when two primaries tie on suffix length
+// (ambiguity = misconfiguration; fail closed).
 func (r *PrimaryRegistry) LookupByBaseDomainSuffix(hostname string) *Primary
 ```
 
-Suffix match means `strings.HasSuffix(hostname, "." + p.BaseDomain)` — *proper* suffix, so `containarium.dev` does NOT match the BaseDomain literally (only `something.containarium.dev`). This keeps `containarium.dev` itself usable as a primary `Hostname` for the apex.
+Suffix match means `strings.HasSuffix(hostname, "." + bd)` for each `bd` in `BaseDomains` — *proper* suffix, so the base domain itself (`example.org`) does NOT match. This keeps the apex hostname usable as a separate `Hostname` or `Alias` for the apex.
 
 ### SNI router precedence
 
-`buildSNIRoutingHandler` ([manager.go:582](../internal/sentinel/manager.go)) becomes:
+`buildSNIRoutingHandler` in `internal/sentinel/manager.go`:
 
-1. Exact hostname match (`LookupByHostname`) — current behavior, unchanged.
-2. **New**: BaseDomain suffix match (`LookupByBaseDomainSuffix`).
-3. Fallback to `fallbackTarget` — current behavior, unchanged.
+1. Exact `Hostname` / `Alias` match (`LookupByHostname`) — unchanged from pre-Phase-3.
+2. `BaseDomains` suffix match (`LookupByBaseDomainSuffix`) — Phase 3 (single) / Phase 3b (multi).
+3. Legacy fallback to `fallbackTarget` — unchanged.
 
-The fallback stays as a safety net for unpooled single-backend deployments (no `BaseDomain` configured → step 2 always returns nil → behavior identical to today).
+The fallback stays as a safety net for unpooled single-backend deployments (no `BaseDomains` configured → step 2 always returns nil → behavior identical to pre-Phase-3).
 
-### Handshake change for tunneled primaries
+### Handshake + flag plumbing
 
-`TunnelHandshake` ([tunnel_auth.go](../internal/sentinel/tunnel_auth.go)) gains `PublicBaseDomain string`. The tunnel command picks it up from a new `--public-base-domain` flag in `internal/cmd/tunnel.go`. On `OnTunnelConnect` the value flows through to the `primaries.Register(...)` call (`manager.go:823-835`).
+`TunnelHandshake` gains `PublicBaseDomains []string`. Repeatable flag on both daemon and tunnel commands:
 
-### Daemon-side change
+```
+containarium daemon ... --public-base-domain lab.example.com --public-base-domain demo.example.org
+containarium tunnel ... --public-base-domain lab.example.com --public-base-domain demo.example.org
+```
 
-`internal/cmd/daemon.go` already has `--base-domain` for the backend's own Caddy. Reuse it: if `--public-base-domain` isn't set explicitly, default to `--base-domain`. This means most operators set one flag, and the sentinel learns it automatically via the existing primary registration.
+When unset, the daemon falls back to `[--base-domain]` (single-element list derived from the existing flag) so single-domain deployments need no extra config.
 
-## Worked example
+REST POST `/sentinel/primaries` body uses `base_domains: [...]`.
 
-| Backend | `--pool` | `--public-hostname` | `--base-domain` (== `--public-base-domain` default) |
+### Tie-breaking
+
+- **Longest suffix wins.** When two base domains both match (e.g. `example.com` and `lab.example.com` for SNI `notebook.lab.example.com`), the longer suffix is more specific and wins. Implemented in `LookupByBaseDomainSuffix` by tracking `bestLen` across all `(primary, base-domain)` pairs.
+- **Equal-length ties fail closed.** Two primaries advertising the *same* base domain is a misconfiguration; the lookup returns nil rather than picking arbitrarily. Caught regardless of which slot the duplicate lives in within each primary's `BaseDomains` list.
+- **Exact alias beats suffix.** Operator's explicit `--public-aliases` entry overrides the implicit suffix routing (step 1 runs before step 2 in the SNI router).
+
+## Worked examples
+
+### Example A — two backends, two base domains
+
+| Backend | `--pool` | `--public-hostname` | `--public-base-domain` (repeatable) |
 |---|---|---|---|
-| prod | `prod` | `containarium-prod.kafeido.app` | `kafeido.app` |
-| demo | `demo` | `demo.containarium.dev` | `containarium.dev` |
-| lab | `lab` | `containarium-lab.kafeido.app` | `lab.kafeido.app` |
+| prod | `prod` | `prod.example.com` | `example.com` |
+| demo | `demo` | `demo.example.org` | `example.org` |
 
-Inbound SNI behavior on the prod sentinel:
+Inbound SNI on the prod sentinel:
 
 | SNI | Match path | Forwards to |
 |---|---|---|
-| `containarium-prod.kafeido.app` | exact (Hostname) | prod backend |
-| `api.kafeido.app` | exact (Aliases, if listed) | prod backend |
-| `blog.containarium.dev` | suffix (`.containarium.dev`) | demo backend |
-| `notebook.lab.kafeido.app` | suffix (`.lab.kafeido.app`) | lab backend — **NOT** prod (more-specific suffix wins) |
-| `kafeido.app` (apex) | none → fallback | legacy backend |
+| `prod.example.com` | exact (Hostname) | prod backend |
+| `api.example.com` | exact (Aliases, if listed) | prod backend |
+| `blog.example.org` | suffix (`.example.org`) | demo backend |
+| `example.com` (apex) | none → fallback | legacy backend |
 
-The third row is the new capability; it removes the need to register `blog.containarium.dev` as an alias.
+### Example B — one backend, multiple base domains (lab-hosts-demo)
+
+The lab backend in the [demo container migration plan](PLAN-DEMO-CONTAINER-MIGRATION.md) hosts both its own pool's workloads and migrated demo workloads. One primary registration covers both surfaces:
+
+```
+containarium tunnel \
+  --pool lab \
+  --public-hostname lab-primary.example.com \
+  --public-base-domain lab.example.com \
+  --public-base-domain demo.example.org \
+  --public-port 443
+```
+
+| SNI | Match path | Forwards to |
+|---|---|---|
+| `notebook.lab.example.com` | suffix (`.lab.example.com`) | lab backend |
+| `blog.demo.example.org` | suffix (`.demo.example.org`) | lab backend (same!) |
+| `api.example.com` | none — `lab.example.com` is more specific than `example.com`, but neither prefix matches `api.example.com`. Falls through. | fallback |
+
+The pool tag stays `lab` — `demo.example.org` is just the routing surface, not a separate trust boundary. If you want demo containers to also be visible as `pool=demo` (for `containarium list --pool=demo` filtering, etc.), use container labels rather than splitting the backend.
+
+### Example C — longest-suffix wins across multi-domain primaries
+
+| Backend | `BaseDomains` |
+|---|---|
+| lab | `[example.com, demo.example.org]` |
+| lab2 | `[sub.example.com]` |
+
+SNI `notebook.sub.example.com` matches both lab's `example.com` (length 11) and lab2's `sub.example.com` (length 15). Lab2 wins — more-specific suffix is the user's intent.
 
 ## Edge cases & failure modes
 
-- **Overlapping base domains.** Two primaries register with `BaseDomain=kafeido.app` and `BaseDomain=lab.kafeido.app`. `notebook.lab.kafeido.app` matches both. **Resolution**: longest-suffix wins (the more-specific one). Implement by sorting candidates by `len(BaseDomain)` desc and returning the first match. Document that ambiguity ladder explicitly.
-- **Identical base domains across pools.** Two primaries register with `BaseDomain=kafeido.app` — a misconfiguration. **Resolution**: `LookupByBaseDomainSuffix` returns nil and logs a warning rather than picking arbitrarily. Fail closed.
-- **Suffix collides with an exact alias on a different primary.** E.g. prod's `Aliases=[blog.containarium.dev]` plus demo's `BaseDomain=containarium.dev`. **Resolution**: exact match wins (precedence step 1 runs before step 2). Operator's explicit choice overrides the implicit suffix routing.
-- **Tunneled primary disconnects.** Same as today — `UnregisterByBackendID` removes the entry, suffix lookups stop matching, suffix-matched SNI falls through to the legacy fallback. No new failure mode.
+- **Identical base domains across pools.** Two primaries advertise `BaseDomains` containing the same string. `LookupByBaseDomainSuffix` returns nil. Fail closed; surfaces the misconfig instead of silently picking the wrong backend.
+- **Suffix collides with exact alias on a different primary.** Exact wins (step 1 before step 2). Operator's explicit choice overrides implicit routing.
+- **Tunneled primary disconnects.** Same as pre-Phase-3 — `UnregisterByBackendID` removes the entry; suffix lookups stop matching for those base domains; suffix-matched SNI falls through to the legacy fallback.
 - **PROXY-v2 framing.** Suffix-matched destinations go through the same dial-or-yamux path as exact matches, so the existing `m.config.ProxyProtocol` handling still applies. No new code needed.
+- **Per-container base-domain selection.** Not a concept — the *backend* advertises its base domains, and the *container* publishes a route under whichever fits. The route-builder in `internal/app/proxy.go` already handles "FQDN that doesn't match the daemon's `--base-domain` → use as-is," so a lab container exposed as `blog.demo.example.org` (FQDN) Just Works even if the daemon's `--base-domain=lab.example.com`.
 
-## Operational additions
+## Operational additions (per cluster)
 
-These are required regardless of the code design — listed here so the work isn't a surprise during rollout:
+These are required regardless of the code; listed here so the work isn't a surprise during rollout.
 
-1. **DNS.** `*.containarium.dev` A record → prod sentinel IP. Cloudflare-managed (separate provider from `kafeido.app`).
-2. **ACME for the second domain.** Each backend's Caddy ACMEs its own subdomains, so `--base-domain=containarium.dev` triggers DNS-01 against the containarium.dev provider. That means the **demo backend's daemon** needs DNS-01 creds for the containarium.dev provider in its environment, not the sentinel. Existing kafeido.app DNS-01 setup on the prod backend is untouched.
-3. **GLB cert SAN.** If the GLB does TLS termination (which prod does not — it's TCP passthrough — but confirm), add `*.containarium.dev` to the managed cert. For passthrough mode, no change.
+1. **DNS.** Wildcard record for each base domain → sentinel IP. Cloudflare-managed for `example.org`, separate provider for `example.com`.
+2. **ACME on each backend.** Caddy on every backend that advertises a given base domain needs creds to mint certs for subdomains under it. HTTP-01 works transparently over sentinel passthrough; DNS-01 requires the relevant provider's API token in the backend's environment.
+3. **GLB cert SAN.** Only if the GLB terminates TLS (prod is passthrough, so this is a no-op).
 
 ## What this does NOT change
 
 - ACME on the sentinel itself (sentinel doesn't terminate TLS for app traffic; passthrough only).
-- Caddy on any backend (each backend continues to own its own `--base-domain`; this design just makes the sentinel aware of that value).
+- Caddy on any backend (each backend continues to own its own `--base-domain` for daemon-driven route naming; this design just makes the sentinel aware of additional suffix anchors).
 - The `--public-aliases` flag (still works for explicit per-domain routing; suffix match is additive).
-- Pool-aware container placement ([added in feat(api): --pool selector](../proto/containarium/v1/container.proto)) — that's the input side; this is the output side.
+- Pool-aware container placement (Phase 1 / #204 — that's the input side; this is the output side).
 
-## Test plan
+## Test coverage
 
-- Unit: `LookupByBaseDomainSuffix` returns nil for empty hostname, exact match, no-suffix, ambiguous (two equal-length matches), and picks longest suffix when nested base domains exist.
-- Unit: `buildSNIRoutingHandler` precedence — exact > suffix > fallback. Use the existing `httptest`/loopback patterns in `internal/sentinel/`.
-- Integration (real Caddy): two primaries registered with different `BaseDomain`, SNI for each routes to the correct one. The Real Caddy wire-compat e2e job in CI is the right home.
-- Manual: prod sentinel + a second backend with `--public-base-domain=containarium.dev`, `curl --resolve` a fake subdomain → confirm the right backend's logs see the request.
+`internal/sentinel/base_domain_test.go`:
 
-## Rollout
+| Test | What it pins |
+|---|---|
+| `LookupByBaseDomainSuffix` | basic suffix match, deeper subdomain, base-domain-itself-isn't-a-match, unrelated returns nil, empty input |
+| `LookupByBaseDomainSuffix_LongestWins` | nested base domains (`lab.example.com` beats `example.com` for the nested name) |
+| `LookupByBaseDomainSuffix_AmbiguousFailsClosed` | two primaries with the same `BaseDomains` entry → nil |
+| `LookupByBaseDomainSuffix_EmptyBaseDomainSkipped` | unconfigured primary is invisible to suffix lookup |
+| `ExactHostnameBeatsSuffix` | router precedence at registry level (alias vs suffix) |
+| `LookupByBaseDomainSuffix_MultipleOnOnePrimary` | **Phase 3b** — single primary advertises multiple base domains; both match |
+| `LookupByBaseDomainSuffix_MultiDomainLosesToMoreSpecific` | **Phase 3b** — longest-wins still applies across multi-domain primaries |
+| `LookupByBaseDomainSuffix_AmbiguousAcrossMultiDomain` | **Phase 3b** — same base domain on two primaries fails closed regardless of slot order |
+| `SNIRouting_BaseDomainSuffix` | end-to-end via SNI router harness — suffix match, exact-beats-suffix, fallback |
+| `SNIRouting_MultiBaseDomainOnOneBackend` | **Phase 3b** — end-to-end of lab-hosts-demo |
+| `RegisterUpdatesBaseDomain` | re-registration replaces the `BaseDomains` list |
 
-1. Land the proto + registry + SNI matcher changes behind the (default-empty) `--public-base-domain` flag. Zero behavior change for any existing deployment.
-2. Demo backend joins the prod sentinel with `--pool=demo --public-base-domain=containarium.dev`.
-3. DNS for `*.containarium.dev` cuts over.
-4. Verify with `curl --resolve` (no DNS dependency for the test).
-5. Demo container migration follows ([plan in Phase 4](MULTI-POOL.md#operator-workflow-adding-a-new-pool)).
+`internal/cmd/daemon_base_domains_test.go`:
+- `TestResolvePublicBaseDomains` — explicit values win, base-domain fallback when unset, empty in both yields nil.
 
 ## Alternatives considered
 
-- **Push container hostnames to sentinel on every `expose_port`.** Workable but couples the route store to a remote API call on every mutation. Adds latency to route creation and a new failure mode (sentinel unreachable → can't expose a port). Suffix match keeps the contract one-way (daemon → sentinel at registration time, never per-route).
-- **Wildcard aliases (`*.containarium.dev` as an alias entry).** Same effect but harder to reason about: aliases are also matched against `Hostname` for non-wildcards, and mixing wildcards into a list invites accidental over-matching. A separate `BaseDomain` field makes the intent explicit.
+- **Push container hostnames to the sentinel on every `expose_port`.** Workable but couples the route store to a remote API call on every mutation. Adds latency to route creation and a new failure mode (sentinel unreachable → can't expose a port). Suffix match keeps the contract one-way (daemon → sentinel at registration time, never per-route).
+- **Wildcard aliases (`*.example.org` as an alias entry).** Same effect but harder to reason about: aliases are also matched against `Hostname` for non-wildcards, and mixing wildcards into a list invites accidental over-matching. A separate `BaseDomains` field makes the intent explicit.
 - **Caddy on the sentinel.** Would centralize routing but adds TLS termination on the sentinel (vs. today's passthrough), which breaks per-backend ACME, complicates client IP recovery, and adds another component to keep alive. Not worth it for this use case.
+- **`BaseDomain string` (single, Phase 3) instead of `BaseDomains []string` (Phase 3b).** The single-domain version shipped first and was complete for the demo-via-prod-sentinel use case. Multi-domain landed when the Phase 4 plan revealed the need for one backend (the lab) to serve both `*.lab.example.com` and `*.demo.example.org`. Migration from singular → plural was a clean field rename across ~10 files with no semantic drift.

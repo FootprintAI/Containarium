@@ -101,10 +101,10 @@ type DualServerConfig struct {
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
-	PublicHostname   string   // primary's own subdomain (e.g. containarium-prod.kafeido.app)
-	PublicAliases    []string // additional hostnames the primary's Caddy serves (e.g. api.kafeido.app, voice.kafeido.app)
-	PublicBaseDomain string   // suffix-match anchor advertised to the sentinel; <anything>.<PublicBaseDomain> routes here (see docs/PER-POOL-BASE-DOMAIN.md)
-	PublicPort       int      // TLS port the sentinel forwards to (typically 443)
+	PublicHostname    string   // primary's own subdomain (e.g. prod.example.com)
+	PublicAliases     []string // additional hostnames the primary's Caddy serves (e.g. api.example.com, voice.example.com)
+	PublicBaseDomains []string // suffix-match anchors advertised to the sentinel; <anything>.<one-of-these> routes here. List multiple to host workloads under different parent domains on the same backend (see docs/PER-POOL-BASE-DOMAIN.md)
+	PublicPort        int      // TLS port the sentinel forwards to (typically 443)
 
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
@@ -1211,13 +1211,13 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 func (ds *DualServer) Start(ctx context.Context) error {
 	// Register this primary with the sentinel (no-op if --public-hostname is unset).
 	runPrimaryRegistration(ctx, PrimaryRegisterConfig{
-		SentinelURL:      ds.config.SentinelURL,
-		Pool:             ds.config.Pool,
-		PublicHostname:   ds.config.PublicHostname,
-		PublicAliases:    ds.config.PublicAliases,
-		PublicBaseDomain: ds.config.PublicBaseDomain,
-		Port:             ds.config.PublicPort,
-		BackendID:        ds.config.LocalBackendID,
+		SentinelURL:       ds.config.SentinelURL,
+		Pool:              ds.config.Pool,
+		PublicHostname:    ds.config.PublicHostname,
+		PublicAliases:     ds.config.PublicAliases,
+		PublicBaseDomains: ds.config.PublicBaseDomains,
+		Port:              ds.config.PublicPort,
+		BackendID:         ds.config.LocalBackendID,
 	})
 
 	// Start peer discovery for multi-backend support

@@ -51,10 +51,10 @@ var (
 	peerAddrs          []string
 	localBackendID     string
 	pool               string
-	publicHostname     string
-	publicAliases      []string
-	publicBaseDomain   string
-	publicPort         int
+	publicHostname    string
+	publicAliases     []string
+	publicBaseDomains []string
+	publicPort        int
 
 	proxyProtocol        bool
 	proxyProtocolTrusted []string
@@ -127,7 +127,7 @@ func init() {
 	// App hosting settings
 	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
 	daemonCmd.Flags().StringVar(&postgresConnString, "postgres", "", "PostgreSQL connection string for app hosting (e.g., postgres://user:pass@host:5432/db)")
-	daemonCmd.Flags().StringVar(&baseDomain, "base-domain", "containarium.dev", "Base domain for app subdomains (e.g., containarium.dev)")
+	daemonCmd.Flags().StringVar(&baseDomain, "base-domain", "example.org", "Base domain for app subdomains (e.g., example.org)")
 	daemonCmd.Flags().StringVar(&caddyAdminURL, "caddy-admin-url", "", "Caddy admin API URL for reverse proxy configuration (leave empty for auto-setup with --app-hosting)")
 	daemonCmd.Flags().StringVar(&caddyCertDir, "caddy-cert-dir", "/var/lib/caddy/.local/share/caddy", "Caddy certificate directory (for sentinel cert sync via /certs endpoint)")
 
@@ -139,9 +139,9 @@ func init() {
 	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses (e.g., 10.128.0.5:18001)")
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
-	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. containarium-prod.kafeido.app); enables sentinel primary registration")
-	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.kafeido.app,voice.kafeido.app); the sentinel SNI router treats these as aliases of --public-hostname")
-	daemonCmd.Flags().StringVar(&publicBaseDomain, "public-base-domain", "", "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Defaults to --base-domain when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
+	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
+	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
+	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
 	daemonCmd.Flags().IntVar(&publicPort, "public-port", 443, "Public TLS port the sentinel forwards to (default 443)")
@@ -467,7 +467,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		Pool:                 pool,
 		PublicHostname:       publicHostname,
 		PublicAliases:        publicAliases,
-		PublicBaseDomain:     resolvePublicBaseDomain(publicBaseDomain, baseDomain),
+		PublicBaseDomains:    resolvePublicBaseDomains(publicBaseDomains, baseDomain),
 		PublicPort:           publicPort,
 		ProxyProtocol:        proxyProtocol,
 		ProxyProtocolTrusted: proxyProtocolTrusted,
@@ -699,17 +699,21 @@ func waitForCoreContainers(incusClient *incus.Client, timeout time.Duration) err
 	}
 }
 
-// resolvePublicBaseDomain returns the value to advertise to the
-// sentinel for suffix-match routing. When the operator passed
-// --public-base-domain explicitly, that wins; otherwise the value
-// falls back to --base-domain, which is already the suffix the
-// backend's own Caddy serves containers under. Empty in both cases
+// resolvePublicBaseDomains returns the list of base domains to
+// advertise to the sentinel for suffix-match routing. When the
+// operator passed one or more --public-base-domain values, those
+// win verbatim; otherwise the list falls back to a single entry
+// derived from --base-domain (which is already the suffix the
+// backend's own Caddy serves containers under). An empty result
 // means suffix matching is disabled for this primary.
-func resolvePublicBaseDomain(public, base string) string {
-	if public != "" {
+func resolvePublicBaseDomains(public []string, base string) []string {
+	if len(public) > 0 {
 		return public
 	}
-	return base
+	if base == "" {
+		return nil
+	}
+	return []string{base}
 }
 
 // saveRecoveryConfigToPersistentStorage saves recovery config to persistent disk
