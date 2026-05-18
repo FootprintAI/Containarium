@@ -638,6 +638,15 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
+	// Stamp last-start timestamp so the Phase 2 auto-sleep ticker can
+	// enforce its anti-thrash window (don't sleep within 2× threshold
+	// of the most recent start). Best-effort — if the SetConfig fails
+	// the container is already running, and the worst case is one
+	// extra wake → sleep flap.
+	if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		log.Printf("[autosleep] failed to stamp %s on %s: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
+	}
+
 	// Re-stamp tenant secrets from the current DB state. Picks up
 	// any rotations that happened while the container was stopped;
 	// existing processes won't see the change (POSIX inherit-at-fork),
@@ -749,6 +758,21 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		Message:   fmt.Sprintf("Container for user %s stopped successfully", req.Username),
 		Container: toProtoContainer(info),
 	}, nil
+}
+
+// StopForAutoSleep is the entry point for the autosleep ticker. It
+// reuses StopContainer's full plumbing (manager.Stop, event emission)
+// so observers can't distinguish an auto-sleep from a manual stop on
+// the bus — by design — and prepends a tagged log line so operators
+// can grep for the reason that triggered it.
+//
+// Lives on ContainerServer rather than the autosleep package so the
+// ticker depends on a narrow interface (Stopper) rather than the full
+// internal/server import graph.
+func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason string, idleMinutes int) error {
+	log.Printf("[autosleep] stopping username=%s reason=%q idle_minutes=%d", username, reason, idleMinutes)
+	_, err := s.StopContainer(ctx, &pb.StopContainerRequest{Username: username, Force: false})
+	return err
 }
 
 // ResizeContainer dynamically resizes container resources

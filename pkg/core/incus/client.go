@@ -275,6 +275,11 @@ type ContainerInfo struct {
 	// IdleThresholdMinutes mirrors user.containarium.idle_threshold_minutes;
 	// defaults to 15 when the key is missing or unparseable.
 	IdleThresholdMinutes int32
+
+	// LastStartedAt mirrors user.containarium.last_started_at, stamped by
+	// StartContainer. Zero value when the key is missing or unparseable.
+	// Consumed by the Phase 2 auto-sleep ticker for its anti-thrash window.
+	LastStartedAt time.Time
 }
 
 // AutoSleepEnabledKey is the Incus config key storing the per-container
@@ -284,6 +289,12 @@ const AutoSleepEnabledKey = "user.containarium.auto_sleep_enabled"
 // IdleThresholdMinutesKey is the Incus config key storing the per-container
 // idle threshold in minutes consumed by the Phase 2 auto-sleep ticker.
 const IdleThresholdMinutesKey = "user.containarium.idle_threshold_minutes"
+
+// LastStartedAtKey is the Incus config key storing the RFC3339 timestamp of
+// the most recent StartContainer success. The Phase 2 auto-sleep ticker
+// reads it to enforce its anti-thrash window (don't sleep a container
+// within 2× the idle threshold of its last start).
+const LastStartedAtKey = "user.containarium.last_started_at"
 
 // DefaultIdleThresholdMinutes is the fallback used when the threshold
 // config key is missing or unparseable.
@@ -301,6 +312,21 @@ func parseIdleThresholdMinutes(cfg map[string]string) int32 {
 		return DefaultIdleThresholdMinutes
 	}
 	return int32(n)
+}
+
+// parseLastStartedAt reads the last-started timestamp from an Incus config
+// map. Missing or unparseable values yield the zero time — callers treat
+// that as "unknown" rather than a real moment in epoch history.
+func parseLastStartedAt(cfg map[string]string) time.Time {
+	raw, ok := cfg[LastStartedAtKey]
+	if !ok || raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // ContainerMetrics holds runtime metrics for a container
@@ -563,6 +589,7 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 			MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
+			LastStartedAt:        parseLastStartedAt(inst.Config),
 		}
 
 		// Get CPU and memory limits from config
@@ -689,6 +716,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
+		LastStartedAt:        parseLastStartedAt(inst.Config),
 	}
 
 	// Get resource limits

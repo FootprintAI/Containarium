@@ -1,6 +1,9 @@
 package incus
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // parseIdleThresholdMinutes reads the per-container idle threshold
 // from the Incus config map. The helper falls back to
@@ -46,5 +49,63 @@ func TestAutoSleepConstants(t *testing.T) {
 	}
 	if DefaultIdleThresholdMinutes != 15 {
 		t.Errorf("DefaultIdleThresholdMinutes = %d, want 15", DefaultIdleThresholdMinutes)
+	}
+	if LastStartedAtKey != "user.containarium.last_started_at" {
+		t.Errorf("LastStartedAtKey = %q, must remain stable across releases", LastStartedAtKey)
+	}
+}
+
+// parseLastStartedAt reads the Phase 2 anti-thrash timestamp from the
+// Incus config map. Missing, empty, or malformed values resolve to the
+// zero time so callers can distinguish "no last-start known" from a
+// real moment in history. The helper is intentionally permissive: it
+// never panics on garbage, never logs, and never returns a non-zero
+// time it can't justify from the input.
+func TestParseLastStartedAt(t *testing.T) {
+	ref := time.Date(2026, 5, 18, 12, 30, 45, 0, time.UTC)
+	cases := []struct {
+		name string
+		cfg  map[string]string
+		want time.Time
+	}{
+		{
+			name: "missing key returns zero",
+			cfg:  map[string]string{},
+			want: time.Time{},
+		},
+		{
+			name: "empty string returns zero",
+			cfg:  map[string]string{LastStartedAtKey: ""},
+			want: time.Time{},
+		},
+		{
+			name: "valid RFC3339 round-trips",
+			cfg:  map[string]string{LastStartedAtKey: ref.Format(time.RFC3339)},
+			want: ref,
+		},
+		{
+			name: "malformed garbage returns zero",
+			cfg:  map[string]string{LastStartedAtKey: "not-a-timestamp"},
+			want: time.Time{},
+		},
+		{
+			name: "go zero-time string parses to zero",
+			cfg:  map[string]string{LastStartedAtKey: "0001-01-01T00:00:00Z"},
+			want: time.Time{},
+		},
+		{
+			name: "unsupported format (RFC1123) returns zero",
+			cfg:  map[string]string{LastStartedAtKey: ref.Format(time.RFC1123)},
+			want: time.Time{},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseLastStartedAt(tc.cfg)
+			if !got.Equal(tc.want) {
+				t.Errorf("parseLastStartedAt(%v) = %v, want %v", tc.cfg, got, tc.want)
+			}
+		})
 	}
 }
