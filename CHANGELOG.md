@@ -7,9 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-05-18
+
+Ships **pool-aware container placement and per-pool base-domain SNI routing** end-to-end. A single sentinel can now front multiple parent domains, and a single backend can host workloads under several of them — enabling consolidation across previously-separate clusters without merging their app domains.
+
+### Added
+
+- **Pool selector for container placement** ([#204](https://github.com/FootprintAI/Containarium/pull/204)) — `--pool` flag on `containarium create` (and matching `pool` arg on the MCP `create_container` tool) routes a new container to any healthy backend tagged with that pool. Validates consistency when both `--pool` and `--backend-id` are set; errors on no-matching-backend rather than silently falling back. The `Container` message now round-trips the `pool` field on Create / List / Get responses so callers can see where their container actually landed. Foundation for sharing one control plane across physically-separated workloads.
+- **Per-pool base-domain SNI routing** ([#205](https://github.com/FootprintAI/Containarium/pull/205)) — primaries advertise one or more `--public-base-domain` values; the sentinel's SNI router suffix-matches inbound TLS against them after exact-`Hostname`/`Alias` matching and before the legacy fallback. Removes the requirement to register every container hostname as an explicit `--public-aliases` entry. Longest-suffix-wins for nested base domains; ties across primaries fail closed rather than picking arbitrarily.
+- **Multi-domain primaries** ([#207](https://github.com/FootprintAI/Containarium/pull/207)) — `--public-base-domain` is now repeatable on both `containarium daemon` and `containarium tunnel`, so one backend can host workloads under several parent domains simultaneously. Enables a single peer to serve, for example, both its own pool's subdomain space and migrated workloads published under a different parent.
+- **`MonitoringEnabled` column in `containarium list`** ([#202](https://github.com/FootprintAI/Containarium/pull/202)) — the new `MON` column makes it visible at a glance which containers have application-emitted OTel turned on.
+
 ### Fixed
 
-- **Per-container disk usage on the `dir` storage backend** — `containarium list`, MCP `get_metrics`, and the OTel collector all reported 0 B for disk usage on hosts that init Incus with the `dir` driver (e.g. lab boxes without a zpool). Incus only fills `state.Disk["root"].Usage` when the backend has filesystem-level quota accounting (zfs / btrfs); on dir backends the field stays empty and there was no fallback. `GetContainerMetrics` now walks the container's rootfs (`/var/lib/incus/storage-pools/<pool>/containers/<name>/rootfs`, same path `du -bs` would) and reports the sum. The walk runs only when Incus's native value is zero, so zfs / btrfs hosts pay nothing.
+- **Per-container disk usage on the `dir` storage backend** ([#203](https://github.com/FootprintAI/Containarium/pull/203)) — `containarium list`, MCP `get_metrics`, and the OTel collector all reported 0 B for disk usage on hosts that init Incus with the `dir` driver (e.g. lab boxes without a zpool). Incus only fills `state.Disk["root"].Usage` when the backend has filesystem-level quota accounting (zfs / btrfs); on dir backends the field stays empty and there was no fallback. `GetContainerMetrics` now walks the container's rootfs (`/var/lib/incus/storage-pools/<pool>/containers/<name>/rootfs`, same path `du -bs` would) and reports the sum. The walk runs only when Incus's native value is zero, so zfs / btrfs hosts pay nothing.
+
+### Documentation
+
+- **Per-pool base-domain design** ([#205](https://github.com/FootprintAI/Containarium/pull/205), [#207](https://github.com/FootprintAI/Containarium/pull/207)) — `docs/PER-POOL-BASE-DOMAIN.md` covers the SNI router precedence, longest-wins / fail-closed semantics, and the lab-hosts-multiple-domains worked example.
+- **Secrets master-keyfile operator runbook** ([#201](https://github.com/FootprintAI/Containarium/pull/201)) — `docs/SECRETS-OPERATIONS.md` documents `/etc/containarium/secrets.key` lifecycle: backup, restore, rotation. Companion to the v0.16.13 secrets management release.
+- **Cluster-cutover runbook** ([#206](https://github.com/FootprintAI/Containarium/pull/206)) — `docs/CUTOVER-DEMO-INTO-PROD-SENTINEL.md` walks through migrating a standalone cluster into an existing sentinel as a `pool=demo` peer, with pre-flight, the `curl --resolve` keystone-verification before DNS changes, and a non-destructive rollback path within the DNS-TTL window.
+
+### Breaking
+
+- **`/sentinel/primaries` registration body**: the `base_domain` field (introduced in unreleased Phase 3) was renamed `base_domains` (string → array) as part of #207 to support multi-domain primaries. Any out-of-tree integration that POSTed JSON with the singular form needs to update. The CLI flags (`--public-base-domain` on `containarium daemon` and `containarium tunnel`) are backward-compatible: a single value still works; the change is that the flag is now repeatable. No live deployments shipped the singular wire format, so this is a clean cutover.
 
 ## [0.16.13] - 2026-05-16
 
