@@ -102,6 +102,16 @@ func (s *Store) initSchema(ctx context.Context) error {
 		ALTER TABLE zap_scan_runs ADD COLUMN IF NOT EXISTS report_html TEXT NOT NULL DEFAULT '';
 		ALTER TABLE zap_scan_runs ADD COLUMN IF NOT EXISTS report_json TEXT NOT NULL DEFAULT '';
 	`)
+	if err != nil {
+		return err
+	}
+
+	// Migration: container_name column on zap_scan_runs to record which
+	// container an operator scoped an on-demand scan to. Empty for
+	// every existing row (cluster-wide scans), which is the historical
+	// default and remains the behavior when the field is unset.
+	_, err = s.pool.Exec(ctx,
+		`ALTER TABLE zap_scan_runs ADD COLUMN IF NOT EXISTS container_name TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -118,6 +128,9 @@ type ScanRun struct {
 	ErrorMessage string
 	StartedAt    time.Time
 	CompletedAt  *time.Time
+	// ContainerName is set for operator-triggered scans scoped to one
+	// container; empty for cluster-wide scheduled scans.
+	ContainerName string
 }
 
 // AlertRecord represents a stored ZAP alert
@@ -176,12 +189,14 @@ type ScanJob struct {
 	CompletedAt   *time.Time
 }
 
-// CreateScanRun inserts a new scan run and returns its UUID
-func (s *Store) CreateScanRun(ctx context.Context, trigger string) (string, error) {
+// CreateScanRun inserts a new scan run and returns its UUID.
+// containerName is empty for cluster-wide scans (the historical default)
+// and set when an operator scopes a scan to a specific container.
+func (s *Store) CreateScanRun(ctx context.Context, trigger, containerName string) (string, error) {
 	var id string
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO zap_scan_runs (trigger) VALUES ($1) RETURNING id`,
-		trigger,
+		`INSERT INTO zap_scan_runs (trigger, container_name) VALUES ($1, $2) RETURNING id`,
+		trigger, containerName,
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("failed to create zap scan run: %w", err)
@@ -219,8 +234,9 @@ func (s *Store) GetReport(ctx context.Context, scanRunID string) (htmlReport, js
 	return
 }
 
-// ListScanRuns returns recent scan runs
-func (s *Store) ListScanRuns(ctx context.Context, limit, offset int) ([]ScanRun, int32, error) {
+// ListScanRuns returns recent scan runs. If containerName is non-empty,
+// only runs scoped to that container are returned.
+func (s *Store) ListScanRuns(ctx context.Context, limit, offset int, containerName string) ([]ScanRun, int32, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -228,20 +244,32 @@ func (s *Store) ListScanRuns(ctx context.Context, limit, offset int) ([]ScanRun,
 		limit = 100
 	}
 
+	// Same pattern as the pentest store — one predicate handles both
+	// unfiltered and scoped cases to avoid duplicate SQL strings.
+	whereClause := ""
+	args := []interface{}{}
+	if containerName != "" {
+		whereClause = "WHERE container_name = $1"
+		args = append(args, containerName)
+	}
+
 	var totalCount int32
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM zap_scan_runs`).Scan(&totalCount)
+	err := s.pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM zap_scan_runs "+whereClause, args...).Scan(&totalCount)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count zap scan runs: %w", err)
 	}
 
+	args = append(args, limit, offset)
+	limitOffset := fmt.Sprintf("LIMIT $%d OFFSET $%d", len(args)-1, len(args))
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, trigger, status, targets_count,
 			high_count, medium_count, low_count, info_count,
-			error_message, started_at, completed_at
+			error_message, started_at, completed_at, container_name
 		FROM zap_scan_runs
+		`+whereClause+`
 		ORDER BY started_at DESC
-		LIMIT $1 OFFSET $2
-	`, limit, offset)
+		`+limitOffset, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list zap scan runs: %w", err)
 	}
@@ -253,7 +281,7 @@ func (s *Store) ListScanRuns(ctx context.Context, limit, offset int) ([]ScanRun,
 		if err := rows.Scan(
 			&run.ID, &run.Trigger, &run.Status, &run.TargetsCount,
 			&run.HighCount, &run.MediumCount, &run.LowCount, &run.InfoCount,
-			&run.ErrorMessage, &run.StartedAt, &run.CompletedAt,
+			&run.ErrorMessage, &run.StartedAt, &run.CompletedAt, &run.ContainerName,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan zap run row: %w", err)
 		}
@@ -268,13 +296,13 @@ func (s *Store) GetScanRun(ctx context.Context, id string) (*ScanRun, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, trigger, status, targets_count,
 			high_count, medium_count, low_count, info_count,
-			error_message, started_at, completed_at
+			error_message, started_at, completed_at, container_name
 		FROM zap_scan_runs
 		WHERE id = $1
 	`, id).Scan(
 		&run.ID, &run.Trigger, &run.Status, &run.TargetsCount,
 		&run.HighCount, &run.MediumCount, &run.LowCount, &run.InfoCount,
-		&run.ErrorMessage, &run.StartedAt, &run.CompletedAt,
+		&run.ErrorMessage, &run.StartedAt, &run.CompletedAt, &run.ContainerName,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get zap scan run: %w", err)

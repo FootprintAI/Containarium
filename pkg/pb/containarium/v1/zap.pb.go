@@ -49,8 +49,11 @@ type ZapScanRun struct {
 	Duration string `protobuf:"bytes,12,opt,name=duration,proto3" json:"duration,omitempty"`
 	// Number of targets that finished processing
 	CompletedCount int32 `protobuf:"varint,13,opt,name=completed_count,json=completedCount,proto3" json:"completed_count,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Container the scan was scoped to. Empty = cluster-wide scan
+	// (every exposed route), the historical/scheduled default.
+	ContainerName string `protobuf:"bytes,14,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ZapScanRun) Reset() {
@@ -172,6 +175,13 @@ func (x *ZapScanRun) GetCompletedCount() int32 {
 		return x.CompletedCount
 	}
 	return 0
+}
+
+func (x *ZapScanRun) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
 }
 
 // ZapAlert represents a single ZAP alert (finding)
@@ -575,7 +585,11 @@ func (x *ZapConfig) GetZapVersion() string {
 }
 
 type TriggerZapScanRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional: container to scope the scan to. Empty = scan every
+	// exposed route, the historical default. Set to scope a single
+	// container's routes for an on-demand operator scan.
+	ContainerName string `protobuf:"bytes,1,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -608,6 +622,13 @@ func (x *TriggerZapScanRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use TriggerZapScanRequest.ProtoReflect.Descriptor instead.
 func (*TriggerZapScanRequest) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_zap_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TriggerZapScanRequest) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
 }
 
 type TriggerZapScanResponse struct {
@@ -669,7 +690,10 @@ type ListZapScanRunsRequest struct {
 	// Maximum number of scan runs to return (default: 20)
 	Limit int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
 	// Offset for pagination
-	Offset        int32 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Offset int32 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	// Optional: filter to scan runs scoped to this container. Empty =
+	// return all runs (both cluster-wide and container-scoped).
+	ContainerName string `protobuf:"bytes,3,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -716,6 +740,13 @@ func (x *ListZapScanRunsRequest) GetOffset() int32 {
 		return x.Offset
 	}
 	return 0
+}
+
+func (x *ListZapScanRunsRequest) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
 }
 
 type ListZapScanRunsResponse struct {
@@ -1361,7 +1392,7 @@ var File_containarium_v1_zap_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_zap_proto_rawDesc = "" +
 	"\n" +
-	"\x19containarium/v1/zap.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\x9d\x03\n" +
+	"\x19containarium/v1/zap.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xc4\x03\n" +
 	"\n" +
 	"ZapScanRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
@@ -1380,7 +1411,8 @@ const file_containarium_v1_zap_proto_rawDesc = "" +
 	" \x01(\tR\tstartedAt\x12!\n" +
 	"\fcompleted_at\x18\v \x01(\tR\vcompletedAt\x12\x1a\n" +
 	"\bduration\x18\f \x01(\tR\bduration\x12'\n" +
-	"\x0fcompleted_count\x18\r \x01(\x05R\x0ecompletedCount\"\x89\x05\n" +
+	"\x0fcompleted_count\x18\r \x01(\x05R\x0ecompletedCount\x12%\n" +
+	"\x0econtainer_name\x18\x0e \x01(\tR\rcontainerName\"\x89\x05\n" +
 	"\bZapAlert\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12 \n" +
 	"\vfingerprint\x18\x02 \x01(\tR\vfingerprint\x12\x1b\n" +
@@ -1430,14 +1462,16 @@ const file_containarium_v1_zap_proto_rawDesc = "" +
 	"\binterval\x18\x02 \x01(\tR\binterval\x12#\n" +
 	"\rzap_available\x18\x03 \x01(\bR\fzapAvailable\x12\x1f\n" +
 	"\vzap_version\x18\x04 \x01(\tR\n" +
-	"zapVersion\"\x17\n" +
-	"\x15TriggerZapScanRequest\"R\n" +
+	"zapVersion\">\n" +
+	"\x15TriggerZapScanRequest\x12%\n" +
+	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\"R\n" +
 	"\x16TriggerZapScanResponse\x12\x1e\n" +
 	"\vscan_run_id\x18\x01 \x01(\tR\tscanRunId\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"F\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"m\n" +
 	"\x16ListZapScanRunsRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x16\n" +
-	"\x06offset\x18\x02 \x01(\x05R\x06offset\"t\n" +
+	"\x06offset\x18\x02 \x01(\x05R\x06offset\x12%\n" +
+	"\x0econtainer_name\x18\x03 \x01(\tR\rcontainerName\"t\n" +
 	"\x17ListZapScanRunsResponse\x128\n" +
 	"\tscan_runs\x18\x01 \x03(\v2\x1b.containarium.v1.ZapScanRunR\bscanRuns\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +

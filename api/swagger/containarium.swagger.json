@@ -2430,6 +2430,13 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          },
+          {
+            "name": "containerName",
+            "description": "Optional: filter to scan runs scoped to this container. Empty =\nreturn all runs (both cluster-wide and container-scoped).",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [
@@ -3355,6 +3362,13 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          },
+          {
+            "name": "containerName",
+            "description": "Optional: filter to scan runs scoped to this container. Empty =\nreturn all runs (both cluster-wide and container-scoped).",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [
@@ -6124,6 +6138,10 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of targets that finished processing"
+        },
+        "containerName": {
+          "type": "string",
+          "description": "Container the scan was scoped to. Empty = cluster-wide scan\n(the historical/scheduled behavior). Set when an operator triggers\nan on-demand scan against a specific container."
         }
       },
       "title": "PentestScanRun represents a single penetration test scan execution"
@@ -6926,6 +6944,10 @@
         "modules": {
           "type": "string",
           "title": "Optional: comma-separated list of modules to run (empty = all enabled)"
+        },
+        "containerName": {
+          "type": "string",
+          "description": "Optional: container to scope the scan to. Empty = scan the whole\ncluster (every active route + every running user container), the\nhistorical default. Set to scope a single container's routes and\npackage surface for an on-demand operator scan."
         }
       }
     },
@@ -6943,7 +6965,13 @@
       }
     },
     "TriggerZapScanRequest": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "description": "Optional: container to scope the scan to. Empty = scan every\nexposed route, the historical default. Set to scope a single\ncontainer's routes for an on-demand operator scan."
+        }
+      }
     },
     "TriggerZapScanResponse": {
       "type": "object",
@@ -7412,6 +7440,10 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of targets that finished processing"
+        },
+        "containerName": {
+          "type": "string",
+          "description": "Container the scan was scoped to. Empty = cluster-wide scan\n(every exposed route), the historical/scheduled default."
         }
       },
       "title": "ZapScanRun represents a single ZAP scan execution"

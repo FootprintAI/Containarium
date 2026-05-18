@@ -32,20 +32,24 @@ func (s *ZapServer) TriggerZapScan(ctx context.Context, req *pb.TriggerZapScanRe
 		return nil, fmt.Errorf("ZAP scanner is not available")
 	}
 
-	scanRunID, err := s.manager.RunScan(ctx, "manual")
+	scanRunID, err := s.manager.RunScan(ctx, "manual", req.ContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to trigger ZAP scan: %w", err)
 	}
 
+	msg := "ZAP scan enqueued — workers processing asynchronously"
+	if req.ContainerName != "" {
+		msg = fmt.Sprintf("ZAP scan enqueued (scope: %s) — workers processing asynchronously", req.ContainerName)
+	}
 	return &pb.TriggerZapScanResponse{
 		ScanRunId: scanRunID,
-		Message:   "ZAP scan enqueued — workers processing asynchronously",
+		Message:   msg,
 	}, nil
 }
 
 // ListZapScanRuns returns recent scan runs
 func (s *ZapServer) ListZapScanRuns(ctx context.Context, req *pb.ListZapScanRunsRequest) (*pb.ListZapScanRunsResponse, error) {
-	runs, totalCount, err := s.store.ListScanRuns(ctx, int(req.Limit), int(req.Offset))
+	runs, totalCount, err := s.store.ListScanRuns(ctx, int(req.Limit), int(req.Offset), req.ContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ZAP scan runs: %w", err)
 	}
@@ -207,16 +211,17 @@ func (s *ZapServer) InstallZap(ctx context.Context, req *pb.InstallZapRequest) (
 // zapScanRunToProto converts a store ScanRun to a proto ZapScanRun
 func zapScanRunToProto(run *zapscanner.ScanRun) *pb.ZapScanRun {
 	pbRun := &pb.ZapScanRun{
-		Id:           run.ID,
-		Trigger:      run.Trigger,
-		Status:       run.Status,
-		TargetsCount: int32(run.TargetsCount),
-		HighCount:    int32(run.HighCount),
-		MediumCount:  int32(run.MediumCount),
-		LowCount:     int32(run.LowCount),
-		InfoCount:    int32(run.InfoCount),
-		ErrorMessage: run.ErrorMessage,
-		StartedAt:    run.StartedAt.Format(time.RFC3339),
+		Id:            run.ID,
+		Trigger:       run.Trigger,
+		Status:        run.Status,
+		TargetsCount:  int32(run.TargetsCount),
+		HighCount:     int32(run.HighCount),
+		MediumCount:   int32(run.MediumCount),
+		LowCount:      int32(run.LowCount),
+		InfoCount:     int32(run.InfoCount),
+		ErrorMessage:  run.ErrorMessage,
+		StartedAt:     run.StartedAt.Format(time.RFC3339),
+		ContainerName: run.ContainerName,
 	}
 	if run.CompletedAt != nil {
 		pbRun.CompletedAt = run.CompletedAt.Format(time.RFC3339)

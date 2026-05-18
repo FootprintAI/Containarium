@@ -480,10 +480,12 @@ func TestAddRoute_ServerError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestTriggerSecurityScan_WirePayloads guards against a regression where
-// pentest/ZAP triggers sent {"username":...} — neither proto accepts that
-// field, and the daemon's grpc-gateway returned 400 "unknown field".
-// ClamAV's proto does take container_name, so its body is preserved.
+// TestTriggerSecurityScan_WirePayloads locks the wire body for each
+// scanner kind. All three protos now accept a container_name field,
+// and the MCP always operates on one container, so all three bodies
+// should carry it. The previous version of this code 400'd against
+// pentest/ZAP because it sent the wrong field name; that's the
+// regression this test guards.
 func TestTriggerSecurityScan_WirePayloads(t *testing.T) {
 	tests := []struct {
 		kind         string
@@ -491,8 +493,8 @@ func TestTriggerSecurityScan_WirePayloads(t *testing.T) {
 		expectFields map[string]string
 	}{
 		{scanKindClamav, "/v1/security/clamav-scan", map[string]string{"containerName": "alice-container"}},
-		{scanKindPentest, "/v1/pentest/scan", map[string]string{}},
-		{scanKindZap, "/v1/zap/scan", map[string]string{}},
+		{scanKindPentest, "/v1/pentest/scan", map[string]string{"containerName": "alice-container"}},
+		{scanKindZap, "/v1/zap/scan", map[string]string{"containerName": "alice-container"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.kind, func(t *testing.T) {

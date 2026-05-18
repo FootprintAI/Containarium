@@ -100,7 +100,7 @@ func (m *Manager) scanCycleLoop(ctx context.Context) {
 
 // runScanCycle creates a scan run and enqueues jobs for all targets
 func (m *Manager) runScanCycle(ctx context.Context) {
-	scanRunID, targetsCount, err := m.enqueueScan(ctx, "scheduled")
+	scanRunID, targetsCount, err := m.enqueueScan(ctx, "scheduled", "")
 	if err != nil {
 		log.Printf("ZAP scan cycle: failed to enqueue: %v", err)
 		return
@@ -117,16 +117,22 @@ func (m *Manager) runScanCycle(ctx context.Context) {
 	log.Printf("ZAP scan cycle: %d jobs enqueued for scan run %s", targetsCount, scanRunID)
 }
 
-// enqueueScan creates a scan run record, collects targets, and enqueues a job per target
-func (m *Manager) enqueueScan(ctx context.Context, trigger string) (string, int, error) {
-	scanRunID, err := m.store.CreateScanRun(ctx, trigger)
+// enqueueScan creates a scan run record, collects targets, and enqueues a job per target.
+// containerName scopes the scan to a single container (filters route targets to
+// that container's routes) and is recorded on the run. Empty = cluster-wide.
+func (m *Manager) enqueueScan(ctx context.Context, trigger, containerName string) (string, int, error) {
+	scanRunID, err := m.store.CreateScanRun(ctx, trigger, containerName)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to create scan run: %w", err)
 	}
 
-	log.Printf("ZAP scan %s started (trigger: %s)", scanRunID, trigger)
+	if containerName != "" {
+		log.Printf("ZAP scan %s started (trigger: %s, scope: %s)", scanRunID, trigger, containerName)
+	} else {
+		log.Printf("ZAP scan %s started (trigger: %s)", scanRunID, trigger)
+	}
 
-	targets := m.collectTargets(ctx)
+	targets := m.collectTargets(ctx, containerName)
 	if len(targets) == 0 {
 		log.Printf("ZAP scan %s: no targets found", scanRunID)
 		now := time.Now()
@@ -157,8 +163,9 @@ func (m *Manager) enqueueScan(ctx context.Context, trigger string) (string, int,
 }
 
 // RunScan enqueues a scan (non-blocking). Workers process jobs asynchronously.
-func (m *Manager) RunScan(ctx context.Context, trigger string) (string, error) {
-	scanRunID, _, err := m.enqueueScan(ctx, trigger)
+// containerName scopes the scan to a specific container; empty = cluster-wide.
+func (m *Manager) RunScan(ctx context.Context, trigger, containerName string) (string, error) {
+	scanRunID, _, err := m.enqueueScan(ctx, trigger, containerName)
 	return scanRunID, err
 }
 
@@ -167,8 +174,10 @@ type zapTarget struct {
 	containerName string
 }
 
-// collectTargets gathers all exposed URLs from the route store
-func (m *Manager) collectTargets(ctx context.Context) []zapTarget {
+// collectTargets gathers all exposed URLs from the route store.
+// If containerName is non-empty, only routes belonging to that container
+// are returned — the scoping path for operator-triggered scans.
+func (m *Manager) collectTargets(ctx context.Context, containerName string) []zapTarget {
 	if m.routeStore == nil {
 		return nil
 	}
@@ -183,6 +192,9 @@ func (m *Manager) collectTargets(ctx context.Context) []zapTarget {
 	var targets []zapTarget
 
 	for _, r := range routes {
+		if containerName != "" && r.ContainerName != containerName {
+			continue
+		}
 		url := fmt.Sprintf("https://%s", r.FullDomain)
 		if seen[url] {
 			continue
