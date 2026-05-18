@@ -1243,6 +1243,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/auto-sleep": {
+      "post": {
+        "summary": "Enable or disable auto-sleep on a container",
+        "description": "Writes the per-container auto-sleep opt-in metadata (Incus user.* keys). Does not itself stop the container — use stop_container for that. Phase 2 (the actual idle-tick) and Phase 3 (wake-on-HTTP) consume this flag.",
+        "operationId": "ContainerService_ToggleAutoSleep",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ToggleAutoSleepResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ToggleAutoSleepBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/cleanup-disk": {
       "post": {
         "summary": "Clean up container disk space",
@@ -4325,6 +4366,15 @@
         "pool": {
           "type": "string",
           "description": "Pool tag of the backend hosting this container (e.g., \"prod\",\n\"demo\", \"lab\"). Mirrors the peer's --pool registration tag and\nis the discriminator used for placement and per-pool routing\n(such as base-domain selection). Empty for untagged backends."
+        },
+        "autoSleepEnabled": {
+          "type": "boolean",
+          "description": "Whether the container is opted into manual auto-sleep tracking\n(Phase 1 of the serverless feature). Read-only; toggled via\nToggleAutoSleep. Backed by the user.containarium.auto_sleep_enabled\nIncus config key."
+        },
+        "idleThresholdMinutes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Idle minutes before the Phase 2 auto-sleep daemon would stop\nthe container. Defaults to 15 when unset. Backed by the\nuser.containarium.idle_threshold_minutes Incus config key."
         }
       },
       "title": "Container represents a complete container instance"
@@ -6578,6 +6628,17 @@
     },
     "StartContainerBody": {
       "type": "object",
+      "properties": {
+        "waitForReady": {
+          "type": "boolean",
+          "description": "When true, the server blocks until the container's primary TCP\nport (from its route record) is accepting connections, or\nready_timeout_seconds elapses. If the container has no route the\nprobe is skipped. Used by `containarium wake` to give callers an\n\"actually serving\" signal rather than just \"incus says started\"."
+        },
+        "readyTimeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Timeout for the readiness probe in seconds. Zero falls back to\nthe server-side default (30s). Ignored when wait_for_ready is\nfalse."
+        }
+      },
       "title": "StartContainerRequest is the request to start a container"
     },
     "StartContainerResponse": {
@@ -6590,6 +6651,10 @@
         "container": {
           "$ref": "#/definitions/Container",
           "title": "Updated container state"
+        },
+        "readyTimedOut": {
+          "type": "boolean",
+          "description": "True when wait_for_ready was set but the readiness probe timed\nout before the primary port accepted. The container is started\neither way — the caller can retry the probe or accept the start\nas best-effort."
         }
       },
       "title": "StartContainerResponse is the response from starting a container"
@@ -6813,6 +6878,40 @@
         }
       },
       "title": "TestWebhookResponse returns the result of the test"
+    },
+    "ToggleAutoSleepBody": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Desired state. true → write user.containarium.auto_sleep_enabled\n= \"true\". false → write \"false\" (the threshold key is left in\nplace so a re-enable picks up the prior value)."
+        },
+        "idleThresholdMinutes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Idle minutes before Phase 2 would stop the container. Ignored\nwhen enabled=false; 0 means \"use existing key or fall back to 15\"."
+        }
+      },
+      "description": "ToggleAutoSleepRequest opts a container into (or out of) auto-sleep\ntracking. The flag and threshold are stored as Incus user.* config\nkeys; the actual sleep tick (Phase 2) and HTTP wake (Phase 3) are\nseparate work. This RPC only writes the metadata."
+    },
+    "ToggleAutoSleepResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary (e.g. \"auto-sleep enabled at 15m\")."
+        },
+        "autoSleepEnabled": {
+          "type": "boolean",
+          "description": "The effective auto_sleep_enabled state after the toggle."
+        },
+        "idleThresholdMinutes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The effective idle_threshold_minutes value (15 if defaulted)."
+        }
+      },
+      "description": "ToggleAutoSleepResponse reports the effective auto-sleep state."
     },
     "ToggleMonitoringBody": {
       "type": "object",

@@ -102,17 +102,19 @@ func parseResponse[T any](resp *http.Response) (*T, error) {
 
 // Container response types matching the protobuf JSON output
 type containerResponse struct {
-	Name              string            `json:"name"`
-	Username          string            `json:"username"`
-	State             string            `json:"state"`
-	Resources         *resourceLimits   `json:"resources"`
-	Network           *networkInfo      `json:"network"`
-	CreatedAt         string            `json:"createdAt"`
-	Labels            map[string]string `json:"labels"`
-	Image             string            `json:"image"`
-	PodmanEnabled     bool              `json:"dockerEnabled"`
-	GpuDevice         string            `json:"gpuDevice"`
-	MonitoringEnabled bool              `json:"monitoringEnabled"`
+	Name                 string            `json:"name"`
+	Username             string            `json:"username"`
+	State                string            `json:"state"`
+	Resources            *resourceLimits   `json:"resources"`
+	Network              *networkInfo      `json:"network"`
+	CreatedAt            string            `json:"createdAt"`
+	Labels               map[string]string `json:"labels"`
+	Image                string            `json:"image"`
+	PodmanEnabled        bool              `json:"dockerEnabled"`
+	GpuDevice            string            `json:"gpuDevice"`
+	MonitoringEnabled    bool              `json:"monitoringEnabled"`
+	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
+	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
 }
 
 type resourceLimits struct {
@@ -158,10 +160,12 @@ type systemInfo struct {
 // containerToIncusInfo converts API response to incus.ContainerInfo
 func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
-		Name:              c.Name,
-		State:             c.State,
-		Labels:            c.Labels,
-		MonitoringEnabled: c.MonitoringEnabled,
+		Name:                 c.Name,
+		State:                c.State,
+		Labels:               c.Labels,
+		MonitoringEnabled:    c.MonitoringEnabled,
+		AutoSleepEnabled:     c.AutoSleepEnabled,
+		IdleThresholdMinutes: c.IdleThresholdMinutes,
 	}
 
 	if c.Network != nil {
@@ -248,6 +252,112 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 
 	info := containerToIncusInfo(result.Container)
 	return &info, nil
+}
+
+// ToggleAutoSleep writes the per-container auto-sleep opt-in
+// metadata via HTTP. See GRPCClient.ToggleAutoSleep for semantics.
+func (c *HTTPClient) ToggleAutoSleep(username string, enabled bool, idleThresholdMinutes int32) (*pb.ToggleAutoSleepResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/auto-sleep", url.PathEscape(username))
+	body := map[string]interface{}{
+		"enabled":                enabled,
+		"idle_threshold_minutes": idleThresholdMinutes,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("toggle auto-sleep: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("toggle auto-sleep: status %d", resp.StatusCode)
+	}
+
+	out := &pb.ToggleAutoSleepResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// StartContainer starts a stopped container via HTTP. When
+// waitForReady is true the daemon blocks until the container's
+// primary TCP port accepts (or readyTimeoutSeconds elapses).
+func (c *HTTPClient) StartContainer(username string, waitForReady bool, readyTimeoutSeconds int32) (*pb.StartContainerResponse, error) {
+	timeout := 60 * time.Second
+	if waitForReady && readyTimeoutSeconds > 0 {
+		timeout = time.Duration(readyTimeoutSeconds+10) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/start", url.PathEscape(username))
+	body := map[string]interface{}{
+		"wait_for_ready":        waitForReady,
+		"ready_timeout_seconds": readyTimeoutSeconds,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("start container: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("start container: status %d", resp.StatusCode)
+	}
+
+	out := &pb.StartContainerResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// StopContainer stops a running container via HTTP.
+func (c *HTTPClient) StopContainer(username string, force bool) (*pb.StopContainerResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/stop", url.PathEscape(username))
+	body := map[string]interface{}{"force": force}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("stop container: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("stop container: status %d", resp.StatusCode)
+	}
+
+	out := &pb.StopContainerResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
 }
 
 // ToggleMonitoring enables / disables OTel app telemetry on an

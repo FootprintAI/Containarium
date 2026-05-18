@@ -663,6 +663,13 @@ func (m *Manager) UnsetEnv(containerName, key string) error {
 	return fmt.Errorf("UnsetEnv not supported on this incus backend (mock?)")
 }
 
+// SetConfig writes an arbitrary Incus config key on a container.
+// Used by ToggleAutoSleep to persist the user.containarium.* keys
+// that Phase 2 and Phase 3 will read.
+func (m *Manager) SetConfig(containerName, key, value string) error {
+	return m.incus.SetConfig(containerName, key, value)
+}
+
 func (m *Manager) Get(username string) (*incus.ContainerInfo, error) {
 	containerName := username + "-container"
 	return m.incus.GetContainer(containerName)

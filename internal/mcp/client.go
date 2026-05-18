@@ -313,9 +313,13 @@ func (c *Client) DeleteContainer(username string, force bool) (*DeleteContainerR
 	return &resp, nil
 }
 
-// StartContainer starts a stopped container
-func (c *Client) StartContainer(username string) (*StartContainerResponse, error) {
-	respBody, err := c.doRequest("POST", "/v1/containers/"+username+"/start", nil)
+// StartContainer starts a stopped container. When waitForReady is
+// true the daemon blocks until the container's primary TCP port
+// accepts or the server-side default (30s) elapses; the response's
+// ReadyTimedOut field reports whether the probe gave up.
+func (c *Client) StartContainer(username string, waitForReady bool) (*StartContainerResponse, error) {
+	body := map[string]interface{}{"wait_for_ready": waitForReady}
+	respBody, err := c.doRequest("POST", "/v1/containers/"+username+"/start", body)
 	if err != nil {
 		return nil, err
 	}
@@ -325,6 +329,25 @@ func (c *Client) StartContainer(username string) (*StartContainerResponse, error
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
+	return &resp, nil
+}
+
+// ToggleAutoSleep writes the per-container auto-sleep opt-in flag.
+// idleThresholdMinutes is honored only when enabled is true; 0 means
+// "use the existing key or the daemon's 15-minute default".
+func (c *Client) ToggleAutoSleep(username string, enabled bool, idleThresholdMinutes int32) (*ToggleAutoSleepResponse, error) {
+	body := map[string]interface{}{
+		"enabled":                enabled,
+		"idle_threshold_minutes": idleThresholdMinutes,
+	}
+	respBody, err := c.doRequest("POST", "/v1/containers/"+username+"/auto-sleep", body)
+	if err != nil {
+		return nil, err
+	}
+	var resp ToggleAutoSleepResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
 	return &resp, nil
 }
 
@@ -815,8 +838,15 @@ type RefreshSecretsResponse struct {
 }
 
 type StartContainerResponse struct {
-	Message   string    `json:"message"`
-	Container Container `json:"container"`
+	Message       string    `json:"message"`
+	Container     Container `json:"container"`
+	ReadyTimedOut bool      `json:"readyTimedOut"`
+}
+
+type ToggleAutoSleepResponse struct {
+	Message              string `json:"message"`
+	AutoSleepEnabled     bool   `json:"autoSleepEnabled"`
+	IdleThresholdMinutes int32  `json:"idleThresholdMinutes"`
 }
 
 type StopContainerResponse struct {

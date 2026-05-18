@@ -158,6 +158,17 @@ message Container {
   // is the discriminator used for placement and per-pool routing
   // (such as base-domain selection). Empty for untagged backends.
   string pool = 19;
+
+  // Whether the container is opted into manual auto-sleep tracking
+  // (Phase 1 of the serverless feature). Read-only; toggled via
+  // ToggleAutoSleep. Backed by the user.containarium.auto_sleep_enabled
+  // Incus config key.
+  bool auto_sleep_enabled = 20;
+
+  // Idle minutes before the Phase 2 auto-sleep daemon would stop
+  // the container. Defaults to 15 when unset. Backed by the
+  // user.containarium.idle_threshold_minutes Incus config key.
+  int32 idle_threshold_minutes = 21;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -367,6 +378,18 @@ message DeleteContainerResponse {
 message StartContainerRequest {
   // Username of the container to start
   string username = 1;
+
+  // When true, the server blocks until the container's primary TCP
+  // port (from its route record) is accepting connections, or
+  // ready_timeout_seconds elapses. If the container has no route the
+  // probe is skipped. Used by `containarium wake` to give callers an
+  // "actually serving" signal rather than just "incus says started".
+  bool wait_for_ready = 2;
+
+  // Timeout for the readiness probe in seconds. Zero falls back to
+  // the server-side default (30s). Ignored when wait_for_ready is
+  // false.
+  int32 ready_timeout_seconds = 3;
 }
 
 // StartContainerResponse is the response from starting a container
@@ -376,6 +399,12 @@ message StartContainerResponse {
 
   // Updated container state
   Container container = 2;
+
+  // True when wait_for_ready was set but the readiness probe timed
+  // out before the primary port accepted. The container is started
+  // either way — the caller can retry the probe or accept the start
+  // as best-effort.
+  bool ready_timed_out = 3;
 }
 
 // StopContainerRequest is the request to stop a container
@@ -423,6 +452,36 @@ message ToggleMonitoringResponse {
   // the toggle (mirrors Container.monitoring_enabled in subsequent
   // GetContainer responses).
   bool monitoring_enabled = 2;
+}
+
+// ToggleAutoSleepRequest opts a container into (or out of) auto-sleep
+// tracking. The flag and threshold are stored as Incus user.* config
+// keys; the actual sleep tick (Phase 2) and HTTP wake (Phase 3) are
+// separate work. This RPC only writes the metadata.
+message ToggleAutoSleepRequest {
+  // Username of the container.
+  string username = 1;
+
+  // Desired state. true → write user.containarium.auto_sleep_enabled
+  // = "true". false → write "false" (the threshold key is left in
+  // place so a re-enable picks up the prior value).
+  bool enabled = 2;
+
+  // Idle minutes before Phase 2 would stop the container. Ignored
+  // when enabled=false; 0 means "use existing key or fall back to 15".
+  int32 idle_threshold_minutes = 3;
+}
+
+// ToggleAutoSleepResponse reports the effective auto-sleep state.
+message ToggleAutoSleepResponse {
+  // Operator-facing summary (e.g. "auto-sleep enabled at 15m").
+  string message = 1;
+
+  // The effective auto_sleep_enabled state after the toggle.
+  bool auto_sleep_enabled = 2;
+
+  // The effective idle_threshold_minutes value (15 if defaulted).
+  int32 idle_threshold_minutes = 3;
 }
 
 // AddSSHKeyRequest is the request to add an SSH key to a container

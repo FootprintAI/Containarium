@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -621,7 +623,11 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 			authToken := extractAuthToken(ctx)
 			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
 			if peer != nil {
-				_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/start", req.Username), authToken, nil)
+				body, _ := json.Marshal(map[string]interface{}{
+					"wait_for_ready":        req.WaitForReady,
+					"ready_timeout_seconds": req.ReadyTimeoutSeconds,
+				})
+				_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/start", req.Username), authToken, body)
 				if fwdErr == nil {
 					return &pb.StartContainerResponse{
 						Message: fmt.Sprintf("Container for user %s started on backend %s", req.Username, peer.ID),
@@ -649,12 +655,63 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, fmt.Errorf("container started but failed to get info: %w", err)
 	}
 
+	timedOut := false
+	if req.WaitForReady {
+		timeoutSec := req.ReadyTimeoutSeconds
+		if timeoutSec <= 0 {
+			timeoutSec = 30
+		}
+		timedOut = s.waitForContainerReady(ctx, req.Username, info.IPAddress, time.Duration(timeoutSec)*time.Second)
+	}
+
 	s.emitter.EmitContainerStarted(toProtoContainer(info))
 
+	msg := fmt.Sprintf("Container for user %s started successfully", req.Username)
+	if req.WaitForReady && timedOut {
+		msg = fmt.Sprintf("Container for user %s started but readiness probe timed out", req.Username)
+	}
+
 	return &pb.StartContainerResponse{
-		Message:   fmt.Sprintf("Container for user %s started successfully", req.Username),
-		Container: toProtoContainer(info),
+		Message:       msg,
+		Container:     toProtoContainer(info),
+		ReadyTimedOut: timedOut,
 	}, nil
+}
+
+// waitForContainerReady polls a TCP dial against the container's
+// primary exposed port until it accepts or the deadline elapses.
+// Returns true when the probe timed out. A nil routeStore, an absent
+// route record, an empty container IP, or a non-positive port all
+// short-circuit to "ready immediately" — the probe is opportunistic.
+func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, containerIP string, total time.Duration) bool {
+	if s.routeStore == nil || containerIP == "" {
+		return false
+	}
+	containerName := username + "-container"
+	routes, err := s.routeStore.ListByContainer(ctx, containerName)
+	if err != nil || len(routes) == 0 {
+		return false
+	}
+	port := routes[0].TargetPort
+	if port <= 0 {
+		return false
+	}
+
+	addr := net.JoinHostPort(containerIP, strconv.Itoa(port))
+	deadline := time.Now().Add(total)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return true
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return true
 }
 
 // StopContainer stops a running container
@@ -1069,6 +1126,62 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 	}, nil
 }
 
+// ToggleAutoSleep writes the per-container auto-sleep opt-in flag
+// (Phase 1 of the serverless feature). Works on running or stopped
+// containers; Incus accepts config updates in either state.
+//
+// On enable, both the flag and the threshold key are written. The
+// threshold key persists across disables so a re-enable restores
+// the prior value; an explicit idle_threshold_minutes > 0 always
+// overwrites, otherwise the existing key or the 15-minute default
+// applies. Core containers are refused — they don't represent user
+// workloads and shouldn't be sleeping.
+func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAutoSleepRequest) (*pb.ToggleAutoSleepResponse, error) {
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+
+	info, err := s.manager.Get(req.Username)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", req.Username, err)
+	}
+	if info.Role.IsCoreRole() {
+		return nil, status.Errorf(codes.InvalidArgument, "container %s is a core container; auto-sleep is for user containers only", info.Name)
+	}
+
+	containerName := info.Name
+	effectiveThreshold := info.IdleThresholdMinutes
+	if req.IdleThresholdMinutes > 0 {
+		effectiveThreshold = req.IdleThresholdMinutes
+	}
+	if effectiveThreshold < 1 {
+		effectiveThreshold = incus.DefaultIdleThresholdMinutes
+	}
+
+	enabledStr := "false"
+	if req.Enabled {
+		enabledStr = "true"
+	}
+	if err := s.manager.SetConfig(containerName, incus.AutoSleepEnabledKey, enabledStr); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.AutoSleepEnabledKey, err)
+	}
+	if req.Enabled || req.IdleThresholdMinutes > 0 {
+		if err := s.manager.SetConfig(containerName, incus.IdleThresholdMinutesKey, strconv.Itoa(int(effectiveThreshold))); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.IdleThresholdMinutesKey, err)
+		}
+	}
+
+	msg := "auto-sleep disabled"
+	if req.Enabled {
+		msg = fmt.Sprintf("auto-sleep enabled at %dm", effectiveThreshold)
+	}
+	return &pb.ToggleAutoSleepResponse{
+		Message:              msg,
+		AutoSleepEnabled:     req.Enabled,
+		IdleThresholdMinutes: effectiveThreshold,
+	}, nil
+}
+
 // AddSSHKey appends an SSH public key to the user's host-side
 // authorized_keys file (/home/<username>/.ssh/authorized_keys).
 //
@@ -1445,16 +1558,18 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		Network: &pb.NetworkInfo{
 			IpAddress: info.IPAddress,
 		},
-		Labels:            info.Labels,
-		CreatedAt:         info.CreatedAt.Unix(),
-		PodmanEnabled:     true,  // TODO: Get from container config
-		Stack:             "",    // TODO: Get from container labels
-		GpuDevice:         info.GPU,
-		BackendId:         info.BackendID,
-		OsType:            osTypeEnum,
-		AccessType:        accessType,
-		RdpAddress:        rdpAddress,
-		MonitoringEnabled: info.MonitoringEnabled,
+		Labels:               info.Labels,
+		CreatedAt:            info.CreatedAt.Unix(),
+		PodmanEnabled:        true,  // TODO: Get from container config
+		Stack:                "",    // TODO: Get from container labels
+		GpuDevice:            info.GPU,
+		BackendId:            info.BackendID,
+		OsType:               osTypeEnum,
+		AccessType:           accessType,
+		RdpAddress:           rdpAddress,
+		MonitoringEnabled:    info.MonitoringEnabled,
+		AutoSleepEnabled:     info.AutoSleepEnabled,
+		IdleThresholdMinutes: info.IdleThresholdMinutes,
 	}
 }
 

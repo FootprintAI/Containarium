@@ -30,6 +30,7 @@ const (
 	ContainerService_MoveContainer_FullMethodName          = "/containarium.v1.ContainerService/MoveContainer"
 	ContainerService_AdoptMigratedContainer_FullMethodName = "/containarium.v1.ContainerService/AdoptMigratedContainer"
 	ContainerService_ToggleMonitoring_FullMethodName       = "/containarium.v1.ContainerService/ToggleMonitoring"
+	ContainerService_ToggleAutoSleep_FullMethodName        = "/containarium.v1.ContainerService/ToggleAutoSleep"
 	ContainerService_AddSSHKey_FullMethodName              = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_RemoveSSHKey_FullMethodName           = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_AddCollaborator_FullMethodName        = "/containarium.v1.ContainerService/AddCollaborator"
@@ -110,6 +111,13 @@ type ContainerServiceClient interface {
 	// core collector); without one, enabling fails with
 	// FAILED_PRECONDITION rather than silently writing dead env vars.
 	ToggleMonitoring(ctx context.Context, in *ToggleMonitoringRequest, opts ...grpc.CallOption) (*ToggleMonitoringResponse, error)
+	// ToggleAutoSleep opts a container into manual auto-sleep tracking
+	// (Phase 1 of the serverless feature). Writes the per-container
+	// Incus user.* metadata keys; does NOT itself sleep or wake the
+	// container. The Phase 2 ticker (auto-sleep daemon) and Phase 3
+	// HTTP wake proxy are separate work — this RPC only sets the flag
+	// they will consume.
+	ToggleAutoSleep(ctx context.Context, in *ToggleAutoSleepRequest, opts ...grpc.CallOption) (*ToggleAutoSleepResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -288,6 +296,16 @@ func (c *containerServiceClient) ToggleMonitoring(ctx context.Context, in *Toggl
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ToggleMonitoringResponse)
 	err := c.cc.Invoke(ctx, ContainerService_ToggleMonitoring_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ToggleAutoSleep(ctx context.Context, in *ToggleAutoSleepRequest, opts ...grpc.CallOption) (*ToggleAutoSleepResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ToggleAutoSleepResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ToggleAutoSleep_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -606,6 +624,13 @@ type ContainerServiceServer interface {
 	// core collector); without one, enabling fails with
 	// FAILED_PRECONDITION rather than silently writing dead env vars.
 	ToggleMonitoring(context.Context, *ToggleMonitoringRequest) (*ToggleMonitoringResponse, error)
+	// ToggleAutoSleep opts a container into manual auto-sleep tracking
+	// (Phase 1 of the serverless feature). Writes the per-container
+	// Incus user.* metadata keys; does NOT itself sleep or wake the
+	// container. The Phase 2 ticker (auto-sleep daemon) and Phase 3
+	// HTTP wake proxy are separate work — this RPC only sets the flag
+	// they will consume.
+	ToggleAutoSleep(context.Context, *ToggleAutoSleepRequest) (*ToggleAutoSleepResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -712,6 +737,9 @@ func (UnimplementedContainerServiceServer) AdoptMigratedContainer(context.Contex
 }
 func (UnimplementedContainerServiceServer) ToggleMonitoring(context.Context, *ToggleMonitoringRequest) (*ToggleMonitoringResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ToggleMonitoring not implemented")
+}
+func (UnimplementedContainerServiceServer) ToggleAutoSleep(context.Context, *ToggleAutoSleepRequest) (*ToggleAutoSleepResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ToggleAutoSleep not implemented")
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
@@ -1006,6 +1034,24 @@ func _ContainerService_ToggleMonitoring_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).ToggleMonitoring(ctx, req.(*ToggleMonitoringRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ToggleAutoSleep_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ToggleAutoSleepRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ToggleAutoSleep(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ToggleAutoSleep_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ToggleAutoSleep(ctx, req.(*ToggleAutoSleepRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1528,6 +1574,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ToggleMonitoring",
 			Handler:    _ContainerService_ToggleMonitoring_Handler,
+		},
+		{
+			MethodName: "ToggleAutoSleep",
+			Handler:    _ContainerService_ToggleAutoSleep_Handler,
 		},
 		{
 			MethodName: "AddSSHKey",

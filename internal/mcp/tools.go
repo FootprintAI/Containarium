@@ -419,7 +419,7 @@ func (s *Server) registerTools() {
 		},
 		{
 			Name:        "start_container",
-			Description: "Start a stopped container",
+			Description: "Start a stopped container. When waitForReady is true the daemon blocks until the container's primary TCP port (from its route record) accepts, or the 30s probe timeout elapses — the response then reports whether the probe timed out.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -427,10 +427,37 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Username of the container to start",
 					},
+					"waitForReady": map[string]interface{}{
+						"type":        "boolean",
+						"description": "If true, block until the container's primary TCP port accepts or 30s elapses (default false)",
+					},
 				},
 				"required": []string{"username"},
 			},
 			Handler: handleStartContainer,
+		},
+		{
+			Name:        "toggle_auto_sleep",
+			Description: "Opt a container into auto-sleep. Enabled containers are stopped after `idleThresholdMinutes` of network inactivity, which frees their RAM and CPU. They are restarted on the next HTTP request (Phase 3, coming). This sets a per-container metadata flag; it doesn't sleep the container itself — use `stop_container` if you want to sleep it now.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container",
+					},
+					"enabled": map[string]interface{}{
+						"type":        "boolean",
+						"description": "true to opt in, false to opt out",
+					},
+					"idleThresholdMinutes": map[string]interface{}{
+						"type":        "integer",
+						"description": "Idle minutes before Phase 2 would sleep the container. Default 15. Ignored when enabled=false.",
+					},
+				},
+				"required": []string{"username", "enabled"},
+			},
+			Handler: handleToggleAutoSleep,
 		},
 		{
 			Name:        "stop_container",
@@ -1141,13 +1168,39 @@ func handleStartContainer(client *Client, args map[string]interface{}) (string, 
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
 	}
+	waitForReady := getBoolArg(args, "waitForReady", false)
 
-	resp, err := client.StartContainer(username)
+	resp, err := client.StartContainer(username, waitForReady)
 	if err != nil {
 		return "", fmt.Errorf("failed to start container: %w", err)
 	}
 
+	if resp.ReadyTimedOut {
+		return fmt.Sprintf("⚠ %s (readiness probe timed out)\nContainer state: %s", resp.Message, resp.Container.State), nil
+	}
 	return fmt.Sprintf("✅ %s\nContainer state: %s", resp.Message, resp.Container.State), nil
+}
+
+func handleToggleAutoSleep(client *Client, args map[string]interface{}) (string, error) {
+	username, ok := args["username"].(string)
+	if !ok || username == "" {
+		return "", fmt.Errorf("username is required")
+	}
+	enabled, ok := args["enabled"].(bool)
+	if !ok {
+		return "", fmt.Errorf("enabled (bool) is required")
+	}
+	idle := int32(0)
+	if n, ok := getIntArg(args, "idleThresholdMinutes"); ok {
+		idle = int32(n)
+	}
+
+	resp, err := client.ToggleAutoSleep(username, enabled, idle)
+	if err != nil {
+		return "", fmt.Errorf("failed to toggle auto-sleep: %w", err)
+	}
+	return fmt.Sprintf("✅ %s (auto_sleep_enabled=%v, idle_threshold_minutes=%d)",
+		resp.Message, resp.AutoSleepEnabled, resp.IdleThresholdMinutes), nil
 }
 
 func handleStopContainer(client *Client, args map[string]interface{}) (string, error) {

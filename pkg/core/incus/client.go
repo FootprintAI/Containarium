@@ -267,6 +267,40 @@ type ContainerInfo struct {
 	// the Incus config map rather than tracked as a separate
 	// flag — single source of truth.
 	MonitoringEnabled bool
+
+	// AutoSleepEnabled mirrors user.containarium.auto_sleep_enabled
+	// on the Incus config — opt-in flag for the serverless feature.
+	AutoSleepEnabled bool
+
+	// IdleThresholdMinutes mirrors user.containarium.idle_threshold_minutes;
+	// defaults to 15 when the key is missing or unparseable.
+	IdleThresholdMinutes int32
+}
+
+// AutoSleepEnabledKey is the Incus config key storing the per-container
+// auto-sleep opt-in flag (Phase 1 of the serverless feature).
+const AutoSleepEnabledKey = "user.containarium.auto_sleep_enabled"
+
+// IdleThresholdMinutesKey is the Incus config key storing the per-container
+// idle threshold in minutes consumed by the Phase 2 auto-sleep ticker.
+const IdleThresholdMinutesKey = "user.containarium.idle_threshold_minutes"
+
+// DefaultIdleThresholdMinutes is the fallback used when the threshold
+// config key is missing or unparseable.
+const DefaultIdleThresholdMinutes = 15
+
+// parseIdleThresholdMinutes reads the threshold key from an Incus
+// config map, falling back to the default for empty/garbage values.
+func parseIdleThresholdMinutes(cfg map[string]string) int32 {
+	raw, ok := cfg[IdleThresholdMinutesKey]
+	if !ok || raw == "" {
+		return DefaultIdleThresholdMinutes
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return DefaultIdleThresholdMinutes
+	}
+	return int32(n)
 }
 
 // ContainerMetrics holds runtime metrics for a container
@@ -520,13 +554,15 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 		}
 
 		info := ContainerInfo{
-			Name:              inst.Name,
-			State:             inst.Status,
-			InstanceType:      inst.Type,
-			CreatedAt:         inst.CreatedAt,
-			Labels:            extractLabelsFromConfig(inst.Config),
-			Role:              Role(inst.Config[RoleKey]),
-			MonitoringEnabled: inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
+			Name:                 inst.Name,
+			State:                inst.Status,
+			InstanceType:         inst.Type,
+			CreatedAt:            inst.CreatedAt,
+			Labels:               extractLabelsFromConfig(inst.Config),
+			Role:                 Role(inst.Config[RoleKey]),
+			MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
+			AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
+			IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 		}
 
 		// Get CPU and memory limits from config
@@ -645,12 +681,14 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 	}
 
 	info := &ContainerInfo{
-		Name:              inst.Name,
-		State:             inst.Status,
-		CreatedAt:         inst.CreatedAt,
-		Labels:            extractLabelsFromConfig(inst.Config),
-		Role:              Role(inst.Config[RoleKey]),
-		MonitoringEnabled: inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
+		Name:                 inst.Name,
+		State:                inst.Status,
+		CreatedAt:            inst.CreatedAt,
+		Labels:               extractLabelsFromConfig(inst.Config),
+		Role:                 Role(inst.Config[RoleKey]),
+		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
+		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
+		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 	}
 
 	// Get resource limits

@@ -99,9 +99,11 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	var containers []incus.ContainerInfo
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:              container.Name,
-			State:             container.State.String(),
-			MonitoringEnabled: container.MonitoringEnabled,
+			Name:                 container.Name,
+			State:                container.State.String(),
+			MonitoringEnabled:    container.MonitoringEnabled,
+			AutoSleepEnabled:     container.AutoSleepEnabled,
+			IdleThresholdMinutes: container.IdleThresholdMinutes,
 		}
 
 		// Get IP address from network info
@@ -193,6 +195,63 @@ func (c *GRPCClient) ToggleMonitoring(username string, enabled bool) (string, bo
 		return "", false, fmt.Errorf("failed to toggle monitoring: %w", err)
 	}
 	return resp.Message, resp.MonitoringEnabled, nil
+}
+
+// ToggleAutoSleep writes the per-container auto-sleep opt-in metadata.
+// idleThresholdMinutes is ignored when enabled is false; 0 means
+// "leave the existing key or fall back to the 15-minute default".
+func (c *GRPCClient) ToggleAutoSleep(username string, enabled bool, idleThresholdMinutes int32) (*pb.ToggleAutoSleepResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := &pb.ToggleAutoSleepRequest{
+		Username:             username,
+		Enabled:              enabled,
+		IdleThresholdMinutes: idleThresholdMinutes,
+	}
+	resp, err := c.client.ToggleAutoSleep(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to toggle auto-sleep: %w", err)
+	}
+	return resp, nil
+}
+
+// StartContainer starts a stopped container via gRPC. When
+// waitForReady is true the server blocks until the container's
+// primary TCP port accepts or readyTimeoutSeconds elapses (0 falls
+// back to the server-side 30s default).
+func (c *GRPCClient) StartContainer(username string, waitForReady bool, readyTimeoutSeconds int32) (*pb.StartContainerResponse, error) {
+	timeout := 60 * time.Second
+	if waitForReady && readyTimeoutSeconds > 0 {
+		timeout = time.Duration(readyTimeoutSeconds+10) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	resp, err := c.client.StartContainer(ctx, &pb.StartContainerRequest{
+		Username:            username,
+		WaitForReady:        waitForReady,
+		ReadyTimeoutSeconds: readyTimeoutSeconds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to start container: %w", err)
+	}
+	return resp, nil
+}
+
+// StopContainer stops a running container via gRPC.
+func (c *GRPCClient) StopContainer(username string, force bool) (*pb.StopContainerResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := c.client.StopContainer(ctx, &pb.StopContainerRequest{
+		Username: username,
+		Force:    force,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to stop container: %w", err)
+	}
+	return resp, nil
 }
 
 // DeleteContainer deletes a container via gRPC
@@ -314,8 +373,11 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:  container.Name,
-		State: container.State.String(),
+		Name:                 container.Name,
+		State:                container.State.String(),
+		MonitoringEnabled:    container.MonitoringEnabled,
+		AutoSleepEnabled:     container.AutoSleepEnabled,
+		IdleThresholdMinutes: container.IdleThresholdMinutes,
 	}
 
 	if container.Network != nil {
