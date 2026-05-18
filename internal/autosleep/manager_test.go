@@ -409,30 +409,19 @@ func TestManager_NilAuditLogger_NoPanic(t *testing.T) {
 	}
 }
 
-// TestManager_StopIsIdempotent — calling Stop twice (after Start)
-// must not panic. The impl nils stopCh on first close so the second
-// caller sees the channel-gone branch and returns without close-on-
-// closed-channel.
-//
-// NOTE on flakiness: under sustained -count=N stress this test has
-// surfaced a pre-existing race in Stop() — see the findings in the
-// PR description. The race window is "ticker fires during Stop()";
-// we use a long interval here (1h) so the ticker never fires, which
-// keeps the test reliable. A reproducer for the race lives in the
-// stress regression we report separately, not here.
+// TestManager_StopIsIdempotent — Stop called twice must not panic and
+// must complete quickly both times. Uses a short interval so the
+// ticker is actively firing during the Stop window, which is the
+// stress shape that previously deadlocked Stop against the run loop.
 func TestManager_StopIsIdempotent(t *testing.T) {
 	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
 	m := NewManager(&fakeIncus{}, nil, &fakeStopper{}, nil, Options{
-		Interval: time.Hour, // tick never fires; isolates Stop semantics.
+		Interval: 25 * time.Millisecond,
 		Clock:    func() time.Time { return now },
 	})
 	m.Start(context.Background())
-	// Give the run() goroutine a moment to park in the select on the
-	// snapshot of stopCh — otherwise the parking happens concurrently
-	// with Stop and we hit the same race we report.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond) // let several ticks fire
 
-	// First Stop blocks until run() exits and closes done.
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
@@ -441,11 +430,9 @@ func TestManager_StopIsIdempotent(t *testing.T) {
 	select {
 	case <-firstDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("first Stop() blocked >2s — race in Stop() vs run() select; " +
-			"see stopChan() re-reading m.stopCh after it was nil'd")
+		t.Fatal("first Stop() blocked >2s")
 	}
 
-	// Second Stop must be a fast no-op.
 	secondDone := make(chan struct{})
 	go func() {
 		defer close(secondDone)
@@ -459,23 +446,15 @@ func TestManager_StopIsIdempotent(t *testing.T) {
 }
 
 // TestManager_ContextCancellationStopsTicker — Start(ctx) with a
-// canceled ctx exits the run loop within a tick interval. A long
-// interval lets ctx.Done() race-free with the select wake-up; the
-// goroutine count check catches a leaked ticker.
-//
-// NOTE: we deliberately do NOT call m.Stop() after cancel here —
-// that path is covered by TestManager_StopIsIdempotent and exercising
-// both paths in this test conflated two contracts and risked the
-// Stop-vs-tick race when the interval was 50ms.
+// canceled ctx exits the run loop within a tick interval.
 func TestManager_ContextCancellationStopsTicker(t *testing.T) {
 	before := runtime.NumGoroutine()
 	ctx, cancel := context.WithCancel(context.Background())
 	m := NewManager(&fakeIncus{}, nil, &fakeStopper{}, nil, Options{
-		Interval: time.Hour, // ticker never fires during the test.
+		Interval: 25 * time.Millisecond,
 	})
 	m.Start(ctx)
-	// Let the run loop park in select.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond) // let several ticks fire
 
 	cancel()
 	// Give the goroutine a chance to exit. The select wakes on ctx.Done().
@@ -531,20 +510,16 @@ func TestManager_AntiThrashFalseNegativeWhenLastStartedAtUnset(t *testing.T) {
 }
 
 // TestManager_StartIsNonBlocking — Start spawns the loop and returns
-// immediately. A blocked Start would hang DualServer.Start. Use an
-// atomic counter to confirm at least one tick fires, then exit via
-// ctx cancellation (not Stop, to avoid the race tracked separately).
+// immediately. A blocked Start would hang DualServer.Start.
 func TestManager_StartIsNonBlocking(t *testing.T) {
 	var ticks int64
 	inc := &fakeIncusCounting{count: &ticks}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	m := NewManager(inc, nil, &fakeStopper{}, nil, Options{
 		Interval: 25 * time.Millisecond,
 	})
 	startReturned := make(chan struct{})
 	go func() {
-		m.Start(ctx)
+		m.Start(context.Background())
 		close(startReturned)
 	}()
 	select {
@@ -552,7 +527,6 @@ func TestManager_StartIsNonBlocking(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Start did not return within 1s — possible blocking call")
 	}
-	// Wait for at least one tick to fire.
 	deadline := time.Now().Add(time.Second)
 	for atomic.LoadInt64(&ticks) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -560,6 +534,7 @@ func TestManager_StartIsNonBlocking(t *testing.T) {
 	if atomic.LoadInt64(&ticks) == 0 {
 		t.Fatal("ticker never fired within 1s")
 	}
+	m.Stop()
 }
 
 // fakeIncusCounting counts ListContainers calls — used by the tick

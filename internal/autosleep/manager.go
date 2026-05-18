@@ -56,9 +56,9 @@ type Manager struct {
 	interval time.Duration
 	clock    func() time.Time
 
-	mu     sync.Mutex
-	stopCh chan struct{}
-	done   chan struct{}
+	stopCh   chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 // Options bundles the optional knobs. Production callers should pass
@@ -90,47 +90,22 @@ func NewManager(inc IncusClient, traffic TrafficSource, stopper Stopper, audit A
 	}
 }
 
-// Start spawns the tick loop. Returns immediately. Safe to call once;
-// subsequent calls before Stop are a no-op.
+// Start spawns the tick loop. Returns immediately.
 func (m *Manager) Start(ctx context.Context) {
-	m.mu.Lock()
-	if m.done == nil {
-		// Stop closed us already; refuse to restart on a poisoned manager.
-		m.mu.Unlock()
-		return
-	}
-	m.mu.Unlock()
-
 	go m.run(ctx)
 	log.Printf("[autosleep] ticker started (interval=%s)", m.interval)
 }
 
-// Stop signals the loop to exit. Idempotent.
+// Stop signals the loop to exit and waits for it. Idempotent.
 func (m *Manager) Stop() {
-	m.mu.Lock()
-	if m.stopCh == nil {
-		m.mu.Unlock()
-		return
-	}
-	close(m.stopCh)
-	m.stopCh = nil
-	done := m.done
-	m.mu.Unlock()
-
-	if done != nil {
-		<-done
-	}
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
+	<-m.done
 }
 
 func (m *Manager) run(ctx context.Context) {
-	defer func() {
-		m.mu.Lock()
-		if m.done != nil {
-			close(m.done)
-			m.done = nil
-		}
-		m.mu.Unlock()
-	}()
+	defer close(m.done)
 
 	t := time.NewTicker(m.interval)
 	defer t.Stop()
@@ -139,21 +114,12 @@ func (m *Manager) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-m.stopChan():
+		case <-m.stopCh:
 			return
 		case <-t.C:
 			m.tick(ctx)
 		}
 	}
-}
-
-// stopChan returns the current stop channel under the lock. A nil
-// channel blocks forever in select, which is the right behavior after
-// Stop() has nil'd it out (run is already exiting via the close).
-func (m *Manager) stopChan() <-chan struct{} {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.stopCh
 }
 
 // tick evaluates every container once. Errors are logged and the loop
