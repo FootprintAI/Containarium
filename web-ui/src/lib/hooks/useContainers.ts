@@ -244,6 +244,21 @@ export function useContainers(server: Server | null) {
   };
 
   /**
+   * Enable or disable auto-sleep on a container
+   */
+  const toggleAutoSleep = async (
+    username: string,
+    enabled: boolean,
+    idleThresholdMinutes: number,
+  ) => {
+    if (!server) throw new Error('No server selected');
+    const client = getClient(server);
+    const result = await client.toggleAutoSleep(username, enabled, idleThresholdMinutes);
+    await mutate();
+    return result;
+  };
+
+  /**
    * Resize a container's resources (CPU, memory, disk)
    */
   const resizeContainer = async (
@@ -302,6 +317,7 @@ export function useContainers(server: Server | null) {
     getLabels,
     setLabels,
     removeLabel,
+    toggleAutoSleep,
     getSystemInfoForBackend,
     refresh,
     // Event stream status
