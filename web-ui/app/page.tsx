@@ -15,6 +15,7 @@ import CreateContainerDialog from '@/src/components/containers/CreateContainerDi
 import DeleteConfirmDialog from '@/src/components/containers/DeleteConfirmDialog';
 import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
 import ResizeContainerDialog from '@/src/components/containers/ResizeContainerDialog';
+import AutoSleepDialog from '@/src/components/containers/AutoSleepDialog';
 import CollaboratorsDialog from '@/src/components/containers/CollaboratorsDialog';
 import AppsView from '@/src/components/apps/AppsView';
 import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
@@ -111,6 +112,7 @@ export default function Home() {
     cleanupDisk,
     setLabels,
     removeLabel,
+    toggleAutoSleep,
     getSystemInfoForBackend,
     refresh: refreshContainers,
   } = useContainers(activeServer);
@@ -159,6 +161,7 @@ export default function Home() {
   const [labelEditorContainer, setLabelEditorContainer] = useState<{ username: string; labels: Record<string, string> } | null>(null);
   const [resizeDialogOpen, setResizeDialogOpen] = useState(false);
   const [resizeTarget, setResizeTarget] = useState<{ username: string; cpu: string; memory: string; disk: string } | null>(null);
+  const [autoSleepTarget, setAutoSleepTarget] = useState<{ username: string; enabled: boolean; threshold: number } | null>(null);
 
   const handleEditServer = (serverId: string) => {
     const server = servers.find(s => s.id === serverId);
@@ -184,6 +187,15 @@ export default function Home() {
   const handleResize = async (resources: { cpu?: string; memory?: string; disk?: string }) => {
     if (!resizeTarget) return;
     await resizeContainer(resizeTarget.username, resources);
+  };
+
+  const handleOpenAutoSleep = (username: string, current: { enabled: boolean; threshold: number }) => {
+    setAutoSleepTarget({ username, ...current });
+  };
+
+  const handleAutoSleepSave = async (enabled: boolean, idleThresholdMinutes: number) => {
+    if (!autoSleepTarget) return;
+    await toggleAutoSleep(autoSleepTarget.username, enabled, idleThresholdMinutes);
   };
 
   const handleEditContainerFirewall = (username: string) => {
@@ -262,6 +274,7 @@ export default function Home() {
                 onEditLabels={handleEditLabels}
                 onResize={handleOpenResize}
                 onManageCollaborators={(u) => setCollaboratorContainer(u)}
+                onToggleAutoSleep={handleOpenAutoSleep}
                 onRefresh={refreshContainers}
                 backends={backends}
                 onSelectBackend={getSystemInfoForBackend}
@@ -368,6 +381,17 @@ export default function Home() {
           currentLabels={labelEditorContainer.labels}
           onSave={async (labels) => { await setLabels(labelEditorContainer.username, labels); }}
           onRemove={async (key) => { await removeLabel(labelEditorContainer.username, key); }}
+        />
+      )}
+
+      {autoSleepTarget && (
+        <AutoSleepDialog
+          open={!!autoSleepTarget}
+          onClose={() => setAutoSleepTarget(null)}
+          username={autoSleepTarget.username}
+          initialEnabled={autoSleepTarget.enabled}
+          initialIdleThresholdMinutes={autoSleepTarget.threshold}
+          onSave={handleAutoSleepSave}
         />
       )}
 

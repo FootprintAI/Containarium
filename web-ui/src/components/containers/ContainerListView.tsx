@@ -2,7 +2,7 @@
 
 import {
   Trash2, Play, Square, Terminal, Monitor, Shield,
-  Tag, SlidersHorizontal, Users,
+  Tag, SlidersHorizontal, Users, Moon,
 } from 'lucide-react';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
 
@@ -17,6 +17,7 @@ interface ContainerListViewProps {
   onEditLabels?: (username: string, labels: Record<string, string>) => void;
   onResize?: (username: string, currentResources: { cpu: string; memory: string; disk: string }) => void;
   onManageCollaborators?: (username: string) => void;
+  onToggleAutoSleep?: (username: string, current: { enabled: boolean; threshold: number }) => void;
 }
 
 function parseSize(s: string): number {
@@ -70,7 +71,7 @@ function IconBtn({ title, onClick, className = '', children }: { title: string; 
 
 export default function ContainerListView({
   containers, metricsMap, onDelete, onStart, onStop, onTerminal,
-  onEditFirewall, onEditLabels, onResize, onManageCollaborators,
+  onEditFirewall, onEditLabels, onResize, onManageCollaborators, onToggleAutoSleep,
 }: ContainerListViewProps) {
   return (
     <div className="overflow-x-auto rounded-xl border border-[var(--border-subtle)]">
@@ -109,9 +110,16 @@ export default function ContainerListView({
 
                 {/* State */}
                 <td className="px-3 py-2.5">
-                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${stateBadge(c.state)}`}>
-                    {c.state}
-                  </span>
+                  {c.state === 'Stopped' && c.autoSleepEnabled ? (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-400">
+                      <Moon size={10} />
+                      Sleeping
+                    </span>
+                  ) : (
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${stateBadge(c.state)}`}>
+                      {c.state}
+                    </span>
+                  )}
                 </td>
 
                 {/* IP */}
@@ -210,6 +218,18 @@ export default function ContainerListView({
                     {onEditFirewall && (
                       <IconBtn title="Firewall" onClick={() => onEditFirewall(username)} className="hover:text-[var(--c-amber)]">
                         <Shield size={13} />
+                      </IconBtn>
+                    )}
+                    {onToggleAutoSleep && (
+                      <IconBtn
+                        title={c.autoSleepEnabled ? `Auto-sleep · idle ${c.idleThresholdMinutes ?? 15}m` : 'Auto-sleep'}
+                        onClick={() => onToggleAutoSleep(username, {
+                          enabled: c.autoSleepEnabled ?? false,
+                          threshold: c.idleThresholdMinutes ?? 15,
+                        })}
+                        className={c.autoSleepEnabled ? 'text-indigo-400 hover:text-indigo-300' : 'hover:text-indigo-400'}
+                      >
+                        <Moon size={13} />
                       </IconBtn>
                     )}
                     {isRunning ? (

@@ -27,6 +27,7 @@ interface ContainerTopologyProps {
   onEditLabels?: (username: string, labels: Record<string, string>) => void;
   onResize?: (username: string, currentResources: { cpu: string; memory: string; disk: string }) => void;
   onManageCollaborators?: (username: string) => void;
+  onToggleAutoSleep?: (username: string, current: { enabled: boolean; threshold: number }) => void;
   onRefresh: () => void;
   backends?: BackendInfo[];
   onSelectBackend?: (backendId: string) => Promise<SystemInfo | null>;
@@ -36,7 +37,7 @@ export default function ContainerTopology({
   containers, coreServices, metricsMap, systemInfo, isLoading, error,
   onCreateContainer, onDeleteContainer, onStartContainer, onStopContainer,
   onTerminalContainer, onEditFirewall, onEditLabels, onResize,
-  onManageCollaborators, onRefresh, backends, onSelectBackend,
+  onManageCollaborators, onToggleAutoSleep, onRefresh, backends, onSelectBackend,
 }: ContainerTopologyProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [groupByLabel, setGroupByLabel] = useState('');
@@ -225,6 +226,7 @@ export default function ContainerTopology({
                   onEditLabels={onEditLabels}
                   onResize={onResize}
                   onManageCollaborators={onManageCollaborators}
+                  onToggleAutoSleep={onToggleAutoSleep}
                 />
               ) : (
                 <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>

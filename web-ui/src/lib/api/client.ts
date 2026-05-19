@@ -89,6 +89,8 @@ function transformContainer(apiContainer: Record<string, unknown>): Container {
     osType: (apiContainer.osType as string) || '',
     accessType: (apiContainer.accessType as Container['accessType']) || undefined,
     rdpAddress: (apiContainer.rdpAddress as string) || '',
+    autoSleepEnabled: Boolean(apiContainer.autoSleepEnabled) || false,
+    idleThresholdMinutes: Number(apiContainer.idleThresholdMinutes) || 0,
   };
 }
 
@@ -330,6 +332,28 @@ export class ContaineriumClient {
       message: response.data.message || 'Disk cleanup completed',
       freedBytes: Number(response.data.freedBytes || response.data.freed_bytes) || 0,
       container,
+    };
+  }
+
+  /**
+   * Enable or disable per-container auto-sleep (Phase 1 scale-down).
+   * Writes the user.containarium.auto_sleep_enabled / idle_threshold_minutes
+   * Incus user.* metadata keys via POST /v1/containers/{username}/auto-sleep.
+   * Does NOT itself stop or start the container — Phase 2 ticker consumes the flag.
+   */
+  async toggleAutoSleep(
+    username: string,
+    enabled: boolean,
+    idleThresholdMinutes: number,
+  ): Promise<{ message: string; autoSleepEnabled: boolean; idleThresholdMinutes: number }> {
+    const response = await this.client.post(`/containers/${username}/auto-sleep`, {
+      enabled,
+      idleThresholdMinutes,
+    });
+    return {
+      message: String(response.data.message || ''),
+      autoSleepEnabled: Boolean(response.data.autoSleepEnabled),
+      idleThresholdMinutes: Number(response.data.idleThresholdMinutes) || 0,
     };
   }
 

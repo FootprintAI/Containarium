@@ -31,6 +31,10 @@ export interface Container {
   osType?: string;
   accessType?: AccessType;
   rdpAddress?: string;
+  // Phase 1 scale-down opt-in (optional — older daemons omit these).
+  // Treat undefined as false / 15.
+  autoSleepEnabled?: boolean;
+  idleThresholdMinutes?: number;
 }
 
 /**
