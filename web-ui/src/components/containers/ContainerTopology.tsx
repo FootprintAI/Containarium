@@ -242,6 +242,7 @@ export default function ContainerTopology({
                       onEditFirewall={onEditFirewall}
                       onEditLabels={onEditLabels ? (u) => onEditLabels(u, container.labels || {}) : undefined}
                       onResize={onResize ? (u) => onResize(u, { cpu: container.cpu, memory: container.memory, disk: container.disk }) : undefined}
+                      onToggleAutoSleep={onToggleAutoSleep}
                     />
                   ))}
                 </div>

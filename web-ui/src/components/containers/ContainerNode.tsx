@@ -2,7 +2,7 @@
 
 import {
   Trash2, Play, Square, Terminal, Monitor,
-  Shield, Tag, SlidersHorizontal, Network,
+  Shield, Tag, SlidersHorizontal, Network, Moon,
 } from 'lucide-react';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
 
@@ -16,6 +16,7 @@ interface ContainerNodeProps {
   onEditFirewall?: (username: string) => void;
   onEditLabels?: (username: string) => void;
   onResize?: (username: string) => void;
+  onToggleAutoSleep?: (username: string, current: { enabled: boolean; threshold: number }) => void;
 }
 
 function parseSize(s: string): number {
@@ -73,7 +74,7 @@ function IconBtn({ title, onClick, className = '', children }: { title: string; 
   );
 }
 
-export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall, onEditLabels, onResize }: ContainerNodeProps) {
+export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall, onEditLabels, onResize, onToggleAutoSleep }: ContainerNodeProps) {
   const isRunning = container.state === 'Running';
   const username = container.username || container.name;
 
@@ -96,9 +97,16 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
           <p className="truncate text-sm font-semibold text-[var(--text)]">{username}</p>
           <p className="truncate text-xs text-[var(--text-muted)]">{container.image || 'ubuntu:24.04'}</p>
         </div>
-        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${stateBadge(container.state)}`}>
-          {container.state}
-        </span>
+        {container.state === 'Stopped' && container.autoSleepEnabled ? (
+          <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-400">
+            <Moon size={10} />
+            Sleeping
+          </span>
+        ) : (
+          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${stateBadge(container.state)}`}>
+            {container.state}
+          </span>
+        )}
       </div>
 
       {/* IP + chips */}
@@ -184,6 +192,18 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
         {onEditFirewall && (
           <IconBtn title="Firewall" onClick={() => onEditFirewall(username)} className="hover:text-[var(--c-amber)]">
             <Shield size={14} />
+          </IconBtn>
+        )}
+        {onToggleAutoSleep && (
+          <IconBtn
+            title={container.autoSleepEnabled ? `Auto-sleep · idle ${container.idleThresholdMinutes ?? 15}m` : 'Auto-sleep'}
+            onClick={() => onToggleAutoSleep(username, {
+              enabled: container.autoSleepEnabled ?? false,
+              threshold: container.idleThresholdMinutes ?? 15,
+            })}
+            className={container.autoSleepEnabled ? 'text-indigo-400 hover:text-indigo-300' : 'hover:text-indigo-400'}
+          >
+            <Moon size={14} />
           </IconBtn>
         )}
         {onEditLabels && (
