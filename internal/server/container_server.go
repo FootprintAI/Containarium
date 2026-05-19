@@ -795,28 +795,30 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 // internal/server import graph.
 func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason string, idleMinutes int) error {
 	log.Printf("[autosleep] stopping username=%s reason=%q idle_minutes=%d", username, reason, idleMinutes)
-	if _, err := s.StopContainer(ctx, &pb.StopContainerRequest{Username: username, Force: false}); err != nil {
-		return err
-	}
 
-	// Post-stop: point this container's Caddy routes at the daemon's
-	// wake handler so the next HTTP request wakes the container
-	// instead of returning 502. Best-effort — a Caddy mutation
-	// failure shouldn't fail the stop (the container is already
-	// down), and RouteSyncJob will re-converge on the next tick if
-	// the tracker entry made it through.
+	// Swap Caddy routes to the wake handler BEFORE stopping the
+	// container. Doing the swap first means any request arriving in
+	// the brief stop-window lands on /wake/, which (since the
+	// container is still Running at that instant) returns ready=true
+	// immediately and proxies through — one extra hop, but no 502.
+	// The reverse order leaves Caddy pointing at a dead container
+	// for the duration of the graceful stop, which is a guaranteed
+	// 502 window on every auto-sleep event. See #224.
 	if s.wakeRouter != nil && s.routeStore != nil {
 		containerName := username + "-container"
 		routes, err := s.routeStore.ListByContainer(ctx, containerName)
 		if err != nil {
 			log.Printf("[autosleep] list routes for %s: %v (skipping swap-to-wake)", containerName, err)
-			return nil
-		}
-		if len(routes) > 0 {
+		} else if len(routes) > 0 {
 			if err := s.wakeRouter.SwapToWake(ctx, containerName, routes); err != nil {
 				log.Printf("[autosleep] swap-to-wake %s: %v", containerName, err)
+				// Don't fail the stop — RouteSyncJob will re-converge.
 			}
 		}
+	}
+
+	if _, err := s.StopContainer(ctx, &pb.StopContainerRequest{Username: username, Force: false}); err != nil {
+		return err
 	}
 	return nil
 }

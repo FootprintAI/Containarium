@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -125,5 +126,72 @@ func TestStopForAutoSleep_DoesNotInvokeAuditDirectly(t *testing.T) {
 	}
 	if stoppedEvents != 1 {
 		t.Errorf("expected exactly 1 stop event from wrapper, got %d", stoppedEvents)
+	}
+}
+
+// recordingWakeRouter / recordingRouteStore stamp a shared seq counter
+// when their tracked method is called, so the test can assert the
+// SwapToWake → StopContainer happens-before relationship.
+type recordingWakeRouter struct {
+	seq        *atomic.Int64
+	swapSeqAt  int64
+}
+
+func (r *recordingWakeRouter) SwapToWake(_ context.Context, _ string, _ []*app.RouteRecord) error {
+	r.swapSeqAt = r.seq.Add(1)
+	return nil
+}
+func (r *recordingWakeRouter) SwapToDirect(context.Context, string, []*app.RouteRecord) error {
+	return nil
+}
+
+type recordingRouteStore struct{}
+
+func (recordingRouteStore) ListByContainer(_ context.Context, _ string) ([]*app.RouteRecord, error) {
+	return []*app.RouteRecord{{FullDomain: "alice.example.test", TargetIP: "10.0.0.5", TargetPort: 8080}}, nil
+}
+func (recordingRouteStore) Delete(context.Context, string) error            { return nil }
+func (recordingRouteStore) Save(context.Context, *app.RouteRecord) error    { return nil }
+
+// TestStopForAutoSleep_SwapsBeforeStop pins the #224 fix: the Caddy
+// route swap MUST happen before the container is stopped, otherwise
+// any request hitting Caddy during the graceful-stop window gets a
+// 502 from a dead upstream. The recorded sequence numbers must show
+// SwapToWake < StopContainer.
+func TestStopForAutoSleep_SwapsBeforeStop(t *testing.T) {
+	var seq atomic.Int64
+	var stopSeqAt int64
+
+	mock := incustest.NewMockBackend()
+	mock.Containers["alice-container"] = &incus.ContainerInfo{Name: "alice-container", State: "Running"}
+	mock.StopContainerFunc = func(name string, force bool) error {
+		stopSeqAt = seq.Add(1)
+		if c, ok := mock.Containers[name]; ok {
+			c.State = "Stopped"
+		}
+		return nil
+	}
+
+	wakeRouter := &recordingWakeRouter{seq: &seq}
+	s := &ContainerServer{
+		manager:     container.NewWithBackend(mock),
+		emitter:     events.NewEmitter(events.NewBus()),
+		wakeRouter:  wakeRouter,
+		routeStore:  recordingRouteStore{},
+	}
+
+	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if wakeRouter.swapSeqAt == 0 {
+		t.Fatal("SwapToWake was not called")
+	}
+	if stopSeqAt == 0 {
+		t.Fatal("StopContainer was not called")
+	}
+	if wakeRouter.swapSeqAt >= stopSeqAt {
+		t.Errorf("ordering bug (#224): SwapToWake seq=%d must be < StopContainer seq=%d; otherwise Caddy points at the dead container during the stop window and inbound requests 502",
+			wakeRouter.swapSeqAt, stopSeqAt)
 	}
 }
