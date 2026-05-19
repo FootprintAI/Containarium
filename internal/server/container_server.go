@@ -77,6 +77,12 @@ type ContainerServer struct {
 	// stamp environment.<NAME>=<value> at LXC start time.
 	secretsStore         *secrets.Store
 
+	// wakeRouter applies the Caddy route swap when a container is
+	// auto-slept (SwapToWake) and woken back up (SwapToDirect).
+	// Nil on daemons without app hosting or with auto-sleep disabled;
+	// the StopForAutoSleep / StartContainer hooks are nil-safe.
+	wakeRouter           WakeRouter
+
 	// otelCollectorEndpoint is the OTLP/HTTP URL of this daemon's
 	// core OTel collector LXC (e.g. "http://10.0.3.142:4318").
 	// Stamped into containers created with monitoring=true so the
@@ -675,6 +681,24 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 
 	s.emitter.EmitContainerStarted(toProtoContainer(info))
 
+	// Post-start: point this container's Caddy routes back at the
+	// container's direct IP/port (undo the wake-mode swap that
+	// StopForAutoSleep applied when the container went to sleep).
+	// Only fires for containers with auto-sleep enabled — that's the
+	// only path that could have left them in wake mode in the first
+	// place. Best-effort; RouteSyncJob re-converges if this fails.
+	if s.wakeRouter != nil && s.routeStore != nil && info != nil && info.AutoSleepEnabled {
+		containerName := req.Username + "-container"
+		routes, err := s.routeStore.ListByContainer(ctx, containerName)
+		if err != nil {
+			log.Printf("[wake] list routes for %s: %v (skipping swap-to-direct)", containerName, err)
+		} else if len(routes) > 0 {
+			if err := s.wakeRouter.SwapToDirect(ctx, containerName, routes); err != nil {
+				log.Printf("[wake] swap-to-direct %s: %v", containerName, err)
+			}
+		}
+	}
+
 	msg := fmt.Sprintf("Container for user %s started successfully", req.Username)
 	if req.WaitForReady && timedOut {
 		msg = fmt.Sprintf("Container for user %s started but readiness probe timed out", req.Username)
@@ -771,8 +795,30 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 // internal/server import graph.
 func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason string, idleMinutes int) error {
 	log.Printf("[autosleep] stopping username=%s reason=%q idle_minutes=%d", username, reason, idleMinutes)
-	_, err := s.StopContainer(ctx, &pb.StopContainerRequest{Username: username, Force: false})
-	return err
+	if _, err := s.StopContainer(ctx, &pb.StopContainerRequest{Username: username, Force: false}); err != nil {
+		return err
+	}
+
+	// Post-stop: point this container's Caddy routes at the daemon's
+	// wake handler so the next HTTP request wakes the container
+	// instead of returning 502. Best-effort — a Caddy mutation
+	// failure shouldn't fail the stop (the container is already
+	// down), and RouteSyncJob will re-converge on the next tick if
+	// the tracker entry made it through.
+	if s.wakeRouter != nil && s.routeStore != nil {
+		containerName := username + "-container"
+		routes, err := s.routeStore.ListByContainer(ctx, containerName)
+		if err != nil {
+			log.Printf("[autosleep] list routes for %s: %v (skipping swap-to-wake)", containerName, err)
+			return nil
+		}
+		if len(routes) > 0 {
+			if err := s.wakeRouter.SwapToWake(ctx, containerName, routes); err != nil {
+				log.Printf("[autosleep] swap-to-wake %s: %v", containerName, err)
+			}
+		}
+	}
+	return nil
 }
 
 // ResizeContainer dynamically resizes container resources

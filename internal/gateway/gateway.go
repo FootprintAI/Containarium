@@ -55,6 +55,13 @@ type GatewayServer struct {
 	// Backends handler (for multi-backend support, set externally)
 	backendsHandler http.HandlerFunc
 
+	// Wake handler (for serverless / wake-on-HTTP, set externally).
+	// Mounted at /wake/ and at the root catch-all when the daemon's
+	// wake feature is enabled. NOT wrapped by the JWT auth middleware
+	// — Caddy forwards user traffic here, and that traffic doesn't
+	// carry the daemon's JWT.
+	wakeHandler http.Handler
+
 	// Alert relay (no auth — internal network only)
 	alertRelayMu     sync.RWMutex
 	alertRelayURL    string // external webhook URL to forward to
@@ -136,6 +143,14 @@ func (gs *GatewayServer) SetRecordDeliveryFn(fn func(ctx context.Context, alertN
 // SetBackendsHandler sets the handler for the /v1/backends endpoint.
 func (gs *GatewayServer) SetBackendsHandler(handler http.HandlerFunc) {
 	gs.backendsHandler = handler
+}
+
+// SetWakeHandler sets the handler mounted at /wake/ — the wake-on-HTTP
+// entry point Caddy forwards user traffic to while a container is
+// auto-slept. The handler is unauthenticated (the auth middleware is
+// for API callers, not for incoming user requests).
+func (gs *GatewayServer) SetWakeHandler(handler http.Handler) {
+	gs.wakeHandler = handler
 }
 
 // SetTerminalPeerProxy configures the terminal handler to proxy WebSocket
@@ -462,6 +477,19 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		httpMux.Handle("/v1/", corsHandler)
 	}
 
+	// Wake-on-HTTP handler (no auth — Caddy forwards user traffic here
+	// while a container is auto-slept, and that traffic carries no JWT).
+	// /wake/* is the explicit smoke-test path; the daemon's path-based
+	// routes (/v1/, /swagger-ui/, /webui/, etc.) take precedence in
+	// http.ServeMux's "longest prefix wins" rule. Caddy itself sends
+	// the original user path through unchanged, so wake-mode user
+	// traffic arrives as / or /<app-path> — those are caught by the
+	// fallback registered below at gateway-Start time.
+	if gs.wakeHandler != nil {
+		httpMux.Handle("/wake/", gs.wakeHandler)
+		httpMux.Handle("/wake", gs.wakeHandler)
+	}
+
 	// Core services endpoint (with authentication via CORS handler)
 	if gs.coreServicesHandler != nil {
 		coreServicesCORS := cors.New(cors.Options{
@@ -602,6 +630,17 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Used by sentinel to sync SSH keys for sshpiper configuration
 	httpMux.HandleFunc("/authorized-keys", ServeAuthorizedKeys())
 	httpMux.HandleFunc("/authorized-keys/sentinel", ServeSentinelKey())
+
+	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
+	// forwards user traffic to this daemon while a container is
+	// auto-slept, and that traffic arrives at arbitrary paths (the
+	// app's original URL, e.g. /api/whatever). Any path not matched
+	// by a more specific handler above falls through to the wake
+	// handler, which resolves the container by the incoming Host
+	// header. When wake is disabled this registration is a no-op.
+	if gs.wakeHandler != nil {
+		httpMux.Handle("/", gs.wakeHandler)
+	}
 
 	// Start HTTP server
 	addr := fmt.Sprintf(":%d", gs.httpPort)

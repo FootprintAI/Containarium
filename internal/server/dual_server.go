@@ -38,6 +38,7 @@ import (
 	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/internal/traffic"
+	"github.com/footprintai/containarium/internal/wake"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -994,6 +995,40 @@ skipAppHosting:
 		containerServer.SetAlertRelayConfig(relayURL, func(webhookURL, secret string) {
 			gatewayServer.SetAlertRelayConfig(webhookURL, secret)
 		})
+	}
+
+	// Phase 3 — wake-on-HTTP wiring. Requires the route store, the
+	// proxy manager (both come from the app-hosting block above), the
+	// container server (always present), and the gateway server (only
+	// when --enable-rest). When any of those is missing, the wiring
+	// degrades to a no-op: containers still auto-sleep, but they
+	// won't wake on request — which mirrors the daemon's behaviour
+	// before Phase 3.
+	if routeStore != nil && routeSyncJob != nil && routeSyncJob.ProxyManager() != nil && config.HostIP != "" {
+		wakeTracker := wake.New()
+		wakeRouter := wake.NewRouter(routeSyncJob.ProxyManager(), wakeTracker, config.HostIP, config.HTTPPort)
+		routeSyncJob.SetWakeTracker(wakeTracker)
+		containerServer.SetWakeRouter(wakeRouter)
+
+		if gatewayServer != nil {
+			var wakeAudit wake.AuditLogger
+			if auditStore != nil {
+				// Reuse the autosleep adapter for symmetry with
+				// the sleep side — both events land in audit_logs
+				// with action="autosleep.*".
+				wakeAudit = &autosleep.AuditStoreAdapter{Store: auditStore}
+			}
+			wakeProxy := wake.NewWakeProxy(
+				NewWakeStarter(containerServer, 30),
+				&routeLookupAdapter{store: routeStore},
+				routeStore,
+				wakeRouter,
+				wakeAudit,
+				30*time.Second,
+			)
+			gatewayServer.SetWakeHandler(wakeProxy)
+			log.Printf("Wake-on-HTTP enabled (wakeHost=%s wakePort=%d)", config.HostIP, config.HTTPPort)
+		}
 	}
 
 	ds := &DualServer{

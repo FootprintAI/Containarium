@@ -8,11 +8,21 @@ import (
 	"time"
 )
 
+// WakeTracker is the subset of *wake.WakeStateTracker that RouteSyncJob
+// reads when deciding what upstream to push to Caddy. Declared as an
+// interface so the wake/app import direction stays one-way (wake →
+// app) — app/route_sync.go would import internal/wake otherwise and
+// create a cycle. Satisfied by *wake.WakeStateTracker.
+type WakeTracker interface {
+	IsInWakeMode(containerName string) (host string, port int, ok bool)
+}
+
 // RouteSyncJob synchronizes routes from PostgreSQL (source of truth) to Caddy (runtime cache)
 type RouteSyncJob struct {
 	routeStore     *RouteStore
 	proxyManager   *ProxyManager
 	l4ProxyManager *L4ProxyManager // optional, for tls_passthrough routes
+	wakeTracker    WakeTracker     // optional; when set, sleeping containers route to daemon's wake handler
 	interval       time.Duration
 
 	mu       sync.Mutex
@@ -40,6 +50,25 @@ func NewRouteSyncJob(routeStore *RouteStore, proxyManager *ProxyManager, interva
 func (j *RouteSyncJob) SetL4ProxyManager(l4 *L4ProxyManager) {
 	j.l4ProxyManager = l4
 }
+
+// SetWakeTracker wires the wake-state tracker so the sync loop knows
+// which containers are currently routed through the daemon's wake
+// handler. Nil is allowed and disables the wake-coordination branch
+// (the loop behaves exactly as it did before Phase 3).
+func (j *RouteSyncJob) SetWakeTracker(t WakeTracker) {
+	j.wakeTracker = t
+}
+
+// ProxyManager returns the underlying *ProxyManager so the wake
+// wiring in DualServer can build a Router without having to pass
+// proxyManager around as a separate construction parameter (it's
+// already captured here).
+func (j *RouteSyncJob) ProxyManager() *ProxyManager { return j.proxyManager }
+
+// RouteStore returns the underlying *RouteStore for the same wiring
+// reason as ProxyManager — DualServer composes a wake.WakeProxy from
+// the same primitives the sync job already holds.
+func (j *RouteSyncJob) RouteStore() *RouteStore { return j.routeStore }
 
 // Start begins the background sync job
 // It runs an immediate sync, then syncs at the configured interval
@@ -280,13 +309,27 @@ func (j *RouteSyncJob) syncL4Routes(dbRoutes []*RouteRecord) error {
 	return nil
 }
 
+// effectiveUpstream returns the (host, port) the sync job should push
+// to Caddy for the given route. If the container is currently in wake
+// mode, that's the daemon's wake handler address; otherwise it's the
+// route's direct target. Centralised here so addRouteToCaddy,
+// updateRouteInCaddy, and needsUpdate all agree.
+func (j *RouteSyncJob) effectiveUpstream(route *RouteRecord) (string, int) {
+	if j.wakeTracker != nil && route.ContainerName != "" {
+		if host, port, ok := j.wakeTracker.IsInWakeMode(route.ContainerName); ok {
+			return host, port
+		}
+	}
+	return route.TargetIP, route.TargetPort
+}
+
 // needsUpdate checks if a route needs to be updated in Caddy
 func (j *RouteSyncJob) needsUpdate(dbRoute *RouteRecord, caddyRoute Route) bool {
-	// Check if target IP or port changed
-	if dbRoute.TargetIP != caddyRoute.UpstreamIP {
+	wantIP, wantPort := j.effectiveUpstream(dbRoute)
+	if wantIP != caddyRoute.UpstreamIP {
 		return true
 	}
-	if dbRoute.TargetPort != caddyRoute.UpstreamPort {
+	if wantPort != caddyRoute.UpstreamPort {
 		return true
 	}
 	// Check if protocol changed
@@ -301,16 +344,18 @@ func (j *RouteSyncJob) needsUpdate(dbRoute *RouteRecord, caddyRoute Route) bool 
 
 // addRouteToCaddy adds a route to Caddy based on the database record
 func (j *RouteSyncJob) addRouteToCaddy(route *RouteRecord) error {
+	ip, port := j.effectiveUpstream(route)
 	if route.Protocol == "grpc" {
-		return j.proxyManager.AddGRPCRoute(route.FullDomain, route.TargetIP, route.TargetPort)
+		return j.proxyManager.AddGRPCRoute(route.FullDomain, ip, port)
 	}
-	return j.proxyManager.AddRoute(route.FullDomain, route.TargetIP, route.TargetPort)
+	return j.proxyManager.AddRoute(route.FullDomain, ip, port)
 }
 
 // updateRouteInCaddy updates a route in Caddy based on the database record
 func (j *RouteSyncJob) updateRouteInCaddy(route *RouteRecord) error {
+	ip, port := j.effectiveUpstream(route)
 	if route.Protocol == "grpc" {
-		return j.proxyManager.UpdateGRPCRoute(route.FullDomain, route.TargetIP, route.TargetPort)
+		return j.proxyManager.UpdateGRPCRoute(route.FullDomain, ip, port)
 	}
-	return j.proxyManager.UpdateRoute(route.FullDomain, route.TargetIP, route.TargetPort)
+	return j.proxyManager.UpdateRoute(route.FullDomain, ip, port)
 }
