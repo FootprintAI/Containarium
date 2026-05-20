@@ -258,7 +258,22 @@ on the internal network. Land them first.
         8 KiB length cap on detail; truncation marker preserved.
         HTTP audit middleware runs SanitizeDetail on every entry.
         Tests in `internal/audit/redact_test.go`.
-- [ ] **4.5** Audit-log tamper-evidence (hash chain or append-only sink) — `internal/audit/store.go`
+- [x] **4.5** Audit-log tamper-evidence (hash chain or append-only sink) — `internal/audit/store.go`
+      — Each row carries `row_hash` (SHA-256 over its fields plus
+        the previous row's hash) and `prev_hash` (previous row's
+        row_hash). A single edit anywhere in `audit_logs` is
+        detectable by re-walking the chain — both the edited row's
+        row_hash and every subsequent row's prev_hash break. Insert
+        path is inside a transaction with `SELECT … FOR UPDATE` on
+        the tail row so concurrent appenders serialize. New
+        `Store.VerifyChainSinceID(ctx, fromID, limit)` walks the
+        chain forward and returns the first tampered row's ID
+        (0 = intact). Schema migration via `ADD COLUMN IF NOT
+        EXISTS`. Tests in `internal/audit/hash_chain_test.go`.
+      — Detects modification + insertion. Deletion of a contiguous
+        suffix isn't detected by the chain alone — that needs an
+        append-only external sink (e.g. periodic push of the tail
+        hash to GCS object versioning). Tracked as a follow-up.
 - [x] **4.6** Request-correlation IDs propagated end-to-end — `internal/audit/middleware.go:63-128`, `internal/server/peer.go`
       — `X-Request-ID` honored from inbound (if shape-valid) or
         minted as 128-bit hex. Echoed in response, attached to
