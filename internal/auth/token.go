@@ -30,10 +30,17 @@ const MinSecretKeyLen = 32
 // replayed against the daemon. Tracks audit finding A-HIGH-1.
 const DefaultAudience = "containarium-api"
 
-// Claims represents the JWT claims for authentication
+// Claims represents the JWT claims for authentication.
+//
+// Phase 1.7 — `Scopes` is the OAuth2-style scope list for
+// least-privilege tokens (typically agent-facing tokens).
+// `omitempty` keeps pre-1.7 tokens identical on the wire;
+// HasScope treats a nil/missing scopes array as "no
+// restriction" for backwards compat.
 type Claims struct {
 	Username string   `json:"username"`
 	Roles    []string `json:"roles"`
+	Scopes   []string `json:"scopes,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -101,7 +108,13 @@ func NewTokenManager(secretKey string, issuer string) (*TokenManager, error) {
 // cryptographic-random 128-bit ID base64url-encoded. The
 // jti is the key the revocation list operates on, so a
 // token's lifetime can be cut short by writing one row.
-func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn time.Duration) (string, error) {
+//
+// Phase 1.7: the variadic `scopes` parameter sets the
+// least-privilege `scopes` claim. Pass nothing (or nil)
+// for a no-restriction token — matches pre-1.7 behavior.
+// Pass a list to mint a least-privilege token, e.g. for
+// an LLM agent that should only see read APIs.
+func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn time.Duration, scopes ...string) (string, error) {
 	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
 	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
 		expiresIn = tm.maxTokenExpiry
@@ -112,9 +125,15 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 		return "", fmt.Errorf("generate jti: %w", err)
 	}
 
+	var scopesClaim []string
+	if len(scopes) > 0 {
+		scopesClaim = scopes
+	}
+
 	claims := Claims{
 		Username: username,
 		Roles:    roles,
+		Scopes:   scopesClaim,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),

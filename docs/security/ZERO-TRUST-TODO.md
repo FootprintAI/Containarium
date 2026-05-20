@@ -176,7 +176,39 @@ on the internal network. Land them first.
         for SSE — follow-up to rewrite with `fetch` +
         `ReadableStream` is tracked under [1.6 / refresh tokens].
 - [ ] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
-- [ ] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
+- [x] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
+      — New `scopes` claim on JWTs (variadic
+        `GenerateToken(..., scopes...)`) + OAuth2-style
+        taxonomy in `internal/auth/scopes.go`
+        (`containers:read|write`, `secrets:read|write`,
+        `routes:read|write`, `security:read|write`,
+        `code:write`, `ssh:write`, plus `*` wildcard).
+        Backwards-compat: nil/missing scopes claim →
+        unrestricted (existing tokens unaffected).
+      — Every MCP tool now carries a `RequiredScope`
+        (assigned in one auditable table in
+        `tools.go:toolScopeAssignments`). The MCP server
+        filters `tools/list` to the JWT's effective scope
+        set and rejects `tools/call` for tools the token
+        can't satisfy — fast local rejection before the
+        request even hits the network. Daemon-side checks
+        remain authoritative; this is defense in depth.
+      — CLI: `containarium token generate --scopes
+        containers:read,secrets:read` mints a
+        least-privilege token (e.g. for handing to an LLM
+        agent). Empty `--scopes` flag preserves pre-1.7
+        unrestricted issuance.
+      — Tests: `scopes_test.go` (HasScope semantics),
+        `scope_filter_test.go` (MCP JWT decode + per-tool
+        gating). `TestEveryToolHasScope` is a guard rail:
+        adding a new MCP tool without a scope assignment
+        fails CI.
+      — **Follow-up:** daemon-side server enforcement of
+        the scopes claim on each RPC. Today the MCP filter
+        catches agent abuse; a tenant calling REST/gRPC
+        directly with a scoped token still bypasses the
+        scope check (the role check still applies).
+        Tracked as a Phase 1.7b item.
 - [x] **1.8** Refuse JWT token files with mode > 0600 — `internal/mcp/client.go:57-78` (**C-HIGH-7**)
       — `readToken` `os.Stat`s the file and refuses if any non-owner
         read/write bit is set. Error message tells the operator the

@@ -14,6 +14,7 @@ import (
 var (
 	tokenUsername   string
 	tokenRoles      []string
+	tokenScopes     []string // Phase 1.7 — least-privilege scope list
 	tokenExpiry     string
 	tokenSecretFlag string
 	tokenSecretFile string
@@ -133,6 +134,7 @@ func init() {
 
 	// Optional flags
 	tokenGenerateCmd.Flags().StringSliceVar(&tokenRoles, "roles", []string{"user"}, "Roles for the token (comma-separated)")
+	tokenGenerateCmd.Flags().StringSliceVar(&tokenScopes, "scopes", nil, "Phase 1.7: least-privilege scopes (comma-separated; e.g. containers:read,secrets:read). Omit for an unrestricted token; pass '*' for the wildcard.")
 	tokenGenerateCmd.Flags().StringVar(&tokenExpiry, "expiry", "24h", "Token expiry duration (e.g., 24h, 168h, 720h, 0 for no expiry)")
 	tokenGenerateCmd.Flags().BoolVar(&tokenRaw, "raw", false, "Output only the raw token (for scripting)")
 }
@@ -168,8 +170,10 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("token manager: %w", err)
 	}
 
-	// Generate token
-	token, err := tm.GenerateToken(tokenUsername, tokenRoles, expiresIn)
+	// Generate token. Phase 1.7 — scopes pass through as a
+	// variadic; an empty slice (no --scopes) leaves the
+	// claim unset, matching pre-1.7 behavior.
+	token, err := tm.GenerateToken(tokenUsername, tokenRoles, expiresIn, tokenScopes...)
 	if err != nil {
 		return fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -191,6 +195,11 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Details:\n")
 	fmt.Printf("  Username: %s\n", tokenUsername)
 	fmt.Printf("  Roles:    %v\n", tokenRoles)
+	if len(tokenScopes) > 0 {
+		fmt.Printf("  Scopes:   %v\n", tokenScopes)
+	} else {
+		fmt.Printf("  Scopes:   <none> (unrestricted)\n")
+	}
 	if expiresIn > 0 {
 		expiryTime := time.Now().Add(expiresIn)
 		fmt.Printf("  Expires:  %s (%s from now)\n", expiryTime.Format(time.RFC3339), expiresIn)

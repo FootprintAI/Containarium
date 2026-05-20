@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/expose"
 )
 
@@ -74,12 +75,25 @@ func saveEphemeralPrivateKey(username string, key []byte) (string, error) {
 	return path, nil
 }
 
-// Tool represents an MCP tool (function)
+// Tool represents an MCP tool (function).
+//
+// Phase 1.7 — RequiredScope names the least-privilege scope
+// (`<resource>:<action>`) a JWT must carry to invoke this
+// tool. Empty string means "no scope needed" (introspection
+// helpers only). The MCP server filters tools/list and
+// rejects tools/call when the JWT's scope set doesn't cover
+// the requirement; see internal/auth/scopes.go for the
+// taxonomy and semantics.
+//
+// Backwards compat: tokens minted before Phase 1.7 have no
+// scopes claim. HasScope treats nil as "no restriction", so
+// existing tokens continue to see every tool.
 type Tool struct {
-	Name        string
-	Description string
-	InputSchema map[string]interface{}
-	Handler     ToolHandler
+	Name          string
+	Description   string
+	InputSchema   map[string]interface{}
+	Handler       ToolHandler
+	RequiredScope string
 }
 
 // ToolHandler is a function that handles a tool call
@@ -858,6 +872,59 @@ func (s *Server) registerTools() {
 			},
 			Handler: handleExposePort,
 		},
+	}
+
+	// Phase 1.7 — assign required scope per tool. Done as a
+	// post-pass so the slice literals above stay short and
+	// the security policy lives in one auditable spot. New
+	// tools added to the slice above MUST also gain an
+	// entry here or they default to `""` (no-scope, allowed
+	// to any token) — see TestEveryToolHasScope which
+	// enforces this in CI.
+	scopeByTool := toolScopeAssignments()
+	for i := range s.tools {
+		s.tools[i].RequiredScope = scopeByTool[s.tools[i].Name]
+	}
+}
+
+// toolScopeAssignments is the canonical scope-per-tool
+// table. Kept as a function so tests can assert
+// completeness against the registered tool list.
+func toolScopeAssignments() map[string]string {
+	return map[string]string{
+		// container lifecycle
+		"create_container":   auth.ScopeContainersWrite,
+		"delete_container":   auth.ScopeContainersWrite,
+		"start_container":    auth.ScopeContainersWrite,
+		"stop_container":     auth.ScopeContainersWrite,
+		"resize_container":   auth.ScopeContainersWrite,
+		"move_container":     auth.ScopeContainersWrite,
+		"toggle_monitoring":  auth.ScopeContainersWrite,
+		"toggle_auto_sleep":  auth.ScopeContainersWrite,
+		"list_containers":    auth.ScopeContainersRead,
+		"get_container":      auth.ScopeContainersRead,
+		"debug_container":    auth.ScopeContainersRead,
+		"get_metrics":        auth.ScopeContainersRead,
+		"get_system_info":    auth.ScopeContainersRead,
+		"list_backends":      auth.ScopeContainersRead,
+		"get_backend":        auth.ScopeContainersRead,
+		// secrets
+		"set_secret":      auth.ScopeSecretsWrite,
+		"delete_secret":   auth.ScopeSecretsWrite,
+		"refresh_secrets": auth.ScopeSecretsWrite,
+		"get_secret":      auth.ScopeSecretsRead,
+		"list_secrets":    auth.ScopeSecretsRead,
+		// routes / network exposure
+		"list_routes": auth.ScopeRoutesRead,
+		"expose_port": auth.ScopeRoutesWrite,
+		// security tools
+		"security_scan":      auth.ScopeSecurityWrite,
+		"security_remediate": auth.ScopeSecurityWrite,
+		"security_findings":  auth.ScopeSecurityRead,
+		// developer-loop tools
+		"push":            auth.ScopeCodeWrite,
+		"sync":            auth.ScopeCodeWrite,
+		"sync_ssh_config": auth.ScopeSSHWrite,
 	}
 }
 

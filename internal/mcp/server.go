@@ -106,15 +106,24 @@ func (s *Server) handleInitialize(req *MCPRequest) *MCPResponse {
 	}
 }
 
-// handleToolsList handles the tools/list request
+// handleToolsList handles the tools/list request. Phase 1.7
+// — when the JWT carries a `scopes` claim we filter the
+// catalog down to tools whose RequiredScope the token can
+// satisfy. A nil/missing scopes claim is treated as "no
+// restriction" (backwards compat for pre-1.7 tokens), in
+// which case every registered tool is returned.
 func (s *Server) handleToolsList(req *MCPRequest) *MCPResponse {
-	tools := make([]map[string]interface{}, len(s.tools))
-	for i, tool := range s.tools {
-		tools[i] = map[string]interface{}{
-			"name":        tool.Name,
-			"description": tool.Description,
-			"inputSchema": tool.InputSchema,
+	granted := s.allowedScopes()
+	tools := make([]map[string]interface{}, 0, len(s.tools))
+	for i := range s.tools {
+		if !toolAllowed(granted, &s.tools[i]) {
+			continue
 		}
+		tools = append(tools, map[string]interface{}{
+			"name":        s.tools[i].Name,
+			"description": s.tools[i].Description,
+			"inputSchema": s.tools[i].InputSchema,
+		})
 	}
 
 	return &MCPResponse{
@@ -154,6 +163,16 @@ func (s *Server) handleToolsCall(req *MCPRequest) *MCPResponse {
 
 	if tool == nil {
 		return s.createErrorResponse(req.ID, -32602, "Tool not found", fmt.Sprintf("Tool '%s' not found", params.Name))
+	}
+
+	// Phase 1.7 — refuse calls to tools the JWT's scope set
+	// doesn't cover. Daemon-side gates still enforce the
+	// canonical check; this is a fast local rejection so
+	// out-of-scope tool calls don't even hit the network.
+	if !toolAllowed(s.allowedScopes(), tool) {
+		return s.createErrorResponse(req.ID, -32603,
+			fmt.Sprintf("Tool '%s' requires scope %q which the current token does not grant", tool.Name, tool.RequiredScope),
+			"insufficient scope")
 	}
 
 	// Execute tool
