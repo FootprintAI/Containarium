@@ -276,6 +276,35 @@ func (c *Client) ResizeContainer(username, cpu, memory, disk string) (*ResizeCon
 
 // SetSecret creates or updates a tenant secret. Idempotent —
 // repeated calls with the same (username, name) bump the version.
+// RevokeToken adds a JWT's jti to the daemon's revocation
+// list via the canonical REST endpoint added in PR #249.
+// Admin-only on the server side. Pass empty strings for
+// `reason` / `expiresAt` to let the daemon default them.
+func (c *Client) RevokeToken(jti, reason, expiresAt string) (string, error) {
+	body := map[string]string{"jti": jti}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	if expiresAt != "" {
+		body["expires_at"] = expiresAt
+	}
+	respBody, err := c.doRequest("POST", "/v1/tokens/revoke", body)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		NewlyRevoked bool   `json:"newlyRevoked"`
+		Message      string `json:"message"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
+	}
+	if resp.Message == "" {
+		resp.Message = "jti added to revocation list"
+	}
+	return resp.Message, nil
+}
+
 func (c *Client) SetSecret(username, name, value string) (*SecretResponse, error) {
 	body, err := json.Marshal(map[string]string{
 		"username": username, "name": name, "value": value,

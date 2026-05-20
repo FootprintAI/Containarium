@@ -117,9 +117,14 @@ on the internal network. Land them first.
         `proto/containarium/v1/tokens.proto`,
         `internal/server/tokens_server.go`, and
         `internal/cmd/token.go`. 10 server-side tests.
-      — Follow-up: MCP tool wrapper for the same RPC (one
-        more `tools.go` registration; thin wrapper per the
-        CLI-first convention).
+      — **MCP wrapper landed.** New `revoke_token` tool in
+        `internal/mcp/tools.go`; thin wrapper over
+        `Client.RevokeToken` which POSTs the same REST
+        endpoint as the CLI. Requires admin role on the
+        server and the new `tokens:write` scope, so an
+        agent token without explicit grant can't kill
+        other tokens. Server-side test confirms
+        admin-without-scope is rejected.
 - [x] **1.3** Require min 32-byte JWT secret in `NewTokenManager` — `internal/auth/token.go:24-45` (**A-MED-2**)
       — `NewTokenManager` now returns `(*TokenManager, error)` and refuses
         secrets shorter than 32 bytes. Fail-closed at daemon startup.

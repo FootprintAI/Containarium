@@ -22,7 +22,7 @@ func TestServerCreation(t *testing.T) {
 	assert.NotNil(t, server)
 	assert.Equal(t, config, server.config)
 	assert.NotNil(t, server.client)
-	assert.Len(t, server.tools, 28, "Should have 28 tools registered")
+	assert.Len(t, server.tools, 29, "Should have 29 tools registered")
 }
 
 // TestServerTools tests tool registration
@@ -126,7 +126,7 @@ func TestHandleToolsList(t *testing.T) {
 
 	tools, ok := result["tools"].([]map[string]interface{})
 	require.True(t, ok)
-	assert.Len(t, tools, 28)
+	assert.Len(t, tools, 29)
 
 	// Check first tool structure
 	firstTool := tools[0]

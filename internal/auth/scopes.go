@@ -49,6 +49,12 @@ const (
 	// developer-loop tools (push, sync, sync_ssh_config)
 	ScopeCodeWrite = "code:write"
 	ScopeSSHWrite  = "ssh:write"
+
+	// JWT lifecycle (revoke). Admin role still required on
+	// the server side — this scope just narrows what an
+	// agent token CAN do; admin-on-paper agent tokens
+	// without `tokens:write` can't revoke either.
+	ScopeTokensWrite = "tokens:write"
 )
 
 // HasScope returns true when the granted-scopes set covers

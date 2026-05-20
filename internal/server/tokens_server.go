@@ -61,6 +61,9 @@ func NewTokensServer(tm *auth.TokenManager, store auth.RevocationStore, maxLifet
 //  2. now + daemon max token lifetime (worst-case fallback —
 //     the row eventually prunes itself).
 func (s *TokensServer) RevokeToken(ctx context.Context, req *pb.RevokeTokenRequest) (*pb.RevokeTokenResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTokensWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}

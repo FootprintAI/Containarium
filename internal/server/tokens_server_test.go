@@ -74,6 +74,37 @@ func TestRevokeToken_RejectsNonAdmin(t *testing.T) {
 	}
 }
 
+// Phase 1.7b — RevokeToken now requires the tokens:write
+// scope in addition to the admin role. Admin without the
+// scope must still be rejected (scopes are orthogonal).
+func TestRevokeToken_RejectsAdminMissingScope(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"ops", []string{auth.RoleAdmin},
+		[]string{auth.ScopeContainersRead}, // no tokens:write
+	)
+	_, err := srv.RevokeToken(ctx, &pb.RevokeTokenRequest{Jti: "x"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("admin without tokens:write: got %v want PermissionDenied", err)
+	}
+}
+
+func TestRevokeToken_AdminWithScopePasses(t *testing.T) {
+	store := newFakeRevocationStore()
+	srv := newTestTokensServer(t, store)
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"ops", []string{auth.RoleAdmin},
+		[]string{auth.ScopeTokensWrite},
+	)
+	resp, err := srv.RevokeToken(ctx, &pb.RevokeTokenRequest{Jti: "with-scope"})
+	if err != nil {
+		t.Fatalf("admin+tokens:write should pass; got %v", err)
+	}
+	if !resp.NewlyRevoked {
+		t.Fatal("expected NewlyRevoked=true")
+	}
+}
+
 func TestRevokeToken_RejectsNoSubject(t *testing.T) {
 	srv := newTestTokensServer(t, newFakeRevocationStore())
 	_, err := srv.RevokeToken(context.Background(), &pb.RevokeTokenRequest{Jti: "x"})

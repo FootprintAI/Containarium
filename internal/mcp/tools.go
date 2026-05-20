@@ -872,6 +872,36 @@ func (s *Server) registerTools() {
 			},
 			Handler: handleExposePort,
 		},
+		{
+			Name: "revoke_token",
+			Description: "Admin: revoke a JWT by its jti. The token is rejected " +
+				"on the next request that names it. Pairs with the daemon's " +
+				"revocation list (Phase 1.2). Idempotent — repeated revokes " +
+				"preserve the original reason. Use when a token leaks, when " +
+				"rotating an agent credential, or when terminating an active " +
+				"session. The jti is in the audit-log entry of any request the " +
+				"token made; you can also base64-decode the JWT payload to find " +
+				"it. Requires admin role AND tokens:write scope.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"jti": map[string]interface{}{
+						"type":        "string",
+						"description": "The token's jti claim (required).",
+					},
+					"reason": map[string]interface{}{
+						"type":        "string",
+						"description": "Free-form reason recorded for forensics (e.g. 'leaked_to_public_gist', 'rotate'). Default: 'operator_revoke'.",
+					},
+					"expires_at": map[string]interface{}{
+						"type":        "string",
+						"description": "RFC3339 timestamp matching the token's own exp claim. Sets the cleanup horizon so the revocation row prunes when the token would have naturally expired. Default: now + daemon max lifetime.",
+					},
+				},
+				"required": []string{"jti"},
+			},
+			Handler: handleRevokeToken,
+		},
 	}
 
 	// Phase 1.7 — assign required scope per tool. Done as a
@@ -925,6 +955,8 @@ func toolScopeAssignments() map[string]string {
 		"push":            auth.ScopeCodeWrite,
 		"sync":            auth.ScopeCodeWrite,
 		"sync_ssh_config": auth.ScopeSSHWrite,
+		// JWT lifecycle (admin)
+		"revoke_token": auth.ScopeTokensWrite,
 	}
 }
 
@@ -1106,6 +1138,20 @@ func handleDebugContainer(client *Client, args map[string]interface{}) (string, 
 	}
 
 	return string(jsonData), nil
+}
+
+func handleRevokeToken(client *Client, args map[string]interface{}) (string, error) {
+	jti, _ := args["jti"].(string)
+	if jti == "" {
+		return "", fmt.Errorf("jti is required")
+	}
+	reason, _ := args["reason"].(string)
+	expiresAt, _ := args["expires_at"].(string)
+	msg, err := client.RevokeToken(jti, reason, expiresAt)
+	if err != nil {
+		return "", fmt.Errorf("revoke token: %w", err)
+	}
+	return fmt.Sprintf("✅ revoked jti=%s — %s", jti, msg), nil
 }
 
 func handleSetSecret(client *Client, args map[string]interface{}) (string, error) {
