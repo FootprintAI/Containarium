@@ -112,7 +112,10 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create token manager
-	tm := auth.NewTokenManager(secret, "containarium")
+	tm, err := auth.NewTokenManager(secret, "containarium")
+	if err != nil {
+		return fmt.Errorf("token manager: %w", err)
+	}
 
 	// Generate token
 	token, err := tm.GenerateToken(tokenUsername, tokenRoles, expiresIn)

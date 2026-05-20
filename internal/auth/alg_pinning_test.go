@@ -27,6 +27,8 @@ func mintToken(t *testing.T, method jwt.SigningMethod, secret interface{}) strin
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "containarium-test",
+			Audience:  jwt.ClaimStrings{DefaultAudience},
 		},
 	}
 	tok := jwt.NewWithClaims(method, claims)
@@ -38,7 +40,7 @@ func mintToken(t *testing.T, method jwt.SigningMethod, secret interface{}) strin
 }
 
 func TestValidateToken_AcceptsHS256(t *testing.T) {
-	tm := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
+	tm, _ := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
 	tok := mintToken(t, jwt.SigningMethodHS256, []byte("a-secret-that-is-at-least-32-bytes-long!!"))
 
 	claims, err := tm.ValidateToken(tok)
@@ -51,7 +53,7 @@ func TestValidateToken_AcceptsHS256(t *testing.T) {
 }
 
 func TestValidateToken_RejectsHS512(t *testing.T) {
-	tm := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
+	tm, _ := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
 	// Signed with the SAME secret but a different alg — the library
 	// would accept it under the old "any HMAC" rule.
 	tok := mintToken(t, jwt.SigningMethodHS512, []byte("a-secret-that-is-at-least-32-bytes-long!!"))
@@ -63,7 +65,7 @@ func TestValidateToken_RejectsHS512(t *testing.T) {
 }
 
 func TestValidateToken_RejectsHS384(t *testing.T) {
-	tm := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
+	tm, _ := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
 	tok := mintToken(t, jwt.SigningMethodHS384, []byte("a-secret-that-is-at-least-32-bytes-long!!"))
 
 	_, err := tm.ValidateToken(tok)
@@ -73,7 +75,7 @@ func TestValidateToken_RejectsHS384(t *testing.T) {
 }
 
 func TestValidateToken_RejectsRS256(t *testing.T) {
-	tm := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
+	tm, _ := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
 
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -87,7 +89,7 @@ func TestValidateToken_RejectsRS256(t *testing.T) {
 }
 
 func TestValidateToken_RejectsNone(t *testing.T) {
-	tm := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
+	tm, _ := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
 
 	claims := Claims{
 		Username: "attacker",
@@ -111,7 +113,7 @@ func TestValidateToken_ErrorIsGeneric(t *testing.T) {
 	// Defense against reconnaissance — the error returned to clients
 	// must not leak the algorithm name, expiry-vs-signature reason,
 	// or library-level parse detail.
-	tm := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
+	tm, _ := NewTokenManager("a-secret-that-is-at-least-32-bytes-long!!", "containarium-test")
 	tok := mintToken(t, jwt.SigningMethodHS512, []byte("a-secret-that-is-at-least-32-bytes-long!!"))
 
 	_, err := tm.ValidateToken(tok)

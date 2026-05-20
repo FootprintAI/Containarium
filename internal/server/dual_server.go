@@ -165,8 +165,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		return nil, fmt.Errorf("failed to create container server: %w", err)
 	}
 
-	// Create token manager
-	tokenManager := auth.NewTokenManager(config.JWTSecret, "containarium")
+	// Create token manager. Refuses to start if the JWT secret is
+	// shorter than auth.MinSecretKeyLen — fail-closed on weak crypto
+	// (audit finding A-MED-2).
+	tokenManager, err := auth.NewTokenManager(config.JWTSecret, "containarium")
+	if err != nil {
+		return nil, fmt.Errorf("token manager: %w", err)
+	}
 
 	// Create auth middleware
 	authMiddleware := auth.NewAuthMiddleware(tokenManager)

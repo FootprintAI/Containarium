@@ -62,11 +62,23 @@ func (c *Client) SetTokenFile(path string) {
 // tokenFile is configured, reads it fresh from disk (whitespace
 // trimmed) on every call so token rotation works without a restart.
 // Otherwise returns the static token captured at construction.
+//
+// Audit C-HIGH-7: the file must be mode 0600 or stricter, otherwise
+// any unprivileged user on the host can read the admin JWT. Fail
+// closed and surface the actual mode in the error so an operator
+// can chmod it without guessing.
 func (c *Client) readToken() (string, error) {
 	if c.jwtTokenFile == "" {
 		return c.jwtToken, nil
 	}
-	b, err := os.ReadFile(c.jwtTokenFile)
+	info, err := os.Stat(c.jwtTokenFile)
+	if err != nil {
+		return "", fmt.Errorf("stat JWT file %s: %w", c.jwtTokenFile, err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		return "", fmt.Errorf("JWT file %s has insecure permissions %#o (any non-owner read/write bit set); chmod 0600 it", c.jwtTokenFile, mode)
+	}
+	b, err := os.ReadFile(c.jwtTokenFile) // #nosec G304 -- path is operator config (CONTAINARIUM_JWT_TOKEN_FILE), already perm-checked
 	if err != nil {
 		return "", fmt.Errorf("read JWT from %s: %w", c.jwtTokenFile, err)
 	}

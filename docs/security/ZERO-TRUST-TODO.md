@@ -90,9 +90,14 @@ on the internal network. Land them first.
 
 ## Phase 1 — Identity & authorization hardening (weeks 2-4)
 
-- [ ] **1.1** Validate JWT `iss` and `aud` claims — `internal/auth/token.go:73-91` (**A-HIGH-1**)
+- [x] **1.1** Validate JWT `iss` and `aud` claims — `internal/auth/token.go:73-91` (**A-HIGH-1**)
+      — `ValidateToken` now passes `jwt.WithIssuer` + `jwt.WithAudience` parser options;
+        `GenerateToken` stamps both. Default audience `containarium-api`
+        (overridable via `CONTAINARIUM_JWT_AUDIENCE`).
 - [ ] **1.2** Add `jti` and a revocation list — `internal/auth/token.go` (**A-MED-1**)
-- [ ] **1.3** Require min 32-byte JWT secret in `NewTokenManager` — `internal/auth/token.go:24-45` (**A-MED-2**)
+- [x] **1.3** Require min 32-byte JWT secret in `NewTokenManager` — `internal/auth/token.go:24-45` (**A-MED-2**)
+      — `NewTokenManager` now returns `(*TokenManager, error)` and refuses
+        secrets shorter than 32 bytes. Fail-closed at daemon startup.
 - [~] **1.4** Per-RPC role enforcement (RBAC interceptor) — `internal/auth/`, all handlers (**A-MED-4**)
       — **Cluster-level ops done.** New `auth.RequireRole(ctx, role)`
         helper applied to GetSystemInfo, MoveContainer,
@@ -107,7 +112,10 @@ on the internal network. Land them first.
 - [ ] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
 - [ ] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
 - [ ] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
-- [ ] **1.8** Refuse JWT token files with mode > 0600 — `internal/mcp/client.go:57-78` (**C-HIGH-7**)
+- [x] **1.8** Refuse JWT token files with mode > 0600 — `internal/mcp/client.go:57-78` (**C-HIGH-7**)
+      — `readToken` `os.Stat`s the file and refuses if any non-owner
+        read/write bit is set. Error message tells the operator the
+        actual mode so they can `chmod 0600` without guessing.
 - [ ] **1.9** Lock down `/wake/` and `/` (Caddy-only assumption) — `internal/gateway/gateway.go:480-491,641-643` (**A-MED-5**)
 - [ ] **1.10** Auth wrap on internal proxies (grafana/alertmanager/guacamole) — `internal/gateway/gateway.go:543-601` (**A-MED-6**)
 

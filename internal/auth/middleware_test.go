@@ -18,7 +18,7 @@ import (
 // MUST reject anonymous requests — every endpoint that relies on this
 // (containers, backends, audit logs, …) inherits the same protection.
 func TestHTTPMiddleware_AuthGate(t *testing.T) {
-	tm := NewTokenManager("test-secret-key-for-auth-middleware-test", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-key-for-auth-middleware-test", "test-issuer")
 	mw := NewAuthMiddleware(tm)
 
 	// Stub handler that records whether it was called. If the auth

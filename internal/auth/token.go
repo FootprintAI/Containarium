@@ -13,6 +13,20 @@ import (
 // DefaultMaxTokenExpiry is the default maximum token expiry (30 days)
 const DefaultMaxTokenExpiry = 30 * 24 * time.Hour
 
+// MinSecretKeyLen is the smallest acceptable JWT signing key.
+// HMAC-SHA256 expects a key with at least 32 bytes of entropy for
+// the security level it claims; weaker keys are brute-forceable
+// offline within practical compute budgets. Tracks audit finding
+// A-MED-2.
+const MinSecretKeyLen = 32
+
+// DefaultAudience is the audience claim Containarium-issued tokens
+// carry by default. Validators reject tokens whose `aud` doesn't
+// include this string, so a token minted for an unrelated service
+// (or by a future tool that shares the same signing key) can't be
+// replayed against the daemon. Tracks audit finding A-HIGH-1.
+const DefaultAudience = "containarium-api"
+
 // Claims represents the JWT claims for authentication
 type Claims struct {
 	Username string   `json:"username"`
@@ -24,11 +38,22 @@ type Claims struct {
 type TokenManager struct {
 	secretKey      []byte
 	issuer         string
+	audience       string
 	maxTokenExpiry time.Duration
 }
 
-// NewTokenManager creates a new token manager
-func NewTokenManager(secretKey string, issuer string) *TokenManager {
+// NewTokenManager creates a new token manager. Returns an error if
+// the secret key is shorter than MinSecretKeyLen — fail-closed
+// rather than silently accepting weak crypto (audit finding
+// A-MED-2).
+//
+// The default audience is DefaultAudience; override via
+// CONTAINARIUM_JWT_AUDIENCE for cross-tenant token issuance.
+func NewTokenManager(secretKey string, issuer string) (*TokenManager, error) {
+	if len(secretKey) < MinSecretKeyLen {
+		return nil, fmt.Errorf("JWT secret is %d bytes, want >=%d (HMAC-SHA256 minimum); generate with `openssl rand -base64 48`", len(secretKey), MinSecretKeyLen)
+	}
+
 	maxExpiry := DefaultMaxTokenExpiry
 
 	// Allow override via environment variable (in hours)
@@ -38,11 +63,17 @@ func NewTokenManager(secretKey string, issuer string) *TokenManager {
 		}
 	}
 
+	audience := DefaultAudience
+	if env := os.Getenv("CONTAINARIUM_JWT_AUDIENCE"); env != "" {
+		audience = env
+	}
+
 	return &TokenManager{
 		secretKey:      []byte(secretKey),
 		issuer:         issuer,
+		audience:       audience,
 		maxTokenExpiry: maxExpiry,
-	}
+	}, nil
 }
 
 // GenerateToken creates a JWT token for a user
@@ -62,6 +93,7 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    tm.issuer,
+			Audience:  jwt.ClaimStrings{tm.audience},
 		},
 	}
 
@@ -96,7 +128,14 @@ func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
 			return nil, errInvalidToken
 		}
 		return tm.secretKey, nil
-	})
+	},
+		// Audit A-HIGH-1: iss and aud must match this daemon's
+		// configuration. A token signed by the same key for a
+		// different deployment or with a different intended audience
+		// is now rejected.
+		jwt.WithIssuer(tm.issuer),
+		jwt.WithAudience(tm.audience),
+	)
 
 	if err != nil {
 		return nil, errInvalidToken

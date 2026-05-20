@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewTokenManager(t *testing.T) {
-	tm := NewTokenManager("test-secret", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	if tm == nil {
 		t.Fatal("NewTokenManager returned nil")
@@ -23,7 +23,7 @@ func TestNewTokenManager_WithEnvOverride(t *testing.T) {
 	os.Setenv("CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS", "48")
 	defer os.Unsetenv("CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS")
 
-	tm := NewTokenManager("test-secret", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	expected := 48 * time.Hour
 	if tm.maxTokenExpiry != expected {
@@ -32,7 +32,7 @@ func TestNewTokenManager_WithEnvOverride(t *testing.T) {
 }
 
 func TestGenerateToken_EnforcesMaxExpiry(t *testing.T) {
-	tm := NewTokenManager("test-secret", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	tests := []struct {
 		name           string
@@ -102,7 +102,7 @@ func TestGenerateToken_EnforcesMaxExpiry(t *testing.T) {
 
 func TestGenerateToken_NoNonExpiringTokens(t *testing.T) {
 	// This is a critical security test - ensure we never create tokens without expiry
-	tm := NewTokenManager("test-secret", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	// Try various ways to create a "non-expiring" token
 	testCases := []time.Duration{
@@ -130,7 +130,7 @@ func TestGenerateToken_NoNonExpiringTokens(t *testing.T) {
 }
 
 func TestValidateToken_RejectsExpiredTokens(t *testing.T) {
-	tm := NewTokenManager("test-secret", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	// Generate a token with very short expiry
 	tokenStr, err := tm.GenerateToken("testuser", []string{"admin"}, 1*time.Millisecond)
@@ -149,7 +149,7 @@ func TestValidateToken_RejectsExpiredTokens(t *testing.T) {
 }
 
 func TestValidateToken_RejectsInvalidTokens(t *testing.T) {
-	tm := NewTokenManager("test-secret", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	invalidTokens := []struct {
 		name  string
@@ -171,8 +171,8 @@ func TestValidateToken_RejectsInvalidTokens(t *testing.T) {
 }
 
 func TestValidateToken_RejectsWrongSecret(t *testing.T) {
-	tm1 := NewTokenManager("secret-1", "test-issuer")
-	tm2 := NewTokenManager("secret-2", "test-issuer")
+	tm1, _ := NewTokenManager("test-secret-1-must-be-at-least-32-bytes-long", "test-issuer")
+	tm2, _ := NewTokenManager("test-secret-2-must-be-at-least-32-bytes-long", "test-issuer")
 
 	// Generate token with tm1
 	tokenStr, err := tm1.GenerateToken("testuser", []string{"admin"}, 1*time.Hour)
@@ -188,7 +188,7 @@ func TestValidateToken_RejectsWrongSecret(t *testing.T) {
 }
 
 func TestTokenClaims(t *testing.T) {
-	tm := NewTokenManager("test-secret", "test-issuer")
+	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	username := "testuser"
 	roles := []string{"admin", "user"}
