@@ -1068,6 +1068,15 @@ skipAppHosting:
 				wakeAudit,
 				30*time.Second,
 			)
+			// Phase 1.9 — source-IP allowlist (audit A-MED-5).
+			// Loopback is always accepted; the env var adds
+			// remote Caddy hosts when the daemon and Caddy are
+			// on different VMs.
+			if trustedProxies, err := wake.LoadTrustedProxies(); err != nil {
+				log.Fatalf("wake: invalid CONTAINARIUM_WAKE_TRUSTED_PROXIES: %v", err)
+			} else {
+				wakeProxy.SetTrustedProxies(trustedProxies)
+			}
 			gatewayServer.SetWakeHandler(wakeProxy)
 			log.Printf("Wake-on-HTTP enabled (wakeHost=%s wakePort=%d)", config.HostIP, config.HTTPPort)
 		}

@@ -123,7 +123,16 @@ on the internal network. Land them first.
       — `readToken` `os.Stat`s the file and refuses if any non-owner
         read/write bit is set. Error message tells the operator the
         actual mode so they can `chmod 0600` without guessing.
-- [ ] **1.9** Lock down `/wake/` and `/` (Caddy-only assumption) — `internal/gateway/gateway.go:480-491,641-643` (**A-MED-5**)
+- [x] **1.9** Lock down `/wake/` and `/` (Caddy-only assumption) — `internal/gateway/gateway.go:480-491,641-643` (**A-MED-5**)
+      — `WakeProxy.ServeHTTP` now refuses requests whose
+        `RemoteAddr` isn't loopback or in the
+        `CONTAINARIUM_WAKE_TRUSTED_PROXIES` allowlist (CIDR or
+        bare IP, comma-separated). 403 is returned before any
+        route lookup or wake side-effect. Wildcard `/0` prefixes
+        are explicitly refused — defeating the gate would be
+        worse than turning it off. Empty allowlist preserves the
+        pre-1.9 behavior with a startup WARNING — the rollout
+        switch is operator-set, not flipped silently.
 - [x] **1.10** Auth wrap on internal proxies (grafana/alertmanager/guacamole) — `internal/gateway/gateway.go:543-601` (**A-MED-6**)
       — Each proxy now requires a valid JWT before forwarding.
         Backend's own auth still applies on top (defense in depth).

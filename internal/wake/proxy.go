@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -55,8 +56,21 @@ type WakeProxy struct {
 	audit       AuditLogger
 	waitTimeout time.Duration
 
+	// Phase 1.9 — source-IP allowlist for the wake handler.
+	// Empty == permissive rollout mode (loopback always
+	// accepted; everything else gated by a startup WARNING).
+	trustedProxies []netip.Prefix
+
 	inflightMu sync.Mutex
 	inflight   map[string]*inflightWake // key: containerName
+}
+
+// SetTrustedProxies configures the source-IP allowlist for the
+// wake handler. Pass nil/empty to keep rollout-mode permissive
+// (the constructor's default). Typically wired at dual-server
+// startup from LoadTrustedProxies().
+func (w *WakeProxy) SetTrustedProxies(p []netip.Prefix) {
+	w.trustedProxies = p
 }
 
 // RouteStore is the narrow interface WakeProxy needs to fetch a
@@ -109,6 +123,17 @@ func NewWakeProxy(
 // `Upgrade: websocket` requests — they just work.
 func (w *WakeProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	start := time.Now()
+
+	// Phase 1.9: source-IP gate. Only loopback (Caddy on the
+	// same host, the production shape) or explicitly trusted
+	// proxies may invoke /wake/. Other sources see 403 — the
+	// wake handler is not a public primitive.
+	if !isTrustedSource(req, w.trustedProxies) {
+		log.Printf("[wake] refused: remote=%s host=%q (not in trusted-proxy allowlist)", req.RemoteAddr, req.Host)
+		http.Error(rw, "wake: source not permitted", http.StatusForbidden)
+		return
+	}
+
 	host := req.Host
 	// Strip the daemon-test prefix if present. Caddy proxies the
 	// original path through unchanged, but humans hitting the daemon
