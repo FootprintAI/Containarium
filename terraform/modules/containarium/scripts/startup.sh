@@ -20,6 +20,7 @@ ADMIN_USERS="${join(",", admin_users)}"
 ENABLE_MONITORING="${enable_monitoring}"
 FAIL2BAN_WHITELIST="${fail2ban_whitelist_cidr}"
 JWT_SECRET="${jwt_secret}"
+SENTINEL_AUTH_SECRET="${sentinel_auth_secret}"
 
 # System info
 echo "System: $(uname -a)"
@@ -330,6 +331,7 @@ echo "✓ Welcome message created"
 # Configure JWT secret
 echo "==> Configuring JWT secret for REST API..."
 mkdir -p /etc/containarium
+chmod 0700 /etc/containarium
 if [ -n "$JWT_SECRET" ]; then
     echo "$JWT_SECRET" > /etc/containarium/jwt.secret
     chmod 600 /etc/containarium/jwt.secret
@@ -342,11 +344,36 @@ else
     echo "✓ JWT secret already exists"
 fi
 
+# Phase 0.4: sentinel↔daemon shared HMAC secret. Same pattern as
+# the spot startup script — write to EnvironmentFile, systemd
+# drop-in loads it. Standalone daemons usually don't talk to a
+# sentinel at all, but we still write the env file so they can if
+# CONTAINARIUM_SENTINEL_URL is set out-of-band.
+if [ -n "$SENTINEL_AUTH_SECRET" ]; then
+    umask 077
+    cat > /etc/containarium/env.secrets <<EOF
+CONTAINARIUM_SENTINEL_AUTH_SECRET=$SENTINEL_AUTH_SECRET
+EOF
+    chmod 0600 /etc/containarium/env.secrets
+    echo "✓ /etc/containarium/env.secrets written"
+fi
+
 # Install systemd service via the binary's built-in command.
 echo "==> Installing Containarium systemd service..."
 if [ -f /usr/local/bin/containarium ]; then
     /usr/local/bin/containarium service install
     echo "✓ Containarium daemon service installed and started"
+
+    # Phase 0.4/0.5 secrets drop-in (mirrors startup-spot.sh).
+    mkdir -p /etc/systemd/system/containarium.service.d
+    cat > /etc/systemd/system/containarium.service.d/secrets.conf <<'EOF'
+[Service]
+EnvironmentFile=-/etc/containarium/env.secrets
+EOF
+    chmod 0644 /etc/systemd/system/containarium.service.d/secrets.conf
+    systemctl daemon-reload
+    systemctl restart containarium.service
+    echo "✓ wrote secrets.conf systemd drop-in"
 
     # Check status
     sleep 2

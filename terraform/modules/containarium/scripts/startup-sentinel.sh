@@ -130,6 +130,60 @@ if [ -n "$CONTAINARIUM_BINARY_URL" ]; then
     echo "Containarium version: $(/usr/local/bin/containarium version 2>/dev/null || echo 'unknown')"
 fi
 
+# --- Phase 0.4 / 0.5 secret + CA bootstrap --------------------------
+#
+# /etc/containarium holds the durable secret material the sentinel
+# daemon reads via env vars (set in the systemd drop-in below).
+# We use 0700 so an accidentally world-readable parent doesn't
+# expose the key files; the files themselves are 0600/0400.
+mkdir -p /etc/containarium
+chmod 0700 /etc/containarium
+
+# Sentinel↔daemon shared HMAC secret (Phase 0.4) lives in an
+# EnvironmentFile that systemd loads when the unit starts. Mode
+# 0600 root-only so it never appears in `ps` or in `systemctl cat`.
+# Empty terraform var → file omitted → daemon logs a loud WARNING
+# and the audit-known endpoints stay vulnerable.
+SENTINEL_AUTH_SECRET="${sentinel_auth_secret}"
+if [ -n "$SENTINEL_AUTH_SECRET" ]; then
+    umask 077
+    cat > /etc/containarium/env.secrets <<EOF
+CONTAINARIUM_SENTINEL_AUTH_SECRET=$SENTINEL_AUTH_SECRET
+EOF
+    chmod 0600 /etc/containarium/env.secrets
+    echo "✓ /etc/containarium/env.secrets written from terraform var"
+else
+    rm -f /etc/containarium/env.secrets
+    echo "⚠ sentinel_auth_secret terraform var is empty — Phase 0.4/0.6 disabled, sentinel endpoints return 401 / unsigned"
+fi
+
+# Peer-CA private key (Phase 0.5). Auto-generated on first boot if
+# enable_peer_mtls=true and the file doesn't already exist. We use
+# `containarium pki generate-ca` once the binary is in place. The
+# file is mode 0400 root-owned so only the sentinel daemon can
+# read it. Replace this file on the host to rotate the CA (and
+# every leaf cert in the fleet expires within 7 days afterwards).
+#
+# IMPORTANT: this key is not in Terraform state; back it up
+# off-host (the audit-known operational gap is the only durable
+# secret being on a single VM).
+%{ if enable_peer_mtls ~}
+if [ ! -f /etc/containarium/ca.key ] && [ -x /usr/local/bin/containarium ]; then
+    echo "==> Generating peer-CA private key (one-time)..."
+    umask 077
+    if /usr/local/bin/containarium pki generate-ca > /etc/containarium/ca.key 2>/dev/null; then
+        chmod 0400 /etc/containarium/ca.key
+        echo "✓ /etc/containarium/ca.key generated (RSA-4096). BACK THIS UP OFF-HOST."
+    else
+        echo "⚠ 'containarium pki generate-ca' failed — Phase 0.5 disabled until ca.key is provisioned manually"
+    fi
+elif [ -f /etc/containarium/ca.key ]; then
+    echo "✓ /etc/containarium/ca.key already present"
+fi
+%{ else ~}
+echo "[sentinel] enable_peer_mtls=false — skipping CA bootstrap (Phase 0.5 off)"
+%{ endif ~}
+
 # Install and start sentinel service
 if [ -f /usr/local/bin/containarium ]; then
     /usr/local/bin/containarium sentinel service install \
@@ -137,6 +191,32 @@ if [ -f /usr/local/bin/containarium ]; then
         --zone "$ZONE" \
         --project "$PROJECT_ID"
     echo "Sentinel service installed and running"
+
+    # Drop-in pulls Phase 0.4/0.5/0.6 env vars into the unit:
+    #   - CONTAINARIUM_SENTINEL_AUTH_SECRET  (HMAC for /authorized-keys,
+    #     /certs, /sentinel/ca, /sentinel/peer-cert; signs
+    #     /sentinel/peers response)
+    #   - CONTAINARIUM_CA_KEY_FILE           (peer-CA private key path)
+    #
+    # `EnvironmentFile=-/path` with the leading dash tells systemd to
+    # ignore the file if absent (rollout-friendly: a sentinel that
+    # hasn't been given the secret yet still boots, just without
+    # the security layer). The secret file is mode 0600 so it
+    # never appears in `ps` or `systemctl cat`.
+    mkdir -p /etc/systemd/system/containarium-sentinel.service.d
+    cat > /etc/systemd/system/containarium-sentinel.service.d/secrets.conf <<'EOF'
+[Service]
+EnvironmentFile=-/etc/containarium/env.secrets
+EOF
+%{ if enable_peer_mtls ~}
+    cat >> /etc/systemd/system/containarium-sentinel.service.d/secrets.conf <<'EOF'
+Environment=CONTAINARIUM_CA_KEY_FILE=/etc/containarium/ca.key
+EOF
+%{ endif ~}
+    chmod 0644 /etc/systemd/system/containarium-sentinel.service.d/secrets.conf
+    systemctl daemon-reload
+    systemctl restart containarium-sentinel.service
+    echo "✓ wrote secrets.conf systemd drop-in"
 
     # Optional override.conf for --proxy-protocol on the sentinel.
     #

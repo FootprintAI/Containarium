@@ -64,6 +64,8 @@ resource "google_compute_instance" "sentinel" {
       zone                    = var.zone
       project_id              = var.project_id
       enable_proxy_protocol   = var.enable_proxy_protocol
+      sentinel_auth_secret    = var.sentinel_auth_secret
+      enable_peer_mtls        = var.enable_peer_mtls
     })
   }
 
@@ -131,7 +133,11 @@ resource "google_compute_firewall" "sentinel_to_spot" {
   description = "Allow sentinel to forward traffic to spot backend"
 }
 
-# Allow spot VM to download binary from sentinel (internal only)
+# Allow spot VM to reach the sentinel binary server: 8888 = legacy
+# HTTP (binary download, peer discovery, key/cert sync, peers
+# endpoint); 8889 = Phase 0.5 HTTPS variant of the same handlers
+# (used once enable_peer_mtls=true). Both ports stay internal-only —
+# the spot-backend tag is the only allowed source.
 resource "google_compute_firewall" "spot_to_sentinel_binary" {
   count = local.use_sentinel ? 1 : 0
 
@@ -141,13 +147,13 @@ resource "google_compute_firewall" "spot_to_sentinel_binary" {
 
   allow {
     protocol = "tcp"
-    ports    = ["8888"]
+    ports    = ["8888", "8889"]
   }
 
   source_tags = ["containarium-spot-backend"]
   target_tags = ["containarium-sentinel"]
 
-  description = "Allow spot VM to download containarium binary from sentinel"
+  description = "Allow spot VM to reach sentinel binary server (HTTP 8888 + Phase 0.5 HTTPS 8889)"
 }
 
 # Allow SSH management on port 2222 (port 22 is handled by sshpiper)

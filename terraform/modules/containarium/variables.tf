@@ -146,6 +146,45 @@ variable "jwt_secret" {
 }
 
 # -----------------------------------------------------------------------------
+# Phase 0.4 / 0.5 — sentinel↔daemon authentication and peer-CA
+# -----------------------------------------------------------------------------
+#
+# `sentinel_auth_secret` is the shared HMAC secret used by the daemon
+# to sign calls to the sentinel's /authorized-keys, /certs,
+# /sentinel/ca, and /sentinel/peer-cert endpoints (Phase 0.4) and by
+# the sentinel to sign the /sentinel/peers response (Phase 0.6).
+# When this is empty, the sentinel falls back to pre-Phase-0
+# behavior — unauthenticated endpoints + unsigned discovery — which
+# matches the audit-vulnerable baseline (findings A-CRIT-4, C-CRIT-2).
+# In production you want this set.
+#
+# Generate with:
+#   openssl rand -base64 48
+#
+# Must be at least 32 bytes after any encoding. Both the sentinel
+# and the spot/daemon VM see the same value via metadata.
+variable "sentinel_auth_secret" {
+  description = "Shared HMAC secret between sentinel and daemons (Phase 0.4/0.5/0.6). 32+ bytes. Empty = falls back to pre-Phase-0 behavior with the audit-known vulnerabilities."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# `enable_peer_mtls` turns on the Phase 0.5 peer-CA path. When true,
+# the sentinel auto-generates an RSA-4096 CA private key at
+# `/etc/containarium/ca.key` on first boot, mints itself a server
+# cert, and exposes the HTTPS binary-server listener on port 8889
+# (in addition to the existing HTTP listener on 8888). Daemons
+# fetch a leaf cert from /sentinel/peer-cert at startup and use it
+# for HTTPS peer-to-peer. Defaults to false during rollout — flip
+# to true once the daemon binaries on every peer support the flow.
+variable "enable_peer_mtls" {
+  description = "Enable Phase 0.5 peer-to-peer mTLS via the sentinel-managed CA. Requires sentinel_auth_secret to also be set."
+  type        = bool
+  default     = false
+}
+
+# -----------------------------------------------------------------------------
 # Conditional Features (production vs dev)
 # -----------------------------------------------------------------------------
 

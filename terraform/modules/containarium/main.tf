@@ -135,6 +135,7 @@ resource "google_compute_instance" "jump_server" {
       containarium_version    = var.containarium_version
       containarium_binary_url = var.containarium_binary_url
       jwt_secret              = var.jwt_secret
+      sentinel_auth_secret    = var.sentinel_auth_secret
       fail2ban_whitelist_cidr = var.fail2ban_whitelist_cidr
     })
   }

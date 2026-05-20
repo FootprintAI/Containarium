@@ -657,6 +657,7 @@ fi
 # Configure JWT secret for REST API
 echo "==> Configuring JWT secret for REST API..."
 mkdir -p /etc/containarium
+chmod 0700 /etc/containarium
 if [ -n "$JWT_SECRET" ]; then
     echo "$JWT_SECRET" > /etc/containarium/jwt.secret
     chmod 600 /etc/containarium/jwt.secret
@@ -669,6 +670,38 @@ elif [ ! -f /etc/containarium/jwt.secret ]; then
 else
     echo "✓ JWT secret already exists"
 fi
+
+# Phase 0.4/0.5: sentinel↔daemon shared HMAC secret. Lives in an
+# EnvironmentFile loaded by the daemon's systemd unit (drop-in
+# written below). Mode 0600 root-only so the value doesn't leak via
+# `ps`, container introspection, or `systemctl cat`. The matching
+# value is written on the sentinel by startup-sentinel.sh; both
+# come from the same terraform variable so they always agree.
+SENTINEL_AUTH_SECRET="${sentinel_auth_secret}"
+if [ -n "$SENTINEL_AUTH_SECRET" ]; then
+    umask 077
+    cat > /etc/containarium/env.secrets <<EOF
+CONTAINARIUM_SENTINEL_AUTH_SECRET=$SENTINEL_AUTH_SECRET
+EOF
+    chmod 0600 /etc/containarium/env.secrets
+    echo "✓ /etc/containarium/env.secrets written (Phase 0.4/0.6 enabled)"
+else
+    rm -f /etc/containarium/env.secrets
+    echo "⚠ sentinel_auth_secret terraform var is empty — daemon will accept unsigned /sentinel/peers responses with a warning (audit C-CRIT-2 still open)"
+fi
+
+# Phase 0.5: tell the daemon where the sentinel's HTTPS binary
+# server lives so peer-to-peer traffic uses TLS pinned to the
+# sentinel-issued CA. When enable_peer_mtls=true the sentinel
+# auto-generates the CA on first boot and exposes HTTPS on the
+# port below (8889 by default). Daemons without this var set
+# stay on plain HTTP — backwards-compatible rollout.
+%{ if enable_peer_mtls && sentinel_internal_ip != "" ~}
+cat >> /etc/containarium/env.secrets <<EOF
+CONTAINARIUM_SENTINEL_URL=https://${sentinel_internal_ip}:8889
+EOF
+echo "✓ daemon will use HTTPS sentinel URL (Phase 0.5 peer mTLS)"
+%{ endif ~}
 
 # Install containarium-shell wrapper so sshd accepts logins for container
 # users. The daemon creates host accounts with shell=containarium-shell;
@@ -805,6 +838,21 @@ EOF
     systemctl daemon-reload
     systemctl restart containarium.service
 %{ endif ~}
+
+    # Phase 0.4/0.5 secrets drop-in. EnvironmentFile=- prefix tells
+    # systemd to silently ignore the file if absent — daemons
+    # without the secret yet still boot, just without the security
+    # layer. See startup-sentinel.sh for the matching write on the
+    # other end.
+    mkdir -p /etc/systemd/system/containarium.service.d
+    cat > /etc/systemd/system/containarium.service.d/secrets.conf <<'EOF'
+[Service]
+EnvironmentFile=-/etc/containarium/env.secrets
+EOF
+    chmod 0644 /etc/systemd/system/containarium.service.d/secrets.conf
+    systemctl daemon-reload
+    systemctl restart containarium.service
+    echo "✓ wrote secrets.conf systemd drop-in"
 
     # Check status
     sleep 2

@@ -15,6 +15,13 @@
 //   - Long-lived end-entity certs (a fleet that can lose a daemon
 //     for 7 days has bigger problems than cert rotation).
 //
+// Cert-building primitives are reused from
+// github.com/footprintai/go-certs/pkg/certs/gen — the same
+// library already used for the daemon's gRPC mTLS path
+// (internal/mtls/loader.go). What we add on top is the "CA cert
+// is regenerated at runtime from just the key" ergonomics, which
+// keeps operators to one secret file instead of two.
+//
 // See docs/security/ZERO-TRUST-AUDIT.md C-CRIT-1 for the threat
 // model this package closes.
 package pki
@@ -26,9 +33,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net"
 	"time"
+
+	certsgen "github.com/footprintai/go-certs/pkg/certs/gen"
 )
 
 // DefaultLeafExpiry is the default TTL for peer / server
@@ -77,37 +85,28 @@ func NewFromKey(caKeyPEM []byte, expiry time.Duration) (*Provisioner, error) {
 		expiry = DefaultLeafExpiry
 	}
 
-	serialNumber, err := randomSerial()
-	if err != nil {
-		return nil, err
-	}
-
+	// Use certsgen.CertTemplate for the serial-number + base
+	// fields, then mark this template as a self-signed CA. (The
+	// library doesn't expose a "make me a CA template" helper, so
+	// we set the CA-specific bits ourselves — short and explicit.)
 	now := time.Now()
-	caTemplate := &x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization: []string{orgName},
-			CommonName:   "Containarium Peer CA",
-		},
-		// Backdate slightly so a daemon with a clock a few seconds
-		// ahead of the sentinel doesn't reject the freshly minted
-		// CA cert as not-yet-valid.
-		NotBefore:             now.Add(-1 * time.Minute),
-		NotAfter:              now.Add(CAValidity),
-		IsCA:                  true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
+	caTemplate, err := certsgen.CertTemplate(
+		now.Add(-1*time.Minute), // backdate to absorb sentinel↔daemon clock skew
+		now.Add(CAValidity),
+		certsgen.WithOrganizations(orgName),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("CA cert template: %w", err)
 	}
+	caTemplate.Subject.CommonName = "Containarium Peer CA"
+	caTemplate.IsCA = true
+	caTemplate.KeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign
+	caTemplate.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
 
-	caCertDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	caCert, caCertPEM, err := certsgen.CreateCert(caTemplate, caTemplate, &caKey.PublicKey, caKey)
 	if err != nil {
 		return nil, fmt.Errorf("create CA cert: %w", err)
 	}
-	caCert, err := x509.ParseCertificate(caCertDER)
-	if err != nil {
-		return nil, fmt.Errorf("parse generated CA cert: %w", err)
-	}
-	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})
 
 	return &Provisioner{
 		caCert:    caCert,
@@ -133,40 +132,18 @@ func (p *Provisioner) IssuePeerCert(peerID string, extraSANs []string, extraIPs 
 	if peerID == "" {
 		return nil, nil, fmt.Errorf("peerID is required")
 	}
-	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, nil, fmt.Errorf("generate leaf key: %w", err)
-	}
-	serial, err := randomSerial()
+	template, err := p.leafTemplate(extraSANs, extraIPs)
 	if err != nil {
 		return nil, nil, err
 	}
+	template.Subject = pkix.Name{CommonName: peerID, Organization: []string{orgName}}
+	// Inject peerID as the first SAN so the verifying side can
+	// pass the expected ID via tls.Config.ServerName.
+	template.DNSNames = append([]string{peerID}, template.DNSNames...)
+	template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
+	template.AuthorityKeyId = p.caCert.SubjectKeyId
 
-	dnsNames := append([]string{peerID}, extraSANs...)
-
-	now := time.Now()
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName:   peerID,
-			Organization: []string{orgName},
-		},
-		NotBefore:             now.Add(-1 * time.Minute),
-		NotAfter:              now.Add(p.expiry),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              dnsNames,
-		IPAddresses:           append([]net.IP{net.ParseIP("127.0.0.1"), net.IPv6loopback}, extraIPs...),
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, p.caCert, &leafKey.PublicKey, p.caKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("sign leaf cert: %w", err)
-	}
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(leafKey)})
-	return certPEM, keyPEM, nil
+	return p.signLeaf(template)
 }
 
 // IssueSentinelServerCert mints a server cert for the sentinel
@@ -176,36 +153,51 @@ func (p *Provisioner) IssuePeerCert(peerID string, extraSANs []string, extraIPs 
 // DNS names and IPs as SANs — pass the sentinel's publicly
 // reachable hostname plus any internal/loopback aliases.
 func (p *Provisioner) IssueSentinelServerCert(dnsNames []string, ipAddrs []net.IP) (certPEM, keyPEM []byte, err error) {
-	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, nil, fmt.Errorf("generate sentinel key: %w", err)
-	}
-	serial, err := randomSerial()
+	template, err := p.leafTemplate(dnsNames, ipAddrs)
 	if err != nil {
 		return nil, nil, err
 	}
+	template.Subject = pkix.Name{CommonName: "containarium-sentinel", Organization: []string{orgName}}
+	template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	template.AuthorityKeyId = p.caCert.SubjectKeyId
 
+	return p.signLeaf(template)
+}
+
+// leafTemplate builds a base x509 template for a leaf cert with
+// the configured TTL and the given SANs. Caller fills in Subject
+// + ExtKeyUsage + AuthorityKeyId before signing.
+func (p *Provisioner) leafTemplate(dnsNames []string, ipAddrs []net.IP) (*x509.Certificate, error) {
 	now := time.Now()
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName:   "containarium-sentinel",
-			Organization: []string{orgName},
-		},
-		DNSNames:              dnsNames,
-		IPAddresses:           ipAddrs,
-		NotBefore:             now.Add(-1 * time.Minute),
-		NotAfter:              now.Add(p.expiry),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
+	stringIPs := make([]string, 0, len(ipAddrs))
+	for _, ip := range ipAddrs {
+		stringIPs = append(stringIPs, ip.String())
 	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, p.caCert, &leafKey.PublicKey, p.caKey)
+	tmpl, err := certsgen.CertTemplate(
+		now.Add(-1*time.Minute),
+		now.Add(p.expiry),
+		certsgen.WithOrganizations(orgName),
+		certsgen.WithAliasDNSNames(dnsNames...),
+		certsgen.WithAliasIPs(stringIPs...),
+	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("sign sentinel cert: %w", err)
+		return nil, fmt.Errorf("leaf cert template: %w", err)
 	}
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	tmpl.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
+	tmpl.BasicConstraintsValid = true
+	return tmpl, nil
+}
+
+// signLeaf signs `template` with the CA and returns PEM cert + key.
+func (p *Provisioner) signLeaf(template *x509.Certificate) (certPEM, keyPEM []byte, err error) {
+	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate leaf key: %w", err)
+	}
+	_, certPEM, err = certsgen.CreateCert(template, p.caCert, &leafKey.PublicKey, p.caKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sign leaf cert: %w", err)
+	}
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(leafKey)})
 	return certPEM, keyPEM, nil
 }
@@ -243,12 +235,4 @@ func parseRSAKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 	default:
 		return nil, fmt.Errorf("unsupported CA key PEM type %q (want RSA PRIVATE KEY or PRIVATE KEY)", block.Type)
 	}
-}
-
-func randomSerial() (*big.Int, error) {
-	n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, fmt.Errorf("generate serial: %w", err)
-	}
-	return n, nil
 }

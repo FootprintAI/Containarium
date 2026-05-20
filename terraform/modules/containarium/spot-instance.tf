@@ -147,6 +147,9 @@ resource "google_compute_instance" "jump_server_spot" {
       containarium_binary_url      = var.containarium_binary_url
       sentinel_binary_url          = local.use_sentinel ? "http://${google_compute_instance.sentinel[0].network_interface[0].network_ip}:8888/containarium" : ""
       jwt_secret                   = var.jwt_secret
+      sentinel_auth_secret         = var.sentinel_auth_secret
+      enable_peer_mtls             = var.enable_peer_mtls
+      sentinel_internal_ip         = local.use_sentinel ? google_compute_instance.sentinel[0].network_interface[0].network_ip : ""
       fail2ban_whitelist_cidr      = var.fail2ban_whitelist_cidr
       enable_app_hosting           = var.enable_app_hosting
       base_domain                  = var.base_domain
