@@ -69,7 +69,10 @@ func buildMCPTLSConfig(baseURL string) (*tls.Config, error) {
 		return nil, nil
 	}
 
-	caBytes, err := os.ReadFile(caFile) // #nosec G304 -- operator-controlled env var
+	// caFile is the operator-supplied CONTAINARIUM_MCP_TRUSTED_CA_FILE
+	// path. gosec emits both G304 and G703 for the same finding —
+	// the inline #nosec covers both.
+	caBytes, err := os.ReadFile(caFile) // #nosec G304 G703 -- operator config
 	if err != nil {
 		return nil, fmt.Errorf("read CA bundle %s: %w", caFile, err)
 	}
