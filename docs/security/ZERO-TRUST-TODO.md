@@ -441,7 +441,23 @@ on the internal network. Land them first.
         `r.Context()` via `audit.ContextWithRequestID`, recorded
         in audit detail as `request_id=<id>`. Tests in
         `internal/audit/request_id_test.go`.
-- [ ] **4.7** Postgres credentials via secret manager / unix-socket auth — `internal/server/dual_server.go` (**C-MED-6**)
+- [~] **4.7** Postgres credentials via secret manager / unix-socket auth — `internal/server/dual_server.go` (**C-MED-6**)
+      — **Secret-file path landed.** Two new env vars
+        (mode-checked file pattern from PR #245 reused):
+        `CONTAINARIUM_POSTGRES_URL_FILE` (full DSN) and
+        `CONTAINARIUM_POSTGRES_PASSWORD_FILE` (password
+        only — assembled into the auto-detect DSN). Both
+        rejected when world-readable. Wired into both the
+        daemon (`cmd/daemon.go`) and CLI
+        (`cmd/postgres.go`). Falls back to env vars then
+        the compiled-in dev default (with a startup
+        WARNING). Tests in
+        `internal/server/postgres_creds_test.go`.
+      — This is the K8s-Secret / Vault-Agent / GCP-Secret-
+        Manager-with-Workload-Identity path. The unix-
+        socket-auth alternative would also require trust
+        config in Postgres (`hba.conf`) and isn't tractable
+        as a same-PR change; tracked as the follow-up.
 - [x] **4.8** Stat-check TLS key directory at startup — `internal/hosting/caddy.go` (**C-MED-7**)
       — `/var/lib/caddy` created at 0750 (was 0755); existing
         directory chmod-tightened to 0750 idempotently. New

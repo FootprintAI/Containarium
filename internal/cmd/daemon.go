@@ -255,14 +255,31 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		log.Printf("VictoriaMetrics auto-detect: no core-victoriametrics container found")
 	}
 
-	// Auto-detect PostgreSQL container IP if no --postgres flag specified
+	// Phase 4.7 — secret-file overrides take precedence
+	// over the --postgres flag. Lets operators mount the
+	// DSN from a K8s Secret / Vault Agent / GCP Secret
+	// Manager without baking it into the daemon's flags.
+	if postgresConnString == "" {
+		if dsn, source, err := server.ResolvePostgresURL(); err != nil {
+			return fmt.Errorf("resolve postgres URL: %w", err)
+		} else if dsn != "" {
+			postgresConnString = dsn
+			log.Printf("[postgres] DSN source: %s", source)
+		}
+	}
+
+	// Auto-detect PostgreSQL container IP if still unset.
 	if postgresConnString == "" {
 		if pgInfo, err := incusClient.FindContainerByRole(incus.RolePostgres); err == nil && pgInfo.IPAddress != "" {
+			password, pwSource, perr := server.ResolvePostgresPassword()
+			if perr != nil {
+				return fmt.Errorf("resolve postgres password: %w", perr)
+			}
 			postgresConnString = fmt.Sprintf(
 				"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-				server.DefaultPostgresUser, server.DefaultPostgresPassword,
+				server.DefaultPostgresUser, password,
 				pgInfo.IPAddress, server.DefaultPostgresPort, server.DefaultPostgresDB)
-			log.Printf("Detected PostgreSQL at: %s", pgInfo.IPAddress)
+			log.Printf("Detected PostgreSQL at: %s (password source: %s)", pgInfo.IPAddress, pwSource)
 		} else {
 			log.Printf("PostgreSQL auto-detect: no core-postgres container found or has no IP")
 		}
