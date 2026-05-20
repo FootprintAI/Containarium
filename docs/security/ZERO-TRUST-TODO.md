@@ -180,7 +180,23 @@ on the internal network. Land them first.
         can't attach headers, so the webui still uses `?token=`
         for SSE — follow-up to rewrite with `fetch` +
         `ReadableStream` is tracked under [1.6 / refresh tokens].
-- [ ] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
+- [~] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
+      — **Part A landed.** New `tt` claim (access | refresh)
+        on JWTs. Generators `GenerateAccessToken`
+        (15min default) + `GenerateRefreshToken` (30d
+        default). `ValidateAccessToken` is now the HTTP
+        middleware path — it REJECTS refresh tokens, so a
+        stolen refresh token can't authenticate to any API
+        surface (gateway, terminal, audit, SSE). Pre-1.6
+        tokens (no tt claim) are still accepted as access
+        for backwards compat. CLI gains `--token-type
+        access|refresh|''` to choose at issuance time.
+      — **Follow-up (Part B):** add a `/v1/tokens/refresh`
+        RPC + CLI verb that takes a refresh token,
+        validates via `ValidateRefreshToken`, and mints a
+        new (access, refresh) pair. Refresh-token
+        rotation (single-use semantics, revoke the prior
+        on issuance) is the next slice.
 - [x] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
       — New `scopes` claim on JWTs (variadic
         `GenerateToken(..., scopes...)`) + OAuth2-style

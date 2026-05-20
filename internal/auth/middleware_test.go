@@ -72,6 +72,35 @@ func TestHTTPMiddleware_AuthGate(t *testing.T) {
 			wantCode: http.StatusOK,
 			wantStub: true,
 		},
+		{
+			// Phase 1.6 — refresh tokens must NOT authenticate
+			// API requests. They can only be exchanged at the
+			// (future) refresh RPC. A stolen refresh token is
+			// therefore unusable against the API directly.
+			name: "Bearer with refresh token → 401, handler does NOT run",
+			setup: func(r *http.Request) {
+				token, err := tm.GenerateRefreshToken("test-user", []string{"admin"}, 5*time.Minute)
+				if err != nil {
+					t.Fatalf("GenerateRefreshToken: %v", err)
+				}
+				r.Header.Set("Authorization", "Bearer "+token)
+			},
+			wantCode: http.StatusUnauthorized,
+			wantStub: false,
+		},
+		{
+			// Pre-1.6 tokens (no tt claim) must keep working.
+			name: "Bearer with access-typed token → 200",
+			setup: func(r *http.Request) {
+				token, err := tm.GenerateAccessToken("test-user", []string{"admin"}, 5*time.Minute)
+				if err != nil {
+					t.Fatalf("GenerateAccessToken: %v", err)
+				}
+				r.Header.Set("Authorization", "Bearer "+token)
+			},
+			wantCode: http.StatusOK,
+			wantStub: true,
+		},
 	}
 
 	for _, tc := range cases {

@@ -37,12 +37,43 @@ const DefaultAudience = "containarium-api"
 // `omitempty` keeps pre-1.7 tokens identical on the wire;
 // HasScope treats a nil/missing scopes array as "no
 // restriction" for backwards compat.
+//
+// Phase 1.6 — `TokenType` (claim `tt`) distinguishes access
+// tokens (used for API auth) from refresh tokens (used only
+// to exchange for new access tokens). `omitempty` keeps
+// pre-1.6 tokens identical on the wire; an empty / missing
+// tt is interpreted as TokenTypeAccess (backwards compat).
+// API auth (HTTP middleware) calls ValidateAccessToken,
+// which refuses any token whose tt is explicitly
+// "refresh" — so a stolen refresh token can't make API
+// calls even though it has a valid signature.
 type Claims struct {
-	Username string   `json:"username"`
-	Roles    []string `json:"roles"`
-	Scopes   []string `json:"scopes,omitempty"`
+	Username  string   `json:"username"`
+	Roles     []string `json:"roles"`
+	Scopes    []string `json:"scopes,omitempty"`
+	TokenType string   `json:"tt,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// Token-type constants for the `tt` claim.
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
+)
+
+// DefaultRefreshTokenExpiry is the cap for refresh-token
+// lifetime when a caller passes zero. Long enough for a
+// CLI / agent session, short enough that a leaked token
+// has bounded blast radius. Capped at the same
+// maxTokenExpiry as access tokens — operators can shorten
+// either via CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS.
+const DefaultRefreshTokenExpiry = 30 * 24 * time.Hour
+
+// DefaultAccessTokenExpiry is the default for access tokens
+// minted via GenerateAccessToken when caller passes 0.
+// Short by design — that's the whole point of Phase 1.6;
+// the refresh token does the long-lived work.
+const DefaultAccessTokenExpiry = 15 * time.Minute
 
 // TokenManager handles JWT token generation and validation
 type TokenManager struct {
@@ -115,6 +146,43 @@ func NewTokenManager(secretKey string, issuer string) (*TokenManager, error) {
 // Pass a list to mint a least-privilege token, e.g. for
 // an LLM agent that should only see read APIs.
 func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn time.Duration, scopes ...string) (string, error) {
+	// Backwards-compatible shim. New code should call
+	// GenerateAccessToken / GenerateRefreshToken directly.
+	// Existing callers (CLI, daemon system tokens) keep
+	// minting access tokens with their current call sites
+	// because tt defaults to "" → access semantics.
+	return tm.generate(username, roles, scopes, "", expiresIn)
+}
+
+// GenerateAccessToken mints a short-lived access token.
+// Phase 1.6 — pass 0 for the daemon default
+// (DefaultAccessTokenExpiry). Carries `tt: "access"`;
+// ValidateAccessToken on the API surface enforces it.
+func (tm *TokenManager) GenerateAccessToken(username string, roles []string, expiresIn time.Duration, scopes ...string) (string, error) {
+	if expiresIn <= 0 {
+		expiresIn = DefaultAccessTokenExpiry
+	}
+	return tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn)
+}
+
+// GenerateRefreshToken mints a long-lived refresh token.
+// Pass 0 for the daemon default (DefaultRefreshTokenExpiry).
+// Carries `tt: "refresh"`; ValidateAccessToken on the API
+// surface REJECTS this token, so a stolen refresh token
+// can't make API calls. Use ValidateRefreshToken when
+// implementing the exchange RPC (Phase 1.6 part B).
+func (tm *TokenManager) GenerateRefreshToken(username string, roles []string, expiresIn time.Duration, scopes ...string) (string, error) {
+	if expiresIn <= 0 {
+		expiresIn = DefaultRefreshTokenExpiry
+	}
+	return tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn)
+}
+
+// generate is the shared implementation. tt may be the
+// empty string for the legacy GenerateToken path; it
+// stays omitempty on the wire so pre-1.6 token shapes are
+// byte-identical for existing test fixtures.
+func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration) (string, error) {
 	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
 	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
 		expiresIn = tm.maxTokenExpiry
@@ -131,9 +199,10 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 	}
 
 	claims := Claims{
-		Username: username,
-		Roles:    roles,
-		Scopes:   scopesClaim,
+		Username:  username,
+		Roles:     roles,
+		Scopes:    scopesClaim,
+		TokenType: tt,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
@@ -224,6 +293,43 @@ func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
 		}
 	}
 
+	return claims, nil
+}
+
+// ValidateAccessToken validates a token AND enforces that
+// the `tt` claim is either empty (pre-1.6 token, treated as
+// access for backwards compat) or "access". A token marked
+// "refresh" is REJECTED — it must not be usable for API
+// calls. Wire this in the HTTP middleware once the daemon
+// is ready to start enforcing the access/refresh split.
+//
+// Returns the same generic errInvalidToken on any failure
+// (signature, expiry, type mismatch) — no reconnaissance
+// detail leaks to the client.
+func (tm *TokenManager) ValidateAccessToken(tokenString string) (*Claims, error) {
+	claims, err := tm.ValidateToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims.TokenType != "" && claims.TokenType != TokenTypeAccess {
+		return nil, errInvalidToken
+	}
+	return claims, nil
+}
+
+// ValidateRefreshToken validates a token AND enforces that
+// `tt == "refresh"`. Used by the refresh-exchange RPC
+// (Phase 1.6 part B). Rejects access tokens and pre-1.6
+// tokens — only an explicit refresh token can be
+// exchanged.
+func (tm *TokenManager) ValidateRefreshToken(tokenString string) (*Claims, error) {
+	claims, err := tm.ValidateToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims.TokenType != TokenTypeRefresh {
+		return nil, errInvalidToken
+	}
 	return claims, nil
 }
 

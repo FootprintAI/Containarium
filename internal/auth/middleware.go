@@ -52,7 +52,14 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		// intentionally generic ("invalid token") so we don't leak
 		// reconnaissance details (algorithm name, expiry vs.
 		// signature failure, etc.) to clients. See finding A-MED-7.
-		claims, err := am.tokenManager.ValidateToken(token)
+		//
+		// Phase 1.6 — ValidateAccessToken rejects tokens with
+		// `tt: "refresh"`. A stolen refresh token can be exchanged
+		// at the (future) /v1/tokens/refresh endpoint but cannot
+		// authenticate to any API surface. Pre-1.6 tokens (no tt
+		// claim) are treated as access by ValidateAccessToken for
+		// backwards compat.
+		claims, err := am.tokenManager.ValidateAccessToken(token)
 		if err != nil {
 			// Audit C-MED-3: per-IP token-bucket on failed
 			// validations. Successful auth doesn't consume
@@ -111,7 +118,16 @@ func (am *AuthMiddleware) GRPCStreamInterceptor() grpc.StreamServerInterceptor {
 	}
 }
 
-// ValidateToken validates a JWT token and returns claims
+// ValidateToken validates a JWT and returns claims for use
+// on an API surface. Phase 1.6 — wraps ValidateAccessToken
+// so refresh tokens are rejected. Callers that legitimately
+// want any-token semantics (e.g. the refresh-exchange RPC
+// validating an incoming refresh token) should call the
+// TokenManager directly via ValidateRefreshToken.
+//
+// The name stays "ValidateToken" because every existing
+// callsite is on an API surface where access-only semantics
+// are the right policy.
 func (am *AuthMiddleware) ValidateToken(token string) (*Claims, error) {
-	return am.tokenManager.ValidateToken(token)
+	return am.tokenManager.ValidateAccessToken(token)
 }

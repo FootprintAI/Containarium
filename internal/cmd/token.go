@@ -15,6 +15,7 @@ var (
 	tokenUsername   string
 	tokenRoles      []string
 	tokenScopes     []string // Phase 1.7 — least-privilege scope list
+	tokenType       string   // Phase 1.6 — "access" (default) or "refresh"
 	tokenExpiry     string
 	tokenSecretFlag string
 	tokenSecretFile string
@@ -135,6 +136,7 @@ func init() {
 	// Optional flags
 	tokenGenerateCmd.Flags().StringSliceVar(&tokenRoles, "roles", []string{"user"}, "Roles for the token (comma-separated)")
 	tokenGenerateCmd.Flags().StringSliceVar(&tokenScopes, "scopes", nil, "Phase 1.7: least-privilege scopes (comma-separated; e.g. containers:read,secrets:read). Omit for an unrestricted token; pass '*' for the wildcard.")
+	tokenGenerateCmd.Flags().StringVar(&tokenType, "token-type", "", "Phase 1.6: 'access' (short-lived API token) or 'refresh' (long-lived token for exchange). Empty = legacy issuance (still acts as access on the API surface).")
 	tokenGenerateCmd.Flags().StringVar(&tokenExpiry, "expiry", "24h", "Token expiry duration (e.g., 24h, 168h, 720h, 0 for no expiry)")
 	tokenGenerateCmd.Flags().BoolVar(&tokenRaw, "raw", false, "Output only the raw token (for scripting)")
 }
@@ -172,8 +174,20 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 
 	// Generate token. Phase 1.7 — scopes pass through as a
 	// variadic; an empty slice (no --scopes) leaves the
-	// claim unset, matching pre-1.7 behavior.
-	token, err := tm.GenerateToken(tokenUsername, tokenRoles, expiresIn, tokenScopes...)
+	// claim unset, matching pre-1.7 behavior. Phase 1.6 —
+	// --token-type selects access/refresh; default is the
+	// legacy untagged path so existing scripts keep working.
+	var token string
+	switch tokenType {
+	case "", "any", "legacy":
+		token, err = tm.GenerateToken(tokenUsername, tokenRoles, expiresIn, tokenScopes...)
+	case auth.TokenTypeAccess:
+		token, err = tm.GenerateAccessToken(tokenUsername, tokenRoles, expiresIn, tokenScopes...)
+	case auth.TokenTypeRefresh:
+		token, err = tm.GenerateRefreshToken(tokenUsername, tokenRoles, expiresIn, tokenScopes...)
+	default:
+		return fmt.Errorf("invalid --token-type %q (expected: '', 'access', 'refresh')", tokenType)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -199,6 +213,9 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Scopes:   %v\n", tokenScopes)
 	} else {
 		fmt.Printf("  Scopes:   <none> (unrestricted)\n")
+	}
+	if tokenType != "" {
+		fmt.Printf("  Type:     %s\n", tokenType)
 	}
 	if expiresIn > 0 {
 		expiryTime := time.Now().Add(expiresIn)
