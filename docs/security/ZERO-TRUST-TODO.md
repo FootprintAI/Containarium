@@ -108,11 +108,18 @@ on the internal network. Land them first.
         `runRevocationCleanup`; one pass on startup catches
         rows orphaned by a prior daemon lifetime. 13 new tests
         in `revocation_test.go`.
-      — **Follow-up:** add a proto `RevokeToken` RPC + CLI
-        verb (`containarium revoke-token --jti <id>`) so
-        operators have a one-shot kill-switch from the CLI.
-        The primitive is in place; the admin UX is the next
-        increment.
+      — **Admin UX landed.** New `TokensService.RevokeToken`
+        RPC + REST endpoint (`POST /v1/tokens/revoke`) +
+        `containarium token revoke --jti <id>` CLI verb.
+        Admin-only; idempotent; reason field for forensics;
+        optional `expires_at` controls the cleanup horizon.
+        Implementation in
+        `proto/containarium/v1/tokens.proto`,
+        `internal/server/tokens_server.go`, and
+        `internal/cmd/token.go`. 10 server-side tests.
+      — Follow-up: MCP tool wrapper for the same RPC (one
+        more `tools.go` registration; thin wrapper per the
+        CLI-first convention).
 - [x] **1.3** Require min 32-byte JWT secret in `NewTokenManager` — `internal/auth/token.go:24-45` (**A-MED-2**)
       — `NewTokenManager` now returns `(*TokenManager, error)` and refuses
         secrets shorter than 32 bytes. Fail-closed at daemon startup.

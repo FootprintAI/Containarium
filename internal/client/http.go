@@ -398,6 +398,36 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	return result.Message, result.MonitoringEnabled, nil
 }
 
+// RevokeToken adds a JWT's jti to the daemon's revocation
+// list. Phase 1.2 follow-up — admin-only on the server side.
+// `reason` is free-form and recorded for forensics; pass ""
+// to let the daemon default it.
+func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body := map[string]string{"jti": jti}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	if expiresAt != "" {
+		body["expires_at"] = expiresAt
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/tokens/revoke", body)
+	if err != nil {
+		return "", fmt.Errorf("revoke token: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", parseErr(b, resp.StatusCode, "revoke token")
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(b, &result)
+	return result.Message, nil
+}
+
 // SetSecret creates or updates a tenant secret via HTTP.
 func (c *HTTPClient) SetSecret(username, name, value string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

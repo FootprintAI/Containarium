@@ -372,6 +372,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register zap service gateway: %w", err)
 	}
 
+	// Register TokensService gateway handler (Phase 1.2 follow-up)
+	if err := pb.RegisterTokensServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register tokens service gateway: %w", err)
+	}
+
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.

@@ -885,6 +885,12 @@ skipAppHosting:
 				tokenManager.SetRevocationStore(revStore)
 				revocationStoreLocal = revStore
 				log.Printf("JWT revocation list enabled")
+
+				// Phase 1.2 follow-up — TokensService RPC
+				// for operator revocation via CLI / MCP.
+				tokensServer := NewTokensServer(tokenManager, revStore, 0)
+				pb.RegisterTokensServiceServer(grpcServer, tokensServer)
+				log.Printf("TokensService registered (POST /v1/tokens/revoke)")
 			}
 		}
 	}

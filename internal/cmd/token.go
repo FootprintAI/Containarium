@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -17,6 +18,11 @@ var (
 	tokenSecretFlag string
 	tokenSecretFile string
 	tokenRaw        bool
+
+	// `token revoke` flags
+	revokeJTI       string
+	revokeReason    string
+	revokeExpiresAt string
 )
 
 var tokenCmd = &cobra.Command{
@@ -68,9 +74,54 @@ Security:
 	RunE: runTokenGenerate,
 }
 
+// tokenRevokeCmd implements `containarium token revoke` — the
+// admin-facing CLI for the JWT revocation list landed in
+// Phase 1.2 (PR #248). It talks to the daemon over the
+// canonical HTTP gateway; the daemon does the actual write
+// and enforces the admin role.
+//
+// Operators get the jti either from the audit trail
+// (every authenticated request logs `jti=<id>`) or by
+// decoding the JWT they want to kill.
+var tokenRevokeCmd = &cobra.Command{
+	Use:   "revoke",
+	Short: "Revoke a JWT by its jti (admin-only)",
+	Long: `Add a JWT's jti to the daemon's revocation list.
+
+The token will be rejected on the next request that names it.
+Idempotent — repeated revokes preserve the original reason.
+
+Admin-only on the server side. The daemon must be reachable
+via --server, and --token must name an admin JWT.
+
+Locate the jti to revoke either from the audit log (every
+authenticated request logs jti=<id>) or by base64-decoding
+the JWT payload (the 'jti' claim).`,
+	Example: `  # Revoke a leaked token
+  containarium token revoke \
+    --jti AbCdEfGh... \
+    --reason "leaked_to_public_gist_2026_05" \
+    --server https://containarium.kafeido.app \
+    --token $ADMIN_TOKEN
+
+  # Revoke with explicit cleanup horizon (the token's own exp)
+  containarium token revoke \
+    --jti AbCdEfGh... \
+    --expires-at 2026-06-19T12:34:56Z \
+    --server https://containarium.kafeido.app \
+    --token $ADMIN_TOKEN`,
+	RunE: runTokenRevoke,
+}
+
 func init() {
 	rootCmd.AddCommand(tokenCmd)
 	tokenCmd.AddCommand(tokenGenerateCmd)
+	tokenCmd.AddCommand(tokenRevokeCmd)
+
+	tokenRevokeCmd.Flags().StringVar(&revokeJTI, "jti", "", "jti claim of the token to revoke (required)")
+	tokenRevokeCmd.MarkFlagRequired("jti")
+	tokenRevokeCmd.Flags().StringVar(&revokeReason, "reason", "", "Free-form reason recorded for forensics (default: 'operator_revoke')")
+	tokenRevokeCmd.Flags().StringVar(&revokeExpiresAt, "expires-at", "", "Token's own exp claim in RFC3339 (controls cleanup horizon; default: daemon max lifetime)")
 
 	// Required flags
 	tokenGenerateCmd.Flags().StringVar(&tokenUsername, "username", "", "Username for the token (required)")
@@ -173,5 +224,35 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("\n")
 
+	return nil
+}
+
+// runTokenRevoke POSTs to /v1/tokens/revoke. The daemon does
+// the admin-role check and the actual revocation list write.
+func runTokenRevoke(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required (the daemon does the revocation, not the CLI)")
+	}
+	if authToken == "" {
+		return fmt.Errorf("--token is required (must name an admin JWT)")
+	}
+	if strings.TrimSpace(revokeJTI) == "" {
+		return fmt.Errorf("--jti is required")
+	}
+
+	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+	if err != nil {
+		return fmt.Errorf("create http client: %w", err)
+	}
+	defer httpClient.Close()
+
+	msg, err := httpClient.RevokeToken(revokeJTI, revokeReason, revokeExpiresAt)
+	if err != nil {
+		return err
+	}
+	if msg == "" {
+		msg = "jti added to revocation list"
+	}
+	fmt.Printf("Revoked: %s\n%s\n", revokeJTI, msg)
 	return nil
 }

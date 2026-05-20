@@ -36,6 +36,9 @@
       "name": "SecurityService"
     },
     {
+      "name": "TokensService"
+    },
+    {
       "name": "ZapService"
     }
   ],
@@ -3085,6 +3088,41 @@
         },
         "tags": [
           "Monitoring"
+        ]
+      }
+    },
+    "/v1/tokens/revoke": {
+      "post": {
+        "summary": "Revoke a JWT by its jti",
+        "description": "Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).",
+        "operationId": "TokensService_RevokeToken",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RevokeTokenResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "RevokeTokenRequest names a token to invalidate.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RevokeTokenRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Tokens"
         ]
       }
     },
@@ -6422,6 +6460,37 @@
         "message": {
           "type": "string",
           "title": "Status message"
+        }
+      }
+    },
+    "RevokeTokenRequest": {
+      "type": "object",
+      "properties": {
+        "jti": {
+          "type": "string",
+          "description": "The `jti` claim of the token to revoke. Required.\nOperators get the jti either from the audit trail\n(every authenticated request logs its jti) or by\ndecoding the token they want to kill."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional free-form reason recorded in the revocation\ntable for forensics. Examples: \"user_logout\",\n\"compromise_2026_05_20\", \"operator_revoke\"."
+        },
+        "expiresAt": {
+          "type": "string",
+          "description": "Optional expiry hint — when the token's exp claim is.\nUsed as the cleanup horizon for the row. If omitted,\nthe daemon falls back to the configured max token\nlifetime so the row eventually prunes itself."
+        }
+      },
+      "description": "RevokeTokenRequest names a token to invalidate."
+    },
+    "RevokeTokenResponse": {
+      "type": "object",
+      "properties": {
+        "newlyRevoked": {
+          "type": "boolean",
+          "description": "True when a new revocation row was inserted; false when\nthe jti was already revoked (idempotent — the existing\nrevocation reason is preserved)."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable confirmation, intended for CLI output."
         }
       }
     },
