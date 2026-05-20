@@ -145,6 +145,7 @@ type DualServer struct {
 	auditStore            *audit.Store
 	auditEventSubscriber  *audit.EventSubscriber
 	sshCollector          *audit.SSHCollector
+	revocationStore       *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
 	alertStore            *alert.Store
 	alertManager          *alert.Manager
 	alertDeliveryStore    *alert.DeliveryStore
@@ -857,6 +858,7 @@ skipAppHosting:
 	// Setup audit logging store and event subscriber
 	var auditStore *audit.Store
 	var auditEventSubscriber *audit.EventSubscriber
+	var revocationStoreLocal *auth.PgRevocationStore
 	if postgresConnString != "" {
 		auditPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
@@ -869,6 +871,20 @@ skipAppHosting:
 			} else {
 				auditEventSubscriber = audit.NewEventSubscriber(events.GetBus(), auditStore)
 				log.Printf("Audit logging service enabled")
+			}
+
+			// Phase 1.2 — JWT revocation list. Same pool as
+			// audit so we don't open a second connection just
+			// for one hot-path lookup. Cleanup goroutine is
+			// launched from Start() so its lifetime tracks
+			// the daemon's serving context.
+			revStore, revErr := auth.NewPgRevocationStore(context.Background(), auditPool)
+			if revErr != nil {
+				log.Printf("Warning: Failed to create JWT revocation store: %v", revErr)
+			} else {
+				tokenManager.SetRevocationStore(revStore)
+				revocationStoreLocal = revStore
+				log.Printf("JWT revocation list enabled")
 			}
 		}
 	}
@@ -1106,6 +1122,7 @@ skipAppHosting:
 		auditStore:           auditStore,
 		auditEventSubscriber: auditEventSubscriber,
 		sshCollector:         sshCollector,
+		revocationStore:      revocationStoreLocal,
 		alertStore:           alertStore,
 		alertManager:         alertManager,
 		alertDeliveryStore:   containerServer.alertDeliveryStore,
@@ -1251,6 +1268,41 @@ func (ds *DualServer) backendsHandler() http.HandlerFunc {
 	}
 }
 
+// runRevocationCleanup prunes expired JWT revocation rows on a
+// fixed cadence. Phase 1.2 — once an hour is plenty; the table
+// only grows when a token is actually revoked (rare), and even
+// if the daemon falls behind the worst case is some extra rows
+// on a B-tree lookup. One initial pass at startup catches
+// anything orphaned by a prior daemon lifetime.
+func (ds *DualServer) runRevocationCleanup(ctx context.Context) {
+	const interval = 1 * time.Hour
+
+	prune := func() {
+		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		n, err := ds.revocationStore.CleanupExpired(c, time.Now())
+		if err != nil {
+			log.Printf("[revocation-cleanup] failed: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("[revocation-cleanup] pruned %d expired rows", n)
+		}
+	}
+
+	prune()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
+		}
+	}
+}
+
 // handleBackendSystemInfo returns system info for a specific backend.
 // For the local backend, it returns the local system info.
 // For peer backends, it forwards the request to the peer.
@@ -1367,6 +1419,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if err := ds.trafficCollector.Start(); err != nil {
 			log.Printf("Warning: Failed to start traffic collector: %v", err)
 		}
+	}
+
+	// Phase 1.2 — prune expired revocation rows hourly. Rows
+	// whose token exp has already passed can no longer
+	// authenticate anyway; keeping them around just bloats
+	// the index. One pass at startup catches anything left
+	// from a prior daemon lifetime.
+	if ds.revocationStore != nil {
+		go ds.runRevocationCleanup(ctx)
 	}
 
 	// Start auto-sleep ticker. Always-on by daemon policy; per-container

@@ -94,7 +94,25 @@ on the internal network. Land them first.
       — `ValidateToken` now passes `jwt.WithIssuer` + `jwt.WithAudience` parser options;
         `GenerateToken` stamps both. Default audience `containarium-api`
         (overridable via `CONTAINARIUM_JWT_AUDIENCE`).
-- [ ] **1.2** Add `jti` and a revocation list — `internal/auth/token.go` (**A-MED-1**)
+- [x] **1.2** Add `jti` and a revocation list — `internal/auth/token.go` (**A-MED-1**)
+      — Every issued token now carries a 128-bit base64url
+        `jti` claim (`crypto/rand`-backed; collision-free in
+        practice). `RevocationStore` interface + Postgres-
+        backed `PgRevocationStore` keyed on jti with the
+        original `exp` for cleanup. `ValidateToken` consults
+        the store on every authenticated request — fail-open
+        on store error (kill-switch, not primary gate);
+        documented inline. `TokenManager.RevokeToken(claims)`
+        is the admin-facing API for logout / compromise flows.
+        Daemon launches a 1h cleanup goroutine in
+        `runRevocationCleanup`; one pass on startup catches
+        rows orphaned by a prior daemon lifetime. 13 new tests
+        in `revocation_test.go`.
+      — **Follow-up:** add a proto `RevokeToken` RPC + CLI
+        verb (`containarium revoke-token --jti <id>`) so
+        operators have a one-shot kill-switch from the CLI.
+        The primitive is in place; the admin UX is the next
+        increment.
 - [x] **1.3** Require min 32-byte JWT secret in `NewTokenManager` — `internal/auth/token.go:24-45` (**A-MED-2**)
       — `NewTokenManager` now returns `(*TokenManager, error)` and refuses
         secrets shorter than 32 bytes. Fail-closed at daemon startup.

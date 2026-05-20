@@ -2,7 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"time"
@@ -40,6 +43,18 @@ type TokenManager struct {
 	issuer         string
 	audience       string
 	maxTokenExpiry time.Duration
+
+	// Phase 1.2 — optional revocation list. nil = check
+	// disabled (tests, minimal deployments). Production
+	// wires a Postgres-backed PgRevocationStore here.
+	revocationStore RevocationStore
+}
+
+// SetRevocationStore enables the revocation-list check on
+// ValidateToken. Pass nil to disable. Typically wired once
+// at daemon startup after the Postgres pool is ready.
+func (tm *TokenManager) SetRevocationStore(store RevocationStore) {
+	tm.revocationStore = store
 }
 
 // NewTokenManager creates a new token manager. Returns an error if
@@ -76,19 +91,32 @@ func NewTokenManager(secretKey string, issuer string) (*TokenManager, error) {
 	}, nil
 }
 
-// GenerateToken creates a JWT token for a user
+// GenerateToken creates a JWT token for a user.
+//
 // SECURITY FIX: Non-expiring tokens are no longer allowed.
-// Maximum expiry is enforced (default: 30 days, configurable via CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS)
+// Maximum expiry is enforced (default: 30 days, configurable
+// via CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS).
+//
+// Phase 1.2: every token now carries a `jti` claim — a
+// cryptographic-random 128-bit ID base64url-encoded. The
+// jti is the key the revocation list operates on, so a
+// token's lifetime can be cut short by writing one row.
 func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn time.Duration) (string, error) {
 	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
 	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
 		expiresIn = tm.maxTokenExpiry
 	}
 
+	jti, err := newJTI()
+	if err != nil {
+		return "", fmt.Errorf("generate jti: %w", err)
+	}
+
 	claims := Claims{
 		Username: username,
 		Roles:    roles,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			NotBefore: jwt.NewNumericDate(time.Now()),
@@ -99,6 +127,18 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(tm.secretKey)
+}
+
+// newJTI returns a base64url-encoded 128-bit cryptographic
+// random ID. 128 bits is enough that collisions never happen
+// in practice (birthday-bound ~2^64 issuances), and base64url
+// keeps the encoded form URL-safe and JWT-friendly.
+func newJTI() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
 // errInvalidToken is the only token-validation error returned to
@@ -141,11 +181,53 @@ func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
 		return nil, errInvalidToken
 	}
 
-	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
-		return claims, nil
+	claims, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid {
+		return nil, errInvalidToken
 	}
 
-	return nil, errInvalidToken
+	// Phase 1.2 — revocation list check. We use a short
+	// background timeout so a slow DB doesn't stall the
+	// auth path. A DB outage fails *open* by design
+	// (revocation is a kill-switch, not the primary auth
+	// gate); a noisy log makes the failure visible without
+	// taking the daemon down. Tokens issued before this
+	// release lack a jti — IsRevoked short-circuits on
+	// empty input.
+	if tm.revocationStore != nil && claims.ID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		revoked, rerr := tm.revocationStore.IsRevoked(ctx, claims.ID)
+		if rerr != nil {
+			log.Printf("WARNING: revocation lookup failed for jti=%s: %v (allowing token; revocation list is the kill-switch, not the primary gate)", claims.ID, rerr)
+		} else if revoked {
+			return nil, errInvalidToken
+		}
+	}
+
+	return claims, nil
+}
+
+// RevokeToken adds the given claims' jti to the revocation
+// list, using its exp claim as the cleanup horizon. Typically
+// called from logout / admin-revoke flows after the claims
+// have already been validated.
+//
+// Returns an error if the store is unconfigured (the caller
+// is asking to revoke when there's no revocation list — that
+// would silently no-op, which is dangerous).
+func (tm *TokenManager) RevokeToken(ctx context.Context, claims *Claims, reason string) error {
+	if tm.revocationStore == nil {
+		return fmt.Errorf("revocation store not configured")
+	}
+	if claims == nil || claims.ID == "" {
+		return fmt.Errorf("token has no jti — cannot revoke (pre-Phase-1.2 token?)")
+	}
+	exp := time.Time{}
+	if claims.ExpiresAt != nil {
+		exp = claims.ExpiresAt.Time
+	}
+	return tm.revocationStore.Revoke(ctx, claims.ID, exp, reason)
 }
 
 // Context keys for storing authentication information
