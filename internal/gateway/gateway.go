@@ -559,9 +559,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	}))
 	httpMux.Handle("/v1/events/subscribe", eventsWithCORS)
 
-	// Swagger UI routes (no authentication required)
-	httpMux.Handle("/swagger-ui/", http.StripPrefix("/swagger-ui", http.HandlerFunc(ServeSwaggerUI(gs.swaggerDir))))
-	httpMux.HandleFunc("/swagger.json", ServeSwaggerSpec(gs.swaggerDir))
+	// Swagger UI routes. Phase 5.1 (audit A-LOW-1) — both
+	// the UI bundle and the spec discloses the full API
+	// surface (route paths, request shapes, security
+	// requirements). That's operator-tier knowledge, not
+	// public. Wrap with HTTPMiddleware (auth gate) AND
+	// requireAdminFromContext (role gate).
+	swaggerUI := http.StripPrefix("/swagger-ui", http.HandlerFunc(ServeSwaggerUI(gs.swaggerDir)))
+	httpMux.Handle("/swagger-ui/", gs.authMiddleware.HTTPMiddleware(requireAdminFromContext(swaggerUI)))
+	httpMux.Handle("/swagger.json", gs.authMiddleware.HTTPMiddleware(requireAdminFromContext(http.HandlerFunc(ServeSwaggerSpec(gs.swaggerDir)))))
 
 	// Web UI routes (no authentication required - auth handled client-side via tokens)
 	httpMux.HandleFunc("/webui/", ServeWebUI())
@@ -655,6 +661,23 @@ func customErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler ru
 // gRPC metadata, where SubjectFromGRPCContext picks it up on the
 // server side. Without this, gRPC handlers cannot enforce
 // per-resource authorization.
+// requireAdminFromContext rejects requests whose authenticated
+// subject does not hold the admin role. Must run AFTER the
+// auth middleware (which stamps username + roles into the
+// request context). Phase 5.1 — used to gate /swagger-ui/
+// and /swagger.json so the full API surface isn't disclosed
+// to any reachable client.
+func requireAdminFromContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		roles, _ := auth.RolesFromContext(r.Context())
+		if !auth.HasRole(roles, auth.RoleAdmin) {
+			http.Error(w, `{"error":"admin role required","code":403}`, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 	md := metadata.Pairs(
 		"x-forwarded-method", req.Method,

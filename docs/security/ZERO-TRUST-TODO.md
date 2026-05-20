@@ -441,7 +441,13 @@ on the internal network. Land them first.
 
 ## Phase 5 — Lower priority / process
 
-- [ ] **5.1** Gate `/swagger-ui/` behind admin role — `internal/gateway/gateway.go:535-540` (**A-LOW-1**)
+- [x] **5.1** Gate `/swagger-ui/` behind admin role — `internal/gateway/gateway.go:535-540` (**A-LOW-1**)
+      — Both `/swagger-ui/` and `/swagger.json` now run
+        through `HTTPMiddleware` (auth gate) +
+        `requireAdminFromContext` (role gate). Non-admin
+        callers see 403; unauthenticated callers see 401
+        from the prior middleware step. Tests in
+        `internal/gateway/swagger_gate_test.go`.
 - [ ] **5.2** Add `gosec`, `govulncheck`, `trivy` to CI
 - [ ] **5.3** Publish `SECURITY.md` with vulnerability-disclosure policy
 - [ ] **5.4** Abuse-case test suite: oversized payloads, replayed tokens, wrong-tenant access — all must fail closed
