@@ -236,11 +236,12 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 	// Without the key the sentinel runs in pre-0.5 (HTTP-only)
 	// mode — backwards compatible during rollout.
 	if caKeyPath := os.Getenv("CONTAINARIUM_CA_KEY_FILE"); caKeyPath != "" {
-		// #nosec G304 -- caKeyPath is operator-controlled config
+		// #nosec G304 G703 -- caKeyPath is operator-controlled config
 		// (CONTAINARIUM_CA_KEY_FILE), not user input. The operator
 		// is trusted to point this at a real CA key on disk; if it
 		// were attacker-controlled the sentinel would already be
-		// compromised at a deeper layer.
+		// compromised at a deeper layer. gosec emits both G304 and
+		// G703 for the same finding, so both IDs are suppressed.
 		caKeyPEM, err := os.ReadFile(caKeyPath)
 		// Sanitize caKeyPath into a quoted form before logging so
 		// gosec's G706 taint analysis sees the explicit escape
@@ -258,6 +259,9 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 			} else if err := m.SetCertProvisioner(provisioner); err != nil {
 				log.Printf("[sentinel] WARNING: failed to install peer-CA provisioner: %v", err)
 			} else {
+				// #nosec G706 -- safeCAPath is strconv.Quote'd; gosec's
+				// taint analysis doesn't recognize Quote as a
+				// sanitizer, so suppress the residual warning.
 				log.Printf("[sentinel] peer-CA loaded from %s, leaf TTL=%s", safeCAPath, provisioner.LeafExpiry())
 			}
 		}

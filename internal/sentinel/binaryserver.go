@@ -170,10 +170,9 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 			if p, perr := parsePort(env); perr == nil {
 				httpsPort = p
 			} else {
-				// strconv.Quote sanitizes the env value so gosec's
-				// G706 taint analysis sees the explicit escape; %q
-				// alone does this at format time but the analyzer
-				// chases the raw os.Getenv source upstream.
+				// #nosec G706 -- env is strconv.Quote'd into the
+				// format string; gosec's taint analysis doesn't
+				// recognize Quote as a sanitizer.
 				log.Printf("[sentinel] invalid CONTAINARIUM_SENTINEL_HTTPS_PORT=%s (%v) — defaulting to %d", strconv.Quote(env), perr, httpsPort)
 			}
 		}
