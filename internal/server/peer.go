@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ type PeerClient struct {
 	Healthy    bool
 	LastSeenAt time.Time // Timestamp of last successful health check
 	client     *http.Client
+	scheme     string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
 	token      string // JWT token for auth (if needed)
 
 	// Cached system info from last discovery poll
@@ -35,6 +37,15 @@ type PeerClient struct {
 	CachedOS             string
 	CachedVersion        string
 	CachedContainerCount int32
+}
+
+// urlScheme returns "http" or "https" — defaults to "http" for
+// backwards compatibility during the Phase 0.5 rollout.
+func (pc *PeerClient) urlScheme() string {
+	if pc.scheme == "" {
+		return "http"
+	}
+	return pc.scheme
 }
 
 // PeerPool manages connections to remote containarium daemon peers.
@@ -48,6 +59,11 @@ type PeerPool struct {
 	pool           string // if non-empty, only peers tagged with this pool are discovered
 	discoveryStop  chan struct{}
 	localBackendID string // this daemon's backend ID
+
+	// pki holds the daemon's leaf cert + pinned peer-CA for Phase
+	// 0.5 HTTPS peer-to-peer. Nil when no CA is configured —
+	// peer.go then falls back to plain HTTP (pre-0.5 behavior).
+	pki *peerPKI
 }
 
 // NewPeerPool creates a new peer pool.
@@ -63,7 +79,8 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 		localBackendID: localBackendID,
 	}
 
-	// Add static peers
+	// Add static peers. They start on plain HTTP; BootstrapPKI
+	// upgrades them in place once the daemon fetches its cert.
 	for _, addr := range staticPeers {
 		p.peers[addr] = &PeerClient{
 			ID:   addr,
@@ -75,6 +92,156 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 	}
 
 	return p
+}
+
+// BootstrapPKI fetches a leaf cert from the sentinel and wires it
+// into every peer client in the pool. After this returns
+// successfully, peer-to-peer calls use HTTPS with CA pinning
+// instead of plain HTTP. Safe to call when no PKI is configured —
+// it just returns nil and the pool keeps using HTTP.
+//
+// Errors are NOT fatal; the caller (dual_server.go) logs them and
+// falls back to HTTP. Operators see the message clearly in the
+// startup log.
+func (p *PeerPool) BootstrapPKI() error {
+	if p.sentinelURL == "" {
+		return nil
+	}
+	secret := loadSentinelHMACSecret()
+	if len(secret) < auth.SentinelMinSecretLen {
+		// No HMAC secret → no way to authenticate the cert request.
+		// Stay on HTTP; the audit warning is logged in discover().
+		return nil
+	}
+	if p.localBackendID == "" {
+		return fmt.Errorf("local backend ID is empty; cannot request peer cert")
+	}
+
+	pki, err := FetchPeerPKI(nil, p.sentinelURL, p.localBackendID, secret)
+	if err != nil {
+		return fmt.Errorf("fetch peer PKI from sentinel: %w", err)
+	}
+
+	p.mu.Lock()
+	p.pki = pki
+	// Rebuild every existing peer client with the TLS-aware HTTP
+	// client so subsequent calls use HTTPS pinning.
+	for _, pc := range p.peers {
+		pc.client = buildPeerHTTPClient(pki)
+		pc.scheme = "https"
+	}
+	p.mu.Unlock()
+
+	log.Printf("[peer-pki] bootstrap complete; %d peer client(s) upgraded to HTTPS", len(p.peers))
+	return nil
+}
+
+// buildPeerHTTPClient returns an http.Client wired to present the
+// daemon's leaf cert and verify peer / sentinel server certs
+// against the pinned CA. When `pki` is nil, returns a plain client
+// with no TLS customization (pre-0.5 behavior).
+//
+// GetClientCertificate is a closure over the *peerPKI value, so a
+// renewal that calls pki.replace() takes effect on the very next
+// TLS handshake — no need to rebuild any http.Client. The RootCAs
+// pool is similarly read on each handshake via VerifyPeerCertificate
+// indirection through `pki.CACertPool()`. We pull the pool once at
+// build time because Go's tls.Config has no RootCAs callback;
+// callers should rebuild the client if the CA itself rotates,
+// which only happens when the operator replaces ca.key on the
+// sentinel (rare).
+func buildPeerHTTPClient(pki *peerPKI) *http.Client {
+	if pki == nil {
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:    pki.CACertPool(),
+				MinVersion: tls.VersionTLS12,
+				GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+					cert := pki.ClientCertificate()
+					return &cert, nil
+				},
+			},
+		},
+	}
+}
+
+// StartCertRenewal launches a background goroutine that watches
+// the daemon's leaf cert and re-issues from the sentinel when the
+// remaining lifetime drops to 1/3 of the original TTL. Safe to
+// call when no PKI is configured — it's a no-op. Exits when ctx
+// is cancelled.
+//
+// Renewal calls pki.replace() in place; existing http.Clients
+// inherit the new leaf at the next TLS handshake (see
+// buildPeerHTTPClient and its GetClientCertificate callback).
+func (p *PeerPool) StartCertRenewal(ctx context.Context) {
+	if p.pki == nil {
+		return
+	}
+	go func() {
+		// Check every minute; the renewal threshold is much
+		// coarser than that, so a 1-minute tick is plenty.
+		// Avoid sub-minute ticks because the sentinel is the
+		// rate-limiting factor on issuance and we don't want a
+		// fleet-wide stampede.
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		log.Printf("[peer-pki] renewal watcher started; next cert expires %s", p.pki.Expiry().Format(time.RFC3339))
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := p.maybeRenewCert(); err != nil {
+					log.Printf("[peer-pki] renewal failed (will retry): %v", err)
+				}
+			}
+		}
+	}()
+}
+
+// maybeRenewCert checks the current leaf's remaining lifetime
+// against a 1/3-TTL threshold and re-issues if we're past it.
+// Idempotent: if the cert isn't due for renewal yet, this is a
+// no-op. Returns an error only when the sentinel call itself
+// fails — the caller's retry loop handles transient failures.
+func (p *PeerPool) maybeRenewCert() error {
+	if p.pki == nil {
+		return nil
+	}
+	expiry := p.pki.Expiry()
+	if expiry.IsZero() {
+		return nil
+	}
+	remaining := time.Until(expiry)
+	// Renew when remaining lifetime is below 1/3 of the leaf TTL.
+	// We use pki.DefaultLeafExpiry as the canonical full TTL —
+	// the daemon doesn't know the sentinel's configured value,
+	// but the default is the only one shipped today and gives a
+	// reasonable threshold either way.
+	threshold := 7 * 24 * time.Hour / 3 // ≈ 2d 8h for the 7-day default
+	if remaining > threshold {
+		return nil
+	}
+	log.Printf("[peer-pki] cert remaining=%s < threshold=%s, renewing from sentinel", remaining.Round(time.Second), threshold)
+
+	secret := loadSentinelHMACSecret()
+	if len(secret) < auth.SentinelMinSecretLen {
+		return fmt.Errorf("HMAC secret unavailable")
+	}
+	fresh, err := FetchPeerPKI(nil, p.sentinelURL, p.localBackendID, secret)
+	if err != nil {
+		return err
+	}
+	// Swap leaf + CA + expiry atomically. Existing http.Clients
+	// pick up the new leaf on their next TLS handshake.
+	p.pki.replace(fresh.ClientCertificate(), fresh.CACertPool(), fresh.CACertPEM(), fresh.Expiry())
+	log.Printf("[peer-pki] renewed; new expiry %s (in %s)", fresh.Expiry().Format(time.RFC3339), time.Until(fresh.Expiry()).Round(time.Second))
+	return nil
 }
 
 // StartDiscovery starts background auto-discovery of peers from the sentinel.
@@ -139,7 +306,16 @@ func (p *PeerPool) discover() {
 	if p.pool != "" {
 		url += "?pool=" + neturl.QueryEscape(p.pool)
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	// Use the PKI-aware client when the daemon has a CA pinned —
+	// otherwise the bare client can't verify the sentinel's
+	// self-signed server cert on the HTTPS port.
+	var client *http.Client
+	if p.pki != nil {
+		client = buildPeerHTTPClient(p.pki)
+		client.Timeout = 5 * time.Second
+	} else {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
 
 	resp, err := client.Get(url)
 	if err != nil {
@@ -211,15 +387,16 @@ func (p *PeerPool) discover() {
 				Addr:    peerAddr,
 				Pool:    peer.Pool,
 				Healthy: peer.Healthy,
-				client: &http.Client{
-					Timeout: 30 * time.Second,
-				},
+				client:  buildPeerHTTPClient(p.pki),
+			}
+			if p.pki != nil {
+				pc.scheme = "https"
 			}
 			if peer.Healthy {
 				pc.LastSeenAt = time.Now()
 			}
 			p.peers[peer.ID] = pc
-			log.Printf("[peers] discovered new peer: %s pool=%q via %s", peer.ID, peer.Pool, peerAddr)
+			log.Printf("[peers] discovered new peer: %s pool=%q via %s://%s", peer.ID, peer.Pool, pc.urlScheme(), peerAddr)
 		}
 	}
 
@@ -335,7 +512,7 @@ func (p *PeerPool) ListContainers(authToken string) []incus.ContainerInfo {
 // fetchContainers fetches containers from a single peer.
 func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, error) {
 	// Addr includes proxy path, e.g. "10.130.0.13:8888/peer/tunnel-fts-5900x-gpu"
-	url := fmt.Sprintf("http://%s/v1/containers", pc.Addr)
+	url := fmt.Sprintf("%s://%s/v1/containers", pc.urlScheme(), pc.Addr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -435,7 +612,7 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("http://%s/v1/containers", pc.Addr)
+	url := fmt.Sprintf("%s://%s/v1/containers", pc.urlScheme(), pc.Addr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -508,7 +685,7 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 // ForwardRequest forwards an arbitrary HTTP request to the peer and returns the response body.
 // GET requests use a 5s timeout to avoid blocking the UI; POST/PUT use 30s for mutations.
 func (pc *PeerClient) ForwardRequest(method, path, authToken string, body []byte) ([]byte, int, error) {
-	url := fmt.Sprintf("http://%s%s", pc.Addr, path)
+	url := fmt.Sprintf("%s://%s%s", pc.urlScheme(), pc.Addr, path)
 
 	timeout := 5 * time.Second
 	if method != "GET" {

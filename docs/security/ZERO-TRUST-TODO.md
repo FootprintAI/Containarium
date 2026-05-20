@@ -53,17 +53,21 @@ on the internal network. Land them first.
         Phase 0.5 peer mTLS (the HMAC layer can stay or be removed once
         mTLS is in place). Tests cover sign+verify roundtrip, tamper
         cases, replay window, and fail-closed middleware behavior.
-- [ ] **0.5** TLS + mTLS for peer-to-peer
+- [x] **0.5** TLS + mTLS for peer-to-peer
       — `internal/server/peer.go:69-72, 295, 305`.
       — Sentinel-issued peer certs with short TTL, pinned CA.
       — Tracks finding **C-CRIT-1**.
-      — **Deferred to a dedicated PR.** Needs PKI bootstrap design
-        (CA location, peer enrollment flow, cert rotation cadence)
-        and Terraform changes to provision the CA. The HMAC layer in
-        0.4/0.6 closes the request/response *integrity* gap but does
-        NOT close the JWT *confidentiality* gap on peer-to-peer
-        calls — Bearer tokens still travel in cleartext between
-        daemons. TLS (Phase 0.5) is the only fix for that.
+      — Pattern adapted from cockburn (single operator-managed RSA
+        key, self-signed CA generated at runtime, 7-day leaf TTL).
+        New `pkg/core/pki` provisioner; sentinel loads CA from
+        `CONTAINARIUM_CA_KEY_FILE`, exposes HMAC-gated
+        `/sentinel/ca` + `/sentinel/peer-cert`, and runs an HTTPS
+        binary-server listener alongside the existing HTTP one.
+        Daemon bootstraps its leaf cert at PeerPool startup,
+        background loop renews at 1/3 of TTL remaining. Plain HTTP
+        remains the default during rollout; flipping a daemon to
+        HTTPS is `CONTAINARIUM_SENTINEL_URL=https://…`.
+        Full operator docs in a follow-up PR.
 - [x] **0.6** Response signing for `/sentinel/peers` poll
       — `internal/server/peer.go:109-199`.
       — Tracks finding **C-CRIT-2**.

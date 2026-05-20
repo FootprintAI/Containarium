@@ -1278,6 +1278,17 @@ func (ds *DualServer) Start(ctx context.Context) error {
 
 	// Start peer discovery for multi-backend support
 	if ds.peerPool != nil {
+		// Phase 0.5: bootstrap the daemon's peer-CA + leaf cert
+		// BEFORE discovery starts. On success, every subsequent
+		// peer-to-peer call (and the discovery poll itself) uses
+		// HTTPS pinned to the sentinel-issued CA. Failure here is
+		// not fatal — the daemon stays on plain HTTP (pre-0.5
+		// behavior) and logs the reason.
+		if err := ds.peerPool.BootstrapPKI(); err != nil {
+			log.Printf("[peer-pki] bootstrap failed (%v) — staying on HTTP for peer-to-peer (audit C-CRIT-1 still open until configured)", err)
+		} else {
+			ds.peerPool.StartCertRenewal(ctx)
+		}
 		ds.peerPool.StartDiscovery(ctx)
 		ds.containerServer.SetPeerPool(ds.peerPool)
 

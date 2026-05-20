@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/pkg/core/pki"
 )
 
 // State represents the current sentinel mode.
@@ -94,6 +95,21 @@ type Manager struct {
 	// Production wiring calls SetHMACSecret() with the env var
 	// CONTAINARIUM_SENTINEL_AUTH_SECRET at startup.
 	hmacSecret []byte
+
+	// pki holds the operator-bootstrapped peer-CA and the sentinel's
+	// own server cert. Set when CONTAINARIUM_CA_KEY_FILE points at a
+	// valid RSA key — see NewManager and SetCertProvisioner.
+	//
+	// When nil, /sentinel/ca returns 503 and the HTTPS binary
+	// server doesn't start; daemons fall back to plain HTTP on the
+	// existing port 8888, which is the pre-Phase-0.5 behavior. The
+	// audit-critical leak (Bearer JWTs in cleartext on peer-to-peer
+	// calls) is only fully closed once the CA is in place and every
+	// daemon is talking to the HTTPS endpoint.
+	pki              *pki.Provisioner
+	sentinelCertPEM  []byte
+	sentinelKeyPEM   []byte
+	pkiMu            sync.RWMutex
 }
 
 // SetHMACSecret wires the sentinel↔daemon shared HMAC secret. Used
@@ -104,6 +120,85 @@ type Manager struct {
 // depending on its own configuration. See finding C-CRIT-2.
 func (m *Manager) SetHMACSecret(secret []byte) {
 	m.hmacSecret = secret
+}
+
+// SetCertProvisioner installs the peer-CA the sentinel will use for
+// HTTPS peer-to-peer (Phase 0.5). When set, the sentinel issues
+// itself a server certificate at construction time and serves the
+// `/sentinel/ca` endpoint so daemons can pin the CA.
+//
+// Tests use this directly; production wiring calls it indirectly
+// via NewManager → CONTAINARIUM_CA_KEY_FILE.
+func (m *Manager) SetCertProvisioner(p *pki.Provisioner) error {
+	if p == nil {
+		return fmt.Errorf("nil provisioner")
+	}
+	// Issue the sentinel's own server cert. SANs include the
+	// reachable hostnames — operators may add more via the env var
+	// CONTAINARIUM_SENTINEL_CERT_SANS (comma-separated). Loopback
+	// addresses are always included so in-process / same-host tests
+	// work without DNS gymnastics.
+	dnsNames := []string{"localhost", "containarium-sentinel"}
+	if extra := os.Getenv("CONTAINARIUM_SENTINEL_CERT_SANS"); extra != "" {
+		for _, name := range strings.Split(extra, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				dnsNames = append(dnsNames, name)
+			}
+		}
+	}
+	ips := []net.IP{net.ParseIP("127.0.0.1"), net.IPv6loopback}
+	certPEM, keyPEM, err := p.IssueSentinelServerCert(dnsNames, ips)
+	if err != nil {
+		return fmt.Errorf("issue sentinel server cert: %w", err)
+	}
+	m.pkiMu.Lock()
+	m.pki = p
+	m.sentinelCertPEM = certPEM
+	m.sentinelKeyPEM = keyPEM
+	m.pkiMu.Unlock()
+	return nil
+}
+
+// HasCertProvisioner reports whether the sentinel has a peer-CA
+// configured. Callers (binaryserver, CAHandler) use this to decide
+// whether to enable HTTPS / serve the CA bundle.
+func (m *Manager) HasCertProvisioner() bool {
+	m.pkiMu.RLock()
+	defer m.pkiMu.RUnlock()
+	return m.pki != nil
+}
+
+// SentinelServerCertPEM returns the PEM-encoded server cert and key
+// that the HTTPS binary server should present. Returns (nil, nil)
+// when no provisioner is configured.
+func (m *Manager) SentinelServerCertPEM() (certPEM, keyPEM []byte) {
+	m.pkiMu.RLock()
+	defer m.pkiMu.RUnlock()
+	return m.sentinelCertPEM, m.sentinelKeyPEM
+}
+
+// CACertPEM returns the peer-CA cert in PEM form, for daemons to
+// pin via /sentinel/ca. Returns nil when no provisioner is set.
+func (m *Manager) CACertPEM() []byte {
+	m.pkiMu.RLock()
+	defer m.pkiMu.RUnlock()
+	if m.pki == nil {
+		return nil
+	}
+	return m.pki.CACertPEM()
+}
+
+// IssuePeerCert mints a peer leaf cert via the sentinel's CA. Used
+// by PeerCertHandler. Returns an error if no provisioner is set
+// (caller should map to 503).
+func (m *Manager) IssuePeerCert(peerID string) (certPEM, keyPEM []byte, err error) {
+	m.pkiMu.RLock()
+	p := m.pki
+	m.pkiMu.RUnlock()
+	if p == nil {
+		return nil, nil, fmt.Errorf("peer CA not configured")
+	}
+	return p.IssuePeerCert(peerID, nil, nil)
 }
 
 // NewManager creates a new sentinel manager. Reads
@@ -129,6 +224,31 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 	} else {
 		log.Printf("[sentinel] WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset — /sentinel/peers responses will be unsigned (daemons in rollout mode accept them with a warning; once fully rolled out they will reject)")
 	}
+
+	// Phase 0.5: peer-CA bootstrap. Operators provision a single
+	// RSA private key on the sentinel (mode 0400) and point this
+	// env var at it. Sentinel auto-generates a self-signed CA cert
+	// from the key, then issues itself a server cert for HTTPS.
+	// Without the key the sentinel runs in pre-0.5 (HTTP-only)
+	// mode — backwards compatible during rollout.
+	if caKeyPath := os.Getenv("CONTAINARIUM_CA_KEY_FILE"); caKeyPath != "" {
+		caKeyPEM, err := os.ReadFile(caKeyPath)
+		if err != nil {
+			log.Printf("[sentinel] WARNING: CONTAINARIUM_CA_KEY_FILE=%q is unreadable (%v) — Phase 0.5 HTTPS/mTLS disabled, falling back to HTTP", caKeyPath, err)
+		} else {
+			provisioner, err := pki.NewFromKey(caKeyPEM, 0 /* default leaf TTL */)
+			if err != nil {
+				log.Printf("[sentinel] WARNING: failed to parse CA key at %q (%v) — Phase 0.5 HTTPS/mTLS disabled", caKeyPath, err)
+			} else if err := m.SetCertProvisioner(provisioner); err != nil {
+				log.Printf("[sentinel] WARNING: failed to install peer-CA provisioner: %v", err)
+			} else {
+				log.Printf("[sentinel] peer-CA loaded from %q, leaf TTL=%s", caKeyPath, provisioner.LeafExpiry())
+			}
+		}
+	} else {
+		log.Printf("[sentinel] CONTAINARIUM_CA_KEY_FILE is unset — Phase 0.5 HTTPS/mTLS disabled. Peer-to-peer JWT travels in cleartext (audit C-CRIT-1).")
+	}
+
 	m.state.Store(StateMaintenance)
 	return m
 }
