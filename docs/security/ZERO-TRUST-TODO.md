@@ -224,9 +224,14 @@ on the internal network. Land them first.
         absent scopes claim → nil grants → unrestricted.
         Tests in `internal/auth/require_scope_test.go` +
         `internal/server/scope_gate_test.go`.
-      — Remaining out-of-scope: ZapServer, AlertServer,
-        PentestServer, SecurityServer, TrafficServer —
-        mechanical follow-up identical to the 1.7b pattern.
+      — **1.7b pass 2 landed.** Same RequireScope pattern
+        applied to ZapServer (7 RPCs, security:read|write),
+        PentestServer (8 RPCs, security:read|write),
+        SecurityServer ClamAV (4 RPCs, security:read|write),
+        AlertServer (8 RPCs, alerts:read|write), and
+        TrafficServer (5 RPCs, traffic:read). New scopes:
+        alerts:read, alerts:write, traffic:read.
+        15 new tests in `scope_gate_pass2_test.go`.
 - [x] **1.8** Refuse JWT token files with mode > 0600 — `internal/mcp/client.go:57-78` (**C-HIGH-7**)
       — `readToken` `os.Stat`s the file and refuses if any non-owner
         read/write bit is set. Error message tells the operator the

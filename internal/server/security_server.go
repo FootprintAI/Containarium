@@ -48,6 +48,9 @@ func NewSecurityServer(store *security.Store, incusClient *incus.Client, scanner
 // owner derivation; when blank, the listing would cover all
 // containers, so require admin.
 func (s *SecurityServer) ListClamavReports(ctx context.Context, req *pb.ListClamavReportsRequest) (*pb.ListClamavReportsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if req.ContainerName == "" {
 		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 			return nil, err
@@ -162,6 +165,9 @@ func (s *SecurityServer) fetchPeerReports(authToken string, req *pb.ListClamavRe
 // Admin-only — cluster-wide infection counts leak posture data and
 // list every container by name.
 func (s *SecurityServer) GetClamavSummary(ctx context.Context, req *pb.GetClamavSummaryRequest) (*pb.GetClamavSummaryResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -282,6 +288,9 @@ func (s *SecurityServer) fetchPeerSummaries(authToken string) (summaries []*pb.C
 // owner derivation; when blank, the request enqueues scans for
 // every container on every peer, so require admin.
 func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerClamavScanRequest) (*pb.TriggerClamavScanResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
 	if req.ContainerName == "" {
 		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 			return nil, err
@@ -390,6 +399,9 @@ func (s *SecurityServer) triggerPeerScans(authToken string) int32 {
 // GetScanStatus returns the current state of the scan job queue.
 // Admin-only — the queue lists work items across all containers.
 func (s *SecurityServer) GetScanStatus(ctx context.Context, req *pb.GetScanStatusRequest) (*pb.GetScanStatusResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}

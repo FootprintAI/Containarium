@@ -31,6 +31,9 @@ func NewZapServer(store *zapscanner.Store, manager *zapscanner.Manager) *ZapServ
 // Admin-only: ZAP scans are cluster-wide security operations that
 // can target arbitrary containers; restricted to operators.
 func (s *ZapServer) TriggerZapScan(ctx context.Context, req *pb.TriggerZapScanRequest) (*pb.TriggerZapScanResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -56,6 +59,9 @@ func (s *ZapServer) TriggerZapScan(ctx context.Context, req *pb.TriggerZapScanRe
 // ListZapScanRuns returns recent scan runs. Admin-only —
 // security scan history can name arbitrary containers.
 func (s *ZapServer) ListZapScanRuns(ctx context.Context, req *pb.ListZapScanRunsRequest) (*pb.ListZapScanRunsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -86,6 +92,9 @@ func (s *ZapServer) ListZapScanRuns(ctx context.Context, req *pb.ListZapScanRuns
 // ListZapAlerts returns alerts with optional filtering.
 // Admin-only — security alerts cross tenants.
 func (s *ZapServer) ListZapAlerts(ctx context.Context, req *pb.ListZapAlertsRequest) (*pb.ListZapAlertsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -116,6 +125,9 @@ func (s *ZapServer) ListZapAlerts(ctx context.Context, req *pb.ListZapAlertsRequ
 // Admin-only — cluster-wide counts leak information about
 // which tenants have unresolved findings.
 func (s *ZapServer) GetZapAlertSummary(ctx context.Context, req *pb.GetZapAlertSummaryRequest) (*pb.GetZapAlertSummaryResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -141,6 +153,9 @@ func (s *ZapServer) GetZapAlertSummary(ctx context.Context, req *pb.GetZapAlertS
 // SuppressZapAlert suppresses an alert. Admin-only — alert
 // suppression directly affects what an operator sees.
 func (s *ZapServer) SuppressZapAlert(ctx context.Context, req *pb.SuppressZapAlertRequest) (*pb.SuppressZapAlertResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -178,6 +193,9 @@ func (s *ZapServer) GetZapConfig(ctx context.Context, req *pb.GetZapConfigReques
 // GetZapReport downloads a scan report. Admin-only — reports
 // can name arbitrary containers and disclose finding details.
 func (s *ZapServer) GetZapReport(ctx context.Context, req *pb.GetZapReportRequest) (*pb.GetZapReportResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -221,6 +239,9 @@ func (s *ZapServer) GetZapReport(ctx context.Context, req *pb.GetZapReportReques
 // InstallZap downloads and installs OWASP ZAP. Admin-only —
 // installs a system tool on the daemon host.
 func (s *ZapServer) InstallZap(ctx context.Context, req *pb.InstallZapRequest) (*pb.InstallZapResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}

@@ -37,6 +37,9 @@ func (s *TrafficServer) SetPeerPool(pool *PeerPool) {
 // derivation (admins always pass; tenants only on their own
 // container; system containers require admin).
 func (s *TrafficServer) GetConnections(ctx context.Context, req *pb.GetConnectionsRequest) (*pb.GetConnectionsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTrafficRead); err != nil {
+		return nil, err
+	}
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}
@@ -86,6 +89,9 @@ func (s *TrafficServer) GetConnections(ctx context.Context, req *pb.GetConnectio
 // GetConnectionSummary returns aggregate connection statistics.
 // Phase 1.4 — tenant authz via container_name → owner.
 func (s *TrafficServer) GetConnectionSummary(ctx context.Context, req *pb.GetConnectionSummaryRequest) (*pb.GetConnectionSummaryResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTrafficRead); err != nil {
+		return nil, err
+	}
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}
@@ -106,6 +112,9 @@ func (s *TrafficServer) GetConnectionSummary(ctx context.Context, req *pb.GetCon
 // containers, so require admin.
 func (s *TrafficServer) SubscribeTraffic(req *pb.SubscribeTrafficRequest, stream pb.TrafficService_SubscribeTrafficServer) error {
 	ctx := stream.Context()
+	if err := auth.RequireScope(ctx, auth.ScopeTrafficRead); err != nil {
+		return err
+	}
 	if req.ContainerName == "" {
 		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 			return err
@@ -174,6 +183,9 @@ func (s *TrafficServer) SubscribeTraffic(req *pb.SubscribeTrafficRequest, stream
 // QueryTrafficHistory queries persisted traffic data.
 // Phase 1.4 — tenant authz via container_name → owner.
 func (s *TrafficServer) QueryTrafficHistory(ctx context.Context, req *pb.QueryTrafficHistoryRequest) (*pb.QueryTrafficHistoryResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTrafficRead); err != nil {
+		return nil, err
+	}
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}
@@ -210,6 +222,9 @@ func (s *TrafficServer) QueryTrafficHistory(ctx context.Context, req *pb.QueryTr
 // GetTrafficAggregates returns time-series traffic aggregates.
 // Phase 1.4 — tenant authz via container_name → owner.
 func (s *TrafficServer) GetTrafficAggregates(ctx context.Context, req *pb.GetTrafficAggregatesRequest) (*pb.GetTrafficAggregatesResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTrafficRead); err != nil {
+		return nil, err
+	}
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}

@@ -45,6 +45,9 @@ func (s *ContainerServer) SetAlertDeliveryStore(ds *alert.DeliveryStore) {
 // CreateAlertRule creates a new custom alert rule. Admin-only
 // — alert rules drive cluster-wide notifications.
 func (s *ContainerServer) CreateAlertRule(ctx context.Context, req *pb.CreateAlertRuleRequest) (*pb.CreateAlertRuleResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -99,6 +102,9 @@ func (s *ContainerServer) CreateAlertRule(ctx context.Context, req *pb.CreateAle
 // ListAlertRules lists all custom alert rules. Admin-only —
 // rule names + expressions can disclose operator practice.
 func (s *ContainerServer) ListAlertRules(ctx context.Context, req *pb.ListAlertRulesRequest) (*pb.ListAlertRulesResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -121,6 +127,9 @@ func (s *ContainerServer) ListAlertRules(ctx context.Context, req *pb.ListAlertR
 
 // GetAlertRule gets a single alert rule by ID. Admin-only.
 func (s *ContainerServer) GetAlertRule(ctx context.Context, req *pb.GetAlertRuleRequest) (*pb.GetAlertRuleResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -145,6 +154,9 @@ func (s *ContainerServer) GetAlertRule(ctx context.Context, req *pb.GetAlertRule
 
 // UpdateAlertRule updates an existing alert rule. Admin-only.
 func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAlertRuleRequest) (*pb.UpdateAlertRuleResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -209,6 +221,9 @@ func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAle
 // DeleteAlertRule deletes an alert rule. Admin-only — rule
 // removal silently stops paging on real issues.
 func (s *ContainerServer) DeleteAlertRule(ctx context.Context, req *pb.DeleteAlertRuleRequest) (*pb.DeleteAlertRuleResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -372,6 +387,9 @@ func parseDefaultAlertRules() ([]*pb.AlertRule, error) {
 // where alert payloads (potentially containing tenant data) are
 // posted; redirecting it is exfiltration.
 func (s *ContainerServer) UpdateAlertingConfig(ctx context.Context, req *pb.UpdateAlertingConfigRequest) (*pb.UpdateAlertingConfigResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -452,6 +470,9 @@ func (s *ContainerServer) UpdateAlertingConfig(ctx context.Context, req *pb.Upda
 // with current system status. Admin-only — exposes the webhook URL
 // in error messages (and validates it works).
 func (s *ContainerServer) TestWebhook(ctx context.Context, req *pb.TestWebhookRequest) (*pb.TestWebhookResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -589,6 +610,9 @@ func (s *ContainerServer) recordDelivery(ctx context.Context, alertName, source,
 // Admin-only — delivery records name alert sources and
 // destinations, useful for forensics but not for tenants.
 func (s *ContainerServer) ListWebhookDeliveries(ctx context.Context, req *pb.ListWebhookDeliveriesRequest) (*pb.ListWebhookDeliveriesResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}

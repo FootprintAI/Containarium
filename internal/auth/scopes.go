@@ -42,9 +42,17 @@ const (
 	ScopeRoutesRead  = "routes:read"
 	ScopeRoutesWrite = "routes:write"
 
-	// security findings + scanning
+	// security findings + scanning (ZapServer, PentestServer,
+	// ClamAV reads on SecurityServer)
 	ScopeSecurityRead  = "security:read"
 	ScopeSecurityWrite = "security:write"
+
+	// alerting rules + webhook config
+	ScopeAlertsRead  = "alerts:read"
+	ScopeAlertsWrite = "alerts:write"
+
+	// traffic introspection (TrafficServer)
+	ScopeTrafficRead = "traffic:read"
 
 	// developer-loop tools (push, sync, sync_ssh_config)
 	ScopeCodeWrite = "code:write"
