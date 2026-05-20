@@ -177,9 +177,27 @@ on the internal network. Land them first.
       — **Bearer-token auth is a follow-up** — requires plumbing
         a shared token to every container's OTEL_EXPORTER_OTLP_HEADERS.
         Audit's full closure deserves its own PR.
-- [ ] **2.6** PROXY v2 trust list required at startup — `internal/server/dual_server.go` (**C-MED-1**)
-- [ ] **2.7** Pin Caddy to TLS 1.3, restrict ciphers — `internal/hosting/caddy.go` (**C-MED-2**)
-- [ ] **2.8** App-layer rate limit on auth endpoints — `internal/auth/`, gateway (**C-MED-3**)
+- [x] **2.6** PROXY v2 trust list required at startup — `internal/server/dual_server.go` (**C-MED-1**)
+      — New `validateProxyProtocolTrusted` rejects empty, wildcard
+        (`0.0.0.0/0`, `::/0`), or malformed CIDR entries before
+        the daemon binds anything. Mirrors the lazy check in
+        `internal/app/l4_proxy.go` so failure is visible at boot
+        rather than at first Caddy reconfigure. Tests in
+        `internal/server/proxy_protocol_trusted_test.go`.
+- [x] **2.7** Pin Caddy to TLS 1.3, restrict ciphers — `internal/hosting/caddy.go` (**C-MED-2**)
+      — Caddyfile template now sets global `servers { protocols
+        tls1.2 tls1.3 }` and per-site `ciphers` lists only AEAD
+        suites (CHACHA20-POLY1305 + AES-GCM, no CBC). TLS 1.0/1.1
+        rejected at the protocol level. `curves` restricted to
+        modern ECC.
+- [x] **2.8** App-layer rate limit on auth endpoints — `internal/auth/`, gateway (**C-MED-3**)
+      — New `AuthFailureLimiter` (per-IP token bucket, 10 burst /
+        6 per-minute refill, 30-minute idle eviction). Wired into
+        the HTTP auth middleware on failed JWT validations only —
+        successful requests don't consume tokens, so legitimate
+        traffic stays unthrottled at any rate. Failed-burst
+        attackers get 429 after the initial burst. Tests in
+        `internal/auth/rate_limit_test.go`.
 
 ---
 

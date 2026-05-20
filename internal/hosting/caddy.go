@@ -172,12 +172,26 @@ const caddyfileTemplate = `# Caddy configuration for Containarium App Hosting
 
     # Email for Let's Encrypt notifications
     email {{.Email}}
+
+    # Audit C-MED-2: pin TLS floor and cipher suites. Caddy's
+    # defaults already prefer TLS 1.3, but the global directive
+    # below makes the floor explicit and survives any future
+    # default change. "protocols tls1.2 tls1.3" keeps TLS 1.2
+    # available for older clients while refusing anything older.
+    # "ciphers" lists only AEAD suites (no CBC, no RC4) -- the
+    # 1.3 set is hard-coded by the protocol, so this only
+    # affects 1.2 fallback.
+    servers {
+        protocols tls1.2 tls1.3
+    }
 }
 {{if not .NoWildcard}}
 # Wildcard domain with DNS-01 challenge for automatic TLS
 *.{{.Domain}} {
     tls {
         {{.DNSConfig}}
+        ciphers TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305 TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+        curves x25519 secp384r1 secp256r1
     }
 
     # Default response for unconfigured subdomains
@@ -188,6 +202,8 @@ const caddyfileTemplate = `# Caddy configuration for Containarium App Hosting
 {{.Domain}} {
     tls {
         {{.DNSConfig}}
+        ciphers TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305 TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+        curves x25519 secp384r1 secp256r1
     }
 
     # Proxy to Containarium REST API

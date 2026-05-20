@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -12,12 +13,18 @@ import (
 // AuthMiddleware handles authentication for HTTP and gRPC requests
 type AuthMiddleware struct {
 	tokenManager *TokenManager
+
+	// failureLimiter rate-limits failed JWT validations per
+	// source IP. nil disables (used in tests). Production wiring
+	// always provides one — see NewAuthMiddleware. Audit C-MED-3.
+	failureLimiter *AuthFailureLimiter
 }
 
 // NewAuthMiddleware creates a new authentication middleware
 func NewAuthMiddleware(tokenManager *TokenManager) *AuthMiddleware {
 	return &AuthMiddleware{
-		tokenManager: tokenManager,
+		tokenManager:   tokenManager,
+		failureLimiter: NewAuthFailureLimiter(),
 	}
 }
 
@@ -47,6 +54,17 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		// signature failure, etc.) to clients. See finding A-MED-7.
 		claims, err := am.tokenManager.ValidateToken(token)
 		if err != nil {
+			// Audit C-MED-3: per-IP token-bucket on failed
+			// validations. Successful auth doesn't consume
+			// tokens — only failures count, so legitimate
+			// users at any rate stay unthrottled. Attacker
+			// spraying invalid tokens gets 429 after the
+			// burst.
+			ip := clientIPFromRequest(r)
+			if ip != "" && !am.failureLimiter.Allow(ip, time.Now()) {
+				http.Error(w, `{"error": "too many failed authentication attempts; try again later", "code": 429}`, http.StatusTooManyRequests)
+				return
+			}
 			http.Error(w, `{"error": "invalid token", "code": 401}`, http.StatusUnauthorized)
 			return
 		}

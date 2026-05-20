@@ -159,6 +159,20 @@ type DualServer struct {
 
 // NewDualServer creates a new dual server instance
 func NewDualServer(config *DualServerConfig) (*DualServer, error) {
+	// Audit C-MED-1: when --proxy-protocol is on, the daemon
+	// trusts PROXY v2 headers from the configured CIDR list. An
+	// empty or wildcard list means anyone on the network can
+	// spoof the X-Forwarded-For chain. The L4 proxy layer
+	// already refuses these inputs (l4_proxy.go:65-72) but only
+	// at the point Caddy is reconfigured — by then the daemon
+	// has been live for a while. Validate at startup so the
+	// failure is visible at boot.
+	if config.ProxyProtocol {
+		if err := validateProxyProtocolTrusted(config.ProxyProtocolTrusted); err != nil {
+			return nil, fmt.Errorf("proxy-protocol-trusted misconfigured: %w", err)
+		}
+	}
+
 	// Create container server
 	containerServer, err := NewContainerServer()
 	if err != nil {
