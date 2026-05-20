@@ -448,8 +448,21 @@ on the internal network. Land them first.
         callers see 403; unauthenticated callers see 401
         from the prior middleware step. Tests in
         `internal/gateway/swagger_gate_test.go`.
-- [ ] **5.2** Add `gosec`, `govulncheck`, `trivy` to CI
-- [ ] **5.3** Publish `SECURITY.md` with vulnerability-disclosure policy
+- [x] **5.2** Add `gosec`, `govulncheck`, `trivy` to CI
+      — Already in place; workflow lives at
+        `.github/workflows/security.yml`. All three run on
+        push to `main`, on every PR, and weekly. SARIF
+        results upload to GitHub code scanning. govulncheck
+        fails the build when a known-fixed vuln is
+        detected.
+- [x] **5.3** Publish `SECURITY.md` with vulnerability-disclosure policy
+      — Added at repo root. Covers: how to report
+        (private GitHub advisory + email fallback),
+        acknowledgement SLA (3 business days), substantive
+        response SLA (10 business days), 90-day coordinated
+        disclosure window, supported versions, out-of-scope
+        cases, automated scanning summary, and an audit-
+        history pointer back to this doc.
 - [ ] **5.4** Abuse-case test suite: oversized payloads, replayed tokens, wrong-tenant access — all must fail closed
 
 ---
