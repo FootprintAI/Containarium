@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -217,6 +218,9 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 	}
 	if raw := os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET"); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {
+			// #nosec G706 -- both args are ints (len(raw) and a
+			// const) so there is no log-injection vector; gosec's
+			// taint chases `raw` upstream and flags any descendant.
 			log.Printf("[sentinel] WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is %d bytes, want >=%d — /sentinel/peers responses will be unsigned and daemons will reject them",
 				len(raw), auth.SentinelMinSecretLen)
 		}
@@ -232,17 +236,29 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 	// Without the key the sentinel runs in pre-0.5 (HTTP-only)
 	// mode — backwards compatible during rollout.
 	if caKeyPath := os.Getenv("CONTAINARIUM_CA_KEY_FILE"); caKeyPath != "" {
+		// #nosec G304 -- caKeyPath is operator-controlled config
+		// (CONTAINARIUM_CA_KEY_FILE), not user input. The operator
+		// is trusted to point this at a real CA key on disk; if it
+		// were attacker-controlled the sentinel would already be
+		// compromised at a deeper layer.
 		caKeyPEM, err := os.ReadFile(caKeyPath)
+		// Sanitize caKeyPath into a quoted form before logging so
+		// gosec's G706 taint analysis sees the explicit escape
+		// step. %q already quotes/escapes control chars, but the
+		// analyzer chases the raw env-var taint rather than the
+		// formatter — so we materialize the sanitized form
+		// upfront.
+		safeCAPath := strconv.Quote(caKeyPath)
 		if err != nil {
-			log.Printf("[sentinel] WARNING: CONTAINARIUM_CA_KEY_FILE=%q is unreadable (%v) — Phase 0.5 HTTPS/mTLS disabled, falling back to HTTP", caKeyPath, err)
+			log.Printf("[sentinel] WARNING: CONTAINARIUM_CA_KEY_FILE=%s is unreadable (%v) — Phase 0.5 HTTPS/mTLS disabled, falling back to HTTP", safeCAPath, err)
 		} else {
 			provisioner, err := pki.NewFromKey(caKeyPEM, 0 /* default leaf TTL */)
 			if err != nil {
-				log.Printf("[sentinel] WARNING: failed to parse CA key at %q (%v) — Phase 0.5 HTTPS/mTLS disabled", caKeyPath, err)
+				log.Printf("[sentinel] WARNING: failed to parse CA key at %s (%v) — Phase 0.5 HTTPS/mTLS disabled", safeCAPath, err)
 			} else if err := m.SetCertProvisioner(provisioner); err != nil {
 				log.Printf("[sentinel] WARNING: failed to install peer-CA provisioner: %v", err)
 			} else {
-				log.Printf("[sentinel] peer-CA loaded from %q, leaf TTL=%s", caKeyPath, provisioner.LeafExpiry())
+				log.Printf("[sentinel] peer-CA loaded from %s, leaf TTL=%s", safeCAPath, provisioner.LeafExpiry())
 			}
 		}
 	} else {

@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -169,7 +170,11 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 			if p, perr := parsePort(env); perr == nil {
 				httpsPort = p
 			} else {
-				log.Printf("[sentinel] invalid CONTAINARIUM_SENTINEL_HTTPS_PORT=%q (%v) — defaulting to %d", env, perr, httpsPort)
+				// strconv.Quote sanitizes the env value so gosec's
+				// G706 taint analysis sees the explicit escape; %q
+				// alone does this at format time but the analyzer
+				// chases the raw os.Getenv source upstream.
+				log.Printf("[sentinel] invalid CONTAINARIUM_SENTINEL_HTTPS_PORT=%s (%v) — defaulting to %d", strconv.Quote(env), perr, httpsPort)
 			}
 		}
 		tlsCert, tlsErr := tls.X509KeyPair(certPEM, keyPEM)
@@ -187,6 +192,9 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 				},
 			}
 			go func() {
+				// #nosec G706 -- httpsPort is an int; taint chases
+				// it back to the env value but %d on an int has no
+				// log-injection vector.
 				log.Printf("[sentinel] binary server HTTPS listener on :%d (Phase 0.5 — clients pin /sentinel/ca)", httpsPort)
 				if err := httpsSrv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 					log.Printf("[sentinel] binary server HTTPS error: %v", err)
@@ -196,9 +204,12 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	}
 
 	return func() {
-		srv.Close()
+		// Errors on shutdown are not actionable — the process is
+		// going away — but acknowledge them explicitly so static
+		// analysis doesn't flag the unhandled returns.
+		_ = srv.Close()
 		if httpsSrv != nil {
-			httpsSrv.Close()
+			_ = httpsSrv.Close()
 		}
 	}, nil
 }

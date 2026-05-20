@@ -140,8 +140,15 @@ func FetchPeerPKI(ctx interface{}, sentinelBaseURL, peerID string, hmacSecret []
 	bootstrap := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
+			// #nosec G402 -- this is the one-shot bootstrap to fetch
+			// the CA bundle itself; we have nothing to verify
+			// against yet. The HMAC signature on the outbound
+			// request authenticates the caller end of the trust
+			// boundary, and the daemon discards this transport
+			// after the response. Every subsequent peer-to-peer
+			// call uses the pinned CA from the response body.
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // bootstrap; pinned CA used for all subsequent calls
+				InsecureSkipVerify: true,
 				MinVersion:         tls.VersionTLS12,
 			},
 		},
