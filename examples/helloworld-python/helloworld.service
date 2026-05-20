@@ -1,0 +1,13 @@
+[Unit]
+Description=helloworld python app
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/helloworld/work/app.py
+WorkingDirectory=/home/helloworld/work
+User=helloworld
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
