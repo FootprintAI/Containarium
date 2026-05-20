@@ -923,6 +923,21 @@ skipAppHosting:
 			config.CaddyCertDir,
 		)
 
+		// Sentinel-facing HMAC secret for /certs, /authorized-keys,
+		// /authorized-keys/sentinel. If unset (or shorter than the
+		// minimum) the gateway fails closed — every request returns
+		// 401 — so an operator running without the env var sees the
+		// keysync error loudly and configures it. Don't paper over.
+		if secret := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET")); secret != "" {
+			if len(secret) < auth.SentinelMinSecretLen {
+				log.Printf("WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is %d bytes, want >=%d — sentinel endpoints will refuse all requests until this is fixed",
+					len(secret), auth.SentinelMinSecretLen)
+			}
+			gatewayServer.SetSentinelAuthSecret([]byte(secret))
+		} else {
+			log.Printf("WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset — /certs, /authorized-keys, /authorized-keys/sentinel will return 401 until configured")
+		}
+
 		// Wire security store for CSV export
 		if securityStore != nil {
 			gatewayServer.SetSecurityStore(securityStore)

@@ -69,25 +69,44 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 	return token.SignedString(tm.secretKey)
 }
 
-// ValidateToken validates a JWT token and returns claims
+// errInvalidToken is the only token-validation error returned to
+// clients. Keeping it generic prevents reconnaissance via error
+// messages (which algorithm was tried, whether the signature or the
+// expiry failed, etc.). The full reason is still logged server-side.
+var errInvalidToken = fmt.Errorf("invalid token")
+
+// ValidateToken validates a JWT token and returns claims.
+//
+// Hardening for zero-trust:
+//
+//   - Algorithm is pinned to HS256. Tokens this daemon issues are
+//     always HS256 (see GenerateToken). Accepting any HMAC variant
+//     (HS384, HS512) widens the attack surface for nothing — and the
+//     loose check that was here previously left the door open to
+//     library-level alg-confusion bugs if a dependency ever
+//     regressed. See finding A-CRIT-3 in docs/security/.
+//   - The error returned to clients is a generic "invalid token",
+//     never leaking the offending algorithm name or the
+//     library-level parse error. Full detail is still logged via
+//     %w-wrapping at the caller's discretion.
 func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		// Verify signing method
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		// Pin to HS256 exactly. SigningMethodHS256.Alg() == "HS256".
+		if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, errInvalidToken
 		}
 		return tm.secretKey, nil
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse token: %w", err)
+		return nil, errInvalidToken
 	}
 
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
 		return claims, nil
 	}
 
-	return nil, fmt.Errorf("invalid token")
+	return nil, errInvalidToken
 }
 
 // Context keys for storing authentication information

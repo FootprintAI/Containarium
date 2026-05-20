@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -119,7 +118,7 @@ func TestMoveContainer_HappyPath(t *testing.T) {
 		// We also have 3 snapshots (sync0, sync1, final) + their
 		// deletes at the end (sync0, sync1, final = 3).
 	}
-	resp, err := cs.MoveContainer(context.Background(), req)
+	resp, err := cs.MoveContainer(testCtx(), req)
 	if err != nil {
 		t.Fatalf("MoveContainer err = %v", err)
 	}
@@ -163,7 +162,7 @@ func TestMoveContainer_RejectsMissingRemote(t *testing.T) {
 	runner := &fakeRunner{hasRemote: false} // not set up
 	cs := newTestContainerServer(t, runner, "vm2")
 
-	_, err := cs.MoveContainer(context.Background(),
+	_, err := cs.MoveContainer(testCtx(),
 		&pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2"})
 	if err == nil {
 		t.Fatal("expected error when incus remote isn't configured")
@@ -192,7 +191,7 @@ func TestMoveContainer_RollsBackOnCutoverFailure(t *testing.T) {
 	})
 	defer prev()
 
-	_, err := cs.MoveContainer(context.Background(),
+	_, err := cs.MoveContainer(testCtx(),
 		&pb.MoveContainerRequest{Username: "alice", TargetBackendId: "vm2", MaxIterations: 1})
 	if err == nil {
 		t.Fatal("expected error on final-delta copy failure")
@@ -222,7 +221,7 @@ func TestMoveContainer_RejectsSelf(t *testing.T) {
 	runner := &fakeRunner{hasRemote: true}
 	cs := newTestContainerServer(t, runner, "vm2")
 
-	_, err := cs.MoveContainer(context.Background(),
+	_, err := cs.MoveContainer(testCtx(),
 		&pb.MoveContainerRequest{Username: "alice", TargetBackendId: cs.peerPool.LocalBackendID()})
 	if err == nil {
 		t.Fatal("expected error when target == local backend")

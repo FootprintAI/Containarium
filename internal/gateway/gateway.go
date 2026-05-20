@@ -55,6 +55,14 @@ type GatewayServer struct {
 	// Backends handler (for multi-backend support, set externally)
 	backendsHandler http.HandlerFunc
 
+	// sentinelAuthSecret is the shared HMAC secret used by the
+	// sentinel to authenticate calls to /authorized-keys and /certs.
+	// Set via CONTAINARIUM_SENTINEL_AUTH_SECRET. Nil/short means the
+	// wrapped endpoints fail closed (401) — fail-open is never an
+	// acceptable default for these endpoints (see audit C-CRIT-4 and
+	// A-CRIT-4).
+	sentinelAuthSecret []byte
+
 	// Wake handler (for serverless / wake-on-HTTP, set externally).
 	// Mounted at /wake/ and at the root catch-all when the daemon's
 	// wake feature is enabled. NOT wrapped by the JWT auth middleware
@@ -140,6 +148,16 @@ func (gs *GatewayServer) SetRecordDeliveryFn(fn func(ctx context.Context, alertN
 
 // SetAlertRelayConfig sets the external webhook URL and HMAC signing secret
 // for the alert relay handler. Thread-safe; can be called at any time.
+// SetSentinelAuthSecret configures the shared HMAC secret that the
+// sentinel uses to sign its calls to /authorized-keys and /certs.
+// Pass a slice that satisfies auth.SentinelMinSecretLen; shorter
+// values cause those endpoints to fail closed (401 for every call).
+// The expected source is CONTAINARIUM_SENTINEL_AUTH_SECRET on both
+// the daemon and the sentinel.
+func (gs *GatewayServer) SetSentinelAuthSecret(secret []byte) {
+	gs.sentinelAuthSecret = secret
+}
+
 // SetBackendsHandler sets the handler for the /v1/backends endpoint.
 func (gs *GatewayServer) SetBackendsHandler(handler http.HandlerFunc) {
 	gs.backendsHandler = handler
@@ -623,13 +641,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		httpMux.Handle("/v1/backends", authed)
 	}
 
-	// Cert export endpoint (no auth — only reachable within VPC)
-	httpMux.HandleFunc("/certs", ServeCerts(gs.caddyCertDir))
-
-	// Authorized keys endpoints (no auth — VPC-internal only, same as /certs)
-	// Used by sentinel to sync SSH keys for sshpiper configuration
-	httpMux.HandleFunc("/authorized-keys", ServeAuthorizedKeys())
-	httpMux.HandleFunc("/authorized-keys/sentinel", ServeSentinelKey())
+	// Sentinel-facing endpoints: /certs and /authorized-keys[/sentinel].
+	// Previously "no auth — VPC-internal only"; that comment never
+	// stopped a firewall misconfiguration. Now gated by HMAC over
+	// CONTAINARIUM_SENTINEL_AUTH_SECRET (auth.SentinelHMACMiddleware).
+	// Fail-closed: if the secret isn't configured, all requests get
+	// 401. See findings A-CRIT-4 and A-HIGH-2.
+	httpMux.Handle("/certs", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeCerts(gs.caddyCertDir)))
+	httpMux.Handle("/authorized-keys", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeAuthorizedKeys()))
+	httpMux.Handle("/authorized-keys/sentinel", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeSentinelKey()))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is
@@ -669,12 +689,24 @@ func customErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler ru
 	json.NewEncoder(w).Encode(errorResp)
 }
 
-// annotateContext adds metadata to context
+// annotateContext adds metadata that grpc-gateway forwards into the
+// outgoing gRPC call. We use it to propagate the authenticated
+// subject from AuthMiddleware (which lives on r.Context()) into
+// gRPC metadata, where SubjectFromGRPCContext picks it up on the
+// server side. Without this, gRPC handlers cannot enforce
+// per-resource authorization.
 func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
-	return metadata.Pairs(
+	md := metadata.Pairs(
 		"x-forwarded-method", req.Method,
 		"x-forwarded-path", req.URL.Path,
 	)
+	if username, ok := auth.UsernameFromContext(ctx); ok && username != "" {
+		md.Set(auth.MDKeyUsername, username)
+	}
+	if roles, ok := auth.RolesFromContext(ctx); ok && len(roles) > 0 {
+		md.Set(auth.MDKeyRoles, strings.Join(roles, ","))
+	}
+	return md
 }
 
 // getAllowedOrigins returns the list of allowed CORS origins.

@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -42,11 +41,13 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 
 		token := parts[1]
 
-		// Validate token
+		// Validate token. The error returned by ValidateToken is
+		// intentionally generic ("invalid token") so we don't leak
+		// reconnaissance details (algorithm name, expiry vs.
+		// signature failure, etc.) to clients. See finding A-MED-7.
 		claims, err := am.tokenManager.ValidateToken(token)
 		if err != nil {
-			errorMsg := fmt.Sprintf(`{"error": "invalid token: %v", "code": 401}`, err)
-			http.Error(w, errorMsg, http.StatusUnauthorized)
+			http.Error(w, `{"error": "invalid token", "code": 401}`, http.StatusUnauthorized)
 			return
 		}
 

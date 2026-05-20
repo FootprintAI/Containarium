@@ -56,7 +56,11 @@ func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
 	url := fmt.Sprintf("http://%s:%d/authorized-keys", backendIP, httpPort)
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	req, err := newSignedRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("key sync: build request: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		ks.mu.Lock()
 		ks.ensureBackendLocked(backendID, backendIP).lastErr = err
@@ -232,7 +236,12 @@ func (ks *KeyStore) PushSentinelKey(backendIP string, httpPort int) error {
 	body, _ := json.Marshal(gateway.SentinelKeyRequest{PublicKey: strings.TrimSpace(string(pubKey))})
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	req, err := newSignedRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("push sentinel key: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("push sentinel key POST %s: %w", url, err)
 	}

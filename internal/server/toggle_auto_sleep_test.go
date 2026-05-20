@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"strconv"
 	"sync"
@@ -62,7 +61,7 @@ func TestToggleAutoSleep_EnableSetsFlagsAndThreshold(t *testing.T) {
 	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
 		"alice-container": {Name: "alice-container", State: "Running"},
 	})
-	resp, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{
+	resp, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
 		Username:             "alice",
 		Enabled:              true,
 		IdleThresholdMinutes: 30,
@@ -108,7 +107,7 @@ func TestToggleAutoSleep_DisableSetsFlagOnly(t *testing.T) {
 			AutoSleepEnabled: true, IdleThresholdMinutes: 30,
 		},
 	})
-	resp, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{
+	resp, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
 		Username: "alice",
 		Enabled:  false,
 	})
@@ -137,7 +136,7 @@ func TestToggleAutoSleep_DefaultThreshold(t *testing.T) {
 			IdleThresholdMinutes: incus.DefaultIdleThresholdMinutes,
 		},
 	})
-	resp, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{
+	resp, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
 		Username:             "alice",
 		Enabled:              true,
 		IdleThresholdMinutes: 0,
@@ -173,7 +172,7 @@ func TestToggleAutoSleep_CoreContainerRejected(t *testing.T) {
 			Role: incus.RoleCaddy,
 		},
 	})
-	_, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
 		Username: "caddy",
 		Enabled:  true,
 	})
@@ -196,7 +195,7 @@ func TestToggleAutoSleep_NoSuchContainer(t *testing.T) {
 		return nil, errors.New("container not found: " + name)
 	}
 	s := &ContainerServer{manager: container.NewWithBackend(mock)}
-	_, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
 		Username: "ghost",
 		Enabled:  true,
 	})
@@ -211,7 +210,7 @@ func TestToggleAutoSleep_NoSuchContainer(t *testing.T) {
 // TestToggleAutoSleep_MissingUsername — universal precondition check.
 func TestToggleAutoSleep_MissingUsername(t *testing.T) {
 	s := &ContainerServer{}
-	_, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{Enabled: true})
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{Enabled: true})
 	if err == nil {
 		t.Fatal("expected error for empty username")
 	}
@@ -227,7 +226,7 @@ func TestToggleAutoSleep_AcceptsStoppedContainer(t *testing.T) {
 	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
 		"alice-container": {Name: "alice-container", State: "Stopped"},
 	})
-	resp, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{
+	resp, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
 		Username:             "alice",
 		Enabled:              true,
 		IdleThresholdMinutes: 20,
@@ -252,7 +251,7 @@ func TestToggleAutoSleep_NegativeThresholdClampsToDefault(t *testing.T) {
 		"alice-container": {Name: "alice-container", State: "Running",
 			IdleThresholdMinutes: incus.DefaultIdleThresholdMinutes},
 	})
-	resp, err := s.ToggleAutoSleep(context.Background(), &pb.ToggleAutoSleepRequest{
+	resp, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
 		Username:             "alice",
 		Enabled:              true,
 		IdleThresholdMinutes: -5,

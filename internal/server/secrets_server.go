@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/secrets"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -29,6 +30,9 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	meta, err := s.secretsStore.Set(ctx, req.Username, req.Name, req.Value)
@@ -60,6 +64,9 @@ func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretReques
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	meta, value, err := s.secretsStore.Get(ctx, req.Username, req.Name)
 	if err != nil {
@@ -81,6 +88,9 @@ func (s *ContainerServer) ListSecrets(ctx context.Context, req *pb.ListSecretsRe
 	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	list, err := s.secretsStore.List(ctx, req.Username)
@@ -106,6 +116,9 @@ func (s *ContainerServer) DeleteSecret(ctx context.Context, req *pb.DeleteSecret
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	if err := s.secretsStore.Delete(ctx, req.Username, req.Name); err != nil {
 		return nil, mapSecretError(err)
@@ -127,6 +140,9 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	stamped, err := s.stampSecretsOnLXC(ctx, req.Username)

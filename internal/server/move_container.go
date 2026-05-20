@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -80,6 +81,9 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	}
 	if req.TargetBackendId == "" {
 		return nil, fmt.Errorf("target_backend_id is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 	if s.peerPool == nil {
 		return nil, fmt.Errorf("peer pool not configured; multi-backend support is disabled on this daemon")

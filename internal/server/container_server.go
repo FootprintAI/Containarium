@@ -13,6 +13,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/internal/events"
@@ -115,6 +116,9 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// Validate request
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	// Pool resolution — if a pool is requested, either validate that
@@ -335,6 +339,21 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 // ListContainers lists all containers
 func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContainersRequest) (*pb.ListContainersResponse, error) {
+	// Tenant isolation: non-admin callers may only see their own
+	// containers. Empty req.Username for a non-admin is rewritten to
+	// the authenticated subject (was "list everyone's"); an explicit
+	// different username is denied.
+	subject, roles, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		if req.Username != "" && req.Username != subject {
+			return nil, status.Error(codes.PermissionDenied, "not authorized for this tenant")
+		}
+		req.Username = subject
+	}
+
 	containers, err := s.manager.List()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
@@ -425,6 +444,9 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	// Check if there's a pending async creation
 	s.pendingMu.RLock()
@@ -505,6 +527,9 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteContainerRequest) (*pb.DeleteContainerResponse, error) {
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
@@ -621,6 +646,9 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartContainerRequest) (*pb.StartContainerResponse, error) {
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	if err := s.manager.Start(req.Username); err != nil {
@@ -752,6 +780,9 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	if err := s.manager.Stop(req.Username, req.Force); err != nil {
 		// Try peer
@@ -794,6 +825,9 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 // ticker depends on a narrow interface (Stopper) rather than the full
 // internal/server import graph.
 func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason string, idleMinutes int) error {
+	// Autosleep is daemon-internal — promote the context to the system
+	// identity so the StopContainer authz check passes.
+	ctx = auth.ContextWithSystemIdentity(ctx)
 	log.Printf("[autosleep] stopping username=%s reason=%q idle_minutes=%d", username, reason, idleMinutes)
 
 	// Swap Caddy routes to the wake handler BEFORE stopping the
@@ -827,6 +861,9 @@ func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason
 func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeContainerRequest) (*pb.ResizeContainerResponse, error) {
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	// At least one resource must be specified
@@ -885,6 +922,9 @@ func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRe
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	message, freedBytes, err := s.manager.CleanupDisk(req.Username)
 	if err != nil {
@@ -939,6 +979,9 @@ func (s *ContainerServer) InstallStack(ctx context.Context, req *pb.InstallStack
 	}
 	if req.StackId == "" {
 		return nil, fmt.Errorf("stack_id is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	// Reject stack installation on Windows VMs
@@ -1012,6 +1055,12 @@ func (s *ContainerServer) ListStacks(ctx context.Context, req *pb.ListStacksRequ
 func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.AdoptMigratedContainerRequest) (*pb.AdoptMigratedContainerResponse, error) {
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
+	}
+	// AdoptMigratedContainer is called peer-to-peer with the destination
+	// daemon's system token (admin role). Tenants must not be able to
+	// craft an adoption request for someone else's container.
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
@@ -1133,6 +1182,9 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	info, err := s.manager.Get(req.Username)
 	if err != nil {
@@ -1212,6 +1264,9 @@ func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAut
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	info, err := s.manager.Get(req.Username)
 	if err != nil {
@@ -1275,6 +1330,9 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	if req.SshPublicKey == "" {
 		return nil, fmt.Errorf("ssh_public_key is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	if err := container.AddAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("add authorized key: %w", err)
@@ -1303,6 +1361,9 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 	if req.SshPublicKey == "" {
 		return nil, fmt.Errorf("ssh_public_key is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	if err := container.RemoveAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("remove authorized key: %w", err)
@@ -1322,6 +1383,20 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 
 // GetMetrics gets runtime metrics for containers
 func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequest) (*pb.GetMetricsResponse, error) {
+	// Tenant isolation: as with ListContainers, empty username for a
+	// non-admin is rewritten to the authenticated subject (was "all
+	// containers"); a different explicit username is denied.
+	subject, roles, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		if req.Username != "" && req.Username != subject {
+			return nil, status.Error(codes.PermissionDenied, "not authorized for this tenant")
+		}
+		req.Username = subject
+	}
+
 	var protoMetrics []*pb.ContainerMetrics
 
 	if req.Username != "" {
@@ -1811,6 +1886,9 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	if req.SshPublicKey == "" {
 		return nil, fmt.Errorf("ssh_public_key is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.OwnerUsername); err != nil {
+		return nil, err
+	}
 
 	if s.collaboratorManager == nil {
 		// No local collaborator manager — try peer
@@ -1882,6 +1960,9 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 	if req.CollaboratorUsername == "" {
 		return nil, fmt.Errorf("collaborator_username is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.OwnerUsername); err != nil {
+		return nil, err
+	}
 
 	if s.collaboratorManager == nil {
 		// No local collaborator manager — try peer
@@ -1917,6 +1998,9 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCollaboratorsRequest) (*pb.ListCollaboratorsResponse, error) {
 	if req.OwnerUsername == "" {
 		return nil, fmt.Errorf("owner_username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.OwnerUsername); err != nil {
+		return nil, err
 	}
 
 	if s.collaboratorManager == nil {

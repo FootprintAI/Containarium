@@ -6,10 +6,13 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // NetworkServer implements the NetworkService gRPC service
@@ -58,6 +61,17 @@ func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager,
 
 // GetRoutes lists all proxy routes from PostgreSQL (source of truth)
 func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest) (*pb.GetRoutesResponse, error) {
+	// Tenant isolation: non-admin → routes for your apps only.
+	subject, roles, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		if req.Username != "" && req.Username != subject {
+			return nil, status.Error(codes.PermissionDenied, "not authorized for this tenant")
+		}
+		req.Username = subject
+	}
 	// If RouteStore is available, use it as source of truth
 	if s.routeStore != nil {
 		routes, err := s.routeStore.List(ctx, false) // include disabled routes so UI can show toggle state
@@ -721,6 +735,12 @@ func (s *NetworkServer) ListDNSRecords(ctx context.Context, req *pb.ListDNSRecor
 
 // GetContainerACL gets firewall rules for a DevBox container
 func (s *NetworkServer) GetContainerACL(ctx context.Context, req *pb.GetContainerACLRequest) (*pb.GetContainerACLResponse, error) {
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 	containerName := req.Username + "-container"
 
 	// Verify container exists
@@ -785,6 +805,12 @@ func (s *NetworkServer) GetContainerACL(ctx context.Context, req *pb.GetContaine
 
 // UpdateContainerACL updates firewall rules for a DevBox container
 func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateContainerACLRequest) (*pb.UpdateContainerACLResponse, error) {
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 	containerName := req.Username + "-container"
 
 	// Verify container exists

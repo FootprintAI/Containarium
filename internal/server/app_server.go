@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -50,6 +51,9 @@ func (s *AppServer) DeployApp(ctx context.Context, req *pb.DeployAppRequest) (*p
 	if len(req.SourceTarball) == 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "source_tarball is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	// Deploy the app
 	deployedApp, detectedLang, err := s.manager.DeployApp(ctx, req)
@@ -71,6 +75,18 @@ func (s *AppServer) DeployApp(ctx context.Context, req *pb.DeployAppRequest) (*p
 func (s *AppServer) ListApps(ctx context.Context, req *pb.ListAppsRequest) (*pb.ListAppsResponse, error) {
 	if s.isDisabled() {
 		return &pb.ListAppsResponse{Apps: nil, TotalCount: 0}, nil
+	}
+	// Tenant isolation: non-admin → list only your own. Empty username
+	// for a non-admin is rewritten to the subject.
+	subject, roles, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		if req.Username != "" && req.Username != subject {
+			return nil, status.Error(codes.PermissionDenied, "not authorized for this tenant")
+		}
+		req.Username = subject
 	}
 	apps, err := s.store.List(ctx, req.Username, req.StateFilter)
 	if err != nil {
@@ -99,6 +115,9 @@ func (s *AppServer) GetApp(ctx context.Context, req *pb.GetAppRequest) (*pb.GetA
 	if req.AppName == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	appInfo, err := s.store.GetByName(ctx, req.Username, req.AppName)
 	if err != nil {
@@ -123,6 +142,9 @@ func (s *AppServer) StopApp(ctx context.Context, req *pb.StopAppRequest) (*pb.St
 	}
 	if req.AppName == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	stoppedApp, err := s.manager.StopApp(ctx, req.Username, req.AppName)
@@ -150,6 +172,9 @@ func (s *AppServer) StartApp(ctx context.Context, req *pb.StartAppRequest) (*pb.
 	if req.AppName == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	startedApp, err := s.manager.StartApp(ctx, req.Username, req.AppName)
 	if err != nil {
@@ -176,6 +201,9 @@ func (s *AppServer) RestartApp(ctx context.Context, req *pb.RestartAppRequest) (
 	if req.AppName == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
 	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
 
 	restartedApp, err := s.manager.RestartApp(ctx, req.Username, req.AppName)
 	if err != nil {
@@ -198,6 +226,9 @@ func (s *AppServer) DeleteApp(ctx context.Context, req *pb.DeleteAppRequest) (*p
 	}
 	if req.AppName == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	// Get app ID before deletion for event
@@ -232,6 +263,9 @@ func (s *AppServer) GetAppLogs(req *pb.GetAppLogsRequest, stream pb.AppService_G
 	}
 	if req.AppName == "" {
 		return status.Errorf(codes.InvalidArgument, "app_name is required")
+	}
+	if err := auth.AuthorizeTenant(stream.Context(), req.Username); err != nil {
+		return err
 	}
 
 	tailLines := req.TailLines

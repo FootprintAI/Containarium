@@ -48,7 +48,7 @@ func TestStopForAutoSleep_CallsStopContainer(t *testing.T) {
 		return nil
 	}
 
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := atomic.LoadInt32(&stops); got != 1 {
@@ -72,7 +72,7 @@ func TestStopForAutoSleep_PropagatesError(t *testing.T) {
 	mock.StopContainerFunc = func(string, bool) error {
 		return errors.New("incus refused stop")
 	}
-	err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90)
+	err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90)
 	if err == nil {
 		t.Fatal("expected error to propagate from inner Stop")
 	}
@@ -100,7 +100,7 @@ func TestStopForAutoSleep_DoesNotInvokeAuditDirectly(t *testing.T) {
 		emitter: events.NewEmitter(bus),
 	}
 
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestStopForAutoSleep_SwapsBeforeStop(t *testing.T) {
 		routeStore:  recordingRouteStore{},
 	}
 
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -39,7 +38,7 @@ func TestStartContainer_NoWaitDefault(t *testing.T) {
 		"alice-container": {Name: "alice-container", State: "Stopped", IPAddress: "10.0.0.42"},
 	})
 	start := time.Now()
-	resp, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	resp, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,7 +59,7 @@ func TestStartContainer_WaitForReady_NilRouteStoreShortCircuits(t *testing.T) {
 		"alice-container": {Name: "alice-container", State: "Stopped", IPAddress: "10.0.0.42"},
 	})
 	start := time.Now()
-	resp, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{
+	resp, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{
 		Username:     "alice",
 		WaitForReady: true,
 	})
@@ -83,7 +82,7 @@ func TestStartContainer_WaitForReady_EmptyIPShortCircuits(t *testing.T) {
 		"alice-container": {Name: "alice-container", State: "Stopped", IPAddress: ""},
 	})
 	start := time.Now()
-	resp, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{
+	resp, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{
 		Username:            "alice",
 		WaitForReady:        true,
 		ReadyTimeoutSeconds: 1,
@@ -102,7 +101,7 @@ func TestStartContainer_WaitForReady_EmptyIPShortCircuits(t *testing.T) {
 // TestStartContainer_MissingUsername — request validation.
 func TestStartContainer_MissingUsername(t *testing.T) {
 	s := newStartContainerTestServer(t, nil)
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{})
 	if err == nil {
 		t.Fatal("expected error for empty username")
 	}
@@ -120,7 +119,7 @@ func TestStartContainer_StartFailureSurfaces(t *testing.T) {
 		manager: container.NewWithBackend(mock),
 		emitter: events.NewEmitter(events.NewBus()),
 	}
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err == nil {
 		t.Fatal("expected error when manager.Start fails")
 	}
@@ -133,7 +132,7 @@ func TestStartContainer_ResponsePopulatesContainerName(t *testing.T) {
 	s := newStartContainerTestServer(t, map[string]*incus.ContainerInfo{
 		"alice-container": {Name: "alice-container", State: "Stopped", IPAddress: "10.0.0.99"},
 	})
-	resp, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	resp, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,7 +169,7 @@ func TestStartContainer_StampsLastStartedAt(t *testing.T) {
 	}
 
 	before := time.Now()
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	after := time.Now()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -222,7 +221,7 @@ func TestStartContainer_DoesNotStampOnFailure(t *testing.T) {
 		emitter: events.NewEmitter(events.NewBus()),
 	}
 
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err == nil {
 		t.Fatal("expected start to fail")
 	}

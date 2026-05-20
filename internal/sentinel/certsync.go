@@ -43,7 +43,11 @@ func (cs *CertStore) Sync(backendIP string, httpPort int) error {
 	url := fmt.Sprintf("http://%s:%d/certs", backendIP, httpPort)
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	req, err := newSignedRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("cert sync: build request: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		cs.mu.Lock()
 		cs.lastSyncErr = err

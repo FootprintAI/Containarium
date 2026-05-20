@@ -114,7 +114,7 @@ func TestStopForAutoSleep_CallsSwapToWake(t *testing.T) {
 		map[string]*incus.ContainerInfo{"alice-container": {Name: "alice-container", State: "Running"}},
 		routes, router)
 
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := router.wakeCount(); got != 1 {
@@ -136,7 +136,7 @@ func TestStopForAutoSleep_NilWakeRouter_NoOp(t *testing.T) {
 		map[string]*incus.ContainerInfo{"alice-container": {Name: "alice-container", State: "Running"}},
 		nil, nil) // nil router
 
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -151,7 +151,7 @@ func TestStopForAutoSleep_SwapToWakeError_DoesNotFailStop(t *testing.T) {
 		map[string]*incus.ContainerInfo{"alice-container": {Name: "alice-container", State: "Running"}},
 		routes, router)
 
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("SwapToWake failure must not fail the stop: got %v", err)
 	}
 }
@@ -166,7 +166,7 @@ func TestStopForAutoSleep_RouteStoreError_DoesNotFailStop(t *testing.T) {
 		routeStore: &memoryRouteStore{err: errors.New("pg unreachable")},
 		wakeRouter: router,
 	}
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("route-store error must not fail the stop: %v", err)
 	}
 	if got := router.wakeCount(); got != 0 {
@@ -182,7 +182,7 @@ func TestStopForAutoSleep_NoRoutes_NoSwap(t *testing.T) {
 		map[string]*incus.ContainerInfo{"alice-container": {Name: "alice-container", State: "Running"}},
 		nil, router) // no routes
 
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := router.wakeCount(); got != 0 {
@@ -207,7 +207,7 @@ func TestStartContainer_CallsSwapToDirectWhenAutoSleepEnabled(t *testing.T) {
 		},
 		routes, router)
 
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestStartContainer_DoesNotCallSwapToDirectWhenAutoSleepDisabled(t *testing.
 		},
 		routes, router)
 
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestStartContainer_NilWakeRouter_NoOp(t *testing.T) {
 		},
 		nil, nil) // nil router
 
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestStartContainer_SwapToDirectError_DoesNotFailStart(t *testing.T) {
 		},
 		routes, router)
 
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err != nil {
 		t.Fatalf("SwapToDirect failure must not fail the start: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestStartContainer_NoRoutes_NoSwapToDirect(t *testing.T) {
 		},
 		nil, router) // routes empty
 
-	_, err := s.StartContainer(context.Background(), &pb.StartContainerRequest{Username: "alice"})
+	_, err := s.StartContainer(testCtx(), &pb.StartContainerRequest{Username: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestStopForAutoSleep_NoRouteStoreWired_NoSwap(t *testing.T) {
 		wakeRouter: router,
 		// routeStore intentionally nil
 	}
-	if err := s.StopForAutoSleep(context.Background(), "alice", "idle 90m", 90); err != nil {
+	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := router.wakeCount(); got != 0 {

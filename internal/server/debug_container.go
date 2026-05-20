@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 )
@@ -33,6 +34,9 @@ const SourceRepo = "https://github.com/FootprintAI/Containarium"
 func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugContainerRequest) (*pb.DebugContainerResponse, error) {
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	resp := &pb.DebugContainerResponse{}
