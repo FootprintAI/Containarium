@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -30,6 +31,13 @@ type Client struct {
 
 	httpClient *http.Client
 
+	// tlsConfigErr is set when buildMCPTLSConfig refuses the
+	// baseURL (e.g. http:// without ALLOW_INSECURE). doRequest
+	// returns this error on every call so the failure is visible
+	// to the caller rather than buried in the startup log. Audit
+	// C-HIGH-1.
+	tlsConfigErr error
+
 	// SentinelHost, when set, is the public SSH endpoint for this
 	// deployment (e.g. "sentinel.example.com" or "34.42.156.100").
 	// create_container's response uses it to construct a complete
@@ -38,13 +46,38 @@ type Client struct {
 	SentinelHost string
 }
 
-// NewClient creates a new Containarium REST API client
+// NewClient creates a new Containarium REST API client.
+//
+// Audit C-HIGH-1: the client refuses an http:// baseURL by default,
+// because the JWT it carries travels as a Bearer header and any
+// passive MITM on the path would harvest the admin token. To opt
+// into plaintext for dev/test, set
+// CONTAINARIUM_MCP_ALLOW_INSECURE=true; the daemon logs a loud
+// WARNING in that mode so an operator can't accidentally leave it
+// on in production.
+//
+// To pin a specific CA (Containarium-issued by Phase 0.5, or a
+// corporate CA), set CONTAINARIUM_MCP_TRUSTED_CA_FILE to a PEM
+// bundle. Without it, the system trust store is used — fine for
+// publicly-trusted hostnames, insufficient for a self-signed
+// sentinel cert.
 func NewClient(baseURL, jwtToken string) *Client {
+	tlsConfig, err := buildMCPTLSConfig(baseURL)
+	if err != nil {
+		// Log loudly at construction so the misconfig is visible
+		// in the daemon's startup output, then stash the error
+		// so every doRequest call returns it. NewClient stays
+		// non-erroring to preserve the existing call shape.
+		log.Printf("[mcp-client] WARNING: TLS config rejected (%v); every request will return this error until baseURL or CA is fixed", err)
+	}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	return &Client{
-		baseURL:  baseURL,
-		jwtToken: jwtToken,
+		baseURL:      baseURL,
+		jwtToken:     jwtToken,
+		tlsConfigErr: err,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second, // Container creation can take time
+			Timeout:   120 * time.Second, // Container creation can take time
+			Transport: transport,
 		},
 	}
 }
@@ -91,6 +124,9 @@ func (c *Client) readToken() (string, error) {
 
 // doRequest performs an HTTP request with JWT authentication
 func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error) {
+	if c.tlsConfigErr != nil {
+		return nil, fmt.Errorf("MCP client refuses to send request: %w", c.tlsConfigErr)
+	}
 	url := c.baseURL + path
 
 	var reqBody io.Reader

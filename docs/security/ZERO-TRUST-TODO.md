@@ -144,7 +144,15 @@ on the internal network. Land them first.
         `EnableMTLS=true`. The old JWT-passthrough interceptor
         that accepted plaintext is gone from the mTLS path. Tests
         in `internal/auth/mtls_interceptor_test.go`.
-- [ ] **2.2** MCP client requires HTTPS + CA pinning — `internal/mcp/client.go:46-48,82` (**C-HIGH-1**)
+- [x] **2.2** MCP client requires HTTPS + CA pinning — `internal/mcp/client.go:46-48,82` (**C-HIGH-1**)
+      — `NewClient` refuses an `http://` baseURL by default; the
+        escape hatch is `CONTAINARIUM_MCP_ALLOW_INSECURE=true`
+        for dev/test. CA pinning via
+        `CONTAINARIUM_MCP_TRUSTED_CA_FILE` (PEM bundle, e.g. the
+        sentinel-issued CA from Phase 0.5). Refusal happens at
+        construction; every doRequest call returns the stashed
+        error so the failure is visible upstream. Tests in
+        `internal/mcp/client_tls_test.go`.
 - [x] **2.3** Tighten SSH-port default in terraform — `terraform/modules/containarium/sentinel.tf:104-106` (**C-HIGH-3**)
       — New variable `allowed_management_sources` defaulting to
         RFC-1918 (10/8 + 172.16/12 + 192.168/16). Applied to
@@ -159,7 +167,16 @@ on the internal network. Land them first.
         with distinct descriptions. An operator can't widen API
         exposure by editing the user-traffic rule without seeing
         the implication.
-- [ ] **2.5** OTel collector: loopback bind + auth on OTLP — `internal/server/core_otel_collector.go` (**C-HIGH-5**)
+- [~] **2.5** OTel collector: loopback bind + auth on OTLP — `internal/server/core_otel_collector.go` (**C-HIGH-5**)
+      — **Bind address now configurable.** New env var
+        `CONTAINARIUM_OTEL_COLLECTOR_BIND` (default `0.0.0.0` for
+        backwards compatibility). Operators in paranoid setups
+        can pin to a specific bridge IP. Applied to all three
+        receivers (OTLP HTTP :4318, OTLP gRPC :4317, health-check
+        :13133). Tests in `internal/server/otel_bind_test.go`.
+      — **Bearer-token auth is a follow-up** — requires plumbing
+        a shared token to every container's OTEL_EXPORTER_OTLP_HEADERS.
+        Audit's full closure deserves its own PR.
 - [ ] **2.6** PROXY v2 trust list required at startup — `internal/server/dual_server.go` (**C-MED-1**)
 - [ ] **2.7** Pin Caddy to TLS 1.3, restrict ciphers — `internal/hosting/caddy.go` (**C-MED-2**)
 - [ ] **2.8** App-layer rate limit on auth endpoints — `internal/auth/`, gateway (**C-MED-3**)

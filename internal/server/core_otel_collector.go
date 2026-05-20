@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -323,6 +324,27 @@ func mergeOTelDropLabels(base, extra []string) []string {
 	return out
 }
 
+// otelReceiverBindAddress returns the address the OTel collector
+// should bind its OTLP receivers to. Default is 0.0.0.0 — fine in
+// the existing single-LXC deployment where the collector container
+// has no external interface (only the incusbr0 bridge IP), but
+// audit C-HIGH-5 flagged the literal "0.0.0.0" string as a hazard:
+// if a future deployment configures the collector LXC with an
+// extra external interface (NAT mapping, direct bridge to a public
+// VLAN, etc.) the OTLP ports would suddenly accept un-authenticated
+// requests from the internet.
+//
+// Operators in paranoid environments override via
+// CONTAINARIUM_OTEL_COLLECTOR_BIND (e.g. "10.0.3.5" — the
+// collector's specific bridge IP) so the listen socket is pinned
+// to the bridge interface explicitly.
+func otelReceiverBindAddress() string {
+	if v := strings.TrimSpace(os.Getenv("CONTAINARIUM_OTEL_COLLECTOR_BIND")); v != "" {
+		return v
+	}
+	return "0.0.0.0"
+}
+
 // buildOTelCollectorConfig renders config.yaml for the collector.
 // Pure function (no side effects) so it's trivially testable.
 func buildOTelCollectorConfig(vmIP string, dropLabels []string) string {
@@ -337,16 +359,20 @@ func buildOTelCollectorConfig(vmIP string, dropLabels []string) string {
 		dropRegex = strings.Join(parts, "|")
 	}
 
+	bind := otelReceiverBindAddress()
+
 	var b strings.Builder
-	b.WriteString(`receivers:
+	fmt.Fprintf(&b, `receivers:
   otlp:
     protocols:
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: %s:4318
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: %s:4317
 
-processors:
+processors:`, bind, bind)
+	b.WriteString(`
+
   # Anti-spoofing: stamp source.ip from the OTLP client.address so a
   # misbehaving container cannot fake provenance. v1 surfaces the raw
   # IP; v2 will join it with /var/lib/containarium/container_ips.json
@@ -376,11 +402,13 @@ processors:
     timeout: 5s
     send_batch_size: 1024
 
-extensions:
+`)
+	fmt.Fprintf(&b, `extensions:
   health_check:
-    endpoint: 0.0.0.0:13133
+    endpoint: %s:13133
 
-exporters:
+`, bind)
+	b.WriteString(`exporters:
   otlphttp:
     endpoint: `)
 	fmt.Fprintf(&b, "http://%s:%d/opentelemetry\n", vmIP, DefaultVMPort)
