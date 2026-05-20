@@ -57,8 +57,9 @@ on the internal network. Land them first.
       — `internal/server/peer.go:69-72, 295, 305`.
       — Sentinel-issued peer certs with short TTL, pinned CA.
       — Tracks finding **C-CRIT-1**.
-      — Pattern adapted from cockburn (single operator-managed RSA
-        key, self-signed CA generated at runtime, 7-day leaf TTL).
+      — Design: single operator-managed RSA key on the sentinel,
+        self-signed CA generated at runtime from that key, 7-day
+        leaf TTL.
         New `pkg/core/pki` provisioner; sentinel loads CA from
         `CONTAINARIUM_CA_KEY_FILE`, exposes HMAC-gated
         `/sentinel/ca` + `/sentinel/peer-cert`, and runs an HTTPS

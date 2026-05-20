@@ -132,10 +132,11 @@ func FetchPeerPKI(ctx interface{}, sentinelBaseURL, peerID string, hmacSecret []
 
 	// Bootstrap client: lenient TLS verification because we don't
 	// have the CA yet. The HMAC signature on the request body
-	// authenticates the caller; the response is JSON containing the
-	// CA, which we'll pin for every subsequent call. Using
-	// InsecureSkipVerify HERE is the same compromise cockburn makes
-	// for its registration RPC (pkg/inferenceserver/client.go:511).
+	// authenticates the caller (only holders of the shared secret
+	// can ask for a cert), and the response is JSON containing the
+	// CA, which we pin for every subsequent call. This bootstrap
+	// hop is the only place InsecureSkipVerify appears in the
+	// peer-to-peer path — it cannot be used once the CA is loaded.
 	bootstrap := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{

@@ -1,12 +1,11 @@
 // Package pki implements the Containarium peer-CA used to issue
 // short-lived certificates for sentinel↔daemon and peer-to-peer
-// HTTPS. The design is borrowed almost verbatim from cockburn's
-// pkg/auth/cert_provisioner.go (Apache-2.0): a single operator-
-// managed RSA private key on the sentinel acts as the CA, the CA
-// certificate is generated at runtime, and per-peer client/server
-// certs are minted on demand with a configurable short TTL (default
-// 7 days). No CRL or OCSP — rotation happens before any leaf could
-// be meaningfully abused.
+// HTTPS. Design summary: a single operator-managed RSA private
+// key on the sentinel acts as the CA, the CA certificate is
+// generated at runtime from that key, and per-peer client/server
+// certs are minted on demand with a configurable short TTL
+// (default 7 days). No CRL or OCSP — rotation happens before any
+// leaf could be meaningfully abused.
 //
 // The pattern intentionally avoids:
 //   - Bundling a separate ca.crt file (only the key needs storing).
@@ -39,9 +38,10 @@ import (
 const DefaultLeafExpiry = 7 * 24 * time.Hour
 
 // CAValidity is the lifetime of the self-signed CA cert generated
-// at runtime from the operator's RSA key. 10 years matches
-// cockburn; the CA cert is regenerated on every sentinel start so
-// the only durable secret is the RSA key on disk.
+// at runtime from the operator's RSA key. 10 years is long enough
+// that the CA cert itself never expires in normal operation; the
+// only durable secret is the RSA key on disk, which the operator
+// rotates by replacing the file and restarting the sentinel.
 const CAValidity = 10 * 365 * 24 * time.Hour
 
 // orgName goes into the Subject of every cert this CA issues —
