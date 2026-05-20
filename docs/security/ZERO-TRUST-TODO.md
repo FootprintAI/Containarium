@@ -98,17 +98,29 @@ on the internal network. Land them first.
 - [x] **1.3** Require min 32-byte JWT secret in `NewTokenManager` — `internal/auth/token.go:24-45` (**A-MED-2**)
       — `NewTokenManager` now returns `(*TokenManager, error)` and refuses
         secrets shorter than 32 bytes. Fail-closed at daemon startup.
-- [~] **1.4** Per-RPC role enforcement (RBAC interceptor) — `internal/auth/`, all handlers (**A-MED-4**)
+- [x] **1.4** Per-RPC role enforcement (RBAC interceptor) — `internal/auth/`, all handlers (**A-MED-4**)
       — **Cluster-level ops done.** New `auth.RequireRole(ctx, role)`
         helper applied to GetSystemInfo, MoveContainer,
         AdoptMigratedContainer, and the `/v1/backends` HTTP
         handler — all admin-only. Tests in
         `internal/auth/require_role_test.go` and
         `internal/server/admin_only_handlers_test.go`.
-      — Full per-RPC RBAC (every privileged handler explicitly
-        gated) is the remaining work. The pattern is now in place;
-        applying it to AddSSHKey/RemoveSSHKey, DeleteContainer,
-        and similar is a mechanical follow-up.
+      — **Second wave landed.** Admin-only gates applied to
+        the entire ZapServer (7 RPCs), AlertServer (8 RPCs),
+        PentestServer (8 RPCs), NetworkServer route/topology
+        mutations (8 RPCs), and SecurityServer cluster-wide
+        reads (2 RPCs). 30 new tests in
+        `internal/server/rbac_phase_1_4_test.go`. Read-only
+        config endpoints (`GetZapConfig`, `GetPentestConfig`,
+        `GetAlertingInfo`, `ListDefaultAlertRules`,
+        `ListACLPresets`) intentionally remain
+        any-authenticated — they expose feature toggles,
+        no tenant data.
+      — Tenant-scoped handlers needing container-name→owner
+        lookup (`TrafficServer` quartet, `security_server`
+        ListClamavReports / TriggerClamavScan) deferred —
+        they need a small ownership helper that doesn't
+        exist yet.
 - [x] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
       — **Audit endpoint done** — `/v1/audit/logs` now requires
         `Authorization: Bearer ...` and explicitly rejects `?token=`.
