@@ -11,8 +11,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -567,56 +565,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		w.Write([]byte(`{"status":"healthy"}`))
 	})
 
-	// Grafana reverse proxy (no auth — Grafana handles its own anonymous access)
-	if gs.grafanaBackendURL != "" {
-		grafanaTarget, err := url.Parse(gs.grafanaBackendURL)
-		if err != nil {
-			log.Printf("Warning: Invalid Grafana backend URL %q: %v", gs.grafanaBackendURL, err)
-		} else {
-			grafanaProxy := httputil.NewSingleHostReverseProxy(grafanaTarget)
-			httpMux.HandleFunc("/grafana/", func(w http.ResponseWriter, r *http.Request) {
-				grafanaProxy.ServeHTTP(w, r)
-			})
-			httpMux.HandleFunc("/grafana", func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(w, r, "/grafana/", http.StatusMovedPermanently)
-			})
-			log.Printf("Grafana reverse proxy enabled at /grafana/ -> %s", gs.grafanaBackendURL)
-		}
-	}
-
-	// Alertmanager reverse proxy (no auth — Alertmanager handles its own access)
-	if gs.alertmanagerBackendURL != "" {
-		amTarget, err := url.Parse(gs.alertmanagerBackendURL)
-		if err != nil {
-			log.Printf("Warning: Invalid Alertmanager backend URL %q: %v", gs.alertmanagerBackendURL, err)
-		} else {
-			amProxy := httputil.NewSingleHostReverseProxy(amTarget)
-			httpMux.HandleFunc("/alertmanager/", func(w http.ResponseWriter, r *http.Request) {
-				amProxy.ServeHTTP(w, r)
-			})
-			httpMux.HandleFunc("/alertmanager", func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(w, r, "/alertmanager/", http.StatusMovedPermanently)
-			})
-			log.Printf("Alertmanager reverse proxy enabled at /alertmanager/ -> %s", gs.alertmanagerBackendURL)
-		}
-	}
-
-	// Guacamole reverse proxy (browser-based RDP for Windows VMs, no auth — Guacamole handles its own)
-	if gs.guacamoleBackendURL != "" {
-		guacTarget, err := url.Parse(gs.guacamoleBackendURL)
-		if err != nil {
-			log.Printf("Warning: Invalid Guacamole backend URL %q: %v", gs.guacamoleBackendURL, err)
-		} else {
-			guacProxy := httputil.NewSingleHostReverseProxy(guacTarget)
-			httpMux.HandleFunc("/guacamole/", func(w http.ResponseWriter, r *http.Request) {
-				guacProxy.ServeHTTP(w, r)
-			})
-			httpMux.HandleFunc("/guacamole", func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(w, r, "/guacamole/", http.StatusMovedPermanently)
-			})
-			log.Printf("Guacamole reverse proxy enabled at /guacamole/ -> %s", gs.guacamoleBackendURL)
-		}
-	}
+	mountInternalProxies(httpMux, gs)
 
 	// Security CSV export endpoint (with auth via token query param or Authorization header)
 	if gs.securityStore != nil {

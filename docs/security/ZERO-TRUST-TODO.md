@@ -109,7 +109,14 @@ on the internal network. Land them first.
         gated) is the remaining work. The pattern is now in place;
         applying it to AddSSHKey/RemoveSSHKey, DeleteContainer,
         and similar is a mechanical follow-up.
-- [ ] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
+- [~] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
+      — **Audit endpoint done** — `/v1/audit/logs` now requires
+        `Authorization: Bearer ...` and explicitly rejects `?token=`.
+        Tests in `internal/gateway/audit_handler_test.go`.
+      — Terminal + events/subscribe (WebSocket endpoints) still
+        accept query-string tokens — those need the WebSocket
+        Sec-WebSocket-Protocol subprotocol auth or a short-lived
+        ticket exchange. Tracked as a follow-up.
 - [ ] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
 - [ ] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
 - [x] **1.8** Refuse JWT token files with mode > 0600 — `internal/mcp/client.go:57-78` (**C-HIGH-7**)
@@ -117,7 +124,13 @@ on the internal network. Land them first.
         read/write bit is set. Error message tells the operator the
         actual mode so they can `chmod 0600` without guessing.
 - [ ] **1.9** Lock down `/wake/` and `/` (Caddy-only assumption) — `internal/gateway/gateway.go:480-491,641-643` (**A-MED-5**)
-- [ ] **1.10** Auth wrap on internal proxies (grafana/alertmanager/guacamole) — `internal/gateway/gateway.go:543-601` (**A-MED-6**)
+- [x] **1.10** Auth wrap on internal proxies (grafana/alertmanager/guacamole) — `internal/gateway/gateway.go:543-601` (**A-MED-6**)
+      — Each proxy now requires a valid JWT before forwarding.
+        Backend's own auth still applies on top (defense in depth).
+        Wiring extracted into `mountInternalProxies` in
+        `internal/gateway/internal_proxies.go`; tests in
+        `internal_proxies_test.go` cover unauth rejection, valid-
+        token forwarding, and the no-slash redirect staying open.
 
 ---
 

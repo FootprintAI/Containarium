@@ -13,20 +13,21 @@ import (
 )
 
 // registerAuditEndpoint registers the audit logs query endpoint on the HTTP mux.
+//
+// Audit A-MED-3: tokens used to live in `?token=` here. Query
+// strings get logged verbatim by every reverse proxy, load
+// balancer, and browser history mechanism in the request path,
+// which means an audit-trail dump of /v1/audit/logs?token=... was
+// silently re-leaking the admin token to every hop. Authorization
+// header only, like the rest of the API.
 func registerAuditEndpoint(mux *http.ServeMux, store *audit.Store, authMW *auth.AuthMiddleware) {
 	mux.HandleFunc("/v1/audit/logs", func(w http.ResponseWriter, r *http.Request) {
-		// Validate auth token from query param or Authorization header
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			authHeader := r.Header.Get("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				token = strings.TrimPrefix(authHeader, "Bearer ")
-			}
-		}
-		if token == "" {
-			http.Error(w, `{"error": "unauthorized: token required", "code": 401}`, http.StatusUnauthorized)
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			http.Error(w, `{"error": "unauthorized: Bearer token required in Authorization header", "code": 401}`, http.StatusUnauthorized)
 			return
 		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if _, err := authMW.ValidateToken(token); err != nil {
 			http.Error(w, `{"error": "unauthorized: invalid token", "code": 401}`, http.StatusUnauthorized)
 			return
