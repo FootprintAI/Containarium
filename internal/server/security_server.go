@@ -43,8 +43,20 @@ func NewSecurityServer(store *security.Store, incusClient *incus.Client, scanner
 	}
 }
 
-// ListClamavReports returns ClamAV scan reports with optional filtering
+// ListClamavReports returns ClamAV scan reports with optional filtering.
+// Phase 1.4 — when ContainerName is set, tenant authz via the
+// owner derivation; when blank, the listing would cover all
+// containers, so require admin.
 func (s *SecurityServer) ListClamavReports(ctx context.Context, req *pb.ListClamavReportsRequest) (*pb.ListClamavReportsResponse, error) {
+	if req.ContainerName == "" {
+		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+			return nil, err
+		}
+	}
 	params := security.ListParams{
 		ContainerName: req.ContainerName,
 		Status:        req.Status,
@@ -265,8 +277,20 @@ func (s *SecurityServer) fetchPeerSummaries(authToken string) (summaries []*pb.C
 	return
 }
 
-// TriggerClamavScan enqueues scan jobs asynchronously and returns immediately
+// TriggerClamavScan enqueues scan jobs asynchronously and returns immediately.
+// Phase 1.4 — when ContainerName is set, tenant authz via the
+// owner derivation; when blank, the request enqueues scans for
+// every container on every peer, so require admin.
 func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerClamavScanRequest) (*pb.TriggerClamavScanResponse, error) {
+	if req.ContainerName == "" {
+		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+			return nil, err
+		}
+	}
 	if s.scanner == nil {
 		return nil, fmt.Errorf("security scanner is not available")
 	}

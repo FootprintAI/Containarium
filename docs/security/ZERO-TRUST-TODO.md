@@ -116,11 +116,22 @@ on the internal network. Land them first.
         `ListACLPresets`) intentionally remain
         any-authenticated — they expose feature toggles,
         no tenant data.
-      — Tenant-scoped handlers needing container-name→owner
-        lookup (`TrafficServer` quartet, `security_server`
-        ListClamavReports / TriggerClamavScan) deferred —
-        they need a small ownership helper that doesn't
-        exist yet.
+      — **Tenant-scoped follow-up landed.** New helper
+        `auth.AuthorizeContainerAccess(ctx, containerName)`
+        derives the owner from the `<username>-container`
+        naming convention (`auth.OwnerFromContainerName`) and
+        applies AuthorizeTenant-style semantics — admin
+        bypass, tenant on own container only, system
+        containers admin-only. Wired into TrafficServer's 4
+        RPCs (`GetConnections`, `GetConnectionSummary`,
+        `QueryTrafficHistory`, `GetTrafficAggregates`),
+        TrafficServer's streaming `SubscribeTraffic` (blank
+        name = admin-only), and `security_server`'s
+        `ListClamavReports` + `TriggerClamavScan` (blank
+        name = cluster-wide, admin-only; named =
+        owner-scoped). Tests in
+        `internal/auth/container_owner_test.go` and
+        `internal/server/rbac_phase_1_4_tenant_test.go`.
 - [x] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
       — **Audit endpoint done** — `/v1/audit/logs` now requires
         `Authorization: Bearer ...` and explicitly rejects `?token=`.

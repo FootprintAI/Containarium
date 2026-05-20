@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/traffic"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -31,10 +32,16 @@ func (s *TrafficServer) SetPeerPool(pool *PeerPool) {
 	s.peerPool = pool
 }
 
-// GetConnections returns active connections for a container
+// GetConnections returns active connections for a container.
+// Phase 1.4 — tenant authz via the container_name → owner
+// derivation (admins always pass; tenants only on their own
+// container; system containers require admin).
 func (s *TrafficServer) GetConnections(ctx context.Context, req *pb.GetConnectionsRequest) (*pb.GetConnectionsResponse, error) {
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
+	}
+	if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+		return nil, err
 	}
 
 	connections := s.collector.GetConnections(req.ContainerName)
@@ -76,10 +83,14 @@ func (s *TrafficServer) GetConnections(ctx context.Context, req *pb.GetConnectio
 	}, nil
 }
 
-// GetConnectionSummary returns aggregate connection statistics
+// GetConnectionSummary returns aggregate connection statistics.
+// Phase 1.4 — tenant authz via container_name → owner.
 func (s *TrafficServer) GetConnectionSummary(ctx context.Context, req *pb.GetConnectionSummaryRequest) (*pb.GetConnectionSummaryResponse, error) {
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
+	}
+	if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+		return nil, err
 	}
 
 	summary := s.collector.GetConnectionSummary(req.ContainerName)
@@ -89,8 +100,21 @@ func (s *TrafficServer) GetConnectionSummary(ctx context.Context, req *pb.GetCon
 	}, nil
 }
 
-// SubscribeTraffic opens a streaming connection for real-time traffic events
+// SubscribeTraffic opens a streaming connection for real-time traffic events.
+// Phase 1.4 — when ContainerName is set, tenant authz via the
+// owner derivation; when blank, the stream would cover all
+// containers, so require admin.
 func (s *TrafficServer) SubscribeTraffic(req *pb.SubscribeTrafficRequest, stream pb.TrafficService_SubscribeTrafficServer) error {
+	ctx := stream.Context()
+	if req.ContainerName == "" {
+		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+			return err
+		}
+	} else {
+		if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+			return err
+		}
+	}
 	// Create filter for traffic events only
 	filter := &pb.SubscribeEventsRequest{
 		ResourceTypes: []pb.ResourceType{pb.ResourceType_RESOURCE_TYPE_TRAFFIC},
@@ -147,10 +171,14 @@ func (s *TrafficServer) SubscribeTraffic(req *pb.SubscribeTrafficRequest, stream
 	}
 }
 
-// QueryTrafficHistory queries persisted traffic data
+// QueryTrafficHistory queries persisted traffic data.
+// Phase 1.4 — tenant authz via container_name → owner.
 func (s *TrafficServer) QueryTrafficHistory(ctx context.Context, req *pb.QueryTrafficHistoryRequest) (*pb.QueryTrafficHistoryResponse, error) {
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
+	}
+	if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+		return nil, err
 	}
 
 	store := s.collector.GetStore()
@@ -179,10 +207,14 @@ func (s *TrafficServer) QueryTrafficHistory(ctx context.Context, req *pb.QueryTr
 	}, nil
 }
 
-// GetTrafficAggregates returns time-series traffic aggregates
+// GetTrafficAggregates returns time-series traffic aggregates.
+// Phase 1.4 — tenant authz via container_name → owner.
 func (s *TrafficServer) GetTrafficAggregates(ctx context.Context, req *pb.GetTrafficAggregatesRequest) (*pb.GetTrafficAggregatesResponse, error) {
 	if req.ContainerName == "" {
 		return nil, fmt.Errorf("container_name is required")
+	}
+	if err := auth.AuthorizeContainerAccess(ctx, req.ContainerName); err != nil {
+		return nil, err
 	}
 
 	store := s.collector.GetStore()
