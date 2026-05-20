@@ -322,8 +322,13 @@ func (m *CaddyManager) EnsureCaddyUser() error {
 		return fmt.Errorf("create caddy user: %s: %w", string(output), err)
 	}
 
-	// Create home directory
-	if err := os.MkdirAll("/var/lib/caddy", 0755); err != nil {
+	// Create home directory. Mode 0750 instead of 0755 so the
+	// caddy group can read (Caddy itself runs as caddy:caddy)
+	// but world cannot — TLS private keys live under here. The
+	// daemon refuses to start the Caddy service if the existing
+	// dir has more-permissive bits set (see CheckStorageDirPerms).
+	// Audit C-MED-7.
+	if err := os.MkdirAll("/var/lib/caddy", 0o750); err != nil {
 		return fmt.Errorf("create caddy home: %w", err)
 	}
 
@@ -333,6 +338,35 @@ func (m *CaddyManager) EnsureCaddyUser() error {
 		return fmt.Errorf("chown caddy home: %s: %w", string(output), err)
 	}
 
+	// Tighten existing dir mode (in case it was created at 0755
+	// by a previous version). chmod is idempotent.
+	if err := os.Chmod("/var/lib/caddy", 0o750); err != nil {
+		return fmt.Errorf("chmod caddy home: %w", err)
+	}
+
+	return nil
+}
+
+// CheckStorageDirPerms refuses to proceed if `dir` (typically
+// /var/lib/caddy/.local/share/caddy — the ACME storage path that
+// holds TLS private keys) has any non-owner/group bit set. The
+// caddy daemon needs the keys readable as caddy:caddy; nothing
+// else should be able to see them.
+//
+// Audit C-MED-7. Symmetric with the master-key perm check in
+// pkg/core/secrets/crypto.go and the JWT-token-file check in
+// internal/mcp/client.go.
+func CheckStorageDirPerms(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat Caddy storage %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("Caddy storage path %s is not a directory", dir)
+	}
+	if perm := info.Mode().Perm(); perm&0o007 != 0 {
+		return fmt.Errorf("Caddy storage %s has insecure permissions %#o (world bits set); chmod o-rwx it — TLS private keys live here", dir, perm)
+	}
 	return nil
 }
 
@@ -345,8 +379,16 @@ func (m *CaddyManager) ReloadSystemd() error {
 	return nil
 }
 
-// EnableAndStartCaddy enables and starts the Caddy service
+// EnableAndStartCaddy enables and starts the Caddy service.
+// Refuses to start if /var/lib/caddy has world-readable bits
+// (audit C-MED-7) — TLS private keys live under there.
+// The check is a stat() of the existing dir; if it didn't
+// exist, EnsureCaddyUser created it at 0750 just above.
 func (m *CaddyManager) EnableAndStartCaddy() error {
+	if err := CheckStorageDirPerms("/var/lib/caddy"); err != nil {
+		return fmt.Errorf("refusing to start Caddy: %w", err)
+	}
+
 	// Enable service
 	cmd := exec.Command("systemctl", "enable", "caddy")
 	if output, err := cmd.CombinedOutput(); err != nil {

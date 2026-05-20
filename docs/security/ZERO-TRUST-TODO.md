@@ -251,11 +251,27 @@ on the internal network. Land them first.
         operator can `chmod 0400` without guessing. Tests in
         `pkg/core/secrets/master_key_perms_test.go`.
 - [ ] **4.3** Document container env-var introspection risk; explore tmpfs-mount alternative — `internal/server/secrets_server.go:133-155` (**C-MED-4**)
-- [ ] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
+- [x] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
+      — New `audit.Redact` / `audit.SanitizeDetail` scrubs JWTs
+        (with or without Bearer prefix), password/api_key/secret
+        env vars, AWS access key IDs, and PEM private-key blocks.
+        8 KiB length cap on detail; truncation marker preserved.
+        HTTP audit middleware runs SanitizeDetail on every entry.
+        Tests in `internal/audit/redact_test.go`.
 - [ ] **4.5** Audit-log tamper-evidence (hash chain or append-only sink) — `internal/audit/store.go`
-- [ ] **4.6** Request-correlation IDs propagated end-to-end — `internal/audit/middleware.go:63-128`, `internal/server/peer.go`
+- [x] **4.6** Request-correlation IDs propagated end-to-end — `internal/audit/middleware.go:63-128`, `internal/server/peer.go`
+      — `X-Request-ID` honored from inbound (if shape-valid) or
+        minted as 128-bit hex. Echoed in response, attached to
+        `r.Context()` via `audit.ContextWithRequestID`, recorded
+        in audit detail as `request_id=<id>`. Tests in
+        `internal/audit/request_id_test.go`.
 - [ ] **4.7** Postgres credentials via secret manager / unix-socket auth — `internal/server/dual_server.go` (**C-MED-6**)
-- [ ] **4.8** Stat-check TLS key directory at startup — `internal/hosting/caddy.go` (**C-MED-7**)
+- [x] **4.8** Stat-check TLS key directory at startup — `internal/hosting/caddy.go` (**C-MED-7**)
+      — `/var/lib/caddy` created at 0750 (was 0755); existing
+        directory chmod-tightened to 0750 idempotently. New
+        `CheckStorageDirPerms` runs at `EnableAndStartCaddy` and
+        refuses world-readable bits — TLS private keys live
+        under here. Tests in `internal/hosting/storage_perms_test.go`.
 
 ---
 

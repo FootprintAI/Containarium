@@ -93,6 +93,17 @@ func HTTPAuditMiddleware(next http.Handler, store *Store) http.Handler {
 		}
 
 		start := time.Now()
+
+		// Phase 4.6: every audited request gets a correlation ID.
+		// Honor an inbound X-Request-ID (sanitized) or mint a
+		// fresh one. Echo in the response header so clients can
+		// correlate their view with the audit row. Attach to
+		// context for any downstream handler that wants to
+		// propagate it (peer RPCs, error responses, log lines).
+		reqID := extractOrGenerateRequestID(r)
+		w.Header().Set(RequestIDHeader, reqID)
+		r = r.WithContext(ContextWithRequestID(r.Context(), reqID))
+
 		rw := newResponseWriter(w)
 
 		next.ServeHTTP(rw, r)
@@ -108,13 +119,21 @@ func HTTPAuditMiddleware(next http.Handler, store *Store) http.Handler {
 		// Use method-specific action for better filtering and UI color-coding
 		action := "api_" + strings.ToLower(r.Method) // api_get, api_post, api_put, api_delete
 
+		// Detail carries `request_id=<id> duration=<d>`. The
+		// request ID is intentionally first so a grep on
+		// audit_logs.detail surfaces it whether the duration is
+		// present or not. Sanitized through SanitizeDetail
+		// (Phase 4.4) — defensive even though the inputs are
+		// already trusted.
+		detail := SanitizeDetail(fmt.Sprintf("request_id=%s duration=%s", reqID, duration))
+
 		entry := &AuditEntry{
 			Timestamp:    start,
 			Username:     username,
 			Action:       action,
 			ResourceType: "api",
 			ResourceID:   fmt.Sprintf("%s %s", r.Method, r.URL.Path),
-			Detail:       fmt.Sprintf("duration=%s", duration),
+			Detail:       detail,
 			SourceIP:     sourceIP,
 			StatusCode:   rw.statusCode,
 		}
