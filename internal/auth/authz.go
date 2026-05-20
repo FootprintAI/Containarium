@@ -88,6 +88,26 @@ func HasRole(roles []string, wanted string) bool {
 	return false
 }
 
+// RequireRole returns nil if the authenticated subject holds
+// `role`. Returns Unauthenticated if no subject is in context,
+// PermissionDenied if the subject exists but lacks the role.
+//
+// Use at the top of handlers that should be admin-only — fleet
+// topology disclosure, cross-backend infrastructure operations,
+// peer-to-peer system endpoints. Tenant-scoped operations should
+// use AuthorizeTenant instead; this is for the strictly-narrower
+// class of cluster-wide ops. Tracks audit finding A-MED-4.
+func RequireRole(ctx context.Context, role string) error {
+	_, roles, ok := SubjectFromGRPCContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	if !HasRole(roles, role) {
+		return status.Error(codes.PermissionDenied, "role required: "+role)
+	}
+	return nil
+}
+
 // AuthorizeTenant returns nil if the authenticated subject is
 // allowed to act on `requestedUsername` — either because they are
 // that user, or because they hold the admin role. Returns a

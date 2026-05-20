@@ -82,6 +82,15 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	if req.TargetBackendId == "" {
 		return nil, fmt.Errorf("target_backend_id is required")
 	}
+	// Admin-only: cross-backend migration is an infrastructure
+	// operation, not a tenant operation. A user owning a container
+	// has no legitimate need to relocate it across the fleet — that's
+	// an operator-driven concern (capacity balancing, drains, GPU
+	// scheduling). AuthorizeTenant alone would still let a tenant
+	// move their own container; require admin on top.
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}

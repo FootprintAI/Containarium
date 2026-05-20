@@ -1056,9 +1056,16 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
-	// AdoptMigratedContainer is called peer-to-peer with the destination
-	// daemon's system token (admin role). Tenants must not be able to
-	// craft an adoption request for someone else's container.
+	// AdoptMigratedContainer is called peer-to-peer with the
+	// destination daemon's system token (admin role). It has no
+	// user-facing semantic — it's the receiving half of
+	// MoveContainer's handshake. Admin-only at both gates: the
+	// RequireRole check stops any user token from crafting an
+	// adoption request, even one that names their own username
+	// (which AuthorizeTenant would otherwise pass).
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
@@ -1460,6 +1467,13 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 
 // GetSystemInfo gets information about the Incus host
 func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error) {
+	// Admin-only: exposes fleet-internal details (hostname, OS,
+	// Incus version, container counts across tenants). A user
+	// token has no legitimate reason to read this — they care
+	// about their own container, not the daemon's identity.
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Get basic system info from container manager
 	containers, err := s.manager.List()
 	if err != nil {

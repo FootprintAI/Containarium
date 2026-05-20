@@ -1089,8 +1089,19 @@ skipAppHosting:
 // Start starts both gRPC and HTTP servers
 // backendsHandler returns an HTTP handler for the /v1/backends endpoint.
 // It also handles /v1/backends/{id}/system-info for per-backend system info.
+//
+// Admin-only (Phase 1.4 / audit finding A-MED-4). The endpoint
+// discloses fleet topology — peer IDs, hostnames, OS versions,
+// GPU inventories — which is operator-grade info, not tenant-
+// grade. The wrapping JWT middleware already validates the
+// token; the inline RequireRole check refuses non-admin tokens
+// with 403 before any backend is even enumerated.
 func (ds *DualServer) backendsHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := auth.RequireRole(r.Context(), auth.RoleAdmin); err != nil {
+			http.Error(w, `{"error":"admin role required","code":403}`, http.StatusForbidden)
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/v1/backends")
 		path = strings.TrimPrefix(path, "/")
 

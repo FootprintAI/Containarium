@@ -93,7 +93,17 @@ on the internal network. Land them first.
 - [ ] **1.1** Validate JWT `iss` and `aud` claims — `internal/auth/token.go:73-91` (**A-HIGH-1**)
 - [ ] **1.2** Add `jti` and a revocation list — `internal/auth/token.go` (**A-MED-1**)
 - [ ] **1.3** Require min 32-byte JWT secret in `NewTokenManager` — `internal/auth/token.go:24-45` (**A-MED-2**)
-- [ ] **1.4** Per-RPC role enforcement (RBAC interceptor) — `internal/auth/`, all handlers (**A-MED-4**)
+- [~] **1.4** Per-RPC role enforcement (RBAC interceptor) — `internal/auth/`, all handlers (**A-MED-4**)
+      — **Cluster-level ops done.** New `auth.RequireRole(ctx, role)`
+        helper applied to GetSystemInfo, MoveContainer,
+        AdoptMigratedContainer, and the `/v1/backends` HTTP
+        handler — all admin-only. Tests in
+        `internal/auth/require_role_test.go` and
+        `internal/server/admin_only_handlers_test.go`.
+      — Full per-RPC RBAC (every privileged handler explicitly
+        gated) is the remaining work. The pattern is now in place;
+        applying it to AddSSHKey/RemoveSSHKey, DeleteContainer,
+        and similar is a mechanical follow-up.
 - [ ] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
 - [ ] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
 - [ ] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
