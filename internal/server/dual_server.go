@@ -176,7 +176,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Create auth middleware
 	authMiddleware := auth.NewAuthMiddleware(tokenManager)
 
-	// Create gRPC server with optional mTLS
+	// Create gRPC server with optional mTLS.
+	//
+	// Audit C-HIGH-2: when EnableMTLS=true the gRPC server must
+	// REJECT calls whose peer wasn't actually authenticated via
+	// mTLS — the JWT-passthrough interceptor that lived here
+	// before would happily forward an insecure-dialed client.
+	// auth.RequireMTLSUnaryInterceptor inspects peer.AuthInfo and
+	// returns Unauthenticated if no verified client cert is
+	// present.
 	var grpcServer *grpc.Server
 	if config.EnableMTLS {
 		certPaths := mtls.CertPathsFromDir(config.CertsDir)
@@ -191,10 +199,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 		grpcServer = grpc.NewServer(
 			grpc.Creds(creds),
-			grpc.UnaryInterceptor(authMiddleware.GRPCUnaryInterceptor()),
-			grpc.StreamInterceptor(authMiddleware.GRPCStreamInterceptor()),
+			grpc.UnaryInterceptor(auth.RequireMTLSUnaryInterceptor()),
+			grpc.StreamInterceptor(auth.RequireMTLSStreamInterceptor()),
 		)
-		log.Printf("gRPC server: mTLS enabled")
+		log.Printf("gRPC server: mTLS enabled (interceptor verifies peer cert on every call)")
 	} else {
 		grpcServer = grpc.NewServer(
 			grpc.UnaryInterceptor(authMiddleware.GRPCUnaryInterceptor()),

@@ -136,7 +136,14 @@ on the internal network. Land them first.
 
 ## Phase 2 — Transport security & network segmentation (weeks 4-6)
 
-- [ ] **2.1** Fail-closed mTLS on gRPC (refuse plaintext fallback) — `internal/mtls/loader.go:14-51` (**C-HIGH-2**)
+- [x] **2.1** Fail-closed mTLS on gRPC (refuse plaintext fallback) — `internal/mtls/loader.go:14-51` (**C-HIGH-2**)
+      — New `auth.RequireMTLSUnaryInterceptor` /
+        `RequireMTLSStreamInterceptor` inspect `peer.AuthInfo` on
+        every call and reject anything that isn't a verified mTLS
+        connection with a client cert. Wired in when
+        `EnableMTLS=true`. The old JWT-passthrough interceptor
+        that accepted plaintext is gone from the mTLS path. Tests
+        in `internal/auth/mtls_interceptor_test.go`.
 - [ ] **2.2** MCP client requires HTTPS + CA pinning — `internal/mcp/client.go:46-48,82` (**C-HIGH-1**)
 - [ ] **2.3** Tighten SSH-port default in terraform — `terraform/modules/containarium/sentinel.tf:104-106` (**C-HIGH-3**)
 - [ ] **2.4** Explicit firewall rule for REST gateway (sentinel-only) — `terraform/modules/containarium/main.tf:65-73` (**C-HIGH-4**)
@@ -160,7 +167,13 @@ on the internal network. Land them first.
 ## Phase 4 — Secrets, audit & operational hardening (ongoing)
 
 - [ ] **4.1** Envelope encryption via external KMS (GCP KMS / Vault) — `pkg/core/secrets/crypto.go` (**C-HIGH-6** is partially addressed by 4.2 below)
-- [ ] **4.2** Stat-check master-key file permissions at load — `pkg/core/secrets/crypto.go:47,109` (**C-HIGH-6**)
+- [x] **4.2** Stat-check master-key file permissions at load — `pkg/core/secrets/crypto.go:47,109` (**C-HIGH-6**)
+      — `LoadOrCreateMasterKey` now stats the file before reading
+        and refuses if any non-owner bit is set (`mode & 0o077 != 0`).
+        Catches umask drift, ownership change, and backup-tool
+        side effects. Error message names the actual mode so the
+        operator can `chmod 0400` without guessing. Tests in
+        `pkg/core/secrets/master_key_perms_test.go`.
 - [ ] **4.3** Document container env-var introspection risk; explore tmpfs-mount alternative — `internal/server/secrets_server.go:133-155` (**C-MED-4**)
 - [ ] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
 - [ ] **4.5** Audit-log tamper-evidence (hash chain or append-only sink) — `internal/audit/store.go`

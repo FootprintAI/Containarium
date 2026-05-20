@@ -90,16 +90,31 @@ func ValidateValue(value string) error {
 // #5; callers must log a loud back-it-up warning when the file is
 // newly created so operators know to copy it off-host.
 //
+// Audit C-HIGH-6: before returning the key, stat the file and refuse
+// if any non-owner permission bit is set. The key was originally
+// written with mode 0400, but umask drift, ownership change, or
+// backup-tool side effects can widen permissions silently — leaving
+// the master key readable by anyone who can land on the host.
+// Fail-closed at startup is the only way operators see the
+// regression.
+//
 // Returns (key, created, err) — created=true means the file did not
 // exist and a new key was written.
 func LoadOrCreateMasterKey(path string) (key []byte, created bool, err error) {
-	if data, readErr := os.ReadFile(path); readErr == nil {
+	if info, statErr := os.Stat(path); statErr == nil {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			return nil, false, fmt.Errorf("master key %s has insecure permissions %#o (any non-owner read/write/exec bit set); chmod 0400 it and ensure root ownership", path, perm)
+		}
+		data, readErr := os.ReadFile(path) // #nosec G304 -- operator-controlled config path
+		if readErr != nil {
+			return nil, false, fmt.Errorf("read master key at %s: %w", path, readErr)
+		}
 		if len(data) != MasterKeySize {
 			return nil, false, fmt.Errorf("%w (file %s has %d bytes)", ErrKeyWrongSize, path, len(data))
 		}
 		return data, false, nil
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return nil, false, fmt.Errorf("read master key at %s: %w", path, readErr)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, false, fmt.Errorf("stat master key at %s: %w", path, statErr)
 	}
 
 	newKey := make([]byte, MasterKeySize)
