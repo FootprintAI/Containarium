@@ -13,9 +13,14 @@ import (
 // the HTTP/JWT layer through grpc-gateway into the gRPC server.
 // Set by AuthMiddleware (HTTP) and by the gateway annotator
 // (internal/gateway/gateway.go), read by SubjectFromGRPCContext.
+//
+// Phase 1.7b — `scopes` joined the trio. Stored as a comma-
+// separated string in metadata (gRPC metadata is single-line
+// per key, and []string is fragile across the wire).
 const (
 	MDKeyUsername = "username"
 	MDKeyRoles    = "roles"
+	MDKeyScopes   = "scopes"
 )
 
 // RoleAdmin is the role granted to operator / system tokens. Holders
@@ -49,6 +54,19 @@ func ContextWithTestSubject(ctx context.Context, username string, roles ...strin
 	return metadata.NewIncomingContext(ctx, md)
 }
 
+// ContextWithTestSubjectScopes is a test-only helper that also
+// stamps a scopes claim. Used by Phase 1.7b RequireScope tests.
+// Pass scopes=nil for an unrestricted token (matches the pre-1.7
+// production path).
+func ContextWithTestSubjectScopes(ctx context.Context, username string, roles []string, scopes []string) context.Context {
+	pairs := []string{MDKeyUsername, username, MDKeyRoles, strings.Join(roles, ",")}
+	if scopes != nil {
+		pairs = append(pairs, MDKeyScopes, strings.Join(scopes, ","))
+	}
+	md := metadata.Pairs(pairs...)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
 // SubjectFromGRPCContext returns the authenticated username and
 // roles. It looks first at incoming gRPC metadata (the production
 // path: HTTP middleware → gateway annotator → gRPC metadata), then
@@ -76,6 +94,27 @@ func SubjectFromGRPCContext(ctx context.Context) (username string, roles []strin
 		}
 	}
 	return username, roles, ok
+}
+
+// ScopesFromGRPCContext returns the JWT's `scopes` claim
+// propagated through metadata or context. Returns (nil, false)
+// when the claim wasn't carried — distinct from (empty, true)
+// which would mean an explicit empty grant. HasScope treats nil
+// as "no restriction" (Phase 1.7 backwards-compat), so callers
+// can pass the returned slice through to HasScope directly.
+func ScopesFromGRPCContext(ctx context.Context) (scopes []string, present bool) {
+	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
+		if vals := md.Get(MDKeyScopes); len(vals) > 0 {
+			if vals[0] == "" {
+				return nil, false
+			}
+			return ParseScopes(vals[0]), true
+		}
+	}
+	if s, found := ScopesFromContext(ctx); found {
+		return s, s != nil
+	}
+	return nil, false
 }
 
 // HasRole reports whether `roles` contains `wanted`.
@@ -106,6 +145,32 @@ func RequireRole(ctx context.Context, role string) error {
 		return status.Error(codes.PermissionDenied, "role required: "+role)
 	}
 	return nil
+}
+
+// RequireScope returns nil if the authenticated subject's JWT
+// carries the required scope (or no scopes claim at all, which
+// is the Phase 1.7 backwards-compat "unrestricted" path).
+// Returns Unauthenticated when no subject is in context and
+// PermissionDenied when scopes are explicitly granted but the
+// required one is missing.
+//
+// Use at the top of handlers AFTER the existing role check, not
+// instead of it. Roles and scopes are orthogonal: roles answer
+// "who is this caller?", scopes answer "what was this specific
+// token authorized to do?". Both must pass.
+//
+// Phase 1.7b — pairs with the MCP-side filter landed in PR #250.
+// The MCP filter catches agent abuse before the network call;
+// this catches REST/gRPC callers who bypass MCP entirely.
+func RequireScope(ctx context.Context, required string) error {
+	if _, _, ok := SubjectFromGRPCContext(ctx); !ok {
+		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	scopes, _ := ScopesFromGRPCContext(ctx)
+	if HasScope(scopes, required) {
+		return nil
+	}
+	return status.Error(codes.PermissionDenied, "scope required: "+required)
 }
 
 // AuthorizeTenant returns nil if the authenticated subject is

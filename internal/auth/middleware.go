@@ -72,11 +72,18 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		// Add claims to context
 		ctx := ContextWithClaims(r.Context(), claims)
 
-		// Add to gRPC metadata for gateway forwarding
-		md := metadata.Pairs(
-			"username", claims.Username,
-			"roles", strings.Join(claims.Roles, ","),
-		)
+		// Add to gRPC metadata for gateway forwarding. Phase
+		// 1.7b — propagate the optional `scopes` claim too;
+		// empty/missing scopes claim is omitted from the
+		// metadata so RequireScope sees "no restriction".
+		mdPairs := []string{
+			MDKeyUsername, claims.Username,
+			MDKeyRoles, strings.Join(claims.Roles, ","),
+		}
+		if len(claims.Scopes) > 0 {
+			mdPairs = append(mdPairs, MDKeyScopes, strings.Join(claims.Scopes, ","))
+		}
+		md := metadata.Pairs(mdPairs...)
 		ctx = metadata.NewOutgoingContext(ctx, md)
 
 		// Continue with modified request

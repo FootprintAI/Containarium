@@ -25,6 +25,9 @@ func (s *ContainerServer) SetSecretsStore(store *secrets.Store) {
 // repeated calls with the same (username, name) bump the version
 // and replace the value. Admin JWT required (design decision #3).
 func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretRequest) (*pb.SetSecretResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecretsWrite); err != nil {
+		return nil, err
+	}
 	if s.secretsStore == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
@@ -58,6 +61,9 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 // #6); v2 layers a per-secret read_via_api flag for write-only
 // rotation.
 func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretRequest) (*pb.GetSecretResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecretsRead); err != nil {
+		return nil, err
+	}
 	if s.secretsStore == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
@@ -83,6 +89,9 @@ func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretReques
 // ListSecrets returns metadata for every secret owned by the
 // tenant. Values are never returned by this path.
 func (s *ContainerServer) ListSecrets(ctx context.Context, req *pb.ListSecretsRequest) (*pb.ListSecretsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecretsRead); err != nil {
+		return nil, err
+	}
 	if s.secretsStore == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
@@ -110,6 +119,9 @@ func (s *ContainerServer) ListSecrets(ctx context.Context, req *pb.ListSecretsRe
 // RefreshSecrets if they want the change to reach a running
 // process.
 func (s *ContainerServer) DeleteSecret(ctx context.Context, req *pb.DeleteSecretRequest) (*pb.DeleteSecretResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecretsWrite); err != nil {
+		return nil, err
+	}
 	if s.secretsStore == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
@@ -135,6 +147,9 @@ func (s *ContainerServer) DeleteSecret(ctx context.Context, req *pb.DeleteSecret
 // processes keep their old env (POSIX semantics); new execs see
 // the refreshed values.
 func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSecretsRequest) (*pb.RefreshSecretsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecretsWrite); err != nil {
+		return nil, err
+	}
 	if s.secretsStore == nil {
 		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}

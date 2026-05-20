@@ -255,12 +255,16 @@ type contextKey string
 const (
 	ContextKeyUsername contextKey = "username"
 	ContextKeyRoles    contextKey = "roles"
+	ContextKeyScopes   contextKey = "scopes" // Phase 1.7b
 )
 
 // ContextWithClaims adds authentication claims to context
 func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 	ctx = context.WithValue(ctx, ContextKeyUsername, claims.Username)
 	ctx = context.WithValue(ctx, ContextKeyRoles, claims.Roles)
+	if claims.Scopes != nil {
+		ctx = context.WithValue(ctx, ContextKeyScopes, claims.Scopes)
+	}
 	return ctx
 }
 
@@ -274,4 +278,13 @@ func UsernameFromContext(ctx context.Context) (string, bool) {
 func RolesFromContext(ctx context.Context) ([]string, bool) {
 	roles, ok := ctx.Value(ContextKeyRoles).([]string)
 	return roles, ok
+}
+
+// ScopesFromContext retrieves the JWT `scopes` claim from
+// context. Returns (nil, false) when no scopes were carried —
+// callers should treat as "no restriction" (the Phase 1.7
+// backwards-compat path). Phase 1.7b.
+func ScopesFromContext(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value(ContextKeyScopes).([]string)
+	return scopes, ok
 }

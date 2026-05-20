@@ -113,6 +113,9 @@ func NewContainerServer() (*ContainerServer, error) {
 
 // CreateContainer creates a new container
 func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	// Validate request
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
@@ -367,6 +370,9 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 // ListContainers lists all containers
 func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContainersRequest) (*pb.ListContainersResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	// Tenant isolation: non-admin callers may only see their own
 	// containers. Empty req.Username for a non-admin is rewritten to
 	// the authenticated subject (was "list everyone's"); an explicit
@@ -469,6 +475,9 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 
 // GetContainer gets information about a specific container
 func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainerRequest) (*pb.GetContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -553,6 +562,9 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 
 // DeleteContainer deletes a container
 func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteContainerRequest) (*pb.DeleteContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -672,6 +684,9 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 
 // StartContainer starts a stopped container
 func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartContainerRequest) (*pb.StartContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -805,6 +820,9 @@ func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, c
 
 // StopContainer stops a running container
 func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContainerRequest) (*pb.StopContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -887,6 +905,9 @@ func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason
 
 // ResizeContainer dynamically resizes container resources
 func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeContainerRequest) (*pb.ResizeContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -1214,6 +1235,9 @@ var otelEnvKeys = []string{
 // Core containers are refused — they don't run user code and don't
 // need app-emitted telemetry.
 func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMonitoringRequest) (*pb.ToggleMonitoringResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
@@ -1296,6 +1320,9 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 // applies. Core containers are refused — they don't represent user
 // workloads and shouldn't be sleeping.
 func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAutoSleepRequest) (*pb.ToggleAutoSleepResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
@@ -1359,6 +1386,9 @@ func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAut
 //
 // Idempotent — a key already present is a no-op success.
 func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyRequest) (*pb.AddSSHKeyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -1390,6 +1420,9 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 // RemoveSSHKey removes a specific SSH public key from the user's
 // host-side authorized_keys file. No-op if the key isn't present.
 func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKeyRequest) (*pb.RemoveSSHKeyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}

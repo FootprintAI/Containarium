@@ -203,12 +203,25 @@ on the internal network. Land them first.
         gating). `TestEveryToolHasScope` is a guard rail:
         adding a new MCP tool without a scope assignment
         fails CI.
-      — **Follow-up:** daemon-side server enforcement of
-        the scopes claim on each RPC. Today the MCP filter
-        catches agent abuse; a tenant calling REST/gRPC
-        directly with a scoped token still bypasses the
-        scope check (the role check still applies).
-        Tracked as a Phase 1.7b item.
+      — **1.7b daemon-side enforcement landed.** New
+        `auth.RequireScope(ctx, scope)` mirrors
+        `RequireRole` semantics. JWT `scopes` claim now
+        propagates through the HTTP middleware AND the
+        gateway annotator (`MDKeyScopes` metadata key,
+        comma-joined). Hot-path handlers gated:
+        `ContainerServer.{Create,List,Get,Delete,Start,
+        Stop,Resize,ToggleMonitoring,ToggleAutoSleep,
+        AddSSHKey,RemoveSSHKey}` (containers:read|write
+        + ssh:write), `SecretsServer.{Set,Get,List,Delete,
+        Refresh}Secret` (secrets:read|write), and
+        `NetworkServer.{Get,Add,Update,Delete}Route`
+        (routes:read|write). Backwards-compat preserved:
+        absent scopes claim → nil grants → unrestricted.
+        Tests in `internal/auth/require_scope_test.go` +
+        `internal/server/scope_gate_test.go`.
+      — Remaining out-of-scope: ZapServer, AlertServer,
+        PentestServer, SecurityServer, TrafficServer —
+        mechanical follow-up identical to the 1.7b pattern.
 - [x] **1.8** Refuse JWT token files with mode > 0600 — `internal/mcp/client.go:57-78` (**C-HIGH-7**)
       — `readToken` `os.Stat`s the file and refuses if any non-owner
         read/write bit is set. Error message tells the operator the

@@ -61,6 +61,9 @@ func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager,
 
 // GetRoutes lists all proxy routes from PostgreSQL (source of truth)
 func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest) (*pb.GetRoutesResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	// Tenant isolation: non-admin → routes for your apps only.
 	subject, roles, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok {
@@ -204,6 +207,9 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 // Admin-only — routes can point at any container IP and steal traffic
 // addressed to other tenants.
 func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (*pb.AddRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -298,6 +304,9 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 // UpdateRoute updates an existing proxy route (updates PostgreSQL, sync job updates Caddy).
 // Admin-only — same blast radius as AddRoute.
 func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequest) (*pb.UpdateRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -408,6 +417,9 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 // Admin-only — denial-of-service vector if a tenant could remove
 // another tenant's route.
 func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequest) (*pb.DeleteRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}

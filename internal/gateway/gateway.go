@@ -666,6 +666,12 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 	if roles, ok := auth.RolesFromContext(ctx); ok && len(roles) > 0 {
 		md.Set(auth.MDKeyRoles, strings.Join(roles, ","))
 	}
+	// Phase 1.7b — forward the optional `scopes` claim. Missing
+	// claim → no metadata entry → RequireScope sees nil grants
+	// → backwards-compat unrestricted.
+	if scopes, ok := auth.ScopesFromContext(ctx); ok && len(scopes) > 0 {
+		md.Set(auth.MDKeyScopes, strings.Join(scopes, ","))
+	}
 	return md
 }
 
