@@ -475,7 +475,24 @@ on the internal network. Land them first.
         disclosure window, supported versions, out-of-scope
         cases, automated scanning summary, and an audit-
         history pointer back to this doc.
-- [ ] **5.4** Abuse-case test suite: oversized payloads, replayed tokens, wrong-tenant access — all must fail closed
+- [x] **5.4** Abuse-case test suite: oversized payloads, replayed tokens, wrong-tenant access — all must fail closed
+      — **Tripwire suite landed at
+        `internal/auth/abuse_test.go`.** 12 scenarios, one
+        per attack class flagged in the audit:
+        revoked-token replay, refresh-token rotation
+        replay, access-token at refresh path,
+        refresh-token at API surface, wrong-tenant
+        access (IDOR), wrong-container access via
+        container_name, scope confusion (admin without
+        scope), tampered signature, alg=none confusion,
+        failed-auth rate limit, plus a legacy-token
+        compat check. The suite is a regression tripwire:
+        if any of these flip from "deny" to "allow" in a
+        future refactor, the build breaks loudly.
+      — Oversized-payload coverage already lives in
+        `internal/server/create_bounds_test.go` from
+        Phase 3.3 (input bounds on CreateContainer
+        fields); not duplicated here.
 
 ---
 
