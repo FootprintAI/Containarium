@@ -200,8 +200,13 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 	}, nil
 }
 
-// AddRoute adds a new proxy route (saves to PostgreSQL, sync job updates Caddy)
+// AddRoute adds a new proxy route (saves to PostgreSQL, sync job updates Caddy).
+// Admin-only — routes can point at any container IP and steal traffic
+// addressed to other tenants.
 func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (*pb.AddRouteResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Validate request
 	if req.Domain == "" {
 		return nil, fmt.Errorf("domain is required")
@@ -290,8 +295,12 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 	}, nil
 }
 
-// UpdateRoute updates an existing proxy route (updates PostgreSQL, sync job updates Caddy)
+// UpdateRoute updates an existing proxy route (updates PostgreSQL, sync job updates Caddy).
+// Admin-only — same blast radius as AddRoute.
 func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequest) (*pb.UpdateRouteResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Validate request
 	if req.Domain == "" {
 		return nil, fmt.Errorf("domain is required")
@@ -395,8 +404,13 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 	}, nil
 }
 
-// DeleteRoute removes a proxy route (deletes from PostgreSQL, sync job updates Caddy)
+// DeleteRoute removes a proxy route (deletes from PostgreSQL, sync job updates Caddy).
+// Admin-only — denial-of-service vector if a tenant could remove
+// another tenant's route.
 func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequest) (*pb.DeleteRouteResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Validate request
 	if req.Domain == "" {
 		return nil, fmt.Errorf("domain is required")
@@ -433,8 +447,12 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 	}, nil
 }
 
-// ListPassthroughRoutes lists all TCP/UDP passthrough routes
+// ListPassthroughRoutes lists all TCP/UDP passthrough routes.
+// Admin-only — passthrough routes are cluster-wide infrastructure.
 func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListPassthroughRoutesRequest) (*pb.ListPassthroughRoutesResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Build IP -> container name map for lookups
 	ipToContainer := make(map[string]string)
 	if s.incusClient != nil {
@@ -519,8 +537,13 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 	}, nil
 }
 
-// AddPassthroughRoute adds a new TCP/UDP passthrough route
+// AddPassthroughRoute adds a new TCP/UDP passthrough route.
+// Admin-only — passthrough binds a host-wide port (iptables/nftables),
+// outside any tenant's scope.
 func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPassthroughRouteRequest) (*pb.AddPassthroughRouteResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Validate request
 	if req.ExternalPort <= 0 || req.ExternalPort > 65535 {
 		return nil, fmt.Errorf("external_port must be between 1 and 65535")
@@ -576,8 +599,12 @@ func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPass
 	}, nil
 }
 
-// DeletePassthroughRoute removes a TCP/UDP passthrough route
+// DeletePassthroughRoute removes a TCP/UDP passthrough route.
+// Admin-only.
 func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.DeletePassthroughRouteRequest) (*pb.DeletePassthroughRouteResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Validate request
 	if req.ExternalPort <= 0 || req.ExternalPort > 65535 {
 		return nil, fmt.Errorf("external_port must be between 1 and 65535")
@@ -607,8 +634,12 @@ func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.Dele
 	}, nil
 }
 
-// UpdatePassthroughRoute updates an existing TCP/UDP passthrough route
+// UpdatePassthroughRoute updates an existing TCP/UDP passthrough route.
+// Admin-only.
 func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.UpdatePassthroughRouteRequest) (*pb.UpdatePassthroughRouteResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Validate request
 	if req.ExternalPort <= 0 || req.ExternalPort > 65535 {
 		return nil, fmt.Errorf("external_port must be between 1 and 65535")
@@ -707,8 +738,13 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 	}, nil
 }
 
-// ListDNSRecords returns available domains that have TLS certificates (from existing routes)
+// ListDNSRecords returns available domains that have TLS certificates
+// (from existing routes). Admin-only — the full list of domains
+// across all tenants is operator-scope.
 func (s *NetworkServer) ListDNSRecords(ctx context.Context, req *pb.ListDNSRecordsRequest) (*pb.ListDNSRecordsResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	var records []*pb.DNSRecord
 
 	// Get existing routes from Caddy - these domains have TLS certificates
@@ -884,8 +920,12 @@ func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateCo
 	}, nil
 }
 
-// GetNetworkTopology returns network visualization data
+// GetNetworkTopology returns network visualization data.
+// Admin-only — the full topology lists every tenant container.
 func (s *NetworkServer) GetNetworkTopology(ctx context.Context, req *pb.GetNetworkTopologyRequest) (*pb.GetNetworkTopologyResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	topology := &pb.NetworkTopology{
 		NetworkCidr: s.containerNetwork,
 		GatewayIp:   s.proxyIP,

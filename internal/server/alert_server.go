@@ -20,6 +20,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,8 +42,12 @@ func (s *ContainerServer) SetAlertDeliveryStore(ds *alert.DeliveryStore) {
 	s.alertDeliveryStore = ds
 }
 
-// CreateAlertRule creates a new custom alert rule
+// CreateAlertRule creates a new custom alert rule. Admin-only
+// — alert rules drive cluster-wide notifications.
 func (s *ContainerServer) CreateAlertRule(ctx context.Context, req *pb.CreateAlertRuleRequest) (*pb.CreateAlertRuleResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertStore == nil {
 		return nil, status.Error(codes.Unavailable, "alerting is not configured")
 	}
@@ -91,8 +96,12 @@ func (s *ContainerServer) CreateAlertRule(ctx context.Context, req *pb.CreateAle
 	}, nil
 }
 
-// ListAlertRules lists all custom alert rules
+// ListAlertRules lists all custom alert rules. Admin-only —
+// rule names + expressions can disclose operator practice.
 func (s *ContainerServer) ListAlertRules(ctx context.Context, req *pb.ListAlertRulesRequest) (*pb.ListAlertRulesResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertStore == nil {
 		return &pb.ListAlertRulesResponse{}, nil
 	}
@@ -110,8 +119,11 @@ func (s *ContainerServer) ListAlertRules(ctx context.Context, req *pb.ListAlertR
 	return &pb.ListAlertRulesResponse{Rules: pbRules}, nil
 }
 
-// GetAlertRule gets a single alert rule by ID
+// GetAlertRule gets a single alert rule by ID. Admin-only.
 func (s *ContainerServer) GetAlertRule(ctx context.Context, req *pb.GetAlertRuleRequest) (*pb.GetAlertRuleResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertStore == nil {
 		return nil, status.Error(codes.Unavailable, "alerting is not configured")
 	}
@@ -131,8 +143,11 @@ func (s *ContainerServer) GetAlertRule(ctx context.Context, req *pb.GetAlertRule
 	return &pb.GetAlertRuleResponse{Rule: alertRuleToProto(rule)}, nil
 }
 
-// UpdateAlertRule updates an existing alert rule
+// UpdateAlertRule updates an existing alert rule. Admin-only.
 func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAlertRuleRequest) (*pb.UpdateAlertRuleResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertStore == nil {
 		return nil, status.Error(codes.Unavailable, "alerting is not configured")
 	}
@@ -191,8 +206,12 @@ func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAle
 	return &pb.UpdateAlertRuleResponse{Rule: alertRuleToProto(updated)}, nil
 }
 
-// DeleteAlertRule deletes an alert rule
+// DeleteAlertRule deletes an alert rule. Admin-only — rule
+// removal silently stops paging on real issues.
 func (s *ContainerServer) DeleteAlertRule(ctx context.Context, req *pb.DeleteAlertRuleRequest) (*pb.DeleteAlertRuleResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertStore == nil {
 		return nil, status.Error(codes.Unavailable, "alerting is not configured")
 	}
@@ -348,8 +367,14 @@ func parseDefaultAlertRules() ([]*pb.AlertRule, error) {
 	return pbRules, nil
 }
 
-// UpdateAlertingConfig updates the alerting system configuration (webhook URL and/or secret)
+// UpdateAlertingConfig updates the alerting system configuration
+// (webhook URL and/or secret). Admin-only — webhook URL controls
+// where alert payloads (potentially containing tenant data) are
+// posted; redirecting it is exfiltration.
 func (s *ContainerServer) UpdateAlertingConfig(ctx context.Context, req *pb.UpdateAlertingConfigRequest) (*pb.UpdateAlertingConfigResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertStore == nil {
 		return nil, status.Error(codes.Unavailable, "alerting is not configured")
 	}
@@ -423,8 +448,13 @@ func (s *ContainerServer) UpdateAlertingConfig(ctx context.Context, req *pb.Upda
 	return resp, nil
 }
 
-// TestWebhook sends a test notification to the configured webhook with current system status
+// TestWebhook sends a test notification to the configured webhook
+// with current system status. Admin-only — exposes the webhook URL
+// in error messages (and validates it works).
 func (s *ContainerServer) TestWebhook(ctx context.Context, req *pb.TestWebhookRequest) (*pb.TestWebhookResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertWebhookURL == "" {
 		return &pb.TestWebhookResponse{
 			Success:    false,
@@ -555,8 +585,13 @@ func (s *ContainerServer) recordDelivery(ctx context.Context, alertName, source,
 	}
 }
 
-// ListWebhookDeliveries returns webhook delivery history
+// ListWebhookDeliveries returns webhook delivery history.
+// Admin-only — delivery records name alert sources and
+// destinations, useful for forensics but not for tenants.
 func (s *ContainerServer) ListWebhookDeliveries(ctx context.Context, req *pb.ListWebhookDeliveriesRequest) (*pb.ListWebhookDeliveriesResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.alertDeliveryStore == nil {
 		return &pb.ListWebhookDeliveriesResponse{}, nil
 	}

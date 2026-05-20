@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/security"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -145,8 +146,13 @@ func (s *SecurityServer) fetchPeerReports(authToken string, req *pb.ListClamavRe
 	return all
 }
 
-// GetClamavSummary returns a summary of ClamAV scan status across all containers
+// GetClamavSummary returns a summary of ClamAV scan status across all containers.
+// Admin-only — cluster-wide infection counts leak posture data and
+// list every container by name.
 func (s *SecurityServer) GetClamavSummary(ctx context.Context, req *pb.GetClamavSummaryRequest) (*pb.GetClamavSummaryResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	// Get scan summaries from DB
 	summaries, err := s.store.GetContainerSummaries(ctx)
 	if err != nil {
@@ -357,8 +363,12 @@ func (s *SecurityServer) triggerPeerScans(authToken string) int32 {
 	return total
 }
 
-// GetScanStatus returns the current state of the scan job queue
+// GetScanStatus returns the current state of the scan job queue.
+// Admin-only — the queue lists work items across all containers.
 func (s *SecurityServer) GetScanStatus(ctx context.Context, req *pb.GetScanStatusRequest) (*pb.GetScanStatusResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	jobs, err := s.store.ListScanJobs(ctx, "", 100)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list scan jobs: %w", err)
