@@ -2,9 +2,11 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -48,7 +50,13 @@ func NewStore(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	return store, nil
 }
 
-// initSchema creates the database schema if it doesn't exist
+// initSchema creates the database schema if it doesn't exist.
+//
+// Phase 4.5: row_hash + prev_hash columns implement the
+// tamper-evidence chain. Added with ADD COLUMN IF NOT EXISTS so
+// the upgrade is non-destructive — pre-existing rows have NULL
+// hashes and the verifier treats them as "before chain was
+// enabled" (skipped from the chain head).
 func (s *Store) initSchema(ctx context.Context) error {
 	schema := `
 		CREATE TABLE IF NOT EXISTS audit_logs (
@@ -62,6 +70,9 @@ func (s *Store) initSchema(ctx context.Context) error {
 			source_ip TEXT NOT NULL DEFAULT '',
 			status_code INTEGER NOT NULL DEFAULT 0
 		);
+
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS row_hash TEXT NOT NULL DEFAULT '';
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS prev_hash TEXT NOT NULL DEFAULT '';
 
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp
 			ON audit_logs(timestamp DESC);
@@ -77,21 +88,50 @@ func (s *Store) initSchema(ctx context.Context) error {
 	return err
 }
 
-// Log inserts a single audit log entry
+// Log inserts a single audit log entry.
+//
+// Phase 4.5: each insert reads the latest row's row_hash inside
+// a transaction, computes the new row's hash from its content
+// plus that prev_hash, and writes both. SELECT FOR UPDATE on
+// the tail row serializes concurrent writers so the chain
+// stays well-ordered. Without the lock, two concurrent inserts
+// could both reference the same prev_hash and produce a fork.
 func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
-	query := `
-		INSERT INTO audit_logs (
-			timestamp, username, action, resource_type, resource_id,
-			detail, source_ip, status_code
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`
-
 	ts := entry.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
 	}
+	entry.Timestamp = ts
 
-	_, err := s.pool.Exec(ctx, query,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("audit: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // best-effort cleanup; Commit() supersedes
+
+	// Get prev_hash from the chain tail. FOR UPDATE serializes
+	// concurrent appenders; the lock releases on Commit.
+	var prevHash string
+	err = tx.QueryRow(ctx,
+		`SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+	).Scan(&prevHash)
+	if err != nil {
+		// First row in the table — no predecessor.
+		if errors.Is(err, pgx.ErrNoRows) {
+			prevHash = HashEmpty
+		} else {
+			return fmt.Errorf("audit: read chain tail: %w", err)
+		}
+	}
+
+	rowHash := computeRowHash(entry, prevHash)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO audit_logs (
+			timestamp, username, action, resource_type, resource_id,
+			detail, source_ip, status_code, row_hash, prev_hash
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`,
 		ts,
 		entry.Username,
 		entry.Action,
@@ -100,12 +140,73 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 		entry.Detail,
 		entry.SourceIP,
 		entry.StatusCode,
+		rowHash,
+		prevHash,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to insert audit log: %w", err)
+		return fmt.Errorf("audit: insert: %w", err)
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("audit: commit: %w", err)
+	}
 	return nil
+}
+
+// VerifyChainSinceID walks the hash chain forward from
+// `fromID` (exclusive) and returns the ID of the first row that
+// fails verification, or 0 if the chain is intact. Pass 0 to
+// verify from the chain start.
+//
+// The function reads up to `limit` rows in one pass — callers
+// verifying long ranges should loop, passing the last verified
+// ID back in as the next fromID, so memory stays bounded.
+func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int) (firstBad int64, err error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, timestamp, username, action, resource_type,
+		       resource_id, detail, source_ip, status_code,
+		       row_hash, prev_hash
+		FROM audit_logs
+		WHERE id > $1 AND row_hash <> ''
+		ORDER BY id ASC
+		LIMIT $2
+	`, fromID, limit)
+	if err != nil {
+		return -1, fmt.Errorf("audit: query chain: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []ChainEntry
+	for rows.Next() {
+		var c ChainEntry
+		if err := rows.Scan(&c.ID, &c.Timestamp, &c.Username, &c.Action,
+			&c.ResourceType, &c.ResourceID, &c.Detail, &c.SourceIP, &c.StatusCode,
+			&c.RowHash, &c.PrevHash); err != nil {
+			return -1, fmt.Errorf("audit: scan chain row: %w", err)
+		}
+		entries = append(entries, c)
+	}
+	if err := rows.Err(); err != nil {
+		return -1, fmt.Errorf("audit: iterate chain rows: %w", err)
+	}
+	if len(entries) == 0 {
+		return 0, nil // empty range
+	}
+
+	// The expected prev_hash for the first row in this batch is
+	// whatever its stored prev_hash claims to be — we can't
+	// reach back beyond the WHERE without an extra query. The
+	// VerifyChain helper compares prev_hash to the value passed
+	// in. For a fromID=0 verification, the first row's
+	// prev_hash should be HashEmpty.
+	expectedRoot := entries[0].PrevHash
+	if fromID == 0 {
+		expectedRoot = HashEmpty
+	}
+	return VerifyChain(entries, expectedRoot)
 }
 
 // Query retrieves audit log entries with optional filters and pagination
