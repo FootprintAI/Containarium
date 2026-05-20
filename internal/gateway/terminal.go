@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/gorilla/websocket"
 	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
@@ -62,6 +63,14 @@ func NewTerminalHandler() (*TerminalHandler, error) {
 				log.Printf("WebSocket connection rejected: origin %s not in allowed list", origin)
 				return false
 			},
+			// Phase 1.5 — advertise the bearer subprotocol so
+			// gorilla picks it up during negotiation and emits
+			// the right Sec-WebSocket-Protocol response header.
+			// Picking only this name means an upgrade where the
+			// client offered a different application subprotocol
+			// won't be confused with auth — apps that need a
+			// custom subprotocol will need to be wired explicitly.
+			Subprotocols:    []string{auth.WSSubprotocolBearer},
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 		},
@@ -123,7 +132,11 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 
 	// Check if container is on a peer backend
 	if th.peerProxy != nil {
-		authToken := r.URL.Query().Get("token")
+		// Phase 1.5 — read the token from whichever form the
+		// client used (subprotocol > Authorization > legacy
+		// ?token=). The gateway wrapper has already validated
+		// it; we just need to forward the bytes upstream.
+		authToken, _ := auth.ExtractBearerForUpgrade(r)
 		if peerURL, err := th.peerProxy.PeerTerminalURL(username, authToken); err == nil && peerURL != "" {
 			// Proxy WebSocket to peer
 			log.Printf("Proxying terminal for %s to peer: %s", containerName, peerURL)
@@ -159,6 +172,11 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 }
 
 // proxyWebSocket proxies a WebSocket connection to a peer backend's terminal endpoint.
+//
+// Phase 1.5 — forwards the bearer token via the
+// Sec-WebSocket-Protocol header (subprotocol form) so the
+// daemon→peer hop also stays out of URL-loggable form. The
+// peer's ExtractBearerForUpgrade picks it up identically.
 func (th *TerminalHandler) proxyWebSocket(w http.ResponseWriter, r *http.Request, peerURL, authToken string) {
 	// Parse the peer URL and set up WebSocket dial
 	u, err := url.Parse(peerURL)
@@ -167,13 +185,19 @@ func (th *TerminalHandler) proxyWebSocket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Add auth token as query param
+	// Strip any legacy ?token= an older callsite may have
+	// already added — we don't want the token to land in both
+	// places on the wire.
 	q := u.Query()
-	q.Set("token", authToken)
+	q.Del("token")
 	u.RawQuery = q.Encode()
 
-	// Dial the peer's WebSocket
+	// Forward the bearer via subprotocol. RFC 6455 wants a
+	// comma-separated list; gorilla parses it back the same
+	// way ExtractBearerForUpgrade does.
 	peerHeaders := http.Header{}
+	peerHeaders.Set("Sec-WebSocket-Protocol", auth.WSSubprotocolBearer+", "+authToken)
+
 	peerConn, _, err := websocket.DefaultDialer.Dial(u.String(), peerHeaders)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to connect to peer terminal: %v", err), http.StatusBadGateway)

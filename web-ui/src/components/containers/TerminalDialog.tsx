@@ -59,11 +59,16 @@ export default function TerminalDialog({ open, onClose, containerName, username,
 
     let wsUrl = serverEndpoint.replace(/^http/, 'ws').replace(/\/v1\/?$/, '');
     const cleanToken = token.replace(/\s+/g, '');
-    wsUrl = `${wsUrl}/v1/containers/${username}/terminal?token=${encodeURIComponent(cleanToken)}`;
+    wsUrl = `${wsUrl}/v1/containers/${username}/terminal`;
 
     term.writeln(`Connecting to ${containerName}...`);
 
-    const ws = new WebSocket(wsUrl);
+    // Phase 1.5 — auth via WebSocket subprotocol header
+    // (Sec-WebSocket-Protocol) so the JWT never lands in URL
+    // bars, access logs, or proxy logs. Server matches the
+    // 'containarium.bearer' marker and reads the next entry
+    // as the token; see internal/auth/ws_token.go.
+    const ws = new WebSocket(wsUrl, ['containarium.bearer', cleanToken]);
     wsRef.current = ws;
 
     ws.onopen = () => {

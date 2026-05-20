@@ -395,23 +395,26 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Create HTTP mux for routing
 	httpMux := http.NewServeMux()
 
-	// Terminal WebSocket route (with authentication via query param)
+	// Terminal WebSocket route.
+	//
+	// Phase 1.5 — auth token comes from the WebSocket
+	// subprotocol header (`Sec-WebSocket-Protocol`) by
+	// preference, since browsers can't attach arbitrary
+	// headers to `new WebSocket(url)`. Authorization header
+	// + `?token=` are kept as backwards-compat fallbacks;
+	// query-param use is logged as a deprecation WARNING.
+	// See internal/auth/ws_token.go.
 	if gs.terminalHandler != nil {
 		// Wrap terminal handler with CORS (using configurable origins)
 		terminalWithCORS := cors.New(cors.Options{
 			AllowedOrigins:   getAllowedOrigins(),
 			AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-			AllowedHeaders:   []string{"Authorization", "Content-Type", "Upgrade", "Connection"},
+			AllowedHeaders:   []string{"Authorization", "Content-Type", "Upgrade", "Connection", "Sec-WebSocket-Protocol"},
 			AllowCredentials: true,
 		}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Validate auth token from query param (WebSocket can't use headers easily)
-			token := r.URL.Query().Get("token")
-			if token == "" {
-				// Try Authorization header as fallback
-				authHeader := r.Header.Get("Authorization")
-				if strings.HasPrefix(authHeader, "Bearer ") {
-					token = strings.TrimPrefix(authHeader, "Bearer ")
-				}
+			token, src := auth.ExtractBearerForUpgrade(r)
+			if src == auth.TokenSourceQueryParam {
+				log.Printf("WARNING: terminal client used deprecated ?token= (remote=%s, host=%q) — switch to Sec-WebSocket-Protocol", r.RemoteAddr, r.Host)
 			}
 
 			// SECURITY FIX: Authentication is MANDATORY for terminal access
@@ -517,20 +520,23 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		httpMux.Handle("/v1/system/core-services", coreServicesCORS)
 	}
 
-	// Events SSE endpoint (with authentication)
+	// Events SSE endpoint.
+	//
+	// Phase 1.5 — Authorization header is the canonical
+	// source. SSE is not a WebSocket, so the subprotocol
+	// path is irrelevant — but ExtractBearerForUpgrade
+	// still gives us a single audit-friendly extraction
+	// point. `?token=` is accepted with a deprecation
+	// WARNING so we can surface affected clients.
 	eventsWithCORS := cors.New(cors.Options{
 		AllowedOrigins:   getAllowedOrigins(),
 		AllowedMethods:   []string{"GET", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type", "Cache-Control"},
 		AllowCredentials: true,
 	}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Validate auth token from query param or header
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			authHeader := r.Header.Get("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				token = strings.TrimPrefix(authHeader, "Bearer ")
-			}
+		token, src := auth.ExtractBearerForUpgrade(r)
+		if src == auth.TokenSourceQueryParam {
+			log.Printf("WARNING: events SSE client used deprecated ?token= (remote=%s) — switch to Authorization: Bearer", r.RemoteAddr)
 		}
 
 		if token == "" {

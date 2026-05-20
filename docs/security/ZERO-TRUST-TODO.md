@@ -109,14 +109,24 @@ on the internal network. Land them first.
         gated) is the remaining work. The pattern is now in place;
         applying it to AddSSHKey/RemoveSSHKey, DeleteContainer,
         and similar is a mechanical follow-up.
-- [~] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
+- [x] **1.5** Drop query-string token support; Authorization header only — `internal/gateway/gateway.go:392,512`, `audit_handler.go:19` (**A-MED-3**)
       — **Audit endpoint done** — `/v1/audit/logs` now requires
         `Authorization: Bearer ...` and explicitly rejects `?token=`.
         Tests in `internal/gateway/audit_handler_test.go`.
-      — Terminal + events/subscribe (WebSocket endpoints) still
-        accept query-string tokens — those need the WebSocket
-        Sec-WebSocket-Protocol subprotocol auth or a short-lived
-        ticket exchange. Tracked as a follow-up.
+      — **Terminal WebSocket done** — auth via
+        `Sec-WebSocket-Protocol: containarium.bearer, <jwt>`.
+        Helper `auth.ExtractBearerForUpgrade` checks subprotocol
+        first, then Authorization, then legacy `?token=` (which
+        emits a deprecation WARNING). `TerminalHandler.upgrader`
+        advertises the subprotocol so gorilla acks it correctly.
+        `proxyWebSocket` forwards the token via the same
+        subprotocol form to the peer hop. webui terminal client
+        updated (`TerminalDialog.tsx`).
+      — **Events SSE done (server side)** — same extraction
+        helper; `?token=` warned. The browser `EventSource` API
+        can't attach headers, so the webui still uses `?token=`
+        for SSE — follow-up to rewrite with `fetch` +
+        `ReadableStream` is tracked under [1.6 / refresh tokens].
 - [ ] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
 - [ ] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
 - [x] **1.8** Refuse JWT token files with mode > 0600 — `internal/mcp/client.go:57-78` (**C-HIGH-7**)
