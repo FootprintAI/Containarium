@@ -200,9 +200,25 @@ on the internal network. Land them first.
         privileged regardless of role). Tests in
         `internal/server/privileged_policy_test.go`. Proto contract
         unchanged — server-side gate, not a wire-level split.
-- [ ] **3.3** Cap `ssh_keys` length — `proto/.../container.proto:210` (**B-MED-1**)
-- [ ] **3.4** Cap `stack_parameters` and `labels` size — `proto/.../container.proto:4,13` (**B-MED-2**, **B-LOW-1**)
-- [ ] **3.5** Explicit newline-rejection in SSH key validation — `pkg/core/container/ssh_validate.go:35` (**B-MED-3**)
+- [x] **3.3** Cap `ssh_keys` length — `proto/.../container.proto:210` (**B-MED-1**)
+      — Server-side bounds in `internal/server/create_bounds.go`:
+        max 32 keys, each ≤ 8 KiB. Enforced at the top of
+        CreateContainer (after the tenant check, before any
+        allocation-heavy work). Tests in
+        `internal/server/create_bounds_test.go`.
+- [x] **3.4** Cap `stack_parameters` and `labels` size — `proto/.../container.proto:4,13` (**B-MED-2**, **B-LOW-1**)
+      — Same module as 3.3. `stack_parameters`: max 64 entries,
+        keys ≤ 256 chars, values ≤ 4 KiB. `labels`: max 64 entries,
+        keys/values ≤ 256 chars. Error messages name the offending
+        field so callers can fix without guessing.
+- [x] **3.5** Explicit newline-rejection in SSH key validation — `pkg/core/container/ssh_validate.go:35` (**B-MED-3**)
+      — `ValidateSSHPublicKey` now does `ContainsAny(key, "\r\n")`
+        before any other check. Previously rejection was incidental
+        (the base64 decoder happened not to tolerate CR/LF); the
+        explicit check makes the intent load-bearing. Tests cover
+        LF / CR / CRLF injection vectors, plus that the newline
+        check beats the placeholder check (more-dangerous vector
+        wins).
 
 ---
 

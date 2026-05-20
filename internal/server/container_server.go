@@ -120,6 +120,14 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
+	// Audit B-MED-1 / B-MED-2 / B-LOW-1: cap the unbounded
+	// repeated-string / map fields before any allocation-heavy
+	// work runs. Done after the tenant check (don't enumerate
+	// resource caps to unauthenticated callers) but before pool
+	// resolution and peer routing.
+	if err := validateCreateContainerBounds(req); err != nil {
+		return nil, err
+	}
 
 	// Pool resolution — if a pool is requested, either validate that
 	// the explicit backend_id belongs to that pool, or pick any
