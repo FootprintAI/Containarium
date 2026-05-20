@@ -145,8 +145,20 @@ on the internal network. Land them first.
         that accepted plaintext is gone from the mTLS path. Tests
         in `internal/auth/mtls_interceptor_test.go`.
 - [ ] **2.2** MCP client requires HTTPS + CA pinning — `internal/mcp/client.go:46-48,82` (**C-HIGH-1**)
-- [ ] **2.3** Tighten SSH-port default in terraform — `terraform/modules/containarium/sentinel.tf:104-106` (**C-HIGH-3**)
-- [ ] **2.4** Explicit firewall rule for REST gateway (sentinel-only) — `terraform/modules/containarium/main.tf:65-73` (**C-HIGH-4**)
+- [x] **2.3** Tighten SSH-port default in terraform — `terraform/modules/containarium/sentinel.tf:104-106` (**C-HIGH-3**)
+      — New variable `allowed_management_sources` defaulting to
+        RFC-1918 (10/8 + 172.16/12 + 192.168/16). Applied to
+        operator-only ports: jump-server SSH :22, gRPC :50051,
+        sentinel management SSH :2222. `allowed_ssh_sources`
+        stays at 0.0.0.0/0 for user-facing services on the
+        sentinel (sshpiper :22, HTTP :80, HTTPS :443) — those
+        legitimately need to accept user traffic.
+- [x] **2.4** Explicit firewall rule for REST gateway (sentinel-only) — `terraform/modules/containarium/main.tf:65-73` (**C-HIGH-4**)
+      — Sentinel→spot rule split: user traffic (22/80/443) and
+        the REST API (:8080) are now separate firewall resources
+        with distinct descriptions. An operator can't widen API
+        exposure by editing the user-traffic rule without seeing
+        the implication.
 - [ ] **2.5** OTel collector: loopback bind + auth on OTLP — `internal/server/core_otel_collector.go` (**C-HIGH-5**)
 - [ ] **2.6** PROXY v2 trust list required at startup — `internal/server/dual_server.go` (**C-MED-1**)
 - [ ] **2.7** Pin Caddy to TLS 1.3, restrict ciphers — `internal/hosting/caddy.go` (**C-MED-2**)

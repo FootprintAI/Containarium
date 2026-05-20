@@ -127,9 +127,37 @@ variable "admin_ssh_keys" {
 }
 
 variable "allowed_ssh_sources" {
-  description = "List of CIDR blocks allowed to SSH to the jump server"
+  description = <<-EOT
+    CIDR blocks allowed to reach user-facing services on the
+    sentinel: sshpiper on :22 (the per-tenant SSH proxy), plus
+    HTTP :80 and HTTPS :443. Defaults to 0.0.0.0/0 because the
+    whole point of these services is to accept user traffic
+    from anywhere; sshpiper has fail2ban in front, and 80/443
+    front Caddy which handles its own TLS termination.
+
+    For operator-only ports (jump-server SSH :22, gRPC :50051,
+    sentinel management SSH :2222) use `allowed_management_sources`
+    instead — that defaults to VPC-only so operator surfaces
+    aren't world-reachable by accident. Audit C-HIGH-3.
+  EOT
   type        = list(string)
   default     = ["0.0.0.0/0"]
+}
+
+variable "allowed_management_sources" {
+  description = <<-EOT
+    CIDR blocks allowed to reach operator-only surfaces: jump-
+    server SSH :22, gRPC :50051, and sentinel management SSH
+    :2222. Defaults to RFC-1918 (10/8, 172.16/12, 192.168/16) so
+    operators reach them via VPN / IAP / bastion rather than via
+    open internet. Set to a narrower CIDR if your operator
+    network is more specific, or to ["0.0.0.0/0"] only when you
+    have a documented reason and other compensating controls.
+
+    Tracks audit finding C-HIGH-3.
+  EOT
+  type        = list(string)
+  default     = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 }
 
 variable "fail2ban_whitelist_cidr" {

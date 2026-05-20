@@ -38,7 +38,12 @@ resource "google_compute_address" "jump_server_ip" {
 # Firewall Rules
 # -----------------------------------------------------------------------------
 
-# Allow SSH to jump server
+# Operator SSH to jump server. Phase 2.3: sources now from
+# `allowed_management_sources` (defaults to VPC-only) rather than
+# `allowed_ssh_sources` (which still defaults to 0.0.0.0/0 for
+# user-facing services on the sentinel). Operators reach the
+# jump server via VPN / IAP / bastion, not by exposing :22 to
+# the internet.
 resource "google_compute_firewall" "allow_ssh" {
   name    = "${var.instance_name}-allow-ssh"
   network = local.network
@@ -49,13 +54,15 @@ resource "google_compute_firewall" "allow_ssh" {
     ports    = ["22"]
   }
 
-  source_ranges = var.allowed_ssh_sources
+  source_ranges = var.allowed_management_sources
   target_tags   = var.instance_tags
 
-  description = "Allow SSH access to Containarium jump server"
+  description = "Allow SSH access to Containarium jump server (operator-only, VPC default)"
 }
 
-# Allow gRPC daemon API
+# gRPC daemon API. Phase 2.3: same shift to allowed_management_sources.
+# The gRPC port is for daemon-to-daemon mTLS and operator CLI usage;
+# it is never user-facing.
 resource "google_compute_firewall" "allow_grpc" {
   count   = var.enable_containarium_daemon ? 1 : 0
   name    = "${var.instance_name}-allow-grpc"
@@ -67,10 +74,10 @@ resource "google_compute_firewall" "allow_grpc" {
     ports    = ["50051"]
   }
 
-  source_ranges = var.allowed_ssh_sources
+  source_ranges = var.allowed_management_sources
   target_tags   = var.instance_tags
 
-  description = "Allow gRPC API access to Containarium daemon"
+  description = "Allow gRPC API access to Containarium daemon (operator-only, VPC default)"
 }
 
 # IAP SSH firewall rule (needed in VPC environments for IAP tunneling)
