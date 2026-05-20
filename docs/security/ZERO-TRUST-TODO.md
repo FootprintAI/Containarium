@@ -156,8 +156,21 @@ on the internal network. Land them first.
 
 ## Phase 3 — Input validation & resource boundary (weeks 6-8)
 
-- [ ] **3.1** Image-registry allowlist + digest pinning — `internal/server/container_server.go:160` (**B-HIGH-1**)
-- [ ] **3.2** Split `enable_podman` from `enable_privileged`; gate latter on role — `internal/server/container_server.go:164`, `pkg/core/incus/client.go:458-459` (**A-HIGH-3**)
+- [~] **3.1** Image-registry allowlist + digest pinning — `internal/server/container_server.go:160` (**B-HIGH-1**)
+      — **Allowlist done.** New `CONTAINARIUM_ALLOWED_IMAGE_REGISTRIES`
+        env var (comma-separated). CreateContainer rejects images
+        whose registry prefix isn't in the allowlist. Empty allowlist
+        = pre-Phase-3 behavior with startup WARNING. Tests in
+        `internal/server/image_allowlist_test.go`.
+      — Digest pinning is a follow-up — would require image-pull
+        side checks for SHA-256 manifests.
+- [x] **3.2** Split `enable_podman` from `enable_privileged`; gate latter on role — `internal/server/container_server.go:164`, `pkg/core/incus/client.go:458-459` (**A-HIGH-3**)
+      — New `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` env var with
+        three modes: `all` (default, backwards-compat), `admin-only`
+        (require admin role to enable podman), `disabled` (refuse
+        privileged regardless of role). Tests in
+        `internal/server/privileged_policy_test.go`. Proto contract
+        unchanged — server-side gate, not a wire-level split.
 - [ ] **3.3** Cap `ssh_keys` length — `proto/.../container.proto:210` (**B-MED-1**)
 - [ ] **3.4** Cap `stack_parameters` and `labels` size — `proto/.../container.proto:4,13` (**B-MED-2**, **B-LOW-1**)
 - [ ] **3.5** Explicit newline-rejection in SSH key validation — `pkg/core/container/ssh_validate.go:35` (**B-MED-3**)

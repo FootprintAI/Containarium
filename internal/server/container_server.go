@@ -158,6 +158,26 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		}
 	}
 
+	// Audit B-HIGH-1: validate the image against the registry
+	// allowlist before any runtime call. Empty allowlist accepts
+	// everything (with a startup WARNING); a configured allowlist
+	// rejects unknown registries.
+	if err := validateImageRegistry(req.Image); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	// Audit A-HIGH-3: enable_podman=true implies privileged + apparmor=unconfined.
+	// Gate that elevation behind CONTAINARIUM_PRIVILEGED_PODMAN_POLICY so
+	// non-admin tenants don't auto-escalate just by setting the flag.
+	enablePodmanPrivileged := false
+	if req.EnablePodman {
+		allowed, err := authorizePrivilegedPodman(ctx)
+		if err != nil {
+			return nil, err
+		}
+		enablePodmanPrivileged = allowed
+	}
+
 	// Build create options
 	opts := container.CreateOptions{
 		Username:               req.Username,
@@ -165,7 +185,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		SSHKeys:                req.SshKeys,
 		Labels:                 req.Labels,
 		EnablePodman:           req.EnablePodman,
-		EnablePodmanPrivileged: req.EnablePodman, // Enable privileged mode for proper Podman-in-LXC support
+		EnablePodmanPrivileged: enablePodmanPrivileged,
 		AutoStart:              true,
 		Stack:                  req.Stack,
 		StackParameters:        req.StackParameters,
