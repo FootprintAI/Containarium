@@ -43,13 +43,40 @@ message RevokeTokenResponse {
   string message = 2;
 }
 
+// Phase 1.6 part B — exchange a refresh token for a new
+// (access, refresh) pair. Rotates the refresh token:
+// the prior jti is revoked on success, so each refresh
+// token is single-use. Replay = denied + audit signal.
+message RefreshTokenRequest {
+  // The current refresh token. Must validate via
+  // ValidateRefreshToken (signature + iss + aud + exp +
+  // tt == "refresh") AND not be in the revocation list.
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  // New short-lived access token, ready to use as
+  // Authorization: Bearer.
+  string access_token = 1;
+
+  // New refresh token. Save this — the one you just sent
+  // in is now revoked and cannot be exchanged again.
+  string refresh_token = 2;
+
+  // Unix-seconds expiry of the access token, for clients
+  // that want to refresh proactively before exp.
+  int64 access_token_expires_at = 3;
+
+  // Unix-seconds expiry of the refresh token.
+  int64 refresh_token_expires_at = 4;
+}
+
 // TokensService is the admin surface for JWT lifecycle.
 //
-// All RPCs require an admin role; tenants can't revoke other
-// tenants' tokens. Note that **a token CAN revoke itself**
-// regardless of role — that's how the operator's own logout
-// flow will eventually work — but a tenant calling revoke
-// for a jti they don't recognize still needs admin.
+// RevokeToken requires an admin role + tokens:write scope;
+// tenants can't revoke other tenants' tokens. RefreshToken
+// is open to any holder of a valid refresh token — that's
+// the whole point of the exchange flow.
 service TokensService {
   // RevokeToken adds a token's jti to the revocation list,
   // taking effect on the next authenticated request that
@@ -62,6 +89,27 @@ service TokensService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Revoke a JWT by its jti";
       description: "Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).";
+      tags: "Tokens";
+    };
+  }
+
+  // RefreshToken exchanges a valid refresh token for a new
+  // (access, refresh) pair. The prior refresh token's jti is
+  // revoked on success — refresh tokens are SINGLE-USE.
+  // Replay of an already-exchanged refresh token returns
+  // Unauthenticated (it's now on the revocation list).
+  //
+  // Unauthenticated endpoint by design — the refresh token
+  // itself IS the credential. Don't wrap with the access-
+  // token middleware.
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/tokens/refresh"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Exchange a refresh token for a new (access, refresh) pair";
+      description: "Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.";
       tags: "Tokens";
     };
   }

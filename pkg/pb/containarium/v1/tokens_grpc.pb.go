@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TokensService_RevokeToken_FullMethodName = "/containarium.v1.TokensService/RevokeToken"
+	TokensService_RevokeToken_FullMethodName  = "/containarium.v1.TokensService/RevokeToken"
+	TokensService_RefreshToken_FullMethodName = "/containarium.v1.TokensService/RefreshToken"
 )
 
 // TokensServiceClient is the client API for TokensService service.
@@ -28,16 +29,25 @@ const (
 //
 // TokensService is the admin surface for JWT lifecycle.
 //
-// All RPCs require an admin role; tenants can't revoke other
-// tenants' tokens. Note that **a token CAN revoke itself**
-// regardless of role — that's how the operator's own logout
-// flow will eventually work — but a tenant calling revoke
-// for a jti they don't recognize still needs admin.
+// RevokeToken requires an admin role + tokens:write scope;
+// tenants can't revoke other tenants' tokens. RefreshToken
+// is open to any holder of a valid refresh token — that's
+// the whole point of the exchange flow.
 type TokensServiceClient interface {
 	// RevokeToken adds a token's jti to the revocation list,
 	// taking effect on the next authenticated request that
 	// names it. Idempotent — repeated revokes are safe.
 	RevokeToken(ctx context.Context, in *RevokeTokenRequest, opts ...grpc.CallOption) (*RevokeTokenResponse, error)
+	// RefreshToken exchanges a valid refresh token for a new
+	// (access, refresh) pair. The prior refresh token's jti is
+	// revoked on success — refresh tokens are SINGLE-USE.
+	// Replay of an already-exchanged refresh token returns
+	// Unauthenticated (it's now on the revocation list).
+	//
+	// Unauthenticated endpoint by design — the refresh token
+	// itself IS the credential. Don't wrap with the access-
+	// token middleware.
+	RefreshToken(ctx context.Context, in *RefreshTokenRequest, opts ...grpc.CallOption) (*RefreshTokenResponse, error)
 }
 
 type tokensServiceClient struct {
@@ -58,22 +68,41 @@ func (c *tokensServiceClient) RevokeToken(ctx context.Context, in *RevokeTokenRe
 	return out, nil
 }
 
+func (c *tokensServiceClient) RefreshToken(ctx context.Context, in *RefreshTokenRequest, opts ...grpc.CallOption) (*RefreshTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshTokenResponse)
+	err := c.cc.Invoke(ctx, TokensService_RefreshToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TokensServiceServer is the server API for TokensService service.
 // All implementations must embed UnimplementedTokensServiceServer
 // for forward compatibility.
 //
 // TokensService is the admin surface for JWT lifecycle.
 //
-// All RPCs require an admin role; tenants can't revoke other
-// tenants' tokens. Note that **a token CAN revoke itself**
-// regardless of role — that's how the operator's own logout
-// flow will eventually work — but a tenant calling revoke
-// for a jti they don't recognize still needs admin.
+// RevokeToken requires an admin role + tokens:write scope;
+// tenants can't revoke other tenants' tokens. RefreshToken
+// is open to any holder of a valid refresh token — that's
+// the whole point of the exchange flow.
 type TokensServiceServer interface {
 	// RevokeToken adds a token's jti to the revocation list,
 	// taking effect on the next authenticated request that
 	// names it. Idempotent — repeated revokes are safe.
 	RevokeToken(context.Context, *RevokeTokenRequest) (*RevokeTokenResponse, error)
+	// RefreshToken exchanges a valid refresh token for a new
+	// (access, refresh) pair. The prior refresh token's jti is
+	// revoked on success — refresh tokens are SINGLE-USE.
+	// Replay of an already-exchanged refresh token returns
+	// Unauthenticated (it's now on the revocation list).
+	//
+	// Unauthenticated endpoint by design — the refresh token
+	// itself IS the credential. Don't wrap with the access-
+	// token middleware.
+	RefreshToken(context.Context, *RefreshTokenRequest) (*RefreshTokenResponse, error)
 	mustEmbedUnimplementedTokensServiceServer()
 }
 
@@ -86,6 +115,9 @@ type UnimplementedTokensServiceServer struct{}
 
 func (UnimplementedTokensServiceServer) RevokeToken(context.Context, *RevokeTokenRequest) (*RevokeTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeToken not implemented")
+}
+func (UnimplementedTokensServiceServer) RefreshToken(context.Context, *RefreshTokenRequest) (*RefreshTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RefreshToken not implemented")
 }
 func (UnimplementedTokensServiceServer) mustEmbedUnimplementedTokensServiceServer() {}
 func (UnimplementedTokensServiceServer) testEmbeddedByValue()                       {}
@@ -126,6 +158,24 @@ func _TokensService_RevokeToken_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TokensService_RefreshToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TokensServiceServer).RefreshToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TokensService_RefreshToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TokensServiceServer).RefreshToken(ctx, req.(*RefreshTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TokensService_ServiceDesc is the grpc.ServiceDesc for TokensService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -136,6 +186,10 @@ var TokensService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevokeToken",
 			Handler:    _TokensService_RevokeToken_Handler,
+		},
+		{
+			MethodName: "RefreshToken",
+			Handler:    _TokensService_RefreshToken_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -109,3 +109,96 @@ func (s *TokensServer) RevokeToken(ctx context.Context, req *pb.RevokeTokenReque
 		Message:      "jti added to revocation list; token will be rejected on next use",
 	}, nil
 }
+
+// RefreshToken exchanges a valid refresh token for a new
+// (access, refresh) pair. Phase 1.6 part B.
+//
+// Single-use rotation: on success, the input refresh
+// token's jti is added to the revocation list. A replayed
+// refresh token (someone stole it AND the legitimate
+// holder already exchanged it) hits the revocation check
+// inside ValidateRefreshToken's path and is rejected.
+// This is a strong tamper signal — an audit hook should
+// page on it; today we just log + return Unauthenticated.
+//
+// Unauthenticated endpoint by design: the refresh token IS
+// the credential. Skip the access-token middleware on the
+// /v1/tokens/refresh path; the daemon's HTTP middleware
+// will need a route allowlist for this in a follow-up.
+func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenRequest) (*pb.RefreshTokenResponse, error) {
+	if req.RefreshToken == "" {
+		return nil, status.Error(codes.InvalidArgument, "refresh_token is required")
+	}
+	if s.tokenManager == nil {
+		return nil, status.Error(codes.Unavailable, "token manager not configured")
+	}
+
+	claims, err := s.tokenManager.ValidateRefreshToken(req.RefreshToken)
+	if err != nil {
+		log.Printf("[tokens] refresh denied: invalid token")
+		return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
+	}
+
+	// Mint the new pair BEFORE revoking the prior. If
+	// minting fails the operator's session stays intact.
+	newAccess, err := s.tokenManager.GenerateAccessToken(
+		claims.Username, claims.Roles, 0, claims.Scopes...,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "mint access: %v", err)
+	}
+	newRefresh, err := s.tokenManager.GenerateRefreshToken(
+		claims.Username, claims.Roles, 0, claims.Scopes...,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "mint refresh: %v", err)
+	}
+
+	// Revoke the input refresh-token jti. If the store is
+	// unavailable, fail closed — without rotation a stolen
+	// refresh token gives the attacker permanent renewal.
+	if s.store != nil && claims.ID != "" {
+		exp := time.Time{}
+		if claims.ExpiresAt != nil {
+			exp = claims.ExpiresAt.Time
+		}
+		if err := s.store.Revoke(ctx, claims.ID, exp, "refresh_rotation"); err != nil {
+			log.Printf("[tokens] refresh rotation revoke failed for jti=%s: %v", claims.ID, err)
+			return nil, status.Errorf(codes.Internal, "rotate failed: %v", err)
+		}
+	}
+
+	// Parse the new exp timestamps from the just-minted
+	// tokens so the client knows when to refresh next.
+	newAccessClaims, _ := s.tokenManager.ValidateAccessToken(newAccess)
+	newRefreshClaims, _ := s.tokenManager.ValidateRefreshToken(newRefresh)
+
+	var accessExp, refreshExp int64
+	if newAccessClaims != nil && newAccessClaims.ExpiresAt != nil {
+		accessExp = newAccessClaims.ExpiresAt.Time.Unix()
+	}
+	if newRefreshClaims != nil && newRefreshClaims.ExpiresAt != nil {
+		refreshExp = newRefreshClaims.ExpiresAt.Time.Unix()
+	}
+
+	log.Printf("[tokens] refresh rotated: user=%s old_jti=%s new_access_jti=%s new_refresh_jti=%s",
+		claims.Username,
+		claims.ID,
+		safeID(newAccessClaims),
+		safeID(newRefreshClaims),
+	)
+
+	return &pb.RefreshTokenResponse{
+		AccessToken:           newAccess,
+		RefreshToken:          newRefresh,
+		AccessTokenExpiresAt:  accessExp,
+		RefreshTokenExpiresAt: refreshExp,
+	}, nil
+}
+
+func safeID(c *auth.Claims) string {
+	if c == nil {
+		return ""
+	}
+	return c.ID
+}

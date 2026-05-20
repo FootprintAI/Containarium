@@ -398,6 +398,35 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	return result.Message, result.MonitoringEnabled, nil
 }
 
+// RefreshToken exchanges a refresh token for a new
+// (access, refresh) pair. Unauthenticated endpoint —
+// the refresh token in the body IS the credential.
+// Returns (access, refresh, accessExpUnix, refreshExpUnix, error).
+func (c *HTTPClient) RefreshToken(refreshTok string) (string, string, int64, int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body := map[string]string{"refresh_token": refreshTok}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/tokens/refresh", body)
+	if err != nil {
+		return "", "", 0, 0, fmt.Errorf("refresh token: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", "", 0, 0, parseErr(b, resp.StatusCode, "refresh token")
+	}
+	var result struct {
+		AccessToken           string `json:"accessToken"`
+		RefreshToken          string `json:"refreshToken"`
+		AccessTokenExpiresAt  int64  `json:"accessTokenExpiresAt,string"`
+		RefreshTokenExpiresAt int64  `json:"refreshTokenExpiresAt,string"`
+	}
+	if err := json.Unmarshal(b, &result); err != nil {
+		return "", "", 0, 0, fmt.Errorf("decode refresh response: %w", err)
+	}
+	return result.AccessToken, result.RefreshToken, result.AccessTokenExpiresAt, result.RefreshTokenExpiresAt, nil
+}
+
 // RevokeToken adds a JWT's jti to the daemon's revocation
 // list. Phase 1.2 follow-up — admin-only on the server side.
 // `reason` is free-form and recorded for forensics; pass ""

@@ -3091,6 +3091,41 @@
         ]
       }
     },
+    "/v1/tokens/refresh": {
+      "post": {
+        "summary": "Exchange a refresh token for a new (access, refresh) pair",
+        "description": "Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.",
+        "operationId": "TokensService_RefreshToken",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RefreshTokenResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "Phase 1.6 part B — exchange a refresh token for a new\n(access, refresh) pair. Rotates the refresh token:\nthe prior jti is revoked on success, so each refresh\ntoken is single-use. Replay = denied + audit signal.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RefreshTokenRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Tokens"
+        ]
+      }
+    },
     "/v1/tokens/revoke": {
       "post": {
         "summary": "Revoke a JWT by its jti",
@@ -6321,6 +6356,39 @@
           "type": "integer",
           "format": "int32",
           "description": "Count of env vars actually stamped (matches the number of\nsecrets owned by the tenant at refresh time)."
+        }
+      }
+    },
+    "RefreshTokenRequest": {
+      "type": "object",
+      "properties": {
+        "refreshToken": {
+          "type": "string",
+          "description": "The current refresh token. Must validate via\nValidateRefreshToken (signature + iss + aud + exp +\ntt == \"refresh\") AND not be in the revocation list."
+        }
+      },
+      "description": "Phase 1.6 part B — exchange a refresh token for a new\n(access, refresh) pair. Rotates the refresh token:\nthe prior jti is revoked on success, so each refresh\ntoken is single-use. Replay = denied + audit signal."
+    },
+    "RefreshTokenResponse": {
+      "type": "object",
+      "properties": {
+        "accessToken": {
+          "type": "string",
+          "description": "New short-lived access token, ready to use as\nAuthorization: Bearer."
+        },
+        "refreshToken": {
+          "type": "string",
+          "description": "New refresh token. Save this — the one you just sent\nin is now revoked and cannot be exchanged again."
+        },
+        "accessTokenExpiresAt": {
+          "type": "string",
+          "format": "int64",
+          "description": "Unix-seconds expiry of the access token, for clients\nthat want to refresh proactively before exp."
+        },
+        "refreshTokenExpiresAt": {
+          "type": "string",
+          "format": "int64",
+          "description": "Unix-seconds expiry of the refresh token."
         }
       }
     },

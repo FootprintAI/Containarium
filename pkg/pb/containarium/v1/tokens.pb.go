@@ -151,6 +151,132 @@ func (x *RevokeTokenResponse) GetMessage() string {
 	return ""
 }
 
+// Phase 1.6 part B — exchange a refresh token for a new
+// (access, refresh) pair. Rotates the refresh token:
+// the prior jti is revoked on success, so each refresh
+// token is single-use. Replay = denied + audit signal.
+type RefreshTokenRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The current refresh token. Must validate via
+	// ValidateRefreshToken (signature + iss + aud + exp +
+	// tt == "refresh") AND not be in the revocation list.
+	RefreshToken  string `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshTokenRequest) Reset() {
+	*x = RefreshTokenRequest{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshTokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshTokenRequest) ProtoMessage() {}
+
+func (x *RefreshTokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshTokenRequest.ProtoReflect.Descriptor instead.
+func (*RefreshTokenRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RefreshTokenRequest) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+type RefreshTokenResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// New short-lived access token, ready to use as
+	// Authorization: Bearer.
+	AccessToken string `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	// New refresh token. Save this — the one you just sent
+	// in is now revoked and cannot be exchanged again.
+	RefreshToken string `protobuf:"bytes,2,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	// Unix-seconds expiry of the access token, for clients
+	// that want to refresh proactively before exp.
+	AccessTokenExpiresAt int64 `protobuf:"varint,3,opt,name=access_token_expires_at,json=accessTokenExpiresAt,proto3" json:"access_token_expires_at,omitempty"`
+	// Unix-seconds expiry of the refresh token.
+	RefreshTokenExpiresAt int64 `protobuf:"varint,4,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *RefreshTokenResponse) Reset() {
+	*x = RefreshTokenResponse{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshTokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshTokenResponse) ProtoMessage() {}
+
+func (x *RefreshTokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshTokenResponse.ProtoReflect.Descriptor instead.
+func (*RefreshTokenResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RefreshTokenResponse) GetAccessToken() string {
+	if x != nil {
+		return x.AccessToken
+	}
+	return ""
+}
+
+func (x *RefreshTokenResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *RefreshTokenResponse) GetAccessTokenExpiresAt() int64 {
+	if x != nil {
+		return x.AccessTokenExpiresAt
+	}
+	return 0
+}
+
+func (x *RefreshTokenResponse) GetRefreshTokenExpiresAt() int64 {
+	if x != nil {
+		return x.RefreshTokenExpiresAt
+	}
+	return 0
+}
+
 var File_containarium_v1_tokens_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tokens_proto_rawDesc = "" +
@@ -163,10 +289,19 @@ const file_containarium_v1_tokens_proto_rawDesc = "" +
 	"expires_at\x18\x03 \x01(\tR\texpiresAt\"T\n" +
 	"\x13RevokeTokenResponse\x12#\n" +
 	"\rnewly_revoked\x18\x01 \x01(\bR\fnewlyRevoked\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage2\x97\x03\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\":\n" +
+	"\x13RefreshTokenRequest\x12#\n" +
+	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\xce\x01\n" +
+	"\x14RefreshTokenResponse\x12!\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12#\n" +
+	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\x125\n" +
+	"\x17access_token_expires_at\x18\x03 \x01(\x03R\x14accessTokenExpiresAt\x127\n" +
+	"\x18refresh_token_expires_at\x18\x04 \x01(\x03R\x15refreshTokenExpiresAt2\x8a\a\n" +
 	"\rTokensService\x12\x85\x03\n" +
 	"\vRevokeToken\x12#.containarium.v1.RevokeTokenRequest\x1a$.containarium.v1.RevokeTokenResponse\"\xaa\x02\x92A\x8a\x02\n" +
-	"\x06Tokens\x12\x17Revoke a JWT by its jti\x1a\xe6\x01Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/tokens/revokeBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x06Tokens\x12\x17Revoke a JWT by its jti\x1a\xe6\x01Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/tokens/revoke\x12\xf0\x03\n" +
+	"\fRefreshToken\x12$.containarium.v1.RefreshTokenRequest\x1a%.containarium.v1.RefreshTokenResponse\"\x92\x03\x92A\xf1\x02\n" +
+	"\x06Tokens\x129Exchange a refresh token for a new (access, refresh) pair\x1a\xab\x02Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.\x82\xd3\xe4\x93\x02\x17:\x01*\"\x12/v1/tokens/refreshBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_tokens_proto_rawDescOnce sync.Once
@@ -180,16 +315,20 @@ func file_containarium_v1_tokens_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tokens_proto_rawDescData
 }
 
-var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_containarium_v1_tokens_proto_goTypes = []any{
-	(*RevokeTokenRequest)(nil),  // 0: containarium.v1.RevokeTokenRequest
-	(*RevokeTokenResponse)(nil), // 1: containarium.v1.RevokeTokenResponse
+	(*RevokeTokenRequest)(nil),   // 0: containarium.v1.RevokeTokenRequest
+	(*RevokeTokenResponse)(nil),  // 1: containarium.v1.RevokeTokenResponse
+	(*RefreshTokenRequest)(nil),  // 2: containarium.v1.RefreshTokenRequest
+	(*RefreshTokenResponse)(nil), // 3: containarium.v1.RefreshTokenResponse
 }
 var file_containarium_v1_tokens_proto_depIdxs = []int32{
 	0, // 0: containarium.v1.TokensService.RevokeToken:input_type -> containarium.v1.RevokeTokenRequest
-	1, // 1: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	2, // 1: containarium.v1.TokensService.RefreshToken:input_type -> containarium.v1.RefreshTokenRequest
+	1, // 2: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
+	3, // 3: containarium.v1.TokensService.RefreshToken:output_type -> containarium.v1.RefreshTokenResponse
+	2, // [2:4] is the sub-list for method output_type
+	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -206,7 +345,7 @@ func file_containarium_v1_tokens_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tokens_proto_rawDesc), len(file_containarium_v1_tokens_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

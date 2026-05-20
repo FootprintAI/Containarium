@@ -28,10 +28,30 @@ func NewAuthMiddleware(tokenManager *TokenManager) *AuthMiddleware {
 	}
 }
 
+// unauthPaths are HTTP endpoints that MUST skip the Bearer
+// token check on the API surface — the endpoint's own
+// payload IS the credential.
+//
+// /v1/tokens/refresh (Phase 1.6 part B): the request body
+// carries the refresh token. Requiring an access token in
+// the header on top would be silly — the whole point is
+// that the client doesn't have a fresh access token yet.
+var unauthPaths = map[string]bool{
+	"/v1/tokens/refresh": true,
+}
+
 // HTTPMiddleware is HTTP middleware for REST endpoints
 // It validates Bearer tokens and adds authentication info to the context
 func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Phase 1.6 part B — skip auth for refresh
+		// exchange. The refresh-token in the body is the
+		// credential; the handler validates it.
+		if unauthPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Extract token from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {

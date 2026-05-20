@@ -180,7 +180,7 @@ on the internal network. Land them first.
         can't attach headers, so the webui still uses `?token=`
         for SSE — follow-up to rewrite with `fetch` +
         `ReadableStream` is tracked under [1.6 / refresh tokens].
-- [~] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
+- [x] **1.6** Short-lived access tokens + refresh tokens — `internal/auth/token.go:14` (**C-MED-8**)
       — **Part A landed.** New `tt` claim (access | refresh)
         on JWTs. Generators `GenerateAccessToken`
         (15min default) + `GenerateRefreshToken` (30d
@@ -191,12 +191,23 @@ on the internal network. Land them first.
         tokens (no tt claim) are still accepted as access
         for backwards compat. CLI gains `--token-type
         access|refresh|''` to choose at issuance time.
-      — **Follow-up (Part B):** add a `/v1/tokens/refresh`
-        RPC + CLI verb that takes a refresh token,
-        validates via `ValidateRefreshToken`, and mints a
-        new (access, refresh) pair. Refresh-token
-        rotation (single-use semantics, revoke the prior
-        on issuance) is the next slice.
+      — **Part B landed.** `TokensService.RefreshToken` RPC
+        + `POST /v1/tokens/refresh` REST + `containarium
+        token refresh` CLI verb. Mints a new (access,
+        refresh) pair from a valid refresh token; revokes
+        the prior refresh jti so refresh tokens are
+        SINGLE-USE (rotation). Replay → Unauthenticated.
+        The refresh endpoint is intentionally
+        unauthenticated (the refresh token in the body IS
+        the credential) — `unauthPaths` map in
+        `middleware.go` carries the path allowlist.
+      — `1.6` story now complete. Operators can mint a
+        short-lived access + long-lived refresh, store
+        refresh securely, and rotate via the endpoint.
+        Stolen refresh tokens get one shot at exchange
+        before the legitimate holder's next rotation
+        revokes them — and they can't be used directly on
+        the API surface at all.
 - [x] **1.7** Per-tool scopes for MCP — `internal/mcp/tools.go`, `internal/mcp/client.go`
       — New `scopes` claim on JWTs (variadic
         `GenerateToken(..., scopes...)`) + OAuth2-style

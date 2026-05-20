@@ -25,6 +25,10 @@ var (
 	revokeJTI       string
 	revokeReason    string
 	revokeExpiresAt string
+
+	// `token refresh` flags (Phase 1.6 part B)
+	refreshTokenIn   string
+	refreshTokenFile string
 )
 
 var tokenCmd = &cobra.Command{
@@ -115,10 +119,44 @@ the JWT payload (the 'jti' claim).`,
 	RunE: runTokenRevoke,
 }
 
+// tokenRefreshCmd implements `containarium token refresh` —
+// Phase 1.6 part B. Exchanges a long-lived refresh token
+// for a new short-lived access token (and a new refresh
+// token, since refresh tokens are single-use). The old
+// refresh token is revoked server-side on success.
+var tokenRefreshCmd = &cobra.Command{
+	Use:   "refresh",
+	Short: "Exchange a refresh token for a new (access, refresh) pair",
+	Long: `Trade a long-lived refresh token for a new short-lived access
+token. The server also issues a fresh refresh token because
+refresh tokens are single-use (rotation) — save the new one
+for the next exchange.
+
+The refresh-exchange endpoint is unauthenticated: the
+refresh-token body IS the credential. Do not pass --token.
+
+Use the access token in subsequent API calls:
+  Authorization: Bearer <access_token>`,
+	Example: `  # From an environment variable
+  containarium token refresh \
+    --refresh-token "$REFRESH" \
+    --server https://containarium.kafeido.app
+
+  # From a file (mode 0600 recommended)
+  containarium token refresh \
+    --refresh-token-file ~/.containarium/refresh \
+    --server https://containarium.kafeido.app`,
+	RunE: runTokenRefresh,
+}
+
 func init() {
 	rootCmd.AddCommand(tokenCmd)
 	tokenCmd.AddCommand(tokenGenerateCmd)
 	tokenCmd.AddCommand(tokenRevokeCmd)
+	tokenCmd.AddCommand(tokenRefreshCmd)
+
+	tokenRefreshCmd.Flags().StringVar(&refreshTokenIn, "refresh-token", "", "Refresh token to exchange (mutually exclusive with --refresh-token-file)")
+	tokenRefreshCmd.Flags().StringVar(&refreshTokenFile, "refresh-token-file", "", "Path to file containing the refresh token (mode 0600 recommended)")
 
 	tokenRevokeCmd.Flags().StringVar(&revokeJTI, "jti", "", "jti claim of the token to revoke (required)")
 	tokenRevokeCmd.MarkFlagRequired("jti")
@@ -250,6 +288,58 @@ func runTokenGenerate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("\n")
 
+	return nil
+}
+
+// runTokenRefresh POSTs the refresh token to /v1/tokens/refresh
+// and prints the new (access, refresh) pair. The endpoint is
+// unauthenticated — no --token flag needed.
+func runTokenRefresh(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required (the daemon does the exchange)")
+	}
+
+	refresh := refreshTokenIn
+	if refreshTokenFile != "" {
+		if refresh != "" {
+			return fmt.Errorf("--refresh-token and --refresh-token-file are mutually exclusive")
+		}
+		b, err := os.ReadFile(refreshTokenFile)
+		if err != nil {
+			return fmt.Errorf("read refresh token file: %w", err)
+		}
+		refresh = strings.TrimSpace(string(b))
+	}
+	if refresh == "" {
+		return fmt.Errorf("--refresh-token or --refresh-token-file is required")
+	}
+
+	// The refresh endpoint is unauthenticated; create an
+	// HTTP client with an empty Authorization to avoid
+	// surprising header propagation.
+	httpClient, err := client.NewHTTPClient(serverAddr, "")
+	if err != nil {
+		return fmt.Errorf("create http client: %w", err)
+	}
+	defer httpClient.Close()
+
+	access, newRefresh, accessExp, refreshExp, err := httpClient.RefreshToken(refresh)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("  Tokens rotated\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+	fmt.Printf("Access token (use as Authorization: Bearer):\n%s\n\n", access)
+	if accessExp > 0 {
+		fmt.Printf("  Access expires:  %s\n", time.Unix(accessExp, 0).Format(time.RFC3339))
+	}
+	fmt.Printf("\nNEW refresh token (the one you sent is now revoked — save this):\n%s\n\n", newRefresh)
+	if refreshExp > 0 {
+		fmt.Printf("  Refresh expires: %s\n", time.Unix(refreshExp, 0).Format(time.RFC3339))
+	}
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n\n")
 	return nil
 }
 

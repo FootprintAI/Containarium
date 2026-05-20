@@ -225,3 +225,96 @@ func TestRevokeToken_AcceptsRFC3339Expiry(t *testing.T) {
 		t.Fatalf("RFC3339 expiry should parse; got %v", err)
 	}
 }
+
+// --- Phase 1.6 part B — RefreshToken RPC ---
+
+func TestRefreshToken_RejectsEmpty(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	_, err := srv.RefreshToken(context.Background(), &pb.RefreshTokenRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty refresh_token: got %v want InvalidArgument", err)
+	}
+}
+
+func TestRefreshToken_RejectsAccessToken(t *testing.T) {
+	// A request bearing an access token where a refresh is
+	// expected must be rejected with Unauthenticated.
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	access, err := srv.tokenManager.GenerateAccessToken("alice", []string{"user"}, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	_, err = srv.RefreshToken(context.Background(), &pb.RefreshTokenRequest{RefreshToken: access})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("access at refresh: got %v want Unauthenticated", err)
+	}
+}
+
+func TestRefreshToken_RejectsLegacyToken(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	legacy, _ := srv.tokenManager.GenerateToken("alice", []string{"user"}, time.Hour)
+	_, err := srv.RefreshToken(context.Background(), &pb.RefreshTokenRequest{RefreshToken: legacy})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("legacy at refresh: got %v want Unauthenticated", err)
+	}
+}
+
+func TestRefreshToken_HappyPath_MintsNewPair(t *testing.T) {
+	store := newFakeRevocationStore()
+	srv := newTestTokensServer(t, store)
+	refresh, _ := srv.tokenManager.GenerateRefreshToken("alice", []string{"user"}, time.Hour, auth.ScopeContainersRead)
+
+	resp, err := srv.RefreshToken(context.Background(), &pb.RefreshTokenRequest{RefreshToken: refresh})
+	if err != nil {
+		t.Fatalf("RefreshToken: %v", err)
+	}
+	if resp.AccessToken == "" || resp.RefreshToken == "" {
+		t.Fatal("response should carry both new tokens")
+	}
+	if resp.AccessTokenExpiresAt == 0 || resp.RefreshTokenExpiresAt == 0 {
+		t.Fatal("response should carry expiry timestamps")
+	}
+
+	// New access token validates as access; new refresh
+	// validates as refresh. Scope passes through.
+	ac, err := srv.tokenManager.ValidateAccessToken(resp.AccessToken)
+	if err != nil {
+		t.Fatalf("new access invalid: %v", err)
+	}
+	if ac.TokenType != auth.TokenTypeAccess {
+		t.Fatalf("new access tt=%q", ac.TokenType)
+	}
+	if len(ac.Scopes) != 1 || ac.Scopes[0] != auth.ScopeContainersRead {
+		t.Fatalf("new access scopes=%v; should pass through", ac.Scopes)
+	}
+	rc, err := srv.tokenManager.ValidateRefreshToken(resp.RefreshToken)
+	if err != nil {
+		t.Fatalf("new refresh invalid: %v", err)
+	}
+	if rc.TokenType != auth.TokenTypeRefresh {
+		t.Fatalf("new refresh tt=%q", rc.TokenType)
+	}
+}
+
+func TestRefreshToken_RotationRevokesPriorJTI(t *testing.T) {
+	// Single-use semantics: after a successful exchange,
+	// replaying the same refresh token must fail.
+	store := newFakeRevocationStore()
+	srv := newTestTokensServer(t, store)
+	refresh, _ := srv.tokenManager.GenerateRefreshToken("alice", []string{"user"}, time.Hour)
+
+	// First exchange succeeds.
+	if _, err := srv.RefreshToken(context.Background(), &pb.RefreshTokenRequest{RefreshToken: refresh}); err != nil {
+		t.Fatalf("first exchange: %v", err)
+	}
+
+	// The prior jti is now revoked. Validate the old
+	// refresh token through the same path — the
+	// revocation list check inside ValidateRefreshToken's
+	// chain trips and returns invalid.
+	srv.tokenManager.SetRevocationStore(store)
+	_, err := srv.RefreshToken(context.Background(), &pb.RefreshTokenRequest{RefreshToken: refresh})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("replay should be rejected; got %v", err)
+	}
+}
