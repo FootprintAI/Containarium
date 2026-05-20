@@ -399,7 +399,19 @@ on the internal network. Land them first.
         side effects. Error message names the actual mode so the
         operator can `chmod 0400` without guessing. Tests in
         `pkg/core/secrets/master_key_perms_test.go`.
-- [ ] **4.3** Document container env-var introspection risk; explore tmpfs-mount alternative — `internal/server/secrets_server.go:133-155` (**C-MED-4**)
+- [~] **4.3** Document container env-var introspection risk; explore tmpfs-mount alternative — `internal/server/secrets_server.go:133-155` (**C-MED-4**)
+      — **Documentation landed.** Full design note at
+        [`docs/security/SECRETS-ENV-VAR-RISK.md`](SECRETS-ENV-VAR-RISK.md)
+        covers the threat model (cross-tenant safe;
+        same-container introspection unprotected by env-
+        var semantics), mitigations operators can apply
+        today, and the tmpfs-mount alternative we plan to
+        offer as opt-in.
+      — **Implementation follow-up:** add
+        `--delivery=env|file` to `containarium secret set`
+        and wire a tmpfs mount + file writer. Targeted
+        for the next secrets pass; not gated on a specific
+        date.
 - [x] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
       — New `audit.Redact` / `audit.SanitizeDetail` scrubs JWTs
         (with or without Bearer prefix), password/api_key/secret
