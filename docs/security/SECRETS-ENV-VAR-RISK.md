@@ -155,18 +155,22 @@ $ ls -l /run/secrets
 The app running as `alice` can `cat /run/secrets/OPENAI_API_KEY`;
 no other in-container user can.
 
-Open Phase B-3 work:
+- **Phase B-3** (this PR): periodic reconciler. The
+  daemon ticks every 60s, asks the Store which tenants
+  have file-mode secrets, and re-stamps each one whose
+  container is Running. A bare `incus restart` not
+  routed through the daemon now self-heals within the
+  tick interval. Skipped on every tick:
+  - tenants with no file-mode secrets (env-mode rows
+    survive restart natively via incus config);
+  - containers that are Stopped (next StartContainer
+    will re-stamp).
 
-- Re-stamp on bare `incus restart`. The daemon already
-  re-stamps on CreateContainer / StartContainer /
-  RefreshSecrets, so the canonical paths are covered.
-  But an operator who runs `incus restart` directly
-  loses file-mode secrets until the next daemon-routed
-  refresh. Options: a periodic reconciler, or a
-  container-side systemd unit that calls back to the
-  daemon at boot. Neither is shipped yet — operators
-  should use `containarium start` / `containarium stop`
-  routes today.
+The reconciler is owned by the daemon alongside the
+autosleep manager; same shape, same lifetime. Stamp is
+idempotent (writing the same content over the same path
+is a no-op at the bytes level), so periodic re-stamps
+cost nothing when state is already correct.
 
 ## References
 

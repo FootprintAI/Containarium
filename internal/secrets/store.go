@@ -444,6 +444,38 @@ func (s *Store) Delete(ctx context.Context, username, name string) error {
 	return nil
 }
 
+// UsernamesWithFileDelivery returns the set of tenants that
+// own at least one file-mode secret. Used by the Phase 4.3
+// reconciler to narrow the re-stamp pass to containers that
+// could actually be affected by a bare `incus restart`
+// (env-mode secrets survive the restart natively via incus
+// config; only file-mode secrets need re-laying onto tmpfs).
+//
+// Empty result = no file-mode rows anywhere; the reconciler
+// can no-op on the whole pass.
+func (s *Store) UsernamesWithFileDelivery(ctx context.Context) ([]string, error) {
+	const q = `
+		SELECT DISTINCT username
+		FROM secrets
+		WHERE delivery = $1
+		ORDER BY username
+	`
+	rows, err := s.pool.Query(ctx, q, DeliveryFile)
+	if err != nil {
+		return nil, fmt.Errorf("query file-mode tenants: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, fmt.Errorf("scan tenant: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 // SecretValue pairs a decrypted plaintext with its delivery
 // mode. Phase 4.3 — LoadAllForUserWithDelivery returns this
 // so callers can dispatch per-secret (env stamp vs tmpfs
