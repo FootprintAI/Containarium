@@ -846,6 +846,19 @@ case the gate exists to catch:
 - The daemon's view of the registry has been MITM'd.
   Investigate TLS / DNS for the daemon's outbound path.
 
+### Index caching
+
+The resolver caches each registry's `streams/v1/images.json`
+for 5 minutes by default. A fleet rollout that creates
+50 containers against `images.linuxcontainers.org` in
+quick succession collapses into a single index fetch.
+
+The TTL is short enough that a freshly-published image
+becomes verifiable within one pull cycle. If you've just
+published a new image and want the daemon to see it
+immediately, restart the daemon (clears the in-process
+cache).
+
 ### Limits
 
 - The gate does NOT catch cache tampering between pull

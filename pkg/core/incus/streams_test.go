@@ -341,3 +341,147 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// --- Cache tests (Phase B+ follow-up) ---
+
+// countingServer wraps the fake index server with a
+// per-request hit counter so cache tests can assert
+// "second resolve didn't hit the network."
+func countingServer(t *testing.T) (*httptest.Server, *int) {
+	t.Helper()
+	count := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != indexPath {
+			http.NotFound(w, r)
+			return
+		}
+		count++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(fakeIndex())
+	}))
+	return srv, &count
+}
+
+func TestResolveImageDigests_CacheHitsAvoidNetwork(t *testing.T) {
+	srv, count := countingServer(t)
+	defer srv.Close()
+
+	// 1-hour TTL — both resolves should hit the cache.
+	r := NewStreamsResolverWithCacheTTL(0, time.Hour)
+
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "alpine/3.19"); err != nil {
+		t.Fatalf("second resolve (different alias, same server): %v", err)
+	}
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err != nil {
+		t.Fatalf("third resolve: %v", err)
+	}
+	if *count != 1 {
+		t.Fatalf("expected 1 network fetch (subsequent resolves served from cache); got %d", *count)
+	}
+}
+
+func TestResolveImageDigests_CacheExpiryTriggersRefetch(t *testing.T) {
+	srv, count := countingServer(t)
+	defer srv.Close()
+
+	// Very short TTL so a sleep crosses expiry.
+	r := NewStreamsResolverWithCacheTTL(0, 30*time.Millisecond)
+
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err != nil {
+		t.Fatalf("post-expiry resolve: %v", err)
+	}
+	if *count != 2 {
+		t.Fatalf("expected 2 network fetches across expiry; got %d", *count)
+	}
+}
+
+func TestResolveImageDigests_ZeroTTLDisablesCache(t *testing.T) {
+	srv, count := countingServer(t)
+	defer srv.Close()
+
+	// TTL=0 → caching off; every resolve hits the
+	// network. Tests in pkg/core/incus that don't want
+	// the cache use this constructor form.
+	r := NewStreamsResolverWithCacheTTL(0, 0)
+
+	for i := 0; i < 3; i++ {
+		if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err != nil {
+			t.Fatalf("resolve %d: %v", i, err)
+		}
+	}
+	if *count != 3 {
+		t.Fatalf("cache should be disabled with TTL=0; got %d fetches", *count)
+	}
+}
+
+func TestResolveImageDigests_CachePerServer(t *testing.T) {
+	srv1, count1 := countingServer(t)
+	defer srv1.Close()
+	srv2, count2 := countingServer(t)
+	defer srv2.Close()
+
+	// One resolver, two servers → each server's index
+	// is cached independently.
+	r := NewStreamsResolverWithCacheTTL(0, time.Hour)
+	for i := 0; i < 3; i++ {
+		_, _ = r.ResolveImageDigests(context.Background(), srv1.URL, "ubuntu/24.04")
+		_, _ = r.ResolveImageDigests(context.Background(), srv2.URL, "ubuntu/24.04")
+	}
+	if *count1 != 1 || *count2 != 1 {
+		t.Fatalf("each server should be fetched once; got srv1=%d srv2=%d", *count1, *count2)
+	}
+}
+
+func TestResolveImageDigests_InvalidateCacheForcesRefetch(t *testing.T) {
+	srv, count := countingServer(t)
+	defer srv.Close()
+	r := NewStreamsResolverWithCacheTTL(0, time.Hour)
+
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	r.InvalidateCache()
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err != nil {
+		t.Fatalf("post-invalidate resolve: %v", err)
+	}
+	if *count != 2 {
+		t.Fatalf("InvalidateCache should force a refetch; got %d", *count)
+	}
+}
+
+func TestResolveImageDigests_NetworkFailureDoesNotPoisonCache(t *testing.T) {
+	// First call fails → no cache entry → next call
+	// retries the network. Caching a failure would mean
+	// a transient blip locks out CreateContainer for the
+	// full TTL, which is unacceptable.
+	failing := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failing {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(fakeIndex())
+	}))
+	defer srv.Close()
+
+	r := NewStreamsResolverWithCacheTTL(0, time.Hour)
+	if _, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04"); err == nil {
+		t.Fatal("expected failure on first resolve")
+	}
+	failing = false
+	got, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04")
+	if err != nil {
+		t.Fatalf("second resolve should retry the network and succeed: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("retry should have populated the digest set")
+	}
+}

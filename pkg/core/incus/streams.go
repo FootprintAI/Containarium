@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -71,27 +72,68 @@ const indexPath = "/streams/v1/images.json"
 // StreamsResolver fetches and caches the simplestreams
 // index for one or more registry servers. Construction is
 // cheap; the network call lands on the first Resolve.
+//
+// Phase B+ follow-up: the resolver now caches each
+// fetched index in memory for `cacheTTL`. A CreateContainer
+// burst against the same registry (e.g., 50 containers
+// pulled from images.linuxcontainers.org during a fleet
+// rollout) collapses into a single index fetch. TTL
+// defaults to 5 minutes — a window short enough that a
+// freshly-published image becomes verifiable within one
+// pull cycle, but long enough to absorb operator bursts.
+//
+// Cache is keyed by server URL. Each entry holds the raw
+// imagesIndex plus its fetch time. Expired entries are
+// re-fetched on the next Resolve; a parallel re-fetch
+// during expiry is acceptable (worst case: one extra
+// network call) and avoids the singleflight machinery
+// that would otherwise be needed.
 type StreamsResolver struct {
 	client *http.Client
-	// cache + cacheTTL would normally live here. Phase A
-	// intentionally skips caching — the first wire-in
-	// (Phase B) will surface call-rate numbers in the
-	// daemon log and a cache, with a chosen TTL, lands as
-	// a Phase B+ follow-up if warranted. Premature caching
-	// hides correctness bugs.
+
+	cacheTTL time.Duration
+
+	mu    sync.Mutex
+	cache map[string]cachedIndex
 }
+
+type cachedIndex struct {
+	idx        imagesIndex
+	fetchedAt  time.Time
+}
+
+// defaultCacheTTL is the cache horizon when callers don't
+// override it. Five minutes balances "operator burst
+// absorption" against "freshly-published image visibility."
+const defaultCacheTTL = 5 * time.Minute
 
 // NewStreamsResolver builds a resolver. timeout caps every
 // network call to the registry index; 10s is the
 // suggested default (matches Vault/GCP KMS timeouts and
 // gives room for simplestreams indexes that have grown to
 // a few MB).
+//
+// Cache TTL defaults to 5 minutes. Use NewStreamsResolverWithCacheTTL
+// to override (tests pass 0 to disable caching).
 func NewStreamsResolver(timeout time.Duration) *StreamsResolver {
+	return NewStreamsResolverWithCacheTTL(timeout, defaultCacheTTL)
+}
+
+// NewStreamsResolverWithCacheTTL is the full constructor
+// — same as NewStreamsResolver but lets callers control
+// cache TTL. Pass 0 to disable caching (each Resolve
+// fetches fresh).
+func NewStreamsResolverWithCacheTTL(timeout, cacheTTL time.Duration) *StreamsResolver {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	if cacheTTL < 0 {
+		cacheTTL = 0
+	}
 	return &StreamsResolver{
-		client: &http.Client{Timeout: timeout},
+		client:   &http.Client{Timeout: timeout},
+		cacheTTL: cacheTTL,
+		cache:    make(map[string]cachedIndex),
 	}
 }
 
@@ -153,10 +195,51 @@ func (r *StreamsResolver) ResolveImageDigests(ctx context.Context, server, alias
 	if alias == "" {
 		return nil, errors.New("simplestreams resolver: alias is required")
 	}
-	url := strings.TrimRight(server, "/") + indexPath
+	idx, err := r.fetchIndex(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	return collectDigests(idx, alias), nil
+}
+
+// fetchIndex returns the simplestreams index for `server`,
+// from the in-memory cache if fresh, or from the network
+// otherwise. The cache is best-effort: a concurrent
+// fetch-during-expiry produces at most one extra network
+// call, no correctness impact.
+func (r *StreamsResolver) fetchIndex(ctx context.Context, server string) (imagesIndex, error) {
+	key := strings.TrimRight(server, "/")
+
+	if r.cacheTTL > 0 {
+		r.mu.Lock()
+		entry, ok := r.cache[key]
+		r.mu.Unlock()
+		if ok && time.Since(entry.fetchedAt) < r.cacheTTL {
+			return entry.idx, nil
+		}
+	}
+
+	idx, err := r.fetchIndexFromNetwork(ctx, key)
+	if err != nil {
+		return imagesIndex{}, err
+	}
+
+	if r.cacheTTL > 0 {
+		r.mu.Lock()
+		r.cache[key] = cachedIndex{idx: idx, fetchedAt: time.Now()}
+		r.mu.Unlock()
+	}
+	return idx, nil
+}
+
+// fetchIndexFromNetwork performs the actual HTTP GET +
+// decode. Pulled out so the cache logic stays readable
+// and so tests can stub it via the public Resolve path.
+func (r *StreamsResolver) fetchIndexFromNetwork(ctx context.Context, server string) (imagesIndex, error) {
+	url := server + indexPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return imagesIndex{}, fmt.Errorf("build request: %w", err)
 	}
 	// Identify ourselves to the registry. Helps operators
 	// chase down "where is this traffic from" questions
@@ -164,25 +247,35 @@ func (r *StreamsResolver) ResolveImageDigests(ctx context.Context, server, alias
 	req.Header.Set("User-Agent", "containarium-streams-resolver/1.0")
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", url, err)
+		return imagesIndex{}, fmt.Errorf("fetch %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("fetch %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+		return imagesIndex{}, fmt.Errorf("fetch %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var idx imagesIndex
 	if err := json.NewDecoder(resp.Body).Decode(&idx); err != nil {
-		return nil, fmt.Errorf("decode index: %w", err)
+		return imagesIndex{}, fmt.Errorf("decode index: %w", err)
 	}
 	if idx.Format != "products:1.0" {
 		// The simplestreams ecosystem could ship a v2
 		// someday. Don't silently mis-parse — fail noisily
 		// so a Phase B+ follow-up can teach the resolver
 		// the new shape.
-		return nil, fmt.Errorf("unrecognized index format %q (want products:1.0)", idx.Format)
+		return imagesIndex{}, fmt.Errorf("unrecognized index format %q (want products:1.0)", idx.Format)
 	}
-	return collectDigests(idx, alias), nil
+	return idx, nil
+}
+
+// InvalidateCache clears any cached index entries. Useful
+// when the operator knows the registry has just published
+// a new image and wants the daemon to see it before the
+// TTL expires (e.g., after a release-ship workflow).
+func (r *StreamsResolver) InvalidateCache() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cache = make(map[string]cachedIndex)
 }
 
 // collectDigests walks products whose alias list contains
