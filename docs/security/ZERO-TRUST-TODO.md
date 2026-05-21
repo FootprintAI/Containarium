@@ -426,7 +426,7 @@ on the internal network. Land them first.
 
 ## Phase 4 — Secrets, audit & operational hardening (ongoing)
 
-- [~] **4.1** Envelope encryption via external KMS (GCP KMS / Vault) — `pkg/core/secrets/crypto.go` (**C-HIGH-6** is partially addressed by 4.2 below)
+- [x] **4.1** Envelope encryption via external KMS (GCP KMS / Vault) — `pkg/core/secrets/crypto.go` (**C-HIGH-6** is partially addressed by 4.2 below)
       — **Design doc landed.**
         [`docs/security/KMS-ENVELOPE-DESIGN.md`](KMS-ENVELOPE-DESIGN.md)
         covers threat model (host-compromise resilience,
@@ -460,6 +460,20 @@ on the internal network. Land them first.
         (legacy row on KMS-store, envelope row on no-KMS
         store rejected), AAD binding preserved through
         envelope path.
+      — **Phase E landed (master-key retirement gate).**
+        New env `CONTAINARIUM_REQUIRE_ENVELOPE=true` +
+        `Store.WithRequireEnvelope(true)` option. When
+        enabled, the Store refuses legacy rows
+        (`wrapped_dek IS NULL`) at decrypt time with a
+        descriptive error pointing operators at
+        `containarium secrets migrate-to-envelope`. Daemon
+        refuses to wire the secrets store if the gate is
+        on but no KMS backend is configured — fail-closed
+        at startup. Tests in `retirement_test.go` cover
+        legacy rejected with gate on, envelope still
+        works with gate on, legacy still works with gate
+        off. Retirement cutover procedure documented in
+        [OPERATOR-SECURITY-RUNBOOK.md](OPERATOR-SECURITY-RUNBOOK.md#retiring-the-master-key-phase-e).
       — **Phase F landed (Vault Transit backend + factory).**
         `pkg/core/secrets/kms_vault.go` implements
         `KMSClient` against Vault's Transit engine using

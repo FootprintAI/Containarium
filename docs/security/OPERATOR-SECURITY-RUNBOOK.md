@@ -340,6 +340,55 @@ re-wrapped and the master key is no longer required for
 decryption (Phase E master-key retirement is then a safe
 operator decision).
 
+### Retiring the master key (Phase E)
+
+Once `envelope-coverage` reports `legacy = 0` and the
+daemon's reads have run cleanly for long enough to be
+confident, the master key file (`/etc/containarium/secrets.key`)
+is no longer used for any production decrypt. Phase E
+gates the cutover so the legacy path can't accidentally be
+re-touched.
+
+```bash
+# 1. Confirm 100% envelope coverage. Repeat over a few
+#    minutes if writes are ongoing; the count should
+#    stabilize at legacy=0.
+containarium secrets envelope-coverage
+
+# 2. Add to the daemon's systemd Environment=:
+CONTAINARIUM_REQUIRE_ENVELOPE=true
+
+# 3. Restart the daemon. The startup log line now ends
+#    "[legacy-rejected]" — that's the confirmation the
+#    gate is on.
+sudo systemctl restart containarium
+
+# 4. Smoke-test a Get; any legacy row that slipped through
+#    the migration surfaces here as an error rather than
+#    silently decrypting under the master key.
+containarium secrets get <user> <name>
+
+# 5. After a soak period (24h+ recommended for production),
+#    remove the master key file. The daemon still loads it
+#    at startup — Phase E doesn't yet remove the dependency
+#    — but every decrypt path goes through the KMS, so
+#    losing the file no longer means losing the data. Keep
+#    a backup off-host in case envelope-coverage was wrong.
+sudo mv /etc/containarium/secrets.key /etc/containarium/secrets.key.retired
+```
+
+If a row WAS missed (because the migrator ran with
+`--max-rows` and a chunk was forgotten, or because of a
+race during migration), Phase E rejects it with:
+
+```
+secret <user>/<name> is legacy-encrypted but
+require_envelope=true (run `containarium secrets
+migrate-to-envelope` before retiring the master key)
+```
+
+Re-run the migration, then retry the Get.
+
 ### Rotating the Vault Transit key
 
 ```bash
