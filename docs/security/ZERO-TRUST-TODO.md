@@ -437,11 +437,17 @@ on the internal network. Land them first.
         retirement → other backends). Operators reading
         the current secrets code can see what's protected
         today and what isn't.
-      — **Implementation deferred.** Multi-PR effort —
-        starts with the `KMSClient` interface +
-        in-process no-op impl in `pkg/core/secrets/kms.go`,
-        then the schema migration, then per-backend
-        impls. Tracked as the C-HIGH-6 follow-up.
+      — **Phase A landed.** `KMSClient` interface +
+        `InProcKMS` no-op impl in
+        `pkg/core/secrets/kms.go`. The inproc backend uses
+        the existing master key with AES-GCM and the kek_id
+        sentinel `inproc:master` — cryptographically
+        equivalent to the legacy path. Phase B (two-write
+        Store flow, schema migration) is the next slice;
+        no callers wire this yet. 9 tests in `kms_test.go`
+        cover round-trip symmetry, kek_id routing,
+        DEK-size rejection, ciphertext tampering,
+        cross-deployment isolation.
 - [x] **4.2** Stat-check master-key file permissions at load — `pkg/core/secrets/crypto.go:47,109` (**C-HIGH-6**)
       — `LoadOrCreateMasterKey` now stats the file before reading
         and refuses if any non-owner bit is set (`mode & 0o077 != 0`).
