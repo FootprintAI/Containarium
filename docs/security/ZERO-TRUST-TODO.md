@@ -391,10 +391,21 @@ on the internal network. Land them first.
         rejection, empty-image bypass (default
         substitution still works), and the "unrecognized
         env stays OFF" fail-open on operator typos.
-      — **Future:** verify the digest against the
-        registry's content. That requires image-pull side
-        checks (Incus manifest verification) — significant
-        deeper work, tracked as a third pass on B-HIGH-1.
+      — **Design landed for registry-side verification.**
+        Full design note at
+        [`docs/security/IMAGE-DIGEST-VERIFY-DESIGN.md`](IMAGE-DIGEST-VERIFY-DESIGN.md)
+        covers the threat model (allowlisted-registry MITM,
+        bytes-vs-declared-digest divergence), the
+        architecture (pre-pull simplestreams resolve →
+        compare to operator-supplied digest → reject if
+        mismatch, with post-pull defense-in-depth via
+        local-store fingerprint check), and a 4-phase
+        rollout (A resolver + tests → B CreateContainer
+        gate → C post-pull check → D runbook + soak).
+        Pre-pull verification picked over post-pull so
+        rejection costs no bandwidth and no state cleanup.
+        Raw HTTP + encoding/json, no new daemon dependency.
+        Implementation is a future overnight pass.
 - [x] **3.2** Split `enable_podman` from `enable_privileged`; gate latter on role — `internal/server/container_server.go:164`, `pkg/core/incus/client.go:458-459` (**A-HIGH-3**)
       — New `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` env var with
         three modes: `all` (default, backwards-compat), `admin-only`
