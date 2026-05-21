@@ -120,30 +120,53 @@ not as a replacement. Operators choose per-tenant or per-secret. The
 default stays env-stamping for backwards compatibility; new
 deployments are encouraged to use file mode for high-risk values.
 
-### Status: shipped as Phase A + Phase B-1
+### Status: shipped through Phase B-2
 
 - **Phase A** (PR #274): the `delivery` field is plumbed
   through proto / Store / CLI. Operators can set it via
   `containarium secrets set <user> <NAME> <value> --delivery file`.
-- **Phase B-1** (this PR): `stampSecretsOnLXC` dispatches
+- **Phase B-1** (PR #275): `stampSecretsOnLXC` dispatches
   per-secret. `delivery="file"` rows are written to
   `/run/secrets/<NAME>` mode `0400`. Since `/run` is tmpfs
   on every systemd distro, file-mode secrets inherit the
   in-memory ephemeral-disposal property for free — the
   tmpfs evaporates when the container stops.
+- **Phase B-2** (this PR): tenant ownership. The
+  `/run/secrets` directory is now `0750 root:<username>`
+  and each file is `0440 root:<username>`. The app
+  process — running as the tenant user inside the
+  container, the convention since CreateContainer — can
+  read its own secrets without sudo. Fallback: if the
+  chown fails (early-boot race, user not in
+  /etc/passwd), the file stays mode `0400 root` and the
+  operator sees a WARNING log line.
 
-Open Phase B-2 work:
+Wire shape inside the container:
 
-- Per-container UID/GID for file ownership. Today files
-  are `0400` root-only; apps running as non-root in the
-  container can't read them without `sudo`. A future
-  pass resolves the tenant's container user and `chown`s
-  the file accordingly.
-- Re-stamp on container start. Currently the daemon stamps
-  on CreateContainer / StartContainer / RefreshSecrets;
-  the latter two cover the "container restart" case but a
-  bare `incus restart` not routed through the daemon
-  would lose file-mode secrets until the next refresh.
+```
+$ ls -ld /run/secrets
+drwxr-x---. 2 root alice 60 /run/secrets
+
+$ ls -l /run/secrets
+-r--r-----. 1 root alice  43 OPENAI_API_KEY
+-r--r-----. 1 root alice 128 DATABASE_URL
+```
+
+The app running as `alice` can `cat /run/secrets/OPENAI_API_KEY`;
+no other in-container user can.
+
+Open Phase B-3 work:
+
+- Re-stamp on bare `incus restart`. The daemon already
+  re-stamps on CreateContainer / StartContainer /
+  RefreshSecrets, so the canonical paths are covered.
+  But an operator who runs `incus restart` directly
+  loses file-mode secrets until the next daemon-routed
+  refresh. Options: a periodic reconciler, or a
+  container-side systemd unit that calls back to the
+  daemon at boot. Neither is shipped yet — operators
+  should use `containarium start` / `containarium stop`
+  routes today.
 
 ## References
 
