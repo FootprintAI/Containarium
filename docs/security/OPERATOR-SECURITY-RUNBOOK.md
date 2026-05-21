@@ -94,11 +94,19 @@ containarium audit query \
 ```
 
 Each row carries the `jti` in the detail column. If you have the raw
-JWT, you can also base64-decode the payload segment:
+JWT, the `inspect` subcommand decodes it for you (no daemon contact
+required):
 
 ```bash
-echo "$LEAKED_TOKEN" | cut -d. -f2 | base64 -d | jq .
+containarium token inspect "$LEAKED_TOKEN"
+
+# Or for scripting:
+containarium token inspect "$LEAKED_TOKEN" --raw | jq -r .jti
 ```
+
+Optionally pass `--secret-file /etc/containarium/jwt.secret` to also
+validate the signature (confirms the token was genuinely issued by
+this daemon and hasn't expired).
 
 ### Step 2 — Revoke
 
