@@ -316,7 +316,7 @@ on the internal network. Land them first.
         with distinct descriptions. An operator can't widen API
         exposure by editing the user-traffic rule without seeing
         the implication.
-- [~] **2.5** OTel collector: loopback bind + auth on OTLP — `internal/server/core_otel_collector.go` (**C-HIGH-5**)
+- [x] **2.5** OTel collector: loopback bind + auth on OTLP — `internal/server/core_otel_collector.go` (**C-HIGH-5**)
       — **Bind address now configurable.** New env var
         `CONTAINARIUM_OTEL_COLLECTOR_BIND` (default `0.0.0.0` for
         backwards compatibility). Operators in paranoid setups
@@ -335,13 +335,17 @@ on the internal network. Land them first.
         Header omitted (and a WARNING logged) if the secret
         can't be loaded — collector stays open so monitoring
         keeps working.
-      — **Collector-side enforcement is the remaining
-        slice.** Generating the bearertokenauth extension
-        block in `config.yaml` and wiring it into the OTLP
-        receiver auth chain. Stamping the header is
-        harmless until that lands — the collector ignores
-        Authorization headers when no auth extension is
-        configured — so this rollout sequence is safe.
+      — **Collector-side enforcement landed (opt-in).**
+        `buildOTelCollectorConfig` now accepts a bearer;
+        when non-empty, wires the `bearertokenauth`
+        extension and stamps `auth.authenticator:
+        bearertokenauth` on both OTLP protocol receivers
+        (http + grpc). Opt-in via
+        `CONTAINARIUM_OTEL_REQUIRE_AUTH=true`; default
+        off so operators control the cutover. Cutover
+        sequence documented inline in
+        `collectorBearerForConfig`. Tests in
+        `otel_collector_auth_test.go`.
 - [x] **2.6** PROXY v2 trust list required at startup — `internal/server/dual_server.go` (**C-MED-1**)
       — New `validateProxyProtocolTrusted` rejects empty, wildcard
         (`0.0.0.0/0`, `::/0`), or malformed CIDR entries before

@@ -53,7 +53,7 @@ func TestMergeOTelDropLabels_TrimsAndDropsEmpty(t *testing.T) {
 }
 
 func TestBuildOTelCollectorConfig_IncludesExporter(t *testing.T) {
-	cfg := buildOTelCollectorConfig("10.0.3.99", DefaultOTelDropLabels)
+	cfg := buildOTelCollectorConfig("10.0.3.99", DefaultOTelDropLabels, "")
 	if !strings.Contains(cfg, "http://10.0.3.99:8428/opentelemetry") {
 		t.Errorf("config should target the supplied VM IP, got:\n%s", cfg)
 	}
@@ -66,7 +66,7 @@ func TestBuildOTelCollectorConfig_IncludesExporter(t *testing.T) {
 }
 
 func TestBuildOTelCollectorConfig_AntiSpoofingProcessor(t *testing.T) {
-	cfg := buildOTelCollectorConfig("10.0.3.99", nil)
+	cfg := buildOTelCollectorConfig("10.0.3.99", nil, "")
 	// The attributes/identity processor must always be present —
 	// it's the security boundary, not an optional add-on.
 	if !strings.Contains(cfg, "attributes/identity") {
@@ -78,7 +78,7 @@ func TestBuildOTelCollectorConfig_AntiSpoofingProcessor(t *testing.T) {
 }
 
 func TestBuildOTelCollectorConfig_DropLabelsRendered(t *testing.T) {
-	cfg := buildOTelCollectorConfig("10.0.3.99", []string{"request_id", "user_email"})
+	cfg := buildOTelCollectorConfig("10.0.3.99", []string{"request_id", "user_email"}, "")
 	if !strings.Contains(cfg, "transform:") {
 		t.Errorf("expected transform processor for non-empty drop list, got:\n%s", cfg)
 	}
@@ -91,7 +91,7 @@ func TestBuildOTelCollectorConfig_DropLabelsRendered(t *testing.T) {
 }
 
 func TestBuildOTelCollectorConfig_NoDropLabelsSkipsTransform(t *testing.T) {
-	cfg := buildOTelCollectorConfig("10.0.3.99", nil)
+	cfg := buildOTelCollectorConfig("10.0.3.99", nil, "")
 	if strings.Contains(cfg, "transform:") {
 		t.Errorf("transform processor should be omitted when drop list is empty, got:\n%s", cfg)
 	}

@@ -32,7 +32,7 @@ func TestOTelReceiverBindAddress_TrimsWhitespace(t *testing.T) {
 
 func TestBuildOTelCollectorConfig_UsesOverrideBind(t *testing.T) {
 	t.Setenv("CONTAINARIUM_OTEL_COLLECTOR_BIND", "10.0.3.5")
-	cfg := buildOTelCollectorConfig("192.168.1.100", nil)
+	cfg := buildOTelCollectorConfig("192.168.1.100", nil, "")
 
 	// Both OTLP receivers should reflect the override.
 	if !strings.Contains(cfg, "endpoint: 10.0.3.5:4318") {
@@ -48,7 +48,7 @@ func TestBuildOTelCollectorConfig_UsesOverrideBind(t *testing.T) {
 
 func TestBuildOTelCollectorConfig_DefaultBind(t *testing.T) {
 	t.Setenv("CONTAINARIUM_OTEL_COLLECTOR_BIND", "")
-	cfg := buildOTelCollectorConfig("192.168.1.100", nil)
+	cfg := buildOTelCollectorConfig("192.168.1.100", nil, "")
 	if !strings.Contains(cfg, "endpoint: 0.0.0.0:4318") {
 		t.Fatalf("default HTTP bind missing:\n%s", cfg)
 	}

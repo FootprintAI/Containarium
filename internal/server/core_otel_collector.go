@@ -228,14 +228,57 @@ WantedBy=multi-user.target
 // VM IP and drop-label set, then reloads the running collector via
 // SIGHUP. Safe to call repeatedly; the collector picks up the new
 // config without dropping in-flight batches.
+//
+// Phase 2.5 follow-up — when CONTAINARIUM_OTEL_REQUIRE_AUTH=true
+// the config wires the bearertokenauth extension onto the OTLP
+// receivers; every push must carry `Authorization: Bearer <secret>`.
+// Default off so operators control the cutover: existing monitoring
+// containers need to re-stamp the header (toggle off+on, or restart)
+// before flipping enforcement on.
 func (cs *CoreServices) applyOTelCollectorConfig(vmIP string, dropLabels []string) error {
-	cfg := buildOTelCollectorConfig(vmIP, dropLabels)
+	cfg := buildOTelCollectorConfig(vmIP, dropLabels, collectorBearerForConfig())
 	if err := cs.incusClient.WriteFile(CoreOTelCollectorContainer, "/etc/otelcol-contrib/config.yaml", []byte(cfg), "0644"); err != nil {
 		return fmt.Errorf("failed to write otelcol config: %w", err)
 	}
 	// best-effort reload — fine if the unit isn't up yet (first install).
 	_ = cs.incusClient.Exec(CoreOTelCollectorContainer, []string{"systemctl", "reload-or-restart", "otelcol-contrib"})
 	return nil
+}
+
+// collectorBearerForConfig returns the bearer to bake into
+// the collector's config.yaml, or "" to skip enforcement.
+// Empty when CONTAINARIUM_OTEL_REQUIRE_AUTH is unset / not
+// recognized, or when the bearer load itself fails.
+//
+// Cutover sequence for operators:
+//   1. Run the new daemon (bearer auto-created; header
+//      stamped on new monitoring containers).
+//   2. Re-toggle monitoring on existing containers so they
+//      pick up the header (or restart, which re-stamps).
+//   3. Set CONTAINARIUM_OTEL_REQUIRE_AUTH=true and restart
+//      the daemon. Now the collector enforces; any
+//      container without the header drops silently (and
+//      that's the signal to find the laggard).
+func collectorBearerForConfig() string {
+	raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_OTEL_REQUIRE_AUTH"))
+	on := false
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		on = true
+	}
+	if !on {
+		return ""
+	}
+	bearer, err := LoadOrCreateOTelBearer()
+	if err != nil || bearer == "" {
+		// Auth required but no bearer available — that's a
+		// misconfig. Log noisily and skip enforcement so the
+		// collector doesn't refuse everything.
+		log.Printf("[otel-collector] CONTAINARIUM_OTEL_REQUIRE_AUTH=true but bearer unavailable (%v); collector will NOT enforce auth", err)
+		return ""
+	}
+	log.Printf("[otel-collector] bearer auth ENFORCED on OTLP receivers")
+	return bearer
 }
 
 // WriteContainerIPMap pushes the current source-IP → container-name
@@ -347,7 +390,14 @@ func otelReceiverBindAddress() string {
 
 // buildOTelCollectorConfig renders config.yaml for the collector.
 // Pure function (no side effects) so it's trivially testable.
-func buildOTelCollectorConfig(vmIP string, dropLabels []string) string {
+//
+// When `bearer` is non-empty, the OTLP receivers are gated by the
+// bearertokenauth extension — every push must carry
+// `Authorization: Bearer <bearer>` or the collector responds with
+// 401. Empty bearer omits the auth wiring entirely (pre-2.5
+// behavior). See collectorBearerForConfig for the env-gated
+// resolution.
+func buildOTelCollectorConfig(vmIP string, dropLabels []string, bearer string) string {
 	// Compose the OTTL drop-keys regex once. Each label becomes an
 	// anchored alternation: ^request_id$|^trace_id$|...
 	var dropRegex string
@@ -361,16 +411,28 @@ func buildOTelCollectorConfig(vmIP string, dropLabels []string) string {
 
 	bind := otelReceiverBindAddress()
 
+	// Phase 2.5 follow-up — when a bearer is supplied, wire
+	// the bearertokenauth extension onto both OTLP protocol
+	// receivers. The receiver-level `auth.authenticator` key
+	// tells the collector to require a matching token on
+	// every push.
+	authBlock := ""
+	if bearer != "" {
+		authBlock = `
+        auth:
+          authenticator: bearertokenauth`
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, `receivers:
   otlp:
     protocols:
       http:
-        endpoint: %s:4318
+        endpoint: %s:4318%s
       grpc:
-        endpoint: %s:4317
+        endpoint: %s:4317%s
 
-processors:`, bind, bind)
+processors:`, bind, authBlock, bind, authBlock)
 	b.WriteString(`
 
   # Anti-spoofing: stamp source.ip from the OTLP client.address so a
@@ -403,11 +465,24 @@ processors:`, bind, bind)
     send_batch_size: 1024
 
 `)
-	fmt.Fprintf(&b, `extensions:
+	// extensions block: always health_check; bearertokenauth
+	// added when bearer is non-empty.
+	if bearer != "" {
+		fmt.Fprintf(&b, `extensions:
+  bearertokenauth:
+    scheme: "Bearer"
+    token: "%s"
+  health_check:
+    endpoint: %s:13133
+
+`, bearer, bind)
+	} else {
+		fmt.Fprintf(&b, `extensions:
   health_check:
     endpoint: %s:13133
 
 `, bind)
+	}
 	b.WriteString(`exporters:
   otlphttp:
     endpoint: `)
@@ -416,8 +491,13 @@ processors:`, bind, bind)
       insecure: true
 
 service:
-  extensions: [health_check]
-  pipelines:
+`)
+	if bearer != "" {
+		b.WriteString("  extensions: [bearertokenauth, health_check]\n")
+	} else {
+		b.WriteString("  extensions: [health_check]\n")
+	}
+	b.WriteString(`  pipelines:
     metrics:
       receivers: [otlp]
 `)
