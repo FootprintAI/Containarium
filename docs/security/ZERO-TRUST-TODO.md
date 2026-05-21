@@ -460,6 +460,28 @@ on the internal network. Land them first.
         (legacy row on KMS-store, envelope row on no-KMS
         store rejected), AAD binding preserved through
         envelope path.
+      — **Phase F landed (Vault Transit backend + factory).**
+        `pkg/core/secrets/kms_vault.go` implements
+        `KMSClient` against Vault's Transit engine using
+        raw HTTP — no Vault Go SDK dependency. Operator
+        env: `CONTAINARIUM_VAULT_ADDR`,
+        `CONTAINARIUM_VAULT_TOKEN_FILE` (or `_TOKEN`),
+        `CONTAINARIUM_VAULT_TRANSIT_KEY`,
+        `CONTAINARIUM_VAULT_TRANSIT_MOUNT` (default
+        `transit`), `CONTAINARIUM_VAULT_TIMEOUT`.
+        kek_id encodes deployment identity
+        (`vault:<addr>|<mount>|<key>`) so a row wrapped by
+        one Vault cluster can't be silently accepted by
+        another. New `LoadKMSClient(masterKey)` factory
+        dispatches on `CONTAINARIUM_KMS_BACKEND` (`none`,
+        `inproc`, `vault`). Daemon wires the factory at
+        startup; the migration CLI uses the same. 10
+        Vault tests use a fake `httptest.Server` to
+        exercise round-trip, token check, kek_id routing,
+        timeout enforcement, error propagation. 9 factory
+        tests cover env-var contract and validation. Vault
+        setup procedure documented in
+        [OPERATOR-SECURITY-RUNBOOK.md](OPERATOR-SECURITY-RUNBOOK.md#enabling-kms-envelope-encryption-for-secrets).
       — **Phase D landed (migration + coverage tooling).**
         `Store.MigrateLegacyToEnvelope(ctx, opts)` walks
         legacy rows in batches, decrypts via the

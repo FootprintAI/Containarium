@@ -154,12 +154,22 @@ func runSecretsCoverage(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// openSecretsStoreWithKMS wires a Store with the
-// InProcKMS Phase-A backend. The daemon uses the same
-// wiring path; doing it here too means the migration uses
-// the same kek_id sentinel and same wrap format. When
-// future GCP/Vault backends ship, this function picks the
-// right one based on flag / env.
+// openSecretsStoreWithKMS wires a Store using the KMS
+// backend the env selects (CONTAINARIUM_KMS_BACKEND). The
+// daemon uses the same selector, so the migration writes
+// rows with the same kek_id shape that the daemon will
+// later read.
+//
+// If the env points at a real backend (vault) but it's
+// misconfigured, this returns an error rather than
+// silently falling back to InProc — the operator running
+// the migration explicitly chose a backend; mis-routing
+// the migration to InProc would produce rows the daemon
+// then can't decrypt.
+//
+// If the env is unset / "none", the migration refuses to
+// run — there's nothing to migrate INTO. Operators must
+// pick at least "inproc" to backfill rows.
 func openSecretsStoreWithKMS(ctx context.Context, masterKeyPath string) (*internalsecrets.Store, func(), error) {
 	masterKey, _, err := corecrypto.LoadOrCreateMasterKey(masterKeyPath)
 	if err != nil {
@@ -169,10 +179,14 @@ func openSecretsStoreWithKMS(ctx context.Context, masterKeyPath string) (*intern
 	if err != nil {
 		return nil, nil, fmt.Errorf("build cipher: %w", err)
 	}
-	kms, err := corecrypto.NewInProcKMS(masterKey)
+	kms, kmsDesc, err := corecrypto.LoadKMSClient(masterKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build kms: %w", err)
+		return nil, nil, fmt.Errorf("load KMS backend: %w", err)
 	}
+	if kms == nil {
+		return nil, nil, fmt.Errorf(`migration requires a KMS backend; set CONTAINARIUM_KMS_BACKEND=inproc|vault (current: %s)`, kmsDesc)
+	}
+	fmt.Fprintf(os.Stderr, "[migrate] KMS backend: %s\n", kmsDesc)
 
 	dsn := getPostgresConnString()
 	pool, err := pgxpool.New(ctx, dsn)

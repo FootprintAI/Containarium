@@ -459,12 +459,29 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					if cerr != nil {
 						log.Printf("Warning: Failed to construct secrets cipher: %v. Secrets disabled.", cerr)
 						secretsPool.Close()
-					} else if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher); serr != nil {
-						log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)
-						secretsPool.Close()
 					} else {
-						containerServer.SetSecretsStore(store)
-						log.Printf("Secrets store ready (file-keyed, AES-256-GCM)")
+						// Phase 4.1 — KMS backend selection via env
+						// CONTAINARIUM_KMS_BACKEND=none|inproc|vault.
+						// On err the store still opens in legacy mode
+						// (no envelope) — operators see the WARNING
+						// rather than the daemon refusing to start.
+						kms, kdesc, kerr := corecryptosecrets.LoadKMSClient(key)
+						if kerr != nil {
+							log.Printf("Warning: KMS backend config error: %v. Secrets store falling back to legacy mode.", kerr)
+							kms = nil
+							kdesc = "disabled (config error)"
+						}
+						var opts []secretsstore.Option
+						if kms != nil {
+							opts = append(opts, secretsstore.WithKMS(kms))
+						}
+						if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher, opts...); serr != nil {
+							log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)
+							secretsPool.Close()
+						} else {
+							containerServer.SetSecretsStore(store)
+							log.Printf("Secrets store ready (file-keyed AES-256-GCM, envelope: %s)", kdesc)
+						}
 					}
 				}
 			}

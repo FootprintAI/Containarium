@@ -17,6 +17,7 @@ If a procedure here is wrong, update it.
 - [Issuing least-privilege tokens for agents](#issuing-least-privilege-tokens-for-agents)
 - [Rotating the JWT signing secret](#rotating-the-jwt-signing-secret)
 - [Rotating Postgres credentials](#rotating-postgres-credentials)
+- [Enabling KMS envelope encryption for secrets](#enabling-kms-envelope-encryption-for-secrets)
 - [Locking down `/wake/` to a known load balancer](#locking-down-wake-to-a-known-load-balancer)
 - [Auditing recent administrative actions](#auditing-recent-administrative-actions)
 - [Verifying the audit-log hash chain](#verifying-the-audit-log-hash-chain)
@@ -251,6 +252,113 @@ The daemon refuses to start if the file is world-readable — same
 contract as the JWT token file (Phase C-HIGH-7).
 
 ---
+
+## Enabling KMS envelope encryption for secrets
+
+Phase 4.1 (audit C-HIGH-6). By default the daemon encrypts
+tenant secrets with the master key at
+`/etc/containarium/secrets.key`. That's enough for many
+deployments but leaves the secret data exposed to anyone
+who can read the keyfile (root on the host, backup tapes,
+forensic dumps). Envelope encryption moves the protection
+into an external KMS — the daemon performs cryptographic
+operations through Vault / GCP KMS / etc., never seeing
+the master key material directly.
+
+Pick a backend via `CONTAINARIUM_KMS_BACKEND`. Supported:
+
+| Value      | What it does                                     |
+| ---------- | ------------------------------------------------ |
+| `none`     | Default. No KMS; behaves identically to pre-4.1. |
+| `inproc`   | In-process wrap under the master key. Dev/test mostly — protection level is unchanged from legacy, but it writes envelope-shaped rows so a future cutover to a real KMS doesn't re-touch every row. |
+| `vault`    | Vault Transit secret engine over HTTP. See setup below. |
+
+### Vault Transit setup
+
+```bash
+# 1. In Vault, mount the transit engine and create a key.
+vault secrets enable transit
+vault write -f transit/keys/containarium-secrets
+
+# 2. Mint a policy that only allows encrypt + decrypt against
+#    the containarium-secrets key — narrowest possible token
+#    surface.
+cat > containarium-kms-policy.hcl <<EOF
+path "transit/encrypt/containarium-secrets" {
+  capabilities = ["update"]
+}
+path "transit/decrypt/containarium-secrets" {
+  capabilities = ["update"]
+}
+EOF
+vault policy write containarium-kms containarium-kms-policy.hcl
+
+# 3. Issue a token bound to that policy. For long-lived
+#    daemons, prefer Vault Agent (auto-renews) over a static
+#    token here.
+vault token create -policy=containarium-kms -ttl=720h -format=json | jq -r .auth.client_token \
+    | sudo install -m 0600 -o root /dev/stdin /etc/containarium/vault.token
+
+# 4. Configure the daemon. Add to systemd Environment=:
+CONTAINARIUM_KMS_BACKEND=vault
+CONTAINARIUM_VAULT_ADDR=https://vault.internal:8200
+CONTAINARIUM_VAULT_TOKEN_FILE=/etc/containarium/vault.token
+CONTAINARIUM_VAULT_TRANSIT_KEY=containarium-secrets
+# Optional: CONTAINARIUM_VAULT_TRANSIT_MOUNT=transit (default)
+# Optional: CONTAINARIUM_VAULT_TIMEOUT=5s
+
+# 5. Restart the daemon. Confirm the startup log shows:
+#    Secrets store ready (file-keyed AES-256-GCM, envelope: vault transit (...))
+sudo systemctl restart containarium
+```
+
+### Migrating existing legacy rows to envelope
+
+New writes after the daemon restart are envelope-shaped.
+Existing legacy rows (`wrapped_dek IS NULL`) still decrypt
+fine via the master-key fallback, but should be migrated
+so the master key can eventually be retired:
+
+```bash
+# Dry run — verifies every legacy row would migrate cleanly
+CONTAINARIUM_KMS_BACKEND=vault \
+CONTAINARIUM_VAULT_ADDR=https://vault.internal:8200 \
+CONTAINARIUM_VAULT_TOKEN_FILE=/etc/containarium/vault.token \
+CONTAINARIUM_VAULT_TRANSIT_KEY=containarium-secrets \
+containarium secrets migrate-to-envelope --dry-run
+
+# Real run
+containarium secrets migrate-to-envelope
+
+# Check progress
+containarium secrets envelope-coverage
+```
+
+Output of `envelope-coverage` reports total / legacy /
+envelope counts. When `legacy = 0`, every row has been
+re-wrapped and the master key is no longer required for
+decryption (Phase E master-key retirement is then a safe
+operator decision).
+
+### Rotating the Vault Transit key
+
+```bash
+vault write -f transit/keys/containarium-secrets/rotate
+```
+
+Existing wrapped DEKs reference the prior key version
+(encoded in the `vault:v<n>:...` blob); Vault transparently
+decrypts under whichever version each row was wrapped
+against. To force re-wrap under the new version:
+
+```bash
+# Re-wrap every envelope row through the latest key.
+# Idempotent — already-current rows are skipped.
+containarium secrets migrate-to-envelope
+```
+
+(Rewrap support is a future enhancement; today the migrator
+only converts legacy → envelope.)
 
 ## Locking down `/wake/` to a known load balancer
 
