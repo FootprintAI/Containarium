@@ -460,6 +460,25 @@ on the internal network. Land them first.
         (legacy row on KMS-store, envelope row on no-KMS
         store rejected), AAD binding preserved through
         envelope path.
+      — **Phase D landed (migration + coverage tooling).**
+        `Store.MigrateLegacyToEnvelope(ctx, opts)` walks
+        legacy rows in batches, decrypts via the
+        master-key path, re-encrypts through the
+        envelope path, **verifies the round-trip** before
+        committing (a mismatch rolls back rather than
+        corrupting), and writes back. Idempotent,
+        resumable, per-row atomic.
+        `Store.VerifyEnvelopeCoverage(ctx)` reports
+        total/legacy/envelope counts so operators know
+        when 100% coverage is reached.
+        New CLI verbs:
+        `containarium secrets migrate-to-envelope`
+        (with `--dry-run`, `--batch-size`, `--max-rows`)
+        and `containarium secrets envelope-coverage`.
+        5 tests in `migrate_test.go` (refused without KMS,
+        single-row roundtrip-verify, verifier catches
+        tampered ciphertext, options defaults, coverage
+        zero-value).
 - [x] **4.2** Stat-check master-key file permissions at load — `pkg/core/secrets/crypto.go:47,109` (**C-HIGH-6**)
       — `LoadOrCreateMasterKey` now stats the file before reading
         and refuses if any non-owner bit is set (`mode & 0o077 != 0`).
