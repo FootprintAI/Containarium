@@ -61,6 +61,15 @@ type CreateOptions struct {
 	// OTEL_RESOURCE_ATTRIBUTES so cross-VM dashboards can filter by
 	// the VM that emitted the metric. Only used when Monitoring=true.
 	BackendID string
+
+	// OTelBearer is the per-deployment shared secret stamped onto
+	// monitoring=true containers as OTEL_EXPORTER_OTLP_HEADERS=
+	// Authorization=Bearer <secret>. Empty omits the header
+	// (pre-Phase-2.5 behavior; the collector stays open). Read
+	// from the daemon's `/etc/containarium/otel.bearer` via
+	// LoadOrCreateOTelBearer in internal/server. Phase 2.5
+	// follow-up (audit C-HIGH-5).
+	OTelBearer string
 }
 
 // New creates a new container manager backed by a real Incus client.

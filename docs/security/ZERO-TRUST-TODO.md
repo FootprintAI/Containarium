@@ -323,9 +323,25 @@ on the internal network. Land them first.
         can pin to a specific bridge IP. Applied to all three
         receivers (OTLP HTTP :4318, OTLP gRPC :4317, health-check
         :13133). Tests in `internal/server/otel_bind_test.go`.
-      — **Bearer-token auth is a follow-up** — requires plumbing
-        a shared token to every container's OTEL_EXPORTER_OTLP_HEADERS.
-        Audit's full closure deserves its own PR.
+      — **Bearer-token primitive + header stamping landed.**
+        `LoadOrCreateOTelBearer()` generates + persists a
+        32-byte random secret at `/etc/containarium/otel.bearer`
+        (mode 0600, same perm contract as the JWT token
+        file). Env overrides: `CONTAINARIUM_OTEL_BEARER` /
+        `CONTAINARIUM_OTEL_BEARER_FILE`. Monitoring=true
+        containers are now stamped with
+        `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <secret>`
+        on create + ToggleMonitoring + AdoptMigratedContainer.
+        Header omitted (and a WARNING logged) if the secret
+        can't be loaded — collector stays open so monitoring
+        keeps working.
+      — **Collector-side enforcement is the remaining
+        slice.** Generating the bearertokenauth extension
+        block in `config.yaml` and wiring it into the OTLP
+        receiver auth chain. Stamping the header is
+        harmless until that lands — the collector ignores
+        Authorization headers when no auth extension is
+        configured — so this rollout sequence is safe.
 - [x] **2.6** PROXY v2 trust list required at startup — `internal/server/dual_server.go` (**C-MED-1**)
       — New `validateProxyProtocolTrusted` rejects empty, wildcard
         (`0.0.0.0/0`, `::/0`), or malformed CIDR entries before
