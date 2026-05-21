@@ -557,11 +557,20 @@ on the internal network. Land them first.
         `LoadAllForUserWithDelivery` returns per-secret
         delivery so the stamper can route correctly. Legacy
         `LoadAllForUser` kept as a backwards-compat shim.
-      — **Phase B-2 follow-up:** chown files to the
-        container's tenant UID/GID so non-root processes
-        can read them; re-stamp on bare `incus restart`
-        not routed through the daemon. The runbook
-        documents the current root-only-read constraint.
+      — **Phase B-2 landed (tenant ownership).**
+        `/run/secrets` is now `0750 root:<username>` and
+        each file is `0440 root:<username>`. The app
+        process running as the tenant user can read its
+        own secrets without sudo. chown is by name, so
+        the container's /etc/passwd is the source of
+        truth. Fallback: if the chown errors (early-boot
+        race, user not yet in passwd), the file stays
+        `0400 root` and the operator sees a WARNING log
+        line — file-mode secrets still work for
+        root-running apps.
+      — **Phase B-3 (open):** re-stamp on bare `incus
+        restart` not routed through the daemon.
+        Daemon-routed start/stop already re-stamp.
 - [x] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
       — New `audit.Redact` / `audit.SanitizeDetail` scrubs JWTs
         (with or without Bearer prefix), password/api_key/secret

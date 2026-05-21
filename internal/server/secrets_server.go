@@ -220,15 +220,36 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 		}
 	}
 	if hasFileMode {
-		// mkdir + chmod is idempotent. mode 0700 root-only;
-		// individual files are 0400 with the same owner.
-		// /run is tmpfs on systemd distros so this dir
-		// vanishes on container stop — that's the design.
-		if err := s.manager.Exec(containerName, []string{"sh", "-c",
-			"mkdir -p /run/secrets && chmod 0700 /run/secrets",
-		}); err != nil {
-			log.Printf("[secrets] failed to prepare /run/secrets on %s: %v (file-mode rows will be skipped)", containerName, err)
-			hasFileMode = false
+		// mkdir + chmod is idempotent. Phase B-2 (audit
+		// C-MED-4 polish) — the dir is mode 0750
+		// root:<username> so the tenant's process group
+		// can traverse it but no other user can. /run is
+		// tmpfs on systemd distros so this dir vanishes on
+		// container stop — that's the design.
+		//
+		// Username lookup: the container's tenant user is
+		// `<username>` by convention (created at
+		// CreateContainer time). chown's by-name form
+		// resolves it via the container's /etc/passwd; if
+		// the user doesn't exist (e.g. early-boot race or
+		// a container provisioned outside the daemon) the
+		// chown errors and we fall back to root-only mode
+		// 0700 + file 0400, same as Phase B-1.
+		prepCmd := fmt.Sprintf(
+			"mkdir -p /run/secrets && chown root:%s /run/secrets && chmod 0750 /run/secrets",
+			username,
+		)
+		if err := s.manager.Exec(containerName, []string{"sh", "-c", prepCmd}); err != nil {
+			log.Printf("[secrets] tenant chown on /run/secrets failed for %s (%v) — falling back to root-only mode", containerName, err)
+			// Fallback: root-only dir. Files will be
+			// 0400 root, app must run as root or use
+			// sudo. Better than failing the whole stamp.
+			if err := s.manager.Exec(containerName, []string{"sh", "-c",
+				"mkdir -p /run/secrets && chmod 0700 /run/secrets",
+			}); err != nil {
+				log.Printf("[secrets] failed to prepare /run/secrets on %s: %v (file-mode rows will be skipped)", containerName, err)
+				hasFileMode = false
+			}
 		}
 	}
 
@@ -239,9 +260,29 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 				continue
 			}
 			path := "/run/secrets/" + k
+			// Write the file mode 0400 (root-only). The
+			// post-write chown/chmod below relaxes the
+			// group bit so the tenant user can read.
+			// We do that as a separate exec rather than
+			// passing uid/gid to WriteFile because the
+			// container's /etc/passwd is the source of
+			// truth for the UID; resolving it server-side
+			// would be fragile.
 			if err := s.manager.WriteFile(containerName, path, []byte(sv.Value), "0400"); err != nil {
 				log.Printf("[secrets] failed to write file-mode %s on %s: %v (continuing)", k, containerName, err)
 				continue
+			}
+			// Try the chown+chmod fix-up. Best-effort —
+			// if the tenant user doesn't exist, the
+			// stamp still succeeds at the file level
+			// (visible to root) and the operator can
+			// debug from the warning.
+			fixupCmd := fmt.Sprintf(
+				"chown root:%s %q && chmod 0440 %q",
+				username, path, path,
+			)
+			if err := s.manager.Exec(containerName, []string{"sh", "-c", fixupCmd}); err != nil {
+				log.Printf("[secrets] chown/chmod %s on %s failed (%v) — file stays root-only 0400", k, containerName, err)
 			}
 		default: // env (and any unknown future mode falls back to env semantics)
 			if err := s.manager.SetEnv(containerName, k, sv.Value); err != nil {
