@@ -277,6 +277,198 @@ func (x *RefreshTokenResponse) GetRefreshTokenExpiresAt() int64 {
 	return 0
 }
 
+// Revocation is one row of the revocation list, surfaced
+// by the admin listing path. The plaintext token itself is
+// not in the table — only the jti is.
+type Revocation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The jti claim of the revoked token.
+	Jti string `protobuf:"bytes,1,opt,name=jti,proto3" json:"jti,omitempty"`
+	// RFC3339 timestamp of the token's original `exp` claim.
+	// Used as the cleanup horizon (rows past this can no
+	// longer authenticate anyway, so the daemon prunes
+	// them eventually).
+	ExpiresAt string `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// RFC3339 timestamp of when the revocation row was
+	// first inserted. Operators correlating an incident
+	// window use this column.
+	RevokedAt string `protobuf:"bytes,3,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	// Free-form reason recorded at revoke time (e.g.
+	// "operator_revoke", "refresh_rotation", "leak_2026_X").
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Revocation) Reset() {
+	*x = Revocation{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Revocation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Revocation) ProtoMessage() {}
+
+func (x *Revocation) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Revocation.ProtoReflect.Descriptor instead.
+func (*Revocation) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Revocation) GetJti() string {
+	if x != nil {
+		return x.Jti
+	}
+	return ""
+}
+
+func (x *Revocation) GetExpiresAt() string {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return ""
+}
+
+func (x *Revocation) GetRevokedAt() string {
+	if x != nil {
+		return x.RevokedAt
+	}
+	return ""
+}
+
+func (x *Revocation) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type ListRevokedTokensRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Max rows to return. 0 → 100 default. Server caps at
+	// 1000.
+	Limit int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	// When true, include rows whose expires_at has already
+	// passed (default false — most operators only care
+	// about active revocations).
+	IncludeExpired bool `protobuf:"varint,2,opt,name=include_expired,json=includeExpired,proto3" json:"include_expired,omitempty"`
+	// Narrow by jti prefix. Empty disables. Useful when an
+	// operator only remembers part of a leaked jti.
+	JtiPrefix     string `protobuf:"bytes,3,opt,name=jti_prefix,json=jtiPrefix,proto3" json:"jti_prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRevokedTokensRequest) Reset() {
+	*x = ListRevokedTokensRequest{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRevokedTokensRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRevokedTokensRequest) ProtoMessage() {}
+
+func (x *ListRevokedTokensRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRevokedTokensRequest.ProtoReflect.Descriptor instead.
+func (*ListRevokedTokensRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ListRevokedTokensRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListRevokedTokensRequest) GetIncludeExpired() bool {
+	if x != nil {
+		return x.IncludeExpired
+	}
+	return false
+}
+
+func (x *ListRevokedTokensRequest) GetJtiPrefix() string {
+	if x != nil {
+		return x.JtiPrefix
+	}
+	return ""
+}
+
+type ListRevokedTokensResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Revocations   []*Revocation          `protobuf:"bytes,1,rep,name=revocations,proto3" json:"revocations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRevokedTokensResponse) Reset() {
+	*x = ListRevokedTokensResponse{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRevokedTokensResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRevokedTokensResponse) ProtoMessage() {}
+
+func (x *ListRevokedTokensResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRevokedTokensResponse.ProtoReflect.Descriptor instead.
+func (*ListRevokedTokensResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListRevokedTokensResponse) GetRevocations() []*Revocation {
+	if x != nil {
+		return x.Revocations
+	}
+	return nil
+}
+
 var File_containarium_v1_tokens_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tokens_proto_rawDesc = "" +
@@ -296,12 +488,29 @@ const file_containarium_v1_tokens_proto_rawDesc = "" +
 	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12#\n" +
 	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\x125\n" +
 	"\x17access_token_expires_at\x18\x03 \x01(\x03R\x14accessTokenExpiresAt\x127\n" +
-	"\x18refresh_token_expires_at\x18\x04 \x01(\x03R\x15refreshTokenExpiresAt2\x8a\a\n" +
+	"\x18refresh_token_expires_at\x18\x04 \x01(\x03R\x15refreshTokenExpiresAt\"t\n" +
+	"\n" +
+	"Revocation\x12\x10\n" +
+	"\x03jti\x18\x01 \x01(\tR\x03jti\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x02 \x01(\tR\texpiresAt\x12\x1d\n" +
+	"\n" +
+	"revoked_at\x18\x03 \x01(\tR\trevokedAt\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"x\n" +
+	"\x18ListRevokedTokensRequest\x12\x14\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12'\n" +
+	"\x0finclude_expired\x18\x02 \x01(\bR\x0eincludeExpired\x12\x1d\n" +
+	"\n" +
+	"jti_prefix\x18\x03 \x01(\tR\tjtiPrefix\"Z\n" +
+	"\x19ListRevokedTokensResponse\x12=\n" +
+	"\vrevocations\x18\x01 \x03(\v2\x1b.containarium.v1.RevocationR\vrevocations2\xff\t\n" +
 	"\rTokensService\x12\x85\x03\n" +
 	"\vRevokeToken\x12#.containarium.v1.RevokeTokenRequest\x1a$.containarium.v1.RevokeTokenResponse\"\xaa\x02\x92A\x8a\x02\n" +
 	"\x06Tokens\x12\x17Revoke a JWT by its jti\x1a\xe6\x01Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/tokens/revoke\x12\xf0\x03\n" +
 	"\fRefreshToken\x12$.containarium.v1.RefreshTokenRequest\x1a%.containarium.v1.RefreshTokenResponse\"\x92\x03\x92A\xf1\x02\n" +
-	"\x06Tokens\x129Exchange a refresh token for a new (access, refresh) pair\x1a\xab\x02Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.\x82\xd3\xe4\x93\x02\x17:\x01*\"\x12/v1/tokens/refreshBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x06Tokens\x129Exchange a refresh token for a new (access, refresh) pair\x1a\xab\x02Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.\x82\xd3\xe4\x93\x02\x17:\x01*\"\x12/v1/tokens/refresh\x12\xf2\x02\n" +
+	"\x11ListRevokedTokens\x12).containarium.v1.ListRevokedTokensRequest\x1a*.containarium.v1.ListRevokedTokensResponse\"\x85\x02\x92A\xe7\x01\n" +
+	"\x06Tokens\x12\x1dList active token revocations\x1a\xbd\x01Returns revocation rows ordered most-recent-first. Default scope is non-expired revocations only; pass include_expired=true for forensic enumeration. Admin-only with the tokens:write scope.\x82\xd3\xe4\x93\x02\x14\x12\x12/v1/tokens/revokedBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_tokens_proto_rawDescOnce sync.Once
@@ -315,23 +524,29 @@ func file_containarium_v1_tokens_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tokens_proto_rawDescData
 }
 
-var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_containarium_v1_tokens_proto_goTypes = []any{
-	(*RevokeTokenRequest)(nil),   // 0: containarium.v1.RevokeTokenRequest
-	(*RevokeTokenResponse)(nil),  // 1: containarium.v1.RevokeTokenResponse
-	(*RefreshTokenRequest)(nil),  // 2: containarium.v1.RefreshTokenRequest
-	(*RefreshTokenResponse)(nil), // 3: containarium.v1.RefreshTokenResponse
+	(*RevokeTokenRequest)(nil),        // 0: containarium.v1.RevokeTokenRequest
+	(*RevokeTokenResponse)(nil),       // 1: containarium.v1.RevokeTokenResponse
+	(*RefreshTokenRequest)(nil),       // 2: containarium.v1.RefreshTokenRequest
+	(*RefreshTokenResponse)(nil),      // 3: containarium.v1.RefreshTokenResponse
+	(*Revocation)(nil),                // 4: containarium.v1.Revocation
+	(*ListRevokedTokensRequest)(nil),  // 5: containarium.v1.ListRevokedTokensRequest
+	(*ListRevokedTokensResponse)(nil), // 6: containarium.v1.ListRevokedTokensResponse
 }
 var file_containarium_v1_tokens_proto_depIdxs = []int32{
-	0, // 0: containarium.v1.TokensService.RevokeToken:input_type -> containarium.v1.RevokeTokenRequest
-	2, // 1: containarium.v1.TokensService.RefreshToken:input_type -> containarium.v1.RefreshTokenRequest
-	1, // 2: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
-	3, // 3: containarium.v1.TokensService.RefreshToken:output_type -> containarium.v1.RefreshTokenResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: containarium.v1.ListRevokedTokensResponse.revocations:type_name -> containarium.v1.Revocation
+	0, // 1: containarium.v1.TokensService.RevokeToken:input_type -> containarium.v1.RevokeTokenRequest
+	2, // 2: containarium.v1.TokensService.RefreshToken:input_type -> containarium.v1.RefreshTokenRequest
+	5, // 3: containarium.v1.TokensService.ListRevokedTokens:input_type -> containarium.v1.ListRevokedTokensRequest
+	1, // 4: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
+	3, // 5: containarium.v1.TokensService.RefreshToken:output_type -> containarium.v1.RefreshTokenResponse
+	6, // 6: containarium.v1.TokensService.ListRevokedTokens:output_type -> containarium.v1.ListRevokedTokensResponse
+	4, // [4:7] is the sub-list for method output_type
+	1, // [1:4] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_tokens_proto_init() }
@@ -345,7 +560,7 @@ func file_containarium_v1_tokens_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tokens_proto_rawDesc), len(file_containarium_v1_tokens_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

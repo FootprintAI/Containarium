@@ -50,6 +50,15 @@ func (f *fakeRevocationStore) Revoke(_ context.Context, jti string, _ time.Time,
 func (f *fakeRevocationStore) CleanupExpired(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
 }
+func (f *fakeRevocationStore) List(_ context.Context, _ auth.ListRevocationsParams) ([]auth.Revocation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]auth.Revocation, 0, len(f.revoked))
+	for jti, reason := range f.revoked {
+		out = append(out, auth.Revocation{JTI: jti, Reason: reason})
+	}
+	return out, nil
+}
 
 func newTestTokensServer(t *testing.T, store auth.RevocationStore) *TokensServer {
 	t.Helper()
@@ -293,6 +302,68 @@ func TestRefreshToken_HappyPath_MintsNewPair(t *testing.T) {
 	}
 	if rc.TokenType != auth.TokenTypeRefresh {
 		t.Fatalf("new refresh tt=%q", rc.TokenType)
+	}
+}
+
+// --- ListRevokedTokens admin enumeration ---
+
+func TestListRevokedTokens_RejectsNoSubject(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	_, err := srv.ListRevokedTokens(context.Background(), &pb.ListRevokedTokensRequest{})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("missing subject: got %v want Unauthenticated", err)
+	}
+}
+
+func TestListRevokedTokens_RejectsNonAdmin(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"alice", []string{"user"}, []string{auth.ScopeTokensWrite},
+	)
+	_, err := srv.ListRevokedTokens(ctx, &pb.ListRevokedTokensRequest{})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("non-admin: got %v want PermissionDenied", err)
+	}
+}
+
+func TestListRevokedTokens_RejectsAdminMissingScope(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"ops", []string{auth.RoleAdmin}, []string{auth.ScopeContainersRead},
+	)
+	_, err := srv.ListRevokedTokens(ctx, &pb.ListRevokedTokensRequest{})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("admin without tokens:write: got %v want PermissionDenied", err)
+	}
+}
+
+func TestListRevokedTokens_AdminWithScopeSucceeds(t *testing.T) {
+	store := newFakeRevocationStore()
+	_ = store.Revoke(context.Background(), "abc123", time.Now().Add(time.Hour), "test")
+	srv := newTestTokensServer(t, store)
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"ops", []string{auth.RoleAdmin}, []string{auth.ScopeTokensWrite},
+	)
+	resp, err := srv.ListRevokedTokens(ctx, &pb.ListRevokedTokensRequest{})
+	if err != nil {
+		t.Fatalf("ListRevokedTokens: %v", err)
+	}
+	if len(resp.Revocations) != 1 {
+		t.Fatalf("len(revocations) = %d, want 1", len(resp.Revocations))
+	}
+	if resp.Revocations[0].Jti != "abc123" {
+		t.Fatalf("jti = %q, want %q", resp.Revocations[0].Jti, "abc123")
+	}
+}
+
+func TestListRevokedTokens_UnavailableWhenStoreNil(t *testing.T) {
+	srv := newTestTokensServer(t, nil)
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"ops", []string{auth.RoleAdmin}, []string{auth.ScopeTokensWrite},
+	)
+	_, err := srv.ListRevokedTokens(ctx, &pb.ListRevokedTokensRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("nil store: got %v want Unavailable", err)
 	}
 }
 

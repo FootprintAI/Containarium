@@ -71,6 +71,48 @@ message RefreshTokenResponse {
   int64 refresh_token_expires_at = 4;
 }
 
+// Revocation is one row of the revocation list, surfaced
+// by the admin listing path. The plaintext token itself is
+// not in the table — only the jti is.
+message Revocation {
+  // The jti claim of the revoked token.
+  string jti = 1;
+
+  // RFC3339 timestamp of the token's original `exp` claim.
+  // Used as the cleanup horizon (rows past this can no
+  // longer authenticate anyway, so the daemon prunes
+  // them eventually).
+  string expires_at = 2;
+
+  // RFC3339 timestamp of when the revocation row was
+  // first inserted. Operators correlating an incident
+  // window use this column.
+  string revoked_at = 3;
+
+  // Free-form reason recorded at revoke time (e.g.
+  // "operator_revoke", "refresh_rotation", "leak_2026_X").
+  string reason = 4;
+}
+
+message ListRevokedTokensRequest {
+  // Max rows to return. 0 → 100 default. Server caps at
+  // 1000.
+  int32 limit = 1;
+
+  // When true, include rows whose expires_at has already
+  // passed (default false — most operators only care
+  // about active revocations).
+  bool include_expired = 2;
+
+  // Narrow by jti prefix. Empty disables. Useful when an
+  // operator only remembers part of a leaked jti.
+  string jti_prefix = 3;
+}
+
+message ListRevokedTokensResponse {
+  repeated Revocation revocations = 1;
+}
+
 // TokensService is the admin surface for JWT lifecycle.
 //
 // RevokeToken requires an admin role + tokens:write scope;
@@ -110,6 +152,22 @@ service TokensService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Exchange a refresh token for a new (access, refresh) pair";
       description: "Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.";
+      tags: "Tokens";
+    };
+  }
+
+  // ListRevokedTokens enumerates active revocations.
+  // Operators use this to confirm a revoke landed or to
+  // investigate "what got killed during the incident window."
+  // Admin-only + tokens:write scope (same surface as
+  // RevokeToken — anyone who can revoke can enumerate).
+  rpc ListRevokedTokens(ListRevokedTokensRequest) returns (ListRevokedTokensResponse) {
+    option (google.api.http) = {
+      get: "/v1/tokens/revoked"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List active token revocations";
+      description: "Returns revocation rows ordered most-recent-first. Default scope is non-expired revocations only; pass include_expired=true for forensic enumeration. Admin-only with the tokens:write scope.";
       tags: "Tokens";
     };
   }

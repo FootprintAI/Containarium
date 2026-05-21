@@ -49,4 +49,45 @@ type RevocationStore interface {
 	// pruned. Callers loop until the count is 0 (or until
 	// they hit their own time budget).
 	CleanupExpired(ctx context.Context, now time.Time) (int64, error)
+
+	// List returns revocation rows in reverse-chronological
+	// order (most recently revoked first), bounded by
+	// params.Limit. `params.IncludeExpired` toggles whether
+	// rows whose expires_at has already passed are returned
+	// — operators investigating a leak may want them; the
+	// default (false) only returns "still kill-switching
+	// something" rows.
+	//
+	// This is the admin-enumeration path; not on the
+	// authenticated-request hot path.
+	List(ctx context.Context, params ListRevocationsParams) ([]Revocation, error)
+}
+
+// Revocation is one row of the revocation list, exposed to
+// callers via List. Mirrors the schema; no encryption /
+// transformation needed.
+type Revocation struct {
+	JTI       string
+	ExpiresAt time.Time
+	RevokedAt time.Time
+	Reason    string
+}
+
+// ListRevocationsParams configures a List call.
+type ListRevocationsParams struct {
+	// Limit caps the returned rows. 0 → 100 default; max
+	// 1000 (enforced at the SQL layer too).
+	Limit int
+
+	// IncludeExpired returns rows whose expires_at is in
+	// the past. Default false — operators investigating a
+	// leak usually only want active revocations. Forensic
+	// queries asking "did we ever revoke this jti?" set it
+	// to true.
+	IncludeExpired bool
+
+	// JTIPrefix narrows the result to jtis starting with
+	// this prefix. Empty disables the filter. Useful when
+	// an operator only remembers part of a leaked jti.
+	JTIPrefix string
 }

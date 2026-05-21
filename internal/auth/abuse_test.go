@@ -268,3 +268,12 @@ func (a *abuseStore) Revoke(_ context.Context, jti string, _ time.Time, _ string
 func (a *abuseStore) CleanupExpired(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
 }
+func (a *abuseStore) List(_ context.Context, _ ListRevocationsParams) ([]Revocation, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]Revocation, 0, len(a.revoked))
+	for jti := range a.revoked {
+		out = append(out, Revocation{JTI: jti})
+	}
+	return out, nil
+}

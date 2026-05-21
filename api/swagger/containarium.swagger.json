@@ -3161,6 +3161,54 @@
         ]
       }
     },
+    "/v1/tokens/revoked": {
+      "get": {
+        "summary": "List active token revocations",
+        "description": "Returns revocation rows ordered most-recent-first. Default scope is non-expired revocations only; pass include_expired=true for forensic enumeration. Admin-only with the tokens:write scope.",
+        "operationId": "TokensService_ListRevokedTokens",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListRevokedTokensResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "description": "Max rows to return. 0 → 100 default. Server caps at\n1000.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "includeExpired",
+            "description": "When true, include rows whose expires_at has already\npassed (default false — most operators only care\nabout active revocations).",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "jtiPrefix",
+            "description": "Narrow by jti prefix. Empty disables. Useful when an\noperator only remembers part of a leaked jti.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tokens"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -5694,6 +5742,18 @@
         }
       }
     },
+    "ListRevokedTokensResponse": {
+      "type": "object",
+      "properties": {
+        "revocations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Revocation"
+          }
+        }
+      }
+    },
     "ListSecretsResponse": {
       "type": "object",
       "properties": {
@@ -6530,6 +6590,28 @@
           "title": "Status message"
         }
       }
+    },
+    "Revocation": {
+      "type": "object",
+      "properties": {
+        "jti": {
+          "type": "string",
+          "description": "The jti claim of the revoked token."
+        },
+        "expiresAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp of the token's original `exp` claim.\nUsed as the cleanup horizon (rows past this can no\nlonger authenticate anyway, so the daemon prunes\nthem eventually)."
+        },
+        "revokedAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp of when the revocation row was\nfirst inserted. Operators correlating an incident\nwindow use this column."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Free-form reason recorded at revoke time (e.g.\n\"operator_revoke\", \"refresh_rotation\", \"leak_2026_X\")."
+        }
+      },
+      "description": "Revocation is one row of the revocation list, surfaced\nby the admin listing path. The plaintext token itself is\nnot in the table — only the jti is."
     },
     "RevokeTokenRequest": {
       "type": "object",

@@ -202,3 +202,45 @@ func safeID(c *auth.Claims) string {
 	}
 	return c.ID
 }
+
+// ListRevokedTokens enumerates active revocations. Admin-
+// only + tokens:write scope (same surface as RevokeToken —
+// anyone who can revoke can confirm what was revoked).
+//
+// Default behavior is to return only non-expired
+// revocations. include_expired=true returns the full
+// forensic set (an operator chasing a leak after the fact
+// might want everything).
+func (s *TokensServer) ListRevokedTokens(ctx context.Context, req *pb.ListRevokedTokensRequest) (*pb.ListRevokedTokensResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTokensWrite); err != nil {
+		return nil, err
+	}
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if s.store == nil {
+		return nil, status.Error(codes.Unavailable, "revocation list is not configured on this daemon")
+	}
+
+	rows, err := s.store.List(ctx, auth.ListRevocationsParams{
+		Limit:          int(req.Limit),
+		IncludeExpired: req.IncludeExpired,
+		JTIPrefix:      req.JtiPrefix,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list revocations: %v", err)
+	}
+
+	out := &pb.ListRevokedTokensResponse{
+		Revocations: make([]*pb.Revocation, 0, len(rows)),
+	}
+	for _, r := range rows {
+		out.Revocations = append(out.Revocations, &pb.Revocation{
+			Jti:       r.JTI,
+			ExpiresAt: r.ExpiresAt.UTC().Format(time.RFC3339),
+			RevokedAt: r.RevokedAt.UTC().Format(time.RFC3339),
+			Reason:    r.Reason,
+		})
+	}
+	return out, nil
+}

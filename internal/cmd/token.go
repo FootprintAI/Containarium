@@ -29,6 +29,11 @@ var (
 	// `token refresh` flags (Phase 1.6 part B)
 	refreshTokenIn   string
 	refreshTokenFile string
+
+	// `token list-revoked` flags
+	listRevokedLimit          int32
+	listRevokedIncludeExpired bool
+	listRevokedJTIPrefix      string
 )
 
 var tokenCmd = &cobra.Command{
@@ -149,11 +154,36 @@ Use the access token in subsequent API calls:
 	RunE: runTokenRefresh,
 }
 
+// tokenListRevokedCmd implements `containarium token
+// list-revoked` — admin enumeration of the revocation
+// list. Confirms a revoke landed; surfaces what got killed
+// during an incident window.
+var tokenListRevokedCmd = &cobra.Command{
+	Use:   "list-revoked",
+	Short: "List active JWT revocations (admin-only)",
+	Long: `Enumerate the revocation list. By default returns only
+revocations whose token exp is still in the future ("active
+kill-switches"); pass --include-expired for forensic queries
+that need the full history.
+
+Admin role + tokens:write scope required.`,
+	Example: `  # Confirm the last revoke landed
+  containarium token list-revoked --server $S --token $T
+
+  # All revocations for a partial jti you remember
+  containarium token list-revoked --jti-prefix "AbCd" --server $S --token $T
+
+  # Forensic: every row, including expired
+  containarium token list-revoked --include-expired --limit 500 --server $S --token $T`,
+	RunE: runTokenListRevoked,
+}
+
 func init() {
 	rootCmd.AddCommand(tokenCmd)
 	tokenCmd.AddCommand(tokenGenerateCmd)
 	tokenCmd.AddCommand(tokenRevokeCmd)
 	tokenCmd.AddCommand(tokenRefreshCmd)
+	tokenCmd.AddCommand(tokenListRevokedCmd)
 
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenIn, "refresh-token", "", "Refresh token to exchange (mutually exclusive with --refresh-token-file)")
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenFile, "refresh-token-file", "", "Path to file containing the refresh token (mode 0600 recommended)")
@@ -162,6 +192,10 @@ func init() {
 	tokenRevokeCmd.MarkFlagRequired("jti")
 	tokenRevokeCmd.Flags().StringVar(&revokeReason, "reason", "", "Free-form reason recorded for forensics (default: 'operator_revoke')")
 	tokenRevokeCmd.Flags().StringVar(&revokeExpiresAt, "expires-at", "", "Token's own exp claim in RFC3339 (controls cleanup horizon; default: daemon max lifetime)")
+
+	tokenListRevokedCmd.Flags().Int32Var(&listRevokedLimit, "limit", 100, "Max rows to return (server caps at 1000)")
+	tokenListRevokedCmd.Flags().BoolVar(&listRevokedIncludeExpired, "include-expired", false, "Include rows whose token exp is already past (default: active only)")
+	tokenListRevokedCmd.Flags().StringVar(&listRevokedJTIPrefix, "jti-prefix", "", "Narrow results to jtis with this prefix (default: all)")
 
 	// Required flags
 	tokenGenerateCmd.Flags().StringVar(&tokenUsername, "username", "", "Username for the token (required)")
@@ -370,5 +404,37 @@ func runTokenRevoke(cmd *cobra.Command, args []string) error {
 		msg = "jti added to revocation list"
 	}
 	fmt.Printf("Revoked: %s\n%s\n", revokeJTI, msg)
+	return nil
+}
+
+// runTokenListRevoked GETs /v1/tokens/revoked and prints
+// the rows. Admin-only on the server side; the CLI does
+// the same flag-validation gate as runTokenRevoke.
+func runTokenListRevoked(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required")
+	}
+	if authToken == "" {
+		return fmt.Errorf("--token is required (must name an admin JWT)")
+	}
+
+	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+	if err != nil {
+		return fmt.Errorf("create http client: %w", err)
+	}
+	defer httpClient.Close()
+
+	revs, err := httpClient.ListRevokedTokens(listRevokedLimit, listRevokedIncludeExpired, listRevokedJTIPrefix)
+	if err != nil {
+		return err
+	}
+	if len(revs) == 0 {
+		fmt.Println("(no revocations match)")
+		return nil
+	}
+	fmt.Printf("%-24s  %-25s  %-25s  %s\n", "JTI", "REVOKED AT", "EXPIRES AT", "REASON")
+	for _, r := range revs {
+		fmt.Printf("%-24s  %-25s  %-25s  %s\n", r.JTI, r.RevokedAt, r.ExpiresAt, r.Reason)
+	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -98,4 +99,52 @@ func (s *PgRevocationStore) CleanupExpired(ctx context.Context, now time.Time) (
 		return 0, fmt.Errorf("cleanup expired: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// List returns revocation rows. See RevocationStore.List
+// for semantics. Builds the WHERE clause dynamically based
+// on params; bind-variable indices are 1-based to match
+// pgx conventions.
+func (s *PgRevocationStore) List(ctx context.Context, params ListRevocationsParams) ([]Revocation, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	q := `SELECT jti, expires_at, revoked_at, reason FROM jwt_revocations`
+	var args []any
+	var conds []string
+
+	if !params.IncludeExpired {
+		conds = append(conds, fmt.Sprintf("expires_at > $%d", len(args)+1))
+		args = append(args, time.Now())
+	}
+	if params.JTIPrefix != "" {
+		conds = append(conds, fmt.Sprintf("jti LIKE $%d", len(args)+1))
+		args = append(args, params.JTIPrefix+"%")
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += fmt.Sprintf(" ORDER BY revoked_at DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list revocations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Revocation
+	for rows.Next() {
+		var r Revocation
+		if err := rows.Scan(&r.JTI, &r.ExpiresAt, &r.RevokedAt, &r.Reason); err != nil {
+			return nil, fmt.Errorf("scan revocation row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

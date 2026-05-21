@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TokensService_RevokeToken_FullMethodName  = "/containarium.v1.TokensService/RevokeToken"
-	TokensService_RefreshToken_FullMethodName = "/containarium.v1.TokensService/RefreshToken"
+	TokensService_RevokeToken_FullMethodName       = "/containarium.v1.TokensService/RevokeToken"
+	TokensService_RefreshToken_FullMethodName      = "/containarium.v1.TokensService/RefreshToken"
+	TokensService_ListRevokedTokens_FullMethodName = "/containarium.v1.TokensService/ListRevokedTokens"
 )
 
 // TokensServiceClient is the client API for TokensService service.
@@ -48,6 +49,12 @@ type TokensServiceClient interface {
 	// itself IS the credential. Don't wrap with the access-
 	// token middleware.
 	RefreshToken(ctx context.Context, in *RefreshTokenRequest, opts ...grpc.CallOption) (*RefreshTokenResponse, error)
+	// ListRevokedTokens enumerates active revocations.
+	// Operators use this to confirm a revoke landed or to
+	// investigate "what got killed during the incident window."
+	// Admin-only + tokens:write scope (same surface as
+	// RevokeToken — anyone who can revoke can enumerate).
+	ListRevokedTokens(ctx context.Context, in *ListRevokedTokensRequest, opts ...grpc.CallOption) (*ListRevokedTokensResponse, error)
 }
 
 type tokensServiceClient struct {
@@ -72,6 +79,16 @@ func (c *tokensServiceClient) RefreshToken(ctx context.Context, in *RefreshToken
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RefreshTokenResponse)
 	err := c.cc.Invoke(ctx, TokensService_RefreshToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tokensServiceClient) ListRevokedTokens(ctx context.Context, in *ListRevokedTokensRequest, opts ...grpc.CallOption) (*ListRevokedTokensResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRevokedTokensResponse)
+	err := c.cc.Invoke(ctx, TokensService_ListRevokedTokens_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +120,12 @@ type TokensServiceServer interface {
 	// itself IS the credential. Don't wrap with the access-
 	// token middleware.
 	RefreshToken(context.Context, *RefreshTokenRequest) (*RefreshTokenResponse, error)
+	// ListRevokedTokens enumerates active revocations.
+	// Operators use this to confirm a revoke landed or to
+	// investigate "what got killed during the incident window."
+	// Admin-only + tokens:write scope (same surface as
+	// RevokeToken — anyone who can revoke can enumerate).
+	ListRevokedTokens(context.Context, *ListRevokedTokensRequest) (*ListRevokedTokensResponse, error)
 	mustEmbedUnimplementedTokensServiceServer()
 }
 
@@ -118,6 +141,9 @@ func (UnimplementedTokensServiceServer) RevokeToken(context.Context, *RevokeToke
 }
 func (UnimplementedTokensServiceServer) RefreshToken(context.Context, *RefreshTokenRequest) (*RefreshTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RefreshToken not implemented")
+}
+func (UnimplementedTokensServiceServer) ListRevokedTokens(context.Context, *ListRevokedTokensRequest) (*ListRevokedTokensResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRevokedTokens not implemented")
 }
 func (UnimplementedTokensServiceServer) mustEmbedUnimplementedTokensServiceServer() {}
 func (UnimplementedTokensServiceServer) testEmbeddedByValue()                       {}
@@ -176,6 +202,24 @@ func _TokensService_RefreshToken_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TokensService_ListRevokedTokens_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRevokedTokensRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TokensServiceServer).ListRevokedTokens(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TokensService_ListRevokedTokens_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TokensServiceServer).ListRevokedTokens(ctx, req.(*ListRevokedTokensRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TokensService_ServiceDesc is the grpc.ServiceDesc for TokensService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -190,6 +234,10 @@ var TokensService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshToken",
 			Handler:    _TokensService_RefreshToken_Handler,
+		},
+		{
+			MethodName: "ListRevokedTokens",
+			Handler:    _TokensService_ListRevokedTokens_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

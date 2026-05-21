@@ -114,6 +114,17 @@ Idempotent — running it twice with the same `jti` preserves the first
 reason. From this point on, any request bearing the revoked token
 gets `401 invalid token`.
 
+Confirm the revoke landed (admin + `tokens:write` scope required):
+
+```bash
+containarium token list-revoked \
+    --jti-prefix "$JTI_FIRST_CHARS" \
+    --server https://containarium.kafeido.app \
+    --token "$ADMIN_TOKEN"
+```
+
+Pass `--include-expired` to enumerate the full history (forensic).
+
 ### Step 3 — If the leaked token was a refresh token
 
 The exchange endpoint won't accept it once revoked, BUT the

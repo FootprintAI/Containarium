@@ -64,6 +64,19 @@ func (m *memRevocationStore) CleanupExpired(_ context.Context, now time.Time) (i
 	return pruned, nil
 }
 
+// List satisfies the RevocationStore interface. memRevocationStore
+// doesn't track revoked_at / reason; tests that exercise the
+// listing path use the Postgres-backed store.
+func (m *memRevocationStore) List(_ context.Context, _ ListRevocationsParams) ([]Revocation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Revocation
+	for jti, exp := range m.rows {
+		out = append(out, Revocation{JTI: jti, ExpiresAt: exp})
+	}
+	return out, nil
+}
+
 const revTestSecret = "test-secret-must-be-at-least-32-bytes-long-ok"
 
 func newTestTM(t *testing.T) *TokenManager {

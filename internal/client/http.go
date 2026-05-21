@@ -427,6 +427,55 @@ func (c *HTTPClient) RefreshToken(refreshTok string) (string, string, int64, int
 	return result.AccessToken, result.RefreshToken, result.AccessTokenExpiresAt, result.RefreshTokenExpiresAt, nil
 }
 
+// Revocation is the CLI-facing shape of one revocation
+// row returned by ListRevokedTokens. Timestamps are
+// RFC3339 strings, matching the wire format.
+type Revocation struct {
+	JTI       string `json:"jti"`
+	ExpiresAt string `json:"expiresAt"`
+	RevokedAt string `json:"revokedAt"`
+	Reason    string `json:"reason"`
+}
+
+// ListRevokedTokens enumerates active revocations.
+// Admin-only on the server side; the daemon checks role +
+// tokens:write scope. `limit` 0 → server default (100);
+// server caps at 1000.
+func (c *HTTPClient) ListRevokedTokens(limit int32, includeExpired bool, jtiPrefix string) ([]Revocation, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if includeExpired {
+		q.Set("includeExpired", "true")
+	}
+	if jtiPrefix != "" {
+		q.Set("jtiPrefix", jtiPrefix)
+	}
+	path := "/v1/tokens/revoked"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list revoked tokens: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, parseErr(b, resp.StatusCode, "list revoked tokens")
+	}
+	var result struct {
+		Revocations []Revocation `json:"revocations"`
+	}
+	if err := json.Unmarshal(b, &result); err != nil {
+		return nil, fmt.Errorf("decode revocations: %w", err)
+	}
+	return result.Revocations, nil
+}
+
 // RevokeToken adds a JWT's jti to the daemon's revocation
 // list. Phase 1.2 follow-up — admin-only on the server side.
 // `reason` is free-form and recorded for forensics; pass ""
