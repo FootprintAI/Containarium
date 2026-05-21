@@ -372,7 +372,7 @@ on the internal network. Land them first.
 
 ## Phase 3 — Input validation & resource boundary (weeks 6-8)
 
-- [~] **3.1** Image-registry allowlist + digest pinning — `internal/server/container_server.go:160` (**B-HIGH-1**)
+- [x] **3.1** Image-registry allowlist + digest pinning — `internal/server/container_server.go:160` (**B-HIGH-1**)
       — **Allowlist done.** New `CONTAINARIUM_ALLOWED_IMAGE_REGISTRIES`
         env var (comma-separated). CreateContainer rejects images
         whose registry prefix isn't in the allowlist. Empty allowlist
@@ -433,6 +433,27 @@ on the internal network. Land them first.
         unresolvable / no-digest / local-alias inputs, and
         the resolver+match composition for match / miss /
         not-found / 5xx-resolver-failure.
+      — **Phase D landed (operator runbook + soak).**
+        [OPERATOR-SECURITY-RUNBOOK.md "Pinning and verifying
+        container image digests"](OPERATOR-SECURITY-RUNBOOK.md#pinning-and-verifying-container-image-digests)
+        documents the two-gate rollout: REQUIRE first
+        (syntax) → soak → VERIFY (content). Includes
+        recipes for finding a published digest (curl + jq
+        / `incus image list` / publisher signed records),
+        a four-step rollout, audit-only soak pattern for
+        production fleets, error catalog for the three
+        failure modes (registry unreachable / alias not
+        found / digest mismatch), and explicit limits
+        (gate doesn't catch local-cache tampering or
+        registry-account compromise — those are Phase C
+        and out-of-band-digest-custody respectively).
+      — **Phase C not yet landed (defense-in-depth).**
+        Post-pull local-store fingerprint re-check
+        deferred — Phase B closes the main threat, Phase
+        C marginal value is lower (would catch local-cache
+        tampering, which requires root on the daemon host
+        and so has other escalation paths). Tracked for a
+        future overnight pass.
 - [x] **3.2** Split `enable_podman` from `enable_privileged`; gate latter on role — `internal/server/container_server.go:164`, `pkg/core/incus/client.go:458-459` (**A-HIGH-3**)
       — New `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` env var with
         three modes: `all` (default, backwards-compat), `admin-only`

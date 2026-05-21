@@ -19,6 +19,7 @@ If a procedure here is wrong, update it.
 - [Rotating Postgres credentials](#rotating-postgres-credentials)
 - [Switching Postgres to unix-socket auth (no password on the wire)](#switching-postgres-to-unix-socket-auth-no-password-on-the-wire)
 - [Enabling KMS envelope encryption for secrets](#enabling-kms-envelope-encryption-for-secrets)
+- [Pinning and verifying container image digests](#pinning-and-verifying-container-image-digests)
 - [Locking down `/wake/` to a known load balancer](#locking-down-wake-to-a-known-load-balancer)
 - [Auditing recent administrative actions](#auditing-recent-administrative-actions)
 - [Verifying the audit-log hash chain](#verifying-the-audit-log-hash-chain)
@@ -645,6 +646,212 @@ primary:
 ```bash
 containarium secrets migrate-to-envelope
 ```
+
+## Pinning and verifying container image digests
+
+Audit B-HIGH-1. By default Containarium accepts any image
+reference the operator passes — including a bare tag like
+`images:ubuntu/24.04` that the registry can quietly
+re-publish under different bytes tomorrow. Two layered
+environment toggles harden that:
+
+| Env var                              | Default | What it does                                                                 |
+| ------------------------------------ | ------- | ---------------------------------------------------------------------------- |
+| `CONTAINARIUM_REQUIRE_IMAGE_DIGEST`  | `false` | Refuse any image reference that doesn't end with `@sha256:<64 lowercase hex>`. Syntax gate. |
+| `CONTAINARIUM_VERIFY_IMAGE_DIGEST`   | `false` | Resolve the alias in the registry's simplestreams index and refuse if the operator-supplied digest doesn't appear there. Content gate. |
+
+The two gates are independent — you can require digests
+(syntax) without verifying them (content), but verifying
+without requiring is pointless because non-digest
+references trivially skip verification. Recommended
+deployment: turn on REQUIRE first, soak, then add VERIFY.
+
+### Step 1 — find a published digest for an image
+
+`containarium audit` doesn't help here; the digest lives
+in the registry's simplestreams index. The handful of
+ways to fetch it:
+
+```bash
+# A. Curl the simplestreams index directly. Search for
+#    the alias under products, then read the per-item
+#    sha256 fields. Returns multiple digests per version
+#    (rootfs, metadata, combined); ANY of them is
+#    acceptable as the operator-supplied digest.
+curl -sL https://images.linuxcontainers.org/streams/v1/images.json \
+    | jq -r '.products
+            | to_entries[]
+            | select(.value.aliases | split(",") | map(ltrimstr(" ") | rtrimstr(" ")) | contains(["ubuntu/24.04"]))
+            | .value.versions
+            | to_entries[]
+            | .value.items
+            | to_entries[]
+            | "\(.value.ftype)\t\(.value.sha256)"'
+
+# B. If you already have a known-good pull on a dev host,
+#    read the fingerprint Incus computed.
+incus image list --format=json \
+    | jq -r '.[] | select(.aliases[]?.name=="ubuntu/24.04") | .fingerprint'
+#    Note: Incus's fingerprint is the sha256 of the unified
+#    image; it should appear in the simplestreams index
+#    above as one of the per-item digests.
+
+# C. From the release-notes / signed digest record the
+#    image publisher posts out-of-band. Always the
+#    strongest source — the bytes the publisher meant.
+```
+
+### Step 2 — turn on REQUIRE
+
+Update each container-create call to pin a digest:
+
+```bash
+# Before
+containarium create-container --image="images:ubuntu/24.04" ...
+
+# After
+containarium create-container \
+    --image="images:ubuntu/24.04@sha256:<digest>" \
+    ...
+```
+
+Then flip the gate in the daemon's systemd
+`Environment=`:
+
+```
+CONTAINARIUM_REQUIRE_IMAGE_DIGEST=true
+```
+
+Restart the daemon. The startup log line includes:
+
+```
+[image-digest] required: every CreateContainer must name a `@sha256:<64hex>` digest (audit B-HIGH-1 follow-up)
+```
+
+Any operator who tries to create a container without a
+digest now gets an InvalidArgument with the exact
+malformed image string.
+
+### Step 3 — soak
+
+Watch the daemon log for `image-digest` lines for a
+day or two. The common failure modes:
+
+| Error                             | What happened                  | Fix                              |
+| --------------------------------- | ------------------------------ | -------------------------------- |
+| "missing a digest"                | An automation forgot to pin    | Pin it; re-run                   |
+| "invalid digest"                  | Hand-typed typo                | Re-copy the 64-hex string        |
+| "expected `sha256:` + 64 lowercase hex" | Uppercase / wrong algo  | Lowercase; ensure sha256 not sha384/sha512 |
+
+When the log is quiet of these for a soak period, you're
+ready for content verification.
+
+### Step 4 — turn on VERIFY
+
+Add to the daemon's systemd `Environment=`:
+
+```
+CONTAINARIUM_VERIFY_IMAGE_DIGEST=true
+```
+
+Restart. The startup log line includes:
+
+```
+[image-digest] registry verification ENABLED: every `@sha256:` digest is checked against the registry's published index before pull (audit B-HIGH-1 Phase B)
+```
+
+From this point, every CreateContainer with a digest
+will:
+
+1. Resolve the (server, alias) from the image string.
+2. Fetch `streams/v1/images.json` from the registry.
+3. Match the supplied digest against the union of all
+   per-item sha256 values published for the alias.
+4. Reject with FailedPrecondition if no match.
+
+Pre-pull, fail-fast, no bandwidth wasted, no partial
+container state to clean up.
+
+### Soak-mode rollout pattern (optional but recommended)
+
+Production deployments serving real tenants should
+**not** flip from "off" to "on" in one step — a typo in
+a single CreateContainer payload becomes a tenant
+outage. Instead:
+
+1. **Audit-only soak.** Leave VERIFY off; periodically
+   re-resolve every tenant's pinned digest against the
+   registry index via a small script (cron + the
+   `curl | jq` recipe above) and alert on misses. Run
+   for 1-2 weeks.
+2. **Single-tenant pilot.** Flip VERIFY on for a single
+   non-critical tenant's dedicated daemon. Confirm pulls
+   still work end-to-end.
+3. **Fleet rollout.** Roll the gate out one daemon at a
+   time, watching the daemon log for `registry digest
+   verification` errors.
+
+### Troubleshooting
+
+```
+registry digest verification: fetch https://images.linuxcontainers.org/streams/v1/images.json for "ubuntu/24.04": ... (timeout|conn refused|TLS error)
+```
+
+The registry index is unreachable. The gate fails closed
+(rejects the create) rather than skipping verification.
+Diagnose:
+
+```bash
+# Is the daemon's network path to the registry healthy?
+sudo -u containarium curl -fsSI \
+    https://images.linuxcontainers.org/streams/v1/images.json
+```
+
+Temporary mitigations:
+- Flip VERIFY off in systemd Environment and restart while
+  you fix DNS / TLS / network — REQUIRE stays on, so
+  operators still need to pin a digest.
+
+```
+registry digest verification: alias "ubuntu/24.04" not found in https://images.linuxcontainers.org/streams/v1/images.json
+```
+
+The alias doesn't resolve to any product in the index.
+Causes:
+- Typo (the alias is case-sensitive)
+- Recently-removed product (registry retired the alias)
+- Stale index cache somewhere up the network path
+
+Diagnose: re-run the Step 1 curl recipe and look for the
+alias under `aliases:`.
+
+```
+registry digest verification: image "..." declares <X> but the registry at <server> publishes a different set of digests for alias "..."
+```
+
+The alias resolves but the digest doesn't. This is the
+case the gate exists to catch:
+- The image was re-published with new bytes; your pinned
+  digest is stale. Update to the current digest if you
+  trust the new bytes.
+- The registry has been compromised. **DO NOT** update
+  the pin until you've independently verified the new
+  bytes (e.g. from the release-notes record).
+- The daemon's view of the registry has been MITM'd.
+  Investigate TLS / DNS for the daemon's outbound path.
+
+### Limits
+
+- The gate does NOT catch cache tampering between pull
+  and start (an attacker who can write to Incus's local
+  image store after the pull). That's tracked as Phase C
+  defense-in-depth — a post-pull local-store fingerprint
+  re-check.
+- The gate does NOT catch registry-account compromise
+  where the attacker pushes new bytes AND updates the
+  index. Only out-of-band digest custody (signed release
+  records, the publisher's own announcement) catches that
+  class.
 
 ## Locking down `/wake/` to a known load balancer
 
