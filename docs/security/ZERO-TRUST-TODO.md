@@ -358,8 +358,23 @@ on the internal network. Land them first.
         whose registry prefix isn't in the allowlist. Empty allowlist
         = pre-Phase-3 behavior with startup WARNING. Tests in
         `internal/server/image_allowlist_test.go`.
-      — Digest pinning is a follow-up — would require image-pull
-        side checks for SHA-256 manifests.
+      — **Digest enforcement landed (operator-side half).**
+        New `CONTAINARIUM_REQUIRE_IMAGE_DIGEST` env var
+        (default off). When `1`/`true`/`yes`/`on`,
+        CreateContainer refuses images that don't end with
+        `@sha256:<64 lowercase hex>`. sha256 only — the
+        algorithm-confusion surface that bit JWTs (see
+        Phase 1.1) is closed for image refs too. Tests in
+        `internal/server/image_digest_test.go` cover
+        enforcement on/off, bare-tag rejection, malformed
+        digests, uppercase-hex rejection, wrong-algo
+        rejection, empty-image bypass (default
+        substitution still works), and the "unrecognized
+        env stays OFF" fail-open on operator typos.
+      — **Future:** verify the digest against the
+        registry's content. That requires image-pull side
+        checks (Incus manifest verification) — significant
+        deeper work, tracked as a third pass on B-HIGH-1.
 - [x] **3.2** Split `enable_podman` from `enable_privileged`; gate latter on role — `internal/server/container_server.go:164`, `pkg/core/incus/client.go:458-459` (**A-HIGH-3**)
       — New `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` env var with
         three modes: `all` (default, backwards-compat), `admin-only`
