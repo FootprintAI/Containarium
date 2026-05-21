@@ -25,25 +25,65 @@ type SecretMetadata struct {
 	UpdatedAt time.Time
 }
 
-// Store handles per-tenant secret persistence. All on-disk data is
-// AES-256-GCM ciphertext bound to (username, name); the cipher
-// instance holds the master key in process memory and is reused
-// across calls.
+// Store handles per-tenant secret persistence.
+//
+// Two encryption modes coexist on the same table (Phase 4.1 — see
+// docs/security/KMS-ENVELOPE-DESIGN.md):
+//
+//   - Legacy: the row's nonce + ciphertext are AES-256-GCM under
+//     the daemon's master key directly. wrapped_dek IS NULL,
+//     kek_id IS NULL.
+//   - Envelope: the row's nonce + ciphertext are AES-256-GCM
+//     under a per-row Data Encryption Key (DEK). The DEK itself
+//     is encrypted under the KMS-resident Key Encryption Key
+//     (KEK) and stored in wrapped_dek; the KEK identifier is in
+//     kek_id.
+//
+// Whether a Set produces a legacy or envelope row depends on
+// whether the Store was constructed with a KMSClient. Sets
+// without KMS write legacy rows; Sets with KMS write envelope
+// rows. Get/LoadAllForUser dispatches per-row based on whether
+// wrapped_dek IS NULL — so a deployment can run with mixed
+// state (legacy rows from before the KMS rollout + new envelope
+// rows) until Phase D's migration tool converts everything.
 type Store struct {
 	pool   *pgxpool.Pool
 	cipher *corecrypto.Cipher
+	kms    corecrypto.KMSClient // optional; nil = legacy-only mode
 }
 
 // ErrNotFound is returned by Get / Delete when the (username, name)
 // tuple has no row.
 var ErrNotFound = errors.New("secrets: not found")
 
+// Option configures a Store at construction time. Phase 4.1 uses
+// this to bolt on the KMS client without breaking the existing
+// NewStore(ctx, pool, cipher) call sites.
+type Option func(*Store)
+
+// WithKMS enables envelope encryption. When set, every new Set
+// produces an envelope row (wrapped_dek + kek_id populated).
+// Reads accept both legacy and envelope rows.
+//
+// Passing nil is a no-op — equivalent to omitting WithKMS.
+func WithKMS(kms corecrypto.KMSClient) Option {
+	return func(s *Store) {
+		if kms != nil {
+			s.kms = kms
+		}
+	}
+}
+
 // NewStore opens the secrets store. Creates the `secrets` table on
-// first run; idempotent on every subsequent call.
+// first run and applies any column migrations; idempotent on every
+// subsequent call.
 //
 // The cipher must already be constructed from the daemon's master
-// key (see pkg/core/secrets.LoadOrCreateMasterKey + NewCipher).
-func NewStore(ctx context.Context, pool *pgxpool.Pool, cipher *corecrypto.Cipher) (*Store, error) {
+// key (see pkg/core/secrets.LoadOrCreateMasterKey + NewCipher) —
+// it's the LEGACY-path crypto and stays required even when
+// WithKMS is supplied, because existing legacy rows still need it
+// for decrypt until Phase D's migration runs.
+func NewStore(ctx context.Context, pool *pgxpool.Pool, cipher *corecrypto.Cipher, opts ...Option) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("secrets: pool is nil")
 	}
@@ -51,6 +91,9 @@ func NewStore(ctx context.Context, pool *pgxpool.Pool, cipher *corecrypto.Cipher
 		return nil, errors.New("secrets: cipher is nil")
 	}
 	s := &Store{pool: pool, cipher: cipher}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if err := s.initSchema(ctx); err != nil {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
@@ -71,6 +114,14 @@ func (s *Store) initSchema(ctx context.Context) error {
 			UNIQUE (username, name)
 		);
 
+		-- Phase 4.1 Phase B (audit C-HIGH-6) — envelope encryption.
+		-- Both nullable so the migration is non-destructive: pre-
+		-- KMS rows keep wrapped_dek=NULL / kek_id=NULL and are
+		-- decrypted via the legacy master-key path. New writes
+		-- under KMS populate both columns.
+		ALTER TABLE secrets ADD COLUMN IF NOT EXISTS wrapped_dek BYTEA;
+		ALTER TABLE secrets ADD COLUMN IF NOT EXISTS kek_id      TEXT;
+
 		CREATE INDEX IF NOT EXISTS idx_secrets_username
 			ON secrets(username);
 	`
@@ -82,6 +133,12 @@ func (s *Store) initSchema(ctx context.Context) error {
 // the same (username, name) bump the version and replace the
 // ciphertext. Validates name + value at the API boundary before
 // touching crypto or the DB.
+//
+// When the Store has a KMSClient configured (WithKMS), this writes
+// an envelope row: a fresh per-row DEK encrypts the plaintext, the
+// DEK is wrapped via the KMS, and wrapped_dek + kek_id are
+// populated. Otherwise it writes a legacy row exactly as before
+// Phase 4.1 — wrapped_dek and kek_id stay NULL.
 func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretMetadata, error) {
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
@@ -93,9 +150,9 @@ func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretM
 		return nil, err
 	}
 
-	nonce, ct, err := s.cipher.Encrypt(username, name, []byte(value))
+	nonce, ct, wrappedDEK, kekID, err := s.encryptForStorage(ctx, username, name, []byte(value))
 	if err != nil {
-		return nil, fmt.Errorf("encrypt: %w", err)
+		return nil, err
 	}
 
 	// INSERT ... ON CONFLICT DO UPDATE handles both create and
@@ -103,19 +160,21 @@ func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretM
 	// rotation; the row's created_at stays as the original
 	// (set-once-ever timestamp), updated_at moves to NOW().
 	const q = `
-		INSERT INTO secrets (username, name, nonce, ciphertext, version)
-		VALUES ($1, $2, $3, $4, 1)
+		INSERT INTO secrets (username, name, nonce, ciphertext, wrapped_dek, kek_id, version)
+		VALUES ($1, $2, $3, $4, $5, $6, 1)
 		ON CONFLICT (username, name)
 		DO UPDATE SET
 			nonce       = EXCLUDED.nonce,
 			ciphertext  = EXCLUDED.ciphertext,
+			wrapped_dek = EXCLUDED.wrapped_dek,
+			kek_id      = EXCLUDED.kek_id,
 			version     = secrets.version + 1,
 			updated_at  = NOW()
 		RETURNING version, created_at, updated_at;
 	`
 	var version int32
 	var createdAt, updatedAt time.Time
-	if err := s.pool.QueryRow(ctx, q, username, name, nonce, ct).Scan(&version, &createdAt, &updatedAt); err != nil {
+	if err := s.pool.QueryRow(ctx, q, username, name, nonce, ct, wrappedDEK, kekID).Scan(&version, &createdAt, &updatedAt); err != nil {
 		return nil, fmt.Errorf("upsert secret: %w", err)
 	}
 	return &SecretMetadata{
@@ -127,6 +186,79 @@ func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretM
 	}, nil
 }
 
+// encryptForStorage picks the right encryption mode based on
+// whether the Store has a KMSClient. Returns the row tuple to
+// INSERT/UPDATE: (nonce, ciphertext, wrapped_dek_or_nil,
+// kek_id_or_empty).
+//
+// Envelope path zeroes the DEK from memory before returning so
+// the plaintext key doesn't outlive the function frame. The
+// wrapped DEK is safe to hand back — it's encrypted under the
+// KEK.
+func (s *Store) encryptForStorage(ctx context.Context, username, name string, plaintext []byte) (nonce, ct, wrappedDEK []byte, kekID string, err error) {
+	if s.kms == nil {
+		// Legacy mode: master-key encrypt directly.
+		nonce, ct, err = s.cipher.Encrypt(username, name, plaintext)
+		if err != nil {
+			return nil, nil, nil, "", fmt.Errorf("encrypt (legacy): %w", err)
+		}
+		return nonce, ct, nil, "", nil
+	}
+
+	// Envelope mode: fresh DEK, encrypt under it, wrap the DEK.
+	dek, err := corecrypto.NewDEK()
+	if err != nil {
+		return nil, nil, nil, "", fmt.Errorf("generate DEK: %w", err)
+	}
+	defer corecrypto.ZeroBytes(dek)
+
+	dekCipher, err := corecrypto.NewCipher(dek)
+	if err != nil {
+		return nil, nil, nil, "", fmt.Errorf("build DEK cipher: %w", err)
+	}
+	nonce, ct, err = dekCipher.Encrypt(username, name, plaintext)
+	if err != nil {
+		return nil, nil, nil, "", fmt.Errorf("encrypt (envelope): %w", err)
+	}
+
+	wrappedDEK, kekID, err = s.kms.Wrap(ctx, dek)
+	if err != nil {
+		return nil, nil, nil, "", fmt.Errorf("KMS wrap: %w", err)
+	}
+	return nonce, ct, wrappedDEK, kekID, nil
+}
+
+// decryptFromStorage is the inverse — picks legacy vs envelope
+// path based on whether wrapped_dek is populated. Zeros the DEK
+// after use in the envelope branch.
+//
+// kms_id_check: if a row's kek_id doesn't match what the Store's
+// KMSClient implementation expects (e.g. a row wrapped under
+// "gcp-kms:..." reaching an InProcKMS-only daemon), the KMS
+// returns an error from Unwrap — that's the signal a future
+// daemon has been swapped to a different KMS without running the
+// migration.
+func (s *Store) decryptFromStorage(ctx context.Context, username, name string, nonce, ct, wrappedDEK []byte, kekID string) ([]byte, error) {
+	// Legacy row: wrapped_dek IS NULL, kek_id IS NULL.
+	if len(wrappedDEK) == 0 {
+		return s.cipher.Decrypt(username, name, nonce, ct)
+	}
+	// Envelope row.
+	if s.kms == nil {
+		return nil, fmt.Errorf("secret %s/%s is envelope-encoded (kek_id=%q) but Store has no KMSClient configured", username, name, kekID)
+	}
+	dek, err := s.kms.Unwrap(ctx, wrappedDEK, kekID)
+	if err != nil {
+		return nil, fmt.Errorf("KMS unwrap: %w", err)
+	}
+	defer corecrypto.ZeroBytes(dek)
+	dekCipher, err := corecrypto.NewCipher(dek)
+	if err != nil {
+		return nil, fmt.Errorf("build DEK cipher: %w", err)
+	}
+	return dekCipher.Decrypt(username, name, nonce, ct)
+}
+
 // Get reads a single secret's decrypted plaintext value. Returns
 // ErrNotFound if the (username, name) tuple isn't in the table.
 //
@@ -134,6 +266,10 @@ func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretM
 // the underlying crypto error so callers can distinguish "you
 // looked up something that exists but I can't decrypt it" from
 // "nothing here."
+//
+// Phase B: envelope rows take the KMS-unwrap path; legacy rows
+// (wrapped_dek IS NULL) take the master-key path. Both produce
+// the same plaintext shape.
 func (s *Store) Get(ctx context.Context, username, name string) (meta *SecretMetadata, value string, err error) {
 	if username == "" {
 		return nil, "", fmt.Errorf("username is required")
@@ -143,21 +279,26 @@ func (s *Store) Get(ctx context.Context, username, name string) (meta *SecretMet
 	}
 
 	const q = `
-		SELECT nonce, ciphertext, version, created_at, updated_at
+		SELECT nonce, ciphertext, wrapped_dek, kek_id, version, created_at, updated_at
 		FROM secrets
 		WHERE username = $1 AND name = $2
 	`
-	var nonce, ct []byte
+	var nonce, ct, wrappedDEK []byte
+	var kekID *string // nullable
 	var version int32
 	var createdAt, updatedAt time.Time
-	if err := s.pool.QueryRow(ctx, q, username, name).Scan(&nonce, &ct, &version, &createdAt, &updatedAt); err != nil {
+	if err := s.pool.QueryRow(ctx, q, username, name).Scan(&nonce, &ct, &wrappedDEK, &kekID, &version, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, "", ErrNotFound
 		}
 		return nil, "", fmt.Errorf("select secret: %w", err)
 	}
 
-	plaintext, err := s.cipher.Decrypt(username, name, nonce, ct)
+	kID := ""
+	if kekID != nil {
+		kID = *kekID
+	}
+	plaintext, err := s.decryptFromStorage(ctx, username, name, nonce, ct, wrappedDEK, kID)
 	if err != nil {
 		return nil, "", fmt.Errorf("decrypt secret: %w", err)
 	}
@@ -232,12 +373,16 @@ func (s *Store) Delete(ctx context.Context, username, name string) error {
 // This path is the hot one: returning N decrypted values in one
 // round-trip beats N Get calls. The caller is responsible for not
 // logging the map or persisting it outside the LXC config.
+//
+// Phase B: per-row dispatch — legacy rows use master key, envelope
+// rows use KMS unwrap. The mixed-state case (some of each) is
+// supported until the migration tool runs.
 func (s *Store) LoadAllForUser(ctx context.Context, username string) (map[string]string, error) {
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
 	const q = `
-		SELECT name, nonce, ciphertext
+		SELECT name, nonce, ciphertext, wrapped_dek, kek_id
 		FROM secrets
 		WHERE username = $1
 	`
@@ -250,11 +395,16 @@ func (s *Store) LoadAllForUser(ctx context.Context, username string) (map[string
 	out := make(map[string]string)
 	for rows.Next() {
 		var name string
-		var nonce, ct []byte
-		if err := rows.Scan(&name, &nonce, &ct); err != nil {
+		var nonce, ct, wrappedDEK []byte
+		var kekID *string
+		if err := rows.Scan(&name, &nonce, &ct, &wrappedDEK, &kekID); err != nil {
 			return nil, fmt.Errorf("scan secret row: %w", err)
 		}
-		pt, decErr := s.cipher.Decrypt(username, name, nonce, ct)
+		kID := ""
+		if kekID != nil {
+			kID = *kekID
+		}
+		pt, decErr := s.decryptFromStorage(ctx, username, name, nonce, ct, wrappedDEK, kID)
 		if decErr != nil {
 			return nil, fmt.Errorf("decrypt secret %s/%s: %w", username, name, decErr)
 		}

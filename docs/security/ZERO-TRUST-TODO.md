@@ -442,12 +442,24 @@ on the internal network. Land them first.
         `pkg/core/secrets/kms.go`. The inproc backend uses
         the existing master key with AES-GCM and the kek_id
         sentinel `inproc:master` — cryptographically
-        equivalent to the legacy path. Phase B (two-write
-        Store flow, schema migration) is the next slice;
-        no callers wire this yet. 9 tests in `kms_test.go`
-        cover round-trip symmetry, kek_id routing,
-        DEK-size rejection, ciphertext tampering,
+        equivalent to the legacy path. 9 tests in
+        `kms_test.go` cover round-trip symmetry, kek_id
+        routing, DEK-size rejection, ciphertext tampering,
         cross-deployment isolation.
+      — **Phase B landed.** Store wired for envelope.
+        Schema migration adds nullable `wrapped_dek` +
+        `kek_id` columns. `NewStore(... WithKMS(client))`
+        enables envelope mode; reads dispatch per-row
+        (`wrapped_dek IS NULL` → legacy master-key path,
+        else KMS unwrap → DEK decrypt). Mixed-state DB
+        works — legacy rows on a newly-KMS-enabled
+        deployment still read; a future Phase D migration
+        rewrites them. 9 dispatch tests in
+        `envelope_dispatch_test.go` cover legacy-only
+        roundtrip, envelope roundtrip, mixed-state cases
+        (legacy row on KMS-store, envelope row on no-KMS
+        store rejected), AAD binding preserved through
+        envelope path.
 - [x] **4.2** Stat-check master-key file permissions at load — `pkg/core/secrets/crypto.go:47,109` (**C-HIGH-6**)
       — `LoadOrCreateMasterKey` now stats the file before reading
         and refuses if any non-owner bit is set (`mode & 0o077 != 0`).
