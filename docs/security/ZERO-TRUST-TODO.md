@@ -426,7 +426,22 @@ on the internal network. Land them first.
 
 ## Phase 4 — Secrets, audit & operational hardening (ongoing)
 
-- [ ] **4.1** Envelope encryption via external KMS (GCP KMS / Vault) — `pkg/core/secrets/crypto.go` (**C-HIGH-6** is partially addressed by 4.2 below)
+- [~] **4.1** Envelope encryption via external KMS (GCP KMS / Vault) — `pkg/core/secrets/crypto.go` (**C-HIGH-6** is partially addressed by 4.2 below)
+      — **Design doc landed.**
+        [`docs/security/KMS-ENVELOPE-DESIGN.md`](KMS-ENVELOPE-DESIGN.md)
+        covers threat model (host-compromise resilience,
+        per-decrypt audit trail), target architecture
+        (DEK-per-secret wrapped by a KMS-resident KEK), and
+        a six-phase rollout (interface + no-op → two-write
+        compat → GCP KMS impl → migration tool → master-key
+        retirement → other backends). Operators reading
+        the current secrets code can see what's protected
+        today and what isn't.
+      — **Implementation deferred.** Multi-PR effort —
+        starts with the `KMSClient` interface +
+        in-process no-op impl in `pkg/core/secrets/kms.go`,
+        then the schema migration, then per-backend
+        impls. Tracked as the C-HIGH-6 follow-up.
 - [x] **4.2** Stat-check master-key file permissions at load — `pkg/core/secrets/crypto.go:47,109` (**C-HIGH-6**)
       — `LoadOrCreateMasterKey` now stats the file before reading
         and refuses if any non-owner bit is set (`mode & 0o077 != 0`).
