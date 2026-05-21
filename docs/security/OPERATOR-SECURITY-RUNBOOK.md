@@ -666,6 +666,12 @@ without requiring is pointless because non-digest
 references trivially skip verification. Recommended
 deployment: turn on REQUIRE first, soak, then add VERIFY.
 
+The daemon logs a `WARNING` at startup when VERIFY is on
+but REQUIRE is off, so this misconfiguration is loud
+rather than silent. The configuration is still allowed
+(some operators legitimately want "verify when pinned,
+but pinning optional"), just flagged.
+
 ### Step 1 — find a published digest for an image
 
 `containarium audit` doesn't help here; the digest lives

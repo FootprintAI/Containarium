@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +33,31 @@ func resetVerifyState() {
 	verifyDigestOn = false
 	verifyResolverOnce = sync.Once{}
 	verifyResolver = nil
+	// Also reset the REQUIRE-gate's once so its log
+	// behavior is reproducible per-test. Tests that
+	// flip REQUIRE on/off would otherwise see the cached
+	// state from a previous test in the same process.
+	imageDigestOnce = sync.Once{}
+	imageDigestReq = false
+}
+
+// captureLog redirects the std log to a buffer for the
+// duration of `fn`, then restores. Returns the captured
+// output. Used to assert WARNING lines from the verify
+// gate's startup banner.
+func captureLog(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	}()
+	fn()
+	return buf.String()
 }
 
 // fakeIndexJSON mirrors the test fixture in pkg/core/incus
@@ -280,4 +307,178 @@ func pubContains(set []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// --- Two-gate misconfiguration warning ---
+//
+// VERIFY only kicks in for `@sha256:` requests. Without
+// REQUIRE, undigested requests bypass verification
+// silently. Operators who enable VERIFY thinking they
+// covered both surfaces would have degraded protection
+// they don't know about. The gate logs a startup WARNING
+// in this configuration — config is still ALLOWED (some
+// operators legitimately want "verify when pinned but
+// pinning optional"), just loudly flagged.
+
+func TestVerifyDigest_WarnsWhenVerifyOnButRequireOff(t *testing.T) {
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "true")
+	t.Setenv(requireImageDigestEnv, "")
+	out := captureLog(t, func() {
+		_ = loadDigestVerificationOn()
+	})
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("expected WARNING in log; got: %s", out)
+	}
+	if !strings.Contains(out, requireImageDigestEnv) {
+		t.Errorf("warning should name the missing REQUIRE env; got: %s", out)
+	}
+}
+
+func TestVerifyDigest_QuietWhenBothGatesOn(t *testing.T) {
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "true")
+	t.Setenv(requireImageDigestEnv, "true")
+	out := captureLog(t, func() {
+		_ = loadDigestVerificationOn()
+	})
+	// The "ENABLED" banner is fine; what we DON'T want
+	// is the misconfig WARNING.
+	if strings.Contains(out, "WARNING: "+verifyImageDigestEnv) {
+		t.Errorf("did not expect misconfig warning when both gates are on; got: %s", out)
+	}
+	// The misconfig warning specifically mentions
+	// "undigested CreateContainer requests will SKIP." If
+	// that phrase appears, the warning fired wrongly.
+	if strings.Contains(out, "will SKIP verification") {
+		t.Errorf("misconfig warning leaked through when both gates on; got: %s", out)
+	}
+}
+
+func TestVerifyDigest_QuietWhenVerifyOff(t *testing.T) {
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "")
+	t.Setenv(requireImageDigestEnv, "true")
+	out := captureLog(t, func() {
+		_ = loadDigestVerificationOn()
+	})
+	if strings.Contains(out, "WARNING") {
+		t.Errorf("verify-off should not log any verify-side warnings; got: %s", out)
+	}
+}
+
+// --- Cross-product / cross-version abuse rejections ---
+//
+// These are abuse-style assertions on the resolver
+// composition: a digest belonging to an unrelated
+// product or version must NOT satisfy the gate.
+
+func TestVerifyDigest_Abuse_CrossProductDigestRejected(t *testing.T) {
+	// An attacker who knows alpine's digest and submits
+	// it inside a ubuntu/24.04 image string must be
+	// rejected — alpine's digest is published in the
+	// index but not under ubuntu's product entry.
+	resetVerifyState()
+	srv := newFakeIndexServerWithBoth(t)
+	defer srv.Close()
+	r := resolver()
+	ubuntu, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04")
+	if err != nil {
+		t.Fatalf("resolve ubuntu: %v", err)
+	}
+	alpineDigest := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	if pubContains(ubuntu, alpineDigest) {
+		t.Fatal("alpine digest leaked into ubuntu's published set — fixture bug")
+	}
+	// Composition: the gate would reject because the
+	// digest the operator declares isn't in the resolved
+	// set for the requested alias. That's the intended
+	// behavior; the assertion above is the load-bearing
+	// part of the abuse test.
+}
+
+func TestVerifyDigest_Abuse_StaleDigestRejected(t *testing.T) {
+	// An attacker who recorded a digest from a retired
+	// (no-longer-published) image version must NOT be
+	// able to pin to that digest after the registry has
+	// rotated. Our resolver only returns what's in the
+	// CURRENT index; a retired version's digest won't be
+	// in the published set.
+	resetVerifyState()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/streams/v1/images.json" {
+			http.NotFound(w, r)
+			return
+		}
+		// Registry has only the new version. Old
+		// digest "aa…aa" is no longer published.
+		_, _ = w.Write([]byte(`{
+			"format": "products:1.0",
+			"products": {
+				"ubuntu:24.04:amd64:default": {
+					"aliases": "24.04,ubuntu/24.04",
+					"arch": "amd64",
+					"versions": {
+						"20240601_07:42": {
+							"items": {
+								"lxd.tar.xz": {"ftype": "lxd.tar.xz", "sha256": "11111111111111111111111111111111111111111111111111111111111111111", "size": 1}
+							}
+						}
+					}
+				}
+			}
+		}`))
+	}))
+	defer srv.Close()
+	r := resolver()
+	pub, err := r.ResolveImageDigests(context.Background(), srv.URL, "ubuntu/24.04")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	staleDigest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if pubContains(pub, staleDigest) {
+		t.Fatal("stale digest accepted — verifier didn't drop retired versions")
+	}
+}
+
+// newFakeIndexServerWithBoth serves a richer fixture
+// containing both ubuntu and alpine products so the
+// cross-product abuse test has something to compare
+// against.
+func newFakeIndexServerWithBoth(t *testing.T) *httptest.Server {
+	t.Helper()
+	const richIndexJSON = `{
+		"format": "products:1.0",
+		"products": {
+			"ubuntu:24.04:amd64:default": {
+				"aliases": "24.04,noble,ubuntu/24.04",
+				"arch": "amd64",
+				"versions": {
+					"20240519_07:42": {
+						"items": {
+							"lxd.tar.xz": {"ftype": "lxd.tar.xz", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 1}
+						}
+					}
+				}
+			},
+			"alpine:3.19:amd64:default": {
+				"aliases": "3.19,alpine/3.19",
+				"arch": "amd64",
+				"versions": {
+					"20240301_13:00": {
+						"items": {
+							"root.squashfs": {"ftype": "squashfs", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "size": 1}
+						}
+					}
+				}
+			}
+		}
+	}`
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/streams/v1/images.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(richIndexJSON))
+	}))
 }

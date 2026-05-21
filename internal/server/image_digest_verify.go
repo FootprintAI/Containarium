@@ -70,6 +70,21 @@ func loadDigestVerificationOn() bool {
 		case "1", "true", "yes", "on":
 			verifyDigestOn = true
 			log.Printf("[image-digest] registry verification ENABLED: every `@sha256:` digest is checked against the registry's published index before pull (audit B-HIGH-1 Phase B)")
+			// Sanity check the operator's two-gate
+			// configuration. VERIFY only kicks in for
+			// requests that carry `@sha256:` — without
+			// REQUIRE, undigested requests bypass the
+			// gate entirely. Operators who enabled VERIFY
+			// thinking they'd covered both surfaces get a
+			// startup warning rather than silently-
+			// degraded protection. The configuration is
+			// still ALLOWED (an operator may legitimately
+			// want "verify when pinned, but pinning is
+			// optional"), just loudly flagged.
+			if !loadDigestRequired() {
+				log.Printf("WARNING: %s=true but %s is OFF; undigested CreateContainer requests will SKIP verification. Set %s=true to make pinning mandatory.",
+					verifyImageDigestEnv, requireImageDigestEnv, requireImageDigestEnv)
+			}
 		default:
 			verifyDigestOn = false
 			log.Printf("WARNING: %s=%q is unrecognized (expected 1/true/yes/on); registry verification STAYS OFF", verifyImageDigestEnv, raw)
