@@ -29,6 +29,7 @@ const (
 	KMSBackendNone   = "none"
 	KMSBackendInProc = "inproc"
 	KMSBackendVault  = "vault"
+	KMSBackendGCP    = "gcp"
 )
 
 // LoadKMSClient picks a backend based on
@@ -67,8 +68,18 @@ func LoadKMSClient(masterKey []byte) (KMSClient, string, error) {
 		}
 		return k, fmt.Sprintf("vault transit (addr=%s mount=%s key=%s)",
 			cfg.Address, cfg.Mount, cfg.KeyName), nil
+	case KMSBackendGCP:
+		cfg, err := gcpConfigFromEnv()
+		if err != nil {
+			return nil, "", fmt.Errorf("KMS backend gcp: %w", err)
+		}
+		k, err := NewGCPKMS(cfg)
+		if err != nil {
+			return nil, "", fmt.Errorf("KMS backend gcp: %w", err)
+		}
+		return k, fmt.Sprintf("gcp cloud kms (key=%s)", cfg.KeyName), nil
 	default:
-		return nil, "", fmt.Errorf("KMS backend: unrecognized value %q (expected: none, inproc, vault)", backend)
+		return nil, "", fmt.Errorf("KMS backend: unrecognized value %q (expected: none, inproc, vault, gcp)", backend)
 	}
 }
 
@@ -111,6 +122,47 @@ func vaultConfigFromEnv() (VaultConfig, error) {
 		d, err := time.ParseDuration(t)
 		if err != nil {
 			return cfg, fmt.Errorf("CONTAINARIUM_VAULT_TIMEOUT: %w", err)
+		}
+		cfg.Timeout = d
+	}
+	return cfg, nil
+}
+
+// gcpConfigFromEnv reads the Cloud KMS config from env.
+// Required: CONTAINARIUM_GCP_KMS_KEY_NAME and one of
+// CONTAINARIUM_GCP_KMS_TOKEN / _TOKEN_FILE. Optional:
+// CONTAINARIUM_GCP_KMS_ENDPOINT (private-endpoint deployments
+// override this), CONTAINARIUM_GCP_KMS_TIMEOUT (default 5s).
+func gcpConfigFromEnv() (GCPConfig, error) {
+	cfg := GCPConfig{
+		KeyName:  strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_KEY_NAME")),
+		Endpoint: strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_ENDPOINT")),
+	}
+	if cfg.KeyName == "" {
+		return cfg, fmt.Errorf("CONTAINARIUM_GCP_KMS_KEY_NAME is required (e.g. projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>)")
+	}
+
+	// Token: env wins over file. File is the recommended
+	// long-lived path — a sidecar refreshes
+	// `gcloud auth print-access-token` or hits the GCE
+	// metadata server and writes the result atomically.
+	if tok := strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TOKEN")); tok != "" {
+		cfg.Token = tok
+	} else if path := strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TOKEN_FILE")); path != "" {
+		tok, err := readBearerLikeFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read CONTAINARIUM_GCP_KMS_TOKEN_FILE: %w", err)
+		}
+		cfg.Token = tok
+	}
+	if cfg.Token == "" {
+		return cfg, fmt.Errorf("set either CONTAINARIUM_GCP_KMS_TOKEN or CONTAINARIUM_GCP_KMS_TOKEN_FILE")
+	}
+
+	if t := strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TIMEOUT")); t != "" {
+		d, err := time.ParseDuration(t)
+		if err != nil {
+			return cfg, fmt.Errorf("CONTAINARIUM_GCP_KMS_TIMEOUT: %w", err)
 		}
 		cfg.Timeout = d
 	}

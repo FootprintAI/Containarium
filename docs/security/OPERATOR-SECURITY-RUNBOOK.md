@@ -420,6 +420,7 @@ Pick a backend via `CONTAINARIUM_KMS_BACKEND`. Supported:
 | `none`     | Default. No KMS; behaves identically to pre-4.1. |
 | `inproc`   | In-process wrap under the master key. Dev/test mostly — protection level is unchanged from legacy, but it writes envelope-shaped rows so a future cutover to a real KMS doesn't re-touch every row. |
 | `vault`    | Vault Transit secret engine over HTTP. See setup below. |
+| `gcp`      | Google Cloud KMS via the REST API. See setup below. |
 
 ### Vault Transit setup
 
@@ -556,6 +557,94 @@ containarium secrets migrate-to-envelope
 
 (Rewrap support is a future enhancement; today the migrator
 only converts legacy → envelope.)
+
+### GCP Cloud KMS setup
+
+Cloud KMS exposes per-key encrypt / decrypt REST endpoints;
+the named CryptoKey is the KEK. The key material never
+leaves Google's HSM-backed boundary — the daemon submits
+the plaintext DEK and gets back an opaque ciphertext.
+
+```bash
+# 1. Create the keyring + key in Cloud KMS. Pick a location
+#    in the same region as your daemon to minimize call
+#    latency. Algorithm `google-symmetric-encryption` is the
+#    one Cloud KMS exposes via :encrypt / :decrypt; rotated
+#    versions remain transparently decryptable.
+gcloud kms keyrings create containarium \
+    --location=us-west1
+gcloud kms keys create secrets \
+    --location=us-west1 \
+    --keyring=containarium \
+    --purpose=encryption
+
+# 2. Grant the daemon's service account the narrow IAM role
+#    that allows encrypt + decrypt against that one key
+#    (NOT Encrypter/Decrypter at project scope — the
+#    blast-radius matters).
+gcloud kms keys add-iam-policy-binding secrets \
+    --location=us-west1 \
+    --keyring=containarium \
+    --member="serviceAccount:containarium-daemon@$PROJECT.iam.gserviceaccount.com" \
+    --role=roles/cloudkms.cryptoKeyEncrypterDecrypter
+
+# 3. Set up token delivery. The daemon expects a static
+#    bearer token in CONTAINARIUM_GCP_KMS_TOKEN_FILE; a tiny
+#    sidecar refreshes it periodically. On GCE/GKE with
+#    workload identity, the metadata server is the source:
+#
+#    while true; do
+#      curl -sH 'Metadata-Flavor: Google' \
+#        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
+#        | jq -r .access_token \
+#        | install -m 0600 /dev/stdin /etc/containarium/gcp-kms.token
+#      sleep 1800
+#    done
+#
+#    Off-cloud: have an operator run
+#    `gcloud auth print-access-token | sudo tee /etc/containarium/gcp-kms.token`
+#    every ~50 minutes (gcloud tokens last 1h). Long-lived
+#    deployments should prefer Workload Identity Federation
+#    so the file is never stale.
+
+# 4. Configure the daemon. Add to systemd Environment=:
+CONTAINARIUM_KMS_BACKEND=gcp
+CONTAINARIUM_GCP_KMS_KEY_NAME=projects/$PROJECT/locations/us-west1/keyRings/containarium/cryptoKeys/secrets
+CONTAINARIUM_GCP_KMS_TOKEN_FILE=/etc/containarium/gcp-kms.token
+# Optional: CONTAINARIUM_GCP_KMS_ENDPOINT (override for
+#           private endpoint deployments).
+# Optional: CONTAINARIUM_GCP_KMS_TIMEOUT=5s
+
+# 5. Restart the daemon. Confirm the startup log shows:
+#    Secrets store ready (file-keyed AES-256-GCM, envelope: gcp cloud kms (key=...))
+sudo systemctl restart containarium
+```
+
+Migration and Phase E retirement work the same as the Vault
+path — `containarium secrets migrate-to-envelope` re-wraps
+legacy rows under the GCP KEK; `envelope-coverage` reports
+progress; `CONTAINARIUM_REQUIRE_ENVELOPE=true` rejects any
+remaining legacy rows.
+
+### Rotating the GCP Cloud KMS key
+
+```bash
+gcloud kms keys versions create \
+    --location=us-west1 \
+    --keyring=containarium \
+    --key=secrets \
+    --primary
+```
+
+Existing wrapped DEKs reference the prior key version (the
+version is baked into the ciphertext); Cloud KMS
+transparently decrypts under whichever version each row
+was wrapped against. To force re-wrap under the new
+primary:
+
+```bash
+containarium secrets migrate-to-envelope
+```
 
 ## Locking down `/wake/` to a known load balancer
 

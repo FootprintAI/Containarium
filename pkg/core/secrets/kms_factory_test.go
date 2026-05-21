@@ -20,6 +20,11 @@ func clearKMSEnv(t *testing.T) {
 		"CONTAINARIUM_VAULT_TRANSIT_MOUNT",
 		"CONTAINARIUM_VAULT_TRANSIT_KEY",
 		"CONTAINARIUM_VAULT_TIMEOUT",
+		"CONTAINARIUM_GCP_KMS_KEY_NAME",
+		"CONTAINARIUM_GCP_KMS_TOKEN",
+		"CONTAINARIUM_GCP_KMS_TOKEN_FILE",
+		"CONTAINARIUM_GCP_KMS_ENDPOINT",
+		"CONTAINARIUM_GCP_KMS_TIMEOUT",
 	} {
 		t.Setenv(k, "")
 	}
@@ -168,6 +173,94 @@ func TestLoadKMSClient_VaultTimeoutParse(t *testing.T) {
 	}
 
 	t.Setenv("CONTAINARIUM_VAULT_TIMEOUT", "not-a-duration")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("malformed duration should error")
+	}
+}
+
+// --- GCP KMS factory cases ---
+
+const factoryTestKeyName = "projects/p/locations/us-west1/keyRings/r/cryptoKeys/k"
+
+func TestLoadKMSClient_GCPFromEnvSucceeds(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", factoryTestKeyName)
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN", "access-token-xyz")
+	c, desc, err := LoadKMSClient(mkMaster(t))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil GCPKMS client")
+	}
+	if desc == "" || desc[:3] != "gcp" {
+		t.Fatalf("description should announce gcp backend; got %q", desc)
+	}
+}
+
+func TestLoadKMSClient_GCPRequiresKeyName(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN", "access-token-xyz")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("missing GCP_KMS_KEY_NAME should error")
+	}
+}
+
+func TestLoadKMSClient_GCPRequiresToken(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", factoryTestKeyName)
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("missing GCP token should error")
+	}
+}
+
+func TestLoadKMSClient_GCPTokenFromFile(t *testing.T) {
+	clearKMSEnv(t)
+	dir := t.TempDir()
+	tokPath := filepath.Join(dir, "gcp.token")
+	if err := os.WriteFile(tokPath, []byte("access-token-xyz\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", factoryTestKeyName)
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN_FILE", tokPath)
+	c, _, err := LoadKMSClient(mkMaster(t))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected client from token-file path")
+	}
+}
+
+func TestLoadKMSClient_GCPTokenFileWithBadPerms(t *testing.T) {
+	clearKMSEnv(t)
+	dir := t.TempDir()
+	tokPath := filepath.Join(dir, "gcp.token")
+	if err := os.WriteFile(tokPath, []byte("access-token-xyz\n"), 0o644); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", factoryTestKeyName)
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN_FILE", tokPath)
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("0644 token file should be rejected (defense-in-depth, same as Vault path)")
+	}
+}
+
+func TestLoadKMSClient_GCPTimeoutParse(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", factoryTestKeyName)
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN", "access-token-xyz")
+	t.Setenv("CONTAINARIUM_GCP_KMS_TIMEOUT", "10s")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err != nil {
+		t.Fatalf("valid duration should parse; got %v", err)
+	}
+	t.Setenv("CONTAINARIUM_GCP_KMS_TIMEOUT", "garbage")
 	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
 		t.Fatal("malformed duration should error")
 	}

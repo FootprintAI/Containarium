@@ -515,6 +515,26 @@ on the internal network. Land them first.
         single-row roundtrip-verify, verifier catches
         tampered ciphertext, options defaults, coverage
         zero-value).
+      — **Phase C landed (GCP Cloud KMS backend).**
+        `pkg/core/secrets/kms_gcp.go` implements
+        `KMSClient` against Cloud KMS via the JSON REST
+        API — no cloud.google.com/go/kms SDK dependency,
+        mirroring the Vault impl's "raw HTTP" stance.
+        Operator env: `CONTAINARIUM_GCP_KMS_KEY_NAME`
+        (full `projects/.../cryptoKeys/...` resource path),
+        `CONTAINARIUM_GCP_KMS_TOKEN_FILE` (or `_TOKEN`),
+        optional `_ENDPOINT` (private-endpoint override),
+        `_TIMEOUT`. kek_id encodes the key resource path
+        (`gcp:projects/.../cryptoKeys/...`) so cross-key
+        rows refuse cleanly. Token lifecycle is operator-
+        managed (workload-identity sidecar or
+        gcloud-tee), matching Vault Agent's stance.
+        Factory dispatch case added; 9 backend tests use
+        a fake `httptest.Server` to exercise round-trip,
+        bearer auth, kek_id routing, error propagation,
+        timeout enforcement; 6 factory tests cover the
+        env-var contract. Setup procedure documented in
+        [OPERATOR-SECURITY-RUNBOOK.md](OPERATOR-SECURITY-RUNBOOK.md#gcp-cloud-kms-setup).
 - [x] **4.2** Stat-check master-key file permissions at load — `pkg/core/secrets/crypto.go:47,109` (**C-HIGH-6**)
       — `LoadOrCreateMasterKey` now stats the file before reading
         and refuses if any non-owner bit is set (`mode & 0o077 != 0`).
