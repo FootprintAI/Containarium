@@ -679,6 +679,31 @@ func (m *Manager) SetConfig(containerName, key, value string) error {
 	return m.incus.SetConfig(containerName, key, value)
 }
 
+// WriteFile writes a byte slice into the named container at
+// `path` with `mode` (e.g. "0400"). Used by the Phase 4.3
+// file-delivery secret stamper. Type-asserts to the concrete
+// client like SetEnv does; the mock backend used in tests
+// surfaces a descriptive error rather than silently
+// no-op'ing.
+func (m *Manager) WriteFile(containerName, path string, content []byte, mode string) error {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.WriteFile(containerName, path, content, mode)
+	}
+	return fmt.Errorf("WriteFile not supported on this incus backend (mock?)")
+}
+
+// Exec runs a command inside the container. Phase 4.3 uses
+// it to mkdir + chmod the /run/secrets directory once per
+// stamp; broader callers like AdoptMigratedContainer already
+// reach Exec directly via the incus.Client. Type-asserts to
+// the concrete client.
+func (m *Manager) Exec(containerName string, command []string) error {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.Exec(containerName, command)
+	}
+	return fmt.Errorf("Exec not supported on this incus backend (mock?)")
+}
+
 func (m *Manager) Get(username string) (*incus.ContainerInfo, error) {
 	containerName := username + "-container"
 	return m.incus.GetContainer(containerName)

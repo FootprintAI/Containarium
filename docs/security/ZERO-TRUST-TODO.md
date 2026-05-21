@@ -522,7 +522,7 @@ on the internal network. Land them first.
         side effects. Error message names the actual mode so the
         operator can `chmod 0400` without guessing. Tests in
         `pkg/core/secrets/master_key_perms_test.go`.
-- [~] **4.3** Document container env-var introspection risk; explore tmpfs-mount alternative — `internal/server/secrets_server.go:133-155` (**C-MED-4**)
+- [x] **4.3** Document container env-var introspection risk; explore tmpfs-mount alternative — `internal/server/secrets_server.go:133-155` (**C-MED-4**)
       — **Documentation landed.** Full design note at
         [`docs/security/SECRETS-ENV-VAR-RISK.md`](SECRETS-ENV-VAR-RISK.md)
         covers the threat model (cross-tenant safe;
@@ -544,11 +544,24 @@ on the internal network. Land them first.
         (tmpfs file writer + per-container mount) lands as
         a focused PR without touching every layer of the
         secrets surface.
-      — **Phase B (implementation follow-up):** wire the
-        tmpfs mount setup at container create time, switch
-        `stampSecretsOnLXC` to write 0400-mode files to
-        `/run/secrets/<NAME>` for `delivery="file"` rows
-        (env rows keep their current behavior).
+      — **Phase B-1 landed (file writer).**
+        `stampSecretsOnLXC` now dispatches per-secret: env
+        rows take the existing incus-config path; `file`
+        rows write to `/run/secrets/<NAME>` mode `0400`.
+        `mkdir -p /run/secrets && chmod 0700` is run once
+        per stamp pass (idempotent). Since `/run` is tmpfs
+        on systemd distros, file-mode secrets inherit
+        in-memory ephemeral disposal — tmpfs evaporates on
+        container stop. New `Manager.WriteFile` /
+        `Manager.Exec` wrappers; new
+        `LoadAllForUserWithDelivery` returns per-secret
+        delivery so the stamper can route correctly. Legacy
+        `LoadAllForUser` kept as a backwards-compat shim.
+      — **Phase B-2 follow-up:** chown files to the
+        container's tenant UID/GID so non-root processes
+        can read them; re-stamp on bare `incus restart`
+        not routed through the daemon. The runbook
+        documents the current root-only-read constraint.
 - [x] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
       — New `audit.Redact` / `audit.SanitizeDetail` scrubs JWTs
         (with or without Bearer prefix), password/api_key/secret

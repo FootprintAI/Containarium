@@ -178,24 +178,76 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 // directly and called from CreateContainer / StartContainer once
 // phase 4 wires them up.
 //
-// Best-effort on a per-key basis: if one SetEnv call fails (e.g.
+// Best-effort on a per-key basis: if one stamp fails (e.g.
 // container doesn't exist), the rest still proceed. Returns the
-// count of successfully-stamped vars.
+// count of successfully-stamped secrets.
+//
+// Phase 4.3 — dispatches per-secret based on the delivery
+// mode. "env" rows stamp via incus config (as before); "file"
+// rows write to /run/secrets/<NAME> inside the container with
+// mode 0400. /run is tmpfs on every distro the daemon
+// supports, so file-mode secrets get the in-memory ephemeral
+// disposal property for free: when the container stops, the
+// tmpfs evaporates and the plaintext is gone.
+//
+// File-mode secrets must be re-stamped on every container
+// start (since the tmpfs file doesn't survive a stop/start),
+// which the daemon already does at CreateContainer +
+// StartContainer + RefreshSecrets call sites.
 func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string) (int, error) {
 	if s.secretsStore == nil {
 		return 0, errors.New("secrets store not configured")
 	}
-	envMap, err := s.secretsStore.LoadAllForUser(ctx, username)
+	secretMap, err := s.secretsStore.LoadAllForUserWithDelivery(ctx, username)
 	if err != nil {
 		return 0, fmt.Errorf("load secrets: %w", err)
 	}
 
 	containerName := username + "-container"
 	stamped := 0
-	for k, v := range envMap {
-		if err := s.manager.SetEnv(containerName, k, v); err != nil {
-			log.Printf("[secrets] failed to stamp %s on %s: %v (continuing)", k, containerName, err)
-			continue
+
+	// File mode needs the /run/secrets directory present and
+	// mode-tight before we write into it. Do this once per
+	// stamp pass if any file-mode rows exist. Failure is
+	// fatal for THIS pass (any file-mode write below would
+	// fail anyway), so we surface and count those rows as
+	// not stamped.
+	hasFileMode := false
+	for _, v := range secretMap {
+		if v.Delivery == secrets.DeliveryFile {
+			hasFileMode = true
+			break
+		}
+	}
+	if hasFileMode {
+		// mkdir + chmod is idempotent. mode 0700 root-only;
+		// individual files are 0400 with the same owner.
+		// /run is tmpfs on systemd distros so this dir
+		// vanishes on container stop — that's the design.
+		if err := s.manager.Exec(containerName, []string{"sh", "-c",
+			"mkdir -p /run/secrets && chmod 0700 /run/secrets",
+		}); err != nil {
+			log.Printf("[secrets] failed to prepare /run/secrets on %s: %v (file-mode rows will be skipped)", containerName, err)
+			hasFileMode = false
+		}
+	}
+
+	for k, sv := range secretMap {
+		switch sv.Delivery {
+		case secrets.DeliveryFile:
+			if !hasFileMode {
+				continue
+			}
+			path := "/run/secrets/" + k
+			if err := s.manager.WriteFile(containerName, path, []byte(sv.Value), "0400"); err != nil {
+				log.Printf("[secrets] failed to write file-mode %s on %s: %v (continuing)", k, containerName, err)
+				continue
+			}
+		default: // env (and any unknown future mode falls back to env semantics)
+			if err := s.manager.SetEnv(containerName, k, sv.Value); err != nil {
+				log.Printf("[secrets] failed to stamp %s on %s: %v (continuing)", k, containerName, err)
+				continue
+			}
 		}
 		stamped++
 	}

@@ -444,6 +444,16 @@ func (s *Store) Delete(ctx context.Context, username, name string) error {
 	return nil
 }
 
+// SecretValue pairs a decrypted plaintext with its delivery
+// mode. Phase 4.3 — LoadAllForUserWithDelivery returns this
+// so callers can dispatch per-secret (env stamp vs tmpfs
+// file). Legacy LoadAllForUser keeps its name+value map
+// shape for backwards compatibility.
+type SecretValue struct {
+	Value    string
+	Delivery string
+}
+
 // LoadAllForUser returns the decrypted plaintext values for every
 // secret owned by the tenant. Used by the daemon's env-var
 // stamping path (CreateContainer / StartContainer / RefreshSecrets)
@@ -456,12 +466,37 @@ func (s *Store) Delete(ctx context.Context, username, name string) error {
 // Phase B: per-row dispatch — legacy rows use master key, envelope
 // rows use KMS unwrap. The mixed-state case (some of each) is
 // supported until the migration tool runs.
+//
+// Phase 4.3 — backwards-compat shim. New callers should prefer
+// LoadAllForUserWithDelivery to receive per-secret delivery
+// modes and dispatch tmpfs / env stamping appropriately.
 func (s *Store) LoadAllForUser(ctx context.Context, username string) (map[string]string, error) {
+	full, err := s.LoadAllForUserWithDelivery(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(full))
+	for k, v := range full {
+		out[k] = v.Value
+	}
+	return out, nil
+}
+
+// LoadAllForUserWithDelivery is the Phase 4.3 shape — same
+// decrypt-all semantics as LoadAllForUser, but each entry
+// carries the row's delivery mode so the caller can route
+// "env" rows to incus config stamping and "file" rows to
+// the tmpfs file writer.
+//
+// Rows with an empty / NULL delivery column (e.g. pre-4.3
+// migrations missed by the DEFAULT 'env' clause) are
+// treated as env.
+func (s *Store) LoadAllForUserWithDelivery(ctx context.Context, username string) (map[string]SecretValue, error) {
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
 	const q = `
-		SELECT name, nonce, ciphertext, wrapped_dek, kek_id
+		SELECT name, nonce, ciphertext, wrapped_dek, kek_id, delivery
 		FROM secrets
 		WHERE username = $1
 	`
@@ -471,12 +506,12 @@ func (s *Store) LoadAllForUser(ctx context.Context, username string) (map[string
 	}
 	defer rows.Close()
 
-	out := make(map[string]string)
+	out := make(map[string]SecretValue)
 	for rows.Next() {
-		var name string
+		var name, delivery string
 		var nonce, ct, wrappedDEK []byte
 		var kekID *string
-		if err := rows.Scan(&name, &nonce, &ct, &wrappedDEK, &kekID); err != nil {
+		if err := rows.Scan(&name, &nonce, &ct, &wrappedDEK, &kekID, &delivery); err != nil {
 			return nil, fmt.Errorf("scan secret row: %w", err)
 		}
 		kID := ""
@@ -487,7 +522,10 @@ func (s *Store) LoadAllForUser(ctx context.Context, username string) (map[string
 		if decErr != nil {
 			return nil, fmt.Errorf("decrypt secret %s/%s: %w", username, name, decErr)
 		}
-		out[name] = string(pt)
+		if delivery == "" {
+			delivery = DeliveryEnv
+		}
+		out[name] = SecretValue{Value: string(pt), Delivery: delivery}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate secret rows: %w", err)

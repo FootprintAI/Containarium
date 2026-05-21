@@ -120,6 +120,31 @@ not as a replacement. Operators choose per-tenant or per-secret. The
 default stays env-stamping for backwards compatibility; new
 deployments are encouraged to use file mode for high-risk values.
 
+### Status: shipped as Phase A + Phase B-1
+
+- **Phase A** (PR #274): the `delivery` field is plumbed
+  through proto / Store / CLI. Operators can set it via
+  `containarium secrets set <user> <NAME> <value> --delivery file`.
+- **Phase B-1** (this PR): `stampSecretsOnLXC` dispatches
+  per-secret. `delivery="file"` rows are written to
+  `/run/secrets/<NAME>` mode `0400`. Since `/run` is tmpfs
+  on every systemd distro, file-mode secrets inherit the
+  in-memory ephemeral-disposal property for free — the
+  tmpfs evaporates when the container stops.
+
+Open Phase B-2 work:
+
+- Per-container UID/GID for file ownership. Today files
+  are `0400` root-only; apps running as non-root in the
+  container can't read them without `sudo`. A future
+  pass resolves the tenant's container user and `chown`s
+  the file accordingly.
+- Re-stamp on container start. Currently the daemon stamps
+  on CreateContainer / StartContainer / RefreshSecrets;
+  the latter two cover the "container restart" case but a
+  bare `incus restart` not routed through the daemon
+  would lose file-mode secrets until the next refresh.
+
 ## References
 
 - Audit finding **C-MED-4** in
