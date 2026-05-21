@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-05-22
+
 Ships the **zero-trust security audit remediation** — 46 PRs across 5 phases closing all 41 numbered findings from the internal audit ([`docs/security/ZERO-TRUST-AUDIT.md`](docs/security/ZERO-TRUST-AUDIT.md)). The headline shifts: every API surface is now authenticated by scope, every secret is decryptable through a pluggable KMS, every audit log row is in a tamper-evident hash chain, and every container-image pull is verified against the registry's published digest. Operators get a full runbook at [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md).
 
 ### Security — Authentication & RBAC
