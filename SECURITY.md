@@ -105,7 +105,10 @@ git history. Major shipped items at the time of writing:
 - Wake-handler source-IP lockdown
   ([#244](https://github.com/FootprintAI/Containarium/pull/244)).
 
-For the full open / closed status, see the audit TODO doc.
+For the full open / closed status, see the audit TODO doc. For
+day-to-day operator procedures (token rotation, leak response,
+least-privilege agent tokens, audit-chain verification), see the
+[operator security runbook](docs/security/OPERATOR-SECURITY-RUNBOOK.md).
 
 ## Thank you
 
