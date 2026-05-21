@@ -17,6 +17,7 @@ If a procedure here is wrong, update it.
 - [Issuing least-privilege tokens for agents](#issuing-least-privilege-tokens-for-agents)
 - [Rotating the JWT signing secret](#rotating-the-jwt-signing-secret)
 - [Rotating Postgres credentials](#rotating-postgres-credentials)
+- [Switching Postgres to unix-socket auth (no password on the wire)](#switching-postgres-to-unix-socket-auth-no-password-on-the-wire)
 - [Enabling KMS envelope encryption for secrets](#enabling-kms-envelope-encryption-for-secrets)
 - [Locking down `/wake/` to a known load balancer](#locking-down-wake-to-a-known-load-balancer)
 - [Auditing recent administrative actions](#auditing-recent-administrative-actions)
@@ -250,6 +251,134 @@ sudo systemctl restart containarium
 
 The daemon refuses to start if the file is world-readable — same
 contract as the JWT token file (Phase C-HIGH-7).
+
+---
+
+## Switching Postgres to unix-socket auth (no password on the wire)
+
+Phase 4.7 deeper half. The daemon's Postgres driver (`pgx`)
+already supports unix-socket connections out of the box —
+this is purely an operator-configuration change to remove
+the password from the connection string entirely, replacing
+network authentication with Postgres's filesystem-permission-
+based `peer` auth.
+
+Why bother:
+
+- **No shared secret on the wire.** Even with TLS, a
+  password is one substitution away from a credential leak;
+  unix-socket peer auth removes the secret entirely.
+- **Local-only by definition.** Anything that can reach
+  `/var/run/postgresql/.s.PGSQL.5432` is already root or in
+  the `postgres` group on the host — you've already lost.
+- **No password to rotate.** The deeper half of Phase 4.7
+  is just: don't have one.
+
+This only applies when Postgres runs **on the same host as
+the daemon**. Network-attached Postgres (managed RDS, Cloud
+SQL with a sidecar, etc.) keeps the password path.
+
+### Configure Postgres for peer auth
+
+Edit `pg_hba.conf` to permit peer auth from the daemon's
+Linux user:
+
+```
+# TYPE  DATABASE      USER          ADDRESS  METHOD
+local   containarium  containarium           peer
+```
+
+Then in `postgresql.conf` confirm the socket directory:
+
+```
+unix_socket_directories = '/var/run/postgresql'
+```
+
+Restart Postgres to pick up the change:
+
+```bash
+sudo systemctl restart postgresql
+```
+
+Confirm peer auth works for the daemon's user before
+flipping the daemon over:
+
+```bash
+sudo -u containarium psql -d containarium -c 'SELECT 1'
+```
+
+If that succeeds with no password prompt, peer auth is
+live.
+
+### Switch the daemon's connection string
+
+The daemon's connection string DSN supports the
+`host=/path` keyword that pgx routes to a unix socket
+instead of TCP. Two equivalent forms work:
+
+```bash
+# URI form — pass host as a query parameter
+CONTAINARIUM_POSTGRES_URL='postgres://containarium@/containarium?host=/var/run/postgresql&sslmode=disable'
+
+# Keyword form
+CONTAINARIUM_POSTGRES_URL='user=containarium dbname=containarium host=/var/run/postgresql sslmode=disable'
+```
+
+`sslmode=disable` is correct for a unix socket — TLS over
+a local filesystem socket is decorative; the socket itself
+is the authentication boundary.
+
+Apply via the daemon's systemd `Environment=`:
+
+```ini
+Environment="CONTAINARIUM_POSTGRES_URL=postgres://containarium@/containarium?host=/var/run/postgresql&sslmode=disable"
+```
+
+Drop any `CONTAINARIUM_POSTGRES_URL_FILE` /
+`CONTAINARIUM_POSTGRES_PASSWORD_FILE` from the unit — they
+override the URL and would re-add the password path.
+
+Restart:
+
+```bash
+sudo systemctl restart containarium
+```
+
+Daemon startup log should show:
+
+```
+[postgres] DSN source: env
+Detected PostgreSQL at: <auto-detect skipped, URL was provided>
+```
+
+If you see `Detected PostgreSQL at: 10.100.0.2 (password
+source: default)` instead, the URL didn't take — check the
+unit for stray `CONTAINARIUM_POSTGRES_*` overrides.
+
+### Verify the password is no longer on the wire
+
+A short loopback `tcpdump` confirms the daemon isn't
+opening TCP connections to port 5432:
+
+```bash
+sudo tcpdump -i lo -nn -c 5 'tcp port 5432'
+# Should produce 0 packets after the daemon has been
+# restarted and made a few queries. If it does produce
+# packets, the daemon is still using a TCP DSN somewhere.
+```
+
+The daemon's queries should now show up as unix-socket
+file accesses instead — verifiable via `strace -e connect`
+on the daemon PID.
+
+### Rolling back
+
+If anything misbehaves, the rollback is symmetric: restore
+the password-bearing URL (or `_FILE`) in the systemd unit,
+restart, and Postgres serves both paths concurrently while
+`pg_hba.conf` still has the `peer` line. Drop the `peer`
+line from `pg_hba.conf` and reload Postgres if you want
+to definitively cut off unix-socket access.
 
 ---
 

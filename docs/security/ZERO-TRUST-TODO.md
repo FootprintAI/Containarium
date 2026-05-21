@@ -550,7 +550,7 @@ on the internal network. Land them first.
         `r.Context()` via `audit.ContextWithRequestID`, recorded
         in audit detail as `request_id=<id>`. Tests in
         `internal/audit/request_id_test.go`.
-- [~] **4.7** Postgres credentials via secret manager / unix-socket auth — `internal/server/dual_server.go` (**C-MED-6**)
+- [x] **4.7** Postgres credentials via secret manager / unix-socket auth — `internal/server/dual_server.go` (**C-MED-6**)
       — **Secret-file path landed.** Two new env vars
         (mode-checked file pattern from PR #245 reused):
         `CONTAINARIUM_POSTGRES_URL_FILE` (full DSN) and
@@ -562,11 +562,18 @@ on the internal network. Land them first.
         the compiled-in dev default (with a startup
         WARNING). Tests in
         `internal/server/postgres_creds_test.go`.
-      — This is the K8s-Secret / Vault-Agent / GCP-Secret-
-        Manager-with-Workload-Identity path. The unix-
-        socket-auth alternative would also require trust
-        config in Postgres (`hba.conf`) and isn't tractable
-        as a same-PR change; tracked as the follow-up.
+      — **Unix-socket path documented.** The Go `pgx`
+        driver natively accepts `host=/path/to/socket` in
+        the DSN, so unix-socket peer auth requires no
+        daemon code changes — purely operator config.
+        Procedure documented in
+        [OPERATOR-SECURITY-RUNBOOK.md](OPERATOR-SECURITY-RUNBOOK.md#switching-postgres-to-unix-socket-auth-no-password-on-the-wire):
+        edit `pg_hba.conf` to add a `peer` line, confirm
+        with `sudo -u containarium psql`, then flip the
+        daemon's DSN to
+        `postgres://containarium@/containarium?host=/var/run/postgresql&sslmode=disable`.
+        No password on the wire, no shared secret to
+        rotate.
 - [x] **4.8** Stat-check TLS key directory at startup — `internal/hosting/caddy.go` (**C-MED-7**)
       — `/var/lib/caddy` created at 0750 (was 0755); existing
         directory chmod-tightened to 0750 idempotently. New
