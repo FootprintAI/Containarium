@@ -153,6 +153,24 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 	return nil
 }
 
+// MaxRowID returns the highest id currently in
+// audit_logs, or 0 if the table is empty. Used by the
+// audit-verify CLI to detect "scanned to the end" without
+// the Store API needing to surface a per-batch terminator.
+//
+// Cheap on a B-tree primary key — Postgres reads the last
+// page directly.
+func (s *Store) MaxRowID(ctx context.Context) (int64, error) {
+	var max *int64
+	if err := s.pool.QueryRow(ctx, `SELECT MAX(id) FROM audit_logs`).Scan(&max); err != nil {
+		return 0, fmt.Errorf("audit: max row id: %w", err)
+	}
+	if max == nil {
+		return 0, nil
+	}
+	return *max, nil
+}
+
 // VerifyChainSinceID walks the hash chain forward from
 // `fromID` (exclusive) and returns the ID of the first row that
 // fails verification, or 0 if the chain is intact. Pass 0 to
