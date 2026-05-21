@@ -63,6 +63,9 @@ type Backend interface {
 	// Server info & metrics
 	GetServerInfo() (*api.Server, error)
 	GetContainerMetrics(name string) (*ContainerMetrics, error)
+
+	// Image inspection (Phase 3.1 Phase-C)
+	GetContainerImageFingerprint(containerName string) (string, error)
 }
 
 // DiskDevice represents a disk device configuration
@@ -1131,6 +1134,28 @@ func (c *Client) UnsetEnv(containerName, key string) error {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
 	return op.Wait()
+}
+
+// GetContainerImageFingerprint returns the Incus-computed
+// fingerprint of the image the container was created from.
+// Incus stores this in `volatile.base_image` at create
+// time; the fingerprint is the SHA-256 of the unified
+// image archive.
+//
+// Phase 3.1 Phase-C uses this to assert that the image
+// landed on disk matches the digest the operator declared
+// at CreateContainer time — a defense-in-depth check
+// against local-cache tampering. Returns empty + nil when
+// the instance has no `volatile.base_image` (e.g., it was
+// created via an alternative path that doesn't go through
+// simplestreams pull). Returns an error only on Incus
+// communication failure.
+func (c *Client) GetContainerImageFingerprint(containerName string) (string, error) {
+	inst, _, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return "", fmt.Errorf("get instance for fingerprint: %w", err)
+	}
+	return inst.Config["volatile.base_image"], nil
 }
 
 func (c *Client) SetConfig(containerName, key, value string) error {

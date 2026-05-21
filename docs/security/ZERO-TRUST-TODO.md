@@ -447,13 +447,27 @@ on the internal network. Land them first.
         (gate doesn't catch local-cache tampering or
         registry-account compromise — those are Phase C
         and out-of-band-digest-custody respectively).
-      — **Phase C not yet landed (defense-in-depth).**
-        Post-pull local-store fingerprint re-check
-        deferred — Phase B closes the main threat, Phase
-        C marginal value is lower (would catch local-cache
-        tampering, which requires root on the daemon host
-        and so has other escalation paths). Tracked for a
-        future overnight pass.
+      — **Phase C landed (post-pull defense-in-depth).**
+        `verifyImageDigestPostPull` runs after
+        `s.manager.Create` succeeds in both the sync and
+        async paths. Reads Incus's `volatile.base_image`
+        fingerprint and asserts it matches the
+        operator-declared digest. Fast path: direct
+        equality. Slow path: re-resolve through the
+        registry index and require both digests to
+        co-publish under the same alias ("two faces of
+        the same image" — operator picked rootfs digest,
+        Incus stored combined-archive fingerprint).
+        Mismatch → delete the just-created container and
+        return FailedPrecondition. Skips when verification
+        is off, no `@sha256:` suffix, local alias, or
+        no `volatile.base_image` on the instance (non-
+        simplestreams create path). 6 tests in
+        `image_digest_verify_test.go` cover the skip
+        cases, fast-path equality, and fingerprint-read
+        failure surfacing. New
+        `incus.Backend.GetContainerImageFingerprint` +
+        mock implementation.
 - [x] **3.2** Split `enable_podman` from `enable_privileged`; gate latter on role — `internal/server/container_server.go:164`, `pkg/core/incus/client.go:458-459` (**A-HIGH-3**)
       — New `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` env var with
         three modes: `all` (default, backwards-compat), `admin-only`

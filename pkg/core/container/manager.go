@@ -679,6 +679,15 @@ func (m *Manager) SetConfig(containerName, key, value string) error {
 	return m.incus.SetConfig(containerName, key, value)
 }
 
+// GetContainerImageFingerprint returns the Incus-computed
+// fingerprint of the image the container was created from
+// (Phase 3.1 Phase-C). Thin delegate so the server-layer
+// digest verifier doesn't need a direct reference to the
+// incus backend.
+func (m *Manager) GetContainerImageFingerprint(containerName string) (string, error) {
+	return m.incus.GetContainerImageFingerprint(containerName)
+}
+
 // WriteFile writes a byte slice into the named container at
 // `path` with `mode` (e.g. "0400"). Used by the Phase 4.3
 // file-delivery secret stamper. Type-asserts to the concrete

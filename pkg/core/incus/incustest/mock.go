@@ -46,6 +46,9 @@ type MockBackend struct {
 	SetLabelsFunc            func(containerName string, labels map[string]string) error
 	GetServerInfoFunc        func() (*api.Server, error)
 	GetContainerMetricsFunc  func(name string) (*incus.ContainerMetrics, error)
+
+	// Phase 3.1 Phase-C — post-pull fingerprint check.
+	GetContainerImageFingerprintFunc func(name string) (string, error)
 }
 
 // NewMockBackend returns a ready-to-use MockBackend with an initialized
@@ -229,6 +232,13 @@ func (m *MockBackend) GetContainerMetrics(name string) (*incus.ContainerMetrics,
 		return m.GetContainerMetricsFunc(name)
 	}
 	return nil, nil
+}
+
+func (m *MockBackend) GetContainerImageFingerprint(name string) (string, error) {
+	if m.GetContainerImageFingerprintFunc != nil {
+		return m.GetContainerImageFingerprintFunc(name)
+	}
+	return "", nil
 }
 
 func (m *MockBackend) UpdateContainerConfig(name, key, value string) error {

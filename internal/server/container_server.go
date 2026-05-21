@@ -301,6 +301,24 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		go func() {
 			info, err := s.manager.Create(opts)
 
+			// Phase 3.1 Phase-C: post-pull verification.
+			// In async mode the HTTP response has already
+			// returned with CREATING; mismatch detection
+			// here can't reach the caller via the response
+			// body, so we delete the container and record
+			// the error in the pending state. The operator
+			// polling for status sees a Done=true,
+			// Error=<digest-mismatch> result.
+			if err == nil && info != nil {
+				if verr := verifyImageDigestPostPull(context.Background(), req.Image, info.Name, s.manager); verr != nil {
+					if delErr := s.manager.Delete(req.Username, true); delErr != nil {
+						log.Printf("[image-digest] async post-pull mismatch: failed to delete container %q: %v", info.Name, delErr)
+					}
+					err = verr
+					info = nil
+				}
+			}
+
 			s.pendingMu.Lock()
 			if pending, exists := s.pendingCreations[req.Username]; exists {
 				pending.Done = true
@@ -339,6 +357,22 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	info, err := s.manager.Create(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
+
+	// Phase 3.1 Phase-C: post-pull defense-in-depth.
+	// Confirm the image landed on disk matches the digest
+	// the operator declared. Mismatch means cache tampering
+	// or an index race — delete the just-created container
+	// rather than leave the attacker's payload running.
+	if err := verifyImageDigestPostPull(ctx, req.Image, info.Name, s.manager); err != nil {
+		// Best-effort cleanup; the error we surface is the
+		// digest mismatch, which is the load-bearing
+		// signal. A failed delete is logged but doesn't
+		// shadow the security event.
+		if delErr := s.manager.Delete(req.Username, true); delErr != nil {
+			log.Printf("[image-digest] failed to delete container %q after post-pull mismatch: %v", info.Name, delErr)
+		}
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 
 	// Stamp tenant secrets into the LXC's env (best-effort — a

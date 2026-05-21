@@ -859,18 +859,36 @@ published a new image and want the daemon to see it
 immediately, restart the daemon (clears the in-process
 cache).
 
-### Limits
+### Post-pull defense-in-depth (Phase C)
 
-- The gate does NOT catch cache tampering between pull
-  and start (an attacker who can write to Incus's local
-  image store after the pull). That's tracked as Phase C
-  defense-in-depth — a post-pull local-store fingerprint
-  re-check.
-- The gate does NOT catch registry-account compromise
-  where the attacker pushes new bytes AND updates the
-  index. Only out-of-band digest custody (signed release
-  records, the publisher's own announcement) catches that
-  class.
+When VERIFY is on, Containarium also re-checks the image
+*after* the pull. It reads the Incus-computed fingerprint
+from `volatile.base_image` and asserts it matches the
+operator's declared digest (with a registry-side
+"two faces of the same image" reconciliation step for the
+common case where the operator pinned one item type and
+Incus stored a different one).
+
+A mismatch deletes the just-created container and returns
+`FailedPrecondition` — the attacker's payload doesn't get
+to run.
+
+Practically: Phase B (pre-pull) catches a compromised
+registry; Phase C (post-pull) catches local-store
+tampering between pull and start. Both run for free when
+VERIFY is on.
+
+### Limits
+- The combined gates do NOT catch registry-account
+  compromise where the attacker pushes new bytes AND
+  updates the index. Only out-of-band digest custody
+  (signed release records, the publisher's own
+  announcement) catches that class.
+- Containers created via non-simplestreams paths (e.g.,
+  snapshot copy, image import) have no
+  `volatile.base_image` and skip the Phase C check;
+  Phase B still runs if VERIFY is on and the image string
+  carries a `@sha256:`.
 
 ## Locking down `/wake/` to a known load balancer
 

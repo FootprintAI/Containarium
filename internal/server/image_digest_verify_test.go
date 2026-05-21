@@ -309,6 +309,110 @@ func pubContains(set []string, want string) bool {
 	return false
 }
 
+// --- Phase C post-pull verification ---
+//
+// The Phase C function takes a small interface
+// (GetContainerImageFingerprint(string) → (string, error))
+// so it can be tested without standing up a real Incus.
+// `fpStub` is the inline stub used by these tests.
+
+type fpStub struct {
+	fingerprint string
+	err         error
+}
+
+func (s *fpStub) GetContainerImageFingerprint(name string) (string, error) {
+	return s.fingerprint, s.err
+}
+
+func TestVerifyDigestPostPull_DefaultIsOff(t *testing.T) {
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "")
+	stub := &fpStub{fingerprint: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+	err := verifyImageDigestPostPull(context.Background(),
+		"images:ubuntu/24.04@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"alice-container", stub)
+	if err != nil {
+		t.Fatalf("verification OFF should never fail; got %v", err)
+	}
+}
+
+func TestVerifyDigestPostPull_NoDigestSkipped(t *testing.T) {
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "true")
+	stub := &fpStub{fingerprint: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+	err := verifyImageDigestPostPull(context.Background(), "images:ubuntu/24.04", "alice-container", stub)
+	if err != nil {
+		t.Fatalf("no-digest image should pass Phase C; got %v", err)
+	}
+}
+
+func TestVerifyDigestPostPull_LocalAliasSkipped(t *testing.T) {
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "true")
+	stub := &fpStub{}
+	err := verifyImageDigestPostPull(context.Background(),
+		"ubuntu@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"alice-container", stub)
+	if err != nil {
+		t.Fatalf("local alias should skip Phase C; got %v", err)
+	}
+}
+
+func TestVerifyDigestPostPull_EmptyFingerprintSkipped(t *testing.T) {
+	// Containers created via non-simplestreams paths
+	// (snapshot copy, image import) won't have
+	// volatile.base_image. The check skips rather than
+	// failing — Phase C is defense-in-depth for the
+	// simplestreams pull path.
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "true")
+	stub := &fpStub{fingerprint: ""}
+	err := verifyImageDigestPostPull(context.Background(),
+		"images:ubuntu/24.04@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"alice-container", stub)
+	if err != nil {
+		t.Fatalf("empty fingerprint should skip; got %v", err)
+	}
+}
+
+func TestVerifyDigestPostPull_FastPathFingerprintMatch(t *testing.T) {
+	// When Incus's fingerprint equals the operator's
+	// declared digest directly, we accept without hitting
+	// the registry.
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "true")
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	stub := &fpStub{fingerprint: digest}
+	err := verifyImageDigestPostPull(context.Background(),
+		"images:ubuntu/24.04@sha256:"+digest, "alice-container", stub)
+	if err != nil {
+		t.Fatalf("fast-path direct match should pass; got %v", err)
+	}
+}
+
+func TestVerifyDigestPostPull_FingerprintReadFails(t *testing.T) {
+	resetVerifyState()
+	t.Setenv(verifyImageDigestEnv, "true")
+	stub := &fpStub{err: errStubFP}
+	err := verifyImageDigestPostPull(context.Background(),
+		"images:ubuntu/24.04@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"alice-container", stub)
+	if err == nil {
+		t.Fatal("fingerprint-read failure should surface as error")
+	}
+	if !strings.Contains(err.Error(), "read fingerprint") {
+		t.Errorf("error should mention fingerprint read; got %v", err)
+	}
+}
+
+// errStubFP is a sentinel error for the read-fails test.
+var errStubFP = &stubFingerprintError{}
+
+type stubFingerprintError struct{}
+
+func (e *stubFingerprintError) Error() string { return "stub: incus unreachable" }
+
 // --- Two-gate misconfiguration warning ---
 //
 // VERIFY only kicks in for `@sha256:` requests. Without

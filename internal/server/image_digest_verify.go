@@ -156,6 +156,96 @@ func verifyImageDigestAgainstRegistry(ctx context.Context, image string) error {
 	return nil
 }
 
+// verifyImageDigestPostPull is the Phase C defense-in-
+// depth check (audit B-HIGH-1, deeper still). After the
+// container has been created, read the Incus-computed
+// fingerprint of the image actually used and assert it
+// matches the digest the operator declared.
+//
+// Catches:
+//   - Local image-store tampering between the registry
+//     pull and the container start (an attacker who can
+//     write to Incus's image cache).
+//   - Pre-pull-verifier index out-of-sync with the actual
+//     pull (e.g., a TTL window where the index was
+//     refreshed but a parallel pull caught the old bytes).
+//
+// Skip semantics match Phase B:
+//   - Verification off → nil.
+//   - No `@sha256:` suffix → nil.
+//   - Image is a local alias (Incus might not have a
+//     fingerprint) → nil with a debug log.
+//
+// On mismatch, the caller is expected to delete the
+// just-created container — leaving it running would
+// preserve the attacker's payload. Container deletion is
+// caller-side so this helper stays read-only.
+//
+// The local fingerprint is one specific SHA-256 (the
+// archive Incus pulled). The operator's digest can match
+// any of the index's published item digests; if the
+// fingerprint isn't directly equal to the operator's
+// digest, we re-resolve through the registry index and
+// check membership — that covers the case where the
+// operator picked the rootfs digest but Incus stored the
+// combined-archive fingerprint.
+func verifyImageDigestPostPull(ctx context.Context, image, containerName string, fpReader interface {
+	GetContainerImageFingerprint(string) (string, error)
+}) error {
+	if !loadDigestVerificationOn() {
+		return nil
+	}
+	declared, ok := extractImageDigest(image)
+	if !ok {
+		return nil
+	}
+	server, alias := splitServerAlias(image)
+	if server == "" {
+		log.Printf("[image-digest] post-pull verification skipped for %q (local alias)", image)
+		return nil
+	}
+
+	fingerprint, err := fpReader.GetContainerImageFingerprint(containerName)
+	if err != nil {
+		return fmt.Errorf("post-pull digest verification: read fingerprint for %q: %w", containerName, err)
+	}
+	if fingerprint == "" {
+		// Incus didn't record a base image — atypical but
+		// possible if the create path bypassed simplestreams
+		// (e.g., a copy-from-snapshot path). Surface as a
+		// log line but don't fail; nothing to compare
+		// against.
+		log.Printf("[image-digest] post-pull verification: container %q has no volatile.base_image; skipping", containerName)
+		return nil
+	}
+
+	// Fast path: Incus fingerprint matches the declared
+	// digest directly.
+	if incus.DigestMatchesSet(declared, []string{fingerprint}) {
+		return nil
+	}
+
+	// Slow path: re-resolve through the registry index.
+	// The operator's digest might match a different item
+	// type than the one Incus chose to store. Both must
+	// appear in the SAME product's index entry — if they
+	// do, that's a legitimate "two faces of the same
+	// image" match.
+	published, err := resolver().ResolveImageDigests(ctx, server, alias)
+	if err != nil {
+		return fmt.Errorf("post-pull digest verification: re-resolve %s/%s: %w", server, alias, err)
+	}
+	declaredMatches := incus.DigestMatchesSet(declared, published)
+	fingerprintMatches := incus.DigestMatchesSet(fingerprint, published)
+	if declaredMatches && fingerprintMatches {
+		// Both are valid items for the same alias —
+		// "two faces of the same image." Accept.
+		return nil
+	}
+	return fmt.Errorf("post-pull digest verification: container %q was created from fingerprint %s, but operator declared %s and the registry's current index for alias %q does not co-publish both digests (local-cache tampering, index race, or stale operator pin)",
+		containerName, fingerprint, declared, alias)
+}
+
 // splitServerAlias maps an image reference to its
 // (server URL, alias) tuple based on the same prefix
 // mapping `pkg/core/incus.parseImageSource` uses. We
