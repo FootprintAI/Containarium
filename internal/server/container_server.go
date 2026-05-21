@@ -176,6 +176,13 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err := validateImageRegistry(req.Image); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// Phase 3.1 follow-up: when CONTAINARIUM_REQUIRE_IMAGE_DIGEST
+	// is on, every image reference must carry an `@sha256:<64hex>`
+	// suffix so the operator pins the exact image bytes. Disabled
+	// by default — opt-in for supply-chain-paranoid deployments.
+	if err := validateImageDigest(req.Image); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	// Audit A-HIGH-3: enable_podman=true implies privileged + apparmor=unconfined.
 	// Gate that elevation behind CONTAINARIUM_PRIVILEGED_PODMAN_POLICY so
