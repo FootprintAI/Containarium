@@ -155,6 +155,7 @@ type DualServer struct {
 	zapStore              *zapscanner.Store
 	peerPool              *PeerPool
 	autoSleepManager      *autosleep.Manager
+	secretsReconciler     *secretsReconciler // Phase 4.3 Phase B-3
 	startTime             time.Time
 }
 
@@ -1496,6 +1497,28 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.autoSleepManager.Start(ctx)
 	}
 
+	// Phase 4.3 Phase B-3 — file-mode secret reconciler.
+	// Periodically re-stamps tmpfs secrets on running
+	// containers so a bare `incus restart` not routed
+	// through the daemon doesn't leave an app without its
+	// /run/secrets files until the next daemon-driven
+	// touch. Owned alongside the autosleep manager —
+	// same shape, same lifetime.
+	if ds.containerServer != nil && ds.containerServer.secretsStore != nil {
+		if ic, err := incus.New(); err != nil {
+			log.Printf("[secrets-reconciler] incus client unavailable: %v (reconciler disabled)", err)
+		} else {
+			rec := newSecretsReconciler(
+				ds.containerServer.secretsStore,
+				ic,
+				ds.containerServer.stampSecretsOnLXC,
+				0, // default interval
+			)
+			rec.Start(ctx)
+			ds.secretsReconciler = rec
+		}
+	}
+
 	// Start OTel metrics collector if available
 	if ds.metricsCollector != nil {
 		// Wire peer metrics fetcher so peer container metrics are pushed to VictoriaMetrics
@@ -1683,6 +1706,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.autoSleepManager != nil {
 			ds.autoSleepManager.Stop()
+		}
+		if ds.secretsReconciler != nil {
+			ds.secretsReconciler.Stop()
 		}
 		if ds.trafficCollector != nil {
 			ds.trafficCollector.Stop()

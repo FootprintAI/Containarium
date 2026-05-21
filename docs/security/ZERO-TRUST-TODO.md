@@ -568,9 +568,20 @@ on the internal network. Land them first.
         `0400 root` and the operator sees a WARNING log
         line — file-mode secrets still work for
         root-running apps.
-      — **Phase B-3 (open):** re-stamp on bare `incus
-        restart` not routed through the daemon.
-        Daemon-routed start/stop already re-stamp.
+      — **Phase B-3 landed (reconciler).** Daemon ticks
+        every 60s, queries the secrets store for tenants
+        with at least one file-mode row
+        (`UsernamesWithFileDelivery`), looks up each
+        tenant's container via Incus, and re-stamps if
+        Running. Bare `incus restart` not routed through
+        the daemon now self-heals within the tick
+        interval. Skipped tenants: no file-mode secrets,
+        or container Stopped (next start re-stamps).
+        Owned alongside autosleep; same Start/Stop
+        lifetime. 5 reconciler tests cover the
+        skip-stopped, skip-missing-container, empty-
+        tenants, error-doesn't-halt-loop, and Stop-channel
+        cases.
 - [x] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
       — New `audit.Redact` / `audit.SanitizeDetail` scrubs JWTs
         (with or without Bearer prefix), password/api_key/secret
