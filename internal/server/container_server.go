@@ -219,6 +219,18 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		OTelCollectorEndpoint:  s.otelCollectorEndpoint,
 		BackendID:              s.localBackendID(),
 	}
+	// Phase 2.5 follow-up — load the OTel bearer for
+	// monitoring=true containers. Best-effort: an error
+	// loading the bearer leaves opts.OTelBearer empty, which
+	// makes the env-stamping path skip the header (pre-2.5
+	// behavior). Operators see the WARNING in the daemon log.
+	if req.Monitoring {
+		bearer, err := LoadOrCreateOTelBearer()
+		if err != nil {
+			log.Printf("[create] OTel bearer load failed: %v (header omitted; collector remains open)", err)
+		}
+		opts.OTelBearer = bearer
+	}
 
 	// Set resource limits
 	if req.Resources != nil {
@@ -1148,8 +1160,13 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 	// config map right now (just pointing at the wrong place).
 	if s.otelCollectorEndpoint != "" {
 		if info, _ := s.manager.Get(req.Username); info != nil && info.MonitoringEnabled {
-			envVars := container.OTelEnvVarsForMigration(
-				req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint,
+			// Phase 2.5 follow-up — re-stamp the bearer at
+			// the destination too. Best-effort; an empty
+			// bearer omits the header so monitoring still
+			// works (collector remains open).
+			bearer, _ := LoadOrCreateOTelBearer()
+			envVars := container.OTelEnvVarsForMigrationWithBearer(
+				req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint, bearer,
 			)
 			for k, v := range envVars {
 				if err := s.manager.SetEnv(containerName, k, v); err != nil {
@@ -1218,6 +1235,7 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 var otelEnvKeys = []string{
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_HEADERS", // Phase 2.5 follow-up — bearer auth
 	"OTEL_SERVICE_NAME",
 	"OTEL_RESOURCE_ATTRIBUTES",
 	"CONTAINARIUM_CONTAINER_ID",
@@ -1266,8 +1284,13 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 		if s.otelCollectorEndpoint == "" {
 			return nil, status.Error(codes.FailedPrecondition, "OTel collector endpoint is not configured on this daemon; cannot enable monitoring")
 		}
-		envVars := container.OTelEnvVarsForMigration(
-			req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint,
+		// Phase 2.5 follow-up — bearer load is best-effort.
+		// On failure the header is omitted and the collector
+		// stays open (pre-2.5 behavior), so monitoring still
+		// works for the operator.
+		bearer, _ := LoadOrCreateOTelBearer()
+		envVars := container.OTelEnvVarsForMigrationWithBearer(
+			req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint, bearer,
 		)
 		for k, v := range envVars {
 			if err := s.manager.SetEnv(containerName, k, v); err != nil {

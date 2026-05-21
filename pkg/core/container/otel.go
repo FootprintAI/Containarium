@@ -43,7 +43,7 @@ func otelEnvVars(opts CreateOptions, containerName string) map[string]string {
 		log.Printf("[otel] container %s requested monitoring=true but daemon has no collector endpoint configured; skipping env-var injection", containerName)
 		return nil
 	}
-	return buildOTelEnvMap(opts.Username, containerName, opts.BackendID, opts.OTelCollectorEndpoint)
+	return buildOTelEnvMap(opts.Username, containerName, opts.BackendID, opts.OTelCollectorEndpoint, opts.OTelBearer)
 }
 
 // OTelEnvVarsForMigration returns the same env-var set as
@@ -56,11 +56,26 @@ func otelEnvVars(opts CreateOptions, containerName string) map[string]string {
 // containerName, username, backendID, and collectorEndpoint are
 // all required; an empty endpoint returns nil (and logs nothing —
 // the caller is responsible for deciding whether that's an error).
+//
+// Phase 2.5 follow-up — pass the bearer token via
+// OTelEnvVarsForMigrationWithBearer. This wrapper keeps the
+// pre-2.5 signature for callers that don't have a bearer yet.
 func OTelEnvVarsForMigration(username, containerName, backendID, collectorEndpoint string) map[string]string {
+	return OTelEnvVarsForMigrationWithBearer(username, containerName, backendID, collectorEndpoint, "")
+}
+
+// OTelEnvVarsForMigrationWithBearer is the bearer-aware shape.
+// When bearer is non-empty, the resulting env-var map carries
+// OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <bearer>
+// so the SDK auto-attaches the credential. Stamping the header
+// is harmless when the collector isn't enforcing auth yet —
+// the collector ignores Authorization unless its config has
+// the bearertokenauth extension wired.
+func OTelEnvVarsForMigrationWithBearer(username, containerName, backendID, collectorEndpoint, bearer string) map[string]string {
 	if collectorEndpoint == "" {
 		return nil
 	}
-	return buildOTelEnvMap(username, containerName, backendID, collectorEndpoint)
+	return buildOTelEnvMap(username, containerName, backendID, collectorEndpoint, bearer)
 }
 
 // buildOTelEnvMap is the single source of truth for what
@@ -79,12 +94,12 @@ func OTelEnvVarsForMigration(username, containerName, backendID, collectorEndpoi
 //     the split form via `${VAR}` compose-interpolation, since the
 //     interpolation runs at compose-up time and feeds the env into
 //     the sidecar container.
-func buildOTelEnvMap(username, containerName, backendID, collectorEndpoint string) map[string]string {
+func buildOTelEnvMap(username, containerName, backendID, collectorEndpoint, bearer string) map[string]string {
 	resourceAttrs := strings.Join([]string{
 		"container.id=" + containerName,
 		"backend.id=" + backendID,
 	}, ",")
-	return map[string]string{
+	envMap := map[string]string{
 		// Legacy / auto-discovered form
 		"OTEL_EXPORTER_OTLP_ENDPOINT": collectorEndpoint,
 		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
@@ -95,4 +110,12 @@ func buildOTelEnvMap(username, containerName, backendID, collectorEndpoint strin
 		"CONTAINARIUM_BACKEND_ID":   backendID,
 		"CONTAINARIUM_TENANT_ID":    username,
 	}
+	// Phase 2.5 follow-up — bearer auth on the OTLP path. The SDK
+	// reads OTEL_EXPORTER_OTLP_HEADERS as a comma-separated
+	// key=value list (per the OTel env-var spec) and attaches each
+	// entry on every export request.
+	if bearer != "" {
+		envMap["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=Bearer " + bearer
+	}
+	return envMap
 }
