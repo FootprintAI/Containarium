@@ -183,6 +183,15 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err := validateImageDigest(req.Image); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// Phase 3.1 Phase-B: when CONTAINARIUM_VERIFY_IMAGE_DIGEST
+	// is on, additionally verify the declared digest matches the
+	// registry's published index for that alias. Catches
+	// allowlisted-registry MITM and bytes-vs-declared-digest
+	// divergence. Pre-pull → fail fast, no bandwidth wasted, no
+	// state to clean up. See docs/security/IMAGE-DIGEST-VERIFY-DESIGN.md.
+	if err := verifyImageDigestAgainstRegistry(ctx, req.Image); err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
 
 	// Audit A-HIGH-3: enable_podman=true implies privileged + apparmor=unconfined.
 	// Gate that elevation behind CONTAINARIUM_PRIVILEGED_PODMAN_POLICY so
