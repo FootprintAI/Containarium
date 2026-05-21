@@ -38,6 +38,9 @@ func (s *AppServer) isDisabled() bool {
 
 // DeployApp deploys a new application or updates an existing one
 func (s *AppServer) DeployApp(ctx context.Context, req *pb.DeployAppRequest) (*pb.DeployAppResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if s.isDisabled() {
 		return nil, status.Errorf(codes.Unavailable, "app hosting is not enabled")
 	}
@@ -73,6 +76,9 @@ func (s *AppServer) DeployApp(ctx context.Context, req *pb.DeployAppRequest) (*p
 
 // ListApps lists all applications for a user
 func (s *AppServer) ListApps(ctx context.Context, req *pb.ListAppsRequest) (*pb.ListAppsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if s.isDisabled() {
 		return &pb.ListAppsResponse{Apps: nil, TotalCount: 0}, nil
 	}
@@ -106,6 +112,9 @@ func (s *AppServer) ListApps(ctx context.Context, req *pb.ListAppsRequest) (*pb.
 
 // GetApp gets details for a specific application
 func (s *AppServer) GetApp(ctx context.Context, req *pb.GetAppRequest) (*pb.GetAppResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if s.isDisabled() {
 		return nil, status.Errorf(codes.Unavailable, "app hosting is not enabled")
 	}
@@ -134,6 +143,9 @@ func (s *AppServer) GetApp(ctx context.Context, req *pb.GetAppRequest) (*pb.GetA
 
 // StopApp stops a running application
 func (s *AppServer) StopApp(ctx context.Context, req *pb.StopAppRequest) (*pb.StopAppResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if s.isDisabled() {
 		return nil, status.Errorf(codes.Unavailable, "app hosting is not enabled")
 	}
@@ -163,6 +175,9 @@ func (s *AppServer) StopApp(ctx context.Context, req *pb.StopAppRequest) (*pb.St
 
 // StartApp starts a stopped application
 func (s *AppServer) StartApp(ctx context.Context, req *pb.StartAppRequest) (*pb.StartAppResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if s.isDisabled() {
 		return nil, status.Errorf(codes.Unavailable, "app hosting is not enabled")
 	}
@@ -192,6 +207,9 @@ func (s *AppServer) StartApp(ctx context.Context, req *pb.StartAppRequest) (*pb.
 
 // RestartApp restarts an application
 func (s *AppServer) RestartApp(ctx context.Context, req *pb.RestartAppRequest) (*pb.RestartAppResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if s.isDisabled() {
 		return nil, status.Errorf(codes.Unavailable, "app hosting is not enabled")
 	}
@@ -218,6 +236,9 @@ func (s *AppServer) RestartApp(ctx context.Context, req *pb.RestartAppRequest) (
 
 // DeleteApp deletes an application
 func (s *AppServer) DeleteApp(ctx context.Context, req *pb.DeleteAppRequest) (*pb.DeleteAppResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if s.isDisabled() {
 		return nil, status.Errorf(codes.Unavailable, "app hosting is not enabled")
 	}
@@ -255,6 +276,10 @@ func (s *AppServer) DeleteApp(ctx context.Context, req *pb.DeleteAppRequest) (*p
 
 // GetAppLogs gets application logs (streaming)
 func (s *AppServer) GetAppLogs(req *pb.GetAppLogsRequest, stream pb.AppService_GetAppLogsServer) error {
+	ctx := stream.Context()
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return err
+	}
 	if s.isDisabled() {
 		return status.Errorf(codes.Unavailable, "app hosting is not enabled")
 	}
@@ -264,7 +289,7 @@ func (s *AppServer) GetAppLogs(req *pb.GetAppLogsRequest, stream pb.AppService_G
 	if req.AppName == "" {
 		return status.Errorf(codes.InvalidArgument, "app_name is required")
 	}
-	if err := auth.AuthorizeTenant(stream.Context(), req.Username); err != nil {
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return err
 	}
 
