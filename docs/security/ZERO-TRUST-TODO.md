@@ -402,10 +402,37 @@ on the internal network. Land them first.
         local-store fingerprint check), and a 4-phase
         rollout (A resolver + tests → B CreateContainer
         gate → C post-pull check → D runbook + soak).
-        Pre-pull verification picked over post-pull so
-        rejection costs no bandwidth and no state cleanup.
-        Raw HTTP + encoding/json, no new daemon dependency.
-        Implementation is a future overnight pass.
+      — **Phase A landed.** `pkg/core/incus/streams.go`
+        implements `StreamsResolver` against the
+        simplestreams products:1.0 schema. Raw HTTP +
+        encoding/json, no go-incus / simplestreams library
+        dependency. Given a server URL + image alias,
+        returns the set of SHA-256 digests published for
+        that alias across all versions. `DigestMatchesSet`
+        helper normalizes prefix / case / whitespace for
+        the Phase B caller. 14 tests cover the happy
+        path, alias alternates, case-insensitive matching,
+        substring-rejection, multi-product isolation, HTTP
+        failure / bad JSON / unknown index-format
+        rejection, timeout enforcement, and the
+        digest-match normalizer.
+      — **Phase B landed (CreateContainer gate).**
+        `internal/server/image_digest_verify.go` wires the
+        resolver into the CreateContainer path behind
+        `CONTAINARIUM_VERIFY_IMAGE_DIGEST=true` (default
+        OFF). On each request: resolve the image's
+        (server, alias), fetch the published digest set,
+        check membership; miss → FailedPrecondition. Pre-
+        pull so rejection costs no bandwidth and leaves
+        no partial state. Skips when verification is off,
+        no `@sha256:` suffix, or the alias is local (no
+        registry to query). Server-URL mapping mirrors
+        `parseImageSource` (images:, ubuntu:,
+        ubuntu-daily:, bare /). 9 tests cover env-flag
+        opt-in, server-mapping, skip semantics for
+        unresolvable / no-digest / local-alias inputs, and
+        the resolver+match composition for match / miss /
+        not-found / 5xx-resolver-failure.
 - [x] **3.2** Split `enable_podman` from `enable_privileged`; gate latter on role — `internal/server/container_server.go:164`, `pkg/core/incus/client.go:458-459` (**A-HIGH-3**)
       — New `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` env var with
         three modes: `all` (default, backwards-compat), `admin-only`
