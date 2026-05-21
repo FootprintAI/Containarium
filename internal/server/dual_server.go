@@ -471,16 +471,36 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							kms = nil
 							kdesc = "disabled (config error)"
 						}
-						var opts []secretsstore.Option
-						if kms != nil {
-							opts = append(opts, secretsstore.WithKMS(kms))
-						}
-						if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher, opts...); serr != nil {
-							log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)
+						// Phase 4.1 Phase-E — master-key retirement
+						// gate. CONTAINARIUM_REQUIRE_ENVELOPE=true
+						// means every decrypt must go through KMS;
+						// legacy rows are rejected. Refuse to wire
+						// the Store if the gate is on but no KMS
+						// backend is configured — fail-closed at
+						// startup is the only safe shape.
+						requireEnvelope := envBool("CONTAINARIUM_REQUIRE_ENVELOPE")
+						if requireEnvelope && kms == nil {
+							log.Printf("FATAL: CONTAINARIUM_REQUIRE_ENVELOPE=true but no KMS backend is configured. Set CONTAINARIUM_KMS_BACKEND=vault (or inproc for dev) before enabling retirement mode. Secrets disabled.")
 							secretsPool.Close()
 						} else {
-							containerServer.SetSecretsStore(store)
-							log.Printf("Secrets store ready (file-keyed AES-256-GCM, envelope: %s)", kdesc)
+							var opts []secretsstore.Option
+							if kms != nil {
+								opts = append(opts, secretsstore.WithKMS(kms))
+							}
+							if requireEnvelope {
+								opts = append(opts, secretsstore.WithRequireEnvelope(true))
+							}
+							if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher, opts...); serr != nil {
+								log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)
+								secretsPool.Close()
+							} else {
+								containerServer.SetSecretsStore(store)
+								retirement := ""
+								if requireEnvelope {
+									retirement = " [legacy-rejected]"
+								}
+								log.Printf("Secrets store ready (file-keyed AES-256-GCM, envelope: %s%s)", kdesc, retirement)
+							}
 						}
 					}
 				}

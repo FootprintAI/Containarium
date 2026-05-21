@@ -50,6 +50,16 @@ type Store struct {
 	pool   *pgxpool.Pool
 	cipher *corecrypto.Cipher
 	kms    corecrypto.KMSClient // optional; nil = legacy-only mode
+
+	// Phase 4.1 Phase-E — when true, the Store refuses
+	// to decrypt any row whose wrapped_dek IS NULL.
+	// Combined with KMS configured, this is the post-
+	// retirement contract: every secret MUST be in
+	// envelope form. Operators flip this after the
+	// migrator reports 100% coverage; from that point
+	// on, a legacy row hitting Get is a strong "you
+	// missed a migration" signal that should page.
+	requireEnvelope bool
 }
 
 // ErrNotFound is returned by Get / Delete when the (username, name)
@@ -71,6 +81,23 @@ func WithKMS(kms corecrypto.KMSClient) Option {
 		if kms != nil {
 			s.kms = kms
 		}
+	}
+}
+
+// WithRequireEnvelope enforces Phase-E retirement: every
+// read MUST go through the envelope path. Legacy rows
+// (wrapped_dek IS NULL) are rejected at Get / LoadAllForUser.
+// Operators flip this on once `containarium secrets
+// envelope-coverage` reports legacy=0 — at that point the
+// master key is unused for production decrypts and the
+// keyfile can be retired.
+//
+// Pairs with the daemon-side startup gate that refuses to
+// start when require_envelope=true but no KMS backend is
+// configured.
+func WithRequireEnvelope(require bool) Option {
+	return func(s *Store) {
+		s.requireEnvelope = require
 	}
 }
 
@@ -241,6 +268,9 @@ func (s *Store) encryptForStorage(ctx context.Context, username, name string, pl
 func (s *Store) decryptFromStorage(ctx context.Context, username, name string, nonce, ct, wrappedDEK []byte, kekID string) ([]byte, error) {
 	// Legacy row: wrapped_dek IS NULL, kek_id IS NULL.
 	if len(wrappedDEK) == 0 {
+		if s.requireEnvelope {
+			return nil, fmt.Errorf("secret %s/%s is legacy-encrypted but require_envelope=true (run `containarium secrets migrate-to-envelope` before retiring the master key)", username, name)
+		}
 		return s.cipher.Decrypt(username, name, nonce, ct)
 	}
 	// Envelope row.
