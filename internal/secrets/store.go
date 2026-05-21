@@ -23,6 +23,31 @@ type SecretMetadata struct {
 	Version   int32
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// Phase 4.3 — delivery mode. "env" (default) or "file".
+	// Phase A lands the field; Phase B switches the stamping
+	// path to honor it. See docs/security/SECRETS-ENV-VAR-RISK.md.
+	Delivery string
+}
+
+// Delivery-mode constants. The DB column stores these
+// strings literally; new values land here before the
+// schema is taught to validate them.
+const (
+	DeliveryEnv  = "env"
+	DeliveryFile = "file"
+)
+
+// ValidateDelivery returns nil for "" (defaults to env at
+// the storage layer), "env", or "file". Anything else is
+// caller-error and rejected at the API boundary.
+func ValidateDelivery(mode string) error {
+	switch mode {
+	case "", DeliveryEnv, DeliveryFile:
+		return nil
+	}
+	return fmt.Errorf("secrets: delivery must be %q or %q; got %q",
+		DeliveryEnv, DeliveryFile, mode)
 }
 
 // Store handles per-tenant secret persistence.
@@ -149,6 +174,13 @@ func (s *Store) initSchema(ctx context.Context) error {
 		ALTER TABLE secrets ADD COLUMN IF NOT EXISTS wrapped_dek BYTEA;
 		ALTER TABLE secrets ADD COLUMN IF NOT EXISTS kek_id      TEXT;
 
+		-- Phase 4.3 Phase A — delivery mode column.
+		-- "env" or "file"; defaults to "env" so pre-4.3 rows
+		-- and any future row that omits the field behave
+		-- exactly as before. Phase B switches the stamping
+		-- code to honor this value.
+		ALTER TABLE secrets ADD COLUMN IF NOT EXISTS delivery TEXT NOT NULL DEFAULT 'env';
+
 		CREATE INDEX IF NOT EXISTS idx_secrets_username
 			ON secrets(username);
 	`
@@ -166,7 +198,11 @@ func (s *Store) initSchema(ctx context.Context) error {
 // DEK is wrapped via the KMS, and wrapped_dek + kek_id are
 // populated. Otherwise it writes a legacy row exactly as before
 // Phase 4.1 — wrapped_dek and kek_id stay NULL.
-func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretMetadata, error) {
+//
+// `delivery` (Phase 4.3) is one of "" (defaults to env on storage),
+// "env", "file". Validated at the API boundary; invalid values
+// reject before any DB work.
+func (s *Store) Set(ctx context.Context, username, name, value, delivery string) (*SecretMetadata, error) {
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -175,6 +211,15 @@ func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretM
 	}
 	if err := corecrypto.ValidateValue(value); err != nil {
 		return nil, err
+	}
+	if err := ValidateDelivery(delivery); err != nil {
+		return nil, err
+	}
+	// Storage layer normalizes "" → "env" so the column is
+	// always populated. Lets future migration code rely on
+	// the field being non-empty.
+	if delivery == "" {
+		delivery = DeliveryEnv
 	}
 
 	nonce, ct, wrappedDEK, kekID, err := s.encryptForStorage(ctx, username, name, []byte(value))
@@ -187,21 +232,22 @@ func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretM
 	// rotation; the row's created_at stays as the original
 	// (set-once-ever timestamp), updated_at moves to NOW().
 	const q = `
-		INSERT INTO secrets (username, name, nonce, ciphertext, wrapped_dek, kek_id, version)
-		VALUES ($1, $2, $3, $4, $5, $6, 1)
+		INSERT INTO secrets (username, name, nonce, ciphertext, wrapped_dek, kek_id, delivery, version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
 		ON CONFLICT (username, name)
 		DO UPDATE SET
 			nonce       = EXCLUDED.nonce,
 			ciphertext  = EXCLUDED.ciphertext,
 			wrapped_dek = EXCLUDED.wrapped_dek,
 			kek_id      = EXCLUDED.kek_id,
+			delivery    = EXCLUDED.delivery,
 			version     = secrets.version + 1,
 			updated_at  = NOW()
 		RETURNING version, created_at, updated_at;
 	`
 	var version int32
 	var createdAt, updatedAt time.Time
-	if err := s.pool.QueryRow(ctx, q, username, name, nonce, ct, wrappedDEK, kekID).Scan(&version, &createdAt, &updatedAt); err != nil {
+	if err := s.pool.QueryRow(ctx, q, username, name, nonce, ct, wrappedDEK, kekID, delivery).Scan(&version, &createdAt, &updatedAt); err != nil {
 		return nil, fmt.Errorf("upsert secret: %w", err)
 	}
 	return &SecretMetadata{
@@ -210,6 +256,7 @@ func (s *Store) Set(ctx context.Context, username, name, value string) (*SecretM
 		Version:   version,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
+		Delivery:  delivery,
 	}, nil
 }
 
@@ -309,15 +356,16 @@ func (s *Store) Get(ctx context.Context, username, name string) (meta *SecretMet
 	}
 
 	const q = `
-		SELECT nonce, ciphertext, wrapped_dek, kek_id, version, created_at, updated_at
+		SELECT nonce, ciphertext, wrapped_dek, kek_id, delivery, version, created_at, updated_at
 		FROM secrets
 		WHERE username = $1 AND name = $2
 	`
 	var nonce, ct, wrappedDEK []byte
 	var kekID *string // nullable
+	var delivery string
 	var version int32
 	var createdAt, updatedAt time.Time
-	if err := s.pool.QueryRow(ctx, q, username, name).Scan(&nonce, &ct, &wrappedDEK, &kekID, &version, &createdAt, &updatedAt); err != nil {
+	if err := s.pool.QueryRow(ctx, q, username, name).Scan(&nonce, &ct, &wrappedDEK, &kekID, &delivery, &version, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, "", ErrNotFound
 		}
@@ -338,6 +386,7 @@ func (s *Store) Get(ctx context.Context, username, name string) (meta *SecretMet
 		Version:   version,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
+		Delivery:  delivery,
 	}, string(plaintext), nil
 }
 
@@ -349,7 +398,7 @@ func (s *Store) List(ctx context.Context, username string) ([]SecretMetadata, er
 		return nil, fmt.Errorf("username is required")
 	}
 	const q = `
-		SELECT username, name, version, created_at, updated_at
+		SELECT username, name, version, created_at, updated_at, delivery
 		FROM secrets
 		WHERE username = $1
 		ORDER BY name
@@ -363,7 +412,7 @@ func (s *Store) List(ctx context.Context, username string) ([]SecretMetadata, er
 	var out []SecretMetadata
 	for rows.Next() {
 		var m SecretMetadata
-		if err := rows.Scan(&m.Username, &m.Name, &m.Version, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.Username, &m.Name, &m.Version, &m.CreatedAt, &m.UpdatedAt, &m.Delivery); err != nil {
 			return nil, fmt.Errorf("scan secret row: %w", err)
 		}
 		out = append(out, m)

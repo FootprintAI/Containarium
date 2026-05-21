@@ -38,13 +38,13 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 		return nil, err
 	}
 
-	meta, err := s.secretsStore.Set(ctx, req.Username, req.Name, req.Value)
+	meta, err := s.secretsStore.Set(ctx, req.Username, req.Name, req.Value, req.Delivery)
 	if err != nil {
 		return nil, mapSecretError(err)
 	}
 
 	// Audit. Never log the value.
-	log.Printf("[secrets] set %s/%s version=%d", req.Username, req.Name, meta.Version)
+	log.Printf("[secrets] set %s/%s version=%d delivery=%s", req.Username, req.Name, meta.Version, meta.Delivery)
 
 	msg := "secret created"
 	if meta.Version > 1 {
@@ -281,5 +281,6 @@ func toProtoSecretMetadata(m *secrets.SecretMetadata) *pb.SecretMetadata {
 		Version:   m.Version,
 		CreatedAt: m.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt: m.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		Delivery:  m.Delivery,
 	}
 }

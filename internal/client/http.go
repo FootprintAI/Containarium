@@ -458,14 +458,21 @@ func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) 
 }
 
 // SetSecret creates or updates a tenant secret via HTTP.
-func (c *HTTPClient) SetSecret(username, name, value string) (string, error) {
+// `delivery` is one of "" (server normalizes to env), "env",
+// or "file" (Phase 4.3 — Phase A lands the field; Phase B
+// switches behavior on it).
+func (c *HTTPClient) SetSecret(username, name, value, delivery string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	body, _ := json.Marshal(map[string]string{
+	payload := map[string]string{
 		"username": username,
 		"name":     name,
 		"value":    value,
-	})
+	}
+	if delivery != "" {
+		payload["delivery"] = delivery
+	}
+	body, _ := json.Marshal(payload)
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/secrets", body)
 	if err != nil {
 		return "", fmt.Errorf("set secret: %w", err)

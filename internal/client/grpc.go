@@ -274,11 +274,13 @@ func (c *GRPCClient) DeleteContainer(username string, force bool) error {
 
 // SetSecret creates or updates a tenant secret via gRPC. Idempotent —
 // repeated calls with the same (username, name) bump the version.
-func (c *GRPCClient) SetSecret(username, name, value string) (*pb.SecretMetadata, string, error) {
+// `delivery` is "" (server normalizes to env), "env", or "file"
+// (Phase 4.3 — Phase A lands the field).
+func (c *GRPCClient) SetSecret(username, name, value, delivery string) (*pb.SecretMetadata, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	resp, err := c.client.SetSecret(ctx, &pb.SetSecretRequest{
-		Username: username, Name: name, Value: value,
+		Username: username, Name: name, Value: value, Delivery: delivery,
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("set secret: %w", err)

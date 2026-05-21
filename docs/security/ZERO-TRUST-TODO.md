@@ -530,11 +530,25 @@ on the internal network. Land them first.
         var semantics), mitigations operators can apply
         today, and the tmpfs-mount alternative we plan to
         offer as opt-in.
-      — **Implementation follow-up:** add
-        `--delivery=env|file` to `containarium secret set`
-        and wire a tmpfs mount + file writer. Targeted
-        for the next secrets pass; not gated on a specific
-        date.
+      — **Phase A landed (field plumbing).** `delivery`
+        column added to the secrets schema (default
+        `"env"`, non-destructive `ADD COLUMN IF NOT EXISTS`
+        on existing deployments). New `SecretMetadata.Delivery`
+        field; `Store.Set(ctx, user, name, value, delivery)`
+        accepts and validates it via the new
+        `ValidateDelivery` helper. Proto `SetSecretRequest`
+        and `SecretMetadata` gain the `delivery` field.
+        CLI: `containarium secrets set --delivery=env|file`.
+        **No behavior change yet** — Phase A is pure
+        data-model plumbing so the Phase B switch
+        (tmpfs file writer + per-container mount) lands as
+        a focused PR without touching every layer of the
+        secrets surface.
+      — **Phase B (implementation follow-up):** wire the
+        tmpfs mount setup at container create time, switch
+        `stampSecretsOnLXC` to write 0400-mode files to
+        `/run/secrets/<NAME>` for `delivery="file"` rows
+        (env rows keep their current behavior).
 - [x] **4.4** Audit-log redaction policy + enforcement — `internal/audit/store.go:53-74` (**C-MED-5**)
       — New `audit.Redact` / `audit.SanitizeDetail` scrubs JWTs
         (with or without Bearer prefix), password/api_key/secret

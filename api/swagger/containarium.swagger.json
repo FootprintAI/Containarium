@@ -6656,6 +6656,10 @@
         },
         "updatedAt": {
           "type": "string"
+        },
+        "delivery": {
+          "type": "string",
+          "description": "Phase 4.3 — how the secret is delivered into the container.\n\"env\" (default): stamped as environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC,\nvisible to every process in the container via /proc/\u003cpid\u003e/environ.\n\"file\": (planned) written to a per-container tmpfs at\n/run/secrets/\u003cNAME\u003e, file mode 0400 owned by the app user. Same\ntenant isolation, narrower in-container access surface. See\ndocs/security/SECRETS-ENV-VAR-RISK.md.\n\nRead-only on the API surface today — Phase A lands the field\nshape; the file delivery path is wired in Phase B."
         }
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
@@ -6674,6 +6678,10 @@
         "value": {
           "type": "string",
           "description": "Plaintext value the daemon will encrypt with its master key\nbefore persisting. Server enforces a 64 KiB hard cap\n(decision #2). Never logged."
+        },
+        "delivery": {
+          "type": "string",
+          "description": "Phase 4.3 — delivery mode for the secret. Accepts \"env\"\n(default; same behavior as pre-4.3) or \"file\" (planned;\ntmpfs-mounted per-file delivery). Unknown values are\nrejected at the API boundary. Phase A allows setting the\nmode but the daemon still stamps env vars for everyone;\nPhase B switches behavior based on this field."
         }
       },
       "description": "SetSecretRequest creates or updates a tenant secret. Idempotent —\nrepeated calls with the same (username, name) bump the version and\nreplace the value."

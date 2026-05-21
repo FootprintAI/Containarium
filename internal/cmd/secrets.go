@@ -88,9 +88,20 @@ without restarting the whole container.`,
 	RunE: runSecretsRefresh,
 }
 
+// secretsDelivery is the value bound to `--delivery` on
+// `secrets set` (Phase 4.3 Phase A). Allowed values: "",
+// "env" (default; server normalizes ""→"env"), "file"
+// (planned tmpfs delivery, Phase B will wire behavior).
+var secretsDelivery string
+
 func init() {
 	rootCmd.AddCommand(secretsCmd)
 	secretsCmd.AddCommand(secretsSetCmd)
+	secretsSetCmd.Flags().StringVar(&secretsDelivery, "delivery", "",
+		`How the secret reaches the container. "env" (default) stamps `+
+			`environment.<NAME>=<value> on the LXC; "file" (Phase 4.3 — `+
+			`not yet wired) plans tmpfs-mount delivery for narrower `+
+			`in-container access. See docs/security/SECRETS-ENV-VAR-RISK.md.`)
 	secretsCmd.AddCommand(secretsGetCmd)
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsDeleteCmd)
@@ -109,7 +120,7 @@ func runSecretsSet(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		defer h.Close()
-		msg, err := h.SetSecret(username, name, value)
+		msg, err := h.SetSecret(username, name, value, secretsDelivery)
 		if err != nil {
 			return err
 		}
@@ -121,11 +132,15 @@ func runSecretsSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer g.Close()
-	meta, msg, err := g.SetSecret(username, name, value)
+	meta, msg, err := g.SetSecret(username, name, value, secretsDelivery)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✓ %s (version=%d)\n", msg, meta.Version)
+	deliverySuffix := ""
+	if meta != nil && meta.Delivery != "" && meta.Delivery != "env" {
+		deliverySuffix = fmt.Sprintf(" delivery=%s", meta.Delivery)
+	}
+	fmt.Printf("✓ %s (version=%d%s)\n", msg, meta.Version, deliverySuffix)
 	return nil
 }
 

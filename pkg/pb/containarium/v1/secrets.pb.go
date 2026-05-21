@@ -35,8 +35,19 @@ type SecretMetadata struct {
 	// version=3, DB says version=4 → restart needed").
 	Version int32 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
 	// RFC3339 timestamps.
-	CreatedAt     string `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     string `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	CreatedAt string `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt string `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Phase 4.3 — how the secret is delivered into the container.
+	// "env" (default): stamped as environment.<NAME>=<value> on the LXC,
+	// visible to every process in the container via /proc/<pid>/environ.
+	// "file": (planned) written to a per-container tmpfs at
+	// /run/secrets/<NAME>, file mode 0400 owned by the app user. Same
+	// tenant isolation, narrower in-container access surface. See
+	// docs/security/SECRETS-ENV-VAR-RISK.md.
+	//
+	// Read-only on the API surface today — Phase A lands the field
+	// shape; the file delivery path is wired in Phase B.
+	Delivery      string `protobuf:"bytes,6,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -106,6 +117,13 @@ func (x *SecretMetadata) GetUpdatedAt() string {
 	return ""
 }
 
+func (x *SecretMetadata) GetDelivery() string {
+	if x != nil {
+		return x.Delivery
+	}
+	return ""
+}
+
 // SetSecretRequest creates or updates a tenant secret. Idempotent —
 // repeated calls with the same (username, name) bump the version and
 // replace the value.
@@ -119,7 +137,14 @@ type SetSecretRequest struct {
 	// Plaintext value the daemon will encrypt with its master key
 	// before persisting. Server enforces a 64 KiB hard cap
 	// (decision #2). Never logged.
-	Value         string `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	Value string `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	// Phase 4.3 — delivery mode for the secret. Accepts "env"
+	// (default; same behavior as pre-4.3) or "file" (planned;
+	// tmpfs-mounted per-file delivery). Unknown values are
+	// rejected at the API boundary. Phase A allows setting the
+	// mode but the daemon still stamps env vars for everyone;
+	// Phase B switches behavior based on this field.
+	Delivery      string `protobuf:"bytes,4,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -171,6 +196,13 @@ func (x *SetSecretRequest) GetName() string {
 func (x *SetSecretRequest) GetValue() string {
 	if x != nil {
 		return x.Value
+	}
+	return ""
+}
+
+func (x *SetSecretRequest) GetDelivery() string {
+	if x != nil {
+		return x.Delivery
 	}
 	return ""
 }
@@ -641,7 +673,7 @@ var File_containarium_v1_secrets_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_secrets_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/secrets.proto\x12\x0fcontainarium.v1\"\x98\x01\n" +
+	"\x1dcontainarium/v1/secrets.proto\x12\x0fcontainarium.v1\"\xb4\x01\n" +
 	"\x0eSecretMetadata\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -649,11 +681,13 @@ const file_containarium_v1_secrets_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x04 \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x05 \x01(\tR\tupdatedAt\"X\n" +
+	"updated_at\x18\x05 \x01(\tR\tupdatedAt\x12\x1a\n" +
+	"\bdelivery\x18\x06 \x01(\tR\bdelivery\"t\n" +
 	"\x10SetSecretRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\tR\x05value\"f\n" +
+	"\x05value\x18\x03 \x01(\tR\x05value\x12\x1a\n" +
+	"\bdelivery\x18\x04 \x01(\tR\bdelivery\"f\n" +
 	"\x11SetSecretResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x127\n" +
 	"\x06secret\x18\x02 \x01(\v2\x1f.containarium.v1.SecretMetadataR\x06secret\"B\n" +

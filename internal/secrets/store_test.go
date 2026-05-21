@@ -53,7 +53,7 @@ func TestSecretsStore_Roundtrip(t *testing.T) {
 
 	// Set, then Get, then List, then rotation (Set again), then
 	// Delete.
-	meta, err := store.Set(ctx, "store-test-user", "OPENAI_API_KEY", "sk-v1")
+	meta, err := store.Set(ctx, "store-test-user", "OPENAI_API_KEY", "sk-v1", "")
 	if err != nil {
 		t.Fatalf("Set first: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestSecretsStore_Roundtrip(t *testing.T) {
 	}
 
 	// Rotation: same (username, name), new value, version should bump.
-	meta2, err := store.Set(ctx, "store-test-user", "OPENAI_API_KEY", "sk-v2")
+	meta2, err := store.Set(ctx, "store-test-user", "OPENAI_API_KEY", "sk-v2", "")
 	if err != nil {
 		t.Fatalf("Set rotation: %v", err)
 	}
