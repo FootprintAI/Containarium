@@ -343,6 +343,122 @@ alice@alice-container:~$ docker-compose up -d
 
 ---
 
+### Phase 5: Harden the Daemon (Recommended for Production)
+
+After containers are running and users are accessing them, opt into the
+zero-trust controls one at a time. Every gate below defaults to OFF so
+upgrading an existing deployment doesn't break anything; flip them on
+deliberately, after soaking with the previous step.
+
+The full operator runbook is at
+[`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](security/OPERATOR-SECURITY-RUNBOOK.md).
+The summary below points at each rollout.
+
+#### 5.1. JWT secret hardening
+
+Verify your `/etc/containarium/jwt.secret` is at least 32 bytes — the
+daemon refuses to start with anything shorter as of v0.18.
+
+```bash
+wc -c /etc/containarium/jwt.secret   # must be ≥ 33 (32 + newline)
+ls -l /etc/containarium/jwt.secret   # must be 0600 root
+```
+
+#### 5.2. Refresh-token rotation
+
+Re-mint long-lived operator tokens — pre-v0.18 tokens lack the `tt`
+claim and `iss`/`aud` and will not validate against the new daemon.
+
+```bash
+# New tokens carry tt=access (short-lived) and an associated refresh
+# token (long-lived, single-use). Clients exchange via:
+#   POST /v1/tokens/refresh
+containarium token generate \
+  --username admin \
+  --roles admin \
+  --secret-file /etc/containarium/jwt.secret
+```
+
+#### 5.3. Image-digest pinning (supply-chain hardening)
+
+Two-gate rollout — turn on REQUIRE first, soak for a week, then add
+VERIFY.
+
+```bash
+# 5.3.1. Update every container-create payload to pin a digest.
+#        See OPERATOR-SECURITY-RUNBOOK.md "Pinning and verifying
+#        container image digests" for recipes to find a published
+#        digest.
+containarium create alice \
+  --image "images:ubuntu/24.04@sha256:<digest>" \
+  --ssh-key ~/.ssh/alice.pub
+
+# 5.3.2. Turn on REQUIRE (syntax gate). Add to systemd Environment=
+#        and restart:
+#          CONTAINARIUM_REQUIRE_IMAGE_DIGEST=true
+#        After this, every create request must end with @sha256:<64hex>.
+
+# 5.3.3. Soak. Watch `journalctl -u containarium -g image-digest` for
+#        a week. Failures here mean an automation forgot a pin.
+
+# 5.3.4. Turn on VERIFY (content gate). Add:
+#          CONTAINARIUM_VERIFY_IMAGE_DIGEST=true
+#        Every digest is now resolved against the registry's
+#        published simplestreams index pre-pull AND the local
+#        volatile.base_image fingerprint post-pull. Mismatch =
+#        FailedPrecondition + container delete.
+```
+
+#### 5.4. KMS envelope encryption for tenant secrets
+
+The default daemon encrypts tenant secrets under a master key file at
+`/etc/containarium/secrets.key`. For deployments where compromising
+that file would be unacceptable, switch to envelope encryption with an
+external KMS — the daemon never sees the master key material.
+
+```bash
+# 5.4.1. Pick a backend. Vault Transit (on-prem) and GCP Cloud KMS
+#        (cloud) are both supported via raw HTTP — no SDK deps.
+#        Full setup in OPERATOR-SECURITY-RUNBOOK.md.
+
+# 5.4.2. Configure systemd Environment=:
+#          CONTAINARIUM_KMS_BACKEND=vault   (or gcp)
+#          CONTAINARIUM_VAULT_ADDR=...      (or _GCP_KMS_KEY_NAME=...)
+#          CONTAINARIUM_VAULT_TOKEN_FILE=/etc/containarium/vault.token
+#          CONTAINARIUM_VAULT_TRANSIT_KEY=containarium-secrets
+
+# 5.4.3. Migrate existing legacy rows.
+containarium secrets migrate-to-envelope --dry-run
+containarium secrets migrate-to-envelope
+containarium secrets envelope-coverage   # must show legacy=0
+
+# 5.4.4. Retire the master key (Phase E gate).
+#          CONTAINARIUM_REQUIRE_ENVELOPE=true
+#        After soak, move /etc/containarium/secrets.key off-host.
+```
+
+#### 5.5. Audit log + tamper-evidence verification
+
+Audit-log rows ship with a SHA-256 hash chain by default — no opt-in
+needed. Verify periodically:
+
+```bash
+containarium audit verify
+# Expected: "✓ Audit-log chain intact (verified through id=N)"
+
+# Investigate administrative actions
+containarium audit query --action revoke_token --from "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+#### 5.6. Sentinel `/wake/` allowlist (only if scale-down is enabled)
+
+```bash
+# Limit /wake/ callers to the load balancer's source range
+CONTAINARIUM_WAKE_TRUSTED_PROXIES=130.211.0.0/22,35.191.0.0/16
+```
+
+---
+
 ## Complete Workflow Summary
 
 ```

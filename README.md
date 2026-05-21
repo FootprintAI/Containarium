@@ -181,35 +181,60 @@ design.
 
 ```
         Agent (Cursor / Claude Code / OpenCode)
-                  |
-                  | MCP over stdio
-                  v
-              ssh user@box  → sshpiper → agent-box (in container)
-                  |
-                  | HTTPS
-                  v
+            │
+            │ JWT (access; tt=access, jti, scopes)
+            │ MCP over stdio  ──┐
+            │                   │ ┌── refresh ──> POST /v1/tokens/refresh
+            v                   ▼ │                  (single-use; old jti revoked)
+        ssh user@box  → sshpiper → agent-box (in container)
+            │
+            │ HTTPS  (mTLS upstream; PROXY-protocol v2)
+            v
         Sentinel (e2-micro, always-on)
-        ├── sshpiper (port 22)            : routes by username
-        └── Caddy + PROXY-protocol (443)  : routes by hostname
-                  |
-                  v
-        +---------------------------+
-        | Backend VM (spot or       |
-        | bare-metal GPU node)      |
-        |                           |
-        |  Incus (LXC) ── containers
-        |    ├── alice-container    : SSH + agent-box stdio MCP
-        |    ├── bob-container      : SSH + agent-box stdio MCP
-        |    └── ...                : ZFS-backed persistent storage
-        |                           |
-        |  Caddy (per-backend)      : TLS termination
-        |  Containarium daemon      : container lifecycle, metrics
-        +---------------------------+
+        ├── sshpiper (port 22)            : routes by username; fail2ban per-user
+        ├── Caddy + PROXY-protocol (443)  : routes by hostname / SNI suffix
+        └── /wake/ source-IP allowlist    : trusted-proxy only
+            │
+            v
+        +-------------------------------------------------+
+        | Backend VM (spot or bare-metal GPU node)        |
+        |                                                 |
+        |  Incus (LXC) ── containers                      |
+        |    ├── alice-container    : SSH + agent-box     |
+        |    │   └── /run/secrets/* : tmpfs, 0440 alice   |
+        |    └── bob-container      : ZFS-backed storage  |
+        |                                                 |
+        |  Containarium daemon                            |
+        |    ├── JWT auth (iss/aud/jti/scopes)            |
+        |    ├── Admin RBAC + container-owner authz       |
+        |    ├── Image-digest gate (REQUIRE + VERIFY)     |
+        |    ├── Secrets ── Postgres (envelope-encrypted) |
+        |    │              │                             |
+        |    │              v                             |
+        |    │           KMS ── Vault Transit / GCP KMS   |
+        |    │           (master key retirable post-cutover)
+        |    └── Audit log ── Postgres + SHA-256 hash     |
+        |                     chain (verify CLI)          |
+        +-------------------------------------------------+
 ```
 
 A single sentinel can front multiple backend VMs — a "pool" — and a
 single deployment can run multiple pools (each isolated). See
 [docs/MULTI-POOL.md](docs/MULTI-POOL.md).
+
+**Security control surface** (all opt-in via env, default-off for
+upgrade safety; see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md)):
+
+| Env var | Layer | Effect |
+| --- | --- | --- |
+| `CONTAINARIUM_REQUIRE_IMAGE_DIGEST=true` | API | refuse images without `@sha256:<64hex>` |
+| `CONTAINARIUM_VERIFY_IMAGE_DIGEST=true` | API | verify digest against the registry index (pre- + post-pull) |
+| `CONTAINARIUM_ALLOWED_IMAGE_REGISTRIES` | API | restrict which simplestreams remotes the daemon will pull from |
+| `CONTAINARIUM_KMS_BACKEND={none,inproc,vault,gcp}` | Secrets | envelope-encrypt DEKs through an external KMS |
+| `CONTAINARIUM_REQUIRE_ENVELOPE=true` | Secrets | refuse legacy master-key-only rows (Phase E retirement gate) |
+| `CONTAINARIUM_POSTGRES_URL_FILE` / `_PASSWORD_FILE` | Secrets | DB creds from disk rather than env |
+| `CONTAINARIUM_WAKE_TRUSTED_PROXIES` | Sentinel | source-IP allowlist for `/wake/` |
+| `OTEL_BEARER_REQUIRED=true` | Telemetry | collector rejects un-bearered OTLP submissions |
 
 ---
 
@@ -324,6 +349,25 @@ user.
 - **AppArmor profiles** per container.
 - **AGENTBOX_ROOT sandbox** to constrain agent-box file ops at runtime.
 
+**Zero-trust controls** (rolled out across the v0.17 → unreleased line; see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md)):
+
+- **JWT with `iss` / `aud` / `jti` / `tt` / `scopes`**: 32-byte minimum
+  secret enforced at startup; refresh tokens are single-use; jti-based
+  revocation; per-tool MCP scopes propagate to server-side gates.
+- **Admin RBAC + per-container ownership** on the API surface; cluster
+  ops admin-only, container ops owner-only.
+- **KMS envelope encryption for tenant secrets** (Vault Transit or GCP
+  Cloud KMS), with a migration tool and master-key retirement gate.
+- **tmpfs `--delivery=file`** for secrets that shouldn't be visible in
+  `/proc/<pid>/environ`.
+- **Audit log with SHA-256 hash chain** + `containarium audit verify`
+  to detect tampering.
+- **Image-registry allowlist + pre-pull simplestreams digest
+  verification + post-pull `volatile.base_image` defense-in-depth**
+  for supply-chain hardening.
+- **`SECURITY.md`** with a 90-day coordinated-disclosure window;
+  `gosec` / `govulncheck` / `trivy` running in CI.
+
 ---
 
 ## CLI reference (essentials)
@@ -383,16 +427,38 @@ containarium ssh-config sync --identity ~/.ssh/containarium_ed25519
 ### Authentication
 
 ```bash
-# Issue a JWT token (CLI-only; never exposed via API)
+# Issue an access + refresh pair (CLI-only; never exposed via API).
+# Access tokens are short-lived (default 15 min) and authenticate the
+# API. Refresh tokens are long-lived and single-use — exchange via
+# POST /v1/tokens/refresh for a new pair.
 containarium token generate \
   --username admin \
   --roles admin \
-  --expiry 720h \
   --secret-file /etc/containarium/jwt.secret
 
-# Use it
-curl -H "Authorization: Bearer <token>" http://localhost:8080/v1/containers
+# Use the access token
+curl -H "Authorization: Bearer <access-token>" http://localhost:8080/v1/containers
+
+# Inspect a token's claims (jti, scopes, expiry, validation)
+containarium token inspect <token> --secret-file /etc/containarium/jwt.secret
+
+# Revoke a leaked token by jti (idempotent; reads from `audit query`
+# or `token inspect`)
+containarium token revoke <jti> --reason "leak_2026_05_22"
+containarium token list-revoked
+
+# Mint a least-privilege token for an agent with only the scopes it
+# needs — server-side gates enforce this even if the agent ignores
+# the filter.
+containarium token generate \
+  --username alice-agent \
+  --scopes containers:read,containers:write \
+  --secret-file /etc/containarium/jwt.secret
 ```
+
+See [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md)
+for the full token lifecycle, leak-response playbook, and the agent
+least-privilege scope catalog.
 
 ---
 

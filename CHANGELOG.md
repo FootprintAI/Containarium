@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Ships the **zero-trust security audit remediation** — 46 PRs across 5 phases closing all 41 numbered findings from the internal audit ([`docs/security/ZERO-TRUST-AUDIT.md`](docs/security/ZERO-TRUST-AUDIT.md)). The headline shifts: every API surface is now authenticated by scope, every secret is decryptable through a pluggable KMS, every audit log row is in a tamper-evident hash chain, and every container-image pull is verified against the registry's published digest. Operators get a full runbook at [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md).
+
+### Security — Authentication & RBAC
+
+- **JWT hardening — `iss` / `aud` / minimum secret length** ([#231](https://github.com/FootprintAI/Containarium/pull/231)). Every issued token now carries `iss=containarium` + `aud=containarium-api`; ValidateToken refuses tokens missing either. Daemon refuses to start with a JWT secret shorter than 32 bytes.
+- **Refresh-token rotation (`tt` claim)** ([#254](https://github.com/FootprintAI/Containarium/pull/254), [#255](https://github.com/FootprintAI/Containarium/pull/255)). Tokens now carry `tt=access|refresh`; only `access` authenticates the API surface. New `RefreshToken` RPC mints a fresh `(access, refresh)` pair and revokes the input refresh token's `jti` — refresh tokens are single-use. Replay returns Unauthenticated.
+- **JWT revocation (`jti` + revocation list)** ([#248](https://github.com/FootprintAI/Containarium/pull/248), [#249](https://github.com/FootprintAI/Containarium/pull/249), [#252](https://github.com/FootprintAI/Containarium/pull/252), [#278](https://github.com/FootprintAI/Containarium/pull/278), [#279](https://github.com/FootprintAI/Containarium/pull/279)). Every token carries a `jti` claim; new Postgres-backed `RevocationStore` rejects revoked tokens at auth time. Operator surface: `containarium token {revoke,list-revoked,inspect}`, MCP `revoke_token` tool (`tokens:write` scope), `RevokeToken` / `ListRevokedTokens` RPCs.
+- **Per-tool MCP scopes** ([#250](https://github.com/FootprintAI/Containarium/pull/250)). MCP tokens can be issued with narrow `--scopes` (e.g. `containers:read`, `secrets:write`); each tool checks its required scope, returning least-privilege-friendly errors instead of running.
+- **Daemon-side scope enforcement on REST/gRPC** ([#251](https://github.com/FootprintAI/Containarium/pull/251), [#253](https://github.com/FootprintAI/Containarium/pull/253), [#265](https://github.com/FootprintAI/Containarium/pull/265), [#266](https://github.com/FootprintAI/Containarium/pull/266)). Scope claims now propagate end-to-end and gate every server-side handler — agent-side scope filtering can't be the only barrier.
+- **Admin RBAC on cluster-level ops** ([#234](https://github.com/FootprintAI/Containarium/pull/234), [#246](https://github.com/FootprintAI/Containarium/pull/246), [#247](https://github.com/FootprintAI/Containarium/pull/247)). 33 cluster-wide RPCs now require the `admin` role; container-scoped RPCs additionally require ownership match (`container_name` → owner authz on 7 endpoints including traffic and ClamAV).
+- **WebSocket subprotocol auth** ([#245](https://github.com/FootprintAI/Containarium/pull/245)). Terminal + SSE WebSockets now authenticate via Sec-WebSocket-Protocol bearer rather than `?token=` query parameters, which leak through proxies and access logs.
+- **Endpoint-auth tightening** ([#233](https://github.com/FootprintAI/Containarium/pull/233)). All non-public endpoints now require valid JWT; previously-anonymous paths gated.
+
+### Security — Secrets & KMS envelope encryption
+
+- **KMS envelope encryption** (audit C-HIGH-6) — full 6-phase rollout that lets operators pull the decrypt key off the daemon host into a managed KMS.
+  - **Phase A** — `KMSClient` interface + in-process no-op impl ([#268](https://github.com/FootprintAI/Containarium/pull/268))
+  - **Phase B** — Store envelope-path wiring, dual-mode reads ([#269](https://github.com/FootprintAI/Containarium/pull/269))
+  - **Phase D** — legacy→envelope migration tool + coverage CLI ([#270](https://github.com/FootprintAI/Containarium/pull/270))
+  - **Phase E** — `CONTAINARIUM_REQUIRE_ENVELOPE=true` retirement gate ([#272](https://github.com/FootprintAI/Containarium/pull/272))
+  - **Phase F** — Vault Transit backend (raw HTTP, no SDK dependency) ([#271](https://github.com/FootprintAI/Containarium/pull/271))
+  - **Phase C** — Google Cloud KMS backend ([#281](https://github.com/FootprintAI/Containarium/pull/281))
+- **tmpfs secret delivery** (audit C-MED-4) — new `--delivery=file` mode writes secrets to `/run/secrets/<NAME>` (tmpfs, mode `0440 root:<tenant>`) instead of env vars, which are visible in `/proc/<pid>/environ` to anyone who can shell into the container.
+  - **Phase A** — field plumbing ([#274](https://github.com/FootprintAI/Containarium/pull/274))
+  - **Phase B-1** — file writer ([#275](https://github.com/FootprintAI/Containarium/pull/275))
+  - **Phase B-2** — chown to tenant user ([#276](https://github.com/FootprintAI/Containarium/pull/276))
+  - **Phase B-3** — re-stamping reconciler (60s tick) ([#277](https://github.com/FootprintAI/Containarium/pull/277))
+- **Postgres credentials from secret-file** ([#260](https://github.com/FootprintAI/Containarium/pull/260)). New `CONTAINARIUM_POSTGRES_URL_FILE` / `_PASSWORD_FILE` env vars let operators store DB credentials at `0600` files instead of inline env. Permissions checked at load.
+- **Master-key file permission check** ([#235](https://github.com/FootprintAI/Containarium/pull/235)). Daemon refuses to start if `/etc/containarium/secrets.key` has any non-owner bit set — catches umask drift and ownership change.
+
+### Security — Audit log & tamper evidence
+
+- **Audit-log hash chain** ([#243](https://github.com/FootprintAI/Containarium/pull/243)). Every audit row now carries `prev_hash` + `row_hash` (Phase 4.5). `SELECT FOR UPDATE` on the chain tail serializes concurrent appends; a tampered row breaks the chain and is detected by `containarium audit verify`.
+- **Audit hygiene** ([#242](https://github.com/FootprintAI/Containarium/pull/242)). Sensitive fields (tokens, passwords, key material) redacted at insert; request-correlation IDs propagated end-to-end; tightened file permissions on audit artifacts.
+- **Operator-facing audit CLI** ([#280](https://github.com/FootprintAI/Containarium/pull/280)). `containarium audit query` filters by username/action/resource-type/time-range; `containarium audit verify` walks the hash chain in batches and reports the first broken row. Direct Postgres access; no daemon route needed.
+
+### Security — Supply-chain (image digest verification)
+
+- **Registry allowlist + operator-enforced digest pinning** ([#236](https://github.com/FootprintAI/Containarium/pull/236), [#261](https://github.com/FootprintAI/Containarium/pull/261)). `CONTAINARIUM_ALLOWED_IMAGE_REGISTRIES` restricts which simplestreams remotes are reachable; `CONTAINARIUM_REQUIRE_IMAGE_DIGEST` forces every image reference to end with `@sha256:<64-hex>` (sha256 only, lowercase-hex).
+- **Full registry-side digest verification** (audit B-HIGH-1) — end-to-end pull-byte verification gated by a single env var.
+  - **Design** — pre-pull simplestreams resolve + post-pull defense-in-depth ([#282](https://github.com/FootprintAI/Containarium/pull/282))
+  - **Phase A** — simplestreams index resolver ([#283](https://github.com/FootprintAI/Containarium/pull/283))
+  - **Phase B** — `CONTAINARIUM_VERIFY_IMAGE_DIGEST=true` pre-pull gate ([#284](https://github.com/FootprintAI/Containarium/pull/284))
+  - **Phase D** — operator runbook + soak-mode rollout pattern ([#285](https://github.com/FootprintAI/Containarium/pull/285))
+  - **Phase C** — post-pull `volatile.base_image` fingerprint check (defense-in-depth) ([#288](https://github.com/FootprintAI/Containarium/pull/288))
+  - **Follow-ups** — VERIFY-without-REQUIRE startup WARNING + abuse tripwires ([#286](https://github.com/FootprintAI/Containarium/pull/286)); TTL cache for the simplestreams resolver ([#287](https://github.com/FootprintAI/Containarium/pull/287))
+
+### Security — Sentinel, TLS, and operational hardening
+
+- **`/wake/` source-IP allowlist** ([#244](https://github.com/FootprintAI/Containarium/pull/244)). Wake-on-HTTP rejects callers outside `CONTAINARIUM_WAKE_TRUSTED_PROXIES`; before, anyone on the daemon's network could trigger a wake by crafting `Host`.
+- **MCP HTTPS pinning + OTel bind override** ([#238](https://github.com/FootprintAI/Containarium/pull/238)). MCP tools refuse non-HTTPS daemon URLs unless explicitly opted in; OTel receiver bind is operator-configurable rather than wildcard-default.
+- **Fail-closed startup checks** ([#235](https://github.com/FootprintAI/Containarium/pull/235)). Daemon refuses to start when a JWT secret is configured but unreadable, or when `REQUIRE_ENVELOPE=true` but no KMS backend is wired.
+- **Terraform firewall tightening** ([#237](https://github.com/FootprintAI/Containarium/pull/237)). Sentinel SSH port narrowed from `22` (open to `0.0.0.0/0`) to operator-supplied allowlist; defaults removed. IAP-only mode for management access.
+- **OTel collector-side bearer enforcement** ([#263](https://github.com/FootprintAI/Containarium/pull/263), [#264](https://github.com/FootprintAI/Containarium/pull/264), audit C-HIGH-5 closed). Collector now rejects un-bearered OTLP submissions when `OTEL_BEARER_REQUIRED=true`; daemon stamps the bearer header on monitoring-enabled containers.
+- **Input bounds + explicit SSH-key newline check** ([#240](https://github.com/FootprintAI/Containarium/pull/240)). `CreateContainer` rejects oversized `ssh_keys` / `stack_parameters` / `labels`; SSH-key validator rejects embedded `\r\n` before base64-decode (previously rejection was incidental, not load-bearing).
+- **Operational hardening pass** ([#239](https://github.com/FootprintAI/Containarium/pull/239), [#241](https://github.com/FootprintAI/Containarium/pull/241)). gosec inline directives, tightened file modes on operator-generated artifacts.
+
+### Security — Process & tooling
+
+- **`/swagger-ui/` gated behind admin role** ([#256](https://github.com/FootprintAI/Containarium/pull/256), audit A-LOW-1).
+- **CI security scanners verified** ([#257](https://github.com/FootprintAI/Containarium/pull/257)). `gosec`, `govulncheck`, `trivy` all run on push, PR, and weekly; SARIF uploads to GitHub code scanning; `govulncheck` fails the build on known-fixed vulns.
+- **`SECURITY.md` published** ([#257](https://github.com/FootprintAI/Containarium/pull/257)). Disclosure policy, SLAs, 90-day coordinated-disclosure window, scope.
+- **Abuse-case regression suite** ([#259](https://github.com/FootprintAI/Containarium/pull/259), audit Phase 5.4). 12 scenarios in `internal/auth/abuse_test.go` — revoked-token replay, refresh-rotation replay, wrong-tenant access, scope confusion, tampered signature, `alg=none` confusion, etc. — that all MUST fail closed. CI tripwire for any future refactor that flips a deny to allow.
+
+### Added — CLI / MCP surface
+
+- **`containarium audit query` / `audit verify`** ([#280](https://github.com/FootprintAI/Containarium/pull/280)).
+- **`containarium token revoke` / `list-revoked` / `inspect`** ([#249](https://github.com/FootprintAI/Containarium/pull/249), [#278](https://github.com/FootprintAI/Containarium/pull/278), [#279](https://github.com/FootprintAI/Containarium/pull/279)).
+- **`containarium secrets migrate-to-envelope` / `envelope-coverage`** ([#270](https://github.com/FootprintAI/Containarium/pull/270)).
+- **`containarium secrets set --delivery=env|file`** ([#274](https://github.com/FootprintAI/Containarium/pull/274)).
+- **`RefreshToken` REST / gRPC endpoint** at `POST /v1/tokens/refresh` ([#255](https://github.com/FootprintAI/Containarium/pull/255)).
+- **`RevokeToken` / `ListRevokedTokens` REST / gRPC endpoints** at `POST /v1/tokens/revoke` and `GET /v1/tokens/revoked` ([#249](https://github.com/FootprintAI/Containarium/pull/249), [#278](https://github.com/FootprintAI/Containarium/pull/278)).
+- **MCP `revoke_token`** tool ([#252](https://github.com/FootprintAI/Containarium/pull/252)).
+
+### Documentation
+
+- **Zero-trust audit and remediation TODO** at [`docs/security/ZERO-TRUST-AUDIT.md`](docs/security/ZERO-TRUST-AUDIT.md) and [`docs/security/ZERO-TRUST-TODO.md`](docs/security/ZERO-TRUST-TODO.md) — full audit, all 41 numbered items now `[x]`.
+- **Operator security runbook** at [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md) ([#262](https://github.com/FootprintAI/Containarium/pull/262), expanded across the session). Covers token lifecycle, leak response, agent-token least-privilege, JWT/Postgres credential rotation, KMS envelope rollout for both Vault and GCP, image digest pinning + verification, auditing administrative actions, `/wake/` lockdown.
+- **Design notes** at [`docs/security/KMS-ENVELOPE-DESIGN.md`](docs/security/KMS-ENVELOPE-DESIGN.md), [`docs/security/IMAGE-DIGEST-VERIFY-DESIGN.md`](docs/security/IMAGE-DIGEST-VERIFY-DESIGN.md), [`docs/security/SECRETS-ENV-VAR-RISK.md`](docs/security/SECRETS-ENV-VAR-RISK.md) ([#258](https://github.com/FootprintAI/Containarium/pull/258), [#267](https://github.com/FootprintAI/Containarium/pull/267)) — threat model + multi-phase rollout for each major remediation.
+- **Phase-0 operator runbook** at [`docs/security/PHASE-0-OPERATOR-RUNBOOK.md`](docs/security/PHASE-0-OPERATOR-RUNBOOK.md) ([#232](https://github.com/FootprintAI/Containarium/pull/232)).
+- **README architecture and security sections** updated to reflect the new gates and env-var surface.
+
+### Breaking
+
+- **JWT validation now requires `iss` and `aud`**. Tokens minted by older `containarium token generate` (pre-#231) won't validate. Operators must re-mint any long-lived tokens — `containarium token inspect <token>` shows whether the claims are present.
+- **`/swagger-ui/` requires admin auth** ([#256](https://github.com/FootprintAI/Containarium/pull/256)). Unauthenticated callers get 401; non-admin callers get 403.
+- **WebSocket auth via `?token=` is removed** ([#245](https://github.com/FootprintAI/Containarium/pull/245)). Clients must use the `Sec-WebSocket-Protocol` subprotocol form. The CLI was updated in the same PR; out-of-tree integrations need to follow.
+- **Terraform sentinel SSH default narrowed** ([#237](https://github.com/FootprintAI/Containarium/pull/237)). New deployments require an explicit `allowed_ssh_sources` rather than getting `0.0.0.0/0`. Existing deployments are not auto-tightened — operators flip the var to opt in.
+
 ## [0.17.0] - 2026-05-18
 
 Ships **pool-aware container placement and per-pool base-domain SNI routing** end-to-end. A single sentinel can now front multiple parent domains, and a single backend can host workloads under several of them — enabling consolidation across previously-separate clusters without merging their app domains.
