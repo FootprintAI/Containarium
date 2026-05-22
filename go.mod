@@ -4,6 +4,7 @@ go 1.25.10
 
 require (
 	cloud.google.com/go/compute v1.57.0
+	github.com/cilium/ebpf v0.21.0
 	github.com/footprintai/go-certs v0.0.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
