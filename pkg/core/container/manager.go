@@ -679,6 +679,15 @@ func (m *Manager) SetConfig(containerName, key, value string) error {
 	return m.incus.SetConfig(containerName, key, value)
 }
 
+// UnsetConfig removes an arbitrary Incus config key from a container.
+// Used by SetContainerTTL's clear path (duration_seconds == 0) so the
+// "no TTL" state is represented by key absence — symmetric with
+// UnsetEnv for the OTel keys. Idempotent: missing keys are not an
+// error on the backend.
+func (m *Manager) UnsetConfig(containerName, key string) error {
+	return m.incus.UnsetConfig(containerName, key)
+}
+
 // GetContainerImageFingerprint returns the Incus-computed
 // fingerprint of the image the container was created from
 // (Phase 3.1 Phase-C). Thin delegate so the server-layer

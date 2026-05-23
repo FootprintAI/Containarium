@@ -48,6 +48,7 @@ type Backend interface {
 
 	// Config & devices
 	SetConfig(containerName, key, value string) error
+	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
 	UpdateContainerConfig(name, key, value string) error
 	GetRawInstance(name string) (map[string]string, string, error)
@@ -283,6 +284,15 @@ type ContainerInfo struct {
 	// StartContainer. Zero value when the key is missing or unparseable.
 	// Consumed by the Phase 2 auto-sleep ticker for its anti-thrash window.
 	LastStartedAt time.Time
+
+	// TTLExpiresAt mirrors user.containarium.ttl_expires_at — the wall-clock
+	// time at which the daemon's ttlsweeper goroutine should force-delete
+	// the container. Zero value when the key is missing or unparseable
+	// (treated by the sweeper and proto-conversion as "no TTL set").
+	// Persistence model is the Incus container config (survives daemon
+	// restart, no extra store needed); see internal/ttlsweeper for the
+	// sweep side and server.SetContainerTTL for the writer side.
+	TTLExpiresAt time.Time
 }
 
 // AutoSleepEnabledKey is the Incus config key storing the per-container
@@ -298,6 +308,13 @@ const IdleThresholdMinutesKey = "user.containarium.idle_threshold_minutes"
 // reads it to enforce its anti-thrash window (don't sleep a container
 // within 2× the idle threshold of its last start).
 const LastStartedAtKey = "user.containarium.last_started_at"
+
+// TTLExpiresAtKey is the Incus config key storing the RFC3339 timestamp at
+// which the container should be auto-deleted. Written by SetContainerTTL
+// (PR following #299) and read by the ttlsweeper goroutine on every tick.
+// Persisted on the Incus config (not a separate store) so it survives
+// daemon restart with no extra plumbing.
+const TTLExpiresAtKey = "user.containarium.ttl_expires_at"
 
 // DefaultIdleThresholdMinutes is the fallback used when the threshold
 // config key is missing or unparseable.
@@ -322,6 +339,23 @@ func parseIdleThresholdMinutes(cfg map[string]string) int32 {
 // that as "unknown" rather than a real moment in epoch history.
 func parseLastStartedAt(cfg map[string]string) time.Time {
 	raw, ok := cfg[LastStartedAtKey]
+	if !ok || raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// parseTTLExpiresAt reads the TTL-expiry timestamp from an Incus config
+// map. Missing or unparseable values yield the zero time — the read-path
+// (toProtoContainer) and the sweeper both treat the zero value as "no
+// TTL set" so a corrupt key never 5xx's the list endpoint or trips
+// false-positive deletions.
+func parseTTLExpiresAt(cfg map[string]string) time.Time {
+	raw, ok := cfg[TTLExpiresAtKey]
 	if !ok || raw == "" {
 		return time.Time{}
 	}
@@ -593,6 +627,7 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 			AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 			LastStartedAt:        parseLastStartedAt(inst.Config),
+			TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		}
 
 		// Get CPU and memory limits from config
@@ -720,6 +755,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 		LastStartedAt:        parseLastStartedAt(inst.Config),
+		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 	}
 
 	// Get resource limits
@@ -1180,6 +1216,32 @@ func (c *Client) SetConfig(containerName, key, value string) error {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
 
+	return nil
+}
+
+// UnsetConfig removes an arbitrary config key from a container's Incus
+// config (deletes the key rather than setting it to empty). Mirrors
+// UnsetEnv but for non-environment keys — used by SetContainerTTL's
+// clear path so "no TTL" is represented by key absence rather than a
+// stored empty string, which keeps parseTTLExpiresAt and the sweeper
+// from having to special-case empty values. Idempotent — a missing
+// key is not an error.
+func (c *Client) UnsetConfig(containerName, key string) error {
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+	if _, present := inst.Config[key]; !present {
+		return nil
+	}
+	delete(inst.Config, key)
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container config: %w", err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to wait for config update: %w", err)
+	}
 	return nil
 }
 

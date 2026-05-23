@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // PendingCreation tracks an async container creation
@@ -1841,7 +1842,7 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		}
 	}
 
-	return &pb.Container{
+	pc := &pb.Container{
 		Name:     info.Name,
 		Username: username,
 		State:    state,
@@ -1866,6 +1867,14 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		AutoSleepEnabled:     info.AutoSleepEnabled,
 		IdleThresholdMinutes: info.IdleThresholdMinutes,
 	}
+	// TTL — populated by SetContainerTTL on the writer side, read here
+	// from the Incus config map. Zero value means no TTL set (parser
+	// silently drops missing/unparseable keys; a corrupted key shouldn't
+	// 5xx the list endpoint).
+	if !info.TTLExpiresAt.IsZero() {
+		pc.TtlExpiresAt = timestamppb.New(info.TTLExpiresAt)
+	}
+	return pc
 }
 
 // GetManager returns the container manager for reuse by other components

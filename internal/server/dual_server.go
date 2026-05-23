@@ -38,6 +38,7 @@ import (
 	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/internal/traffic"
+	"github.com/footprintai/containarium/internal/ttlsweeper"
 	"github.com/footprintai/containarium/internal/wake"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -155,6 +156,7 @@ type DualServer struct {
 	zapStore              *zapscanner.Store
 	peerPool              *PeerPool
 	autoSleepManager      *autosleep.Manager
+	ttlSweeperManager     *ttlsweeper.Manager // ephemeral CI box auto-delete (#299)
 	secretsReconciler     *secretsReconciler // Phase 4.3 Phase B-3
 	startTime             time.Time
 }
@@ -1497,6 +1499,27 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.autoSleepManager.Start(ctx)
 	}
 
+	// Start TTL sweeper (#299 scaffold + this PR's wiring). Reads
+	// user.containarium.ttl_expires_at off each container's Incus
+	// config every 60s; when the wall clock crosses the stamped
+	// expiry (minus a 30s clock-skew grace), routes the deletion
+	// through DeleteContainer so the audit + event + Caddy-cascade
+	// hooks all fire. Always-on by daemon policy; per-container
+	// opt-in (the TTL key must be set explicitly via SetContainerTTL).
+	// Naturally cooperates with autosleep — if both ticks decide on
+	// the same container in the same second, deletion is final and
+	// the autosleep stop becomes a no-op against a missing container.
+	if incusClient, err := incus.New(); err != nil {
+		log.Printf("[ttlsweeper] incus client unavailable: %v (sweeper disabled)", err)
+	} else {
+		ds.ttlSweeperManager = ttlsweeper.NewManager(
+			&ttlsweeperIncusAdapter{ic: incusClient},
+			&ttlsweeperDeleter{cs: ds.containerServer},
+			ttlsweeper.Options{},
+		)
+		ds.ttlSweeperManager.Start(ctx)
+	}
+
 	// Phase 4.3 Phase B-3 — file-mode secret reconciler.
 	// Periodically re-stamps tmpfs secrets on running
 	// containers so a bare `incus restart` not routed
@@ -1706,6 +1729,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.autoSleepManager != nil {
 			ds.autoSleepManager.Stop()
+		}
+		if ds.ttlSweeperManager != nil {
+			ds.ttlSweeperManager.Stop()
 		}
 		if ds.secretsReconciler != nil {
 			ds.secretsReconciler.Stop()
