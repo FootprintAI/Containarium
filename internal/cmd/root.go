@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
@@ -90,14 +91,16 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.containarium.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 
-	// Remote server flags (gRPC mode)
-	rootCmd.PersistentFlags().StringVar(&serverAddr, "server", "", "remote server address (e.g., 35.229.246.67:50051 for gRPC, or http://host:8080 for HTTP)")
-	rootCmd.PersistentFlags().StringVar(&certsDir, "certs-dir", "", "directory containing mTLS certificates (default: ~/.config/containarium/certs)")
-	rootCmd.PersistentFlags().BoolVar(&insecure, "insecure", false, "connect without TLS (not recommended)")
+	// Remote server flags (gRPC mode). Env vars provide defaults so the
+	// CLI can be driven non-interactively (CI, scripts, GitHub Actions)
+	// without repeating flags on every invocation.
+	rootCmd.PersistentFlags().StringVar(&serverAddr, "server", os.Getenv("CONTAINARIUM_SERVER"), "remote server address (env: CONTAINARIUM_SERVER) — e.g., 35.229.246.67:50051 for gRPC, or http://host:8080 for HTTP")
+	rootCmd.PersistentFlags().StringVar(&certsDir, "certs-dir", os.Getenv("CONTAINARIUM_CERTS_DIR"), "directory containing mTLS certificates (env: CONTAINARIUM_CERTS_DIR; default: ~/.config/containarium/certs)")
+	rootCmd.PersistentFlags().BoolVar(&insecure, "insecure", os.Getenv("CONTAINARIUM_INSECURE") == "true", "connect without TLS (env: CONTAINARIUM_INSECURE=true; not recommended)")
 
 	// Remote server flags (HTTP mode)
-	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", false, "use HTTP/REST API instead of gRPC")
-	rootCmd.PersistentFlags().StringVar(&authToken, "token", "", "JWT authentication token for HTTP API")
+	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", os.Getenv("CONTAINARIUM_HTTP") == "true", "use HTTP/REST API instead of gRPC (env: CONTAINARIUM_HTTP=true)")
+	rootCmd.PersistentFlags().StringVar(&authToken, "token", os.Getenv("CONTAINARIUM_TOKEN"), "JWT authentication token for HTTP API (env: CONTAINARIUM_TOKEN)")
 
 	// Version command with verbose flag
 	versionCmd.Flags().BoolVar(&verboseVersion, "verbose", false, "show detailed version information")
