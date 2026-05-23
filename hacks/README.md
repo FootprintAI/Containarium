@@ -39,6 +39,42 @@ sudo ./install.sh
 
 ---
 
+### ⚙️ `install-cli.sh` - CLI-Only Installation
+
+Installs only the `containarium` CLI binary — no daemon, no Incus,
+no system service. Use this when you want to drive a *remote*
+Containarium server (CI runner, developer laptop, admin shell)
+instead of running one locally.
+
+**Quick install:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install-cli.sh | sudo bash
+```
+
+**User-local install (no sudo):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install-cli.sh \
+  | INSTALL_DIR=$HOME/.local/bin bash
+```
+
+**Drive a remote server with env vars:**
+```bash
+export CONTAINARIUM_HTTP=true
+export CONTAINARIUM_SERVER=https://your-host:8080
+export CONTAINARIUM_TOKEN=<jwt>
+containarium list
+```
+
+The CLI's global flags (`--server`, `--token`, `--http`, `--insecure`,
+`--certs-dir`) all read defaults from matching `CONTAINARIUM_*` env
+vars, so CI workflows and scripts don't need to repeat flags on every
+invocation.
+
+**Supports:** `linux/amd64`, `darwin/amd64`, `darwin/arm64`.
+(`linux/arm64` binaries aren't built — use `make build` from source.)
+
+---
+
 ### 🗑️ `uninstall.sh` - Complete Removal
 
 Removes Containarium completely (keeps Incus by default).
