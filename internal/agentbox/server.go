@@ -15,6 +15,12 @@
 //   - process_list    — list managed processes with PID, command, liveness
 //   - process_kill    — SIGTERM (or SIGKILL with force) and reap
 //
+// Resource taxonomy (v0):
+//
+//   - containarium://ci-context — JSON metadata about the current CI run
+//     (PR, commit, failing test), populated by the containarium-run GitHub
+//     Action. Empty stub when the box isn't being used for CI.
+//
 // File-ops tools enforce a sandbox in this order:
 //   1. AGENTBOX_ROOT env var (strict floor when set).
 //   2. MCP Roots advertised by the client via roots/list (used as the
@@ -42,4 +48,12 @@ func RegisterTools(s *server.MCPServer) {
 	registerFileTools(s)
 	registerTailLogTool(s)
 	registerProcessTools(s)
+}
+
+// RegisterResources wires every agentbox MCP resource onto the given
+// server. Resources are read-only data the agent fetches via the MCP
+// resources/read RPC — distinct from tools, which are imperative calls.
+// Called once at startup by cmd/agent-box, parallel to RegisterTools.
+func RegisterResources(s *server.MCPServer) {
+	registerCIContextResource(s)
 }

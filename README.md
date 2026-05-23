@@ -128,6 +128,12 @@ SSH on the client side). Exposes Linux-native operations:
 | `move_file` | Atomic rename with `mkdirp` on destination |
 | `delete_file` | Single-file remove (refuses directories so recursive deletes go via `shell_exec` where blast radius is explicit) |
 
+Resources (read-only data the agent fetches via MCP `resources/read`):
+
+| URI | What it returns |
+|---|---|
+| `containarium://ci-context` | JSON metadata about the current CI run (PR number, commit SHA, failing test, etc.) when the box was kept alive by the FootprintAI/containarium-run GitHub Action after a failed CI run. Returns `{"available": false}` on non-CI boxes so callers never have to special-case errors. |
+
 Optional sandbox: when `AGENTBOX_ROOT` is set, every file-ops path is
 resolved against that root with a boundary-aware prefix check. Default
 unset = no constraint. See
