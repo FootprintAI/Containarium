@@ -253,7 +253,15 @@ func buildRunnerDeps(sentinel, sshUser string) (runner.Deps, string, error) {
 		if err != nil {
 			return runner.Deps{}, "", err
 		}
-		pubBytes, err := os.ReadFile(pubPath)
+		// gosec G304: pubPath comes from a CLI flag the operator
+		// passed themselves. The CLI runs as the operator's UID;
+		// any file it can open, the operator can already `cat`.
+		// Constraining the path would just block legitimate
+		// custom-key-location use cases without any real security
+		// benefit. (Contrast with internal/mcp/runner_tools.go,
+		// where the path IS constrained because the caller may
+		// be a different identity than the daemon.)
+		pubBytes, err := os.ReadFile(pubPath) // #nosec G304 -- operator-supplied path; CLI runs as operator's UID
 		if err != nil {
 			return runner.Deps{}, "", fmt.Errorf("read public key %s: %w", pubPath, err)
 		}

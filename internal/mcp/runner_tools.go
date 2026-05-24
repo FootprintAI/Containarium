@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/runner"
@@ -222,7 +223,11 @@ func buildMCPRunnerDeps(client *Client, sentinel, sshKeyPath string, withSSH boo
 		if err != nil {
 			return runner.Deps{}, "", err
 		}
-		pubBytes, err := os.ReadFile(pubPath)
+		// gosec G304: pubPath comes from resolveMCPSSHKey, which
+		// constrains the path to ~/.ssh/ after Clean + absolute
+		// resolution. Caller-supplied paths that escape that root
+		// are rejected with InvalidArgument before reaching here.
+		pubBytes, err := os.ReadFile(pubPath) // #nosec G304 -- constrained to ~/.ssh by resolveMCPSSHKey
 		if err != nil {
 			return runner.Deps{}, "", fmt.Errorf("read ssh public key %s: %w", pubPath, err)
 		}
@@ -258,22 +263,65 @@ func splitMCPKey(s string) []string {
 // CLI's resolveOperatorSSHKey does. Kept separate (rather than
 // importing internal/cmd) to avoid the cmd↔mcp coupling that
 // would otherwise creep in.
+// resolveMCPSSHKey turns a caller-supplied path into a (pubPath,
+// privPath) pair, restricting both to the MCP daemon user's
+// ~/.ssh/ directory.
+//
+// Why constrained: this is the MCP-side resolver. An authenticated
+// MCP caller could otherwise pass an arbitrary `ssh_key_path` and
+// trick the daemon into reading any file the daemon's UID can read
+// (gosec G304). The CLI-side resolver (cmd/runner.go) has no such
+// restriction because the CLI runs as the operator and they can
+// `cat` anything they want anyway.
+//
+// Allowed shapes:
+//
+//	""              → ~/.ssh/id_rsa.pub  (default for the daemon user)
+//	"~/.ssh/foo"    → ~/.ssh/foo         (tilde-expanded, must still resolve under ~/.ssh)
+//	"foo"           → ~/.ssh/foo         (bare filename — sugar for ~/.ssh/foo)
+//
+// Anything that resolves outside ~/.ssh/ (absolute paths to other
+// directories, `..` escapes after Clean, symlink-resolved escapes)
+// is rejected with InvalidArgument.
 func resolveMCPSSHKey(pubPathFlag string) (pubPath, privPath string, err error) {
-	pubPath = pubPathFlag
-	if pubPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", "", fmt.Errorf("home dir: %w", err)
-		}
-		pubPath = home + "/.ssh/id_rsa.pub"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", fmt.Errorf("home dir: %w", err)
 	}
-	if strings.HasPrefix(pubPath, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", "", fmt.Errorf("home dir: %w", err)
-		}
-		pubPath = home + pubPath[1:]
+	sshDir := filepath.Join(home, ".ssh")
+
+	raw := pubPathFlag
+	switch {
+	case raw == "":
+		raw = filepath.Join(sshDir, "id_rsa.pub")
+	case strings.HasPrefix(raw, "~/"):
+		raw = filepath.Join(home, raw[2:])
+	case !strings.Contains(raw, "/"):
+		// Bare filename → treat as a key in ~/.ssh/.
+		raw = filepath.Join(sshDir, raw)
 	}
+
+	// Clean removes `..` and `.` segments and normalizes separators.
+	cleaned := filepath.Clean(raw)
+	abs, err := filepath.Abs(cleaned)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve ssh key path: %w", err)
+	}
+
+	// Constrain to ~/.ssh/. We use the resolved absolute path for
+	// both sides of the prefix check so that anything escaping via
+	// `..` after Clean (defensive — Clean already handles most)
+	// gets rejected here. A trailing separator on sshDir is added
+	// so "/home/x/.ssh-evil" doesn't match "/home/x/.ssh".
+	sshDirAbs, err := filepath.Abs(sshDir)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve ssh dir: %w", err)
+	}
+	if !strings.HasPrefix(abs, sshDirAbs+string(os.PathSeparator)) && abs != sshDirAbs {
+		return "", "", fmt.Errorf("ssh_key_path must resolve under %s; got %s", sshDirAbs, abs)
+	}
+
+	pubPath = abs
 	privPath = strings.TrimSuffix(pubPath, ".pub")
 	if privPath == pubPath {
 		privPath = pubPath
