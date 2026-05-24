@@ -4,6 +4,36 @@ This file is a small set of durable conventions for AI assistants working
 on this repository. Keep it short — only rules whose violation we'd
 actually want to catch in review.
 
+## No instance / endpoint / tenant names in OSS-visible files
+
+This repository is public-facing. **Anonymize anything that names a
+specific deployment** in files that ship with the repo: `docs/`,
+`README.md`, `CHANGELOG.md`, design notes, runbooks, PR descriptions,
+and commit messages.
+
+| Don't write | Do write |
+| --- | --- |
+| Concrete backend / lab node hostnames | "a backend host" / `<host>` / "the GPU node" |
+| Live production cluster apex hostnames | "the cluster's apex hostname" / `<cluster>.example.com` |
+| Tenant container names (`<tenant>-container` with real tenants) | "a tenant container" / `<tenant>-container` (generic) |
+| Containarium-core service container names (in operator-specific context) | "the platform Postgres LXC" / "core service LXCs" |
+| Live IPs (LAN, GCP, Tailscale) | "a private LAN IP" / `<sentinel-ip>` |
+| Internal tenant workload names (docker container, app names) | "a tenant workload" / "a docker compose service" |
+
+**Why:** concrete names are reconnaissance signals — they reveal what's
+running where, which workloads to target, which backend names to
+fingerprint. The cost of generic wording is one extra word; the cost of
+leaking is permanent — PR descriptions and merged commits stay indexed
+forever.
+
+**Where concrete names ARE fine:**
+- Private operator runbooks not in the repo.
+- Internal Slack / email / private docs.
+- Operator memory files outside the repo.
+
+**Before pushing any doc / runbook / PR description:** grep the diff
+for concrete names; if you're not sure, anonymize.
+
 ## CLI-first, MCP wraps it
 
 When adding a new platform action (anything that mutates Containarium
