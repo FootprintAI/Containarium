@@ -93,12 +93,18 @@ at host boot regardless of whether the tenant is logged in.
 
 Pure-local-filesystem walk inside the LXC: look for
 `docker-compose.{yml,yaml}` or `compose.{yml,yaml}` files
-under `$HOME` (depth-limited; skip `node_modules`,
-`.git`, `vendor`, etc.). For each found stack, report:
+under `$HOME` (depth-limited; honors a configurable
+skip-list, see [Skip-list configuration](#skip-list-configuration)
+below). For each found stack, report:
 
 - absolute path to the compose file
 - absolute path to the compose directory
-- whether it's currently running (`<compose-bin> ps` exit + output)
+- `compose_bin` resolved for this stack (`podman-compose` |
+  `docker compose` | `podman compose`)
+- **`running_count` + `total_count`** — services up vs total
+  declared, so agents can detect partial degradation
+  (`2/3 services up`) without re-running compose-ps
+  themselves
 - whether it's autostart-protected (does a
   `containarium-compose@<slug>.service` exist + is it enabled?)
 - last-modified time of the compose file vs. last-modified time
@@ -109,6 +115,25 @@ Same logic, called from both surfaces:
 - `agent-box compose discover` (in-box MCP)
 - `containarium compose discover <user>` (operator CLI via
   daemon RPC)
+
+#### Skip-list configuration
+
+Walk skips a default set known to contain irrelevant compose
+files (vendored examples, test fixtures): `node_modules`,
+`.git`, `vendor`, `target`, `dist`, `.cache`, `.venv`,
+`__pycache__`. Operators / tenants can override per-tenant
+via:
+
+- **CLI / RPC**: `--skip DIR` (repeatable) or `--skip-from FILE`
+- **In-box config**: `~/.config/containarium/compose-discover.toml`
+  ```toml
+  skip = ["node_modules", ".git", "playground"]
+  max_depth = 6   # default 5
+  ```
+
+The config file wins over the default; the CLI flag wins
+over the config file. Agents that want the un-filtered view
+pass `--no-skip` to bypass defaults + config.
 
 ### Surfaces
 
@@ -127,17 +152,32 @@ An agent setting up its workload, end-to-end:
 agent inside LXC:
   → agent-box compose discover
     ← {"stacks": [
-         {"path":"~/deploy/docker-compose.yml",
-          "running": true, "autostart": false, "compose_bin": "podman-compose"},
-         {"path":"~/playground/test/compose.yml",
-          "running": false, "autostart": false, "compose_bin": "podman-compose"}
+         {"path": "~/deploy/docker-compose.yml",
+          "compose_bin": "podman-compose",
+          "running_count": 3, "total_count": 3,
+          "autostart": false},
+         {"path": "~/playground/test/compose.yml",
+          "compose_bin": "podman-compose",
+          "running_count": 0, "total_count": 2,
+          "autostart": false},
+         {"path": "~/api/docker-compose.yml",
+          "compose_bin": "docker compose",
+          "running_count": 1, "total_count": 3,   ← partial degradation!
+          "autostart": true,
+          "compose_modified_at": "2026-05-24T11:00:00Z",
+          "unit_modified_at":    "2026-05-20T09:00:00Z"}  ← compose changed since enable
        ]}
 
-agent decides: production stack at ~/deploy should survive reboots
+agent decides:
+  - ~/deploy is the production stack, fully up → enable autostart
+  - ~/playground is a scratchpad, leave it alone
+  - ~/api has partial-degradation AND compose changed since
+    autostart was wired → re-enable to refresh + verify
+
   → agent-box compose enable --dir ~/deploy
     ← installed containarium-compose@deploy.service; enabled; linger ON
-
-agent leaves ~/playground/test/ unprotected (it's a scratchpad)
+  → agent-box compose enable --dir ~/api --force
+    ← re-installed; verified all 3 services up
 ```
 
 Discovery is **read-only**. Enable is **opt-in** per stack.
@@ -157,11 +197,18 @@ message ComposeStack {
   string compose_dir = 2;      // absolute path inside the LXC
   string compose_file = 3;     // absolute path to the compose.yml
   string compose_bin = 4;      // "podman-compose" | "docker compose" | "podman compose"
-  bool running = 5;
-  bool autostart_enabled = 6;
-  string unit_name = 7;        // containarium-compose@<slug>.service when enabled
-  google.protobuf.Timestamp compose_modified_at = 8;
-  google.protobuf.Timestamp unit_modified_at = 9;
+
+  // Per-service counts (not a boolean) so agents can detect
+  // partial degradation: "1/3 services up" tells them to act,
+  // "3/3" tells them to leave alone, "0/2" tells them the
+  // stack is fully down.
+  int32 running_count = 5;
+  int32 total_count = 6;
+
+  bool autostart_enabled = 7;
+  string unit_name = 8;        // containarium-compose@<slug>.service when enabled
+  google.protobuf.Timestamp compose_modified_at = 9;
+  google.protobuf.Timestamp unit_modified_at = 10;
 }
 ```
 
@@ -185,14 +232,6 @@ without daemon-side work).
 
 ## Open questions
 
-- **Compose-file discovery depth.** A naive walk of `$HOME`
-  finds compose files under `node_modules/` or `vendor/`
-  (vendored examples). Skip-list pattern: `node_modules`,
-  `.git`, `vendor`, `target`, `dist`. Configurable but with a
-  sane default.
-- **What counts as "running"?** `<compose-bin> ps -q` returning
-  non-empty? Some compose tools also surface "Created" vs
-  "Up." Probably surface both: `running_count` + `total_count`.
 - **Multiple compose files per directory** (`compose.yml` +
   `compose.override.yml`). The unit invokes the compose tool
   in the directory, which handles overrides itself — no
@@ -226,6 +265,17 @@ without daemon-side work).
   Existing infrastructure for stamping secrets already runs
   commands inside the LXC; the install command is "one more
   consumer of that pattern."
+- **Skip-list is configurable, not hard-coded.** Defaults
+  cover ~95% of false-positive cases (`node_modules`,
+  `.git`, `vendor`, `target`, `dist`, `.cache`, `.venv`,
+  `__pycache__`). Per-tenant override via
+  `~/.config/containarium/compose-discover.toml`; per-call
+  override via `--skip` / `--no-skip`. Hard-coded would
+  surprise tenants with edge-case directory names.
+- **Discovery surfaces `running_count` + `total_count`, not a
+  boolean.** Agents need to distinguish "fully up" from
+  "partial degradation" from "fully down" — boolean conflates
+  the first two and hides the actionable signal.
 
 ## What this is NOT
 
