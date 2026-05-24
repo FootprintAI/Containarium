@@ -904,6 +904,12 @@ func (s *Server) registerTools() {
 		},
 	}
 
+	// Runner-provision tools (CLI-mirrored). Appended here so the
+	// tools.go slice literal stays focused on container/secret/
+	// route lifecycle; the actual Tool definitions live in
+	// runner_tools.go alongside their handlers.
+	s.tools = append(s.tools, runnerTools()...)
+
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
 	// the security policy lives in one auditable spot. New
@@ -957,6 +963,12 @@ func toolScopeAssignments() map[string]string {
 		"sync_ssh_config": auth.ScopeSSHWrite,
 		// JWT lifecycle (admin)
 		"revoke_token": auth.ScopeTokensWrite,
+		// Runner provisioning — provision/remove create or delete
+		// boxes; list is read-only. Reuses the containers:* scopes
+		// since the underlying operations are box-level CRUD.
+		"provision_runners": auth.ScopeContainersWrite,
+		"remove_runner":     auth.ScopeContainersWrite,
+		"list_runners":      auth.ScopeContainersRead,
 	}
 }
 
