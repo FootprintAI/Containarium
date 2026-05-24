@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -517,10 +518,15 @@ func composeServiceCounts(bin, dir string) (running, total int) {
 // composeExec builds the right exec.Cmd for `bin` (one or two
 // tokens) running in `dir`. Splits the bin into argv to handle
 // "docker compose" / "podman compose" sub-command forms.
+//
+// Both `bin` (one of the three hardcoded strings returned by
+// resolveComposeBin) and `args` (hardcoded "ps" / "--format" /
+// "json" at every call site) are entirely under the agent-box
+// binary's control — no agent-supplied input reaches argv here.
 func composeExec(bin, dir string, args ...string) *exec.Cmd {
 	parts := strings.Fields(bin)
 	all := append(parts[1:], args...)
-	cmd := exec.Command(parts[0], all...)
+	cmd := exec.Command(parts[0], all...) // #nosec G204 -- bin from resolveComposeBin (hardcoded set), args hardcoded at all call sites
 	cmd.Dir = dir
 	return cmd
 }
@@ -635,8 +641,12 @@ func fillAutostartStatus(stack *ComposeStack) {
 
 // unitEnabled returns true when `systemctl --user is-enabled
 // <unit>` reports enabled / static / generated.
+//
+// `unit` is always constructed as "containarium-compose@<slug>.service"
+// where <slug> is the output of sanitizeSlug (restricted to [a-z0-9.-]),
+// so no agent input reaches argv unsanitized.
 func unitEnabled(unit string) bool {
-	out, err := exec.Command("systemctl", "--user", "is-enabled", unit).Output()
+	out, err := exec.Command("systemctl", "--user", "is-enabled", unit).Output() // #nosec G204 -- unit is "containarium-compose@<sanitizedSlug>.service"
 	if err != nil {
 		return false
 	}
@@ -655,7 +665,7 @@ func installComposeUnit(bin string, force bool) error {
 			return nil
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 	contents := fmt.Sprintf(`# Containarium compose autostart — Phase B.
@@ -678,7 +688,7 @@ RestartSec=10
 [Install]
 WantedBy=default.target
 `, bin, bin)
-	return os.WriteFile(dst, []byte(contents), 0o644)
+	return os.WriteFile(dst, []byte(contents), 0o600)
 }
 
 // enableLinger asks loginctl to keep the user-systemd
@@ -686,18 +696,30 @@ WantedBy=default.target
 // boot). Requires root in most distros — best-effort here; a
 // non-root agent-box can still benefit from autostart while
 // it's logged in.
+//
+// Resolves the current username via os/user (passwd lookup) rather
+// than os.Getenv("USER") — env vars are caller-controlled in some
+// invocation modes; the passwd entry isn't, and is the canonical
+// source for the running uid's name.
 func enableLinger() error {
-	user := os.Getenv("USER")
-	if user == "" {
-		user = "$USER"
+	u, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("resolve current user: %w", err)
 	}
-	return exec.Command("loginctl", "enable-linger", user).Run()
+	if u.Username == "" {
+		return fmt.Errorf("current user has empty username")
+	}
+	return exec.Command("loginctl", "enable-linger", u.Username).Run() // #nosec G204 -- u.Username from os/user passwd lookup (uid-derived, not env)
 }
 
 // systemctlUser runs `systemctl --user <args>` and returns
 // the error verbatim (with output included on failure).
+//
+// Every call site supplies hardcoded subcommands ("daemon-reload",
+// "enable", "--now", "disable") OR a sanitized unit instance name
+// (see unitEnabled comment). No agent-supplied input reaches argv.
 func systemctlUser(args ...string) error {
-	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...) // #nosec G204 -- args hardcoded at all call sites or sanitized unit-instance names
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
 	}
