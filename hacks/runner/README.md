@@ -57,9 +57,17 @@ After step 2 finishes, verify the runner appears at
 ~30 seconds. It'll show idle, with labels `containarium, ephemeral`,
 ready to pick up jobs.
 
-## Targeting the runners from a workflow
+## Two ways to target the runners
 
-In your repo's `.github/workflows/*.yml`:
+The runner kit supports two distinct workflow patterns. They have
+different security properties; pick based on your threat model.
+
+### Pattern A — jobs run **natively** in the runner box
+
+Simpler. Each job's steps execute directly in the runner box. The
+runner box itself is ephemeral (replaced per-job via `--ephemeral`),
+so state doesn't accumulate, but the runner box does have access to
+its own filesystem + the GitHub PAT in `/etc/containarium-runner.env`.
 
 ```yaml
 jobs:
@@ -67,13 +75,62 @@ jobs:
     runs-on: [self-hosted, containarium, ephemeral]
     steps:
       - uses: actions/checkout@v4
-      - run: go test ./...   # runs natively in the Containarium box
+      - run: go test ./...
 ```
 
-No need for the [`containarium-run`](https://github.com/FootprintAI/containarium-run)
-Action — the runner IS already on Containarium. The Action is for
-the *other* model (thin-shim on GHA-hosted runners that spawn boxes
-on demand).
+**Use when:** trusted internal repos, single-tenant team, you're OK
+with jobs having sibling-level access to the runner box's surface.
+
+### Pattern B — runner orchestrates a **fresh per-job box** via `containarium-run`
+
+Defense-in-depth. The runner box only holds the GitHub registration;
+each job spawns a brand-new Containarium box where the actual work
+happens. The job box has zero access to the runner box's filesystem,
+zero access to the GitHub PAT, and gets torn down after the job
+finishes.
+
+```yaml
+jobs:
+  test:
+    runs-on: [self-hosted, containarium, ephemeral]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: FootprintAI/containarium-run@v1
+        with:
+          server: https://cloud.containarium.dev  # or your self-hosted daemon
+          token:  ${{ secrets.CONTAINARIUM_TOKEN }}
+          # config: .github/containarium.yml   # the script that runs IN the per-job box
+```
+
+The runner box becomes a thin orchestrator: receives the GHA webhook,
+calls the Action, the Action calls the daemon API to spawn a new box,
+work happens there, box dies. The runner box never touches user code.
+
+**Use when:**
+- **Multi-tenant CI** (one runner pool serves many repos / orgs)
+- **Untrusted workflows** (PRs from external contributors, even if
+  you've restricted who can run them)
+- **Compliance** (per-job blast-radius is small enough to satisfy
+  "jobs cannot affect each other")
+- **You want zero GHA-hosted minutes AND per-job isolation** — this
+  pattern delivers both. Pattern A gives you the first; Pattern B
+  gives you both.
+
+### Picking between them
+
+| | Pattern A (native) | Pattern B (nested Action) |
+|---|---|---|
+| GHA-hosted minutes | 0 | 0 |
+| Per-job filesystem isolation | Box is ephemeral, but ONE job sees the runner-box state during its run | Each job in its own brand-new box |
+| Runner credentials accessible to jobs | Yes (`/etc/containarium-runner.env` is readable) | No (the job box has no such file) |
+| Setup overhead | Just this kit | This kit + a `CONTAINARIUM_TOKEN` secret on the repo |
+| Per-job startup time | ~0s (job runs immediately) | ~5-15s (box spawn + ssh) |
+| Best for | Trusted internal team | Anything with untrusted code or multi-tenant concerns |
+
+Most teams should start with **Pattern A** for simplicity and graduate
+to Pattern B if/when isolation becomes a real concern. Containarium
+itself uses Pattern A for its own CI (single-team trusted repo) and
+documents Pattern B as the secure default for external usage.
 
 ## Operations
 
