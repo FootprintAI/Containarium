@@ -1,13 +1,12 @@
 # Compose Autostart — Design Note
 
 > Status: **Exploration / not yet approved.** Filed in response
-> to a real production incident on `containarium.footprint-ai.com`
-> (2026-05-24): the `cloud-daemon-container` LXC restarted after
-> a host reboot, but its `podman-compose` workload (postgres +
-> nginx + cloud-daemon) was left in `Created` state because
-> nothing inside the LXC owned its restart lifecycle. The tenant
-> had to be told to `cd ~/deploy && podman-compose up -d` by
-> hand. Every Containarium tenant running compose has this gap.
+> to a real production incident (2026-05-24): a tenant's LXC
+> restarted after a host reboot, but its `podman-compose`
+> workload (a three-service stack) was left in `Created` state
+> because nothing inside the LXC owned its restart lifecycle.
+> The tenant had to be told to `cd <compose-dir> && podman-compose up -d`
+> by hand. Every Containarium tenant running compose has this gap.
 
 ## Where we are today
 
@@ -224,7 +223,7 @@ so an agent can write one parser for both.
 | **B — agent-box subcommand** | `agent-box compose {discover,enable,disable,status}` against local filesystem + systemd-user. No daemon involvement. | 3 days |
 | **C — daemon proto + RPC** | `ComposeAutostartService` end-to-end (proto → server → CLI → platform MCP wrapper). Daemon execs into the LXC via existing `container.Manager.Exec` | 1 week |
 | **D — `containarium create --auto-restart-compose`** | Provision-time integration. Tenants opt in at create. | 2 days |
-| **E — operator runbook + migration** | Doc section + the retroactive `containarium compose enable --all` for fixing existing prod containers (like cloud-daemon-container today) | 2 days |
+| **E — operator runbook + migration** | Doc section + the retroactive `containarium compose enable --all` for fixing existing prod containers without recreation | 2 days |
 
 Total: **2-3 weeks bounded**, Phase B independently shippable as
 the highest-value primitive (agents can self-protect immediately
@@ -295,10 +294,10 @@ without daemon-side work).
 
 ## Related
 
-- The 2026-05-24 cloud-daemon-container incident — concrete
-  motivating example. After a host reboot, three podman
-  containers were left in `Created` state; the tenant had to
-  manually `podman-compose up -d`.
+- The 2026-05-24 production incident — concrete motivating
+  example. After a host reboot, three podman containers were
+  left in `Created` state; the tenant had to manually
+  `podman-compose up -d`.
 - [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](security/OPERATOR-SECURITY-RUNBOOK.md)
   — operator-facing security runbook; will get a sibling
   section on compose-autostart when this lands.
