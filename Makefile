@@ -1,4 +1,4 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-release sidecar-build-otel
+.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
 
 # Variables
 BINARY_NAME=containarium
@@ -172,6 +172,31 @@ build-release: build-all build-mcp-all build-agent-box-all ## Build all 9 releas
 	    > SHA256SUMS.txt
 	@echo "==> Release artifacts ready in $(BUILD_DIR)/:"
 	@ls -1 $(BUILD_DIR)/
+
+# ---- Air-gapped install bundle (E3a/E3b) ----
+# Per prd/cloud/air-gapped-install-bundle.md, ship a `.tar.gz` bundle
+# that bakes in every binary, toolchain, .deb, and sidecar image needed
+# to install Containarium on a host with zero internet egress. The
+# bundle wraps `make build-release` output + a download-cache populated
+# by scripts/bundle/download-deps.sh.
+BUNDLE_OS?=linux
+BUNDLE_ARCH?=amd64
+BUNDLE_VERSION?=$(shell grep '^[[:space:]]*Version = ' pkg/version/version.go | head -1 | sed -E 's/.*"([^"]+)".*/v\1/')
+
+bundle-download-deps: ## Pull toolchains + apt packages into dist/bundle-cache/ (run once per OS/ARCH)
+	@echo "==> Downloading bundle dependencies for $(BUNDLE_OS)/$(BUNDLE_ARCH)..."
+	@chmod +x scripts/bundle/download-deps.sh
+	@OS=$(BUNDLE_OS) ARCH=$(BUNDLE_ARCH) ./scripts/bundle/download-deps.sh
+
+build-bundle: build-release ## Assemble the air-gapped install bundle tarball
+	@echo "==> Building air-gapped bundle $(BUNDLE_VERSION) for $(BUNDLE_OS)/$(BUNDLE_ARCH)..."
+	@chmod +x scripts/bundle/build-bundle.sh
+	@VERSION=$(BUNDLE_VERSION) OS=$(BUNDLE_OS) ARCH=$(BUNDLE_ARCH) \
+		./scripts/bundle/build-bundle.sh
+
+build-bundle-all: ## Build bundles for linux/amd64 and linux/arm64
+	@$(MAKE) build-bundle BUNDLE_OS=linux BUNDLE_ARCH=amd64
+	@$(MAKE) build-bundle BUNDLE_OS=linux BUNDLE_ARCH=arm64
 
 install: build ## Install the binary to /usr/local/bin (requires sudo)
 	@echo "==> Installing $(BINARY_NAME) to /usr/local/bin..."
