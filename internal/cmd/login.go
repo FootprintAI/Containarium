@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -49,7 +50,22 @@ var (
 	logoutAll        bool
 	configTokenSrv   string
 	whoamiServerFlag string
+
+	// Sub-task A7 (umbrella-issue #100): post-login SSH-key
+	// auto-registration. Default behaviour is "prompt the user with
+	// Y default"; --with-ssh-setup forces the prompt-and-go path
+	// non-interactively (assume yes), and --no-ssh-setup skips it
+	// entirely. The two flags are mutually exclusive — cobra
+	// enforces.
+	loginWithSSHSetup bool
+	loginNoSSHSetup   bool
 )
+
+// loginPromptReader is the io.Reader the prompt loop drains for the
+// y/N answer. Tests swap it for a strings.Reader; production reads
+// from stdin. Kept package-private so nothing else accidentally
+// drives the login prompt.
+var loginPromptReader io.Reader = os.Stdin
 
 // pollIntervalOverride lets tests dial the polling interval down to
 // milliseconds so the device-flow happy-path runs fast. Defaults to
@@ -147,6 +163,9 @@ func init() {
 	loginCmd.Flags().StringVar(&loginServer, "server", "", "server to log in to (default: "+defaultLoginServer+")")
 	loginCmd.Flags().StringVar(&loginDeviceName, "device-name", "", "human label for this session (default: <user>-<host>)")
 	loginCmd.Flags().BoolVar(&loginNoBrowser, "no-browser", false, "don't try to open a browser; print the URL instead")
+	loginCmd.Flags().BoolVar(&loginWithSSHSetup, "with-ssh-setup", false, "after login, register this machine's SSH public key non-interactively (skips the y/N prompt)")
+	loginCmd.Flags().BoolVar(&loginNoSSHSetup, "no-ssh-setup", false, "after login, skip the SSH-key registration prompt entirely")
+	loginCmd.MarkFlagsMutuallyExclusive("with-ssh-setup", "no-ssh-setup")
 
 	logoutCmd.Flags().StringVar(&loginServer, "server", "", "server to log out of (default: default_server)")
 	logoutCmd.Flags().BoolVar(&logoutAll, "all", false, "wipe credentials for all servers")
@@ -329,8 +348,130 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(out, "✓ Logged in as %s\n", who)
 	fmt.Fprintf(out, "  Token saved to %s\n", path)
+
+	// Sub-task A7: optionally register this machine's SSH key for
+	// access to boxes created under this account. Done as a tail of
+	// login so a fresh user gets a working `ssh <box>` after a single
+	// command. Errors are surfaced but non-fatal — the login itself
+	// succeeded, and the user can re-run `containarium ssh setup`
+	// later.
+	maybeRunPostLoginSSHSetup(out, srv)
 	return nil
 }
+
+// maybeRunPostLoginSSHSetup implements the A7 contract:
+//
+//   --no-ssh-setup        skip silently
+//   --with-ssh-setup      run setup non-interactively (assume yes)
+//   neither (default)     prompt "Register this machine's SSH key
+//                         as 'X' for SSH access to your boxes? [Y/n]"
+//                         — empty answer = yes, anything else parsed
+//
+// In non-TTY environments (CI, pipes) we treat an empty/EOF answer
+// as "no" because hitting people with a key-registration in CI
+// without an explicit opt-in is hostile. Use --with-ssh-setup to
+// force-on in CI.
+func maybeRunPostLoginSSHSetup(out io.Writer, srv string) {
+	if loginNoSSHSetup {
+		return
+	}
+
+	name := defaultLocalKeyName()
+	if loginDeviceName != "" {
+		// Re-use the login --device-name when the user gave one;
+		// otherwise the SSH-keys table on the cloud has a different
+		// label than the "Active sessions" table, which is confusing.
+		name = loginDeviceName
+	}
+
+	// Prompt-or-skip decision.
+	yes := loginWithSSHSetup
+	if !yes {
+		isTTY := isStdinTTY()
+		prompt := fmt.Sprintf("\nRegister this machine's SSH key as %q for SSH access to your boxes? [Y/n] ", name)
+		fmt.Fprint(out, prompt)
+		ans, ok := readYesNo(loginPromptReader)
+		switch {
+		case !ok && isTTY:
+			fmt.Fprintln(out, "(no answer; skipping. Run `containarium ssh setup` later.)")
+			return
+		case !ok:
+			// Non-TTY + no answer = silent no.
+			return
+		case ans:
+			yes = true
+		default:
+			fmt.Fprintln(out, "(skipped. Run `containarium ssh setup` later.)")
+			return
+		}
+	}
+
+	if !yes {
+		return
+	}
+
+	// Drive the same code path `containarium ssh setup` uses, with
+	// the post-login defaults wired in. Errors surface as warnings
+	// because the login itself already succeeded — we don't want to
+	// roll that back.
+	oldName, oldServer := sshSetupName, sshSetupServer
+	sshSetupName = name
+	sshSetupServer = srv
+	defer func() {
+		sshSetupName = oldName
+		sshSetupServer = oldServer
+	}()
+
+	// Build a tiny cobra context so the handler's cmd.OutOrStdout()
+	// flows to the same writer login is using.
+	tmp := &cobra.Command{}
+	tmp.SetOut(out)
+	if err := runSSHSetup(tmp, nil); err != nil {
+		fmt.Fprintf(out, "⚠ SSH key setup skipped: %v\n", err)
+		fmt.Fprintln(out, "  You can re-run it later with `containarium ssh setup`.")
+	}
+}
+
+// readYesNo reads a single line from r and returns (yes, true) for
+// y/Y/yes/empty (because the prompt's default is Y), (no, true) for
+// n/N/no, and (_, false) for EOF.
+func readYesNo(r io.Reader) (bool, bool) {
+	if r == nil {
+		return false, false
+	}
+	br := bufio.NewReader(r)
+	line, err := br.ReadString('\n')
+	if err != nil && line == "" {
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true, true
+	case "n", "no":
+		return false, true
+	default:
+		// Unrecognised answer = treat as "no" but ok=true so the
+		// caller knows we got *some* input.
+		return false, true
+	}
+}
+
+// isStdinTTY is a best-effort "are we attached to a terminal?"
+// check. We don't pull in golang.org/x/term to keep the dependency
+// footprint tight — Stat() on stdin and checking the file mode is
+// good enough for the "should I treat empty-prompt as silent skip?"
+// decision below.
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// defaultLocalKeyName is defined in ssh.go (same package); this
+// comment is just a pointer for the next reader so they don't grep
+// for a missing helper.
 
 // createSession POSTs /v1/cli/sessions and decodes the response.
 func createSession(ctx context.Context, hc *http.Client, server, device string) (*createSessionResp, error) {
