@@ -51,6 +51,7 @@ func RegisterTools(s *server.MCPServer) {
 	registerFileTools(s)
 	registerTailLogTool(s)
 	registerProcessTools(s)
+	registerComposeTools(s)
 }
 
 // RegisterResources wires every agentbox MCP resource onto the given
