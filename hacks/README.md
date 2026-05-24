@@ -75,6 +75,26 @@ invocation.
 
 ---
 
+### 🤖 `runner/` - Containarium as a GitHub Actions runner pool
+
+Provisions a Containarium box as an **ephemeral** GitHub Actions self-hosted
+runner — one job per registration, fresh state every time. Eliminates
+GHA-hosted-runner minutes for your CI; avoids the classic
+"one long-lived runner gets stuck and the queue stalls" failure mode.
+
+```bash
+containarium create runner-1
+ssh runner-1 'curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/runner/install.sh \
+  | sudo GH_REPO=<owner>/<repo> GH_PAT=ghp_xxx bash'
+```
+
+Workflows then target `runs-on: [self-hosted, containarium, ephemeral]`.
+
+See [`runner/README.md`](runner/README.md) for the full guide, ops
+playbook, cost comparison, and security notes.
+
+---
+
 ### 🗑️ `uninstall.sh` - Complete Removal
 
 Removes Containarium completely (keeps Incus by default).
