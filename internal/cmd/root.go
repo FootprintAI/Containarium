@@ -45,6 +45,31 @@ Examples:
 
   # Show system information
   containarium info`,
+	// PersistentPreRunE fills in the auth token from the
+	// credentials file when neither --token nor
+	// CONTAINARIUM_TOKEN are set. Precedence:
+	//   1. --token flag (explicit)
+	//   2. CONTAINARIUM_TOKEN env var (becomes the flag default
+	//      in init() below — so by the time this runs, both
+	//      collapse into authToken)
+	//   3. ~/.containarium/credentials.json (server matching
+	//      --server, else default_server)
+	// See `containarium login --help`.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// login / logout / whoami / config get-token are the
+		// commands that produce/consume the credentials file
+		// directly. Skip the auto-fill for them — login is
+		// unauthenticated by definition, and we don't want a
+		// stale token to leak into a logout call.
+		switch {
+		case cmd == loginCmd, cmd == logoutCmd, cmd == whoamiCmd, cmd == configGetTokenCmd:
+			return nil
+		}
+		if authToken == "" {
+			authToken = resolveAuthToken(serverAddr)
+		}
+		return nil
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -100,7 +125,7 @@ func init() {
 
 	// Remote server flags (HTTP mode)
 	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", os.Getenv("CONTAINARIUM_HTTP") == "true", "use HTTP/REST API instead of gRPC (env: CONTAINARIUM_HTTP=true)")
-	rootCmd.PersistentFlags().StringVar(&authToken, "token", os.Getenv("CONTAINARIUM_TOKEN"), "JWT authentication token for HTTP API (env: CONTAINARIUM_TOKEN)")
+	rootCmd.PersistentFlags().StringVar(&authToken, "token", os.Getenv("CONTAINARIUM_TOKEN"), "JWT authentication token for HTTP API. Precedence: 1) --token flag, 2) CONTAINARIUM_TOKEN env, 3) ~/.containarium/credentials.json (populated by `containarium login`).")
 
 	// Version command with verbose flag
 	versionCmd.Flags().BoolVar(&verboseVersion, "verbose", false, "show detailed version information")
