@@ -19,11 +19,11 @@ func main() {
 
 	if config.ServerURL == "" {
 		printUsage()
-		log.Fatal("CONTAINARIUM_SERVER_URL environment variable is required")
+		log.Fatal("no server URL found: set CONTAINARIUM_SERVER_URL, or run `containarium login` (writes ~/.containarium/credentials.json with a default_server)")
 	}
 	if config.JWTToken == "" && config.JWTTokenFile == "" {
 		printUsage()
-		log.Fatal("either CONTAINARIUM_JWT_TOKEN or CONTAINARIUM_JWT_TOKEN_FILE environment variable is required")
+		log.Fatal("no token found: set CONTAINARIUM_JWT_TOKEN or CONTAINARIUM_JWT_TOKEN_FILE, or run `containarium login` (writes ~/.containarium/credentials.json)")
 	}
 
 	// Create MCP server with protobuf-defined contracts
@@ -49,12 +49,18 @@ func printUsage() {
 	log.Println("")
 	log.Println("=== Containarium MCP Server Configuration ===")
 	log.Println("")
-	log.Println("Required environment variables:")
-	log.Println("  CONTAINARIUM_SERVER_URL      - URL of the Containarium REST API (e.g., http://localhost:8080)")
-	log.Println("  CONTAINARIUM_JWT_TOKEN       - JWT token for authentication  (use one or the other)")
+	log.Println("Required configuration:")
+	log.Println("  CONTAINARIUM_SERVER_URL      - URL of the Containarium REST API (e.g., http://localhost:8080).")
+	log.Println("                                 Optional when ~/.containarium/credentials.json has a")
+	log.Println("                                 default_server (written by `containarium login`).")
+	log.Println("")
+	log.Println("Token resolution (highest precedence first):")
+	log.Println("  CONTAINARIUM_JWT_TOKEN       - JWT token (static, captured at MCP start)")
 	log.Println("  CONTAINARIUM_JWT_TOKEN_FILE  - Path to a file with the JWT — re-read on every request,")
 	log.Println("                                 so rotating the token is `mv newtoken oldpath`. Prefer this")
 	log.Println("                                 for long-running MCP processes that need to survive rotation.")
+	log.Println("  ~/.containarium/credentials.json — fallback when neither env var is set.")
+	log.Println("                                 Written by `containarium login`; looked up by server URL.")
 	log.Println("")
 	log.Println("Optional environment variables:")
 	log.Println("  CONTAINARIUM_DEBUG           - Enable debug logging (true/false)")
