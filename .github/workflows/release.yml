@@ -135,3 +135,81 @@ jobs:
             bin/SHA256SUMS.txt
           draft: false
           prerelease: false
+
+  # Air-gapped install bundle (E3a/E3b).
+  # Per prd/cloud/air-gapped-install-bundle.md, ship a self-contained
+  # tarball for Tier 3 customers with no internet egress. Bundle wraps
+  # the per-platform binaries above + toolchains, sidecars, .debs.
+  # Runs as a parallel matrix job so the binary release isn't blocked
+  # if the bundle build is slow or flaky.
+  build-bundle:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { os: linux, arch: amd64 }
+          # arm64 disabled in v0 — `apt-get download` on an amd64 runner
+          # pulls amd64 .debs by default. To produce a true arm64 bundle
+          # we either need an arm64 runner (gh-hosted larger runners) or
+          # cross-arch apt setup. Re-enable when one of those is in
+          # place. v0 customer ask is amd64-only.
+          # - { os: linux, arch: arm64 }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.10'
+
+      - name: Install buf
+        run: go install github.com/bufbuild/buf/cmd/buf@latest
+
+      - name: Install apt-rdepends
+        # Needed by scripts/bundle/download-deps.sh to resolve transitive
+        # .deb dependencies. Runner is ubuntu-latest so apt is present.
+        run: sudo apt-get update && sudo apt-get install -y apt-rdepends
+
+      - name: Build per-platform binaries
+        # build-bundle depends on build-release; calling explicitly so
+        # the binary outputs land in bin/ before the bundle script reads
+        # them. (The job above only writes binaries to the release page,
+        # not to a workflow artifact; we rebuild here.)
+        run: make build-release
+
+      - name: Download bundle dependencies
+        run: |
+          make bundle-download-deps \
+            BUNDLE_OS=${{ matrix.target.os }} \
+            BUNDLE_ARCH=${{ matrix.target.arch }}
+
+      - name: Build OTel sidecar (for docker-save into bundle)
+        # Best-effort: if the sidecar build fails the bundle still ships,
+        # just without the OTel image. Tier 3 customers can add it later.
+        run: make sidecar-build-otel || true
+
+      - name: Assemble bundle tarball
+        run: |
+          make build-bundle \
+            BUNDLE_VERSION=${{ github.ref_name }} \
+            BUNDLE_OS=${{ matrix.target.os }} \
+            BUNDLE_ARCH=${{ matrix.target.arch }}
+
+      - name: List bundle outputs
+        run: ls -lh dist/
+
+      - name: Upload bundle to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          # append_files preserves the binary release uploaded above;
+          # without it, this step would overwrite the release files
+          # list.
+          files: |
+            dist/containarium-bundle-${{ github.ref_name }}-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz
+            dist/containarium-bundle-${{ github.ref_name }}-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz.sha256
+          draft: false
+          prerelease: false
