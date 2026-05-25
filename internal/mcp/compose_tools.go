@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 )
 
@@ -84,7 +85,17 @@ func handleComposeDiscoverPlatform(client *Client, args map[string]interface{}) 
 		NoSkip:   getBoolArg(args, "no_skip", false),
 	}
 	if d, ok := getIntArg(args, "max_depth"); ok {
-		req.MaxDepth = int32(d)
+		// Bound to int32 — agent-supplied value, defensively clamp
+		// rather than overflow-cast. Realistic max_depth is single
+		// digits; negative or absurd values get pinned to safe bounds.
+		switch {
+		case d < 0:
+			req.MaxDepth = 0
+		case d > math.MaxInt32:
+			req.MaxDepth = math.MaxInt32
+		default:
+			req.MaxDepth = int32(d)
+		}
 	}
 	if skip, ok := args["skip"].([]interface{}); ok {
 		for _, s := range skip {
