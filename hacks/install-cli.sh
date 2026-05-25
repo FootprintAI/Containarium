@@ -71,7 +71,14 @@ if [ ! -w "$INSTALL_DIR" ]; then
 fi
 
 mv "$TMP/containarium" "${INSTALL_DIR}/containarium"
-echo "Installed: $(${INSTALL_DIR}/containarium --version 2>&1 | head -1)"
+# Print the installed version. The CLI exposes its version via the
+# `version` subcommand, NOT a top-level `--version` flag (the daemon
+# accepts both, the CLI doesn't). The previous wording here
+# (`--version`) produced "Installed: Error: unknown flag: --version"
+# which read like a fatal install error in CI logs — see
+# containarium-run#8 / #9 / #10 for the cloud CI debug chain that
+# this misleading message helped delay.
+echo "Installed: $(${INSTALL_DIR}/containarium version 2>&1 | head -1)"
 echo
 echo "Talk to a remote Containarium server with:"
 echo "  export CONTAINARIUM_HTTP=true"
