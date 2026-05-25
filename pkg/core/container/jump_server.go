@@ -695,6 +695,12 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 
 	// Retry useradd with flock for serialization
 	var lastErr error
+	var lastOutput string // Captured stdout/stderr of the last useradd
+	                       // attempt — surfaced in the final error when
+	                       // all retries exhaust. Without this, callers
+	                       // see only "exit status 1", which is actively
+	                       // misleading when the real cause was e.g.
+	                       // /etc/passwd locked by another process.
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			fmt.Printf("       Retry attempt %d/%d...\n", attempt+1, maxRetries)
@@ -721,6 +727,7 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 
 		lastErr = err
 		errMsg := string(output)
+		lastOutput = errMsg
 
 		// Check if it's a lock-related error (retry) or something else (fail immediately)
 		if !strings.Contains(errMsg, "cannot lock") && !strings.Contains(errMsg, "try again later") {
@@ -739,8 +746,13 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 		killGoogleProcesses(verbose)
 	}
 
-	// All retries exhausted
+	// All retries exhausted — surface the last attempt's useradd output
+	// so the operator sees what actually failed (e.g. "cannot lock
+	// /etc/passwd; try again later"), not just "exit status 1".
 	fmt.Printf("       useradd failed after %d attempts!\n", maxRetries)
+	if trimmed := strings.TrimSpace(lastOutput); trimmed != "" {
+		return fmt.Errorf("failed to create user %s after %d attempts: %w\nLast useradd output: %s", username, maxRetries, lastErr, trimmed)
+	}
 	return fmt.Errorf("failed to create user %s after %d attempts: %w", username, maxRetries, lastErr)
 }
 
