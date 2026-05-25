@@ -904,6 +904,12 @@ func (s *Server) registerTools() {
 		},
 	}
 
+	// Append compose-autostart tools (Phase C — daemon RPC is
+	// shipped in PR #324; these MCP wrappers are the §4 piece of
+	// issue #317). Defined in compose_tools.go so the giant tools
+	// literal above stays readable.
+	s.tools = append(s.tools, composeTools()...)
+
 	// Runner-provision tools (CLI-mirrored). Appended here so the
 	// tools.go slice literal stays focused on container/secret/
 	// route lifecycle; the actual Tool definitions live in
