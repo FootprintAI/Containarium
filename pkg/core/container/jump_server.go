@@ -729,6 +729,22 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 		errMsg := string(output)
 		lastOutput = errMsg
 
+		// Permission-denied is a permanent error — fail-fast with a
+		// pointed message. useradd emits BOTH "Permission denied" and
+		// "cannot lock /etc/passwd; try again later" when run as a
+		// non-root user: the privileged read+lock fails first, then
+		// useradd's generic fallback prints the lock line. Without
+		// this guard the lock-error retry branch below catches both
+		// lines and we burn 5 retries on a condition that won't fix
+		// itself — observed in cloud CI (containarium-run issue #15)
+		// where the cloud-daemon process didn't have the capability
+		// to add a system user.
+		if strings.Contains(errMsg, "Permission denied") {
+			fmt.Printf("       useradd failed with Permission denied — daemon process lacks the privilege to add a system user.\n")
+			fmt.Printf("       Output: %s\n", errMsg)
+			return fmt.Errorf("failed to create user %s: %w\nuseradd requires root (or CAP_CHOWN+CAP_DAC_OVERRIDE on /etc/passwd). Check the daemon's deploy unit (systemd User= directive) or container privileges. Output: %s", username, err, errMsg)
+		}
+
 		// Check if it's a lock-related error (retry) or something else (fail immediately)
 		if !strings.Contains(errMsg, "cannot lock") && !strings.Contains(errMsg, "try again later") {
 			// Not a lock error - fail immediately
