@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,7 +30,8 @@ var (
 	osTypeStr      string
 	monitoring     bool
 	createPool     string
-	createBackendID string
+	createBackendID          string
+	createAutoRestartCompose string
 )
 
 var createCmd = &cobra.Command{
@@ -86,6 +88,14 @@ func init() {
 	createCmd.Flags().BoolVar(&monitoring, "monitoring", false, "Opt into application-emitted OpenTelemetry. When set, the daemon stamps the container with OTEL_EXPORTER_OTLP_ENDPOINT etc. pointing at the platform's OTel collector, so any OTel SDK inside the container ships telemetry without app-side config. Default off.")
 	createCmd.Flags().StringVar(&createPool, "pool", "", "Place the container on any healthy backend tagged with this pool (e.g., 'demo', 'lab'). Empty means the local/primary backend. Mutually exclusive with --backend-id unless the chosen backend is in the named pool.")
 	createCmd.Flags().StringVar(&createBackendID, "backend-id", "", "Place the container on a specific backend by ID (e.g., 'tunnel-node-a-gpu'). Use 'containarium backends' to list available backend IDs.")
+	createCmd.Flags().StringVar(&createAutoRestartCompose, "auto-restart-compose", "",
+		"Path to a compose directory inside the new container; after create, "+
+			"enable the systemd-user autostart unit for that stack so it "+
+			"survives host reboots. Same as running "+
+			"'containarium compose enable <username> --dir <path>' after "+
+			"create. Requires --server (the daemon's ComposeAutostartService "+
+			"backs the call). Best-effort — a failure to enable autostart "+
+			"surfaces a warning but does NOT fail the overall create.")
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
@@ -329,6 +339,56 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	// Phase D: --auto-restart-compose enables the systemd-user
+	// autostart unit for a compose stack inside the new container.
+	// Best-effort — print a warning on failure but do NOT fail the
+	// overall create (the container is up and useful regardless).
+	//
+	// Requires --server: the call goes to the daemon's
+	// ComposeAutostartService, which in turn execs `agent-box compose
+	// enable` inside the LXC. Local mode (`createLocal`) talks to
+	// Incus directly and has no such service; surface that as a
+	// warning and skip rather than silently no-op.
+	if createAutoRestartCompose != "" {
+		if serverAddr == "" {
+			fmt.Println("Warning: --auto-restart-compose is set but no --server provided; skipping (compose autostart requires the daemon RPC).")
+		} else if err := enableAutoRestartCompose(username, createAutoRestartCompose); err != nil {
+			fmt.Printf("Warning: container created but compose-autostart enable failed: %v\n", err)
+			fmt.Printf("  Re-run later with: containarium compose enable %s --dir %s --server %s\n",
+				username, createAutoRestartCompose, serverAddr)
+		}
+	}
+
+	return nil
+}
+
+// enableAutoRestartCompose dials the daemon's ComposeAutostartService
+// and Enables the autostart unit for the given dir inside `username`'s
+// container. Returns nil on success OR on "already enabled" (which
+// the daemon flags via Already=true; semantically a no-op, not a
+// failure).
+func enableAutoRestartCompose(username, dir string) error {
+	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", serverAddr, err)
+	}
+	defer grpcClient.Close()
+
+	c := pb.NewComposeAutostartServiceClient(grpcClient.Conn())
+	resp, err := c.Enable(context.Background(), &pb.EnableRequest{
+		Username: username,
+		Dir:      dir,
+		// Force false — first-time provision; if the unit already
+		// exists (rare for a fresh box), respect it.
+	})
+	if err != nil {
+		return err
+	}
+	if resp.GetAlready() {
+		fmt.Printf("✓ Compose autostart: %s (already enabled)\n", resp.GetUnit())
+	} else {
+		fmt.Printf("✓ Compose autostart enabled: %s (compose=%s)\n", resp.GetUnit(), resp.GetComposeBin())
+	}
 	return nil
 }
 
