@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strconv"
 
 	"google.golang.org/grpc/codes"
@@ -248,11 +249,28 @@ func (d discoveredStack) toProto() *pb.ComposeStack {
 		ComposeFile:       d.ComposeFile,
 		ComposeBin:        d.ComposeBin,
 		ComposeModifiedAt: d.ComposeModifiedAt,
-		RunningCount:      int32(d.RunningCount),
-		TotalCount:        int32(d.TotalCount),
+		RunningCount:      clampToInt32(d.RunningCount),
+		TotalCount:        clampToInt32(d.TotalCount),
 		AutostartEnabled:  d.AutostartEnabled,
 		UnitModifiedAt:    d.UnitModifiedAt,
 	}
+}
+
+// clampToInt32 bounds an int (from agent-box's JSON, where service
+// counts arrive as JSON numbers and Go decodes into int) to int32
+// range before assigning to the proto field. Realistic compose stacks
+// have a handful of services, but the agent-box CLI is in-the-box
+// untrusted-ish — defensively clamp rather than overflow-cast.
+// Negative values shouldn't occur (counts are non-negative by
+// construction) but clamp them to 0 too.
+func clampToInt32(n int) int32 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
 }
 
 // The real *incus.Client implements the IncusExecer seam. We don't
