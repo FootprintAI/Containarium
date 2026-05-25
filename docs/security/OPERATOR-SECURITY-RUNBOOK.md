@@ -67,7 +67,7 @@ chmod 0600 ~/.containarium/refresh
 # Whenever you need a fresh access token (e.g. on session start):
 containarium token refresh \
     --refresh-token-file ~/.containarium/refresh \
-    --server https://containarium.kafeido.app
+    --server https://<cluster>.example.com
 ```
 
 `token refresh` prints the new access token (use for the next ~15
@@ -115,7 +115,7 @@ this daemon and hasn't expired).
 containarium token revoke \
     --jti "$JTI" \
     --reason "leaked_to_public_gist_$(date -u +%Y%m%d)" \
-    --server https://containarium.kafeido.app \
+    --server https://<cluster>.example.com \
     --token "$ADMIN_TOKEN"
 ```
 
@@ -128,7 +128,7 @@ Confirm the revoke landed (admin + `tokens:write` scope required):
 ```bash
 containarium token list-revoked \
     --jti-prefix "$JTI_FIRST_CHARS" \
-    --server https://containarium.kafeido.app \
+    --server https://<cluster>.example.com \
     --token "$ADMIN_TOKEN"
 ```
 

@@ -128,8 +128,8 @@ During MAINTENANCE mode, the sentinel serves HTTPS on port 443. To avoid browser
 
 When a TLS handshake arrives, the sentinel's `CertStore.GetCertificate()` selects:
 
-1. **Exact match** — e.g., `facelabor.kafeido.app`
-2. **Wildcard match** — e.g., `*.kafeido.app`
+1. **Exact match** — e.g., `app.example.com`
+2. **Wildcard match** — e.g., `*.example.com`
 3. **Self-signed fallback** — generated at startup (last resort)
 
 ### Configuration

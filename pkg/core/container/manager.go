@@ -161,7 +161,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	// a stable PCI address. Passing the input through as Incus' "id"
 	// field is brittle: that field maps to the DRM card minor index,
 	// which can shift across kernel upgrades. We hit this in production
-	// when the 6.8.0-110 → 6.8.0-111 upgrade renumbered fts-5900x's
+	// when the 6.8.0-110 → 6.8.0-111 upgrade renumbered a backend host's
 	// RTX 4090 from card0 to card1, breaking every container with
 	// id="0". PCI addresses are stable, so we always pin by PCI.
 	if opts.GPU != "" {

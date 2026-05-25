@@ -10,21 +10,21 @@
 
 ## What's true today
 
-| | Demo (footprintai-dev / us-central1-a) | Prod (footprintai-prod / us-west1-a) |
+| | Demo (<dev-gcp-project> / <demo-zone>) | Prod (<prod-gcp-project> / <prod-zone>) |
 |---|---|---|
-| Sentinel | `containarium-demo-sentinel` (e2-micro) | `containarium-jump-usw1-sentinel` (e2-micro) |
-| Backend | `containarium-demo` (e2-standard-2 spot) | `containarium-jump-usw1` (c3d-highmem-8) |
-| Base domain | `demo.containarium.dev` | `kafeido.app` |
-| DNS wildcard | `*.demo.containarium.dev` → demo sentinel IP | `*.kafeido.app` → prod sentinel IP |
+| Sentinel | `<demo-sentinel-vm>` (e2-micro) | `<prod-sentinel-vm>` (e2-micro) |
+| Backend | `<demo-backend>` (e2-standard-2 spot) | `<prod-backend>` (c3d-highmem-8) |
+| Base domain | `<demo-base-domain>` | `<your-base-domain>` |
+| DNS wildcard | `*.<demo-base-domain>` → demo sentinel IP | `*.<your-base-domain>` → prod sentinel IP |
 | Daemon binary | v0.16.7 (per terraform/gce-demo/variables.tf default) | v0.15.0 last observed 2026-05-03 — **verify before starting** |
 
-The demo backend's own Caddy ACMEs `*.demo.containarium.dev` certs and terminates TLS. The prod sentinel is TCP/SNI passthrough — it never sees the TLS bytes — so post-cutover the demo backend keeps doing its own cert lifecycle exactly as today.
+The demo backend's own Caddy ACMEs `*.<demo-base-domain>` certs and terminates TLS. The prod sentinel is TCP/SNI passthrough — it never sees the TLS bytes — so post-cutover the demo backend keeps doing its own cert lifecycle exactly as today.
 
 ## What changes after cutover
 
-- The demo backend's daemon stops registering itself as a sentinel primary and instead opens a yamux tunnel into the prod sentinel, declaring `--pool=demo --public-base-domain=demo.containarium.dev`.
-- The prod sentinel's SNI router suffix-matches any inbound `*.demo.containarium.dev` to that tunnel and forwards bytes through it.
-- `*.demo.containarium.dev` DNS re-points from demo sentinel IP → prod sentinel IP.
+- The demo backend's daemon stops registering itself as a sentinel primary and instead opens a yamux tunnel into the prod sentinel, declaring `--pool=demo --public-base-domain=<demo-base-domain>`.
+- The prod sentinel's SNI router suffix-matches any inbound `*.<demo-base-domain>` to that tunnel and forwards bytes through it.
+- `*.<demo-base-domain>` DNS re-points from demo sentinel IP → prod sentinel IP.
 - The demo sentinel + its public IP can be destroyed (decommission step, last).
 
 ---
@@ -36,39 +36,39 @@ Run from your laptop. Each step is verifiable independently.
 1. **Confirm both binaries support the new flags.**
    ```sh
    # On the prod sentinel host
-   ssh footprintai-prod-sentinel sudo /usr/local/bin/containarium version
+   ssh <prod-gcp-project>-sentinel sudo /usr/local/bin/containarium version
    # On the prod daemon host
-   ssh -p 2222 footprintai-prod-sentinel "ssh containarium-jump-usw1 sudo /usr/local/bin/containarium version"
+   ssh -p 2222 <prod-gcp-project>-sentinel "ssh <prod-backend> sudo /usr/local/bin/containarium version"
    # On the demo daemon host
-   ssh demo.containarium.dev sudo /usr/local/bin/containarium version
+   ssh <demo-base-domain> sudo /usr/local/bin/containarium version
    ```
    All three must print `vX.Y.Z` or later (a release that includes #204 + #205). If any is older, **upgrade it first** — the cutover assumes the prod sentinel knows about `base_domain` and the daemons know about `--public-base-domain`.
 
 2. **Confirm the prod backend is already pool-tagged.** Per [memory](../README.md), the prod backend may have been brought up before the pool concept landed.
    ```sh
-   curl -s https://containarium.kafeido.app/sentinel/peers | jq '.peers[] | {id, pool, healthy}'
+   curl -s https://containarium.<your-base-domain>/sentinel/peers | jq '.peers[] | {id, pool, healthy}'
    ```
-   If `containarium-jump-usw1` shows `pool: ""`, restart its daemon with `--pool=prod --public-base-domain=kafeido.app` *before* introducing the demo pool — otherwise demo and prod would both be "untagged" and the routing decision would be ambiguous.
+   If `<prod-backend>` shows `pool: ""`, restart its daemon with `--pool=prod --public-base-domain=<your-base-domain>` *before* introducing the demo pool — otherwise demo and prod would both be "untagged" and the routing decision would be ambiguous.
 
 3. **Confirm a tunnel token exists for the demo pool.** The sentinel's `--tunnel-token-policy` controls which tokens can register which pools. Either:
    ```sh
-   ssh footprintai-prod-sentinel "systemctl cat containarium-sentinel" | grep tunnel-token
+   ssh <prod-gcp-project>-sentinel "systemctl cat containarium-sentinel" | grep tunnel-token
    ```
    should already include a `token=demo` entry, OR you need to add one and reload the sentinel. Generate a fresh token and store it in GCP Secret Manager:
    ```sh
-   openssl rand -hex 32 | gcloud secrets create containarium-demo-tunnel-token --data-file=- --project=footprintai-prod
+   openssl rand -hex 32 | gcloud secrets create <demo-backend>-tunnel-token --data-file=- --project=<prod-gcp-project>
    ```
    Then update the sentinel systemd unit's `--tunnel-token-policy` to include `<that-hex>=demo`, `systemctl daemon-reload`, and restart the sentinel.
 
 4. **Confirm Caddy on the demo backend can keep ACME-ing post-cutover.** It already does HTTP-01 by default. HTTP-01 traverses the sentinel transparently (port 80 passthrough is identical to port 443). No code change.
    ```sh
-   ssh demo.containarium.dev sudo journalctl -u caddy --since '1 day ago' | grep -E 'obtain|renew' | tail -5
+   ssh <demo-base-domain> sudo journalctl -u caddy --since '1 day ago' | grep -E 'obtain|renew' | tail -5
    ```
    If you see recent successful renews, you're good.
 
 5. **Note the current DNS TTL** so you know how long the cutover takes to propagate.
    ```sh
-   dig +short TTL=ANSWER A blog.demo.containarium.dev   # whatever subdomain is in use
+   dig +short TTL=ANSWER A blog.<demo-base-domain>   # whatever subdomain is in use
    ```
    Cloudflare default is 300s; cutover-then-rollback window matches that.
 
@@ -78,20 +78,20 @@ Run from your laptop. Each step is verifiable independently.
 
 ### Step 1 — register demo backend as a peer of prod sentinel
 
-On the demo backend (`containarium-demo` spot VM):
+On the demo backend (`<demo-backend>` spot VM):
 
 ```sh
-ssh demo.containarium.dev
+ssh <demo-base-domain>
 
 # Stop the local standalone roles (sentinel registration + own sentinel)
 sudo systemctl stop containarium-sentinel.service     # if present locally
 sudo systemctl disable containarium-sentinel.service  # so it doesn't come back on reboot
 
 # Pull the demo pool's tunnel token (set in pre-flight step 3)
-TUNNEL_TOKEN=$(gcloud secrets versions access latest --secret=containarium-demo-tunnel-token --project=footprintai-prod)
+TUNNEL_TOKEN=$(gcloud secrets versions access latest --secret=<demo-backend>-tunnel-token --project=<prod-gcp-project>)
 
 # Find prod sentinel's external IP (or use the public hostname)
-PROD_SENTINEL=containarium.kafeido.app:9443
+PROD_SENTINEL=containarium.<your-base-domain>:9443
 
 # Install / update the tunnel client unit
 sudo tee /etc/systemd/system/containarium-tunnel.service > /dev/null <<EOF
@@ -104,11 +104,11 @@ Wants=network-online.target
 Environment=CONTAINARIUM_TUNNEL_TOKEN=${TUNNEL_TOKEN}
 ExecStart=/usr/local/bin/containarium tunnel \\
   --sentinel-addr ${PROD_SENTINEL} \\
-  --spot-id containarium-demo-spot \\
+  --spot-id <demo-backend>-spot \\
   --pool demo \\
   --ports 22,80,443 \\
-  --public-hostname demo.containarium.dev \\
-  --public-base-domain demo.containarium.dev \\
+  --public-hostname <demo-base-domain> \\
+  --public-base-domain <demo-base-domain> \\
   --public-port 443
 Restart=on-failure
 RestartSec=5
@@ -122,32 +122,32 @@ sudo systemctl enable --now containarium-tunnel.service
 sudo journalctl -u containarium-tunnel -f
 ```
 
-The journal should show `connected to sentinel`, `registered as "containarium-demo-spot"`, and an assigned `127.0.0.X` loopback IP within ~5 seconds.
+The journal should show `connected to sentinel`, `registered as "<demo-backend>-spot"`, and an assigned `127.0.0.X` loopback IP within ~5 seconds.
 
 ### Step 2 — verify the prod sentinel learned about us
 
-From your laptop (or any host that can reach `containarium.kafeido.app`):
+From your laptop (or any host that can reach `containarium.<your-base-domain>`):
 
 ```sh
 # Peer registry — demo backend should appear with pool=demo
-curl -s https://containarium.kafeido.app/sentinel/peers \
-  | jq '.peers[] | select(.id == "tunnel-containarium-demo-spot")'
+curl -s https://containarium.<your-base-domain>/sentinel/peers \
+  | jq '.peers[] | select(.id == "tunnel-<demo-backend>-spot")'
 
 # Primary registry — should show the demo primary with base_domain set
-curl -s https://containarium.kafeido.app/sentinel/primaries \
+curl -s https://containarium.<your-base-domain>/sentinel/primaries \
   | jq '.primaries[] | select(.pool == "demo")'
 ```
 
-Look for `pool: "demo"`, `base_domain: "demo.containarium.dev"`, `backend_id: "tunnel-containarium-demo-spot"`. If `base_domain` is empty, the daemon binary is too old (back to pre-flight step 1).
+Look for `pool: "demo"`, `base_domain: "<demo-base-domain>"`, `backend_id: "tunnel-<demo-backend>-spot"`. If `base_domain` is empty, the daemon binary is too old (back to pre-flight step 1).
 
 ### Step 3 — prove SNI routing works BEFORE touching DNS
 
-This is the cutover's keystone: confirm the prod sentinel forwards `*.demo.containarium.dev` to the demo backend, without trusting DNS yet.
+This is the cutover's keystone: confirm the prod sentinel forwards `*.<demo-base-domain>` to the demo backend, without trusting DNS yet.
 
 ```sh
 # Pick any existing demo container hostname (e.g. blog, agent01, …)
-EXISTING_HOST=blog.demo.containarium.dev
-PROD_SENTINEL_IP=$(dig +short A containarium.kafeido.app | head -1)
+EXISTING_HOST=blog.<demo-base-domain>
+PROD_SENTINEL_IP=$(dig +short A containarium.<your-base-domain> | head -1)
 
 # --resolve forces curl to dial the prod sentinel, but the TLS SNI
 # and Host header still say the demo hostname. If the suffix route
@@ -157,7 +157,7 @@ curl -vk --resolve "${EXISTING_HOST}:443:${PROD_SENTINEL_IP}" \
   "https://${EXISTING_HOST}/"
 ```
 
-Expected: an HTTP response from the demo backend (or its app). The demo backend's Caddy log should show the request. The prod sentinel log should show `forwarding SNI=${EXISTING_HOST} to tunnel-containarium-demo-spot`.
+Expected: an HTTP response from the demo backend (or its app). The demo backend's Caddy log should show the request. The prod sentinel log should show `forwarding SNI=${EXISTING_HOST} to tunnel-<demo-backend>-spot`.
 
 **If this fails, STOP and read the daemon + sentinel logs.** Do not change DNS until this works. Most likely cause: pre-flight step 1 (binary too old) was skipped.
 
@@ -167,8 +167,8 @@ Once step 3 is green:
 
 ```sh
 # In Cloudflare, update both records:
-#   *.demo.containarium.dev   A   <prod_sentinel_ip>   (was demo_sentinel_ip)
-#   demo.containarium.dev     A   <prod_sentinel_ip>   (was demo_sentinel_ip)
+#   *.<demo-base-domain>   A   <prod_sentinel_ip>   (was demo_sentinel_ip)
+#   <demo-base-domain>     A   <prod_sentinel_ip>   (was demo_sentinel_ip)
 # TTL 300 (same as today) so rollback is fast.
 ```
 
@@ -177,7 +177,7 @@ Verify propagation from a few resolvers:
 ```sh
 for resolver in 1.1.1.1 8.8.8.8 9.9.9.9; do
   echo "=== ${resolver} ==="
-  dig @${resolver} +short A blog.demo.containarium.dev
+  dig @${resolver} +short A blog.<demo-base-domain>
 done
 ```
 
@@ -186,7 +186,7 @@ All three should return the prod sentinel IP within a few minutes.
 ### Step 5 — verify end-to-end via real DNS
 
 ```sh
-curl -v https://blog.demo.containarium.dev/
+curl -v https://blog.<demo-base-domain>/
 ```
 
 Should hit the demo backend exactly as before, but the TCP connection terminates on the prod sentinel.
@@ -201,7 +201,7 @@ cd terraform/gce-demo
 terraform destroy -target=module.containarium.google_compute_instance.sentinel  # exact resource name per module
 
 # Release its static IP if it had one
-gcloud compute addresses delete containarium-demo-sentinel-ip --region=us-central1 --project=footprintai-dev
+gcloud compute addresses delete <demo-sentinel-vm>-ip --region=us-central1 --project=<dev-gcp-project>
 ```
 
 The demo backend keeps running. Its only changed responsibility is "talk to prod sentinel via yamux instead of being its own primary."
@@ -214,18 +214,18 @@ If anything in step 3 or after misbehaves and you need to revert within the DNS 
 
 ```sh
 # 1) Stop the tunnel on the demo backend
-ssh demo.containarium.dev sudo systemctl stop containarium-tunnel.service
+ssh <demo-base-domain> sudo systemctl stop containarium-tunnel.service
 
 # 2) Re-enable the local sentinel
-ssh demo.containarium.dev sudo systemctl enable --now containarium-sentinel.service
+ssh <demo-base-domain> sudo systemctl enable --now containarium-sentinel.service
 
 # 3) Revert DNS records in Cloudflare to the demo sentinel IP
 
 # 4) Verify
-curl -v https://blog.demo.containarium.dev/   # should hit demo backend via demo sentinel again
+curl -v https://blog.<demo-base-domain>/   # should hit demo backend via demo sentinel again
 ```
 
-Rollback is non-destructive on the prod side — the prod sentinel just stops getting `*.demo.containarium.dev` traffic; no config change needed there.
+Rollback is non-destructive on the prod side — the prod sentinel just stops getting `*.<demo-base-domain>` traffic; no config change needed there.
 
 ---
 
@@ -241,10 +241,10 @@ Rollback is non-destructive on the prod side — the prod sentinel just stops ge
 ## One-pager (for the runbook drawer)
 
 1. Confirm all three binaries are >= vX.Y.Z (#204 + #205).
-2. Pool-tag prod backend (`--pool=prod --public-base-domain=kafeido.app`) if not already.
+2. Pool-tag prod backend (`--pool=prod --public-base-domain=<your-base-domain>`) if not already.
 3. Mint a demo-pool tunnel token, add to sentinel's `--tunnel-token-policy`.
-4. Stop the demo sentinel role; install `containarium-tunnel.service` with `--pool=demo --public-base-domain=demo.containarium.dev`.
+4. Stop the demo sentinel role; install `containarium-tunnel.service` with `--pool=demo --public-base-domain=<demo-base-domain>`.
 5. Verify `/sentinel/peers` and `/sentinel/primaries` on prod.
 6. `curl --resolve` an existing demo hostname against prod sentinel IP — must succeed before DNS change.
-7. Cut DNS `*.demo.containarium.dev` to prod sentinel IP.
+7. Cut DNS `*.<demo-base-domain>` to prod sentinel IP.
 8. After 24h: destroy demo sentinel + its static IP.

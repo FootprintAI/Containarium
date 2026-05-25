@@ -24,7 +24,7 @@ containarium create android-dev \
   --ssh-key ~/.ssh/id_ed25519.pub \
   --cpu 8 --memory 16GB --disk 100GB \
   --stack android \
-  --backend-id tunnel-fts-13700k-gpu
+  --backend-id tunnel-node-b-gpu
 ```
 
 After creation, SSH in and use:
@@ -56,7 +56,7 @@ containarium create android-studio-dev \
   --ssh-key ~/.ssh/id_ed25519.pub \
   --cpu 8 --memory 16GB --disk 100GB \
   --stack android-studio \
-  --backend-id tunnel-fts-13700k-gpu
+  --backend-id tunnel-node-b-gpu
 ```
 
 After creation:

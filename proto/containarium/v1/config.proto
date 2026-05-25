@@ -188,7 +188,7 @@ message SystemInfo {
   // GPU information
   repeated GPUInfo gpus = 18;
 
-  // Backend ID (e.g., "tunnel-fts-5900x-gpu") — set when returned from peer
+  // Backend ID (e.g., "tunnel-node-a-gpu") — set when returned from peer
   string backend_id = 19;
 }
 
@@ -282,7 +282,7 @@ enum BackendType {
 
 // BackendInfo contains information about a backend instance
 message BackendInfo {
-  // Unique backend identifier (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+  // Unique backend identifier (e.g., "gcp-spot", "tunnel-node-a-gpu")
   string id = 1;
 
   // Backend type

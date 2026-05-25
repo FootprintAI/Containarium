@@ -3,7 +3,7 @@
 # Phase B of the lab pool bring-up: install Incus, initialize it, configure
 # the containarium daemon to run with --pool=lab, and let the daemon bring
 # up its core containers (postgres, victoriametrics, caddy). After this
-# completes successfully, https://containarium-lab.kafeido.app/ should
+# completes successfully, https://lab.example.com/ should
 # eventually serve the WebUI (Caddy fetches its Let's Encrypt cert via
 # TLS-ALPN-01 over the SNI route established in slice 8).
 #
@@ -26,7 +26,7 @@ fi
 
 NETWORK_SUBNET="${NETWORK_SUBNET:-10.0.4.1/24}"
 POOL="${POOL:-lab}"
-BASE_DOMAIN="${BASE_DOMAIN:-containarium-lab.kafeido.app}"
+BASE_DOMAIN="${BASE_DOMAIN:-lab.example.com}"
 
 echo "==> Step 1/8: Install Incus from Zabbly"
 if command -v incus >/dev/null 2>&1; then
@@ -113,7 +113,7 @@ ExecStart=/usr/local/bin/containarium daemon \\
   --jwt-secret-file /etc/containarium/jwt.secret \\
   --app-hosting \\
   --base-domain ${BASE_DOMAIN}
-Environment="CONTAINARIUM_ALLOWED_ORIGINS=https://containarium.kafeido.app,https://${BASE_DOMAIN},http://localhost:3000,http://localhost:8080"
+Environment="CONTAINARIUM_ALLOWED_ORIGINS=https://<cluster>.example.com,https://${BASE_DOMAIN},http://localhost:3000,http://localhost:8080"
 Restart=on-failure
 RestartSec=10s
 CONF
@@ -205,5 +205,5 @@ echo "Or check container state:"
 echo "    sudo incus list"
 echo
 echo "Once 'containarium-core-caddy' is RUNNING, the lab pool should"
-echo "start serving https://containarium-lab.kafeido.app/ (Caddy will"
+echo "start serving https://lab.example.com/ (Caddy will"
 echo "fetch a Let's Encrypt cert on first request)."

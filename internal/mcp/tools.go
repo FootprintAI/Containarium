@@ -196,7 +196,7 @@ func (s *Server) registerTools() {
 					},
 					"backend_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Place the container on a specific backend by ID (e.g., 'tunnel-fts-5900x-gpu'). Look up valid IDs via list_backends. Use pool instead when any backend in a pool will do.",
+						"description": "Place the container on a specific backend by ID (e.g., 'tunnel-node-a-gpu'). Look up valid IDs via list_backends. Use pool instead when any backend in a pool will do.",
 					},
 				},
 				"required": []string{"username"},

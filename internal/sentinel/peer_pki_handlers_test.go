@@ -96,7 +96,7 @@ func TestCAHandler_RejectsUnsignedRequest(t *testing.T) {
 func TestPeerCertHandler_IssuesVerifiableCert(t *testing.T) {
 	m := newManagerForPKITest(t, true)
 
-	body, _ := json.Marshal(PeerCertRequest{PeerID: "tunnel-fts-5900x-gpu"})
+	body, _ := json.Marshal(PeerCertRequest{PeerID: "tunnel-node-a-gpu"})
 	req := httptest.NewRequest(http.MethodPost, "/sentinel/peer-cert", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	auth.SignSentinelRequest(req, []byte(phase05Secret))
@@ -129,7 +129,7 @@ func TestPeerCertHandler_IssuesVerifiableCert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificate: %v", err)
 	}
-	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, DNSName: "tunnel-fts-5900x-gpu"}); err != nil {
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, DNSName: "tunnel-node-a-gpu"}); err != nil {
 		t.Fatalf("issued cert does not verify: %v", err)
 	}
 }

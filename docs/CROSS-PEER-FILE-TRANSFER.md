@@ -5,7 +5,7 @@ Transfer files between containers on different peer nodes over LAN. Avoids the s
 ## Architecture
 
 ```
-fts-5900x (LAN: 10.0.3.14)              fts-13700k (LAN: 10.0.3.19)
+peer-a (LAN: <peer-a-ip>)               peer-b (LAN: <peer-b-ip>)
   └── incusbr0 (10.100.0.0/24)            └── incusbr0 (10.100.0.0/24)
       └── container-A                         └── container-B
           (isolated bridge)                        (isolated bridge)
@@ -19,7 +19,7 @@ Containers on different peers can't reach each other directly — they're on sep
 
 Direct host-to-host rsync requires root SSH access (container storage paths are root-owned).
 
-**On the source peer** (e.g., fts-5900x):
+**On the source peer**:
 ```bash
 # Generate root SSH key (if not already done)
 sudo ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519
@@ -28,7 +28,7 @@ sudo ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519
 sudo cat /root/.ssh/id_ed25519.pub
 ```
 
-**On the destination peer** (e.g., fts-13700k):
+**On the destination peer**:
 ```bash
 # Add the source peer's root key
 sudo mkdir -p /root/.ssh
@@ -39,7 +39,7 @@ sudo chmod 600 /root/.ssh/authorized_keys
 
 **Verify** (on source peer):
 ```bash
-sudo ssh -o StrictHostKeyChecking=no 10.0.3.19 echo "SSH OK"
+sudo ssh -o StrictHostKeyChecking=no <peer-b-ip> echo "SSH OK"
 ```
 
 ## Method 1: rsync (Recommended for Large Transfers)
@@ -55,25 +55,25 @@ Container rootfs is at:
 
 Example:
 ```bash
-# Source path (on fts-5900x)
-SRC=/var/lib/incus/storage-pools/default/containers/apibox-dev-4090-container/rootfs/home/apibox-dev-4090/data/
+# Source path (on the source peer)
+SRC=/var/lib/incus/storage-pools/default/containers/<src-container>/rootfs/home/<tenant-user>/data/
 
-# Destination path (on fts-13700k)
-DST=/var/lib/incus/storage-pools/default/containers/apibox-dev-3090-container/rootfs/home/apibox-dev-3090/data/
+# Destination path (on the destination peer)
+DST=/var/lib/incus/storage-pools/default/containers/<dst-container>/rootfs/home/<tenant-user>/data/
 ```
 
 ### Run Transfer
 
-On the **source peer** as root:
+On the **source peer** as root (substitute `<peer-b-ip>` with the destination peer's LAN IP):
 ```bash
 # Create destination directory
-sudo ssh 10.0.3.19 "mkdir -p '$DST'"
+sudo ssh <peer-b-ip> "mkdir -p '$DST'"
 
 # rsync with progress and compression
-sudo rsync -avP --compress "$SRC" "10.0.3.19:$DST"
+sudo rsync -avP --compress "$SRC" "<peer-b-ip>:$DST"
 
 # Fix ownership for LXC uid mapping (unprivileged containers use uid 1000000+)
-sudo ssh 10.0.3.19 "chown -R 1000000:1000000 '$DST'"
+sudo ssh <peer-b-ip> "chown -R 1000000:1000000 '$DST'"
 ```
 
 ### Speed Reference
@@ -89,17 +89,17 @@ sudo ssh 10.0.3.19 "chown -R 1000000:1000000 '$DST'"
 
 Streams data directly without temp files. Good when disk space is tight.
 
-On the **source peer** as root:
+On the **source peer** as root (substitute `<peer-b-ip>` with the destination peer):
 ```bash
-sudo tar cf - -C "$SRC" . | ssh 10.0.3.19 "mkdir -p '$DST' && tar xf - -C '$DST'"
+sudo tar cf - -C "$SRC" . | ssh <peer-b-ip> "mkdir -p '$DST' && tar xf - -C '$DST'"
 
 # Fix ownership
-sudo ssh 10.0.3.19 "chown -R 1000000:1000000 '$DST'"
+sudo ssh <peer-b-ip> "chown -R 1000000:1000000 '$DST'"
 ```
 
 Add `pv` for progress monitoring (install with `apt install pv`):
 ```bash
-sudo tar cf - -C "$SRC" . | pv -s $(sudo du -sb "$SRC" | cut -f1) | ssh 10.0.3.19 "tar xf - -C '$DST'"
+sudo tar cf - -C "$SRC" . | pv -s $(sudo du -sb "$SRC" | cut -f1) | ssh <peer-b-ip> "tar xf - -C '$DST'"
 ```
 
 ## Method 3: incus file (Simple, Small Files)

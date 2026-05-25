@@ -116,7 +116,7 @@ type GPUDevice struct {
 	//
 	// Deprecated for new container creation: ID maps to Incus' DRM card
 	// minor index, which can shift across kernel upgrades (e.g., the
-	// 6.8.0-110 → 6.8.0-111 incident on fts-5900x where the RTX 4090
+	// 6.8.0-110 → 6.8.0-111 incident on a backend host where the RTX 4090
 	// moved from card0 to card1, breaking every container with id="0").
 	// Prefer PCI, which is stable across reboots and kernel changes.
 	// New code should call ResolveGPUInputToPCI() to convert a

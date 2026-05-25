@@ -121,7 +121,7 @@ forged PROXY header.
 3. **Restart sentinel** with `--proxy-protocol`. From now on every forwarded
    HTTPS connection carries a PROXY v2 header.
 4. **Verify** with a known-IP curl + the destination container's access
-   log. For wordpress: `curl https://wordpress.kafeido.app/?ip-test=<marker>`,
+   log. For wordpress: `curl https://<tenant-app>.example.com/?ip-test=<marker>`,
    then `ssh wordpress 'docker logs --tail 20 wordpress-nginx | grep <marker>'`
    — the rightmost `"..."` field is the parsed source IP.
 

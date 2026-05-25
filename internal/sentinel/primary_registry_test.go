@@ -15,7 +15,7 @@ func TestPrimaryRegistry_RegisterLookupHeartbeat(t *testing.T) {
 	r := NewPrimaryRegistry()
 
 	// Initial registration
-	stored := r.Register(Primary{Pool: "prod", Hostname: "containarium-prod.kafeido.app", IP: "10.0.0.10", Port: 443})
+	stored := r.Register(Primary{Pool: "prod", Hostname: "prod.example.com", IP: "10.0.0.10", Port: 443})
 	assert.NotNil(t, stored)
 	assert.Equal(t, Pool("prod"), stored.Pool)
 	assert.False(t, stored.RegisteredAt.IsZero())
@@ -25,14 +25,14 @@ func TestPrimaryRegistry_RegisterLookupHeartbeat(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Re-register: RegisteredAt preserved, LastHeartbeat advanced
-	updated := r.Register(Primary{Pool: "prod", Hostname: "containarium-prod.kafeido.app", IP: "10.0.0.11", Port: 443})
+	updated := r.Register(Primary{Pool: "prod", Hostname: "prod.example.com", IP: "10.0.0.11", Port: 443})
 	assert.Equal(t, originalRegisteredAt, updated.RegisteredAt)
 	assert.True(t, updated.LastHeartbeat.After(originalRegisteredAt))
 	assert.Equal(t, "10.0.0.11", updated.IP, "IP should update on re-register")
 
 	// Lookup hits
 	assert.NotNil(t, r.LookupByPool("prod"))
-	assert.NotNil(t, r.LookupByHostname("containarium-prod.kafeido.app"))
+	assert.NotNil(t, r.LookupByHostname("prod.example.com"))
 
 	// Heartbeat refreshes
 	prevHB := r.LookupByPool("prod").LastHeartbeat
@@ -54,50 +54,50 @@ func TestPrimaryRegistry_LookupByHostnameMatchesAliases(t *testing.T) {
 	r := NewPrimaryRegistry()
 	r.Register(Primary{
 		Pool:     "prod",
-		Hostname: "containarium-prod.kafeido.app",
-		Aliases:  []string{"api.kafeido.app", "voice.kafeido.app"},
+		Hostname: "prod.example.com",
+		Aliases:  []string{"api.example.com", "voice.example.com"},
 		IP:       "10.0.0.10",
 		Port:     443,
 	})
 	r.Register(Primary{
 		Pool:     "lab",
-		Hostname: "containarium-lab.kafeido.app",
-		Aliases:  []string{"lab-api.kafeido.app"},
+		Hostname: "lab.example.com",
+		Aliases:  []string{"lab-api.example.com"},
 		IP:       "10.0.0.20",
 		Port:     443,
 	})
 
 	// Primary hostname matches
-	p := r.LookupByHostname("containarium-prod.kafeido.app")
+	p := r.LookupByHostname("prod.example.com")
 	if assert.NotNil(t, p) {
 		assert.Equal(t, Pool("prod"), p.Pool)
 	}
 
 	// Alias matches
-	p = r.LookupByHostname("api.kafeido.app")
+	p = r.LookupByHostname("api.example.com")
 	if assert.NotNil(t, p) {
-		assert.Equal(t, Pool("prod"), p.Pool, "api.kafeido.app should resolve to prod via alias")
+		assert.Equal(t, Pool("prod"), p.Pool, "api.example.com should resolve to prod via alias")
 	}
 
 	// Different pool's alias resolves to that pool
-	p = r.LookupByHostname("lab-api.kafeido.app")
+	p = r.LookupByHostname("lab-api.example.com")
 	if assert.NotNil(t, p) {
 		assert.Equal(t, Pool("lab"), p.Pool)
 	}
 
 	// Unknown hostname returns nil
-	assert.Nil(t, r.LookupByHostname("ghost.kafeido.app"))
+	assert.Nil(t, r.LookupByHostname("ghost.example.com"))
 
 	// Re-registration with new aliases replaces the list
 	r.Register(Primary{
 		Pool:     "prod",
-		Hostname: "containarium-prod.kafeido.app",
-		Aliases:  []string{"new-app.kafeido.app"},
+		Hostname: "prod.example.com",
+		Aliases:  []string{"new-app.example.com"},
 		IP:       "10.0.0.10",
 		Port:     443,
 	})
-	assert.Nil(t, r.LookupByHostname("api.kafeido.app"), "old alias should be replaced on re-register")
-	if p := r.LookupByHostname("new-app.kafeido.app"); assert.NotNil(t, p) {
+	assert.Nil(t, r.LookupByHostname("api.example.com"), "old alias should be replaced on re-register")
+	if p := r.LookupByHostname("new-app.example.com"); assert.NotNil(t, p) {
 		assert.Equal(t, Pool("prod"), p.Pool)
 	}
 }
@@ -193,7 +193,7 @@ func TestPrimariesHandler_HTTPFlow(t *testing.T) {
 	}
 
 	t.Run("POST registers and infers IP from RemoteAddr", func(t *testing.T) {
-		body := `{"pool":"prod","hostname":"containarium-prod.kafeido.app","port":443}`
+		body := `{"pool":"prod","hostname":"prod.example.com","port":443}`
 		rec := post(body, "10.20.30.40:54321")
 		assert.Equal(t, http.StatusCreated, rec.Code)
 		var got Primary
@@ -202,7 +202,7 @@ func TestPrimariesHandler_HTTPFlow(t *testing.T) {
 	})
 
 	t.Run("POST honors explicit IP if provided", func(t *testing.T) {
-		body := `{"pool":"lab","hostname":"containarium-lab.kafeido.app","ip":"10.99.99.99","port":443}`
+		body := `{"pool":"lab","hostname":"lab.example.com","ip":"10.99.99.99","port":443}`
 		rec := post(body, "10.20.30.40:1234")
 		assert.Equal(t, http.StatusCreated, rec.Code)
 		var got Primary

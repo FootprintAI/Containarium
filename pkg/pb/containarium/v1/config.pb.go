@@ -913,7 +913,7 @@ type SystemInfo struct {
 	CpuLoad_15Min float64 `protobuf:"fixed64,17,opt,name=cpu_load_15min,json=cpuLoad15min,proto3" json:"cpu_load_15min,omitempty"`
 	// GPU information
 	Gpus []*GPUInfo `protobuf:"bytes,18,rep,name=gpus,proto3" json:"gpus,omitempty"`
-	// Backend ID (e.g., "tunnel-fts-5900x-gpu") — set when returned from peer
+	// Backend ID (e.g., "tunnel-node-a-gpu") — set when returned from peer
 	BackendId     string `protobuf:"bytes,19,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1277,7 +1277,7 @@ func (x *GetSystemInfoResponse) GetPeers() []*SystemInfo {
 // BackendInfo contains information about a backend instance
 type BackendInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unique backend identifier (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+	// Unique backend identifier (e.g., "gcp-spot", "tunnel-node-a-gpu")
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Backend type
 	Type BackendType `protobuf:"varint,2,opt,name=type,proto3,enum=containarium.v1.BackendType" json:"type,omitempty"`

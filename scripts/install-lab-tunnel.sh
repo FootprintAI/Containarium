@@ -8,7 +8,10 @@
 # Phase B (Incus + daemon + core containers) follows once Phase A is green.
 #
 # Usage (on the lab node, with sudo):
-#   sudo bash install-lab-tunnel.sh
+#   sudo CONTAINARIUM_TUNNEL_TOKEN=<token> \
+#        CONTAINARIUM_SENTINEL_ADDR=<host:port> \
+#        CONTAINARIUM_PUBLIC_HOSTNAME=<cluster>.example.com \
+#        bash install-lab-tunnel.sh
 #
 # Idempotent: re-running replaces the unit and restarts the service.
 
@@ -22,12 +25,30 @@ fi
 BINARY_SRC="${BINARY_SRC:-/tmp/containarium}"
 BINARY_DST="/usr/local/bin/containarium"
 
-LAB_TOKEN="912029bbfca64e4ec11dcbf8556d8db0b2a15f58c9a7b97bfaa3ccccf0f55186"
-SENTINEL_ADDR="containarium.kafeido.app:443"
-SPOT_ID="lab-primary-1"
-POOL="lab"
-PUBLIC_HOSTNAME="containarium-lab.kafeido.app"
-PUBLIC_PORT="443"
+# Lab tunnel token — env-only (no default literal in this OSS-tracked
+# file; see CLAUDE.md OSS-disclosure rule). A prior committed literal
+# was rotated 2026-05-25.
+LAB_TOKEN="${CONTAINARIUM_TUNNEL_TOKEN:-}"
+SENTINEL_ADDR="${CONTAINARIUM_SENTINEL_ADDR:-<sentinel-host>:443}"
+SPOT_ID="${SPOT_ID:-lab-primary-1}"
+POOL="${POOL:-lab}"
+# Pool's public hostname — placeholder; the cluster's apex doesn't
+# belong in the repo per CLAUDE.md.
+PUBLIC_HOSTNAME="${CONTAINARIUM_PUBLIC_HOSTNAME:-<cluster>.example.com}"
+PUBLIC_PORT="${PUBLIC_PORT:-443}"
+
+if [[ -z "$LAB_TOKEN" ]]; then
+    echo "Error: CONTAINARIUM_TUNNEL_TOKEN env var required"
+    exit 1
+fi
+if [[ "$SENTINEL_ADDR" == *"<sentinel-host>"* ]]; then
+    echo "Error: CONTAINARIUM_SENTINEL_ADDR env var required (got placeholder)"
+    exit 1
+fi
+if [[ "$PUBLIC_HOSTNAME" == *"<cluster>.example.com"* ]]; then
+    echo "Error: CONTAINARIUM_PUBLIC_HOSTNAME env var required (got placeholder)"
+    exit 1
+fi
 
 if [[ ! -f "$BINARY_SRC" ]]; then
     echo "Error: $BINARY_SRC not found. SCP the binary there first:"

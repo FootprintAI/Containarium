@@ -203,11 +203,14 @@ func getEventAllowedOrigins() []string {
 		}
 		return origins
 	}
+	// Dev defaults only. Production deployments MUST set
+	// CONTAINARIUM_ALLOWED_ORIGINS to include their public origin —
+	// the cluster's apex hostname doesn't belong in this OSS file
+	// (per CLAUDE.md OSS-disclosure rule).
 	return []string{
 		"http://localhost:3000",
 		"http://localhost:8080",
 		"http://localhost",
-		"https://containarium.kafeido.app",
 	}
 }
 

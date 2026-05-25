@@ -26,7 +26,7 @@ type NetworkServer struct {
 	passthroughStore   network.PassthroughStore   // Source of truth for passthrough routes (PostgreSQL)
 	containerNetwork   string                      // e.g., "10.100.0.0/24"
 	proxyIP            string                      // e.g., "10.100.0.1"
-	baseDomain         string                      // e.g., "kafeido.app"
+	baseDomain         string                      // e.g., "example.com"
 	emitter            *events.Emitter
 }
 

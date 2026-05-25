@@ -298,7 +298,7 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		type peerInfo struct {
 			ID        string `json:"id"`
-			ProxyPath string `json:"proxy_path"` // path prefix on binary server, e.g. "/peer/tunnel-fts-5900x-gpu"
+			ProxyPath string `json:"proxy_path"` // path prefix on binary server, e.g. "/peer/tunnel-node-a-gpu"
 			Healthy   bool   `json:"healthy"`
 			Pool      Pool   `json:"pool,omitempty"`
 		}

@@ -23,7 +23,7 @@ container's BackendID field and want to drill down without paging
 through the full list.
 
 Example:
-  containarium backends get tunnel-fts-13700k-gpu --server <host:port>`,
+  containarium backends get tunnel-node-a-gpu --server <host:port>`,
 	Args: cobra.ExactArgs(1),
 	RunE: runBackendsGet,
 }

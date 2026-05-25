@@ -362,7 +362,7 @@ func (p *PeerPool) discover() {
 
 	// Build new peer set from discovery
 	// Peer address is the sentinel's binary server (port 8888) + proxy path
-	// e.g., "10.130.0.13:8888/peer/tunnel-fts-5900x-gpu"
+	// e.g., "10.130.0.13:8888/peer/tunnel-node-a-gpu"
 	sentinelHost := extractHost(p.sentinelURL)
 	sentinelPort := extractPort(p.sentinelURL)
 
@@ -511,7 +511,7 @@ func (p *PeerPool) ListContainers(authToken string) []incus.ContainerInfo {
 
 // fetchContainers fetches containers from a single peer.
 func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, error) {
-	// Addr includes proxy path, e.g. "10.130.0.13:8888/peer/tunnel-fts-5900x-gpu"
+	// Addr includes proxy path, e.g. "10.130.0.13:8888/peer/tunnel-node-a-gpu"
 	url := fmt.Sprintf("%s://%s/v1/containers", pc.urlScheme(), pc.Addr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

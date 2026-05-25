@@ -14,11 +14,20 @@
 set -euo pipefail
 
 USERNAME="${1:-}"
-SENTINEL_PUBKEY="${2:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0CMewXb9jrvqnAX+Mk+PmaNd5vAyCoiR70HtLuO57z root@containarium-jump-usw1-sentinel}"
+# Default sentinel pubkey: empty. Operators MUST pass the second arg
+# (or set SENTINEL_PUBKEY env). Pubkeys are not secrets, but the
+# `comment` field bundled with them — `<user>@<sentinel-host>` —
+# leaks the sentinel hostname per CLAUDE.md.
+SENTINEL_PUBKEY="${2:-${SENTINEL_PUBKEY:-}}"
 
 if [[ -z "$USERNAME" ]]; then
     echo "Usage: sudo $0 <username> [sentinel_pubkey]"
-    echo "Example: sudo $0 apibox-dev-3090"
+    echo "Example: sudo $0 <tenant-username>"
+    exit 1
+fi
+
+if [[ -z "$SENTINEL_PUBKEY" ]]; then
+    echo "Error: sentinel pubkey required — pass as 2nd arg or via SENTINEL_PUBKEY env"
     exit 1
 fi
 

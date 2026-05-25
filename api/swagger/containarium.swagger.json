@@ -3814,7 +3814,7 @@
       "properties": {
         "domain": {
           "type": "string",
-          "title": "Domain name (e.g., \"test.kafeido.app\" or subdomain like \"myapp\")"
+          "title": "Domain name (e.g., \"test.example.com\" or subdomain like \"myapp\")"
         },
         "targetIp": {
           "type": "string",
@@ -4507,7 +4507,7 @@
         },
         "backendId": {
           "type": "string",
-          "title": "Backend ID this container runs on (e.g., \"gcp-spot\", \"tunnel-fts-5900x-gpu\")"
+          "title": "Backend ID this container runs on (e.g., \"gcp-spot\", \"tunnel-node-a-gpu\")"
         },
         "osType": {
           "$ref": "#/definitions/OSType",
@@ -7146,7 +7146,7 @@
         },
         "backendId": {
           "type": "string",
-          "title": "Backend ID (e.g., \"tunnel-fts-5900x-gpu\") — set when returned from peer"
+          "title": "Backend ID (e.g., \"tunnel-node-a-gpu\") — set when returned from peer"
         }
       },
       "title": "SystemInfo contains information about the host system"

@@ -134,7 +134,7 @@ message Container {
   // GPU device info (e.g., GPU ID or PCI address if attached)
   string gpu_device = 13;
 
-  // Backend ID this container runs on (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+  // Backend ID this container runs on (e.g., "gcp-spot", "tunnel-node-a-gpu")
   string backend_id = 14;
 
   // Operating system type of the container

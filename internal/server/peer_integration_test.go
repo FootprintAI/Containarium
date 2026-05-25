@@ -374,7 +374,7 @@ func TestIntegration_PeerForwardCollaborators(t *testing.T) {
 // TestIntegration_PeerSystemInfo verifies per-backend system info forwarding.
 func TestIntegration_PeerSystemInfo(t *testing.T) {
 	gpu := newFakeBackend("tunnel-gpu", nil, fakeSystemInfo{
-		Hostname:  "fts-5900x",
+		Hostname:  "node-a",
 		TotalCPUs: 24,
 		TotalMem:  137438953472, // 128GB
 		GPUs: []fakeGPU{
@@ -416,8 +416,8 @@ func TestIntegration_PeerSystemInfo(t *testing.T) {
 		t.Fatalf("failed to parse: %v", err)
 	}
 
-	if resp.Info.Hostname != "fts-5900x" {
-		t.Errorf("expected hostname 'fts-5900x', got %q", resp.Info.Hostname)
+	if resp.Info.Hostname != "node-a" {
+		t.Errorf("expected hostname 'node-a', got %q", resp.Info.Hostname)
 	}
 	if resp.Info.TotalCPUs != 24 {
 		t.Errorf("expected 24 CPUs, got %d", resp.Info.TotalCPUs)

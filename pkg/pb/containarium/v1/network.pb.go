@@ -1044,7 +1044,7 @@ func (x *GetRoutesResponse) GetTotalCount() int32 {
 // AddRouteRequest adds a new proxy route
 type AddRouteRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Domain name (e.g., "test.kafeido.app" or subdomain like "myapp")
+	// Domain name (e.g., "test.example.com" or subdomain like "myapp")
 	Domain string `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
 	// Target container IP address
 	TargetIp string `protobuf:"bytes,2,opt,name=target_ip,json=targetIp,proto3" json:"target_ip,omitempty"`

@@ -112,14 +112,14 @@ the JWT payload (the 'jti' claim).`,
   containarium token revoke \
     --jti AbCdEfGh... \
     --reason "leaked_to_public_gist_2026_05" \
-    --server https://containarium.kafeido.app \
+    --server https://<cluster>.example.com \
     --token $ADMIN_TOKEN
 
   # Revoke with explicit cleanup horizon (the token's own exp)
   containarium token revoke \
     --jti AbCdEfGh... \
     --expires-at 2026-06-19T12:34:56Z \
-    --server https://containarium.kafeido.app \
+    --server https://<cluster>.example.com \
     --token $ADMIN_TOKEN`,
 	RunE: runTokenRevoke,
 }
@@ -145,12 +145,12 @@ Use the access token in subsequent API calls:
 	Example: `  # From an environment variable
   containarium token refresh \
     --refresh-token "$REFRESH" \
-    --server https://containarium.kafeido.app
+    --server https://<cluster>.example.com
 
   # From a file (mode 0600 recommended)
   containarium token refresh \
     --refresh-token-file ~/.containarium/refresh \
-    --server https://containarium.kafeido.app`,
+    --server https://<cluster>.example.com`,
 	RunE: runTokenRefresh,
 }
 

@@ -4,7 +4,7 @@ Containarium automatically provisions TLS certificates for domains when adding p
 
 ## Overview
 
-When you add a new proxy route (e.g., `myapp.kafeido.app`), Containarium:
+When you add a new proxy route (e.g., `myapp.example.com`), Containarium:
 
 1. Adds the reverse proxy route to Caddy
 2. Adds the domain to Caddy's TLS automation policy
@@ -18,14 +18,14 @@ When you add a route via the API or Web UI:
 
 ```bash
 # Via CLI (future)
-containarium route add myapp.kafeido.app --target 10.0.3.100:8080
+containarium route add myapp.example.com --target 10.0.3.100:8080
 
 # Via REST API
-curl -X POST https://containarium.kafeido.app/v1/network/routes \
+curl -X POST https://<cluster>.example.com/v1/network/routes \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "domain": "myapp.kafeido.app",
+    "domain": "myapp.example.com",
     "target_ip": "10.0.3.100",
     "target_port": 8080
   }'
@@ -42,7 +42,7 @@ Caddy uses an automation policy to manage certificates. When a domain is added, 
 
 ```json
 {
-  "subjects": ["myapp.kafeido.app", "other.kafeido.app"],
+  "subjects": ["myapp.example.com", "other.example.com"],
   "issuers": [
     {"module": "acme"},
     {"module": "acme", "ca": "https://acme.zerossl.com/v2/DV90"}
@@ -68,8 +68,8 @@ This configures:
 The domain must resolve to the Caddy server's IP address:
 
 ```bash
-# Example: point myapp.kafeido.app to your server
-myapp.kafeido.app.  IN  A  35.xxx.xxx.xxx
+# Example: point myapp.example.com to your server
+myapp.example.com.  IN  A  35.xxx.xxx.xxx
 ```
 
 ### Firewall Rules
@@ -98,7 +98,7 @@ The Network tab in the Web UI provides route management with automatic TLS:
 
 1. Navigate to **Network** tab
 2. Click **Add Route**
-3. Select or enter a domain (e.g., `myapp.kafeido.app`)
+3. Select or enter a domain (e.g., `myapp.example.com`)
 4. Select target container and port
 5. Click **Add Route**
 
@@ -106,19 +106,19 @@ The certificate is provisioned automatically in the background.
 
 ## Wildcard Certificates
 
-For wildcard certificates (e.g., `*.kafeido.app`), use DNS-01 challenge:
+For wildcard certificates (e.g., `*.example.com`), use DNS-01 challenge:
 
 1. Configure Caddy with a DNS provider plugin (Cloudflare, Route53, etc.)
 2. Set up DNS API credentials
 3. Configure the Caddyfile with DNS challenge:
 
 ```caddyfile
-*.kafeido.app {
+*.example.com {
     tls {
         dns cloudflare {env.CLOUDFLARE_API_TOKEN}
     }
     
-    @subdomain host *.kafeido.app
+    @subdomain host *.example.com
     handle @subdomain {
         reverse_proxy {http.request.host.labels.2}:8080
     }
@@ -159,7 +159,7 @@ curl -s http://localhost:2019/config/apps/tls/automation/policies | jq
 If a domain already has a certificate (e.g., wildcard), the provisioning gracefully skips:
 
 ```
-Warning: Failed to provision TLS for myapp.kafeido.app: domain already in policy
+Warning: Failed to provision TLS for myapp.example.com: domain already in policy
 ```
 
 This is expected behavior - the existing certificate will be used.
@@ -177,7 +177,7 @@ func (p *ProxyManager) ProvisionTLS(domain string) error
 ```
 
 **Parameters:**
-- `domain`: Full domain name (e.g., `myapp.kafeido.app`)
+- `domain`: Full domain name (e.g., `myapp.example.com`)
 
 **Returns:**
 - `nil` on success

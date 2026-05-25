@@ -63,7 +63,7 @@ git status
 git status --ignored
 
 # 3. Search for potential secrets in tracked files
-git grep -i "footprintai-dev" -- ':!*.md' ':!SECURITY-CHECKLIST.md'
+git grep -i "<your-gcp-project>" -- ':!*.md' ':!SECURITY-CHECKLIST.md'
 git grep -E "ssh-(rsa|ed25519) AAAA" -- ':!terraform/gce/terraform.tfvars.example'
 git grep -E "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}" -- ':!*.md' ':!SECURITY-CHECKLIST.md'
 

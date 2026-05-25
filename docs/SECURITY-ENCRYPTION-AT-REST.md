@@ -21,7 +21,7 @@ container data itself — protection comes from the underlying disk layer
 
 ## What is NOT encrypted at rest
 
-- **Bare-metal peers** (e.g. the `fts-5900x` and `fts-13700k` GPU
+- **Bare-metal peers** (e.g. the GPU
   nodes). These hosts have no PD layer between Containarium and the
   physical disks. If the operator did not configure LUKS, dm-crypt,
   or ZFS native encryption on the underlying storage themselves, the

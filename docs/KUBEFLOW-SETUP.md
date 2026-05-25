@@ -44,7 +44,7 @@ The stack installs the full **Kubeflow AI Reference Platform 26.03** from [`kube
 - **CPU**: 8+ cores recommended
 - **Disk**: 100GB+ (PVCs alone need 65GB)
 - **Nested containers**: `--podman` flag required (sets `security.nesting=true`)
-- **Peer node**: Only `fts-5900x` or `fts-13700k` have the RAM; the primary VM is too small
+- **Peer node**: Only a peer node with sufficient RAM have the RAM; the primary VM is too small
 
 ## Quick Start
 
@@ -56,7 +56,7 @@ containarium create mldev \
   --cpu 8 --memory 32GB --disk 150GB \
   --podman \
   --stack kind-kubeflow \
-  --backend-id tunnel-fts-5900x-gpu
+  --backend-id tunnel-<peer-id>-gpu
 ```
 
 The stack installs Docker CE, clones `kubeflow/manifests` at tag `26.03` to `/opt/kubeflow-manifests`, and writes a `setup-kubeflow` helper script.

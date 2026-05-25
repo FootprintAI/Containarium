@@ -13,35 +13,35 @@ func TestResolveFullDomain(t *testing.T) {
 		{
 			name:       "simple subdomain",
 			domain:     "myapp",
-			baseDomain: "containarium.kafeido.app",
-			want:       "myapp.containarium.kafeido.app",
+			baseDomain: "<cluster>.example.com",
+			want:       "myapp.<cluster>.example.com",
 		},
 		// Already has base domain suffix — use as-is
 		{
 			name:       "already has base domain suffix",
-			domain:     "myapp.containarium.kafeido.app",
-			baseDomain: "containarium.kafeido.app",
-			want:       "myapp.containarium.kafeido.app",
+			domain:     "myapp.<cluster>.example.com",
+			baseDomain: "<cluster>.example.com",
+			want:       "myapp.<cluster>.example.com",
 		},
 		// Domain equals base domain exactly
 		{
 			name:       "domain equals base domain",
-			domain:     "containarium.kafeido.app",
-			baseDomain: "containarium.kafeido.app",
-			want:       "containarium.kafeido.app",
+			domain:     "<cluster>.example.com",
+			baseDomain: "<cluster>.example.com",
+			want:       "<cluster>.example.com",
 		},
 		// Independent FQDN — must NOT append base domain (the bug scenario)
 		{
 			name:       "independent FQDN not doubled",
-			domain:     "facelabor.dev.kafeido.app",
-			baseDomain: "containarium.kafeido.app",
-			want:       "facelabor.dev.kafeido.app",
+			domain:     "tenant-a.dev.example.com",
+			baseDomain: "<cluster>.example.com",
+			want:       "tenant-a.dev.example.com",
 		},
 		// Another independent FQDN
 		{
 			name:       "another independent FQDN",
 			domain:     "api.example.com",
-			baseDomain: "containarium.kafeido.app",
+			baseDomain: "<cluster>.example.com",
 			want:       "api.example.com",
 		},
 		// No base domain configured — use as-is
@@ -60,16 +60,16 @@ func TestResolveFullDomain(t *testing.T) {
 		// Multi-level subdomain of base domain — use as-is
 		{
 			name:       "multi-level subdomain of base domain",
-			domain:     "a.b.containarium.kafeido.app",
-			baseDomain: "containarium.kafeido.app",
-			want:       "a.b.containarium.kafeido.app",
+			domain:     "a.b.<cluster>.example.com",
+			baseDomain: "<cluster>.example.com",
+			want:       "a.b.<cluster>.example.com",
 		},
 		// Partial overlap but NOT a suffix — must not double
 		{
 			name:       "partial overlap not suffix",
-			domain:     "pes.kafeido.app",
-			baseDomain: "containarium.kafeido.app",
-			want:       "pes.kafeido.app",
+			domain:     "tenant-b.example.com",
+			baseDomain: "<cluster>.example.com",
+			want:       "tenant-b.example.com",
 		},
 	}
 

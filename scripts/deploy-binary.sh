@@ -11,18 +11,23 @@
 #   4. Triggers each peer to self-update from the sentinel
 #
 # Prerequisites:
-#   - gcloud configured with access to footprintai-prod
-#   - SSH access to peer nodes (fts-5900x, fts-13700k)
+#   - gcloud configured with access to your GCP project
+#   - SSH access to your peer node hostnames
+#
+# Edit the constants below (PROJECT / ZONE / PRIMARY_VM / SENTINEL_VM /
+# PEERS) for your deployment OR override at invocation time via env
+# vars (`PROJECT=my-prod ZONE=us-east1-a ... bash deploy-binary.sh`).
 #
 
 set -euo pipefail
 
 BINARY="bin/containarium-linux-amd64"
-PROJECT="footprintai-prod"
-ZONE="us-west1-a"
-PRIMARY_VM="containarium-jump-usw1"
-SENTINEL_VM="containarium-jump-usw1-sentinel"
-PEERS=("fts-5900x" "fts-13700k")
+PROJECT="${PROJECT:-<your-gcp-project>}"
+ZONE="${ZONE:-<your-zone>}"
+PRIMARY_VM="${PRIMARY_VM:-<your-primary-vm>}"
+SENTINEL_VM="${SENTINEL_VM:-<your-sentinel-vm>}"
+# Space-separated peer hostnames; defaults are placeholders.
+PEERS=(${PEERS:-<peer-a> <peer-b>})
 
 # Parse flags
 BUILD=false

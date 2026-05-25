@@ -251,7 +251,7 @@ message GetRoutesResponse {
 
 // AddRouteRequest adds a new proxy route
 message AddRouteRequest {
-  // Domain name (e.g., "test.kafeido.app" or subdomain like "myapp")
+  // Domain name (e.g., "test.example.com" or subdomain like "myapp")
   string domain = 1;
 
   // Target container IP address

@@ -19,7 +19,7 @@ import (
 // stdlib's tls.Client and verifies extractSNI parses the SNI field correctly.
 func TestExtractSNI_RealClientHello(t *testing.T) {
 	cases := []string{
-		"containarium-prod.kafeido.app",
+		"prod.example.com",
 		"a.b",            // minimal
 		"x.example.com",  // typical
 	}

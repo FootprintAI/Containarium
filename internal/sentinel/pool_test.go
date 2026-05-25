@@ -89,8 +89,8 @@ func TestOnTunnelConnect_PromotesPrimary(t *testing.T) {
 		LocalIP:        "127.0.0.7",
 		ExternalPort:   18007,
 		Pool:           "lab",
-		PublicHostname: "containarium-lab.kafeido.app",
-		PublicAliases:  []string{"lab-api.kafeido.app"},
+		PublicHostname: "lab.example.com",
+		PublicAliases:  []string{"lab-api.example.com"},
 		PublicPort:     443,
 	}
 
@@ -106,15 +106,15 @@ func TestOnTunnelConnect_PromotesPrimary(t *testing.T) {
 	// Primary registry has the tunnel-promoted entry.
 	p := m.primaries.LookupByPool("lab")
 	if assert.NotNil(t, p) {
-		assert.Equal(t, "containarium-lab.kafeido.app", p.Hostname)
-		assert.Equal(t, []string{"lab-api.kafeido.app"}, p.Aliases)
+		assert.Equal(t, "lab.example.com", p.Hostname)
+		assert.Equal(t, []string{"lab-api.example.com"}, p.Aliases)
 		assert.Equal(t, "127.0.0.7", p.IP)
 		assert.Equal(t, 443, p.Port)
 		assert.Equal(t, "tunnel-lab-primary-1", p.BackendID)
 	}
 
 	// SNI lookup by alias finds the same primary.
-	if p2 := m.primaries.LookupByHostname("lab-api.kafeido.app"); assert.NotNil(t, p2) {
+	if p2 := m.primaries.LookupByHostname("lab-api.example.com"); assert.NotNil(t, p2) {
 		assert.Equal(t, Pool("lab"), p2.Pool)
 	}
 

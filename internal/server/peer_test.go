@@ -276,8 +276,8 @@ func TestExtractPort(t *testing.T) {
 }
 
 func TestIsDiscoveredPeer(t *testing.T) {
-	if !isDiscoveredPeer("tunnel-fts-5900x-gpu") {
-		t.Error("expected tunnel-fts-5900x-gpu to be discovered peer")
+	if !isDiscoveredPeer("tunnel-node-a-gpu") {
+		t.Error("expected tunnel-node-a-gpu to be discovered peer")
 	}
 	if isDiscoveredPeer("static-peer") {
 		t.Error("expected static-peer to not be discovered peer")

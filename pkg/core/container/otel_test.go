@@ -34,7 +34,7 @@ func TestOtelEnvVars_FullyConfigured(t *testing.T) {
 		Username:              "alice",
 		Monitoring:            true,
 		OTelCollectorEndpoint: "http://10.0.0.1:4318",
-		BackendID:             "fts-5900x-gpu",
+		BackendID:             "node-a-gpu",
 	}
 	got := otelEnvVars(opts, "alice-container")
 	if got == nil {
@@ -54,15 +54,15 @@ func TestOtelEnvVars_FullyConfigured(t *testing.T) {
 	if !strings.Contains(attrs, "container.id=alice-container") {
 		t.Errorf("OTEL_RESOURCE_ATTRIBUTES missing container.id: %q", attrs)
 	}
-	if !strings.Contains(attrs, "backend.id=fts-5900x-gpu") {
+	if !strings.Contains(attrs, "backend.id=node-a-gpu") {
 		t.Errorf("OTEL_RESOURCE_ATTRIBUTES missing backend.id: %q", attrs)
 	}
 	// New split form for sidecar compose-interpolation
 	if got["CONTAINARIUM_CONTAINER_ID"] != "alice-container" {
 		t.Errorf("CONTAINARIUM_CONTAINER_ID = %q, want %q", got["CONTAINARIUM_CONTAINER_ID"], "alice-container")
 	}
-	if got["CONTAINARIUM_BACKEND_ID"] != "fts-5900x-gpu" {
-		t.Errorf("CONTAINARIUM_BACKEND_ID = %q, want %q", got["CONTAINARIUM_BACKEND_ID"], "fts-5900x-gpu")
+	if got["CONTAINARIUM_BACKEND_ID"] != "node-a-gpu" {
+		t.Errorf("CONTAINARIUM_BACKEND_ID = %q, want %q", got["CONTAINARIUM_BACKEND_ID"], "node-a-gpu")
 	}
 	if got["CONTAINARIUM_TENANT_ID"] != "alice" {
 		t.Errorf("CONTAINARIUM_TENANT_ID = %q, want %q", got["CONTAINARIUM_TENANT_ID"], "alice")
@@ -76,7 +76,7 @@ func TestOTelEnvVarsForMigration_EmptyEndpoint(t *testing.T) {
 }
 
 func TestOTelEnvVarsForMigration_Populated(t *testing.T) {
-	got := OTelEnvVarsForMigration("alice", "alice-container", "fts-13700k-gpu", "http://10.0.0.2:4318")
+	got := OTelEnvVarsForMigration("alice", "alice-container", "node-b-gpu", "http://10.0.0.2:4318")
 	if got == nil {
 		t.Fatal("expected non-nil map")
 	}
@@ -87,15 +87,15 @@ func TestOTelEnvVarsForMigration_Populated(t *testing.T) {
 		t.Errorf("service name mismatch: %q", got["OTEL_SERVICE_NAME"])
 	}
 	attrs := got["OTEL_RESOURCE_ATTRIBUTES"]
-	if !strings.Contains(attrs, "backend.id=fts-13700k-gpu") {
+	if !strings.Contains(attrs, "backend.id=node-b-gpu") {
 		t.Errorf("expected backend.id in attrs, got %q", attrs)
 	}
 	// Split form must match the legacy comma-encoded form
 	if got["CONTAINARIUM_CONTAINER_ID"] != "alice-container" {
 		t.Errorf("split CONTAINARIUM_CONTAINER_ID = %q, want alice-container", got["CONTAINARIUM_CONTAINER_ID"])
 	}
-	if got["CONTAINARIUM_BACKEND_ID"] != "fts-13700k-gpu" {
-		t.Errorf("split CONTAINARIUM_BACKEND_ID = %q, want fts-13700k-gpu", got["CONTAINARIUM_BACKEND_ID"])
+	if got["CONTAINARIUM_BACKEND_ID"] != "node-b-gpu" {
+		t.Errorf("split CONTAINARIUM_BACKEND_ID = %q, want node-b-gpu", got["CONTAINARIUM_BACKEND_ID"])
 	}
 	if got["CONTAINARIUM_TENANT_ID"] != "alice" {
 		t.Errorf("split CONTAINARIUM_TENANT_ID = %q, want alice", got["CONTAINARIUM_TENANT_ID"])

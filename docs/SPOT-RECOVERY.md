@@ -262,8 +262,8 @@ During maintenance mode, the sentinel serves HTTPS on port 443. To avoid browser
 3. Certificates are stored in memory and served via SNI-based lookup during maintenance mode
 
 **SNI certificate selection order:**
-1. Exact domain match (e.g., `facelabor.kafeido.app`)
-2. Wildcard match (e.g., `*.kafeido.app`)
+1. Exact domain match (e.g., `app.example.com`)
+2. Wildcard match (e.g., `*.example.com`)
 3. Self-signed fallback (generated at startup)
 
 **Configuration:**
@@ -307,8 +307,8 @@ ssh -p 2222 admin@<sentinel-ip>
 ssh admin@<sentinel-ip>
 
 # Via IAP (for VMs without external IP)
-gcloud compute ssh containarium-jump-usw1-sentinel \
-  --project footprintai-prod \
+gcloud compute ssh <your-sentinel-vm> \
+  --project <your-gcp-project> \
   --zone us-west1-b \
   --tunnel-through-iap \
   -- -p 2222
@@ -354,7 +354,7 @@ sudo journalctl -u containarium-sentinel -f
 ```hcl
 resource "google_compute_instance_group_manager" "containarium_spot" {
   target_size        = 1
-  base_instance_name = "containarium-jump-usw1"
+  base_instance_name = "<your-primary-vm>"
 
   stateful_disk {
     device_name = "incus-data"
@@ -409,7 +409,7 @@ The startup script (`scripts/startup-spot.sh`) handles two scenarios because the
 ```bash
 # Stop the instance (simulates STOP preemption action)
 gcloud compute instances stop containarium-jump \
-  --project footprintai-prod \
+  --project <your-gcp-project> \
   --zone us-west1-a
 
 # Sentinel detects in ~10s, serves maintenance page, restarts VM
@@ -440,7 +440,7 @@ ssh admin@<sentinel-ip> '
 
 # Or direct to spot VM (if you know its ephemeral IP)
 gcloud compute ssh containarium-jump \
-  --project footprintai-prod \
+  --project <your-gcp-project> \
   --zone us-west1-a \
   --tunnel-through-iap \
   --command "systemctl is-active containarium && sudo incus list -c ns"

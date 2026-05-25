@@ -97,7 +97,7 @@ func (p *ProxyManager) addRouteWithProtocol(subdomain, containerIP string, port 
 	// If the input is a simple subdomain (no dots), append baseDomain.
 	// If it already contains baseDomain as suffix, extract the subdomain part.
 	// If it's a fully-qualified domain that is NOT a subdomain of baseDomain
-	// (e.g., "api.kafeido.app" when baseDomain is "containarium.kafeido.app"),
+	// (e.g., "api.example.com" when baseDomain is "<cluster>.example.com"),
 	// use it as-is — it's an independent domain.
 	if p.baseDomain != "" {
 		if strings.HasSuffix(subdomain, "."+p.baseDomain) || strings.HasSuffix(subdomain, p.baseDomain) {

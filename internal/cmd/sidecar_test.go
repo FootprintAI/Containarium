@@ -11,7 +11,7 @@ func TestRenderOTelComposeSnippet_AllFieldsRendered(t *testing.T) {
 		ServiceName:       "alice-otel",
 		Username:          "alice",
 		ContainerEnvName:  "alice-container",
-		BackendEnvValue:   "containarium-jump-usw1",
+		BackendEnvValue:   "<your-primary-vm>",
 		TenantEnvValue:    "alice",
 		CollectorEnvValue: "http://10.0.3.112:4318",
 	})
@@ -31,7 +31,7 @@ func TestRenderOTelComposeSnippet_AllFieldsRendered(t *testing.T) {
 		// All four current values shown as comments for verification
 		"http://10.0.3.112:4318",
 		"alice-container",
-		"containarium-jump-usw1",
+		"<your-primary-vm>",
 		// Health check block present
 		"http://localhost:13133/",
 		// SERVICE_VERSION with default fallback
@@ -52,7 +52,7 @@ func TestRenderOTelComposeSnippet_DoesNotLeakHardcodedTenantInImage(t *testing.T
 		ServiceName:       "wordpress-otel",
 		Username:          "wordpress",
 		ContainerEnvName:  "wordpress-container",
-		BackendEnvValue:   "containarium-jump-usw1",
+		BackendEnvValue:   "<your-primary-vm>",
 		TenantEnvValue:    "wordpress",
 		CollectorEnvValue: "http://10.0.3.112:4318",
 	})

@@ -12,7 +12,12 @@
 #   - Run as root: sudo bash setup-peer.sh --spot-id <ID>
 #
 # Usage:
-#   sudo bash setup-peer.sh --spot-id fts-13700k-gpu [--network-subnet 10.0.3.1/24] [--tunnel-token TOKEN]
+#   sudo CONTAINARIUM_TUNNEL_TOKEN=<token> CONTAINARIUM_SENTINEL_ADDR=<host:port> \
+#     bash setup-peer.sh --spot-id <peer-id-gpu> [--network-subnet 10.0.3.1/24]
+#
+# `--tunnel-token` / `--sentinel-addr` flags still work for ad-hoc overrides,
+# but the env-var form is the recommended path so the token never appears in
+# shell history or process listings.
 #
 
 set -euo pipefail
@@ -20,8 +25,14 @@ set -euo pipefail
 # Defaults
 SPOT_ID=""
 NETWORK_SUBNET="10.0.3.1/24"
-TUNNEL_TOKEN="82ae3301b4650ab2d0026cf0f6a5b5b78dfcc9e022922ac23858d1609913aa7f"
-SENTINEL_ADDR="containarium.kafeido.app:443"
+# Tunnel token: env-var-first (no default literal in this OSS-tracked file
+# — see CLAUDE.md "No instance / endpoint / tenant names in OSS-visible
+# files"). A prior committed literal was rotated 2026-05-25.
+TUNNEL_TOKEN="${CONTAINARIUM_TUNNEL_TOKEN:-}"
+# Sentinel address — defaults to a placeholder; override at the call site
+# (env or --sentinel-addr). The cluster's apex hostname does not belong in
+# the repo.
+SENTINEL_ADDR="${CONTAINARIUM_SENTINEL_ADDR:-<sentinel-host>:443}"
 SENTINEL_URL=""  # Internal URL for auto-update (auto-detected from primary)
 POOL=""
 PUBLIC_HOSTNAME=""
@@ -47,12 +58,12 @@ Usage: sudo $0 --spot-id <ID> [options]
 
 Common options:
   --network-subnet CIDR   Container network subnet (default: 10.0.3.1/24)
-  --tunnel-token TOKEN    Tunnel auth token
-  --sentinel-addr ADDR    Sentinel address (default: containarium.kafeido.app:443)
+  --tunnel-token TOKEN    Tunnel auth token (prefer CONTAINARIUM_TUNNEL_TOKEN env)
+  --sentinel-addr ADDR    Sentinel address host:port (prefer CONTAINARIUM_SENTINEL_ADDR env)
   --pool NAME             Pool to register this node in
 
 Primary-via-tunnel (slice 6) — promote this tunnel to a pool primary:
-  --public-hostname HOST  Pool's public hostname (e.g. containarium-lab.kafeido.app)
+  --public-hostname HOST  Pool's public hostname (e.g. <cluster>.example.com)
   --public-aliases LIST   Comma-separated app domains the primary's Caddy serves
   --public-port PORT      Public TLS port (default: 443 when --public-hostname is set)
 HELP
@@ -63,7 +74,12 @@ HELP
 done
 
 if [[ -z "$SPOT_ID" ]]; then
-    echo "Error: --spot-id is required (e.g., fts-13700k-gpu)"
+    echo "Error: --spot-id is required (e.g., <peer-id>-gpu)"
+    exit 1
+fi
+
+if [[ -z "$TUNNEL_TOKEN" ]]; then
+    echo "Error: tunnel token required — set CONTAINARIUM_TUNNEL_TOKEN env or pass --tunnel-token"
     exit 1
 fi
 
@@ -108,7 +124,7 @@ ExecStart=/usr/local/bin/containarium daemon \\
   --network-subnet ${NETWORK_SUBNET} ${SENTINEL_URL_FLAG}
 Restart=on-failure
 RestartSec=5s
-Environment="CONTAINARIUM_ALLOWED_ORIGINS=https://containarium.kafeido.app,http://localhost:3000,http://localhost:8080"
+Environment="CONTAINARIUM_ALLOWED_ORIGINS=https://<cluster>.example.com,http://localhost:3000,http://localhost:8080"
 CONF
 echo "  Override written: /etc/systemd/system/containarium.service.d/override.conf"
 

@@ -15,7 +15,7 @@ If a single team needs visibility across all containers, **don't use multi-pool*
 ## High-level architecture
 
 ```
-                       containarium-prod.kafeido.app  containarium-lab.kafeido.app
+                       <prod-pool>.example.com  <lab-pool>.example.com
                                        │                       │
                                        └──────────┬────────────┘
                                                   │ HTTPS
@@ -69,7 +69,7 @@ If a single team needs visibility across all containers, **don't use multi-pool*
 | 2 | `--pool` flag on the daemon; `PeerPool` appends `?pool=` to discovery so primaries see only their own peers | `internal/cmd/daemon.go`, `internal/server/peer.go` |
 | 3 | Primary self-registration with sentinel: `POST /sentinel/primaries`, heartbeat, deregister; `--public-hostname` / `--public-port` flags | `internal/sentinel/primary_registry.go`, `internal/server/primary_register.go` |
 | 4 | SNI peeking + routing in the sentinel HTTPS dispatcher; falls back to the legacy single-backend behavior on miss | `internal/sentinel/sni.go`, `internal/sentinel/manager.go` |
-| 5 | Hostname aliases on `Primary` so app domains (e.g. `api.kafeido.app`) route to the right pool's primary; `--public-aliases` flag | `internal/sentinel/primary_registry.go`, `internal/server/primary_register.go` |
+| 5 | Hostname aliases on `Primary` so app domains (e.g. `api.example.com`) route to the right pool's primary; `--public-aliases` flag | `internal/sentinel/primary_registry.go`, `internal/server/primary_register.go` |
 | 6 | Primary registration via tunnel handshake — a primary behind NAT/Tailscale tunnels into the sentinel and gets auto-promoted into the primary registry pointing at its loopback alias | `internal/sentinel/tunnel_auth.go`, `tunnel_registry.go`, `manager.go`, `internal/cmd/tunnel.go`, `scripts/setup-peer.sh` |
 | 7 | Token-bound pool authorization — `--tunnel-token-policy token=pool1,pool2` per-pool tokens; sentinel rejects handshakes whose `pool` field isn't in the token's allow-list. Adds `type Pool string` so pool routing uses a distinct type instead of bare strings. | `internal/sentinel/pool.go`, `tunnel_auth.go`, `internal/cmd/sentinel.go` |
 | 8 | SNI router uses yamux for tunneled primaries — `TunnelRegistry.DialTunnel()` opens a yamux stream directly to the primary's local port, avoiding the loopback-listener-on-:443 conflict with the sentinel's own ConnMux. | `internal/sentinel/tunnel_registry.go`, `manager.go`, `tunnel_server.go` |
@@ -117,7 +117,7 @@ primary daemon                        sentinel
        │  POST /sentinel/primaries       │
        │  { pool: "prod",                │
        │    hostname: "containarium-     │
-       │      prod.kafeido.app",         │
+       │      <prod-pool>.example.com",         │
        │    port: 443 }                  │
        │  ────────────────────────────▶  │  PrimaryRegistry.Register
        │                                 │  IP filled from RemoteAddr
@@ -143,7 +143,7 @@ client (browser)                sentinel                          primary (prod)
     │                              │  startHTTPSProxy handler:         │
     │  TLS ClientHello             │   1. bufio.Peek the record        │
     │   SNI=containarium-          │   2. extractSNI(buf) → "…-prod…"  │
-    │   prod.kafeido.app           │   3. primaries.LookupByHostname() │
+    │   <prod-pool>.example.com           │   3. primaries.LookupByHostname() │
     │  ─────────────────────────▶  │   4. dial primary.IP:primary.Port │
     │                              │   5. replay peeked bytes,         │
     │                              │      then io.Copy both directions │
@@ -157,20 +157,20 @@ If SNI is missing, malformed, or doesn't match any registered primary, the dispa
 
 ### App domain routing via aliases
 
-A primary registers its main hostname plus any *additional* hostnames its Caddy serves (`api.kafeido.app`, `voice.kafeido.app`, etc.). The SNI lookup matches against both, so app-domain traffic lands on the same primary that owns the pool's apps:
+A primary registers its main hostname plus any *additional* hostnames its Caddy serves (`api.example.com`, `voice.example.com`, etc.). The SNI lookup matches against both, so app-domain traffic lands on the same primary that owns the pool's apps:
 
 ```
 client (browser)                sentinel                          primary (prod)
     │                              │                                   │
     │  TLS ClientHello              │                                   │
-    │   SNI=api.kafeido.app         │                                   │
+    │   SNI=api.example.com         │                                   │
     │  ─────────────────────────▶   │                                   │
     │                              │  primaries.LookupByHostname        │
     │                              │   matches Aliases of pool=prod     │
     │                              │   → forward to prod primary:443    │
     │                              │  ─────────────────────────────▶    │
     │                              │                                   │  Caddy:
-    │                              │                                   │   Host=api.kafeido.app
+    │                              │                                   │   Host=api.example.com
     │                              │                                   │   → api-container:8080
     │  ◀════════════════════════════════════════════════════════════    │
 ```
@@ -189,7 +189,7 @@ peer/primary host                           sentinel
        │    --spot-id lab-primary-1 \          │
        │    --ports 22,8080,443 \              │
        │    --public-hostname containarium-    │
-       │      lab.kafeido.app \                │
+       │      lab.example.com \                │
        │    --public-aliases lab-api.kafeido.  │
        │      app \                            │
        │    --public-port 443                  │
@@ -209,7 +209,7 @@ peer/primary host                           sentinel
        │   (loopback proxy → yamux)            │
 ```
 
-When inbound TLS arrives with `SNI=containarium-lab.kafeido.app`, the SNI router's `LookupByHostname` returns the tunnel-promoted entry. Sentinel dials `127.0.0.X:443` (its own loopback alias), bytes stream through yamux back to the primary's local `:443` (where Caddy terminates TLS).
+When inbound TLS arrives with `SNI=<lab-pool>.example.com`, the SNI router's `LookupByHostname` returns the tunnel-promoted entry. Sentinel dials `127.0.0.X:443` (its own loopback alias), bytes stream through yamux back to the primary's local `:443` (where Caddy terminates TLS).
 
 On tunnel disconnect, the primary entry is removed automatically (`UnregisterByBackendID`).
 
@@ -217,15 +217,15 @@ On tunnel disconnect, the primary entry is removed automatically (`UnregisterByB
 
 ## Operator workflow: adding a new pool
 
-1. **Pick a name and subdomain.** E.g. `pool=lab`, hostname `containarium-lab.kafeido.app`.
+1. **Pick a name and subdomain.** E.g. `pool=lab`, hostname `<lab-pool>.example.com`.
 2. **Provision a primary VM.** Same Terraform module as your existing primary (`terraform/modules/containarium/`). The new VM runs its own postgres/Grafana/Caddy core stack.
 3. **Configure the primary daemon** with the registration flags:
    ```
    containarium daemon \
      --sentinel-url http://<sentinel-internal-ip>:8888 \
      --pool lab \
-     --public-hostname containarium-lab.kafeido.app \
-     --public-aliases lab-api.kafeido.app,lab-grafana.kafeido.app \
+     --public-hostname <lab-pool>.example.com \
+     --public-aliases lab-api.example.com,lab-grafana.example.com \
      --public-port 443 \
      --proxy-protocol --proxy-protocol-trusted=127.0.0.0/8 \
      ...other flags...
@@ -237,15 +237,15 @@ On tunnel disconnect, the primary entry is removed automatically (`UnregisterByB
    ```
    sudo bash setup-peer.sh --spot-id host-a --pool lab ...
    ```
-5. **Add DNS:** `containarium-lab.kafeido.app` CNAME → the GLB.
-6. **TLS:** wildcard cert on the GLB (`*.kafeido.app`) already covers it. If using per-subdomain certs, add a managed cert.
+5. **Add DNS:** `<lab-pool>.example.com` CNAME → the GLB.
+6. **TLS:** wildcard cert on the GLB (`*.example.com`) already covers it. If using per-subdomain certs, add a managed cert.
 7. **Verify:**
    ```
-   curl -s https://containarium.kafeido.app/sentinel/primaries | jq
+   curl -s https://<cluster>.example.com/sentinel/primaries | jq
    # → confirms lab primary is registered
-   curl -s https://containarium.kafeido.app/sentinel/peers?pool=lab | jq
+   curl -s https://<cluster>.example.com/sentinel/peers?pool=lab | jq
    # → confirms peers are tagged correctly
-   curl -sI https://containarium-lab.kafeido.app/      # → 200 from lab primary
+   curl -sI https://<lab-pool>.example.com/      # → 200 from lab primary
    ```
 
 No sentinel config edits, no Caddy admin API edits, no daemon restart on the existing pool.
@@ -263,6 +263,6 @@ No sentinel config edits, no Caddy admin API edits, no daemon restart on the exi
 - Auth on `/sentinel/primaries` (low risk in VPC, real before public exposure).
 - Cross-pool aggregator UI (out of scope today; would be a separate service that queries each primary's `/v1/backends`).
 - Heartbeat-based primary failover (today: sentinel falls back to legacy single-backend on SNI miss; not yet a "primary failed → use a hot spare" path).
-- **Pool-namespaced SSH usernames (correctness — high priority).** Today the sentinel's keysync iterates every backend's `/authorized-keys` and writes one global sshpiper YAML mapping. If two pools both expose a user named `test01`, last-write-wins silently routes `ssh test01` to whichever backend got iterated last. Fix: keysync should emit `<user>-<pool>` (e.g. `test01-lab`, `test01-fts-5900x`) and sshpiper YAML maps that namespaced form to the correct upstream. Requires changes to the sshpiper YAML generator on the sentinel and a one-time SSH config migration on operator side.
+- **Pool-namespaced SSH usernames (correctness — high priority).** Today the sentinel's keysync iterates every backend's `/authorized-keys` and writes one global sshpiper YAML mapping. If two pools both expose a user named `test01`, last-write-wins silently routes `ssh test01` to whichever backend got iterated last. Fix: keysync should emit `<user>-<pool>` (e.g. `test01-lab`, `test01-node-a`) and sshpiper YAML maps that namespaced form to the correct upstream. Requires changes to the sshpiper YAML generator on the sentinel and a one-time SSH config migration on operator side.
 - **sshpiper `systemctl restart` doesn't refresh state.** Observed during multi-pool bring-up: after pushing a new YAML, `systemctl restart sshpiper` reported success but kept the stale routing table; only `systemctl kill` followed by `systemctl start` picked up the new file. Root cause unknown — could be sshpiper holding open the file descriptor, a watch that doesn't survive restart, or systemd `KillMode` semantics. Worth a focused look once pool-namespaced usernames land (more YAML changes per day → restart reliability matters).
 - **Daemon `/authorized-keys` should skip nologin host users when the wrapper isn't installed.** Defensive: if `/usr/local/bin/containarium-shell` doesn't exist on a peer, the daemon still advertises every "Containarium user - *" host account, but those accounts have a nologin shell and just confuse keysync + give "account not available" when SSH'd. Filter: if `getUserShell()` would return nologin, omit the user from `/authorized-keys`.

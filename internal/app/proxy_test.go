@@ -299,15 +299,15 @@ func TestProxyManager_RemoveRoute_FullDomain(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
 	// Pass full domain, should extract "test" as route ID
-	err := pm.RemoveRoute("test.kafeido.app")
+	err := pm.RemoveRoute("test.example.com")
 	if err != nil {
 		t.Fatalf("RemoveRoute() error = %v", err)
 	}
 
-	// Should delete by ID "test" (not "test.kafeido.app")
+	// Should delete by ID "test" (not "test.example.com")
 	expectedPath := "/id/test"
 	if receivedPath != expectedPath {
 		t.Errorf("request path = %q, want %q", receivedPath, expectedPath)
@@ -324,7 +324,7 @@ func TestProxyManager_RemoveRoute_SubdomainOnly(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
 	err := pm.RemoveRoute("myapp")
 	if err != nil {
@@ -357,12 +357,12 @@ func TestProxyManager_RemoveRoute_FallbackToIndex(t *testing.T) {
 			routes := []map[string]interface{}{
 				{
 					"match": []map[string]interface{}{
-						{"host": []string{"other.kafeido.app"}},
+						{"host": []string{"other.example.com"}},
 					},
 				},
 				{
 					"match": []map[string]interface{}{
-						{"host": []string{"test.kafeido.app"}},
+						{"host": []string{"test.example.com"}},
 					},
 				},
 			}
@@ -370,7 +370,7 @@ func TestProxyManager_RemoveRoute_FallbackToIndex(t *testing.T) {
 			json.NewEncoder(w).Encode(routes)
 
 		case r.Method == "DELETE" && r.URL.Path == "/config/apps/http/servers/srv0/routes/1":
-			// Delete by index (index 1 = test.kafeido.app)
+			// Delete by index (index 1 = test.example.com)
 			deleteByIndexCalled = true
 			deleteIndexPath = r.URL.Path
 			w.WriteHeader(http.StatusOK)
@@ -382,9 +382,9 @@ func TestProxyManager_RemoveRoute_FallbackToIndex(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
-	err := pm.RemoveRoute("test.kafeido.app")
+	err := pm.RemoveRoute("test.example.com")
 	if err != nil {
 		t.Fatalf("RemoveRoute() error = %v", err)
 	}
@@ -417,10 +417,10 @@ func TestProxyManager_AddRoute_FullDomain(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
-	// Pass full domain - should NOT become "test.kafeido.app.kafeido.app"
-	err := pm.AddRoute("test.kafeido.app", "10.0.3.136", 8080)
+	// Pass full domain - should NOT become "test.example.com.example.com"
+	err := pm.AddRoute("test.example.com", "10.0.3.136", 8080)
 	if err != nil {
 		t.Fatalf("AddRoute() error = %v", err)
 	}
@@ -434,8 +434,8 @@ func TestProxyManager_AddRoute_FullDomain(t *testing.T) {
 	if matches, ok := receivedBody["match"].([]interface{}); ok && len(matches) > 0 {
 		match := matches[0].(map[string]interface{})
 		if hosts, ok := match["host"].([]interface{}); ok && len(hosts) > 0 {
-			if hosts[0] != "test.kafeido.app" {
-				t.Errorf("host = %v, want %q", hosts[0], "test.kafeido.app")
+			if hosts[0] != "test.example.com" {
+				t.Errorf("host = %v, want %q", hosts[0], "test.example.com")
 			}
 		}
 	}
@@ -451,7 +451,7 @@ func TestProxyManager_AddRoute_SubdomainOnly(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
 	// Pass subdomain only
 	err := pm.AddRoute("myapp", "10.0.3.136", 8080)
@@ -468,8 +468,8 @@ func TestProxyManager_AddRoute_SubdomainOnly(t *testing.T) {
 	if matches, ok := receivedBody["match"].([]interface{}); ok && len(matches) > 0 {
 		match := matches[0].(map[string]interface{})
 		if hosts, ok := match["host"].([]interface{}); ok && len(hosts) > 0 {
-			if hosts[0] != "myapp.kafeido.app" {
-				t.Errorf("host = %v, want %q", hosts[0], "myapp.kafeido.app")
+			if hosts[0] != "myapp.example.com" {
+				t.Errorf("host = %v, want %q", hosts[0], "myapp.example.com")
 			}
 		}
 	}
@@ -519,7 +519,7 @@ func TestProxyManager_UpdateRoute(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
 	err := pm.UpdateRoute("test", "10.0.3.140", 9000)
 	if err != nil {
@@ -543,7 +543,7 @@ func TestProxyManager_ListRoutes_Empty(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
 	routes, err := pm.ListRoutes()
 	if err != nil {
@@ -563,7 +563,7 @@ func TestProxyManager_ListRoutes_BadRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm := NewProxyManager(server.URL, "kafeido.app")
+	pm := NewProxyManager(server.URL, "example.com")
 
 	routes, err := pm.ListRoutes()
 	if err != nil {
@@ -591,8 +591,8 @@ func TestProxyManager_EnableProxyProtocol_PreservesOtherFields(t *testing.T) {
 						"listen": []interface{}{":80", ":443"},
 						"routes": []interface{}{
 							map[string]interface{}{
-								"@id":    "wordpress.kafeido.app",
-								"match":  []interface{}{map[string]interface{}{"host": []interface{}{"wordpress.kafeido.app"}}},
+								"@id":    "wordpress.example.com",
+								"match":  []interface{}{map[string]interface{}{"host": []interface{}{"wordpress.example.com"}}},
 								"handle": []interface{}{map[string]interface{}{"handler": "reverse_proxy", "upstreams": []interface{}{map[string]interface{}{"dial": "10.0.3.53:8888"}}}},
 							},
 						},
@@ -605,7 +605,7 @@ func TestProxyManager_EnableProxyProtocol_PreservesOtherFields(t *testing.T) {
 	srv := newFakeCaddy(initial)
 	defer srv.Close()
 
-	pm := NewProxyManager(srv.URL, "kafeido.app")
+	pm := NewProxyManager(srv.URL, "example.com")
 	if err := pm.EnableProxyProtocol([]string{"10.130.0.13/32", "127.0.0.0/8"}); err != nil {
 		t.Fatalf("EnableProxyProtocol err = %v", err)
 	}
@@ -668,7 +668,7 @@ func TestProxyManager_EnsureHTTPApp_AcceptsExistingConfigWithHandlers(t *testing
 		case r.Method == http.MethodGet && r.URL.Path == "/config/apps/http":
 			// Realistic Caddy response: a server with a route whose handle is a
 			// concrete reverse_proxy handler. The old decode failed here.
-			_, _ = w.Write([]byte(`{"servers":{"srv0":{"listen":[":80",":443"],"routes":[{"@id":"wordpress.kafeido.app","match":[{"host":["wordpress.kafeido.app"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"10.0.3.53:8888"}]}]}]}}}`))
+			_, _ = w.Write([]byte(`{"servers":{"srv0":{"listen":[":80",":443"],"routes":[{"@id":"wordpress.example.com","match":[{"host":["wordpress.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"10.0.3.53:8888"}]}]}]}}}`))
 		case r.Method == http.MethodPut && r.URL.Path == "/config/apps/http":
 			putToHTTPApp++
 			http.Error(w, `{"error":"[/config/apps/http] key already exists: http"}`, http.StatusConflict)
@@ -683,7 +683,7 @@ func TestProxyManager_EnsureHTTPApp_AcceptsExistingConfigWithHandlers(t *testing
 	}))
 	defer srv.Close()
 
-	pm := NewProxyManager(srv.URL, "kafeido.app")
+	pm := NewProxyManager(srv.URL, "example.com")
 	if err := pm.EnsureServerConfig(); err != nil {
 		t.Fatalf("EnsureServerConfig err = %v", err)
 	}
@@ -785,14 +785,14 @@ func TestProxyManager_RemoveTLSSubject_HandlesNullConfig(t *testing.T) {
 }
 
 func TestProxyManager_EnableProxyProtocol_RefusesEmpty(t *testing.T) {
-	pm := NewProxyManager("http://unreachable", "kafeido.app")
+	pm := NewProxyManager("http://unreachable", "example.com")
 	if err := pm.EnableProxyProtocol(nil); err == nil {
 		t.Errorf("expected error on empty CIDRs, got nil")
 	}
 }
 
 func TestProxyManager_EnableProxyProtocol_RefusesWildcard(t *testing.T) {
-	pm := NewProxyManager("http://unreachable", "kafeido.app")
+	pm := NewProxyManager("http://unreachable", "example.com")
 	if err := pm.EnableProxyProtocol([]string{"0.0.0.0/0"}); err == nil {
 		t.Errorf("expected error on wildcard CIDR, got nil")
 	}

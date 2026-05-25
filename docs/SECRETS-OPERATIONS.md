@@ -20,17 +20,17 @@ Run **on the daemon host**:
 ```bash
 # One-time: create the secret resource.
 sudo gcloud secrets create containarium-prod-secrets-master \
-  --project=footprintai-prod \
+  --project=<your-gcp-project> \
   --replication-policy=automatic
 
 # Upload the current keyfile as version 1.
 sudo gcloud secrets versions add containarium-prod-secrets-master \
-  --project=footprintai-prod \
+  --project=<your-gcp-project> \
   --data-file=/etc/containarium/secrets.key
 
 # Verify (metadata only — does not print bytes).
 sudo gcloud secrets versions list containarium-prod-secrets-master \
-  --project=footprintai-prod \
+  --project=<your-gcp-project> \
   --limit=3 \
   --format='table(name,state,createTime)'
 ```
@@ -57,7 +57,7 @@ Steps (GCP Secret Manager backup):
 # Pull the most recent version of the keyfile back to disk.
 gcloud secrets versions access latest \
   --secret=containarium-prod-secrets-master \
-  --project=footprintai-prod \
+  --project=<your-gcp-project> \
   | sudo tee /etc/containarium/secrets.key >/dev/null
 
 # Restore the file mode and ownership.
@@ -109,6 +109,6 @@ The daemon doesn't ship an automated rotation command in v1 (see `SECRETS-MANAGE
 - **File mode**: `0400`, root-owned
 - **File size**: exactly 32 bytes (256-bit AES key)
 - **Auto-generated**: yes, on first daemon start if missing
-- **In our prod**: backed up at `projects/footprintai-prod/secrets/containarium-prod-secrets-master/versions/1` as of 2026-05-17
+- **In our prod**: backed up at `projects/<your-gcp-project>/secrets/containarium-prod-secrets-master/versions/1` as of 2026-05-17
 - **Encryption**: AES-256-GCM with `(username, name)` as AAD per `SECRETS-MANAGEMENT-DESIGN.md` §4
 - **Storage of ciphertext**: `secrets` table in `containarium-core-postgres`

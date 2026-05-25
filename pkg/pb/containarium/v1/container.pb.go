@@ -377,7 +377,7 @@ type Container struct {
 	Stack string `protobuf:"bytes,12,opt,name=stack,proto3" json:"stack,omitempty"`
 	// GPU device info (e.g., GPU ID or PCI address if attached)
 	GpuDevice string `protobuf:"bytes,13,opt,name=gpu_device,json=gpuDevice,proto3" json:"gpu_device,omitempty"`
-	// Backend ID this container runs on (e.g., "gcp-spot", "tunnel-fts-5900x-gpu")
+	// Backend ID this container runs on (e.g., "gcp-spot", "tunnel-node-a-gpu")
 	BackendId string `protobuf:"bytes,14,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
 	// Operating system type of the container
 	OsType OSType `protobuf:"varint,15,opt,name=os_type,json=osType,proto3,enum=containarium.v1.OSType" json:"os_type,omitempty"`

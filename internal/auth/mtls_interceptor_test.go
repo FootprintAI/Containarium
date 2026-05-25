@@ -74,7 +74,7 @@ func TestAssertMTLSPeer_VerifiedClientCert(t *testing.T) {
 func TestMTLSPeerCN_ReturnsCommonName(t *testing.T) {
 	cert := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "tunnel-fts-5900x-gpu"},
+		Subject:      pkix.Name{CommonName: "tunnel-node-a-gpu"},
 	}
 	ctx := peer.NewContext(context.Background(), &peer.Peer{
 		AuthInfo: credentials.TLSInfo{
@@ -87,8 +87,8 @@ func TestMTLSPeerCN_ReturnsCommonName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MTLSPeerCN: %v", err)
 	}
-	if cn != "tunnel-fts-5900x-gpu" {
-		t.Fatalf("CN = %q, want tunnel-fts-5900x-gpu", cn)
+	if cn != "tunnel-node-a-gpu" {
+		t.Fatalf("CN = %q, want tunnel-node-a-gpu", cn)
 	}
 }
 

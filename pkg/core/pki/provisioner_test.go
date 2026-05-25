@@ -24,7 +24,7 @@ func newTestProvisioner(t *testing.T, expiry time.Duration) *Provisioner {
 
 func TestIssuedPeerCert_VerifiesAgainstCA(t *testing.T) {
 	p := newTestProvisioner(t, 24*time.Hour)
-	certPEM, keyPEM, err := p.IssuePeerCert("tunnel-fts-5900x-gpu", nil, nil)
+	certPEM, keyPEM, err := p.IssuePeerCert("tunnel-node-a-gpu", nil, nil)
 	if err != nil {
 		t.Fatalf("IssuePeerCert: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestIssuedPeerCert_VerifiesAgainstCA(t *testing.T) {
 	opts := x509.VerifyOptions{
 		Roots:     pool,
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		DNSName:   "tunnel-fts-5900x-gpu",
+		DNSName:   "tunnel-node-a-gpu",
 	}
 	if _, err := leaf.Verify(opts); err != nil {
 		t.Fatalf("verify against CA: %v", err)

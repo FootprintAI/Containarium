@@ -99,7 +99,7 @@ daemon:
   address: 0.0.0.0
   port: 50051
   http_port: 8080
-  base_domain: kafeido.app
+  base_domain: <your-base-domain>
   caddy_admin_url: http://localhost:2019
   jwt_secret_file: /etc/containarium/jwt.secret
   app_hosting: true
@@ -129,7 +129,7 @@ After=network.target incus.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret --app-hosting --base-domain kafeido.app --caddy-admin-url http://localhost:2019 --skip-infra-init
+ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret --app-hosting --base-domain <your-base-domain> --caddy-admin-url http://localhost:2019 --skip-infra-init
 Restart=on-failure
 RestartSec=5
 

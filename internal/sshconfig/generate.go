@@ -29,7 +29,7 @@ import (
 //     block sets HostName=<sentinel> and User=<container-name>.
 type Options struct {
 	// Sentinel is the public-facing SSH endpoint, e.g.
-	// "containarium.kafeido.app" or "sentinel.example.com:22". Empty
+	// "<cluster>.example.com" or "sentinel.example.com:22". Empty
 	// means generate direct entries against each container's IP.
 	Sentinel string
 	// SentinelPort is the SSH port on the sentinel. Default 22.
