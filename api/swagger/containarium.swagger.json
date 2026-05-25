@@ -24,6 +24,9 @@
       "name": "AppService"
     },
     {
+      "name": "ComposeAutostartService"
+    },
+    {
       "name": "TrafficService"
     },
     {
@@ -68,7 +71,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -90,7 +93,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -124,7 +127,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -148,7 +151,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -178,7 +181,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -208,7 +211,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -248,7 +251,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -296,7 +299,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -330,7 +333,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -368,7 +371,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -415,7 +418,7 @@
                   "$ref": "#/definitions/GetAppLogsResponse"
                 },
                 "error": {
-                  "$ref": "#/definitions/Status"
+                  "$ref": "#/definitions/rpc.Status"
                 }
               },
               "title": "Stream result of GetAppLogsResponse"
@@ -424,7 +427,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -479,7 +482,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -527,7 +530,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -575,7 +578,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -623,7 +626,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -678,7 +681,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -712,7 +715,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -782,7 +785,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -815,7 +818,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -885,7 +888,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -965,7 +968,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1006,7 +1009,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1037,7 +1040,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1078,7 +1081,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1118,7 +1121,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1149,7 +1152,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1189,7 +1192,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1220,7 +1223,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1261,7 +1264,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1302,7 +1305,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1343,7 +1346,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1384,7 +1387,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1417,7 +1420,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1458,7 +1461,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1499,7 +1502,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1540,7 +1543,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1581,7 +1584,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1622,7 +1625,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1662,7 +1665,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1703,7 +1706,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1744,7 +1747,7 @@
                   "$ref": "#/definitions/Event"
                 },
                 "error": {
-                  "$ref": "#/definitions/Status"
+                  "$ref": "#/definitions/rpc.Status"
                 }
               },
               "title": "Stream result of Event"
@@ -1753,7 +1756,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1813,7 +1816,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1846,7 +1849,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1879,7 +1882,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1903,7 +1906,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1936,7 +1939,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1958,7 +1961,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -1992,7 +1995,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2040,7 +2043,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2082,7 +2085,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2120,7 +2123,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2154,7 +2157,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2185,7 +2188,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2226,7 +2229,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2259,7 +2262,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2283,7 +2286,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2353,7 +2356,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2377,7 +2380,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2419,7 +2422,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2461,7 +2464,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2495,7 +2498,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2544,7 +2547,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2577,7 +2580,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2611,7 +2614,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2646,7 +2649,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2679,7 +2682,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2719,7 +2722,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2755,7 +2758,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2793,7 +2796,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2863,7 +2866,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2897,7 +2900,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2921,7 +2924,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2945,7 +2948,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2969,7 +2972,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -2991,7 +2994,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3025,7 +3028,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3065,7 +3068,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3099,7 +3102,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3123,12 +3126,168 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
         "tags": [
           "Monitoring"
+        ]
+      }
+    },
+    "/v1/tenants/{username}/compose/disable": {
+      "post": {
+        "summary": "Disable stops the autostart unit. Does NOT stop the running\ncontainers — use the compose CLI for that.",
+        "operationId": "ComposeAutostartService_Disable",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DisableResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/DisableBody"
+            }
+          }
+        ],
+        "tags": [
+          "ComposeAutostartService"
+        ]
+      }
+    },
+    "/v1/tenants/{username}/compose/discover": {
+      "post": {
+        "summary": "Discover compose stacks under the tenant's LXC. Walks from the\ntenant's $HOME (or supplied `root`) up to `max_depth`, skipping\ncommon noise directories.",
+        "operationId": "ComposeAutostartService_Discover",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DiscoverResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Tenant LXC to discover stacks in. Required.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/DiscoverBody"
+            }
+          }
+        ],
+        "tags": [
+          "ComposeAutostartService"
+        ]
+      }
+    },
+    "/v1/tenants/{username}/compose/enable": {
+      "post": {
+        "summary": "Enable installs the systemd-user autostart unit for a compose\nstack and brings it up. Idempotent — force=true refreshes the\nunit when the compose file has changed.",
+        "operationId": "ComposeAutostartService_Enable",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/EnableResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Tenant LXC to operate in. Required.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/EnableBody"
+            }
+          }
+        ],
+        "tags": [
+          "ComposeAutostartService"
+        ]
+      }
+    },
+    "/v1/tenants/{username}/compose/status": {
+      "get": {
+        "summary": "Status returns ComposeStack metadata for a single dir without\na full filesystem walk. Cheaper than Discover when the caller\nalready knows the path.",
+        "operationId": "ComposeAutostartService_Status",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "dir",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "ComposeAutostartService"
         ]
       }
     },
@@ -3147,7 +3306,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3182,7 +3341,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3217,7 +3376,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3265,7 +3424,7 @@
                   "$ref": "#/definitions/TrafficEvent"
                 },
                 "error": {
-                  "$ref": "#/definitions/Status"
+                  "$ref": "#/definitions/rpc.Status"
                 }
               },
               "title": "Stream result of TrafficEvent"
@@ -3274,7 +3433,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3331,7 +3490,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3387,7 +3546,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3411,7 +3570,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3453,7 +3612,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3477,7 +3636,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3511,7 +3670,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3545,7 +3704,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -3594,7 +3753,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/Status"
+              "$ref": "#/definitions/rpc.Status"
             }
           }
         },
@@ -4298,6 +4457,46 @@
       },
       "title": "Collaborator represents a user with access to a container"
     },
+    "ComposeStack": {
+      "type": "object",
+      "properties": {
+        "composeDir": {
+          "type": "string",
+          "description": "Absolute path to the compose directory inside the LXC."
+        },
+        "composeFile": {
+          "type": "string",
+          "description": "Absolute path to the compose file itself (compose.yml /\ndocker-compose.yml — whichever exists)."
+        },
+        "composeBin": {
+          "type": "string",
+          "description": "The compose binary the agent-box resolved on PATH:\n\"podman-compose\" | \"docker compose\" | \"podman compose\" | \"\" (none)."
+        },
+        "composeModifiedAt": {
+          "type": "string",
+          "description": "RFC3339 mtime of the compose file. Useful for \"is the unit\nstale vs the compose file\" diagnostics."
+        },
+        "runningCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of services currently in running state. 0 when compose_bin\nis empty or the call failed."
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Total services declared in the compose file. 0 on resolution\nfailure."
+        },
+        "autostartEnabled": {
+          "type": "boolean",
+          "description": "True if the systemd-user autostart unit for this stack is\ninstalled and enabled."
+        },
+        "unitModifiedAt": {
+          "type": "string",
+          "description": "RFC3339 mtime of the autostart unit file. Empty when the unit\ndoesn't exist. Useful to detect \"I re-ran enable but the unit\nhasn't been refreshed\" drift."
+        }
+      },
+      "description": "ComposeStack is the public-safe metadata for one discovered compose\ndirectory inside a tenant's LXC. Mirrors the agent-box-side struct\nof the same name (internal/agentbox/compose.go).\n\n`running_count` + `total_count` are deliberately NOT a single\nboolean: agents need to distinguish fully-up / partial-degradation\n/ fully-down to decide whether to alert vs. restart vs. ignore.\n\"running\" matches docker compose's State=\"running\" and podman's\nequivalent; \"total\" is every service declared in the compose file\nregardless of state."
+    },
     "Connection": {
       "type": "object",
       "properties": {
@@ -4987,6 +5186,107 @@
         }
       },
       "title": "DetectedLanguage information"
+    },
+    "DisableBody": {
+      "type": "object",
+      "properties": {
+        "dir": {
+          "type": "string"
+        }
+      }
+    },
+    "DisableResponse": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "already": {
+          "type": "boolean",
+          "description": "True when the unit wasn't enabled and nothing was disabled."
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "DiscoverBody": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "Optional: walk root. Defaults to the tenant's $HOME inside the\nLXC when empty."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Optional: directory depth cap. Default matches the agent-box\ndefault (see internal/agentbox/compose.go defaultMaxDepth)."
+        },
+        "skip": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional: extra directory names to skip on the walk (additive\nto the default skip set: node_modules, .git, etc.)."
+        },
+        "noSkip": {
+          "type": "boolean",
+          "description": "Optional: bypass the default skip set entirely."
+        }
+      }
+    },
+    "DiscoverResponse": {
+      "type": "object",
+      "properties": {
+        "stacks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ComposeStack"
+          }
+        }
+      }
+    },
+    "EnableBody": {
+      "type": "object",
+      "properties": {
+        "dir": {
+          "type": "string",
+          "description": "Compose directory inside the LXC. Required."
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Re-install the systemd unit even if already enabled. Use after\nchanging the compose file."
+        }
+      }
+    },
+    "EnableResponse": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string",
+          "description": "The systemd-user unit instance name\n(\"containarium-compose@\u003cslug\u003e.service\")."
+        },
+        "dir": {
+          "type": "string",
+          "description": "Absolute path inside the LXC that was enabled."
+        },
+        "composeBin": {
+          "type": "string",
+          "description": "The resolved compose binary inside the LXC."
+        },
+        "already": {
+          "type": "boolean",
+          "description": "True when the unit was already enabled and no work was done\n(with force=false). False when this call installed or refreshed\nthe unit."
+        },
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary, set when there's something interesting\nto say beyond the structured fields (e.g. \"already enabled (use\nforce=true to refresh)\")."
+        }
+      }
     },
     "Event": {
       "type": "object",
@@ -6954,22 +7254,12 @@
       },
       "title": "StartContainerResponse is the response from starting a container"
     },
-    "Status": {
+    "StatusResponse": {
       "type": "object",
       "properties": {
-        "code": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "message": {
-          "type": "string"
-        },
-        "details": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/Any"
-          }
+        "stack": {
+          "$ref": "#/definitions/ComposeStack",
+          "description": "Single-stack status. Same shape as one entry from\nDiscoverResponse.stacks."
         }
       }
     },
@@ -7841,6 +8131,25 @@
         }
       },
       "title": "ZapScanRun represents a single ZAP scan execution"
+    },
+    "rpc.Status": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Any"
+          }
+        }
+      }
     }
   },
   "securityDefinitions": {

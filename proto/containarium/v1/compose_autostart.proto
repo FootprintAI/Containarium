@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "google/api/annotations.proto";
+
+// ComposeAutostartService — daemon RPC for the compose-autostart ops
+// that already live as MCP tools inside agent-box (see Phase B in
+// internal/agentbox/compose.go).
+//
+// This is the "platform" surface — for callers OUTSIDE the LXC
+// (operator scripts, the platform MCP, cloud control planes). It
+// drives the same operations as the in-the-box agent-box MCP tools,
+// but reached over gRPC/REST against the daemon, which SSHes into
+// the LXC and execs `agent-box compose <verb>`.
+//
+// The CLI form on agent-box (added in the Phase C-prep PR that
+// shipped just before this one) returns a uniform JSON envelope:
+//
+//   {"ok": true,  "result": {...}}
+//   {"ok": false, "error": "..."}
+//
+// The handler parses that envelope and maps `ok=false` → gRPC error
+// status, `ok=true` → the response message. Failures from the SSH
+// transport itself (LXC not found, exec exit code != 0) map to
+// status.Internal with the captured stderr inlined.
+
+// ComposeStack is the public-safe metadata for one discovered compose
+// directory inside a tenant's LXC. Mirrors the agent-box-side struct
+// of the same name (internal/agentbox/compose.go).
+//
+// `running_count` + `total_count` are deliberately NOT a single
+// boolean: agents need to distinguish fully-up / partial-degradation
+// / fully-down to decide whether to alert vs. restart vs. ignore.
+// "running" matches docker compose's State="running" and podman's
+// equivalent; "total" is every service declared in the compose file
+// regardless of state.
+message ComposeStack {
+  // Absolute path to the compose directory inside the LXC.
+  string compose_dir = 1;
+  // Absolute path to the compose file itself (compose.yml /
+  // docker-compose.yml — whichever exists).
+  string compose_file = 2;
+  // The compose binary the agent-box resolved on PATH:
+  // "podman-compose" | "docker compose" | "podman compose" | "" (none).
+  string compose_bin = 3;
+  // RFC3339 mtime of the compose file. Useful for "is the unit
+  // stale vs the compose file" diagnostics.
+  string compose_modified_at = 4;
+  // Number of services currently in running state. 0 when compose_bin
+  // is empty or the call failed.
+  int32 running_count = 5;
+  // Total services declared in the compose file. 0 on resolution
+  // failure.
+  int32 total_count = 6;
+  // True if the systemd-user autostart unit for this stack is
+  // installed and enabled.
+  bool autostart_enabled = 7;
+  // RFC3339 mtime of the autostart unit file. Empty when the unit
+  // doesn't exist. Useful to detect "I re-ran enable but the unit
+  // hasn't been refreshed" drift.
+  string unit_modified_at = 8;
+}
+
+// ---- Discover ------------------------------------------------------
+
+message DiscoverRequest {
+  // Tenant LXC to discover stacks in. Required.
+  string username = 1;
+  // Optional: walk root. Defaults to the tenant's $HOME inside the
+  // LXC when empty.
+  string root = 2;
+  // Optional: directory depth cap. Default matches the agent-box
+  // default (see internal/agentbox/compose.go defaultMaxDepth).
+  int32 max_depth = 3;
+  // Optional: extra directory names to skip on the walk (additive
+  // to the default skip set: node_modules, .git, etc.).
+  repeated string skip = 4;
+  // Optional: bypass the default skip set entirely.
+  bool no_skip = 5;
+}
+
+message DiscoverResponse {
+  repeated ComposeStack stacks = 1;
+}
+
+// ---- Enable --------------------------------------------------------
+
+message EnableRequest {
+  // Tenant LXC to operate in. Required.
+  string username = 1;
+  // Compose directory inside the LXC. Required.
+  string dir = 2;
+  // Re-install the systemd unit even if already enabled. Use after
+  // changing the compose file.
+  bool force = 3;
+}
+
+message EnableResponse {
+  // The systemd-user unit instance name
+  // ("containarium-compose@<slug>.service").
+  string unit = 1;
+  // Absolute path inside the LXC that was enabled.
+  string dir = 2;
+  // The resolved compose binary inside the LXC.
+  string compose_bin = 3;
+  // True when the unit was already enabled and no work was done
+  // (with force=false). False when this call installed or refreshed
+  // the unit.
+  bool already = 4;
+  // Operator-facing summary, set when there's something interesting
+  // to say beyond the structured fields (e.g. "already enabled (use
+  // force=true to refresh)").
+  string message = 5;
+}
+
+// ---- Disable -------------------------------------------------------
+
+message DisableRequest {
+  string username = 1;
+  string dir = 2;
+}
+
+message DisableResponse {
+  string unit = 1;
+  string dir = 2;
+  // True when the unit wasn't enabled and nothing was disabled.
+  bool already = 3;
+  string message = 4;
+}
+
+// ---- Status --------------------------------------------------------
+
+message StatusRequest {
+  string username = 1;
+  string dir = 2;
+}
+
+message StatusResponse {
+  // Single-stack status. Same shape as one entry from
+  // DiscoverResponse.stacks.
+  ComposeStack stack = 1;
+}
+
+// ---- Service -------------------------------------------------------
+
+service ComposeAutostartService {
+  // Discover compose stacks under the tenant's LXC. Walks from the
+  // tenant's $HOME (or supplied `root`) up to `max_depth`, skipping
+  // common noise directories.
+  rpc Discover(DiscoverRequest) returns (DiscoverResponse) {
+    option (google.api.http) = {
+      post: "/v1/tenants/{username}/compose/discover"
+      body: "*"
+    };
+  }
+
+  // Enable installs the systemd-user autostart unit for a compose
+  // stack and brings it up. Idempotent — force=true refreshes the
+  // unit when the compose file has changed.
+  rpc Enable(EnableRequest) returns (EnableResponse) {
+    option (google.api.http) = {
+      post: "/v1/tenants/{username}/compose/enable"
+      body: "*"
+    };
+  }
+
+  // Disable stops the autostart unit. Does NOT stop the running
+  // containers — use the compose CLI for that.
+  rpc Disable(DisableRequest) returns (DisableResponse) {
+    option (google.api.http) = {
+      post: "/v1/tenants/{username}/compose/disable"
+      body: "*"
+    };
+  }
+
+  // Status returns ComposeStack metadata for a single dir without
+  // a full filesystem walk. Cheaper than Discover when the caller
+  // already knows the path.
+  rpc Status(StatusRequest) returns (StatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/tenants/{username}/compose/status"
+    };
+  }
+}

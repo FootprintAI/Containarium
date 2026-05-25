@@ -85,6 +85,17 @@ func (c *GRPCClient) Close() error {
 	return c.conn.Close()
 }
 
+// Conn returns the underlying *grpc.ClientConn for callers that need
+// to instantiate typed clients beyond the ones this wrapper pre-builds
+// (container/app/network). Useful for adding a new service without
+// also adding pre-built helper methods here for every RPC.
+//
+// Callers should NOT close the returned conn — its lifetime is owned
+// by this GRPCClient and is freed in Close().
+func (c *GRPCClient) Conn() *grpc.ClientConn {
+	return c.conn
+}
+
 // ListContainers lists all containers via gRPC
 func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

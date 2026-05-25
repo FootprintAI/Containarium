@@ -173,11 +173,11 @@ func runComposeEnableCLI(argv []string, stdout, stderr io.Writer) int {
 
 	if !*force && unitEnabled(unitInstance) {
 		writeOK(stdout, map[string]any{
-			"unit":      unitInstance,
-			"dir":       abs,
-			"compose":   bin,
-			"already":   true,
-			"message":   "already enabled (use --force to refresh)",
+			"unit":        unitInstance,
+			"dir":         abs,
+			"compose_bin": bin,
+			"already":     true,
+			"message":     "already enabled (use --force to refresh)",
 		})
 		return 0
 	}
@@ -199,10 +199,10 @@ func runComposeEnableCLI(argv []string, stdout, stderr io.Writer) int {
 	}
 
 	writeOK(stdout, map[string]any{
-		"unit":    unitInstance,
-		"dir":     abs,
-		"compose": bin,
-		"already": false,
+		"unit":        unitInstance,
+		"dir":         abs,
+		"compose_bin": bin,
+		"already":     false,
 	})
 	return 0
 }

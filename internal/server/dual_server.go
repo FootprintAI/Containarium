@@ -232,6 +232,18 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
 
+	// ComposeAutostartService — operator-side RPC that execs
+	// `agent-box compose <verb>` inside the tenant's LXC. Uses a
+	// dedicated incus client (cheap; the gRPC server keeps the
+	// reference for the process lifetime). Skipped on incus init
+	// failure — the service is opt-in to the deploy that has incus.
+	if composeIncusClient, err := incus.New(); err == nil {
+		pb.RegisterComposeAutostartServiceServer(grpcServer, NewComposeAutostartServer(composeIncusClient))
+		log.Printf("ComposeAutostartService registered (POST /v1/tenants/{username}/compose/{discover,enable,disable,status})")
+	} else {
+		log.Printf("Warning: ComposeAutostartService disabled — incus client init failed: %v", err)
+	}
+
 	// Create NetworkServer (always available for network topology)
 	var networkServer *NetworkServer
 	networkCIDR := "10.100.0.0/24" // Default, will be updated from incus
