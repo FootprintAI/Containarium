@@ -49,6 +49,16 @@ func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	// Subcommand dispatch — `agent-box compose <verb>` runs the CLI form
+	// of the compose tools (same Go funcs the MCP handlers call, but
+	// arguments via flags + result as JSON on stdout). Used by the
+	// platform daemon to drive these operations from outside the LXC
+	// (Containarium#317 Phase C). No subcommand → start the MCP server
+	// as before.
+	if len(os.Args) >= 2 && os.Args[1] == "compose" {
+		os.Exit(agentbox.RunComposeCLI(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	mcpServer := server.NewMCPServer(
 		"containarium-agent-box",
 		version.Version,
