@@ -13,7 +13,7 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/lxc/incus/v6 v6.23.0
-	github.com/mark3labs/mcp-go v0.52.0
+	github.com/mark3labs/mcp-go v0.54.1
 	github.com/pires/go-proxyproto v0.12.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
