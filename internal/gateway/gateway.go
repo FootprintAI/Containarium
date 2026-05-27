@@ -61,6 +61,12 @@ type GatewayServer struct {
 	// A-CRIT-4).
 	sentinelAuthSecret []byte
 
+	// containerExistsFn is the orphan filter used by
+	// /authorized-keys (#343). When set, the handler drops users
+	// whose container has been deleted but whose home dir survived.
+	// Wired from dual_server using the container manager.
+	containerExistsFn func(username string) bool
+
 	// Wake handler (for serverless / wake-on-HTTP, set externally).
 	// Mounted at /wake/ and at the root catch-all when the daemon's
 	// wake feature is enabled. NOT wrapped by the JWT auth middleware
@@ -154,6 +160,14 @@ func (gs *GatewayServer) SetRecordDeliveryFn(fn func(ctx context.Context, alertN
 // the daemon and the sentinel.
 func (gs *GatewayServer) SetSentinelAuthSecret(secret []byte) {
 	gs.sentinelAuthSecret = secret
+}
+
+// SetContainerExistsFn wires the orphan filter for /authorized-keys.
+// When set, sentinel keysync responses exclude entries whose container
+// has been deleted — preventing the #343 "auth accepted, then
+// disconnected" symptom.
+func (gs *GatewayServer) SetContainerExistsFn(fn func(username string) bool) {
+	gs.containerExistsFn = fn
 }
 
 // SetBackendsHandler sets the handler for the /v1/backends endpoint.
@@ -620,7 +634,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Fail-closed: if the secret isn't configured, all requests get
 	// 401. See findings A-CRIT-4 and A-HIGH-2.
 	httpMux.Handle("/certs", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeCerts(gs.caddyCertDir)))
-	httpMux.Handle("/authorized-keys", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeAuthorizedKeys()))
+	httpMux.Handle("/authorized-keys", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeAuthorizedKeys("", gs.containerExistsFn)))
 	httpMux.Handle("/authorized-keys/sentinel", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeSentinelKey()))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy

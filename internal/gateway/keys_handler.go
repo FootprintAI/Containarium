@@ -26,19 +26,34 @@ type SentinelKeyRequest struct {
 	PublicKey string `json:"public_key"`
 }
 
-// ServeAuthorizedKeys returns an HTTP handler that walks /home/*/.ssh/authorized_keys
-// and returns all users' authorized keys as JSON. This allows the sentinel to sync
-// SSH keys for sshpiper configuration.
-func ServeAuthorizedKeys() http.HandlerFunc {
+// ServeAuthorizedKeys returns an HTTP handler that walks
+// homeRoot/*/.ssh/authorized_keys and returns each user's authorized keys
+// as JSON for the sentinel to sync into sshpiper.
+//
+// homeRoot defaults to "/home" when empty (allows tests to inject a
+// tmp dir).
+//
+// containerExistsFn is the orphan filter for #343: when non-nil, each
+// candidate username is checked against the live container registry,
+// and entries whose container is missing are dropped from the response
+// AND logged as `WARNING orphan ...`. This prevents sshpiper from
+// accepting keys for tenants whose container has been deleted (the
+// resulting "Container <name>-container not found" inside the SSH
+// session was the user-facing symptom in #343). Pass nil to disable
+// the filter (back-compat / tests).
+func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string) bool) http.HandlerFunc {
+	if homeRoot == "" {
+		homeRoot = "/home"
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
 
-		entries, err := os.ReadDir("/home")
+		entries, err := os.ReadDir(homeRoot)
 		if err != nil {
-			log.Printf("[keys] failed to read /home: %v", err)
+			log.Printf("[keys] failed to read %s: %v", homeRoot, err)
 			http.Error(w, `{"error":"failed to read home directories"}`, http.StatusInternalServerError)
 			return
 		}
@@ -49,13 +64,21 @@ func ServeAuthorizedKeys() http.HandlerFunc {
 				continue
 			}
 			username := entry.Name()
-			akPath := filepath.Join("/home", username, ".ssh", "authorized_keys")
+			akPath := filepath.Join(homeRoot, username, ".ssh", "authorized_keys")
+			// akPath is built from os.ReadDir output (entry.Name() has
+			// no path separators) joined with a fixed suffix — caller
+			// can't inject a traversal.
+			// #nosec G304 -- safe path construction (see above)
 			data, err := os.ReadFile(akPath)
 			if err != nil {
 				continue // no authorized_keys file, skip
 			}
 			content := strings.TrimSpace(string(data))
 			if content == "" {
+				continue
+			}
+			if containerExistsFn != nil && !containerExistsFn(username) {
+				log.Printf("[keys] WARNING: orphan authorized_keys for %q — no live container; skipping (run `containarium delete %s` or `userdel -r %s` to clean up)", username, username, username)
 				continue
 			}
 			keys = append(keys, UserKeys{
@@ -65,7 +88,7 @@ func ServeAuthorizedKeys() http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
+		_ = json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
 	}
 }
 
