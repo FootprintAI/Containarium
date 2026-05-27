@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -101,6 +103,63 @@ func TestMiddleware_FailsClosedWithoutSecret(t *testing.T) {
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d", rec.Code)
+	}
+}
+
+// TestMiddleware_UnconfiguredLogsLoudly is the regression guard for
+// #341 §1: when the secret is missing and a request actually hits,
+// the daemon must emit a WARNING (not just at startup) so the
+// operator sees the misconfig in real-time log output during an
+// incident.
+func TestMiddleware_UnconfiguredLogsLoudly(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	// Reset rate-limit so this test stands on its own.
+	lastDaemonMisconfigLogNs.Store(0)
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	srv := SentinelHMACMiddleware(nil, next)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/authorized-keys", nil)
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", rec.Code)
+	}
+	if !strings.Contains(buf.String(), "sentinel-auth secret unconfigured") {
+		t.Fatalf("missing-secret middleware must log misconfig; got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "/authorized-keys") {
+		t.Fatalf("log line should mention the request path; got %q", buf.String())
+	}
+}
+
+// TestMiddleware_UnconfiguredLogRateLimit guards against log-flood:
+// keysync hits every interval (often <1s), so without rate-limiting
+// the daemon would dump 100+ identical WARNING lines per minute.
+// The middleware logs at most once per minute — second invocation
+// in the same window must be silent.
+func TestMiddleware_UnconfiguredLogRateLimit(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	lastDaemonMisconfigLogNs.Store(0)
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	srv := SentinelHMACMiddleware(nil, next)
+
+	for i := 0; i < 5; i++ {
+		srv.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/certs", nil))
+	}
+
+	if got := strings.Count(buf.String(), "sentinel-auth secret unconfigured"); got != 1 {
+		t.Fatalf("want exactly 1 misconfig WARNING under rate-limit; got %d", got)
 	}
 }
 
