@@ -13,7 +13,7 @@ import (
 
 func TestServeAuthorizedKeys_Empty(t *testing.T) {
 	// The handler reads from /home which we can't override, so test the response structure
-	handler := ServeAuthorizedKeys()
+	handler := ServeAuthorizedKeys("", nil)
 	req := httptest.NewRequest(http.MethodGet, "/authorized-keys", nil)
 	rr := httptest.NewRecorder()
 
@@ -33,8 +33,67 @@ func TestServeAuthorizedKeys_Empty(t *testing.T) {
 	t.Logf("got %d keys from /home", len(resp.Keys))
 }
 
+// TestServeAuthorizedKeys_OrphanFiltered is the regression guard for
+// #343: when a tenant container has been deleted but the host user +
+// authorized_keys file survive (userdel failure, manual provisioning,
+// etc.), the keys endpoint must NOT return the orphan — otherwise
+// sshpiper accepts the client's key and the relay later fails inside
+// the SSH session with "Container X not found".
+func TestServeAuthorizedKeys_OrphanFiltered(t *testing.T) {
+	tmpHome := t.TempDir()
+	mkUser(t, tmpHome, "alice", "ssh-ed25519 AAAA_alice alice@laptop\n")
+	mkUser(t, tmpHome, "orphan", "ssh-ed25519 AAAA_orphan orphan@old\n")
+
+	// Filter says alice's container exists, orphan's does not.
+	exists := func(username string) bool { return username == "alice" }
+
+	handler := ServeAuthorizedKeys(tmpHome, exists)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	var resp KeysResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Keys) != 1 {
+		t.Fatalf("expected exactly 1 entry (alice only), got %d", len(resp.Keys))
+	}
+	if resp.Keys[0].Username != "alice" {
+		t.Errorf("expected alice, got %s", resp.Keys[0].Username)
+	}
+}
+
+// TestServeAuthorizedKeys_NilFilterIncludesAll asserts the back-compat
+// path — when containerExistsFn is nil, every user in homeRoot is
+// returned (matches the pre-#343 behavior so the orphan filter is
+// strictly opt-in at the wiring layer).
+func TestServeAuthorizedKeys_NilFilterIncludesAll(t *testing.T) {
+	tmpHome := t.TempDir()
+	mkUser(t, tmpHome, "alice", "ssh-ed25519 AAAA_alice alice@laptop\n")
+	mkUser(t, tmpHome, "bob", "ssh-ed25519 AAAA_bob bob@laptop\n")
+
+	handler := ServeAuthorizedKeys(tmpHome, nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var resp KeysResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Keys) != 2 {
+		t.Fatalf("expected 2 entries (no filter), got %d", len(resp.Keys))
+	}
+}
+
 func TestServeAuthorizedKeys_MethodNotAllowed(t *testing.T) {
-	handler := ServeAuthorizedKeys()
+	handler := ServeAuthorizedKeys("", nil)
 	req := httptest.NewRequest(http.MethodPost, "/authorized-keys", nil)
 	rr := httptest.NewRecorder()
 

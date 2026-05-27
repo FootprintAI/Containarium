@@ -1039,6 +1039,21 @@ skipAppHosting:
 			log.Printf("WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset — /certs, /authorized-keys, /authorized-keys/sentinel will return 401 until configured")
 		}
 
+		// Orphan filter for /authorized-keys (#343). When a container
+		// is deleted but its host user / home dir survives (userdel
+		// failed under lock contention, or the user was provisioned
+		// outside the normal flow), the keys endpoint used to return
+		// the stale entry — sshpiper would accept the client's key
+		// and then the relay would fail with "Container X not found"
+		// inside the SSH session. Filtering at read time drops those
+		// entries AND logs a per-orphan WARNING so operators can clean
+		// up.
+		if mgr := containerServer.GetManager(); mgr != nil {
+			gatewayServer.SetContainerExistsFn(func(username string) bool {
+				return mgr.ContainerExists(username + "-container")
+			})
+		}
+
 		// Wire security store for CSV export
 		if securityStore != nil {
 			gatewayServer.SetSecurityStore(securityStore)
