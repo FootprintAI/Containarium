@@ -101,6 +101,71 @@ func TestHTTPMiddleware_AuthGate(t *testing.T) {
 			wantCode: http.StatusOK,
 			wantStub: true,
 		},
+		{
+			// Issue #338 — browser iframe carries the JWT in a
+			// cookie (Authorization header is impossible to set on
+			// <iframe src=...>). Valid cookie should authenticate.
+			name: "cookie with valid access token → 200",
+			setup: func(r *http.Request) {
+				token, err := tm.GenerateAccessToken("test-user", []string{"admin"}, 5*time.Minute)
+				if err != nil {
+					t.Fatalf("GenerateAccessToken: %v", err)
+				}
+				r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
+			},
+			wantCode: http.StatusOK,
+			wantStub: true,
+		},
+		{
+			name: "cookie with junk value → 401",
+			setup: func(r *http.Request) {
+				r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "not.a.real.jwt"})
+			},
+			wantCode: http.StatusUnauthorized,
+			wantStub: false,
+		},
+		{
+			// A stolen refresh token must NOT authenticate via the
+			// cookie path either — same Phase 1.6 contract as the
+			// header path.
+			name: "cookie with refresh token → 401",
+			setup: func(r *http.Request) {
+				token, err := tm.GenerateRefreshToken("test-user", []string{"admin"}, 5*time.Minute)
+				if err != nil {
+					t.Fatalf("GenerateRefreshToken: %v", err)
+				}
+				r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
+			},
+			wantCode: http.StatusUnauthorized,
+			wantStub: false,
+		},
+		{
+			// Bearer takes precedence: if a junk header is set
+			// alongside a valid cookie, the header decides (and
+			// fails). Otherwise an attacker could mask a stolen
+			// cookie's permissions by pasting a junk header.
+			name: "junk Authorization header beats valid cookie → 401",
+			setup: func(r *http.Request) {
+				token, err := tm.GenerateAccessToken("test-user", []string{"admin"}, 5*time.Minute)
+				if err != nil {
+					t.Fatalf("GenerateAccessToken: %v", err)
+				}
+				r.Header.Set("Authorization", "Bearer not.a.real.jwt")
+				r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
+			},
+			wantCode: http.StatusUnauthorized,
+			wantStub: false,
+		},
+		{
+			// Empty cookie value is the same as no cookie — fall
+			// through to "missing authorization header".
+			name: "empty cookie → 401",
+			setup: func(r *http.Request) {
+				r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: ""})
+			},
+			wantCode: http.StatusUnauthorized,
+			wantStub: false,
+		},
 	}
 
 	for _, tc := range cases {

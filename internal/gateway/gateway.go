@@ -584,6 +584,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 
 	mountInternalProxies(httpMux, gs)
 
+	// Session-cookie set/clear endpoint. Lets the webui promote its
+	// localStorage JWT into a cookie so iframe loads (notably the
+	// /grafana/ proxy on the monitoring page) can authenticate.
+	// Issue #338.
+	registerCookieSession(httpMux, gs.authMiddleware)
+
 	// Security CSV export endpoint (with auth via token query param or Authorization header)
 	if gs.securityStore != nil {
 		registerSecurityExport(httpMux, gs.securityStore, gs.authMiddleware)

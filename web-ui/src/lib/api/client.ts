@@ -764,6 +764,25 @@ export class ContaineriumClient {
   // ============================================
 
   /**
+   * Promote the in-memory bearer token into a same-origin session
+   * cookie so the browser sends it with iframe / top-level navigations
+   * (notably the /grafana/ reverse proxy on the monitoring page).
+   *
+   * Browsers cannot attach Authorization headers to <iframe src=...>
+   * loads from JS, so the embedded Grafana dashboard would otherwise
+   * always 401. The daemon's auth middleware accepts the cookie as a
+   * fallback to the bearer header — same JWT, same validation, same
+   * revocation. See issue #338.
+   *
+   * Idempotent: callers can invoke this on every relevant page mount
+   * without worrying about duplicate cookies. withCredentials is
+   * required for axios to accept the Set-Cookie response.
+   */
+  async setSessionCookie(): Promise<void> {
+    await this.client.post('/auth/session', null, { withCredentials: true });
+  }
+
+  /**
    * Get monitoring configuration (Grafana/VictoriaMetrics URLs)
    */
   async getMonitoringInfo(): Promise<{ enabled: boolean; grafanaUrl: string; victoriaMetricsUrl: string }> {
