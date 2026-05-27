@@ -782,6 +782,10 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 		// flock -w 30 ensures we wait up to 30 seconds to acquire the lock
 		fmt.Printf("       Creating user %s (with flock)...\n", username)
 		shell := getUserShell()
+		// #nosec G204 -- `username` is validated by isValidUsername at the
+		// CreateJumpServerAccount entry point (alphanumeric, dash, underscore
+		// only). `shell` is a fixed-path constant from getUserShell(). No
+		// untrusted input reaches the subprocess invocation.
 		cmd := exec.Command("flock", "-w", "30", "/var/lock/containarium-useradd.lock",
 			"useradd", username,
 			"-s", shell, // nologin (ProxyJump) or containarium-shell (exec into container)
