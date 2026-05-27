@@ -96,7 +96,13 @@ func TestCookieSession_SetClear(t *testing.T) {
 		}
 	})
 
-	t.Run("POST behind TLS terminator → Secure cookie", func(t *testing.T) {
+	t.Run("Secure flag is set unconditionally", func(t *testing.T) {
+		// The JWT is a high-value credential; we don't want it
+		// crossing plain HTTP under any configuration. Browsers treat
+		// localhost as a secure context even over HTTP so dev still
+		// works; prod is always HTTPS via Caddy on the outer leg.
+		// httptest requests are plain HTTP (no r.TLS, no X-Forwarded-
+		// Proto) — Secure must still be true.
 		token, err := tm.GenerateAccessToken("test-user", []string{"admin"}, 10*time.Minute)
 		if err != nil {
 			t.Fatalf("GenerateAccessToken: %v", err)
@@ -104,11 +110,6 @@ func TestCookieSession_SetClear(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/session", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		// Simulates the production deploy: Caddy terminates TLS and
-		// forwards plain HTTP to the daemon, setting this header. The
-		// cookie must come back Secure=true so the browser refuses to
-		// send it back over a hypothetical HTTP downgrade.
-		req.Header.Set("X-Forwarded-Proto", "https")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 
@@ -120,7 +121,7 @@ func TestCookieSession_SetClear(t *testing.T) {
 			t.Fatalf("cookie not set")
 		}
 		if !c.Secure {
-			t.Errorf("X-Forwarded-Proto=https should set Secure on the cookie")
+			t.Errorf("Secure must be true unconditionally — JWT must never cross plain HTTP")
 		}
 	})
 

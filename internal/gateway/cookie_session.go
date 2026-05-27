@@ -65,12 +65,19 @@ func handleSessionCookieSet(w http.ResponseWriter, r *http.Request, authMW *auth
 		}
 	}
 
+	// Secure is unconditional: the daemon's JWT is a high-value
+	// credential and we don't want it crossing plain HTTP under any
+	// configuration. Browsers treat localhost as a secure context
+	// even over HTTP, so local development still works. In prod the
+	// outer leg is always HTTPS via Caddy; the inner leg between
+	// Caddy and the daemon is loopback / VPC, so the browser never
+	// sees the cookie over a plaintext hop.
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   requestIsHTTPS(r),
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   maxAge,
 	})
@@ -83,32 +90,17 @@ func handleSessionCookieSet(w http.ResponseWriter, r *http.Request, authMW *auth
 	})
 }
 
-func handleSessionCookieClear(w http.ResponseWriter, r *http.Request) {
+func handleSessionCookieClear(w http.ResponseWriter, _ *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   requestIsHTTPS(r),
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok": true}`))
-}
-
-// requestIsHTTPS reports whether the originating browser connection
-// is HTTPS, accounting for the typical deploy where Caddy terminates
-// TLS and forwards plain HTTP to the daemon. Without this the cookie
-// would be set Secure=false in production behind Caddy, which is
-// strictly worse than what Caddy already delivers on the outer leg.
-func requestIsHTTPS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		return true
-	}
-	return false
 }
