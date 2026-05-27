@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-05-27
+
+Headline: **agent-box reaches the CI surface** — the platform now provisions GitHub-Actions ephemeral runners, owns the compose-autostart contract end-to-end, and ships the MCP / CLI surface (`login`, `whoami`, `ssh setup`, `runner provision`, compose-autostart tools) that lets an agent or a script drive a Containarium host without hand-rolling SSH glue. Plus the trailing useradd-on-jumpserver fixes that closed [`cloud#163`](https://github.com/FootprintAI/Containarium-cloud/issues/163).
+
+### Added — CI runner pool
+
+- **Runner kit** ([#302](https://github.com/FootprintAI/Containarium/pull/302), [#304](https://github.com/FootprintAI/Containarium/pull/304)) — Containarium as a GHA ephemeral runner pool; `containarium runner provision` CLI + MCP tool spins one up agent-driven.
+- **Pattern B docs** ([#303](https://github.com/FootprintAI/Containarium/pull/303)) — runner orchestrates nested per-job, with the trade-offs vs. flat pools written down.
+
+### Added — compose-autostart end-to-end
+
+- **Phase B** — agent-box MCP tools ([#310](https://github.com/FootprintAI/Containarium/pull/310))
+- **Phase C** — daemon proto + RPC + CLI ([#317](https://github.com/FootprintAI/Containarium/pull/317), [#323](https://github.com/FootprintAI/Containarium/pull/323), [#324](https://github.com/FootprintAI/Containarium/pull/324))
+- **Phase D** — `containarium create --auto-restart-compose=<dir>` ([#326](https://github.com/FootprintAI/Containarium/pull/326))
+- **Platform compose-autostart MCP tools** ([#325](https://github.com/FootprintAI/Containarium/pull/325))
+- **Design note** ([#309](https://github.com/FootprintAI/Containarium/pull/309)) — captures why this lands platform-level rather than per-image.
+
+### Added — CLI / MCP surface
+
+- **`containarium login` / `logout` / `whoami`** ([#305](https://github.com/FootprintAI/Containarium/pull/305)) — A3 of the agent-onboarding plan; replaces ad-hoc `~/.containarium/credentials.json` editing.
+- **`containarium ssh setup` / `list` / `remove` / `propagate`** + **`login --with-ssh-setup`** ([#307](https://github.com/FootprintAI/Containarium/pull/307)) — A5/A6/A7; one-shot SSH key onboarding from any client.
+- **MCP credentials.json fallback for token** ([#311](https://github.com/FootprintAI/Containarium/pull/311)) — A4; MCP tools pick up the credentials file when no env token is set.
+- **TTL CLI verbs** — `containarium ttl set / get / unset` ([#297](https://github.com/FootprintAI/Containarium/pull/297)) for box auto-delete scheduling.
+- **TTL sweeper + handler** ([#299](https://github.com/FootprintAI/Containarium/pull/299), [#300](https://github.com/FootprintAI/Containarium/pull/300)) — proto RPC + decision logic + keep-on-failure chain.
+- **Agent-box CI MCP resources** ([#298](https://github.com/FootprintAI/Containarium/pull/298), [#296](https://github.com/FootprintAI/Containarium/pull/296)) — `ci-context` + `ci-prompt` resources with an opinionated debug playbook.
+- **Post-login banner rotation hint** ([#333](https://github.com/FootprintAI/Containarium/pull/333)) — K2; banner now nudges users toward token rotation.
+- **Env-var defaults + CLI-only install script** ([#295](https://github.com/FootprintAI/Containarium/pull/295)) — unblocks the GHA Action path.
+
+### Added — Air-gapped install + ebpf
+
+- **Air-gapped install bundle** ([#308](https://github.com/FootprintAI/Containarium/pull/308), E3b) — `offline-install.sh`, release-pipeline matrix, GHES support.
+- **ebpf Phase 0** ([#292](https://github.com/FootprintAI/Containarium/pull/292)) — bridge-attach validator (shell + Go paths).
+
+### Fixed — Jump-server useradd reliability
+
+The fail-fast + serialization fixes that took the useradd path from "retries-until-misleading-lock-error" to "errors clearly, immediately":
+
+- **Surface useradd output when all retries exhaust** ([#320](https://github.com/FootprintAI/Containarium/pull/320)) — `lastOutput` captured so the final error includes the real stderr.
+- **Fail-fast on `Permission denied`** ([#322](https://github.com/FootprintAI/Containarium/pull/322), closes [containarium-run#15](https://github.com/FootprintAI/containarium-run/issues/15)) — distinguishes "non-root can't write /etc/passwd" from "transient lock," fails immediately on the former.
+- **Serialize useradd + exponential backoff + mid-loop lock cleanup** ([#335](https://github.com/FootprintAI/Containarium/pull/335), closes [cloud#163](https://github.com/FootprintAI/Containarium-cloud/issues/163)) — concurrent useradds no longer thrash; stale locks get cleaned up between attempts.
+
+### Fixed — Other
+
+- **`containarium version` subcommand on install** ([#321](https://github.com/FootprintAI/Containarium/pull/321)) — installer now uses the actual subcommand rather than `--version` which isn't a flag.
+
+### Tests / Docs
+
+- **MCP K3 + K4 + K5 + 60-second doc** ([#334](https://github.com/FootprintAI/Containarium/pull/334)) — API-token verify tests + new operator quickstart.
+- **VM-migration plan + OSS-disclosure rule** ([#313](https://github.com/FootprintAI/Containarium/pull/313)) — host→VM migration plan written down; CLAUDE.md gains a rule on what may leak into OSS commits.
+
+### Chores
+
+- **Scrub leaked deploy tokens + apply OSS-anonymization rule** ([#314](https://github.com/FootprintAI/Containarium/pull/314)) — closes a token leak from an earlier commit; the rule from #313 in force from here on.
+- **Dependencies**: bumps for `google.golang.org/api`, `grpc-gateway/v2`, `mcp-go`, `pgx/v5`, `cloud.google.com/go/compute`, and `docker/setup-buildx-action` ([#319](https://github.com/FootprintAI/Containarium/pull/319), [#327](https://github.com/FootprintAI/Containarium/pull/327), [#328](https://github.com/FootprintAI/Containarium/pull/328), [#329](https://github.com/FootprintAI/Containarium/pull/329), [#330](https://github.com/FootprintAI/Containarium/pull/330), [#332](https://github.com/FootprintAI/Containarium/pull/332)).
+
 ## [0.18.0] - 2026-05-22
 
 Ships the **zero-trust security audit remediation** — 46 PRs across 5 phases closing all 41 numbered findings from the internal audit ([`docs/security/ZERO-TRUST-AUDIT.md`](docs/security/ZERO-TRUST-AUDIT.md)). The headline shifts: every API surface is now authenticated by scope, every secret is decryptable through a pluggable KMS, every audit log row is in a tamper-evident hash chain, and every container-image pull is verified against the registry's published digest. Operators get a full runbook at [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md).
