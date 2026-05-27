@@ -975,6 +975,14 @@ func toolScopeAssignments() map[string]string {
 		"provision_runners": auth.ScopeContainersWrite,
 		"remove_runner":     auth.ScopeContainersWrite,
 		"list_runners":      auth.ScopeContainersRead,
+		// Compose-autostart (platform MCP tools added in #325).
+		// Discovery is read-only; enable/disable + status mutate or
+		// inspect the LXC's systemd-user units. Reuses containers:*
+		// scopes since the operations are box-local lifecycle.
+		"compose_discover": auth.ScopeContainersRead,
+		"compose_status":   auth.ScopeContainersRead,
+		"compose_enable":   auth.ScopeContainersWrite,
+		"compose_disable":  auth.ScopeContainersWrite,
 	}
 }
 

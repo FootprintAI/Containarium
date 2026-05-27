@@ -22,9 +22,8 @@ func TestServerCreation(t *testing.T) {
 	assert.NotNil(t, server)
 	assert.Equal(t, config, server.config)
 	assert.NotNil(t, server.client)
-	// 29 base tools + 3 runner-provision tools (provision_runners,
-	// list_runners, remove_runner) added in the runner-MCP-tool PR.
-	assert.Len(t, server.tools, 32, "Should have 32 tools registered")
+	// 29 base + 3 runner-provision + 4 compose-autostart (#325).
+	assert.Len(t, server.tools, 36, "Should have 36 tools registered")
 }
 
 // TestServerTools tests tool registration
@@ -128,9 +127,8 @@ func TestHandleToolsList(t *testing.T) {
 
 	tools, ok := result["tools"].([]map[string]interface{})
 	require.True(t, ok)
-	// 29 base tools + 3 runner-provision tools (provision_runners,
-	// list_runners, remove_runner) added in the runner-MCP-tool PR.
-	assert.Len(t, tools, 32)
+	// 29 base + 3 runner-provision + 4 compose-autostart (#325).
+	assert.Len(t, tools, 36)
 
 	// Check first tool structure
 	firstTool := tools[0]
