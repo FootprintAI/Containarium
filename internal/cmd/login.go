@@ -347,7 +347,13 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		who = "unknown user"
 	}
 	fmt.Fprintf(out, "✓ Logged in as %s\n", who)
-	fmt.Fprintf(out, "  Token saved to %s\n", path)
+	fmt.Fprintf(out, "✓ API token saved to %s\n", path)
+	// K2 of cloud#147 — surface the rotation path so the operator
+	// knows where to find the token they just got handed. The cloud
+	// minted this token during the cli-session approve flow; it's
+	// org-scoped and long-lived (no expiry) until explicit revoke.
+	fmt.Fprintf(out, "  → View / rotate at %s/settings/api-tokens\n",
+		strings.TrimRight(srv, "/"))
 
 	// Sub-task A7: optionally register this machine's SSH key for
 	// access to boxes created under this account. Done as a tail of
