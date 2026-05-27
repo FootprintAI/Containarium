@@ -734,6 +734,9 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 			if baseDelay > 60*time.Second {
 				baseDelay = 60 * time.Second
 			}
+			// #nosec G404 -- jitter for retry backoff; not security-sensitive.
+			// math/rand is fine here — we want variance to break up
+			// thundering-herd patterns, not unguessable output.
 			jitter := time.Duration(float64(baseDelay) * 0.3 * (rand.Float64()*2 - 1))
 			delay := baseDelay + jitter
 			if delay < time.Second {
