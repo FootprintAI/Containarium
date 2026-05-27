@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-05-27
+
+Patch release covering the sentinel-side incident-response footguns shaken out during today's investigation: a silent tunnel-server enablement bug, three loopback / authorized-keys observability gaps that turned routine reconnects into hours-long operator drilling sessions, and the sentinel↔daemon HMAC misconfig that 401s every keysync without warning.
+
+### Fixed
+
+- **sentinel tunnel-server silently disabled when only `--tunnel-token-policy` is set** ([#337](https://github.com/FootprintAI/Containarium/issues/337) / [#344](https://github.com/FootprintAI/Containarium/pull/344)). Two gate conditions in `cmd/sentinel.go` checked `--tunnel-token != ""` but ignored `--tunnel-token-policy`; operators following the per-pool policy syntax got no listener and no error. Gates now accept either flag.
+
+- **loopback aliases leaked on sentinel shutdown** ([#337](https://github.com/FootprintAI/Containarium/issues/337) follow-up / [#346](https://github.com/FootprintAI/Containarium/pull/346)). The per-spot `127.0.0.x` aliases persisted across restarts, blocking fresh allocations from the 127.0.0.2-254 pool. New `TunnelRegistry.UnregisterAll()` is `defer`-wired at both registry-creation sites; clean shutdown AND `SIGINT`/`SIGTERM` both drop every alias before exit.
+
+- **HMAC sentinel-auth misconfig was silent** ([#341](https://github.com/FootprintAI/Containarium/issues/341) §1 / [#347](https://github.com/FootprintAI/Containarium/pull/347)). When `CONTAINARIUM_SENTINEL_AUTH_SECRET` was missing the daemon 401'd every protected request and the sentinel emitted unsigned requests forever — with only a single startup `WARNING` line that scrolled out of journals within hours. Both sides now log a rate-limited `WARNING` (once per 60s) on every actual cycle, so operators tailing the journal during an incident see the misconfig in real time.
+
+- **stale `/authorized-keys` entries for deleted tenants** ([#343](https://github.com/FootprintAI/Containarium/issues/343) / [#348](https://github.com/FootprintAI/Containarium/pull/348)). When a tenant container was deleted but the host user / home dir survived (userdel lock contention, manual provisioning), sshpiper would accept the client's key and then the relay would fail mid-session with `Container <name>-container not found`. The keys endpoint now filters at read time using a `containerExistsFn` callback wired to the live container registry, and logs orphan entries with the exact cleanup command. Bonus: system accounts (`ubuntu`, `root`, anything in `/home` without a matching tenant) are also dropped from the response — they were always returned and were never valid sshpiper upstreams.
+
+- **loopback alias allocator drifted upward across reconnects** ([#342](https://github.com/FootprintAI/Containarium/issues/342) / [#349](https://github.com/FootprintAI/Containarium/pull/349)). The previous `nextIP` cursor advanced monotonically and never rewound on `Unregister`, so a single backend that bounced landed on a different `127.0.0.X` each time. `allocateOctet(spotID)` now derives a deterministic preferred slot from `fnv32a(spotID) mod 253 + 2` and linear-probes only on collision. A backend that reconnects gets the same slot — sshpiper config stays valid through churn and `ss -tlnp` output matches the config.
+
+### Known issues
+
+- Sentinel `[keysync]`/`[certsync]` 401s against pre-tightening spots from the v0.18+ endpoint-auth change ([#345](https://github.com/FootprintAI/Containarium/issues/345)). Needs a design call on the sentinel↔spot trust model (PSK vs JWT vs mTLS); deferred.
+- #341 §2 (deploy script auto-provisions the env var on upgrade) is a deploy-automation concern and tracked on the issue.
+
 ## [0.19.1] - 2026-05-27
 
 Patch release fixing the embedded Grafana monitoring iframe on auth-enabled deploys.
