@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net"
 	"os/exec"
@@ -39,7 +40,6 @@ type TunnelSpot struct {
 type TunnelRegistry struct {
 	mu      sync.RWMutex
 	spots   map[string]*TunnelSpot
-	nextIP  byte // next octet for 127.0.0.X (starts at 2)
 	usedIPs map[byte]string // octet -> spotID
 }
 
@@ -47,7 +47,6 @@ type TunnelRegistry struct {
 func NewTunnelRegistry() *TunnelRegistry {
 	return &TunnelRegistry{
 		spots:   make(map[string]*TunnelSpot),
-		nextIP:  2,
 		usedIPs: make(map[byte]string),
 	}
 }
@@ -227,23 +226,45 @@ func (r *TunnelRegistry) Spots() []*TunnelSpot {
 	return result
 }
 
+// allocateOctet picks the 127.0.0.X octet for spotID. The slot is
+// derived deterministically from a hash of spotID so a backend that
+// disconnects and reconnects (e.g., after a network blip, sshpiper
+// reload, or sentinel restart) lands on the same loopback alias
+// across the lifetime of the registry — keysync's sshpiper config
+// stays valid through churn, and "ss -tlnp" output matches the
+// config without operator confusion (#342).
+//
+// When the preferred slot is occupied by a *different* spotID, we
+// linear-probe forward to the next free slot. This keeps the
+// existing capacity (127.0.0.2..127.0.0.254 = 253 slots) and only
+// drifts under genuine contention. Two backends with the same hash
+// land in adjacent slots; the first one keeps the preferred slot,
+// the second pays one extra probe.
 func (r *TunnelRegistry) allocateOctet(spotID string) (byte, error) {
-	// Try from nextIP up to 254
+	preferred := preferredOctet(spotID)
 	for i := byte(0); i < 253; i++ {
-		candidate := r.nextIP + i
-		if candidate > 254 {
-			candidate = candidate - 253 + 2 // wrap around
+		// step through the 2..254 range starting from `preferred`,
+		// wrapping if we run off the top.
+		candidate := preferred + i
+		if candidate < 2 || candidate > 254 {
+			candidate = byte(2 + (int(preferred)+int(i)-2)%253)
 		}
 		if _, used := r.usedIPs[candidate]; !used {
 			r.usedIPs[candidate] = spotID
-			r.nextIP = candidate + 1
-			if r.nextIP > 254 {
-				r.nextIP = 2
-			}
 			return candidate, nil
 		}
 	}
 	return 0, fmt.Errorf("no available loopback addresses (all 127.0.0.2-254 in use)")
+}
+
+// preferredOctet maps a spotID to a deterministic octet in [2, 254].
+// FNV-1a is a non-cryptographic hash — collision resistance is
+// irrelevant here because we linear-probe on collision. We just want
+// a uniform spread so independent spotIDs don't pile up at slot 2.
+func preferredOctet(spotID string) byte {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(spotID))
+	return byte(2 + (h.Sum32() % 253))
 }
 
 // addLoopbackAlias adds an IP alias to the loopback interface.
