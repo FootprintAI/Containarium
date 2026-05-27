@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-05-27
+
+Patch release fixing the embedded Grafana monitoring iframe on auth-enabled deploys.
+
+### Fixed
+
+- **monitoring iframe 401** ([#338](https://github.com/FootprintAI/Containarium/issues/338) / [#339](https://github.com/FootprintAI/Containarium/pull/339)). The webui's monitoring page iframes `/grafana/d/...` on the same origin, but browsers can't attach `Authorization: Bearer …` headers to `<iframe src=…>` loads — so every embedded Grafana request hit the daemon's auth middleware bare and got `{"error":"missing authorization header","code":401}`. The page was functionally broken on any deploy with auth enabled.
+
+  Fix: the daemon's `auth.AuthMiddleware.HTTPMiddleware` now accepts a `containarium_session` cookie as a fallback to the bearer header (bearer still wins when both are present). New `POST/DELETE /v1/auth/session` endpoint promotes/clears the cookie (HttpOnly, SameSite=Lax, Secure unconditionally, Max-Age bounded by JWT lifetime). The webui calls the promote endpoint on monitoring-page mount before painting the iframe. Cookie value is the raw JWT — no new credential material, no change to revocation / expiry / refresh-token rejection semantics. CLI/MCP/API clients see no behavior change.
+
+### Known issues
+
+- The sentinel's `tunnel-server` silently fails to accept tunnel-client connections when `--tunnel-token` is omitted in favor of policy-only flags ([#337](https://github.com/FootprintAI/Containarium/issues/337)). Workaround documented on the issue; fix deferred to a follow-up release.
+
 ## [0.19.0] - 2026-05-27
 
 Headline: **agent-box reaches the CI surface** — the platform now provisions GitHub-Actions ephemeral runners, owns the compose-autostart contract end-to-end, and ships the MCP / CLI surface (`login`, `whoami`, `ssh setup`, `runner provision`, compose-autostart tools) that lets an agent or a script drive a Containarium host without hand-rolling SSH glue. Plus the trailing useradd-on-jumpserver fixes that closed [`cloud#163`](https://github.com/FootprintAI/Containarium-cloud/issues/163).
