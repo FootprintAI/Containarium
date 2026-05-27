@@ -108,12 +108,19 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		defer gcpProvider.Close()
 		provider = gcpProvider
 
-		// Hybrid mode: GCP + tunnel if --tunnel-token is also provided
+		// Hybrid mode: GCP + tunnel if --tunnel-token OR
+		// --tunnel-token-policy is provided. Issue #337 — previously
+		// gated on --tunnel-token alone, which contradicted the
+		// --help text labeling --tunnel-token as "legacy; use
+		// --tunnel-token-policy for pool-restricted tokens." Operators
+		// following the documented rotation pattern (stage NEW via
+		// policy, drop legacy) silently lost the tunnel-server when
+		// they finished step 2.
 		tunnelToken := sentinelTunnelToken
 		if tunnelToken == "" {
 			tunnelToken = os.Getenv("CONTAINARIUM_TUNNEL_TOKEN")
 		}
-		if tunnelToken != "" {
+		if tunnelToken != "" || len(sentinelTunnelTokenPolicies) > 0 {
 			// Hybrid mode: GCP + tunnel on the same port 443 via ConnMux.
 			// The ConnMux peeks the first byte to route tunnel ({) vs HTTPS (0x16).
 			// HTTPS is proxied as raw TCP to the spot VM (Caddy handles TLS via SNI).
@@ -185,8 +192,12 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		if tunnelToken == "" {
 			tunnelToken = os.Getenv("CONTAINARIUM_TUNNEL_TOKEN")
 		}
-		if tunnelToken == "" {
-			return fmt.Errorf("--tunnel-token or CONTAINARIUM_TUNNEL_TOKEN is required for tunnel provider")
+		// Issue #337 — accept --tunnel-token-policy as a sufficient
+		// enablement signal too. The --help text frames --tunnel-token
+		// as "legacy; use --tunnel-token-policy for pool-restricted
+		// tokens", so requiring both is a contradiction.
+		if tunnelToken == "" && len(sentinelTunnelTokenPolicies) == 0 {
+			return fmt.Errorf("--tunnel-token, --tunnel-token-policy, or CONTAINARIUM_TUNNEL_TOKEN is required for tunnel provider")
 		}
 		registry := sentinel.NewTunnelRegistry()
 		provider = sentinel.NewTunnelProvider(registry, "")
