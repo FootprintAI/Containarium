@@ -7,10 +7,25 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Note: As of Go 1.20, rand is automatically seeded
+
+// useraddMu serializes useradd invocations within the same daemon
+// process. Cloud #163 — two concurrent box creates (CI provisioning
+// in parallel) race the /etc/passwd lock; even though we use `flock
+// -w 30` for the cross-process case, two in-process goroutines can
+// both win flock + both call useradd before the first finishes, at
+// which point useradd's own lock contention surfaces as the
+// "cannot lock /etc/passwd" retry storm in the logs.
+//
+// Holding this mutex around the entire flock+useradd path means
+// only one useradd at a time per daemon process, regardless of how
+// many CI jobs are provisioning boxes concurrently. The cross-process
+// case still relies on the existing flock + stale-lock cleanup.
+var useraddMu sync.Mutex
 
 // CreateJumpServerAccount creates a proxy-only user account on the jump server
 // The account is configured with /usr/sbin/nologin shell, preventing direct shell access
@@ -626,7 +641,14 @@ func checkGuestAgentStatus(stage string) {
 
 // retryUseraddWithLockWait stops google-guest-agent, creates user, then restarts it
 func retryUseraddWithLockWait(username string, verbose bool) error {
-	const maxRetries = 5 // Retry up to 5 times with flock
+	// Cloud #163 — serialize within-process so two concurrent box
+	// creates don't race the /etc/passwd lock. The flock command
+	// below handles the cross-process case; this handles
+	// goroutine-vs-goroutine.
+	useraddMu.Lock()
+	defer useraddMu.Unlock()
+
+	const maxRetries = 10 // Bumped from 5 (cloud #163). Combined with the new exponential backoff below, total ceiling is ~6min vs the old 10s — gives stale passwd locks enough room to clear or be force-removed.
 
 	fmt.Printf("       Temporarily stopping google-guest-agent to avoid race condition...\n")
 
@@ -703,8 +725,31 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 	                       // /etc/passwd locked by another process.
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			fmt.Printf("       Retry attempt %d/%d...\n", attempt+1, maxRetries)
-			time.Sleep(time.Duration(attempt) * time.Second) // Increasing backoff
+			// Cloud #163 — exponential backoff with jitter so concurrent
+			// CI provisioning bursts don't dogpile. Cap at 60s per wait.
+			// Was previously linear (attempt*1s) → total 10s across 5
+			// retries, which the lab observed wasn't enough to outlast
+			// stale-lock cleanup by external tools (google_guest_agent).
+			baseDelay := time.Duration(1<<uint(attempt-1)) * time.Second
+			if baseDelay > 60*time.Second {
+				baseDelay = 60 * time.Second
+			}
+			jitter := time.Duration(float64(baseDelay) * 0.3 * (rand.Float64()*2 - 1))
+			delay := baseDelay + jitter
+			if delay < time.Second {
+				delay = time.Second
+			}
+			fmt.Printf("       Retry attempt %d/%d after %v...\n", attempt+1, maxRetries, delay)
+			time.Sleep(delay)
+
+			// Re-check + force-remove any lock files that appeared
+			// during the retry window. The pre-loop forceRemoveLockFiles
+			// only handles the initial state; a process that died
+			// mid-loop (or google-guest-agent restarting against our
+			// defer) can leave a fresh stale lock that the previous
+			// useradd attempt just hit. Cleaning here unsticks it
+			// before the next attempt rather than burning more retries.
+			forceRemoveLockFiles(lockFiles, verbose)
 		}
 
 		// Create user using flock for serialization
