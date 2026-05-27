@@ -112,6 +112,27 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 	return localIP, nil
 }
 
+// UnregisterAll iterates every registered spot and unregisters it.
+// Used on sentinel shutdown so the loopback aliases (127.0.0.x)
+// don't persist into the next start. Without this, restarting the
+// sentinel can leave the previous run's aliases blocking fresh
+// allocations — operators had to `ip addr del` them by hand
+// (#337 §"Related observations").
+//
+// Safe to call concurrently with Register; takes the registry lock.
+// Each Unregister closes the yamux session and removes the alias.
+func (r *TunnelRegistry) UnregisterAll() {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.spots))
+	for id := range r.spots {
+		ids = append(ids, id)
+	}
+	r.mu.Unlock()
+	for _, id := range ids {
+		r.Unregister(id)
+	}
+}
+
 // Unregister removes a spot from the registry and cleans up its loopback alias.
 func (r *TunnelRegistry) Unregister(spotID string) {
 	r.mu.Lock()
