@@ -153,6 +153,12 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			defer connMux.Close()
 
 			registry := sentinel.NewTunnelRegistry()
+			// Issue #337 §"Related observations" — drain the registry
+			// on shutdown so per-spot loopback aliases (127.0.0.x)
+			// get removed. Without this, restarting the sentinel
+			// inherits stale aliases that block fresh allocations
+			// and force a manual `ip addr del`.
+			defer registry.UnregisterAll()
 			tunnelPolicy, polErr := sentinel.PolicyFromCLI(tunnelToken, sentinelTunnelTokenPolicies)
 			if polErr != nil {
 				return polErr
@@ -200,6 +206,10 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("--tunnel-token, --tunnel-token-policy, or CONTAINARIUM_TUNNEL_TOKEN is required for tunnel provider")
 		}
 		registry := sentinel.NewTunnelRegistry()
+		// Issue #337 §"Related observations" — drain on shutdown so
+		// per-spot 127.0.0.x aliases get removed (else the next start
+		// inherits them and has to ip-addr-del them by hand).
+		defer registry.UnregisterAll()
 		provider = sentinel.NewTunnelProvider(registry, "")
 
 		config := sentinel.Config{
