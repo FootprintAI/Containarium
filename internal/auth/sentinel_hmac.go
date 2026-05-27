@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -120,10 +122,16 @@ func VerifySentinelRequest(req *http.Request, secret []byte, now time.Time) erro
 // requests with 401 — fail-closed by default, no silent
 // passthrough. Operators must configure
 // CONTAINARIUM_SENTINEL_AUTH_SECRET to enable the wrapped endpoints.
+//
+// When unconfigured AND requests are actually arriving, a WARNING
+// is logged at most once per sentinelMisconfigLogInterval so the
+// daemon's journal shows the misconfiguration in real time during
+// an incident — the startup line alone is easy to miss (#341).
 func SentinelHMACMiddleware(secret []byte, next http.Handler) http.Handler {
 	configured := len(secret) >= SentinelMinSecretLen
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !configured {
+			logDaemonSentinelMisconfigOncePerInterval(r)
 			http.Error(w, `{"error":"sentinel auth not configured","code":401}`, http.StatusUnauthorized)
 			return
 		}
@@ -133,6 +141,24 @@ func SentinelHMACMiddleware(secret []byte, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+const sentinelMisconfigLogInterval = 60 * time.Second
+
+// lastDaemonMisconfigLogNs tracks the most recent per-request
+// WARNING so the daemon doesn't spam the log every keysync cycle.
+var lastDaemonMisconfigLogNs atomic.Int64
+
+func logDaemonSentinelMisconfigOncePerInterval(r *http.Request) {
+	now := time.Now().UnixNano()
+	last := lastDaemonMisconfigLogNs.Load()
+	if last != 0 && now-last < int64(sentinelMisconfigLogInterval) {
+		return
+	}
+	if !lastDaemonMisconfigLogNs.CompareAndSwap(last, now) {
+		return
+	}
+	log.Printf("[sentinel-hmac] WARNING: sentinel-auth secret unconfigured but request received for %s %s — set CONTAINARIUM_SENTINEL_AUTH_SECRET on the daemon host; until then every sentinel keysync/certsync cycle is failing", r.Method, r.URL.Path)
 }
 
 func computeSentinelSignature(secret []byte, method, path, ts string) string {
