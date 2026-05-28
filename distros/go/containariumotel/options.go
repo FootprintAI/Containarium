@@ -12,6 +12,7 @@ type Option func(*options)
 
 type options struct {
 	serviceName    string
+	endpointURL    string
 	extraAttrs     map[string]string
 	metricInterval time.Duration
 	metricTimeout  time.Duration
@@ -41,6 +42,18 @@ func WithServiceName(name string) Option {
 // region or cluster name.
 func WithExtraAttrs(attrs map[string]string) Option {
 	return func(o *options) { o.extraAttrs = attrs }
+}
+
+// WithEndpoint overrides OTEL_EXPORTER_OTLP_METRICS_ENDPOINT (or its
+// non-metrics-specific fallback). Accepts a full URL including scheme
+// and path; otlpmetrichttp.WithEndpointURL handles parsing.
+//
+// Useful when the caller talks to a backend with a non-default
+// metrics ingest path — VictoriaMetrics' `/opentelemetry/api/v1/push`
+// is the canonical example. Most apps should leave this unset and
+// configure via OTEL_EXPORTER_OTLP_ENDPOINT instead.
+func WithEndpoint(url string) Option {
+	return func(o *options) { o.endpointURL = url }
 }
 
 // WithMetricInterval sets the periodic export tick. Default 5s.

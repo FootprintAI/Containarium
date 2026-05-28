@@ -68,11 +68,12 @@ func doInit(ctx context.Context, opts ...Option) (ShutdownFunc, error) {
 		cfg.ServiceName = options.serviceName
 	}
 
-	if cfg.Endpoint == "" {
+	if cfg.Endpoint == "" && options.endpointURL == "" {
 		log.Printf(
-			"containariumotel: OTEL_EXPORTER_OTLP_ENDPOINT not set; " +
-				"telemetry will be a no-op. Enable monitoring on the LXC " +
-				"with `containarium monitoring enable <username>`.",
+			"containariumotel: OTEL_EXPORTER_OTLP_ENDPOINT not set " +
+				"(and no WithEndpoint option given); telemetry will be " +
+				"a no-op. Enable monitoring on the LXC with " +
+				"`containarium monitoring enable <username>`.",
 		)
 		return noopShutdown, nil
 	}
@@ -84,9 +85,14 @@ func doInit(ctx context.Context, opts ...Option) (ShutdownFunc, error) {
 	}
 
 	// OTLP/HTTP exporter — reads endpoint, headers, protocol from env
-	// directly. Don't pass them as constructor args; that would
-	// shadow user overrides we're meant to honor.
-	exporter, err := otlpmetrichttp.New(ctx)
+	// by default. We only pass an explicit endpoint when the caller
+	// gave one via WithEndpoint (e.g. the daemon's dogfood path needs
+	// a non-default URL path).
+	var expOpts []otlpmetrichttp.Option
+	if options.endpointURL != "" {
+		expOpts = append(expOpts, otlpmetrichttp.WithEndpointURL(options.endpointURL))
+	}
+	exporter, err := otlpmetrichttp.New(ctx, expOpts...)
 	if err != nil {
 		log.Printf("containariumotel: create OTLP exporter failed: %v", err)
 		return noopShutdown, fmt.Errorf("%w: %v", ErrInitFailed, err)

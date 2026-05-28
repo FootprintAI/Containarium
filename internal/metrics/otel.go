@@ -6,13 +6,12 @@ import (
 	"log"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
+	"github.com/footprintai/containarium/distros/go/containariumotel"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
@@ -88,6 +87,7 @@ type Collector struct {
 	config      CollectorConfig
 	incusClient *incus.Client
 	provider    *sdkmetric.MeterProvider
+	shutdownFn  containariumotel.ShutdownFunc
 
 	// System metric instruments
 	systemCPUCount    otelmetric.Int64Gauge
@@ -133,44 +133,36 @@ func NewCollector(config CollectorConfig, incusClient *incus.Client) (*Collector
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Create OTLP/HTTP exporter targeting Victoria Metrics
-	endpoint := config.VictoriaMetricsURL
-	// Strip protocol for otlpmetrichttp (it adds its own)
-	endpoint = stripProtocol(endpoint)
-
-	exporter, err := otlpmetrichttp.New(ctx,
-		otlpmetrichttp.WithEndpoint(endpoint),
-		otlpmetrichttp.WithURLPath("/opentelemetry/api/v1/push"),
-		otlpmetrichttp.WithInsecure(),
+	// Dogfood the Go distro for SDK setup (Phase 7 of the rollout
+	// plan). The distro composes the resource per the standard
+	// precedence + adds the defended containarium.distro stamp;
+	// otlpmetrichttp.WithEndpointURL handles VictoriaMetrics' custom
+	// ingest path under WithEndpoint.
+	vmURL := stripProtocol(config.VictoriaMetricsURL)
+	shutdownFn, err := containariumotel.Init(ctx,
+		containariumotel.WithServiceName(config.ServiceName),
+		containariumotel.WithEndpoint(fmt.Sprintf("http://%s/opentelemetry/api/v1/push", vmURL)),
+		containariumotel.WithMetricInterval(config.CollectionInterval),
 	)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
+		return nil, fmt.Errorf("init telemetry distro: %w", err)
 	}
 
-	// Create resource with service name
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(config.ServiceName),
-		),
-	)
-	if err != nil {
+	// Pull the concrete *sdkmetric.MeterProvider back out of the
+	// global so existing call sites (pentest.NewManager, Meter()
+	// callers below) keep working without a wider refactor.
+	provider, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider)
+	if !ok {
 		cancel()
-		return nil, fmt.Errorf("failed to create resource: %w", err)
+		return nil, fmt.Errorf("global MeterProvider is not *sdkmetric.MeterProvider (got %T)", otel.GetMeterProvider())
 	}
-
-	// Create MeterProvider with periodic reader
-	provider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter,
-			sdkmetric.WithInterval(config.CollectionInterval),
-		)),
-		sdkmetric.WithResource(res),
-	)
 
 	c := &Collector{
 		config:      config,
 		incusClient: incusClient,
 		provider:    provider,
+		shutdownFn:  shutdownFn,
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -460,10 +452,10 @@ func (c *Collector) SetPeerFetcher(fetcher PeerMetricsFetcher) {
 // Stop shuts down the collector
 func (c *Collector) Stop() {
 	c.cancel()
-	if c.provider != nil {
+	if c.shutdownFn != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		if err := c.provider.Shutdown(shutdownCtx); err != nil {
+		if err := c.shutdownFn(shutdownCtx); err != nil {
 			log.Printf("Warning: failed to shutdown OTel provider: %v", err)
 		}
 	}
