@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **App-side OpenTelemetry distros for Python and Go** — `containarium-telemetry` (PyPI) and `github.com/footprintai/containarium/distros/go/containariumotel` ship as opinionated wrappers over the vanilla OTel SDKs. One-line init (`containarium_telemetry.init()` / `containariumotel.Init(ctx)`) wires the MeterProvider with the platform's resource attributes (`container.id`, `backend.id`, `service.namespace`, `service.version`) plus a defended `containarium.distro` support stamp, against the central collector that ships with `--monitoring=true`. See `docs/TELEMETRY-DISTRO-DESIGN.md`.
+
+- **`containarium-instrument` console script** (Python) — always installed with the base package. Wraps `opentelemetry-instrument` so auto-instrumentation picks up the distro's defaults without app code changes. Adds `--dry-run` to print the resolved config (endpoint, redacted bearer headers, distro stamp) for first-line "why no metrics" debugging.
+
+- **`containariumotel.HTTPMiddleware` + `containariumotel/grpc` sub-package** (Go) — thin wrappers over the canonical `otelhttp` / `otelgrpc` packages. gRPC ships as a sub-package so the gRPC transitive dependency only lands in apps that opt in.
+
+- **`examples/helloworld-go`** — symmetric with the Python helloworld. Tiny HTTP server demonstrating Init + HTTPMiddleware + a hand-rolled `helloworld.requests` counter, plus a deploy.sh / systemd unit ready for the standard agent-native push flow.
+
+- **CI workflows for the Python distro**: `distros-py-ci.yml` runs the test matrix (3.9, 3.10, 3.11, 3.12) on PRs touching `distros/py/**`; `distros-py-release.yml` publishes to PyPI via Trusted Publishing on every `v*` tag.
+
+### Changed
+
+- **`examples/helloworld-python` now uses `containarium-telemetry`** — two-line distro init in `app.py` plus a `helloworld.requests` counter, `requirements.txt` for the PyPI dep, and a `pip install --user` step added to `deploy.sh`. systemd unit unchanged.
+
+- **`internal/metrics/otel.go` dogfoods the Go distro** — replaced the daemon's ad-hoc `otlpmetrichttp.New` / `resource.New` setup with `containariumotel.Init(ctx, WithServiceName, WithEndpoint, WithMetricInterval)`. `WithEndpoint` is the new distro option that wraps `otlpmetrichttp.WithEndpointURL` so callers that need a non-default ingest path (VictoriaMetrics' `/opentelemetry/api/v1/push`) don't have to fall back to env-only configuration.
+
 ## [0.19.2] - 2026-05-27
 
 Patch release covering the sentinel-side incident-response footguns shaken out during today's investigation: a silent tunnel-server enablement bug, three loopback / authorized-keys observability gaps that turned routine reconnects into hours-long operator drilling sessions, and the sentinel↔daemon HMAC misconfig that 401s every keysync without warning.

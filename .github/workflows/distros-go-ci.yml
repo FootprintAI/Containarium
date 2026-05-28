@@ -1,0 +1,51 @@
+name: CI — Go distro
+
+# Symmetric with distros-py-ci.yml: run the Go distro's test suite on
+# PRs that touch it and on every push to main. The Go distro ships
+# inside the main go.mod (D13), so this workflow is narrower than the
+# top-level Go build — just the distro's own packages.
+on:
+  pull_request:
+    paths:
+      - 'distros/go/**'
+      - '.github/workflows/distros-go-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'distros/go/**'
+      - '.github/workflows/distros-go-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          # Pinned to match the version the daemon's release workflow
+          # uses; drift would mean release-built daemon and CI-tested
+          # distro stop sharing a toolchain.
+          go-version: '1.25.10'
+
+      - name: Verify module hygiene
+        # `go mod tidy` should be a no-op on a clean PR. If it changes
+        # go.mod or go.sum, the PR is missing a tidy commit.
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Run distro tests
+        run: go test -race -v ./distros/go/...
+
+      - name: Build helloworld-go example
+        # Catches regressions where the distro API changes but the
+        # example doesn't track. Same pattern as the daemon's
+        # release.yml verifying it can still build itself.
+        run: go build ./examples/helloworld-go/
