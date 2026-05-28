@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/auth"
 )
 
 // fakeStarter satisfies WakeStarter for tests.
@@ -101,6 +102,75 @@ func TestWakeProxy_HappyPath(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "hello from container" {
 		t.Errorf("body: got %q, want %q", got, "hello from container")
+	}
+}
+
+// subjectCapturingStarter records the context it was invoked with so
+// the test can assert what identity the wake proxy stamps before
+// calling into the authz-gated StartContainer.
+type subjectCapturingStarter struct {
+	ready  bool
+	ip     string
+	port   int
+	gotCtx context.Context
+}
+
+func (s *subjectCapturingStarter) WakeForRequest(ctx context.Context, username string) (bool, string, int, error) {
+	s.gotCtx = ctx
+	return s.ready, s.ip, s.port, nil
+}
+
+// TestWakeProxy_StarterReceivesSystemIdentity is a regression test for
+// the wake-on-HTTP auth bug. The proxy used to invoke the starter with
+// a bare context.Background(), so StartContainer's RequireScope /
+// AuthorizeTenant gate rejected every wake with "no authenticated
+// subject in request context" — wake-on-HTTP could never succeed.
+// Wake is a daemon-internal action, so the proxy must stamp the
+// _system identity. If someone reverts to context.Background(), the
+// subject lookup below fails and this test catches it.
+func TestWakeProxy_StarterReceivesSystemIdentity(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split host/port: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("port parse: %v", err)
+	}
+
+	const fullDomain = "alice-web.example.test"
+	starter := &subjectCapturingStarter{ready: true, ip: host, port: port}
+
+	proxy := NewWakeProxy(
+		starter,
+		&fakeLookup{fullDomain: fullDomain, containerName: "alice-container", targetIP: host, targetPort: port},
+		&fakeRouteStore{},
+		nil,
+		nil,
+		5*time.Second,
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "http://"+fullDomain+"/", nil)
+	req.Host = fullDomain
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+
+	if starter.gotCtx == nil {
+		t.Fatal("starter was never invoked")
+	}
+	username, roles, ok := auth.SubjectFromGRPCContext(starter.gotCtx)
+	if !ok {
+		t.Fatal("wake context carries no authenticated subject — StartContainer's authz gate would reject this wake")
+	}
+	if username != auth.SystemSubject {
+		t.Errorf("subject: got %q, want %q", username, auth.SystemSubject)
+	}
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		t.Errorf("roles: got %v, want to include %q", roles, auth.RoleAdmin)
 	}
 }
 
