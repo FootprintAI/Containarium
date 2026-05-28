@@ -14,12 +14,27 @@ instrumentors itself.
 from __future__ import annotations
 
 import logging
+import sys
 from importlib.metadata import entry_points
 from typing import List, Union
 
 logger = logging.getLogger("containarium_telemetry")
 
 InstrumentationsArg = Union[str, List[str]]
+
+
+def _entry_points_for_group(group: str):
+    """Cross-version wrapper for importlib.metadata.entry_points.
+
+    Python 3.10+ takes a `group=` kwarg directly. On 3.9 the kwarg is
+    silently ignored (entry_points() returns a dict-like of all groups)
+    so `entry_points(group="x")` returns the whole dict and our
+    instrumentor enumeration drops to zero — exactly the bug the
+    matrix CI caught on first run.
+    """
+    if sys.version_info >= (3, 10):
+        return list(entry_points(group=group))
+    return list(entry_points().get(group, []))
 
 
 def register_instrumentations(instrumentations: InstrumentationsArg) -> List[str]:
@@ -40,7 +55,7 @@ def register_instrumentations(instrumentations: InstrumentationsArg) -> List[str
         return []
 
     try:
-        all_entries = list(entry_points(group="opentelemetry_instrumentor"))
+        all_entries = _entry_points_for_group("opentelemetry_instrumentor")
     except Exception as e:  # noqa: BLE001 — entry_points API has changed across versions
         logger.warning(
             "containarium_telemetry: failed to enumerate instrumentor "

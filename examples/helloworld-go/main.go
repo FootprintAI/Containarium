@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
@@ -65,12 +66,16 @@ func main() {
 		now := time.Now().Format(time.RFC3339)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// X-Forwarded-For is attacker-controllable upstream of any
+		// proxy that doesn't sanitize it; escape before interpolating
+		// into the response body. `now` is RFC3339-bounded by
+		// time.Format, no escape needed.
 		fmt.Fprintf(w, `<!DOCTYPE html>
 <html><head><title>Hello (Go)</title></head><body>
 <h1>Hello, world (Go)</h1>
 <p>Your IP: <code>%s</code></p>
 <p>Server time: <code>%s</code></p>
-</body></html>`, ip, now)
+</body></html>`, html.EscapeString(ip), now)
 	})
 
 	port := os.Getenv("PORT")

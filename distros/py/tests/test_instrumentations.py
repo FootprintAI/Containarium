@@ -28,7 +28,7 @@ def test_auto_loads_all_entries():
     instr = mock.MagicMock()
     ep = _make_entry("flask", instrumentor_mock=instr)
     with mock.patch(
-        "containarium_telemetry._instrumentations.entry_points",
+        "containarium_telemetry._instrumentations._entry_points_for_group",
         return_value=[ep],
     ):
         result = register_instrumentations("auto")
@@ -41,7 +41,7 @@ def test_failed_entry_skipped_others_continue():
     working_instr = mock.MagicMock()
     working = _make_entry("flask", instrumentor_mock=working_instr)
     with mock.patch(
-        "containarium_telemetry._instrumentations.entry_points",
+        "containarium_telemetry._instrumentations._entry_points_for_group",
         return_value=[failing, working],
     ):
         result = register_instrumentations("auto")
@@ -57,7 +57,7 @@ def test_list_filter():
         _make_entry("fastapi", instrumentor_mock=fastapi_instr),
     ]
     with mock.patch(
-        "containarium_telemetry._instrumentations.entry_points",
+        "containarium_telemetry._instrumentations._entry_points_for_group",
         return_value=entries,
     ):
         result = register_instrumentations(["flask"])
@@ -71,7 +71,7 @@ def test_instrument_method_failure_logged_not_raised():
     bad_instr.instrument.side_effect = RuntimeError("boom")
     ep = _make_entry("flask", instrumentor_mock=bad_instr)
     with mock.patch(
-        "containarium_telemetry._instrumentations.entry_points",
+        "containarium_telemetry._instrumentations._entry_points_for_group",
         return_value=[ep],
     ):
         result = register_instrumentations("auto")
