@@ -1,0 +1,13 @@
+[Unit]
+Description=helloworld-go app
+After=network.target
+
+[Service]
+ExecStart=/home/helloworld-go/work/helloworld-go
+WorkingDirectory=/home/helloworld-go/work
+User=helloworld-go
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
