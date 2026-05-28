@@ -1,0 +1,83 @@
+name: Publish Python distro to PyPI
+
+# Triggered by the same v* release tags as the main release + sidecars
+# workflows. Per TELEMETRY-DISTRO-DESIGN.md decision D5, the distro
+# version tracks the Containarium project version — every v*.*.* tag
+# publishes a matching containarium-telemetry release to PyPI.
+on:
+  push:
+    tags:
+      - 'v*'   # e.g. v0.20.0
+  # Manual trigger for ad-hoc republishes (e.g. recovering from a
+  # PyPI infra blip). version input overrides the tag-derived version.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (without v prefix), e.g. 0.20.0'
+        required: true
+
+# Trusted publishing on PyPI uses OIDC, which needs id-token:write.
+# Configure on the PyPI side under "Trusted Publishers":
+#   - PyPI project: containarium-telemetry
+#   - GitHub repo: footprintai/containarium
+#   - Workflow file: .github/workflows/distros-py-release.yml
+#   - Environment name: pypi
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-pypi:
+    name: Build and publish containarium-telemetry
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/containarium-telemetry/
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Publishing containarium-telemetry==${version}"
+
+      - name: Stamp version into pyproject.toml
+        run: |
+          cd distros/py
+          # pyproject.toml's `version = "0.20.0"` is the local-dev value;
+          # the release workflow rewrites it to the tag's version so
+          # devs don't have to keep a separate VERSION file in sync.
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" pyproject.toml
+          grep '^version' pyproject.toml
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build sdist + wheel
+        run: |
+          cd distros/py
+          python -m build
+          ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: distros/py/dist/
+          # First publish of a new version succeeds; re-runs of the
+          # same version (e.g. workflow retry) are a no-op rather
+          # than a hard failure.
+          skip-existing: true

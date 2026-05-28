@@ -1,0 +1,48 @@
+name: CI — Python distro
+
+# Run the distro test suite on PRs that touch it, and on every push to
+# main. Keeps the release workflow honest: when the v* tag fires, the
+# code on main has already passed CI.
+on:
+  pull_request:
+    paths:
+      - 'distros/py/**'
+      - '.github/workflows/distros-py-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'distros/py/**'
+      - '.github/workflows/distros-py-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches the requires-python lower bound in pyproject.toml. If
+        # we drop a version here, drop it from pyproject classifiers too.
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install distro in editable mode with dev extras
+        run: |
+          cd distros/py
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: |
+          cd distros/py
+          pytest -v
