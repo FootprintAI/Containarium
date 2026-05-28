@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/auth"
 )
 
 // WakeStarter starts a container and blocks until its primary route
@@ -172,7 +173,15 @@ func (w *WakeProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if leader {
 		// Leader: run the actual wake on a derived context so
 		// followers' cancellations don't abort the whole group.
-		ctx, cancel := context.WithTimeout(context.Background(), w.waitTimeout)
+		//
+		// Wake is a daemon-internal action: the inbound request that
+		// triggered it may be unauthenticated (a public route, a health
+		// probe), but StartContainer is authz-gated (RequireScope +
+		// AuthorizeTenant). Stamp the _system identity so the wake call
+		// passes those gates — the same pattern the autosleep ticker
+		// and peer forwarders use. Without it, every wake fails with
+		// "no authenticated subject in request context".
+		ctx, cancel := context.WithTimeout(auth.ContextWithSystemIdentity(context.Background()), w.waitTimeout)
 		ready, ip, port, werr := w.starter.WakeForRequest(ctx, username)
 		cancel()
 		if werr != nil {
