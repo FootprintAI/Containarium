@@ -22,6 +22,8 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.trace import NoOpTracerProvider
 
 from ._config import DistroConfig
+from ._distro import AUTO_INSTRUMENT_ENV_KEY
+from ._instrumentations import InstrumentationsArg, register_instrumentations
 from ._resource import build_resource
 
 logger = logging.getLogger("containarium_telemetry")
@@ -57,10 +59,23 @@ class Shutdown:
 def init(
     service_name: Optional[str] = None,
     extra_attrs: Optional[Dict[str, str]] = None,
+    instrumentations: InstrumentationsArg = "auto",
     metric_export_interval_ms: int = 5_000,
     metric_export_timeout_ms: int = 10_000,
 ) -> Shutdown:
     """Initialize the distro. Returns an idempotent Shutdown handle.
+
+    Args:
+        service_name: Override OTEL_SERVICE_NAME if not already set.
+        extra_attrs: Extra resource attributes — win over env attrs
+            (precedence #5 in TELEMETRY-DISTRO-DESIGN.md).
+        instrumentations: "auto" (default — every installed
+            opentelemetry_instrumentor), "off", or a list of names.
+            Skipped when invoked from `containarium-instrument` /
+            `opentelemetry-instrument` (the runtime handles it).
+        metric_export_interval_ms: Periodic export tick. Default 5s,
+            matching the sidecar's batch processor.
+        metric_export_timeout_ms: Per-export timeout. Default 10s.
 
     Fail-open: missing OTEL_EXPORTER_OTLP_ENDPOINT logs WARN and returns
     a no-op handle. The app never crashes because telemetry isn't wired.
@@ -107,6 +122,13 @@ def init(
     # don't crash — v1 collector accepts metrics only (D4). The v2
     # traces pipeline will replace this with a real provider.
     _set_noop_tracer_provider_if_unset()
+
+    # Skip instrumentation registration when invoked from the
+    # auto-instrument runtime (containarium-instrument /
+    # opentelemetry-instrument) — the runtime registers them itself
+    # after we return.
+    if os.environ.get(AUTO_INSTRUMENT_ENV_KEY) != "1":
+        register_instrumentations(instrumentations)
 
     _shutdown_handle = Shutdown(provider)
     _initialized = True

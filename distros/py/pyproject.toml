@@ -22,12 +22,13 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: System :: Monitoring",
 ]
-# Phase 1 ships the base distro only — no auto-instrumentation extras.
-# Phase 2 adds [all] / [flask] / [fastapi] / etc.
 dependencies = [
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+    # Required for ContainariumDistro / Configurator entry points and
+    # the auto-instrumentation runtime used by `containarium-instrument`.
+    "opentelemetry-instrumentation>=0.48b0",
 ]
 
 [project.urls]
@@ -36,11 +37,60 @@ Documentation = "https://github.com/footprintai/containarium/blob/main/docs/TELE
 Repository = "https://github.com/footprintai/containarium"
 Issues = "https://github.com/footprintai/containarium/issues"
 
+# Per-framework extras pull in the upstream OTel instrumentation package
+# for that framework. The instrumentation packages themselves declare
+# the framework as a transitive dep, so e.g. `pip install
+# containarium-telemetry[flask]` installs flask too. Tenants who already
+# pin their framework get no version conflict because the OTel
+# instrumentation packages declare ranges, not pins.
 [project.optional-dependencies]
+flask = ["opentelemetry-instrumentation-flask>=0.48b0"]
+fastapi = ["opentelemetry-instrumentation-fastapi>=0.48b0"]
+django = ["opentelemetry-instrumentation-django>=0.48b0"]
+requests = ["opentelemetry-instrumentation-requests>=0.48b0"]
+httpx = ["opentelemetry-instrumentation-httpx>=0.48b0"]
+sqlalchemy = ["opentelemetry-instrumentation-sqlalchemy>=0.48b0"]
+asyncpg = ["opentelemetry-instrumentation-asyncpg>=0.48b0"]
+psycopg = ["opentelemetry-instrumentation-psycopg>=0.48b0"]
+redis = ["opentelemetry-instrumentation-redis>=0.48b0"]
+logging = ["opentelemetry-instrumentation-logging>=0.48b0"]
+# `all` is the convenience bundle — recommended default for greenfield
+# apps. Tenants with image-size sensitivity pin individual extras.
+all = [
+    "opentelemetry-instrumentation-flask>=0.48b0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-django>=0.48b0",
+    "opentelemetry-instrumentation-requests>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.48b0",
+    "opentelemetry-instrumentation-asyncpg>=0.48b0",
+    "opentelemetry-instrumentation-psycopg>=0.48b0",
+    "opentelemetry-instrumentation-redis>=0.48b0",
+    "opentelemetry-instrumentation-logging>=0.48b0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    # Used by integration tests for the instrumentor auto-discovery path.
+    "flask>=2.0",
+    "opentelemetry-instrumentation-flask>=0.48b0",
 ]
+
+# `containarium-instrument` is always installed (D8) — it's a console
+# script alias over `opentelemetry-instrument` that adds --dry-run +
+# branding.
+[project.scripts]
+containarium-instrument = "containarium_telemetry._exec_shim:main"
+
+# Entry points the OTel auto-instrumentation runtime discovers. When
+# `opentelemetry-instrument` (or our `containarium-instrument` alias)
+# runs, it loads our Distro + Configurator so that the init we run via
+# direct API call also runs via the auto-instrument path.
+[project.entry-points."opentelemetry_distro"]
+containarium = "containarium_telemetry._distro:ContainariumDistro"
+
+[project.entry-points."opentelemetry_configurator"]
+containarium = "containarium_telemetry._distro:ContainariumConfigurator"
 
 [tool.setuptools.packages.find]
 where = ["src"]

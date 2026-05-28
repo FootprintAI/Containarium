@@ -20,7 +20,7 @@ def test_init_fail_open_without_endpoint(caplog):
     # return a no-op handle. App keeps running.
     with mock.patch.dict(os.environ, {}, clear=True):
         with caplog.at_level("WARNING", logger="containarium_telemetry"):
-            handle = init()
+            handle = init(instrumentations="off")
     assert isinstance(handle, Shutdown)
     assert any("OTEL_EXPORTER_OTLP_ENDPOINT" in r.message for r in caplog.records)
     # No-op shutdown shouldn't raise.
@@ -44,8 +44,8 @@ def test_init_with_endpoint_returns_shutdown():
 def test_init_idempotent():
     env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318"}
     with mock.patch.dict(os.environ, env, clear=True):
-        handle1 = init()
-        handle2 = init()
+        handle1 = init(instrumentations="off")
+        handle2 = init(instrumentations="off")
     assert handle1 is handle2
 
 
@@ -65,7 +65,7 @@ def test_service_name_arg_setdefaults_env():
     # init(service_name=...) sets OTEL_SERVICE_NAME if not already set.
     # Explicit env wins (setdefault, not override).
     with mock.patch.dict(os.environ, {}, clear=True):
-        init(service_name="from-arg")
+        init(service_name="from-arg", instrumentations="off")
         assert os.environ.get("OTEL_SERVICE_NAME") == "from-arg"
 
     _reset_for_tests()
@@ -73,6 +73,6 @@ def test_service_name_arg_setdefaults_env():
     with mock.patch.dict(
         os.environ, {"OTEL_SERVICE_NAME": "from-env"}, clear=True
     ):
-        init(service_name="from-arg")
+        init(service_name="from-arg", instrumentations="off")
         # Env wins.
         assert os.environ.get("OTEL_SERVICE_NAME") == "from-env"
