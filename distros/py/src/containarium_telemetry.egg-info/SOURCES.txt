@@ -1,0 +1,15 @@
+pyproject.toml
+src/containarium_telemetry/__init__.py
+src/containarium_telemetry/_config.py
+src/containarium_telemetry/_init.py
+src/containarium_telemetry/_resource.py
+src/containarium_telemetry/_version.py
+src/containarium_telemetry/py.typed
+src/containarium_telemetry.egg-info/PKG-INFO
+src/containarium_telemetry.egg-info/SOURCES.txt
+src/containarium_telemetry.egg-info/dependency_links.txt
+src/containarium_telemetry.egg-info/requires.txt
+src/containarium_telemetry.egg-info/top_level.txt
+tests/test_config.py
+tests/test_init.py
+tests/test_resource.py

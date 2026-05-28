@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "containarium-telemetry"
+version = "0.20.0"
+description = "Containarium telemetry distro for Python — opinionated OpenTelemetry init that pairs with the Containarium platform's monitoring infrastructure."
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "FootprintAI" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+]
+# Phase 1 ships the base distro only — no auto-instrumentation extras.
+# Phase 2 adds [all] / [flask] / [fastapi] / etc.
+dependencies = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/footprintai/containarium"
+Documentation = "https://github.com/footprintai/containarium/blob/main/docs/TELEMETRY-DISTRO-DESIGN.md"
+Repository = "https://github.com/footprintai/containarium"
+Issues = "https://github.com/footprintai/containarium/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+containarium_telemetry = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
