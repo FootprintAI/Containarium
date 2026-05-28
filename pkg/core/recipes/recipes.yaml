@@ -1,0 +1,66 @@
+# Containarium Recipe Catalog
+#
+# A recipe deploys a GPU/app workload as a NEW dedicated container. The
+# container is an Ubuntu LXC (with optional GPU passthrough); the recipe's
+# image runs inside it via Podman in the post_start commands — the same
+# pattern the kubeflow stack uses to run k3s inside an LXC.
+#
+# Deploy-time parameters are exported to post_start as
+# CONTAINARIUM_PARAM_<UPPER_NAME> environment variables.
+#
+# These recipes ship in-tree and are reviewed; post_start runs with the same
+# trust level as a stack's post_install. Remote/community catalogs are a
+# separate, signed mechanism (not loaded here).
+
+recipes:
+  - id: ollama
+    name: Ollama
+    description: Run Ollama with GPU acceleration and pull a model on first boot.
+    image: ollama/ollama
+    requires_gpu: true
+    resources:
+      cpu: "8"
+      memory: 16GB
+      disk: 200GB
+    ports:
+      - container_port: 11434
+        subdomain: ollama
+    volumes:
+      - name: ollama-models
+        path: /root/.ollama
+    parameters:
+      - name: model
+        label: Model
+        description: Model to pull after the server starts (e.g. llama3, qwen2.5).
+        type: string
+        default: llama3
+    post_start:
+      - podman volume create ollama-models
+      - podman run -d --name ollama --restart=always --device nvidia.com/gpu=all -p 11434:11434 -v ollama-models:/root/.ollama docker.io/ollama/ollama
+      - 'podman exec ollama ollama pull "$CONTAINARIUM_PARAM_MODEL"'
+
+  - id: llamacpp
+    name: llama.cpp server
+    description: Run the llama.cpp OpenAI-compatible server with CUDA, serving a HuggingFace GGUF model.
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    requires_gpu: true
+    resources:
+      cpu: "8"
+      memory: 16GB
+      disk: 100GB
+    ports:
+      - container_port: 8080
+        subdomain: llamacpp
+    volumes:
+      - name: llamacpp-models
+        path: /models
+    parameters:
+      - name: hf_repo
+        label: HuggingFace GGUF repo
+        description: HuggingFace repo to serve, in -hf form (e.g. ggml-org/gemma-3-1b-it-GGUF).
+        type: string
+        default: ggml-org/gemma-3-1b-it-GGUF
+        required: true
+    post_start:
+      - podman volume create llamacpp-models
+      - 'podman run -d --name llamacpp --restart=always --device nvidia.com/gpu=all -p 8080:8080 -v llamacpp-models:/models ghcr.io/ggml-org/llama.cpp:server-cuda -hf "$CONTAINARIUM_PARAM_HF_REPO" --host 0.0.0.0 --port 8080'

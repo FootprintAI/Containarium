@@ -418,8 +418,18 @@ func ensureProxyOnlyShell(username string, verbose bool) error {
 	return nil
 }
 
-// waitForLocksAndRun stops google-guest-agent, executes the function, then restarts it
+// waitForLocksAndRun stops google-guest-agent, executes the function, then restarts it.
+// On non-GCP hosts the stop/start sequence is meaningless (google-guest-agent
+// doesn't exist) and produces misleading errors, so we just run fn directly.
+// Issue #351.
 func waitForLocksAndRun(fn func() error, verbose bool) error {
+	if !isGCPHost() {
+		if verbose {
+			fmt.Printf("       Skipping google-guest-agent dance: host is not a GCP VM\n")
+		}
+		return fn()
+	}
+
 	if verbose {
 		fmt.Printf("       Temporarily stopping google-guest-agent...\n")
 	}
@@ -650,69 +660,82 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 
 	const maxRetries = 10 // Bumped from 5 (cloud #163). Combined with the new exponential backoff below, total ceiling is ~6min vs the old 10s — gives stale passwd locks enough room to clear or be force-removed.
 
-	fmt.Printf("       Temporarily stopping google-guest-agent to avoid race condition...\n")
-
-	// Stop google-guest-agent
-	cmd := exec.Command("systemctl", "stop", "google-guest-agent")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		fmt.Printf("       Warning: Failed to stop google-guest-agent: %v\n%s\n", err, output)
-		fmt.Printf("       Proceeding anyway...\n")
-	} else {
-		fmt.Printf("       ✓ google-guest-agent stopped\n")
-	}
-
-	// Kill any remaining google processes that might be holding locks
-	killGoogleProcesses(verbose)
-
-	// Ensure we restart it when done
-	defer func() {
-		fmt.Printf("       Restarting google-guest-agent...\n")
-		cmd := exec.Command("systemctl", "start", "google-guest-agent")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			fmt.Printf("       Warning: Failed to restart google-guest-agent: %v\n%s\n", err, output)
-		} else {
-			fmt.Printf("       ✓ google-guest-agent restarted\n")
-		}
-	}()
-
-	// Wait for the agent to fully stop and release locks
-	fmt.Printf("       Waiting for agent to stop and release locks...\n")
-	time.Sleep(2 * time.Second)
-
-	// Check if agent actually stopped
-	checkCmd := exec.Command("systemctl", "is-active", "google-guest-agent")
-	if statusOutput, _ := checkCmd.CombinedOutput(); len(statusOutput) > 0 {
-		fmt.Printf("       Agent status after stop: %s\n", strings.TrimSpace(string(statusOutput)))
-	}
-
-	// Wait for lock files to clear (up to 10 seconds)
+	// Pre-useradd dance: stop google-guest-agent, wait for the
+	// passwd lock to clear, force-remove if stuck. This is GCP-VM
+	// specific — google-guest-agent races with local useradd over
+	// /etc/.pwd.lock via OS Login. On a non-GCP backend (VirtualBox
+	// lab spot, on-prem, AWS/Azure, …) the service doesn't exist
+	// and the lockfile is held by something else legitimately;
+	// running this dance just produces misleading "Access denied"
+	// stderr and force-removes a lock we shouldn't touch. Issue
+	// #351 — gate it on host-class detection.
 	lockFiles := []string{"/etc/passwd.lock", "/etc/shadow.lock", "/etc/.pwd.lock", "/etc/group.lock"}
-	locksClear := false
-	for attempt := 0; attempt < 10; attempt++ {
-		allClear := true
-		for _, lockFile := range lockFiles {
-			if _, err := os.Stat(lockFile); err == nil {
-				allClear = false
-				if attempt == 0 {
-					fmt.Printf("       Waiting for lock file to clear: %s\n", lockFile)
+	if isGCPHost() {
+		fmt.Printf("       Temporarily stopping google-guest-agent to avoid race condition...\n")
+
+		// Stop google-guest-agent
+		cmd := exec.Command("systemctl", "stop", "google-guest-agent")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			fmt.Printf("       Warning: Failed to stop google-guest-agent: %v\n%s\n", err, output)
+			fmt.Printf("       Proceeding anyway...\n")
+		} else {
+			fmt.Printf("       ✓ google-guest-agent stopped\n")
+		}
+
+		// Kill any remaining google processes that might be holding locks
+		killGoogleProcesses(verbose)
+
+		// Ensure we restart it when done
+		defer func() {
+			fmt.Printf("       Restarting google-guest-agent...\n")
+			cmd := exec.Command("systemctl", "start", "google-guest-agent")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				fmt.Printf("       Warning: Failed to restart google-guest-agent: %v\n%s\n", err, output)
+			} else {
+				fmt.Printf("       ✓ google-guest-agent restarted\n")
+			}
+		}()
+
+		// Wait for the agent to fully stop and release locks
+		fmt.Printf("       Waiting for agent to stop and release locks...\n")
+		time.Sleep(2 * time.Second)
+
+		// Check if agent actually stopped
+		checkCmd := exec.Command("systemctl", "is-active", "google-guest-agent")
+		if statusOutput, _ := checkCmd.CombinedOutput(); len(statusOutput) > 0 {
+			fmt.Printf("       Agent status after stop: %s\n", strings.TrimSpace(string(statusOutput)))
+		}
+
+		// Wait for lock files to clear (up to 10 seconds)
+		locksClear := false
+		for attempt := 0; attempt < 10; attempt++ {
+			allClear := true
+			for _, lockFile := range lockFiles {
+				if _, err := os.Stat(lockFile); err == nil {
+					allClear = false
+					if attempt == 0 {
+						fmt.Printf("       Waiting for lock file to clear: %s\n", lockFile)
+					}
+					break
 				}
+			}
+			if allClear {
+				locksClear = true
 				break
 			}
+			time.Sleep(1 * time.Second)
 		}
-		if allClear {
-			locksClear = true
-			break
-		}
-		time.Sleep(1 * time.Second)
-	}
 
-	if !locksClear {
-		fmt.Printf("       Warning: Lock files still present after waiting, forcing removal...\n")
-		// Since we stopped google-guest-agent, any remaining lock files are stale
-		// Forcibly remove them regardless of age
-		forceRemoveLockFiles(lockFiles, verbose)
-	} else {
-		fmt.Printf("       ✓ All lock files cleared\n")
+		if !locksClear {
+			fmt.Printf("       Warning: Lock files still present after waiting, forcing removal...\n")
+			// Since we stopped google-guest-agent, any remaining lock files are stale
+			// Forcibly remove them regardless of age
+			forceRemoveLockFiles(lockFiles, verbose)
+		} else {
+			fmt.Printf("       ✓ All lock files cleared\n")
+		}
+	} else if verbose {
+		fmt.Printf("       Skipping google-guest-agent / pwd-lock dance: host is not a GCP VM\n")
 	}
 
 	// Retry useradd with flock for serialization
@@ -759,7 +782,11 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 		// flock -w 30 ensures we wait up to 30 seconds to acquire the lock
 		fmt.Printf("       Creating user %s (with flock)...\n", username)
 		shell := getUserShell()
-		cmd = exec.Command("flock", "-w", "30", "/var/lock/containarium-useradd.lock",
+		// #nosec G204 -- `username` is validated by isValidUsername at the
+		// CreateJumpServerAccount entry point (alphanumeric, dash, underscore
+		// only). `shell` is a fixed-path constant from getUserShell(). No
+		// untrusted input reaches the subprocess invocation.
+		cmd := exec.Command("flock", "-w", "30", "/var/lock/containarium-useradd.lock",
 			"useradd", username,
 			"-s", shell, // nologin (ProxyJump) or containarium-shell (exec into container)
 			"-m",                      // Create home directory

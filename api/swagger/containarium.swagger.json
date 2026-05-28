@@ -36,6 +36,9 @@
       "name": "PentestService"
     },
     {
+      "name": "RecipeService"
+    },
+    {
       "name": "SecurityService"
     },
     {
@@ -2599,6 +2602,103 @@
         ]
       }
     },
+    "/v1/recipes": {
+      "get": {
+        "summary": "List recipes",
+        "description": "Returns all built-in recipes that can be deployed as dedicated containers.",
+        "operationId": "RecipeService_ListRecipes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListRecipesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Recipes"
+        ]
+      }
+    },
+    "/v1/recipes/{id}": {
+      "get": {
+        "summary": "Get recipe",
+        "description": "Returns the definition of a single recipe, including its parameters, ports, and resource defaults.",
+        "operationId": "RecipeService_GetRecipe",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetRecipeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Recipes"
+        ]
+      }
+    },
+    "/v1/recipes/{recipeId}/deploy": {
+      "post": {
+        "summary": "Deploy a recipe",
+        "description": "Provisions a new dedicated container (with optional GPU passthrough), runs the recipe's image inside it, and exposes the configured ports.",
+        "operationId": "RecipeService_DeployRecipe",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeployRecipeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "recipeId",
+            "description": "Recipe to deploy (e.g. \"ollama\").",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/DeployRecipeBody"
+            }
+          }
+        ],
+        "tags": [
+          "Recipes"
+        ]
+      }
+    },
     "/v1/secrets": {
       "post": {
         "summary": "Create or update a tenant secret",
@@ -5149,6 +5249,57 @@
         }
       }
     },
+    "DeployRecipeBody": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Deployment / container identity (the new container is named\n\"\u003cname\u003e-container\", same identity scheme as `containarium create`)."
+        },
+        "gpu": {
+          "type": "string",
+          "description": "GPU device ID for passthrough (e.g. \"0\" or a PCI address). Required for\nrecipes with requires_gpu unless a GPU-capable backend is selected."
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Target backend ID for placement (empty = primary backend)."
+        },
+        "pool": {
+          "type": "string",
+          "description": "Pool selector for placement (empty = untagged backends only)."
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Overrides for the recipe's declared parameters (by name)."
+        },
+        "resourceOverrides": {
+          "$ref": "#/definitions/RecipeResources",
+          "description": "Optional overrides for the recipe's default resource limits."
+        }
+      },
+      "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."
+    },
+    "DeployRecipeResponse": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container",
+          "description": "The created container."
+        },
+        "url": {
+          "type": "string",
+          "description": "Public URL of the first exposed port, if any."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable status message."
+        }
+      },
+      "description": "DeployRecipeResponse is the result of a recipe deployment."
+    },
     "DestinationStats": {
       "type": "object",
       "properties": {
@@ -5655,6 +5806,15 @@
         }
       }
     },
+    "GetRecipeResponse": {
+      "type": "object",
+      "properties": {
+        "recipe": {
+          "$ref": "#/definitions/Recipe"
+        }
+      },
+      "description": "GetRecipeResponse returns a single recipe definition."
+    },
     "GetRoutesResponse": {
       "type": "object",
       "properties": {
@@ -6087,6 +6247,19 @@
           "format": "int32"
         }
       }
+    },
+    "ListRecipesResponse": {
+      "type": "object",
+      "properties": {
+        "recipes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Recipe"
+          }
+        }
+      },
+      "description": "ListRecipesResponse returns all built-in recipes."
     },
     "ListRevokedTokensResponse": {
       "type": "object",
@@ -6747,6 +6920,151 @@
           "title": "Total count matching query"
         }
       }
+    },
+    "Recipe": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable recipe identifier (e.g. \"ollama\")."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name (e.g. \"Ollama\")."
+        },
+        "description": {
+          "type": "string",
+          "description": "Short description."
+        },
+        "image": {
+          "type": "string",
+          "description": "OCI image run via `podman run` inside the LXC (e.g. \"ollama/ollama\")."
+        },
+        "requiresGpu": {
+          "type": "boolean",
+          "title": "When true, the deploy must specify a GPU"
+        },
+        "resources": {
+          "$ref": "#/definitions/RecipeResources",
+          "description": "Default resource limits for the container."
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RecipePort"
+          },
+          "description": "Ports to expose publicly after the app is running."
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RecipeVolume"
+          },
+          "description": "Persistent volumes to create and mount."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Static environment variables passed to the app."
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RecipeParam"
+          },
+          "description": "Deploy-time parameters (with defaults), surfaced to UIs and exported to\npost_start as CONTAINARIUM_PARAM_\u003cNAME\u003e."
+        },
+        "postStart": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shell commands run inside the container after it is up (e.g. the\n`podman run ...` that starts the app, plus model warm-up). Same trust\nlevel as a stack's post_install: these ship in-tree and are reviewed."
+        }
+      },
+      "description": "Recipe is a declarative definition of a GPU/app workload that Containarium\ncan provision as a new dedicated container. The container is an LXC system\ncontainer; the recipe's image runs inside it via Podman (post_start),\nmirroring how the kubeflow stack runs k3s inside an LXC."
+    },
+    "RecipeParam": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Parameter key (e.g. \"model\"). Env var seen by post_start is\nCONTAINARIUM_PARAM_\u003cupper(name)\u003e."
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-readable label for UIs."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional helper text."
+        },
+        "type": {
+          "type": "string",
+          "description": "\"string\", \"password\", \"number\", or \"boolean\". Controls UI rendering;\nthe value is always carried as a string."
+        },
+        "default": {
+          "type": "string",
+          "description": "Fallback value if the deployer leaves it blank."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Marks the parameter as mandatory."
+        }
+      },
+      "description": "RecipeParam describes a deploy-time input the recipe accepts. Mirrors\nstacks.StackParameter. Values are exported to post_start commands as\nCONTAINARIUM_PARAM_\u003cNAME\u003e environment variables."
+    },
+    "RecipePort": {
+      "type": "object",
+      "properties": {
+        "containerPort": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Port the app listens on inside the container (e.g. 11434)"
+        },
+        "subdomain": {
+          "type": "string",
+          "description": "Subdomain to expose it under (e.g. \"ollama\"); combined with the\ndeployment name and the daemon's base domain to form the public host."
+        }
+      },
+      "description": "RecipePort maps a container port to a public subdomain."
+    },
+    "RecipeResources": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "title": "CPU limit (number of cores, e.g. \"8\")"
+        },
+        "memory": {
+          "type": "string",
+          "title": "Memory limit (e.g. \"16GB\")"
+        },
+        "disk": {
+          "type": "string",
+          "title": "Disk limit (e.g. \"200GB\")"
+        }
+      },
+      "description": "RecipeResources holds default resource limits for a recipe's container."
+    },
+    "RecipeVolume": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "Volume name (e.g. \"ollama-models\")"
+        },
+        "path": {
+          "type": "string",
+          "title": "Mount path inside the app container (e.g. \"/root/.ollama\")"
+        }
+      },
+      "description": "RecipeVolume is a named persistent volume mounted into the app container."
     },
     "RefreshSecretsBody": {
       "type": "object",

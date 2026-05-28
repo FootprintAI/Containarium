@@ -1,0 +1,205 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+import "containarium/v1/container.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// RecipeResources holds default resource limits for a recipe's container.
+message RecipeResources {
+  // CPU limit (number of cores, e.g. "8")
+  string cpu = 1;
+
+  // Memory limit (e.g. "16GB")
+  string memory = 2;
+
+  // Disk limit (e.g. "200GB")
+  string disk = 3;
+}
+
+// RecipePort maps a container port to a public subdomain.
+message RecipePort {
+  // Port the app listens on inside the container (e.g. 11434)
+  int32 container_port = 1;
+
+  // Subdomain to expose it under (e.g. "ollama"); combined with the
+  // deployment name and the daemon's base domain to form the public host.
+  string subdomain = 2;
+}
+
+// RecipeVolume is a named persistent volume mounted into the app container.
+message RecipeVolume {
+  // Volume name (e.g. "ollama-models")
+  string name = 1;
+
+  // Mount path inside the app container (e.g. "/root/.ollama")
+  string path = 2;
+}
+
+// RecipeParam describes a deploy-time input the recipe accepts. Mirrors
+// stacks.StackParameter. Values are exported to post_start commands as
+// CONTAINARIUM_PARAM_<NAME> environment variables.
+message RecipeParam {
+  // Parameter key (e.g. "model"). Env var seen by post_start is
+  // CONTAINARIUM_PARAM_<upper(name)>.
+  string name = 1;
+
+  // Human-readable label for UIs.
+  string label = 2;
+
+  // Optional helper text.
+  string description = 3;
+
+  // "string", "password", "number", or "boolean". Controls UI rendering;
+  // the value is always carried as a string.
+  string type = 4;
+
+  // Fallback value if the deployer leaves it blank.
+  string default = 5;
+
+  // Marks the parameter as mandatory.
+  bool required = 6;
+}
+
+// Recipe is a declarative definition of a GPU/app workload that Containarium
+// can provision as a new dedicated container. The container is an LXC system
+// container; the recipe's image runs inside it via Podman (post_start),
+// mirroring how the kubeflow stack runs k3s inside an LXC.
+message Recipe {
+  // Stable recipe identifier (e.g. "ollama").
+  string id = 1;
+
+  // Display name (e.g. "Ollama").
+  string name = 2;
+
+  // Short description.
+  string description = 3;
+
+  // OCI image run via `podman run` inside the LXC (e.g. "ollama/ollama").
+  string image = 4;
+
+  // When true, the deploy must specify a GPU (--gpu) and/or a GPU-capable
+  // backend (--backend-id/--pool); the daemon rejects the deploy otherwise.
+  bool requires_gpu = 5;
+
+  // Default resource limits for the container.
+  RecipeResources resources = 6;
+
+  // Ports to expose publicly after the app is running.
+  repeated RecipePort ports = 7;
+
+  // Persistent volumes to create and mount.
+  repeated RecipeVolume volumes = 8;
+
+  // Static environment variables passed to the app.
+  map<string, string> env = 9;
+
+  // Deploy-time parameters (with defaults), surfaced to UIs and exported to
+  // post_start as CONTAINARIUM_PARAM_<NAME>.
+  repeated RecipeParam parameters = 10;
+
+  // Shell commands run inside the container after it is up (e.g. the
+  // `podman run ...` that starts the app, plus model warm-up). Same trust
+  // level as a stack's post_install: these ship in-tree and are reviewed.
+  repeated string post_start = 11;
+}
+
+// ListRecipesRequest is the request to list available recipes.
+message ListRecipesRequest {}
+
+// ListRecipesResponse returns all built-in recipes.
+message ListRecipesResponse {
+  repeated Recipe recipes = 1;
+}
+
+// GetRecipeRequest fetches a single recipe definition.
+message GetRecipeRequest {
+  string id = 1;
+}
+
+// GetRecipeResponse returns a single recipe definition.
+message GetRecipeResponse {
+  Recipe recipe = 1;
+}
+
+// DeployRecipeRequest provisions a new dedicated container from a recipe.
+message DeployRecipeRequest {
+  // Recipe to deploy (e.g. "ollama").
+  string recipe_id = 1;
+
+  // Deployment / container identity (the new container is named
+  // "<name>-container", same identity scheme as `containarium create`).
+  string name = 2;
+
+  // GPU device ID for passthrough (e.g. "0" or a PCI address). Required for
+  // recipes with requires_gpu unless a GPU-capable backend is selected.
+  string gpu = 3;
+
+  // Target backend ID for placement (empty = primary backend).
+  string backend_id = 4;
+
+  // Pool selector for placement (empty = untagged backends only).
+  string pool = 5;
+
+  // Overrides for the recipe's declared parameters (by name).
+  map<string, string> parameters = 6;
+
+  // Optional overrides for the recipe's default resource limits.
+  RecipeResources resource_overrides = 7;
+}
+
+// DeployRecipeResponse is the result of a recipe deployment.
+message DeployRecipeResponse {
+  // The created container.
+  Container container = 1;
+
+  // Public URL of the first exposed port, if any.
+  string url = 2;
+
+  // Human-readable status message.
+  string message = 3;
+}
+
+// RecipeService provides one-command deployment of declarative GPU/app
+// recipes onto Containarium backends.
+service RecipeService {
+  // ListRecipes returns all available built-in recipes.
+  rpc ListRecipes(ListRecipesRequest) returns (ListRecipesResponse) {
+    option (google.api.http) = {
+      get: "/v1/recipes"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List recipes";
+      description: "Returns all built-in recipes that can be deployed as dedicated containers.";
+      tags: "Recipes";
+    };
+  }
+
+  // GetRecipe returns a single recipe definition by ID.
+  rpc GetRecipe(GetRecipeRequest) returns (GetRecipeResponse) {
+    option (google.api.http) = {
+      get: "/v1/recipes/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get recipe";
+      description: "Returns the definition of a single recipe, including its parameters, ports, and resource defaults.";
+      tags: "Recipes";
+    };
+  }
+
+  // DeployRecipe provisions a new dedicated container from a recipe.
+  rpc DeployRecipe(DeployRecipeRequest) returns (DeployRecipeResponse) {
+    option (google.api.http) = {
+      post: "/v1/recipes/{recipe_id}/deploy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Deploy a recipe";
+      description: "Provisions a new dedicated container (with optional GPU passthrough), runs the recipe's image inside it, and exposes the configured ports.";
+      tags: "Recipes";
+    };
+  }
+}

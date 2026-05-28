@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`internal/metrics/otel.go` dogfoods the Go distro** — replaced the daemon's ad-hoc `otlpmetrichttp.New` / `resource.New` setup with `containariumotel.Init(ctx, WithServiceName, WithEndpoint, WithMetricInterval)`. `WithEndpoint` is the new distro option that wraps `otlpmetrichttp.WithEndpointURL` so callers that need a non-default ingest path (VictoriaMetrics' `/opentelemetry/api/v1/push`) don't have to fall back to env-only configuration.
 
+## [0.19.3] - 2026-05-27
+
+Patch release fixing CI box creation on non-GCP backends.
+
+### Fixed
+
+- **jump-server: gate google-guest-agent / pwd-lock dance on GCP-only hosts** ([#351](https://github.com/FootprintAI/Containarium/issues/351) / [#352](https://github.com/FootprintAI/Containarium/pull/352)). The useradd precondition sequence — `systemctl stop google-guest-agent`, wait for `/etc/.pwd.lock` to clear, force-remove if stuck — was hardcoded for GCP VMs (where `google-guest-agent` races with local `useradd` via OS Login). On any non-GCP backend (VirtualBox lab spot, on-prem, AWS, Azure, …) the service doesn't exist; running the dance produced misleading "Access denied" stderr and force-removed lockfiles held legitimately by other processes, blocking every `containarium create` that landed on that backend.
+
+  Fix: new `isGCPHost()` (backed by `systemd-detect-virt`, cached behind `sync.Once`) gates both `retryUseraddWithLockWait` and `waitForLocksAndRun`. Non-GCP hosts skip straight to the generic `flock + useradd` retry loop; GCP-VM deploys are byte-equivalent to v0.19.2. v0.19.2's "lacks privilege" final-error stops being misleading on non-GCP hosts — if useradd still fails after this, it's a real permission problem.
+
 ## [0.19.2] - 2026-05-27
 
 Patch release covering the sentinel-side incident-response footguns shaken out during today's investigation: a silent tunnel-server enablement bug, three loopback / authorized-keys observability gaps that turned routine reconnects into hours-long operator drilling sessions, and the sentinel↔daemon HMAC misconfig that 401s every keysync without warning.

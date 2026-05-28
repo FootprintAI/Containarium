@@ -269,6 +269,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		log.Printf("Network service enabled")
 	}
 
+	// Register RecipeService — one-command deployment of declarative
+	// GPU/app recipes. Pure orchestration over the container + network
+	// servers; networkServer may be nil (expose then degrades to a warning).
+	pb.RegisterRecipeServiceServer(grpcServer, NewRecipeServer(containerServer, networkServer))
+	log.Printf("Recipe service enabled")
+
 	// Create TrafficServer (always available, but conntrack only works on Linux)
 	var trafficServer *TrafficServer
 	var trafficCollector *traffic.Collector

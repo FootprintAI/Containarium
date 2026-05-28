@@ -873,6 +873,51 @@ func (s *Server) registerTools() {
 			Handler: handleExposePort,
 		},
 		{
+			Name: "list_recipes",
+			Description: "List the platform's built-in recipes. A recipe is a " +
+				"one-command deployment of a GPU/app workload (e.g. ollama, " +
+				"llama.cpp): it provisions a new dedicated container, runs the " +
+				"recipe's image inside it, and exposes its ports. Use this to " +
+				"discover deployable recipe IDs before calling deploy_recipe.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListRecipes,
+		},
+		{
+			Name: "deploy_recipe",
+			Description: "Deploy a recipe as a new dedicated container. Provisions " +
+				"the container (with optional GPU passthrough), runs the recipe's " +
+				"image inside it, and exposes the configured ports. In v1 the " +
+				"recipe deploys on the backend this MCP server's daemon manages; " +
+				"GPU recipes require the `gpu` argument. Discover recipe IDs and " +
+				"their parameters with list_recipes.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"recipe_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Recipe to deploy, e.g. 'ollama' (see list_recipes).",
+					},
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Identity for the new container (container is named '<name>-container').",
+					},
+					"gpu": map[string]interface{}{
+						"type":        "string",
+						"description": "GPU device ID for passthrough, e.g. '0'. Required for GPU recipes.",
+					},
+					"parameters": map[string]interface{}{
+						"type":        "object",
+						"description": "Recipe parameters as key→value (e.g. {\"model\": \"llama3\"}). See the recipe's declared parameters via list_recipes / get.",
+					},
+				},
+				"required": []string{"recipe_id", "name"},
+			},
+			Handler: handleDeployRecipe,
+		},
+		{
 			Name: "revoke_token",
 			Description: "Admin: revoke a JWT by its jti. The token is rejected " +
 				"on the next request that names it. Pairs with the daemon's " +
@@ -959,6 +1004,9 @@ func toolScopeAssignments() map[string]string {
 		// routes / network exposure
 		"list_routes": auth.ScopeRoutesRead,
 		"expose_port": auth.ScopeRoutesWrite,
+		// recipes — declarative GPU/app deploys
+		"list_recipes":  auth.ScopeContainersRead,
+		"deploy_recipe": auth.ScopeContainersWrite,
 		// security tools
 		"security_scan":      auth.ScopeSecurityWrite,
 		"security_remediate": auth.ScopeSecurityWrite,
@@ -1546,6 +1594,52 @@ func handleExposePort(client *Client, args map[string]interface{}) (string, erro
 	out += "\n\nNext: confirm DNS for this hostname points at the sentinel, then\n"
 	out += fmt.Sprintf("`curl https://%s/` should reach the app inside %s.",
 		res.Domain, getStringArg(args, "username", ""))
+	return out, nil
+}
+
+func handleListRecipes(client *Client, _ map[string]interface{}) (string, error) {
+	resp, err := client.ListRecipes()
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Recipes) == 0 {
+		return "No recipes available.", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-12s %-10s %-30s %s\n", "ID", "GPU", "IMAGE", "DESCRIPTION")
+	for _, r := range resp.Recipes {
+		gpu := "no"
+		if r.RequiresGPU {
+			gpu = "required"
+		}
+		fmt.Fprintf(&b, "%-12s %-10s %-30s %s\n", r.ID, gpu, r.Image, r.Description)
+	}
+	return b.String(), nil
+}
+
+func handleDeployRecipe(client *Client, args map[string]interface{}) (string, error) {
+	params := map[string]string{}
+	if raw, ok := args["parameters"].(map[string]interface{}); ok {
+		for k, v := range raw {
+			params[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	resp, err := client.DeployRecipe(DeployRecipeRequest{
+		RecipeID:   getStringArg(args, "recipe_id", ""),
+		Name:       getStringArg(args, "name", ""),
+		GPU:        getStringArg(args, "gpu", ""),
+		Parameters: params,
+	})
+	if err != nil {
+		return "", err
+	}
+	out := fmt.Sprintf("✅ %s\n", resp.Message)
+	if resp.URL != "" {
+		out += fmt.Sprintf("URL:       %s\n", resp.URL)
+	}
+	if resp.Container != nil {
+		out += fmt.Sprintf("Container: %s (%s)\n", resp.Container.Name, resp.Container.State)
+	}
 	return out, nil
 }
 

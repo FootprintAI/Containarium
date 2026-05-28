@@ -20,6 +20,7 @@ type GRPCClient struct {
 	client        pb.ContainerServiceClient
 	appClient     pb.AppServiceClient
 	networkClient pb.NetworkServiceClient
+	recipeClient  pb.RecipeServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -71,12 +72,14 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	client := pb.NewContainerServiceClient(conn)
 	appClient := pb.NewAppServiceClient(conn)
 	networkClient := pb.NewNetworkServiceClient(conn)
+	recipeClient := pb.NewRecipeServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
 		client:        client,
 		appClient:     appClient,
 		networkClient: networkClient,
+		recipeClient:  recipeClient,
 	}, nil
 }
 
@@ -482,6 +485,50 @@ func (c *GRPCClient) DeployApp(username, appName string, sourceTarball []byte, p
 	}
 
 	return resp.App, resp.DetectedLanguage, nil
+}
+
+// ListRecipes lists all built-in recipes via gRPC.
+func (c *GRPCClient) ListRecipes() ([]*pb.Recipe, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.recipeClient.ListRecipes(ctx, &pb.ListRecipesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list recipes: %w", err)
+	}
+	return resp.Recipes, nil
+}
+
+// GetRecipe fetches a single recipe definition via gRPC.
+func (c *GRPCClient) GetRecipe(id string) (*pb.Recipe, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.recipeClient.GetRecipe(ctx, &pb.GetRecipeRequest{Id: id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get recipe: %w", err)
+	}
+	return resp.Recipe, nil
+}
+
+// DeployRecipe provisions a new dedicated container from a recipe via gRPC.
+func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
+	defer cancel()
+
+	req := &pb.DeployRecipeRequest{
+		RecipeId:   recipeID,
+		Name:       name,
+		Gpu:        gpu,
+		BackendId:  backendID,
+		Pool:       pool,
+		Parameters: params,
+	}
+	resp, err := c.recipeClient.DeployRecipe(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deploy recipe: %w", err)
+	}
+	return resp, nil
 }
 
 // ListApps lists all applications via gRPC

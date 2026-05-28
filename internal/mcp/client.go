@@ -215,6 +215,66 @@ func (c *Client) GetContainer(username string) (*GetContainerResponse, error) {
 	return &resp, nil
 }
 
+// RecipeSummary is the subset of a recipe the MCP surface displays.
+type RecipeSummary struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Image       string `json:"image"`
+	RequiresGPU bool   `json:"requiresGpu"`
+}
+
+// ListRecipesResponse is the /v1/recipes response.
+type ListRecipesResponse struct {
+	Recipes []RecipeSummary `json:"recipes"`
+}
+
+// ListRecipes returns the daemon's built-in recipe catalog.
+func (c *Client) ListRecipes() (*ListRecipesResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/recipes", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListRecipesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// DeployRecipeRequest is the body for a recipe deploy.
+type DeployRecipeRequest struct {
+	RecipeID   string            `json:"recipe_id"`
+	Name       string            `json:"name"`
+	GPU        string            `json:"gpu,omitempty"`
+	BackendID  string            `json:"backend_id,omitempty"`
+	Pool       string            `json:"pool,omitempty"`
+	Parameters map[string]string `json:"parameters,omitempty"`
+}
+
+// DeployRecipeResponse is the result of a recipe deploy.
+type DeployRecipeResponse struct {
+	URL       string `json:"url"`
+	Message   string `json:"message"`
+	Container *struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+	} `json:"container"`
+}
+
+// DeployRecipe provisions a new dedicated container from a recipe.
+func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/recipes/"+req.RecipeID+"/deploy", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp DeployRecipeResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 // One layer deeper than the agent's raw ssh error — surfaces host-side
 // state the agent can't see directly (user account, shell file, sshd logs).

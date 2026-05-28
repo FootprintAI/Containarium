@@ -813,6 +813,94 @@ func (c *HTTPClient) InstallStack(username, stackID string) error {
 	return nil
 }
 
+// ListRecipes lists all built-in recipes via HTTP.
+func (c *HTTPClient) ListRecipes() ([]*pb.Recipe, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/recipes", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list recipes: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "list recipes")
+	}
+	out := &pb.ListRecipesResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Recipes, nil
+}
+
+// GetRecipe fetches a single recipe definition via HTTP.
+func (c *HTTPClient) GetRecipe(id string) (*pb.Recipe, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/recipes/%s", url.PathEscape(id))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get recipe: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get recipe")
+	}
+	out := &pb.GetRecipeResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Recipe, nil
+}
+
+// DeployRecipe provisions a new dedicated container from a recipe via HTTP.
+func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/recipes/%s/deploy", url.PathEscape(recipeID))
+	body := map[string]interface{}{
+		"recipe_id":  recipeID,
+		"name":       name,
+		"gpu":        gpu,
+		"backend_id": backendID,
+		"pool":       pool,
+		"parameters": params,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("deploy recipe: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "deploy recipe")
+	}
+	out := &pb.DeployRecipeResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// httpError extracts a JSON {"error": ...} message from a gateway error body,
+// falling back to the status code.
+func httpError(bodyBytes []byte, statusCode int, op string) error {
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+		return fmt.Errorf("%s", errResp.Error)
+	}
+	return fmt.Errorf("%s: status %d", op, statusCode)
+}
+
 // labelResponse is the response from label operations
 type labelResponse struct {
 	Container string            `json:"container"`
