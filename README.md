@@ -261,6 +261,36 @@ These give you sandboxes for AI agents, but only as hosted SaaS:
 - **Transport**: MCP-native from day one, not a custom SDK with MCP
   bolted on.
 
+### vs. Docker AI Sandboxes (`sbx`)
+
+Docker's `sbx run claude` and Containarium both call themselves
+"AI sandboxes," but they sit on opposite ends of the same spectrum:
+
+- **Locality**: `sbx` runs the sandbox on the developer's laptop
+  (microVM, host-isolation). Containarium runs the sandbox on a VM
+  you host (LXC, multi-tenant, public-internet reachable via the
+  sentinel).
+- **Persistence**: `sbx` is session-shaped (workspace mount, no
+  documented "give me a box that survives reboot and has a
+  hostname"). Containarium containers persist indefinitely, with
+  ZFS snapshots and 30-day retention.
+- **Public reach**: `containarium expose-port alice --domain
+  blog.example.com` is one verb. `sbx` is laptop-local; no
+  public-hostname story.
+- **Agent surface**: `sbx` is CLI-first (`sbx run <agent>`).
+  Containarium is MCP-native — two MCP servers (in-the-box
+  `agent-box` + platform `mcp-server`) plus the same surface via
+  CLI, SSH, REST/gRPC, and a web UI.
+- **License**: `sbx` CLI is free; team policy (Docker Admin Console)
+  is a paid subscription. Containarium is Apache 2.0 — including
+  the audit log, RBAC, KMS integrations, and everything else on
+  this page.
+
+If you're stopping an agent from `rm -rf`-ing the laptop it's
+running on, `sbx` is the lighter tool. If you're giving your agent
+(or your customer's agent) a persistent Linux box on the public
+internet, Containarium is the shape.
+
 ### vs. dev environment platforms (Codespaces, Gitpod, Coder)
 
 Those are persistent IDEs. Containarium is a persistent **box** —
