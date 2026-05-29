@@ -15,10 +15,10 @@ The CLI already authenticates against the cloud:
 
 - `containarium login` runs an OAuth-style device flow and
   stores a bearer token in `~/.containarium/credentials.json`
-  (`internal/cmd/login.go:76`).
+  (`internal/cmd/login.go:75`).
 - `containarium ssh setup` generates or finds a local SSH key,
   uploads the **public** half to the cloud, registers it under
-  a friendly name (`internal/cmd/ssh.go:85`).
+  a friendly name (`internal/cmd/ssh.go:84`).
 - `containarium ssh propagate` pushes the registered key-set to
   every box the user owns (`internal/cmd/ssh.go:152`).
 - `containarium ssh-config sync` writes a self-contained
