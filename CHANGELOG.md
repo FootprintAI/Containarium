@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-05-29
+
+Minor release: app-side OpenTelemetry distros for Python and Go, plus a wake-on-HTTP fix.
+
 ### Added
 
 - **App-side OpenTelemetry distros for Python and Go** — `containarium-telemetry` (PyPI) and `github.com/footprintai/containarium/distros/go/containariumotel` ship as opinionated wrappers over the vanilla OTel SDKs. One-line init (`containarium_telemetry.init()` / `containariumotel.Init(ctx)`) wires the MeterProvider with the platform's resource attributes (`container.id`, `backend.id`, `service.namespace`, `service.version`) plus a defended `containarium.distro` support stamp, against the central collector that ships with `--monitoring=true`. See `docs/TELEMETRY-DISTRO-DESIGN.md`.
@@ -24,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`examples/helloworld-python` now uses `containarium-telemetry`** — two-line distro init in `app.py` plus a `helloworld.requests` counter, `requirements.txt` for the PyPI dep, and a `pip install --user` step added to `deploy.sh`. systemd unit unchanged.
 
 - **`internal/metrics/otel.go` dogfoods the Go distro** — replaced the daemon's ad-hoc `otlpmetrichttp.New` / `resource.New` setup with `containariumotel.Init(ctx, WithServiceName, WithEndpoint, WithMetricInterval)`. `WithEndpoint` is the new distro option that wraps `otlpmetrichttp.WithEndpointURL` so callers that need a non-default ingest path (VictoriaMetrics' `/opentelemetry/api/v1/push`) don't have to fall back to env-only configuration.
+
+### Fixed
+
+- **wake-on-HTTP rejected every wake with "no authenticated subject in request context"** ([#357](https://github.com/FootprintAI/Containarium/pull/357)). The wake proxy invoked the container-start path with a bare `context.Background()`, so `StartContainer`'s authz gate (`RequireScope` + `AuthorizeTenant`) rejected the call — an inbound request routed to a scaled-down container returned `503 wake: start: ...` instead of waking it, making wake-on-HTTP (scale-down Phase 3) inert. Wake is a daemon-internal action triggered by a possibly-unauthenticated inbound request, so the proxy now stamps the `_system` identity (admin role, unrestricted scope) on the wake context — the same pattern the autosleep ticker and peer forwarders already use. Adds a regression test asserting the starter receives a system-identity context.
 
 ## [0.19.3] - 2026-05-27
 
