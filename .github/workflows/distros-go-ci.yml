@@ -1,16 +1,22 @@
 name: CI — Go distro
 
 # Symmetric with distros-py-ci.yml: run the Go distro's test suite on
-# PRs that touch it and on every push to main. The Go distro ships
-# inside the main go.mod (D13), so this workflow is narrower than the
-# top-level Go build — just the distro's own packages.
+# PRs that touch it and on every push to main OR an integration/**
+# branch. Per the team's PR-target rule we stage changes on integration
+# branches before promoting to main — validating the integration HEAD
+# before promotion catches regressions at the same point the old
+# "push to main" trigger did. The Go distro ships inside the main
+# go.mod (D13), so this workflow is narrower than the top-level Go
+# build — just the distro's own packages.
 on:
   pull_request:
     paths:
       - 'distros/go/**'
       - '.github/workflows/distros-go-ci.yml'
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'integration/**'
     paths:
       - 'distros/go/**'
       - '.github/workflows/distros-go-ci.yml'

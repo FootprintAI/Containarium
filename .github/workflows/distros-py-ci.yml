@@ -1,15 +1,20 @@
 name: CI — Python distro
 
 # Run the distro test suite on PRs that touch it, and on every push to
-# main. Keeps the release workflow honest: when the v* tag fires, the
-# code on main has already passed CI.
+# main OR an integration/** branch. Per the team's PR-target rule we
+# stage changes on integration branches before promoting to main —
+# validating the integration HEAD before promotion catches regressions
+# at the same point the old "push to main" trigger did. The pull_request
+# trigger has no `branches:` filter so it fires on PRs against any base.
 on:
   pull_request:
     paths:
       - 'distros/py/**'
       - '.github/workflows/distros-py-ci.yml'
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'integration/**'
     paths:
       - 'distros/py/**'
       - '.github/workflows/distros-py-ci.yml'
