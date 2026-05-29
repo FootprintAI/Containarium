@@ -37,11 +37,11 @@ type CreateOptions struct {
 	EnablePodmanPrivileged bool // Full Docker support (privileged + AppArmor disabled)
 	AutoStart              bool
 	Verbose                bool
-	Stack                  string    // Software stack to install (e.g., "nodejs", "python")
+	Stack                  string            // Software stack to install (e.g., "nodejs", "python")
 	StackParameters        map[string]string // Stack parameters — passed to install scripts as CONTAINARIUM_STACK_<name> env vars
-	OSType                 pb.OSType // Operating system type for the container
-	OnProvisioning         func()    // Called when container is running but still provisioning (installing packages/stack)
-	RDPPassword            string    // Generated RDP password for Windows VMs (output, set by Create)
+	OSType                 pb.OSType         // Operating system type for the container
+	OnProvisioning         func()            // Called when container is running but still provisioning (installing packages/stack)
+	RDPPassword            string            // Generated RDP password for Windows VMs (output, set by Create)
 
 	// Monitoring toggles application-emitted OpenTelemetry. When
 	// true, the container is created with OTEL_EXPORTER_OTLP_ENDPOINT
@@ -70,6 +70,15 @@ type CreateOptions struct {
 	// LoadOrCreateOTelBearer in internal/server. Phase 2.5
 	// follow-up (audit C-HIGH-5).
 	OTelBearer string
+
+	// Git source provisioning. When GitSource is set, Create fetches
+	// the repo into WorkspacePath inside the box (via incus exec, no
+	// caller→box SSH) right after the container is up + packaged.
+	// See prd/oss/create-git-source.md (Containarium-cloud).
+	GitSource     string // clone URL, e.g. "https://github.com/org/repo"
+	GitRef        string // SHA / branch / tag / "refs/pull/N/merge"; empty = default branch
+	GitCredential string // bearer token for private repos; daemon-side only, never persisted in the box
+	WorkspacePath string // where to place source; empty defaults to "/workspace"
 }
 
 // New creates a new container manager backed by a real Incus client.
@@ -302,6 +311,20 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	} else {
 		if opts.Verbose {
 			fmt.Println("       No SSH keys to add, skipping...")
+		}
+	}
+
+	// Step 8: Provision git source into the workspace (optional).
+	// The daemon fetches the repo via incus exec — no caller→box SSH.
+	// A failed fetch fails the create: a box without its source is
+	// useless, and a half-populated workspace is worse than none.
+	if opts.GitSource != "" {
+		if opts.Verbose {
+			fmt.Printf("  [8/8] Fetching git source %s into %s...\n", opts.GitSource, gitWorkspacePath(opts.WorkspacePath))
+		}
+		if err := m.provisionGitSource(containerName, opts); err != nil {
+			_ = m.cleanup(containerName)
+			return nil, fmt.Errorf("failed to provision git source: %w", err)
 		}
 	}
 
@@ -782,7 +805,7 @@ func (m *Manager) GetServerInfo() (*incus.ServerInfo, error) {
 
 	// Convert to our own type for easier use
 	info := &incus.ServerInfo{
-		Version:    server.Environment.ServerVersion,
+		Version:       server.Environment.ServerVersion,
 		KernelVersion: server.Environment.KernelVersion,
 	}
 

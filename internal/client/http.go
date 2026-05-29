@@ -214,7 +214,18 @@ func (c *HTTPClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via HTTP
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string) (*incus.ContainerInfo, error) {
+// GitSourceOpts carries the optional create-time git provisioning
+// parameters. Zero value (Source == "") means "no git source" and the
+// daemon skips provisioning. Kept as a struct so CreateContainer's
+// already-long signature doesn't grow four more positional strings.
+type GitSourceOpts struct {
+	Source        string // clone URL; empty disables git provisioning
+	Ref           string // SHA / branch / tag / refs/pull/N/merge; empty = default branch
+	Credential    string // bearer token for private repos
+	WorkspacePath string // empty defaults to /workspace
+}
+
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -234,6 +245,12 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		"monitoring":   monitoring,
 		"pool":         pool,
 		"backendId":    backendID,
+	}
+	if git.Source != "" {
+		reqBody["gitSource"] = git.Source
+		reqBody["gitRef"] = git.Ref
+		reqBody["gitCredential"] = git.Credential
+		reqBody["workspacePath"] = git.WorkspacePath
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", reqBody)

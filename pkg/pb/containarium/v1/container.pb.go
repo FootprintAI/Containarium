@@ -761,7 +761,26 @@ type CreateContainerRequest struct {
 	// the peer's daemon). When both pool and backend_id are set, the
 	// chosen backend_id must belong to this pool or the request is
 	// rejected. Empty means "untagged backends only" (legacy behavior).
-	Pool          string `protobuf:"bytes,15,opt,name=pool,proto3" json:"pool,omitempty"`
+	Pool string `protobuf:"bytes,15,opt,name=pool,proto3" json:"pool,omitempty"`
+	// Git source provisioning — when git_source is set, the daemon
+	// fetches the repo into the box's workspace at create time (via
+	// incus exec, no caller→box SSH). Removes the caller's need to
+	// push code in over rsync/scp. See
+	// prd/oss/create-git-source.md (Containarium-cloud).
+	//
+	// git_source: clone URL, e.g. "https://github.com/org/repo".
+	GitSource string `protobuf:"bytes,16,opt,name=git_source,json=gitSource,proto3" json:"git_source,omitempty"`
+	// git_ref: the exact ref to check out — full SHA (preferred,
+	// reproducible), branch, tag, or a server ref like
+	// "refs/pull/<n>/merge". Empty = the remote's default branch.
+	GitRef string `protobuf:"bytes,17,opt,name=git_ref,json=gitRef,proto3" json:"git_ref,omitempty"`
+	// git_credential: bearer token for private repos. Used daemon-side
+	// for a single fetch (injected as an ephemeral http.extraHeader)
+	// and never written to the box's .git/config. Empty = public repo.
+	GitCredential string `protobuf:"bytes,18,opt,name=git_credential,json=gitCredential,proto3" json:"git_credential,omitempty"`
+	// workspace_path: where in the box to place the source. Empty
+	// defaults to "/workspace".
+	WorkspacePath string `protobuf:"bytes,19,opt,name=workspace_path,json=workspacePath,proto3" json:"workspace_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -897,6 +916,34 @@ func (x *CreateContainerRequest) GetMonitoring() bool {
 func (x *CreateContainerRequest) GetPool() string {
 	if x != nil {
 		return x.Pool
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetGitSource() string {
+	if x != nil {
+		return x.GitSource
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetGitRef() string {
+	if x != nil {
+		return x.GitRef
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetGitCredential() string {
+	if x != nil {
+		return x.GitCredential
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetWorkspacePath() string {
+	if x != nil {
+		return x.WorkspacePath
 	}
 	return ""
 }
@@ -3964,7 +4011,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xde\x05\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xe4\x06\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -3984,7 +4031,12 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
 	"monitoring\x18\x0e \x01(\bR\n" +
 	"monitoring\x12\x12\n" +
-	"\x04pool\x18\x0f \x01(\tR\x04pool\x1a9\n" +
+	"\x04pool\x18\x0f \x01(\tR\x04pool\x12\x1d\n" +
+	"\n" +
+	"git_source\x18\x10 \x01(\tR\tgitSource\x12\x17\n" +
+	"\agit_ref\x18\x11 \x01(\tR\x06gitRef\x12%\n" +
+	"\x0egit_credential\x18\x12 \x01(\tR\rgitCredential\x12%\n" +
+	"\x0eworkspace_path\x18\x13 \x01(\tR\rworkspacePath\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +

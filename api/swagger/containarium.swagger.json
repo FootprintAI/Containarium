@@ -5035,6 +5035,22 @@
         "pool": {
           "type": "string",
           "title": "Pool selector — when set and backend_id is empty, the daemon\npicks any healthy peer tagged with this pool"
+        },
+        "gitSource": {
+          "type": "string",
+          "description": "Git source provisioning — when git_source is set, the daemon\nfetches the repo into the box's workspace at create time (via\nincus exec, no caller→box SSH). Removes the caller's need to\npush code in over rsync/scp. See\nprd/oss/create-git-source.md (Containarium-cloud).\n\ngit_source: clone URL, e.g. \"https://github.com/org/repo\"."
+        },
+        "gitRef": {
+          "type": "string",
+          "description": "git_ref: the exact ref to check out — full SHA (preferred,\nreproducible), branch, tag, or a server ref like\n\"refs/pull/\u003cn\u003e/merge\". Empty = the remote's default branch."
+        },
+        "gitCredential": {
+          "type": "string",
+          "description": "git_credential: bearer token for private repos. Used daemon-side\nfor a single fetch (injected as an ephemeral http.extraHeader)\nand never written to the box's .git/config. Empty = public repo."
+        },
+        "workspacePath": {
+          "type": "string",
+          "description": "workspace_path: where in the box to place the source. Empty\ndefaults to \"/workspace\"."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"

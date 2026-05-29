@@ -272,6 +272,29 @@ message CreateContainerRequest {
   // chosen backend_id must belong to this pool or the request is
   // rejected. Empty means "untagged backends only" (legacy behavior).
   string pool = 15;
+
+  // Git source provisioning — when git_source is set, the daemon
+  // fetches the repo into the box's workspace at create time (via
+  // incus exec, no caller→box SSH). Removes the caller's need to
+  // push code in over rsync/scp. See
+  // prd/oss/create-git-source.md (Containarium-cloud).
+  //
+  // git_source: clone URL, e.g. "https://github.com/org/repo".
+  string git_source = 16;
+
+  // git_ref: the exact ref to check out — full SHA (preferred,
+  // reproducible), branch, tag, or a server ref like
+  // "refs/pull/<n>/merge". Empty = the remote's default branch.
+  string git_ref = 17;
+
+  // git_credential: bearer token for private repos. Used daemon-side
+  // for a single fetch (injected as an ephemeral http.extraHeader)
+  // and never written to the box's .git/config. Empty = public repo.
+  string git_credential = 18;
+
+  // workspace_path: where in the box to place the source. Empty
+  // defaults to "/workspace".
+  string workspace_path = 19;
 }
 
 // CreateContainerResponse is the response from creating a container

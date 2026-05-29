@@ -16,22 +16,26 @@ import (
 )
 
 var (
-	sshKeyPath     string
-	cpuLimit       string
-	memoryLimit    string
-	diskLimit      string
-	staticIP       string
-	containerImage string
-	enablePodman   bool
-	labels         []string
-	forceRecreate  bool
-	stackID        string
-	gpuDevice      string
-	osTypeStr      string
-	monitoring     bool
-	createPool     string
+	sshKeyPath               string
+	cpuLimit                 string
+	memoryLimit              string
+	diskLimit                string
+	staticIP                 string
+	containerImage           string
+	enablePodman             bool
+	labels                   []string
+	forceRecreate            bool
+	stackID                  string
+	gpuDevice                string
+	osTypeStr                string
+	monitoring               bool
+	createPool               string
 	createBackendID          string
 	createAutoRestartCompose string
+	createGitSource          string
+	createGitRef             string
+	createGitCredentialFile  string
+	createWorkspacePath      string
 )
 
 var createCmd = &cobra.Command{
@@ -96,6 +100,10 @@ func init() {
 			"create. Requires --server (the daemon's ComposeAutostartService "+
 			"backs the call). Best-effort — a failure to enable autostart "+
 			"surfaces a warning but does NOT fail the overall create.")
+	createCmd.Flags().StringVar(&createGitSource, "git-source", "", "Git clone URL to provision into the box's workspace at create time (e.g. https://github.com/org/repo). The daemon fetches it via incus exec — no SSH back to the box. Empty = no source provisioning.")
+	createCmd.Flags().StringVar(&createGitRef, "git-ref", "", "Exact ref to check out for --git-source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.")
+	createCmd.Flags().StringVar(&createGitCredentialFile, "git-credential-file", "", "Path to a file holding a bearer token for a private --git-source. Used daemon-side for one fetch; never written to the box's .git/config.")
+	createCmd.Flags().StringVar(&createWorkspacePath, "workspace-path", "", "Where --git-source lands inside the box. Empty defaults to /workspace.")
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
@@ -179,7 +187,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 			_, err = httpClient.GetContainer(username)
 			containerExists = (err == nil)
 		} else if serverAddr != "" {
-			// Remote mode via gRPC 
+			// Remote mode via gRPC
 			grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 			if err != nil {
 				return fmt.Errorf("failed to connect to remote server: %w", err)
@@ -214,7 +222,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 					return fmt.Errorf("failed to delete existing container: %w", err)
 				}
 			} else if serverAddr != "" {
-				// Remote mode via gRPC 
+				// Remote mode via gRPC
 				grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 				if err != nil {
 					return fmt.Errorf("failed to connect to remote server: %w", err)
@@ -264,15 +272,22 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// Parse OS type from flag
 	osType := ostype.OSTypeFromString(osTypeStr)
 
+	// Resolve optional git-source provisioning from flags (reads the
+	// credential file if one was given). Empty Source = no-op.
+	gitOpts, err := resolveGitSourceOpts()
+	if err != nil {
+		return err
+	}
+
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
-		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID)
+		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts)
 		if err != nil {
 			return fmt.Errorf("failed to create container via HTTP API: %w", err)
 		}
 	} else if serverAddr != "" {
 		// Remote mode via gRPC
-		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID)
+		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts)
 		if err != nil {
 			return fmt.Errorf("failed to create container via remote server: %w", err)
 		}
@@ -281,7 +296,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if verbose {
 			fmt.Println("Creating container...")
 		}
-		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevice, osType, monitoring)
+		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevice, osType, monitoring, gitOpts)
 		if err != nil {
 			// Cleanup jump server account on failure
 			_ = container.DeleteJumpServerAccount(username, false)
@@ -392,8 +407,30 @@ func enableAutoRestartCompose(username, dir string) error {
 	return nil
 }
 
+// resolveGitSourceOpts builds the git-source options from the create
+// flags, reading the credential file if one was supplied. Returns the
+// zero value (Source == "") when --git-source wasn't set.
+func resolveGitSourceOpts() (client.GitSourceOpts, error) {
+	if createGitSource == "" {
+		return client.GitSourceOpts{}, nil
+	}
+	opts := client.GitSourceOpts{
+		Source:        createGitSource,
+		Ref:           createGitRef,
+		WorkspacePath: createWorkspacePath,
+	}
+	if createGitCredentialFile != "" {
+		data, err := os.ReadFile(createGitCredentialFile)
+		if err != nil {
+			return client.GitSourceOpts{}, fmt.Errorf("failed to read --git-credential-file: %w", err)
+		}
+		opts.Credential = strings.TrimSpace(string(data))
+	}
+	return opts, nil
+}
+
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, git client.GitSourceOpts) (*incus.ContainerInfo, error) {
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -416,6 +453,10 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 		Stack:                  stack,
 		OSType:                 osType,
 		Monitoring:             monitoring,
+		GitSource:              git.Source,
+		GitRef:                 git.Ref,
+		GitCredential:          git.Credential,
+		WorkspacePath:          git.WorkspacePath,
 	}
 
 	return mgr.Create(opts)
@@ -438,23 +479,23 @@ func parseLabels(labelSlice []string) map[string]string {
 }
 
 // createRemote creates a container using remote gRPC server
-func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string) (*incus.ContainerInfo, error) {
+func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts) (*incus.ContainerInfo, error) {
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
 	defer grpcClient.Close()
 
-	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID)
+	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git)
 }
 
 // createRemoteHTTP creates a container using remote HTTP API
-func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string) (*incus.ContainerInfo, error) {
+func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts) (*incus.ContainerInfo, error) {
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
 	if err != nil {
 		return nil, err
 	}
 	defer httpClient.Close()
 
-	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID)
+	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git)
 }

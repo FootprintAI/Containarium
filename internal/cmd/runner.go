@@ -20,15 +20,15 @@ import (
 // Flags for `containarium runner provision`. Kept as package-level
 // vars to match the pattern in create.go / delete.go / list.go.
 var (
-	runnerRepo           string
-	runnerPAT            string
-	runnerCount          int
-	runnerNamePrefix     string
-	runnerLabels         string
-	runnerNameTemplate   string
-	runnerSSHKeyPath     string
-	runnerSentinelHost   string
-	runnerSSHUser        string
+	runnerRepo         string
+	runnerPAT          string
+	runnerCount        int
+	runnerNamePrefix   string
+	runnerLabels       string
+	runnerNameTemplate string
+	runnerSSHKeyPath   string
+	runnerSentinelHost string
+	runnerSSHUser      string
 
 	// runner list / remove
 	runnerListFormat string
@@ -377,9 +377,10 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				"",   // stack
 				"",   // gpu
 				ostype.OSTypeFromString("ubuntu"),
-				false, // monitoring
-				"",    // pool
-				"",    // backend-id
+				false,                  // monitoring
+				"",                     // pool
+				"",                     // backend-id
+				client.GitSourceOpts{}, // no git-source for runner boxes
 			)
 			if err != nil {
 				return "", err
@@ -413,6 +414,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			false,
 			"",
 			"",
+			client.GitSourceOpts{}, // no git-source for runner boxes
 		)
 		if err != nil {
 			return "", err

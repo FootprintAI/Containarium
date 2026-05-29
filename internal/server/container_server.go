@@ -14,10 +14,10 @@ import (
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
-	"github.com/footprintai/containarium/internal/secrets"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/secrets"
+	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/stacks"
@@ -47,43 +47,43 @@ type ContainerServer struct {
 	pendingCreations    map[string]*PendingCreation
 	pendingMu           sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
-	victoriaMetricsURL  string
-	grafanaURL          string
+	victoriaMetricsURL string
+	grafanaURL         string
 	// Alerting (set by DualServer after setup)
-	alertStore           *alert.Store
-	alertManager         *alert.Manager
-	alertDeliveryStore   *alert.DeliveryStore
-	alertWebhookURL      string
-	alertWebhookSecret   string
-	hostRelayURL         string // e.g. "http://10.100.0.1:8080/internal/alert-relay"
-	alertRelayConfigFn   func(webhookURL, secret string) // callback to update gateway relay config
-	coreServices         *CoreServices
-	daemonConfigStore    *app.DaemonConfigStore
-	peerPool             *PeerPool
+	alertStore         *alert.Store
+	alertManager       *alert.Manager
+	alertDeliveryStore *alert.DeliveryStore
+	alertWebhookURL    string
+	alertWebhookSecret string
+	hostRelayURL       string                          // e.g. "http://10.100.0.1:8080/internal/alert-relay"
+	alertRelayConfigFn func(webhookURL, secret string) // callback to update gateway relay config
+	coreServices       *CoreServices
+	daemonConfigStore  *app.DaemonConfigStore
+	peerPool           *PeerPool
 	// Route / Caddy cleanup deps (set by DualServer wiring, may be nil if
 	// the daemon was started without --app-hosting). Used by DeleteContainer
 	// to cascade-remove the routes / TLS-automation subjects a container
 	// owned, so deleting an LXC actually deletes the public hostname too.
-	routeStore           routeLister
-	proxyManager         *app.ProxyManager
+	routeStore   routeLister
+	proxyManager *app.ProxyManager
 
 	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
 	// MoveContainer migration flow. Nil on daemons that don't support
 	// migration (MoveContainer returns "not configured" then).
-	moveRunner           incus.MigrationRunner
+	moveRunner incus.MigrationRunner
 
 	// secretsStore is the tenant-secrets backend. Nil on daemons
 	// that don't have Postgres wired up (--standalone); the
 	// SecretsService RPCs return Unavailable in that case.
 	// CreateContainer / StartContainer call LoadAllForUser to
 	// stamp environment.<NAME>=<value> at LXC start time.
-	secretsStore         *secrets.Store
+	secretsStore *secrets.Store
 
 	// wakeRouter applies the Caddy route swap when a container is
 	// auto-slept (SwapToWake) and woken back up (SwapToDirect).
 	// Nil on daemons without app hosting or with auto-sleep disabled;
 	// the StopForAutoSleep / StartContainer hooks are nil-safe.
-	wakeRouter           WakeRouter
+	wakeRouter WakeRouter
 
 	// otelCollectorEndpoint is the OTLP/HTTP URL of this daemon's
 	// core OTel collector LXC (e.g. "http://10.0.3.142:4318").
@@ -94,9 +94,9 @@ type ContainerServer struct {
 	// warning and skip the env-var injection.
 	otelCollectorEndpoint string
 	// Guacamole integration for Windows VM RDP access
-	guacamoleClient      *guacamole.Client
-	guacamoleUser        string // Guacamole admin username
-	guacamolePass        string // Guacamole admin password
+	guacamoleClient *guacamole.Client
+	guacamoleUser   string // Guacamole admin username
+	guacamolePass   string // Guacamole admin password
 }
 
 // NewContainerServer creates a new container server
@@ -225,9 +225,15 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		// collector tag emissions with the originating VM for
 		// cross-VM Grafana queries. Both are no-ops when
 		// req.Monitoring is false.
-		Monitoring:             req.Monitoring,
-		OTelCollectorEndpoint:  s.otelCollectorEndpoint,
-		BackendID:              s.localBackendID(),
+		Monitoring:            req.Monitoring,
+		OTelCollectorEndpoint: s.otelCollectorEndpoint,
+		BackendID:             s.localBackendID(),
+		// Git source provisioning (optional) — the daemon fetches the
+		// repo into the box at create time, no caller→box SSH.
+		GitSource:     req.GitSource,
+		GitRef:        req.GitRef,
+		GitCredential: req.GitCredential,
+		WorkspacePath: req.WorkspacePath,
 	}
 	// Phase 2.5 follow-up — load the OTel bearer for
 	// monitoring=true containers. Best-effort: an error
@@ -695,17 +701,17 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 // the demo cluster on 2026-05-14.
 //
 // Order is deliberate:
-//   1. Route store first — kills the source of truth so RouteSyncJob
-//      will reap the Caddy srv0 route on its next tick (5s). Deleting
-//      directly from Caddy without this step lets the sync job
-//      resurrect the route within seconds, producing the 502-after-
-//      delete trap.
-//   2. TLS subject removal — stops Caddy's ACME renewal loop for the
-//      dead hostname. Harmless to keep (no upstream to challenge) but
-//      wastes rate-limit budget over time.
-//   3. Host user (jump-server account) — removes the Linux user, home,
-//      and the containarium-shell wrapper. sshpiper auto-reaps the
-//      user from its own config on the next keysync (2 min).
+//  1. Route store first — kills the source of truth so RouteSyncJob
+//     will reap the Caddy srv0 route on its next tick (5s). Deleting
+//     directly from Caddy without this step lets the sync job
+//     resurrect the route within seconds, producing the 502-after-
+//     delete trap.
+//  2. TLS subject removal — stops Caddy's ACME renewal loop for the
+//     dead hostname. Harmless to keep (no upstream to challenge) but
+//     wastes rate-limit budget over time.
+//  3. Host user (jump-server account) — removes the Linux user, home,
+//     and the containarium-shell wrapper. sshpiper auto-reaps the
+//     user from its own config on the next keysync (2 min).
 //
 // On-disk Caddy cert at /data/caddy/certificates/... is intentionally
 // left in place — it's harmless after step 2 (no renewal attempts) and
@@ -1652,22 +1658,22 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 
 	// Build response
 	info := &pb.SystemInfo{
-		IncusVersion:          serverInfo.Environment.ServerVersion,
-		Os:                    serverInfo.Environment.OSName,
-		KernelVersion:         serverInfo.Environment.KernelVersion,
-		ContainersRunning:     running,
-		ContainersStopped:     stopped,
-		ContainersTotal:       int32(len(containers)),
-		Hostname:              serverInfo.Environment.ServerName,
-		NetworkCidr:           networkCIDR,
-		TotalCpus:             sysResources.TotalCPUs,
-		TotalMemoryBytes:      sysResources.TotalMemoryBytes,
-		AvailableMemoryBytes:  sysResources.TotalMemoryBytes - sysResources.UsedMemoryBytes,
-		TotalDiskBytes:        sysResources.TotalDiskBytes,
-		AvailableDiskBytes:    sysResources.TotalDiskBytes - sysResources.UsedDiskBytes,
-		CpuLoad_1Min:          sysResources.CPULoad1Min,
-		CpuLoad_5Min:          sysResources.CPULoad5Min,
-		CpuLoad_15Min:         sysResources.CPULoad15Min,
+		IncusVersion:         serverInfo.Environment.ServerVersion,
+		Os:                   serverInfo.Environment.OSName,
+		KernelVersion:        serverInfo.Environment.KernelVersion,
+		ContainersRunning:    running,
+		ContainersStopped:    stopped,
+		ContainersTotal:      int32(len(containers)),
+		Hostname:             serverInfo.Environment.ServerName,
+		NetworkCidr:          networkCIDR,
+		TotalCpus:            sysResources.TotalCPUs,
+		TotalMemoryBytes:     sysResources.TotalMemoryBytes,
+		AvailableMemoryBytes: sysResources.TotalMemoryBytes - sysResources.UsedMemoryBytes,
+		TotalDiskBytes:       sysResources.TotalDiskBytes,
+		AvailableDiskBytes:   sysResources.TotalDiskBytes - sysResources.UsedDiskBytes,
+		CpuLoad_1Min:         sysResources.CPULoad1Min,
+		CpuLoad_5Min:         sysResources.CPULoad5Min,
+		CpuLoad_15Min:        sysResources.CPULoad15Min,
 	}
 
 	// Populate GPU info
@@ -1856,8 +1862,8 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		},
 		Labels:               info.Labels,
 		CreatedAt:            info.CreatedAt.Unix(),
-		PodmanEnabled:        true,  // TODO: Get from container config
-		Stack:                "",    // TODO: Get from container labels
+		PodmanEnabled:        true, // TODO: Get from container config
+		Stack:                "",   // TODO: Get from container labels
 		GpuDevice:            info.GPU,
 		BackendId:            info.BackendID,
 		OsType:               osTypeEnum,
@@ -2054,10 +2060,10 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 			peer := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
 			if peer != nil {
 				body, _ := json.Marshal(map[string]interface{}{
-					"collaborator_username":    req.CollaboratorUsername,
-					"ssh_public_key":           req.SshPublicKey,
-					"grant_sudo":               req.GrantSudo,
-					"grant_container_runtime":  req.GrantContainerRuntime,
+					"collaborator_username":   req.CollaboratorUsername,
+					"ssh_public_key":          req.SshPublicKey,
+					"grant_sudo":              req.GrantSudo,
+					"grant_container_runtime": req.GrantContainerRuntime,
 				})
 				respBody, statusCode, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/collaborators", req.OwnerUsername), authToken, body)
 				if fwdErr != nil {

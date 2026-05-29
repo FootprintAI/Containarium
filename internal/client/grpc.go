@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -143,7 +143,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
 
@@ -154,15 +154,19 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 			Memory: memory,
 			Disk:   disk,
 		},
-		SshKeys:      sshKeys,
-		Image:        image,
-		EnablePodman: enablePodman,
-		Stack:        stack,
-		Gpu:          gpu,
-		OsType:       osType,
-		Monitoring:   monitoring,
-		Pool:         pool,
-		BackendId:    backendID,
+		SshKeys:       sshKeys,
+		Image:         image,
+		EnablePodman:  enablePodman,
+		Stack:         stack,
+		Gpu:           gpu,
+		OsType:        osType,
+		Monitoring:    monitoring,
+		Pool:          pool,
+		BackendId:     backendID,
+		GitSource:     git.Source,
+		GitRef:        git.Ref,
+		GitCredential: git.Credential,
+		WorkspacePath: git.WorkspacePath,
 	}
 
 	resp, err := c.client.CreateContainer(ctx, req)
