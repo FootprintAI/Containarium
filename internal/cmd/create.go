@@ -420,6 +420,8 @@ func resolveGitSourceOpts() (client.GitSourceOpts, error) {
 		WorkspacePath: createWorkspacePath,
 	}
 	if createGitCredentialFile != "" {
+		// #nosec G304 -- operator-supplied path; reading it is the documented
+		// purpose of --git-credential-file (same trust as reading an SSH key file).
 		data, err := os.ReadFile(createGitCredentialFile)
 		if err != nil {
 			return client.GitSourceOpts{}, fmt.Errorf("failed to read --git-credential-file: %w", err)

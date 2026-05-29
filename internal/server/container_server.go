@@ -1663,7 +1663,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		KernelVersion:        serverInfo.Environment.KernelVersion,
 		ContainersRunning:    running,
 		ContainersStopped:    stopped,
-		ContainersTotal:      int32(len(containers)),
+		ContainersTotal:      int32(len(containers)), // #nosec G115 -- container count cannot overflow int32
 		Hostname:             serverInfo.Environment.ServerName,
 		NetworkCidr:          networkCIDR,
 		TotalCpus:            sysResources.TotalCPUs,
