@@ -7782,6 +7782,10 @@
         "otelCollectorEndpoint": {
           "type": "string",
           "description": "OTLP collector endpoint (e.g., \"http://10.0.3.5:4318\") that\nmonitoring=true containers ship app telemetry to. Empty when the\ncore OTel collector isn't provisioned. Advertised here so a tenant\nor agent can discover where to point OTEL_EXPORTER_OTLP_ENDPOINT —\nin particular for docker-in-LXC apps that don't inherit the\nenv-stamped value. See #370."
+        },
+        "daemonVersion": {
+          "type": "string",
+          "description": "Containarium daemon version of this backend (e.g. \"0.21.0\"), so the\nfleet's running versions + drift are visible via get_system_info and\n/v1/backends without SSHing each host. See #354."
         }
       },
       "title": "SystemInfo contains information about the host system"

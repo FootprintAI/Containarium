@@ -198,6 +198,11 @@ message SystemInfo {
   // in particular for docker-in-LXC apps that don't inherit the
   // env-stamped value. See #370.
   string otel_collector_endpoint = 20;
+
+  // Containarium daemon version of this backend (e.g. "0.21.0"), so the
+  // fleet's running versions + drift are visible via get_system_info and
+  // /v1/backends without SSHing each host. See #354.
+  string daemon_version = 21;
 }
 
 // GPU vendor enum

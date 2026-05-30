@@ -922,8 +922,12 @@ type SystemInfo struct {
 	// in particular for docker-in-LXC apps that don't inherit the
 	// env-stamped value. See #370.
 	OtelCollectorEndpoint string `protobuf:"bytes,20,opt,name=otel_collector_endpoint,json=otelCollectorEndpoint,proto3" json:"otel_collector_endpoint,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Containarium daemon version of this backend (e.g. "0.21.0"), so the
+	// fleet's running versions + drift are visible via get_system_info and
+	// /v1/backends without SSHing each host. See #354.
+	DaemonVersion string `protobuf:"bytes,21,opt,name=daemon_version,json=daemonVersion,proto3" json:"daemon_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SystemInfo) Reset() {
@@ -1092,6 +1096,13 @@ func (x *SystemInfo) GetBackendId() string {
 func (x *SystemInfo) GetOtelCollectorEndpoint() string {
 	if x != nil {
 		return x.OtelCollectorEndpoint
+	}
+	return ""
+}
+
+func (x *SystemInfo) GetDaemonVersion() string {
+	if x != nil {
+		return x.DaemonVersion
 	}
 	return ""
 }
@@ -1495,7 +1506,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xa9\x06\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xd0\x06\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -1520,7 +1531,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x04gpus\x18\x12 \x03(\v2\x18.containarium.v1.GPUInfoR\x04gpus\x12\x1d\n" +
 	"\n" +
 	"backend_id\x18\x13 \x01(\tR\tbackendId\x126\n" +
-	"\x17otel_collector_endpoint\x18\x14 \x01(\tR\x15otelCollectorEndpoint\"\x97\x02\n" +
+	"\x17otel_collector_endpoint\x18\x14 \x01(\tR\x15otelCollectorEndpoint\x12%\n" +
+	"\x0edaemon_version\x18\x15 \x01(\tR\rdaemonVersion\"\x97\x02\n" +
 	"\aGPUInfo\x122\n" +
 	"\x06vendor\x18\x01 \x01(\x0e2\x1a.containarium.v1.GPUVendorR\x06vendor\x12/\n" +
 	"\x05model\x18\x02 \x01(\x0e2\x19.containarium.v1.GPUModelR\x05model\x12\x1d\n" +

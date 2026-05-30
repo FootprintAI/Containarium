@@ -332,6 +332,7 @@ func TestClientGetSystemInfo(t *testing.T) {
 				ContainersRunning:     5,
 				ContainersTotal:       10,
 				OTelCollectorEndpoint: "http://10.0.3.5:4318",
+				DaemonVersion:         "0.21.0",
 			},
 		}
 
@@ -349,6 +350,8 @@ func TestClientGetSystemInfo(t *testing.T) {
 	// #370: the collector endpoint must round-trip so an agent can
 	// discover where to point docker-in-LXC apps.
 	assert.Equal(t, "http://10.0.3.5:4318", resp.Info.OTelCollectorEndpoint)
+	// #354: the daemon version must round-trip so fleet drift is visible.
+	assert.Equal(t, "0.21.0", resp.Info.DaemonVersion)
 }
 
 // TestClientPreMarshaledBodyNotDoubleEncoded is the regression test

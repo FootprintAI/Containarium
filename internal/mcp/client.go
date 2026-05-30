@@ -1126,6 +1126,10 @@ type SystemInfo struct {
 	ContainersStopped int    `json:"containersStopped"`
 	ContainersTotal   int    `json:"containersTotal"`
 	Hostname          string `json:"hostname"`
+	// DaemonVersion is the Containarium daemon version on this backend
+	// (e.g. "0.21.0") — surfaced so fleet version drift is visible without
+	// SSHing each host. #354.
+	DaemonVersion string `json:"daemonVersion"`
 	// OTelCollectorEndpoint is where monitoring=true containers ship
 	// OTLP telemetry (e.g. "http://10.0.3.5:4318"). Empty when the
 	// daemon has no OTel collector. Surfaced so an agent can configure

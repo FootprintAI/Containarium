@@ -1445,6 +1445,9 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 	result += fmt.Sprintf("OS: %s\n", resp.Info.OS)
 	result += fmt.Sprintf("Kernel: %s\n", resp.Info.KernelVersion)
 	result += fmt.Sprintf("Incus Version: %s\n", resp.Info.IncusVersion)
+	if resp.Info.DaemonVersion != "" {
+		result += fmt.Sprintf("Daemon Version: %s\n", resp.Info.DaemonVersion)
+	}
 	result += fmt.Sprintf("\nContainers:\n")
 	result += fmt.Sprintf("  Running: %d\n", resp.Info.ContainersRunning)
 	result += fmt.Sprintf("  Stopped: %d\n", resp.Info.ContainersStopped)

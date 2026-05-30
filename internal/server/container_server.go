@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -1694,6 +1695,9 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// inherit the env-stamped value) at the collector. Empty when
 		// the daemon has no OTel collector. See #370.
 		OtelCollectorEndpoint: s.otelCollectorEndpoint,
+		// This backend's daemon version, so the fleet's running versions +
+		// drift are visible via get_system_info / /v1/backends. See #354.
+		DaemonVersion: version.GetVersion(),
 	}
 
 	// Populate GPU info

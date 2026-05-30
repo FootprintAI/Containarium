@@ -1341,6 +1341,7 @@ func (ds *DualServer) backendsHandler() http.HandlerFunc {
 							if protojson.Unmarshal(body, &peerResp) == nil && peerResp.Info != nil {
 								peerInfo.Hostname = peerResp.Info.Hostname
 								peerInfo.OS = peerResp.Info.Os
+								peerInfo.Version = peerResp.Info.DaemonVersion // #354: per-backend version
 								peerInfo.ContainerCount = peerResp.Info.ContainersRunning
 								for _, g := range peerResp.Info.Gpus {
 									peerInfo.GPUs = append(peerInfo.GPUs, gpuInfo{
