@@ -250,6 +250,17 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		fmt.Printf("  Container IP: %s\n", ipAddr)
 	}
 
+	// Drop the dotenv copy of the monitoring env vars for nested
+	// docker / docker-compose apps (which don't inherit the LXC env).
+	// Best-effort: the Incus-config env (config.Env) is already set for
+	// native LXC apps, so a file-write failure shouldn't fail create.
+	// See #370.
+	if len(config.Env) > 0 {
+		if err := m.WriteOTelEnvFile(containerName, config.Env); err != nil {
+			log.Printf("[otel] %s: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
+		}
+	}
+
 	// Signal provisioning state — container is running but still installing packages
 	if opts.OnProvisioning != nil {
 		opts.OnProvisioning()
@@ -743,6 +754,33 @@ func (m *Manager) Exec(containerName string, command []string) error {
 		return real.Exec(containerName, command)
 	}
 	return fmt.Errorf("Exec not supported on this incus backend (mock?)")
+}
+
+// WriteOTelEnvFile drops the monitoring env vars as a dotenv file at
+// OTelEnvFilePath inside the container, so docker-compose / nested
+// docker apps can consume them via `env_file:` — they don't inherit
+// the LXC's Incus-config environment. Creates the parent dir first
+// (incus file-push doesn't). See #370.
+func (m *Manager) WriteOTelEnvFile(containerName string, env map[string]string) error {
+	if len(env) == 0 {
+		return nil
+	}
+	// mkdir -p the parent; harmless if it already exists.
+	if err := m.Exec(containerName, []string{"mkdir", "-p", OTelEnvFileDir}); err != nil {
+		return fmt.Errorf("mkdir %s: %w", OTelEnvFileDir, err)
+	}
+	if err := m.WriteFile(containerName, OTelEnvFilePath, RenderOTelEnvFile(env), "0644"); err != nil {
+		return fmt.Errorf("write %s: %w", OTelEnvFilePath, err)
+	}
+	return nil
+}
+
+// RemoveOTelEnvFile deletes the dotenv file written by
+// WriteOTelEnvFile. Used on the monitoring-disable path so a stale
+// endpoint doesn't linger. Best-effort by nature (rm -f); a missing
+// file is not an error.
+func (m *Manager) RemoveOTelEnvFile(containerName string) error {
+	return m.Exec(containerName, []string{"rm", "-f", OTelEnvFilePath})
 }
 
 func (m *Manager) Get(username string) (*incus.ContainerInfo, error) {
