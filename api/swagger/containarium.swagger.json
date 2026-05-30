@@ -7771,6 +7771,10 @@
         "backendId": {
           "type": "string",
           "title": "Backend ID (e.g., \"tunnel-node-a-gpu\") — set when returned from peer"
+        },
+        "otelCollectorEndpoint": {
+          "type": "string",
+          "description": "OTLP collector endpoint (e.g., \"http://10.0.3.5:4318\") that\nmonitoring=true containers ship app telemetry to. Empty when the\ncore OTel collector isn't provisioned. Advertised here so a tenant\nor agent can discover where to point OTEL_EXPORTER_OTLP_ENDPOINT —\nin particular for docker-in-LXC apps that don't inherit the\nenv-stamped value. See #370."
         }
       },
       "title": "SystemInfo contains information about the host system"

@@ -1126,4 +1126,9 @@ type SystemInfo struct {
 	ContainersStopped int    `json:"containersStopped"`
 	ContainersTotal   int    `json:"containersTotal"`
 	Hostname          string `json:"hostname"`
+	// OTelCollectorEndpoint is where monitoring=true containers ship
+	// OTLP telemetry (e.g. "http://10.0.3.5:4318"). Empty when the
+	// daemon has no OTel collector. Surfaced so an agent can configure
+	// docker-in-LXC apps that don't inherit the env-stamped value. #370.
+	OTelCollectorEndpoint string `json:"otelCollectorEndpoint"`
 }

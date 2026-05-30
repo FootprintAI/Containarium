@@ -1674,6 +1674,11 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		CpuLoad_1Min:         sysResources.CPULoad1Min,
 		CpuLoad_5Min:         sysResources.CPULoad5Min,
 		CpuLoad_15Min:        sysResources.CPULoad15Min,
+		// Advertise where monitoring=true containers ship telemetry so
+		// tenants/agents can point docker-in-LXC apps (which don't
+		// inherit the env-stamped value) at the collector. Empty when
+		// the daemon has no OTel collector. See #370.
+		OtelCollectorEndpoint: s.otelCollectorEndpoint,
 	}
 
 	// Populate GPU info

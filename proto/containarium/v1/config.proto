@@ -190,6 +190,14 @@ message SystemInfo {
 
   // Backend ID (e.g., "tunnel-node-a-gpu") — set when returned from peer
   string backend_id = 19;
+
+  // OTLP collector endpoint (e.g., "http://10.0.3.5:4318") that
+  // monitoring=true containers ship app telemetry to. Empty when the
+  // core OTel collector isn't provisioned. Advertised here so a tenant
+  // or agent can discover where to point OTEL_EXPORTER_OTLP_ENDPOINT —
+  // in particular for docker-in-LXC apps that don't inherit the
+  // env-stamped value. See #370.
+  string otel_collector_endpoint = 20;
 }
 
 // GPU vendor enum

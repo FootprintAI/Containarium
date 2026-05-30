@@ -914,9 +914,16 @@ type SystemInfo struct {
 	// GPU information
 	Gpus []*GPUInfo `protobuf:"bytes,18,rep,name=gpus,proto3" json:"gpus,omitempty"`
 	// Backend ID (e.g., "tunnel-node-a-gpu") — set when returned from peer
-	BackendId     string `protobuf:"bytes,19,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BackendId string `protobuf:"bytes,19,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	// OTLP collector endpoint (e.g., "http://10.0.3.5:4318") that
+	// monitoring=true containers ship app telemetry to. Empty when the
+	// core OTel collector isn't provisioned. Advertised here so a tenant
+	// or agent can discover where to point OTEL_EXPORTER_OTLP_ENDPOINT —
+	// in particular for docker-in-LXC apps that don't inherit the
+	// env-stamped value. See #370.
+	OtelCollectorEndpoint string `protobuf:"bytes,20,opt,name=otel_collector_endpoint,json=otelCollectorEndpoint,proto3" json:"otel_collector_endpoint,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *SystemInfo) Reset() {
@@ -1078,6 +1085,13 @@ func (x *SystemInfo) GetGpus() []*GPUInfo {
 func (x *SystemInfo) GetBackendId() string {
 	if x != nil {
 		return x.BackendId
+	}
+	return ""
+}
+
+func (x *SystemInfo) GetOtelCollectorEndpoint() string {
+	if x != nil {
+		return x.OtelCollectorEndpoint
 	}
 	return ""
 }
@@ -1481,7 +1495,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xf1\x05\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xa9\x06\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -1505,7 +1519,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x0ecpu_load_15min\x18\x11 \x01(\x01R\fcpuLoad15min\x12,\n" +
 	"\x04gpus\x18\x12 \x03(\v2\x18.containarium.v1.GPUInfoR\x04gpus\x12\x1d\n" +
 	"\n" +
-	"backend_id\x18\x13 \x01(\tR\tbackendId\"\x97\x02\n" +
+	"backend_id\x18\x13 \x01(\tR\tbackendId\x126\n" +
+	"\x17otel_collector_endpoint\x18\x14 \x01(\tR\x15otelCollectorEndpoint\"\x97\x02\n" +
 	"\aGPUInfo\x122\n" +
 	"\x06vendor\x18\x01 \x01(\x0e2\x1a.containarium.v1.GPUVendorR\x06vendor\x12/\n" +
 	"\x05model\x18\x02 \x01(\x0e2\x19.containarium.v1.GPUModelR\x05model\x12\x1d\n" +

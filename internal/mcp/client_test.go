@@ -327,10 +327,11 @@ func TestClientGetSystemInfo(t *testing.T) {
 
 		resp := GetSystemInfoResponse{
 			Info: SystemInfo{
-				IncusVersion:      "0.6.0",
-				OS:                "Ubuntu 24.04",
-				ContainersRunning: 5,
-				ContainersTotal:   10,
+				IncusVersion:          "0.6.0",
+				OS:                    "Ubuntu 24.04",
+				ContainersRunning:     5,
+				ContainersTotal:       10,
+				OTelCollectorEndpoint: "http://10.0.3.5:4318",
 			},
 		}
 
@@ -345,6 +346,9 @@ func TestClientGetSystemInfo(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.Equal(t, "0.6.0", resp.Info.IncusVersion)
 	assert.Equal(t, 5, resp.Info.ContainersRunning)
+	// #370: the collector endpoint must round-trip so an agent can
+	// discover where to point docker-in-LXC apps.
+	assert.Equal(t, "http://10.0.3.5:4318", resp.Info.OTelCollectorEndpoint)
 }
 
 // TestClientPreMarshaledBodyNotDoubleEncoded is the regression test

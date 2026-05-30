@@ -187,7 +187,7 @@ func (s *Server) registerTools() {
 						"enum":        []string{"", "ubuntu", "rocky9", "rhel9"},
 					},
 					"monitoring": map[string]interface{}{
-						"type": "boolean",
+						"type":        "boolean",
 						"description": "Opt the container into application-emitted OpenTelemetry. When true, the daemon stamps the LXC with OTEL_EXPORTER_OTLP_ENDPOINT (and related env vars) pointing at the platform's core OTel collector, so any OTel SDK inside the container ships telemetry without app-side configuration. Default false. The daemon's own cgroup-level metrics for the container (CPU/mem/disk/net) are independent of this flag and continue for every container regardless.",
 					},
 					"pool": map[string]interface{}{
@@ -980,21 +980,21 @@ func (s *Server) registerTools() {
 func toolScopeAssignments() map[string]string {
 	return map[string]string{
 		// container lifecycle
-		"create_container":   auth.ScopeContainersWrite,
-		"delete_container":   auth.ScopeContainersWrite,
-		"start_container":    auth.ScopeContainersWrite,
-		"stop_container":     auth.ScopeContainersWrite,
-		"resize_container":   auth.ScopeContainersWrite,
-		"move_container":     auth.ScopeContainersWrite,
-		"toggle_monitoring":  auth.ScopeContainersWrite,
-		"toggle_auto_sleep":  auth.ScopeContainersWrite,
-		"list_containers":    auth.ScopeContainersRead,
-		"get_container":      auth.ScopeContainersRead,
-		"debug_container":    auth.ScopeContainersRead,
-		"get_metrics":        auth.ScopeContainersRead,
-		"get_system_info":    auth.ScopeContainersRead,
-		"list_backends":      auth.ScopeContainersRead,
-		"get_backend":        auth.ScopeContainersRead,
+		"create_container":  auth.ScopeContainersWrite,
+		"delete_container":  auth.ScopeContainersWrite,
+		"start_container":   auth.ScopeContainersWrite,
+		"stop_container":    auth.ScopeContainersWrite,
+		"resize_container":  auth.ScopeContainersWrite,
+		"move_container":    auth.ScopeContainersWrite,
+		"toggle_monitoring": auth.ScopeContainersWrite,
+		"toggle_auto_sleep": auth.ScopeContainersWrite,
+		"list_containers":   auth.ScopeContainersRead,
+		"get_container":     auth.ScopeContainersRead,
+		"debug_container":   auth.ScopeContainersRead,
+		"get_metrics":       auth.ScopeContainersRead,
+		"get_system_info":   auth.ScopeContainersRead,
+		"list_backends":     auth.ScopeContainersRead,
+		"get_backend":       auth.ScopeContainersRead,
 		// secrets
 		"set_secret":      auth.ScopeSecretsWrite,
 		"delete_secret":   auth.ScopeSecretsWrite,
@@ -1449,6 +1449,15 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 	result += fmt.Sprintf("  Running: %d\n", resp.Info.ContainersRunning)
 	result += fmt.Sprintf("  Stopped: %d\n", resp.Info.ContainersStopped)
 	result += fmt.Sprintf("  Total: %d\n", resp.Info.ContainersTotal)
+
+	// OTLP endpoint: where monitoring=true containers ship telemetry.
+	// Point docker-in-LXC apps here when they can't inherit the
+	// env-stamped OTEL_EXPORTER_OTLP_ENDPOINT. See #370.
+	if resp.Info.OTelCollectorEndpoint != "" {
+		result += fmt.Sprintf("\nOTel collector (OTLP/HTTP): %s\n", resp.Info.OTelCollectorEndpoint)
+	} else {
+		result += "\nOTel collector: not configured (app monitoring unavailable)\n"
+	}
 
 	return result, nil
 }
