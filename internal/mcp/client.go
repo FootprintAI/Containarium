@@ -131,9 +131,19 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 
 	var reqBody io.Reader
 	if body != nil {
-		jsonData, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		// A []byte body is already-encoded JSON — pass it through as-is.
+		// Marshaling it again would wrap the bytes as a base64 JSON
+		// string, which the daemon's grpc-gateway decoder rejects as a
+		// proto syntax error. Several callers (ToggleMonitoring,
+		// SetSecret, ResizeContainer, RefreshSecrets) pre-marshal; this
+		// keeps them correct rather than double-encoding. See #370.
+		jsonData, ok := body.([]byte)
+		if !ok {
+			var err error
+			jsonData, err = json.Marshal(body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal request: %w", err)
+			}
 		}
 		reqBody = bytes.NewReader(jsonData)
 	}

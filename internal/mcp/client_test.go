@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -346,6 +347,57 @@ func TestClientGetSystemInfo(t *testing.T) {
 	assert.Equal(t, 5, resp.Info.ContainersRunning)
 }
 
+// TestClientPreMarshaledBodyNotDoubleEncoded is the regression test
+// for #370: callers that pre-marshal their body to []byte (ToggleMonitoring,
+// SetSecret, ResizeContainer, RefreshSecrets) must NOT get double-encoded
+// by doRequest. The symptom was the daemon receiving the base64 of the
+// JSON (e.g. "eyJlbmFibGVkIjp0cnVlfQ==") instead of {"enabled":true},
+// and rejecting it as a proto syntax error. The handler here decodes the
+// raw body as a JSON object — which fails outright if the body arrived as
+// a base64 string literal.
+func TestClientPreMarshaledBodyNotDoubleEncoded(t *testing.T) {
+	t.Run("ToggleMonitoring", func(t *testing.T) {
+		var gotBody []byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "POST", r.Method)
+			assert.Equal(t, "/v1/containers/alice/monitoring", r.URL.Path)
+			gotBody, _ = io.ReadAll(r.Body)
+			json.NewEncoder(w).Encode(ToggleMonitoringResponse{Message: "ok", MonitoringEnabled: true})
+		}))
+		defer server.Close()
+
+		resp, err := NewClient(server.URL, "test-token").ToggleMonitoring("alice", true)
+		require.NoError(t, err)
+		assert.True(t, resp.MonitoringEnabled)
+
+		// The body must be a JSON object decodable into the typed shape —
+		// a double-encoded []byte arrives as a quoted base64 string and
+		// fails this decode.
+		var decoded map[string]bool
+		require.NoError(t, json.Unmarshal(gotBody, &decoded),
+			"body must be a JSON object, got %q", string(gotBody))
+		assert.True(t, decoded["enabled"])
+	})
+
+	t.Run("SetSecret", func(t *testing.T) {
+		var gotBody []byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotBody, _ = io.ReadAll(r.Body)
+			json.NewEncoder(w).Encode(SecretResponse{Message: "ok"})
+		}))
+		defer server.Close()
+
+		_, err := NewClient(server.URL, "test-token").SetSecret("alice", "API_KEY", "s3cr3t")
+		require.NoError(t, err)
+
+		var decoded map[string]string
+		require.NoError(t, json.Unmarshal(gotBody, &decoded),
+			"body must be a JSON object, got %q", string(gotBody))
+		assert.Equal(t, "API_KEY", decoded["name"])
+		assert.Equal(t, "s3cr3t", decoded["value"])
+	})
+}
+
 // TestClientAuthenticationHeader tests JWT token is sent correctly
 func TestClientAuthenticationHeader(t *testing.T) {
 	expectedToken := "test-jwt-token-123"
@@ -534,9 +586,9 @@ func TestToggleAutoSleep_WirePayload_DisableOmitsThreshold(t *testing.T) {
 // gateway-decoded request.
 func TestStartContainer_WirePayload_WaitForReady(t *testing.T) {
 	tests := []struct {
-		name              string
-		waitForReady      bool
-		wantWaitForReady  bool
+		name             string
+		waitForReady     bool
+		wantWaitForReady bool
 	}{
 		{"waitForReady=true", true, true},
 		{"waitForReady=false", false, false},
