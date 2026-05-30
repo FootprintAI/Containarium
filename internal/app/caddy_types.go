@@ -348,10 +348,11 @@ func DNSChallengeFromEnv() *CaddyACMEChallenges {
 }
 
 // dnsProviderModules maps a caddy-dns provider name to its Go module path,
-// for the xcaddy build of the core Caddy. This is the canonical list — the
-// core Caddy build (internal/server.setupCaddy) must compile in the matching
-// dns.providers.<name> module or Caddy will reject the DNS-01 config the
-// daemon emits. Mirrors internal/hosting/caddy.go's provider list.
+// for the xcaddy build of Caddy. This is the single source of truth shared by
+// the core Caddy build (internal/server.setupCaddy) and the hosting Caddy
+// build (internal/hosting.CaddyManager.providerModule): the build must compile
+// in the matching dns.providers.<name> module or Caddy rejects the DNS-01
+// config the daemon emits.
 var dnsProviderModules = map[string]string{
 	"cloudflare":     "github.com/caddy-dns/cloudflare",
 	"route53":        "github.com/caddy-dns/route53",

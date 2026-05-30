@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/footprintai/containarium/internal/app"
 )
 
 const (
@@ -65,34 +67,25 @@ func NewCaddyManager(cfg CaddyConfig) *CaddyManager {
 	return &CaddyManager{config: cfg}
 }
 
-// providerModule returns the Go module path for the DNS provider
+// providerModule returns the Go module path for the configured DNS provider.
+// Delegates to app.DNSProviderModule — the single source of truth shared with
+// the core Caddy build (internal/server.setupCaddy) so the two can't drift.
 func (m *CaddyManager) providerModule() string {
-	modules := map[string]string{
-		"godaddy":        "github.com/caddy-dns/godaddy",
-		"cloudflare":    "github.com/caddy-dns/cloudflare",
-		"route53":       "github.com/caddy-dns/route53",
-		"googleclouddns": "github.com/caddy-dns/googleclouddns",
-		"digitalocean":  "github.com/caddy-dns/digitalocean",
-		"azure":         "github.com/caddy-dns/azure",
-		"vultr":         "github.com/caddy-dns/vultr",
-		"duckdns":       "github.com/caddy-dns/duckdns",
-		"namecheap":     "github.com/caddy-dns/namecheap",
-	}
-	return modules[m.config.Provider]
+	return app.DNSProviderModule(m.config.Provider)
 }
 
 // dnsConfigBlock returns the Caddyfile DNS configuration block for the provider
 func (m *CaddyManager) dnsConfigBlock() string {
 	configs := map[string]string{
 		"godaddy":        "dns godaddy { api_token {env.GODADDY_API_TOKEN} }",
-		"cloudflare":    "dns cloudflare {env.CF_API_TOKEN}",
-		"route53":       "dns route53",
+		"cloudflare":     "dns cloudflare {env.CF_API_TOKEN}",
+		"route53":        "dns route53",
 		"googleclouddns": "dns googleclouddns {env.GCP_PROJECT}",
-		"digitalocean":  "dns digitalocean {env.DO_AUTH_TOKEN}",
-		"azure":         "dns azure",
-		"vultr":         "dns vultr {env.VULTR_API_KEY}",
-		"duckdns":       "dns duckdns {env.DUCKDNS_API_TOKEN}",
-		"namecheap":     "dns namecheap",
+		"digitalocean":   "dns digitalocean {env.DO_AUTH_TOKEN}",
+		"azure":          "dns azure",
+		"vultr":          "dns vultr {env.VULTR_API_KEY}",
+		"duckdns":        "dns duckdns {env.DUCKDNS_API_TOKEN}",
+		"namecheap":      "dns namecheap",
 	}
 	return configs[m.config.Provider]
 }
