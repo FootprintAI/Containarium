@@ -385,6 +385,20 @@ service ContainerService {
     };
   }
 
+  // GetLatestRelease reports the latest Containarium release on GitHub vs the
+  // running version, so operators see "update available" without SSHing in.
+  // The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
+  rpc GetLatestRelease(GetLatestReleaseRequest) returns (GetLatestReleaseResponse) {
+    option (google.api.http) = {
+      get: "/v1/releases/latest"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get latest release";
+      description: "Returns the latest Containarium release tag from GitHub (cached) alongside this daemon's running version and whether an update is available.";
+      tags: "System";
+    };
+  }
+
   // GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
   rpc GetMonitoringInfo(GetMonitoringInfoRequest) returns (GetMonitoringInfoResponse) {
     option (google.api.http) = {

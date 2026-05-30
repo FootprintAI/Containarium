@@ -516,6 +516,15 @@ func (s *Server) registerTools() {
 			Handler: handleGetSystemInfo,
 		},
 		{
+			Name:        "check_for_updates",
+			Description: "Check whether a newer Containarium release is available. Returns the running daemon version, the latest GitHub release (cached), and whether an update is available.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleCheckForUpdates,
+		},
+		{
 			Name: "list_backends",
 			Description: "List the cluster's backend hosts (the local daemon plus any " +
 				"tunnel-connected peers). Returns id, type (local/tunnel), health, " +
@@ -993,6 +1002,7 @@ func toolScopeAssignments() map[string]string {
 		"debug_container":   auth.ScopeContainersRead,
 		"get_metrics":       auth.ScopeContainersRead,
 		"get_system_info":   auth.ScopeContainersRead,
+		"check_for_updates": auth.ScopeContainersRead,
 		"list_backends":     auth.ScopeContainersRead,
 		"get_backend":       auth.ScopeContainersRead,
 		// secrets
@@ -1462,6 +1472,25 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 		result += "\nOTel collector: not configured (app monitoring unavailable)\n"
 	}
 
+	return result, nil
+}
+
+func handleCheckForUpdates(client *Client, args map[string]interface{}) (string, error) {
+	resp, err := client.GetLatestRelease()
+	if err != nil {
+		return "", fmt.Errorf("failed to check for updates: %w", err)
+	}
+	result := fmt.Sprintf("Running version:  %s\n", resp.CurrentVersion)
+	if resp.LatestRelease == "" {
+		result += "Latest release:   unknown (GitHub lookup unavailable)\n"
+		return result, nil
+	}
+	result += fmt.Sprintf("Latest release:   %s\n", resp.LatestRelease)
+	if resp.UpdateAvailable {
+		result += fmt.Sprintf("\n⚠ Update available: %s → %s\n", resp.CurrentVersion, resp.LatestRelease)
+	} else {
+		result += "\n✓ Up to date\n"
+	}
 	return result, nil
 }
 

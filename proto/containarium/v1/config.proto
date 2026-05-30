@@ -286,6 +286,23 @@ message GetSystemInfoResponse {
   repeated SystemInfo peers = 2;
 }
 
+// GetLatestReleaseRequest is the request for the latest-release check.
+message GetLatestReleaseRequest {}
+
+// GetLatestReleaseResponse reports the latest published release vs the
+// running daemon version. See #354.
+message GetLatestReleaseResponse {
+  // Latest release tag from GitHub (e.g. "v0.21.2"). Empty when the lookup
+  // hasn't succeeded yet (e.g. rate-limited with no cached value).
+  string latest_release = 1;
+
+  // This daemon's running version (e.g. "0.21.0").
+  string current_version = 2;
+
+  // True when latest_release is a newer semver than current_version.
+  bool update_available = 3;
+}
+
 // BackendType represents the type of backend instance
 enum BackendType {
   BACKEND_TYPE_UNSPECIFIED = 0;

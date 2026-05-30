@@ -16,6 +16,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -1619,6 +1620,28 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 
 	return &pb.GetMetricsResponse{
 		Metrics: protoMetrics,
+	}, nil
+}
+
+// daemonReleaseChecker caches the latest GitHub release across requests so a
+// busy fleet's status checks don't burn the unauthenticated GitHub rate
+// limit. Package-level (not per-request) for that shared cache. #354.
+var daemonReleaseChecker = releasecheck.New()
+
+// GetLatestRelease reports the latest published Containarium release vs this
+// daemon's running version. Admin-only, matching the other System endpoints.
+// Best-effort: a failed/rate-limited GitHub lookup yields an empty
+// latest_release (and update_available=false) rather than an error. #354.
+func (s *ContainerServer) GetLatestRelease(ctx context.Context, req *pb.GetLatestReleaseRequest) (*pb.GetLatestReleaseResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	current := version.GetVersion()
+	latest, _ := daemonReleaseChecker.Latest(ctx) // empty on persistent failure
+	return &pb.GetLatestReleaseResponse{
+		LatestRelease:   latest,
+		CurrentVersion:  current,
+		UpdateAvailable: releasecheck.UpdateAvailable(current, latest),
 	}, nil
 }
 

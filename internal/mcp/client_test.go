@@ -405,6 +405,27 @@ func TestClientPreMarshaledBodyNotDoubleEncoded(t *testing.T) {
 	})
 }
 
+// TestClientGetLatestRelease is the #354 wire-contract check: the daemon's
+// latest-release fields round-trip into the client (camelCase JSON).
+func TestClientGetLatestRelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/v1/releases/latest", r.URL.Path)
+		json.NewEncoder(w).Encode(LatestReleaseResponse{
+			LatestRelease:   "v0.21.2",
+			CurrentVersion:  "0.21.0",
+			UpdateAvailable: true,
+		})
+	}))
+	defer server.Close()
+
+	resp, err := NewClient(server.URL, "test-token").GetLatestRelease()
+	require.NoError(t, err)
+	assert.Equal(t, "v0.21.2", resp.LatestRelease)
+	assert.Equal(t, "0.21.0", resp.CurrentVersion)
+	assert.True(t, resp.UpdateAvailable)
+}
+
 // TestClientAuthenticationHeader tests JWT token is sent correctly
 func TestClientAuthenticationHeader(t *testing.T) {
 	expectedToken := "test-jwt-token-123"

@@ -2699,6 +2699,30 @@
         ]
       }
     },
+    "/v1/releases/latest": {
+      "get": {
+        "summary": "Get latest release",
+        "description": "Returns the latest Containarium release tag from GitHub (cached) alongside this daemon's running version and whether an update is available.",
+        "operationId": "ContainerService_GetLatestRelease",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetLatestReleaseResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/secrets": {
       "post": {
         "summary": "Create or update a tenant secret",
@@ -5763,6 +5787,24 @@
         }
       },
       "title": "GetContainerResponse is the response from getting a container"
+    },
+    "GetLatestReleaseResponse": {
+      "type": "object",
+      "properties": {
+        "latestRelease": {
+          "type": "string",
+          "description": "Latest release tag from GitHub (e.g. \"v0.21.2\"). Empty when the lookup\nhasn't succeeded yet (e.g. rate-limited with no cached value)."
+        },
+        "currentVersion": {
+          "type": "string",
+          "description": "This daemon's running version (e.g. \"0.21.0\")."
+        },
+        "updateAvailable": {
+          "type": "boolean",
+          "description": "True when latest_release is a newer semver than current_version."
+        }
+      },
+      "description": "GetLatestReleaseResponse reports the latest published release vs the\nrunning daemon version. See #354."
     },
     "GetMetricsResponse": {
       "type": "object",

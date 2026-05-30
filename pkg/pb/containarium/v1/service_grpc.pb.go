@@ -42,6 +42,7 @@ const (
 	ContainerService_InstallStack_FullMethodName           = "/containarium.v1.ContainerService/InstallStack"
 	ContainerService_ListStacks_FullMethodName             = "/containarium.v1.ContainerService/ListStacks"
 	ContainerService_GetSystemInfo_FullMethodName          = "/containarium.v1.ContainerService/GetSystemInfo"
+	ContainerService_GetLatestRelease_FullMethodName       = "/containarium.v1.ContainerService/GetLatestRelease"
 	ContainerService_GetMonitoringInfo_FullMethodName      = "/containarium.v1.ContainerService/GetMonitoringInfo"
 	ContainerService_CreateAlertRule_FullMethodName        = "/containarium.v1.ContainerService/CreateAlertRule"
 	ContainerService_ListAlertRules_FullMethodName         = "/containarium.v1.ContainerService/ListAlertRules"
@@ -153,6 +154,10 @@ type ContainerServiceClient interface {
 	ListStacks(ctx context.Context, in *ListStacksRequest, opts ...grpc.CallOption) (*ListStacksResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(ctx context.Context, in *GetSystemInfoRequest, opts ...grpc.CallOption) (*GetSystemInfoResponse, error)
+	// GetLatestRelease reports the latest Containarium release on GitHub vs the
+	// running version, so operators see "update available" without SSHing in.
+	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
+	GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
 	// CreateAlertRule creates a new custom alert rule
@@ -435,6 +440,16 @@ func (c *containerServiceClient) GetSystemInfo(ctx context.Context, in *GetSyste
 	return out, nil
 }
 
+func (c *containerServiceClient) GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetLatestReleaseResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetLatestRelease_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetMonitoringInfoResponse)
@@ -688,6 +703,10 @@ type ContainerServiceServer interface {
 	ListStacks(context.Context, *ListStacksRequest) (*ListStacksResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error)
+	// GetLatestRelease reports the latest Containarium release on GitHub vs the
+	// running version, so operators see "update available" without SSHing in.
+	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
+	GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
 	// CreateAlertRule creates a new custom alert rule
@@ -808,6 +827,9 @@ func (UnimplementedContainerServiceServer) ListStacks(context.Context, *ListStac
 }
 func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSystemInfo not implemented")
+}
+func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetLatestRelease not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
@@ -1292,6 +1314,24 @@ func _ContainerService_GetSystemInfo_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_GetLatestRelease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetLatestReleaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetLatestRelease(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetLatestRelease_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetLatestRelease(ctx, req.(*GetLatestReleaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetMonitoringInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetMonitoringInfoRequest)
 	if err := dec(in); err != nil {
@@ -1678,6 +1718,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetSystemInfo",
 			Handler:    _ContainerService_GetSystemInfo_Handler,
+		},
+		{
+			MethodName: "GetLatestRelease",
+			Handler:    _ContainerService_GetLatestRelease_Handler,
 		},
 		{
 			MethodName: "GetMonitoringInfo",

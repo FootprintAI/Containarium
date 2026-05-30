@@ -551,6 +551,27 @@ func (c *Client) GetSystemInfo() (*GetSystemInfoResponse, error) {
 	return &resp, nil
 }
 
+// LatestReleaseResponse is the GET /v1/releases/latest body (#354).
+type LatestReleaseResponse struct {
+	LatestRelease   string `json:"latestRelease"`
+	CurrentVersion  string `json:"currentVersion"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+}
+
+// GetLatestRelease reports the latest published Containarium release vs the
+// daemon's running version (cached server-side). #354.
+func (c *Client) GetLatestRelease() (*LatestReleaseResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/releases/latest", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp LatestReleaseResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // AddRoute creates a domain → container:port mapping in the sentinel
 // reverse proxy. Used by the expose_port tool to make a container
 // reachable on the public internet under a chosen hostname.
