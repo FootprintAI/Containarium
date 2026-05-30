@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-05-31
+
+Minor release: managed DNS-01 wildcard TLS, multi-domain Caddy apex management, fleet version visibility, and multi-key collaborators.
+
+### Added
+
+- **DNS-01 ACME for wildcard certs** — the core Caddy build now bundles the `caddy-dns` module, so the daemon issues/renews wildcard certificates via DNS-01 instead of per-host HTTP-01, with a single source of truth for the DNS-provider→module map. (#378)
+- **Daemon Caddy-manages the apex of every `PublicBaseDomain`** — multi-base-domain support: each configured apex is served and auto-TLS'd. (#213)
+- **Per-backend daemon version** in `get_system_info` and `/v1/backends`, so fleet version drift is visible without SSHing each host. (#354, Phase A0)
+- **`GetLatestRelease` "update available" check** — the daemon can report whether a newer release exists. (#354, Phase A1)
+- **`AddCollaborator` accepts multiple SSH keys** in a single call. (#369)
+- **Sentinel HMAC-misconfig surfaced in `/status`** — a machine-readable `sentinel_auth_misconfigured` flag so monitoring can alert directly on the missing/short `CONTAINARIUM_SENTINEL_AUTH_SECRET` 401 loop. (#341, #373)
+- **sshpiper-reload repro harness** (`hacks/repro/`) for validating hot-reload behavior (#301), with a single-VM Multipass bring-up. (#374)
+
+### Fixed
+
+- **App-side OpenTelemetry monitoring unblocked end-to-end** — the `--monitoring=true` ingest path now reaches the central collector. (#370, #371)
+
+### Changed
+
+- **Terraform module**: 0.9.x→0.21.x migration note plus a `sentinel_auth_secret` guard, so upgrades don't silently hit the HMAC 401 loop. (#375)
+
+## [0.21.0] - 2026-05-29
+
+Minor release: `--git-source` create plus a wake-on-HTTP fix.
+
+### Added
+
+- **`containarium create --git-source`** — the daemon fetches a git repo into the box at create time. (#363)
+
+### Fixed
+
+- **Wake-on-HTTP** returns 404 instead of a futile container start for routes with no backing container. (#362)
+
 ## [0.20.0] - 2026-05-29
 
 Minor release: app-side OpenTelemetry distros for Python and Go, plus a wake-on-HTTP fix.
