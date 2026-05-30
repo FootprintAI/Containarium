@@ -41,7 +41,7 @@ type ManagerConfig struct {
 func NewManager(store AppStore, incusClient incus.Backend, config ManagerConfig) *Manager {
 	detector := buildpack.NewDetector()
 	builder := NewBuilder(incusClient, detector)
-	proxy := NewProxyManager(config.CaddyAdminURL, config.BaseDomain)
+	proxy := NewProxyManager(config.CaddyAdminURL, config.BaseDomain).WithDNSChallenge(DNSChallengeFromEnv())
 
 	return &Manager{
 		store:       store,

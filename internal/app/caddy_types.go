@@ -1,5 +1,11 @@
 package app
 
+import (
+	"encoding/json"
+	"os"
+	"strings"
+)
+
 // Caddy API Types
 // These types provide type-safe representations of Caddy's JSON API structures.
 // Reference: https://caddyserver.com/docs/json/
@@ -32,9 +38,9 @@ type CaddyTrustedProxies struct {
 
 // CaddyRouteTyped represents a fully typed Caddy route configuration
 type CaddyRouteTyped struct {
-	ID     string             `json:"@id,omitempty"`
-	Match  []CaddyMatchTyped  `json:"match,omitempty"`
-	Handle []CaddyHandler     `json:"handle,omitempty"`
+	ID     string            `json:"@id,omitempty"`
+	Match  []CaddyMatchTyped `json:"match,omitempty"`
+	Handle []CaddyHandler    `json:"handle,omitempty"`
 }
 
 // CaddyMatchTyped represents typed match conditions for a route
@@ -51,16 +57,16 @@ type CaddyHandler interface {
 
 // CaddyReverseProxyHandler represents a reverse_proxy handler configuration
 type CaddyReverseProxyHandler struct {
-	Handler   string                `json:"handler"` // Always "reverse_proxy"
-	Upstreams []CaddyUpstreamTyped  `json:"upstreams"`
-	Headers   *CaddyHeadersConfig   `json:"headers,omitempty"`
-	Transport *CaddyHTTPTransport   `json:"transport,omitempty"` // For gRPC/HTTP2 support
+	Handler   string               `json:"handler"` // Always "reverse_proxy"
+	Upstreams []CaddyUpstreamTyped `json:"upstreams"`
+	Headers   *CaddyHeadersConfig  `json:"headers,omitempty"`
+	Transport *CaddyHTTPTransport  `json:"transport,omitempty"` // For gRPC/HTTP2 support
 }
 
 // CaddyHTTPTransport represents the HTTP transport configuration
 // Used to enable HTTP/2 (h2c) for gRPC proxying
 type CaddyHTTPTransport struct {
-	Protocol string   `json:"protocol"`          // Always "http" for HTTP transport
+	Protocol string   `json:"protocol"`           // Always "http" for HTTP transport
 	Versions []string `json:"versions,omitempty"` // ["h2c", "2"] for gRPC
 }
 
@@ -97,10 +103,10 @@ type CaddyHeaderOps struct {
 
 // CaddyStaticResponseHandler represents a static_response handler
 type CaddyStaticResponseHandler struct {
-	Handler    string            `json:"handler"` // Always "static_response"
-	StatusCode int               `json:"status_code,omitempty"`
+	Handler    string              `json:"handler"` // Always "static_response"
+	StatusCode int                 `json:"status_code,omitempty"`
 	Headers    map[string][]string `json:"headers,omitempty"`
-	Body       string            `json:"body,omitempty"`
+	Body       string              `json:"body,omitempty"`
 }
 
 // HandlerName implements CaddyHandler
@@ -110,20 +116,39 @@ func (h CaddyStaticResponseHandler) HandlerName() string {
 
 // CaddyTLSAutomationPolicy represents a TLS automation policy
 type CaddyTLSAutomationPolicy struct {
-	Subjects      []string          `json:"subjects,omitempty"`
-	Issuers       []CaddyTLSIssuer  `json:"issuers,omitempty"`
-	OnDemand      bool              `json:"on_demand,omitempty"`
-	MustStaple    bool              `json:"must_staple,omitempty"`
-	RenewalWindow string            `json:"renewal_window,omitempty"` // Duration string, e.g., "720h"
+	Subjects      []string         `json:"subjects,omitempty"`
+	Issuers       []CaddyTLSIssuer `json:"issuers,omitempty"`
+	OnDemand      bool             `json:"on_demand,omitempty"`
+	MustStaple    bool             `json:"must_staple,omitempty"`
+	RenewalWindow string           `json:"renewal_window,omitempty"` // Duration string, e.g., "720h"
 }
 
 // CaddyTLSIssuer represents a TLS certificate issuer configuration
 type CaddyTLSIssuer struct {
-	Module                string `json:"module"`            // "acme", "internal", "zerossl"
-	CA                    string `json:"ca,omitempty"`      // ACME CA URL
-	Email                 string `json:"email,omitempty"`   // ACME account email
-	ExternalAccountKey    string `json:"external_account,omitempty"`
-	TrustedRootsPEMFiles  []string `json:"trusted_roots_pem_files,omitempty"`
+	Module               string               `json:"module"`          // "acme", "internal", "zerossl"
+	CA                   string               `json:"ca,omitempty"`    // ACME CA URL
+	Email                string               `json:"email,omitempty"` // ACME account email
+	ExternalAccountKey   string               `json:"external_account,omitempty"`
+	TrustedRootsPEMFiles []string             `json:"trusted_roots_pem_files,omitempty"`
+	Challenges           *CaddyACMEChallenges `json:"challenges,omitempty"` // DNS-01 opt-in; nil = Caddy default (HTTP-01 + TLS-ALPN-01)
+}
+
+// CaddyACMEChallenges configures which ACME challenge types the issuer may
+// use. Only the DNS-01 path is modeled here — it's the one that can issue
+// wildcard certs and sidesteps the HTTP-01 redirect failure mode. Leaving
+// this nil keeps Caddy's default HTTP-01 + TLS-ALPN-01 behavior.
+type CaddyACMEChallenges struct {
+	DNS *CaddyDNSChallenge `json:"dns,omitempty"`
+}
+
+// CaddyDNSChallenge holds the DNS-01 provider configuration. Provider is a
+// type-erased object because each caddy-dns module has its own schema (e.g.
+// cloudflare uses {"name":"cloudflare","api_token":"..."}, route53 reads the
+// AWS environment with just {"name":"route53"}). The Caddy binary must be
+// built with the matching dns.providers.<name> module — see
+// internal/hosting/caddy.go for the xcaddy build path.
+type CaddyDNSChallenge struct {
+	Provider map[string]interface{} `json:"provider"`
 }
 
 // CaddyTLSAutomation represents the TLS automation configuration
@@ -256,13 +281,68 @@ func NewZeroSSLIssuer() CaddyTLSIssuer {
 	}
 }
 
+// issuersFor returns the standard ACME + ZeroSSL issuers, attaching the
+// DNS-01 challenge config to each when dns is non-nil (both CAs support
+// DNS-01). When dns is nil the issuers carry no `challenges` field, so the
+// emitted JSON is identical to the pre-DNS-01 default (HTTP-01 + TLS-ALPN-01).
+func issuersFor(dns *CaddyACMEChallenges) []CaddyTLSIssuer {
+	acme := NewACMEIssuer()
+	zerossl := NewZeroSSLIssuer()
+	acme.Challenges = dns
+	zerossl.Challenges = dns
+	return []CaddyTLSIssuer{acme, zerossl}
+}
+
 // NewTLSPolicy creates a TLS automation policy with default issuers
+// (HTTP-01 + TLS-ALPN-01).
 func NewTLSPolicy(subjects []string) CaddyTLSAutomationPolicy {
+	return NewTLSPolicyWithDNS(subjects, nil)
+}
+
+// NewTLSPolicyWithDNS creates a TLS automation policy whose issuers solve
+// DNS-01 via the given challenge config. Passing nil is equivalent to
+// NewTLSPolicy. DNS-01 is required for wildcard subjects (e.g.
+// "*.example.com").
+func NewTLSPolicyWithDNS(subjects []string, dns *CaddyACMEChallenges) CaddyTLSAutomationPolicy {
 	return CaddyTLSAutomationPolicy{
 		Subjects: subjects,
-		Issuers: []CaddyTLSIssuer{
-			NewACMEIssuer(),
-			NewZeroSSLIssuer(),
-		},
+		Issuers:  issuersFor(dns),
 	}
+}
+
+// DNSChallengeFromEnv builds a DNS-01 challenge config from the daemon's
+// environment, or returns nil (the default — HTTP-01 + TLS-ALPN-01) when
+// DNS-01 isn't opted into.
+//
+//   - CONTAINARIUM_ACME_DNS_PROVIDER — the caddy-dns provider name, e.g.
+//     "cloudflare". Empty/unset → DNS-01 disabled, returns nil.
+//   - CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG — optional JSON object of
+//     provider-specific fields merged into the provider block, so any
+//     caddy-dns module works without hardcoding its schema, e.g.
+//     '{"api_token":"{env.MY_TOKEN}"}'. Caddy expands {env.X} at load time,
+//     so the secret itself is never placed in this process's config or logs.
+//
+// As a convenience for the common case, "cloudflare" defaults api_token to
+// "{env.CF_API_TOKEN}" when not overridden. The Caddy binary must be built
+// with the matching dns.providers.<name> module.
+func DNSChallengeFromEnv() *CaddyACMEChallenges {
+	provider := strings.TrimSpace(os.Getenv("CONTAINARIUM_ACME_DNS_PROVIDER"))
+	if provider == "" {
+		return nil
+	}
+	prov := map[string]interface{}{"name": provider}
+	if raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG")); raw != "" {
+		var extra map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &extra); err == nil {
+			for k, v := range extra {
+				prov[k] = v
+			}
+		}
+	}
+	if provider == "cloudflare" {
+		if _, ok := prov["api_token"]; !ok {
+			prov["api_token"] = "{env.CF_API_TOKEN}"
+		}
+	}
+	return &CaddyACMEChallenges{DNS: &CaddyDNSChallenge{Provider: prov}}
 }

@@ -20,6 +20,11 @@ type ProxyManager struct {
 	baseDomain    string
 	serverName    string // Caddy server name (default: "srv0")
 	httpClient    *http.Client
+	// dnsChallenge, when non-nil, makes provisioned policies solve ACME
+	// DNS-01 (required for wildcard certs). Nil keeps Caddy's default
+	// HTTP-01 + TLS-ALPN-01. Configured via WithDNSChallenge /
+	// DNSChallengeFromEnv. See issue #378.
+	dnsChallenge *CaddyACMEChallenges
 }
 
 // RouteProtocol represents the protocol type for a route
@@ -46,9 +51,9 @@ type Route struct {
 // caddyRouteJSON is used for JSON marshaling routes to Caddy API
 // It uses a concrete handler type for type safety while remaining JSON-compatible
 type caddyRouteJSON struct {
-	ID     string                       `json:"@id,omitempty"`
-	Match  []CaddyMatchTyped            `json:"match,omitempty"`
-	Handle []CaddyReverseProxyHandler   `json:"handle,omitempty"`
+	ID     string                     `json:"@id,omitempty"`
+	Match  []CaddyMatchTyped          `json:"match,omitempty"`
+	Handle []CaddyReverseProxyHandler `json:"handle,omitempty"`
 }
 
 // caddyRouteRaw is used for unmarshaling routes from Caddy API
@@ -69,6 +74,15 @@ func NewProxyManager(caddyAdminURL, baseDomain string) *ProxyManager {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// WithDNSChallenge configures the manager to provision certificates via ACME
+// DNS-01, which is required for wildcard subjects and sidesteps the HTTP-01
+// redirect failure mode. Nil keeps the default HTTP-01 + TLS-ALPN-01 path.
+// Returns the manager for chaining. See DNSChallengeFromEnv and issue #378.
+func (p *ProxyManager) WithDNSChallenge(dns *CaddyACMEChallenges) *ProxyManager {
+	p.dnsChallenge = dns
+	return p
 }
 
 // SetServerName sets the Caddy server name (useful when Caddy uses a custom server name)
@@ -306,8 +320,9 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 		return nil
 	}
 
-	// No existing policies, create a new one with ACME issuers
-	newPolicy := NewTLSPolicy([]string{domain})
+	// No existing policies, create a new one with ACME issuers (DNS-01 when
+	// configured, otherwise Caddy's default HTTP-01 + TLS-ALPN-01).
+	newPolicy := NewTLSPolicyWithDNS([]string{domain}, p.dnsChallenge)
 
 	policyJSON, err := json.Marshal([]CaddyTLSAutomationPolicy{newPolicy})
 	if err != nil {
@@ -332,6 +347,25 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 	}
 
 	return nil
+}
+
+// ProvisionWildcardTLS adds a single "*.<baseDomain>" wildcard subject to
+// Caddy's TLS automation, issued via DNS-01. This is the per-cluster
+// alternative to per-subdomain on-demand issuance: one cert covers every
+// subdomain, eliminating the Let's Encrypt per-domain rate-limit exposure and
+// the HTTP-01 redirect failure mode (issue #378).
+//
+// Requires a DNS-01 challenge to be configured — HTTP-01 / TLS-ALPN-01 cannot
+// issue wildcard certificates, so this returns an error rather than silently
+// falling back to a path that can't work.
+func (p *ProxyManager) ProvisionWildcardTLS() error {
+	if p.dnsChallenge == nil {
+		return fmt.Errorf("wildcard TLS requires an ACME DNS-01 provider (set CONTAINARIUM_ACME_DNS_PROVIDER); HTTP-01 / TLS-ALPN-01 cannot issue wildcard certificates")
+	}
+	if p.baseDomain == "" {
+		return fmt.Errorf("wildcard TLS requires a base domain")
+	}
+	return p.ProvisionTLS("*." + p.baseDomain)
 }
 
 // RemoveRoute removes a route from Caddy by subdomain or full domain
@@ -584,20 +618,19 @@ func (p *ProxyManager) ensureTLSApp() error {
 
 // createTLSApp creates the base TLS app with automation policies using ACME issuers
 func (p *ProxyManager) createTLSApp() error {
-	tlsConfig := map[string]interface{}{
-		"automation": map[string]interface{}{
-			"policies": []map[string]interface{}{
-				{
-					"issuers": []map[string]interface{}{
-						{"module": "acme"},
-						{"module": "acme", "ca": "https://acme.zerossl.com/v2/DV90"},
-					},
-				},
+	// Typed config (was a map[string]interface{}). When no DNS challenge is
+	// configured the issuers carry no `challenges` field, so the emitted JSON
+	// is identical to the previous default. With DNS-01 configured, both the
+	// ACME and ZeroSSL issuers gain the provider's `challenges.dns` block.
+	tlsApp := CaddyTLSApp{
+		Automation: &CaddyTLSAutomation{
+			Policies: []CaddyTLSAutomationPolicy{
+				{Issuers: issuersFor(p.dnsChallenge)},
 			},
 		},
 	}
 
-	configJSON, err := json.Marshal(tlsConfig)
+	configJSON, err := json.Marshal(tlsApp)
 	if err != nil {
 		return fmt.Errorf("failed to marshal TLS config: %w", err)
 	}

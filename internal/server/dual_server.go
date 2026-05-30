@@ -24,22 +24,22 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/autosleep"
 	"github.com/footprintai/containarium/internal/collaborator"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
-	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/mtls"
-	"github.com/footprintai/containarium/pkg/core/network"
 	"github.com/footprintai/containarium/internal/pentest"
-	"github.com/footprintai/containarium/internal/security"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
-	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
-	zapscanner "github.com/footprintai/containarium/internal/zap"
+	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/internal/ttlsweeper"
 	"github.com/footprintai/containarium/internal/wake"
+	zapscanner "github.com/footprintai/containarium/internal/zap"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/network"
+	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -67,10 +67,10 @@ type DualServerConfig struct {
 	SwaggerDir string
 
 	// App hosting settings (optional)
-	EnableAppHosting     bool
-	PostgresConnString   string
-	BaseDomain           string
-	CaddyAdminURL        string
+	EnableAppHosting   bool
+	PostgresConnString string
+	BaseDomain         string
+	CaddyAdminURL      string
 
 	// Route sync settings
 	RouteSyncInterval time.Duration // Interval for syncing routes to Caddy (default 5s)
@@ -123,42 +123,42 @@ type DualServerConfig struct {
 
 // DualServer runs both gRPC and HTTP/REST servers
 type DualServer struct {
-	config                *DualServerConfig
-	grpcServer            *grpc.Server
-	containerServer       *ContainerServer
-	appServer             *AppServer
-	networkServer         *NetworkServer
-	trafficServer         *TrafficServer
-	trafficCollector      *traffic.Collector
-	gatewayServer         *gateway.GatewayServer
-	tokenManager          *auth.TokenManager
-	authMiddleware        *auth.AuthMiddleware
-	routeStore            *app.RouteStore
-	routeSyncJob          *app.RouteSyncJob
-	passthroughStore      network.PassthroughStore
-	passthroughSyncJob    *network.PassthroughSyncJob
-	collaboratorStore     *collaborator.Store
-	daemonConfigStore     *app.DaemonConfigStore
-	metricsCollector      *metrics.Collector
-	securityScanner       *security.Scanner
-	securityStore         *security.Store
-	securityServer        *SecurityServer
-	auditStore            *audit.Store
-	auditEventSubscriber  *audit.EventSubscriber
-	sshCollector          *audit.SSHCollector
-	revocationStore       *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
-	alertStore            *alert.Store
-	alertManager          *alert.Manager
-	alertDeliveryStore    *alert.DeliveryStore
-	pentestManager        *pentest.Manager
-	pentestStore          *pentest.Store
-	zapManager            *zapscanner.Manager
-	zapStore              *zapscanner.Store
-	peerPool              *PeerPool
-	autoSleepManager      *autosleep.Manager
-	ttlSweeperManager     *ttlsweeper.Manager // ephemeral CI box auto-delete (#299)
-	secretsReconciler     *secretsReconciler // Phase 4.3 Phase B-3
-	startTime             time.Time
+	config               *DualServerConfig
+	grpcServer           *grpc.Server
+	containerServer      *ContainerServer
+	appServer            *AppServer
+	networkServer        *NetworkServer
+	trafficServer        *TrafficServer
+	trafficCollector     *traffic.Collector
+	gatewayServer        *gateway.GatewayServer
+	tokenManager         *auth.TokenManager
+	authMiddleware       *auth.AuthMiddleware
+	routeStore           *app.RouteStore
+	routeSyncJob         *app.RouteSyncJob
+	passthroughStore     network.PassthroughStore
+	passthroughSyncJob   *network.PassthroughSyncJob
+	collaboratorStore    *collaborator.Store
+	daemonConfigStore    *app.DaemonConfigStore
+	metricsCollector     *metrics.Collector
+	securityScanner      *security.Scanner
+	securityStore        *security.Store
+	securityServer       *SecurityServer
+	auditStore           *audit.Store
+	auditEventSubscriber *audit.EventSubscriber
+	sshCollector         *audit.SSHCollector
+	revocationStore      *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
+	alertStore           *alert.Store
+	alertManager         *alert.Manager
+	alertDeliveryStore   *alert.DeliveryStore
+	pentestManager       *pentest.Manager
+	pentestStore         *pentest.Store
+	zapManager           *zapscanner.Manager
+	zapStore             *zapscanner.Store
+	peerPool             *PeerPool
+	autoSleepManager     *autosleep.Manager
+	ttlSweeperManager    *ttlsweeper.Manager // ephemeral CI box auto-delete (#299)
+	secretsReconciler    *secretsReconciler  // Phase 4.3 Phase B-3
+	startTime            time.Time
 }
 
 // NewDualServer creates a new dual server instance
@@ -545,7 +545,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					var proxyManager *app.ProxyManager
 
 					if caddyAdminURL != "" {
-						proxyManager = app.NewProxyManager(caddyAdminURL, config.BaseDomain)
+						proxyManager = app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())
 						// Ensure Caddy has basic server config for routes
 						if err := proxyManager.EnsureServerConfig(); err != nil {
 							log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
@@ -714,7 +714,7 @@ skipAppHosting:
 				log.Printf("Warning: Failed to create route store: %v", err)
 				pool.Close()
 			} else {
-				proxyManager := app.NewProxyManager(caddyAdminURL, config.BaseDomain)
+				proxyManager := app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())
 				if err := proxyManager.EnsureServerConfig(); err != nil {
 					log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
 				}
@@ -1178,23 +1178,23 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
-		config:             config,
-		grpcServer:         grpcServer,
-		containerServer:    containerServer,
-		appServer:          appServer,
-		networkServer:      networkServer,
-		trafficServer:      trafficServer,
-		trafficCollector:   trafficCollector,
-		gatewayServer:      gatewayServer,
-		tokenManager:       tokenManager,
-		authMiddleware:     authMiddleware,
-		routeStore:         routeStore,
-		routeSyncJob:       routeSyncJob,
-		passthroughStore:   passthroughStore,
-		passthroughSyncJob: passthroughSyncJob,
-		collaboratorStore:  collabStore,
-		daemonConfigStore:  config.DaemonConfigStore,
-		metricsCollector:   metricsCollector,
+		config:               config,
+		grpcServer:           grpcServer,
+		containerServer:      containerServer,
+		appServer:            appServer,
+		networkServer:        networkServer,
+		trafficServer:        trafficServer,
+		trafficCollector:     trafficCollector,
+		gatewayServer:        gatewayServer,
+		tokenManager:         tokenManager,
+		authMiddleware:       authMiddleware,
+		routeStore:           routeStore,
+		routeSyncJob:         routeSyncJob,
+		passthroughStore:     passthroughStore,
+		passthroughSyncJob:   passthroughSyncJob,
+		collaboratorStore:    collabStore,
+		daemonConfigStore:    config.DaemonConfigStore,
+		metricsCollector:     metricsCollector,
 		securityScanner:      securityScanner,
 		securityStore:        securityStore,
 		securityServer:       securityServerInstance,
