@@ -535,6 +535,12 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 				log.Printf("Warning: failed to install podman-compose via pip: %v", err)
 			}
 		}
+
+		// Make podman workloads reboot-durable. The LXC already carries
+		// boot.autostart=true, so it comes back after a host reboot/preemption;
+		// these steps ensure podman containers that carry a restart policy
+		// (--restart=always / unless-stopped) come back with it. See issue #387.
+		m.enablePodmanRestartDurability(containerName, username)
 	}
 
 	sshService := pkgMgr.SSHServiceName()
@@ -592,6 +598,54 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 	}
 
 	return nil
+}
+
+// enablePodmanRestartDurability makes podman workloads in a freshly-provisioned
+// tenant survive a host reboot/preemption. The LXC already auto-starts
+// (boot.autostart=true) and host boot → Incus → tenant systemd is in place; the
+// remaining link is restarting the podman containers themselves. This wires up
+// both podman runtimes:
+//
+//   - rootful: enable the system podman-restart.service, which on boot restarts
+//     every root-owned container created with --restart=always|unless-stopped.
+//   - rootless: enable-linger for the tenant user so their systemd --user
+//     manager starts at boot even with no login session, and enable the *user*
+//     podman-restart.service (installed by symlink so it doesn't depend on a
+//     live user bus at provision time) to do the same for their containers.
+//
+// All best-effort and non-fatal: a missing unit (older podman) or any failure
+// is logged, not propagated, so it never blocks container creation. It only
+// restarts containers that carry a restart policy — callers/tenants must still
+// create workloads with --restart=always (or a compose `restart: always`). See
+// issue #387.
+func (m *Manager) enablePodmanRestartDurability(containerName, username string) {
+	// Rootful: system-wide podman-restart.service.
+	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", "podman-restart.service"}); err != nil {
+		log.Printf("Warning: failed to enable system podman-restart.service in %s: %v", containerName, err)
+	}
+
+	// Rootless: linger + user podman-restart.service for the tenant user.
+	if username == "" {
+		return
+	}
+	if err := m.incus.Exec(containerName, []string{"loginctl", "enable-linger", username}); err != nil {
+		log.Printf("Warning: failed to enable-linger for %s in %s: %v", username, containerName, err)
+	}
+	// Enable the user unit by creating the wants symlink directly. `systemctl
+	// --user enable` would need a live user bus (not guaranteed mid-provision),
+	// whereas the symlink is what enable produces and is picked up when the
+	// lingering user manager starts at boot. Idempotent (ln -sf). Resolves the
+	// home dir and the shipped unit path at run time so it works across distros.
+	const enableUserUnit = `set -e
+home=$(getent passwd "$1" | cut -d: -f6)
+unit=$(ls /usr/lib/systemd/user/podman-restart.service /lib/systemd/user/podman-restart.service 2>/dev/null | head -1)
+[ -n "$home" ] && [ -n "$unit" ] || { echo "podman-restart user unit or home not found; skipping" >&2; exit 0; }
+mkdir -p "$home/.config/systemd/user/default.target.wants"
+ln -sf "$unit" "$home/.config/systemd/user/default.target.wants/podman-restart.service"
+chown -R "$1:$1" "$home/.config"`
+	if err := m.incus.Exec(containerName, []string{"bash", "-c", enableUserUnit, "bash", username}); err != nil {
+		log.Printf("Warning: failed to enable user podman-restart.service for %s in %s: %v", username, containerName, err)
+	}
 }
 
 // createUser creates a user in the container with sudo access
