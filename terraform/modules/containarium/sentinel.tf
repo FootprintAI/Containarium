@@ -59,6 +59,7 @@ resource "google_compute_instance" "sentinel" {
     ])
     startup-script = templatefile("${path.module}/scripts/startup-sentinel.sh", {
       admin_users             = keys(var.admin_ssh_keys)
+      containarium_version    = var.containarium_version
       containarium_binary_url = var.containarium_binary_url
       spot_vm_name            = local.spot_vm_name
       zone                    = var.zone

@@ -102,10 +102,12 @@ daemon — with two caveats that bit a prod sentinel-HA deployment ([#385]):
   first** so its `:8888` server hands out the matching version and the
   workhorse can take the fast same-version path on recovery.
 
-  > The sentinel's own binary is still existence-aware on its boot path;
-  > applying the same version-aware reconcile to `startup-sentinel.sh` is a
-  > tracked follow-up. Until then, upgrade the sentinel via `-replace` (or the
-  > out-of-band swap below) so it serves the intended version.
+  > Both VMs are now version-aware: `startup-sentinel.sh` reconciles its own
+  > binary to `containarium_version` the same way, so a rebooted/replaced
+  > sentinel serves the requested version on `:8888`. The metadata-apply
+  > caveat above still applies — the sentinel only re-reads its startup script
+  > on its next boot, so reboot or `-replace` it (sentinel first) to roll a
+  > version.
 
 **Out-of-band swap** (when you can't reboot, e.g. a live upgrade): on the
 **sentinel first**, then the workhorse — `curl` the release binary to
