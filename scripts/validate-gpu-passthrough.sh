@@ -69,7 +69,7 @@ cleanup() {
     code=$?
     if [ "$LAUNCHED" = true ]; then
         if [ "$STATUS" = "ok" ] || [ "$KEEP_ON_FAIL" != true ]; then
-            incus delete --force "$CT" >/dev/null 2>&1 || true
+            incus delete --force "$CT" >/dev/null 2>&1 </dev/null || true
         else
             echo "  (kept $CT for debugging — 'incus delete --force $CT' to remove)" >&2
         fi
@@ -85,37 +85,42 @@ trap cleanup EXIT
 fail() { REASON="$1"; exit 1; }
 
 # --- preflight --------------------------------------------------------------
+# Every `incus` call below redirects stdin from /dev/null. `incus exec` (and,
+# observed, `incus launch`) inherit this process's stdin and forward/consume it;
+# if the script itself was piped in (`bash -s < script` / `curl ... | bash`),
+# that drains the bytes the shell still needs and the run breaks. </dev/null
+# makes the script behave identically whether run as a file or piped.
 command -v incus >/dev/null 2>&1 || fail "incus not found on host"
-incus info >/dev/null 2>&1 || fail "cannot talk to incus (run as root / in the incus group?)"
+incus info >/dev/null 2>&1 </dev/null || fail "cannot talk to incus (run as root / in the incus group?)"
 
 # --- launch throwaway LXC with NVIDIA passthrough ---------------------------
 # nvidia.runtime=true makes Incus inject the host's NVIDIA driver + nvidia-smi.
-if ! incus launch "$IMAGE" "$CT" -c nvidia.runtime=true >/dev/null 2>&1; then
+if ! incus launch "$IMAGE" "$CT" -c nvidia.runtime=true >/dev/null 2>&1 </dev/null; then
     fail "incus launch failed (image $IMAGE, nvidia.runtime=true)"
 fi
 LAUNCHED=true
 
 # Attach the GPU device — a specific PCI address if given, else all GPUs.
 if [ -n "$PCI" ]; then
-    incus config device add "$CT" gpu gpu "pci=$PCI" >/dev/null 2>&1 \
+    incus config device add "$CT" gpu gpu "pci=$PCI" >/dev/null 2>&1 </dev/null \
         || fail "could not attach GPU device pci=$PCI"
 else
-    incus config device add "$CT" gpu gpu >/dev/null 2>&1 \
+    incus config device add "$CT" gpu gpu >/dev/null 2>&1 </dev/null \
         || fail "could not attach GPU device"
 fi
 
 # Give the container a moment to finish booting before exec.
 for _ in $(seq 1 15); do
-    if incus exec "$CT" -- true >/dev/null 2>&1; then break; fi
+    if incus exec "$CT" -- true >/dev/null 2>&1 </dev/null; then break; fi
     sleep 1
 done
 
 # --- run nvidia-smi inside --------------------------------------------------
-if ! incus exec "$CT" -- sh -c 'command -v nvidia-smi >/dev/null 2>&1'; then
+if ! incus exec "$CT" -- sh -c 'command -v nvidia-smi >/dev/null 2>&1' </dev/null; then
     fail "nvidia-smi not present in the container (nvidia.runtime injection failed — check host driver + libnvidia-container)"
 fi
 
-OUT="$(incus exec "$CT" -- nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1 || true)"
+OUT="$(incus exec "$CT" -- nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null </dev/null | head -1 || true)"
 if [ -z "$OUT" ]; then
     fail "nvidia-smi ran but returned no GPU (passthrough not visible inside the LXC)"
 fi
