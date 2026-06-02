@@ -328,7 +328,17 @@ variable "enable_disk_snapshots" {
 # -----------------------------------------------------------------------------
 
 variable "containarium_version" {
-  description = "Containarium version to install"
+  description = <<-EOT
+    Containarium version to install. The startup script reconciles the
+    installed binary to this version on every boot (substring match against
+    `containarium version`), so bumping it upgrades the daemon — but note a
+    metadata-only `terraform apply` does NOT restart the instance, so the new
+    version takes effect on the next reboot/preemption-recovery (or force one
+    with `terraform apply -replace=<instance>`). On a sentinel-HA deployment a
+    recovered workhorse declines a sentinel-served binary whose version doesn't
+    match this value (avoids silent downgrade); upgrade the sentinel too so its
+    :8888 server hands out the matching version. See #385 and the module README.
+  EOT
   type        = string
   default     = "dev"
 }

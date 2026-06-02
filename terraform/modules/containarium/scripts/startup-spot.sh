@@ -31,6 +31,107 @@ JWT_SECRET="${jwt_secret}"
 # custody story.
 ZFS_ENCRYPTION_KEYFILE="${zfs_encryption_keyfile}"
 
+# Containarium binary sources. Declared up here (not just in the full-install
+# block) so the fast path can reconcile the binary to the desired version too.
+CONTAINARIUM_VERSION="${containarium_version}"
+CONTAINARIUM_BINARY_URL="${containarium_binary_url}"
+SENTINEL_BINARY_URL="${sentinel_binary_url}"
+
+# reconcile_containarium_binary ensures /usr/local/bin/containarium is at the
+# desired version (CONTAINARIUM_VERSION), re-downloading and restarting the
+# daemon when it isn't. This replaces the old existence-aware install, which
+# made the binary write-once: a tfvar version bump never upgraded an existing
+# box (the fast path skipped all install), and a spot-recovery would pull
+# whatever the sentinel served and could silently DOWNGRADE the workhorse to an
+# older pinned version (#385).
+#
+# Behavior:
+#   - version pinned + already installed at that version  → no-op (stays fast).
+#   - version pinned + missing/mismatched                 → download + restart,
+#     accepting the sentinel only when it serves the desired version (else it
+#     could downgrade us), otherwise the explicit URL (authoritative).
+#   - version NOT pinned                                   → prior behavior:
+#     install only if absent; sentinel-first then URL.
+#
+# Strictly best-effort: every failure falls through keeping the existing binary
+# and returns 0, so it can never block the boot / the fast path's service start.
+reconcile_containarium_binary() {
+    desired="$CONTAINARIUM_VERSION"
+    current=""
+    if [ -x /usr/local/bin/containarium ]; then
+        current="$(/usr/local/bin/containarium version 2>/dev/null || true)"
+    fi
+
+    if [ -n "$desired" ]; then
+        if printf '%s' "$current" | grep -qF "$desired"; then
+            echo "==> containarium already at desired version ($desired) — skipping download"
+            return 0
+        fi
+        if [ -n "$current" ]; then
+            echo "==> containarium version mismatch (have: $current, want: $desired) — upgrading"
+        fi
+    elif [ -x /usr/local/bin/containarium ]; then
+        echo "==> containarium present, version not pinned — leaving as-is"
+        return 0
+    fi
+
+    tmp=/usr/local/bin/.containarium.new
+    rm -f "$tmp"
+    got=false
+
+    # Sentinel first (internal, fast) — but only accept it when it serves the
+    # desired version (or the version isn't pinned). This is what stops a stale
+    # sentinel from downgrading a recovered workhorse (#385).
+    if [ -n "$SENTINEL_BINARY_URL" ] && [ "$got" = "false" ]; then
+        echo "Trying sentinel: $SENTINEL_BINARY_URL"
+        for i in $(seq 1 10); do
+            if curl -fsSL --connect-timeout 5 "$SENTINEL_BINARY_URL" -o "$tmp"; then
+                chmod +x "$tmp"
+                sv="$("$tmp" version 2>/dev/null || true)"
+                if [ -z "$desired" ] || printf '%s' "$sv" | grep -qF "$desired"; then
+                    echo "✓ accepted sentinel binary ($sv)"
+                    got=true
+                else
+                    echo "  sentinel serves '$sv' but want '$desired' — declining (avoiding downgrade)"
+                    rm -f "$tmp"
+                fi
+                break
+            fi
+            echo "  sentinel not ready yet, retrying... ($i/10)"
+            sleep 10
+        done
+    fi
+
+    # Explicit URL — authoritative for a pinned version.
+    if [ -n "$CONTAINARIUM_BINARY_URL" ] && [ "$got" = "false" ]; then
+        echo "Downloading from: $CONTAINARIUM_BINARY_URL"
+        if curl -fsSL "$CONTAINARIUM_BINARY_URL" -o "$tmp"; then
+            chmod +x "$tmp"
+            got=true
+        fi
+    fi
+
+    if [ "$got" = "false" ]; then
+        rm -f "$tmp"
+        if [ -x /usr/local/bin/containarium ]; then
+            echo "⚠ could not fetch desired binary; keeping existing ($current)"
+        else
+            echo "⚠ No Containarium binary source available, daemon not installed"
+        fi
+        return 0
+    fi
+
+    # Atomic swap, then restart only if the service is already installed (it
+    # isn't on first boot — the full-install path enables+starts it later).
+    mv -f "$tmp" /usr/local/bin/containarium
+    chmod +x /usr/local/bin/containarium
+    echo "✓ containarium installed: $(/usr/local/bin/containarium version 2>/dev/null || echo '(version unavailable)')"
+    if systemctl list-unit-files containarium.service >/dev/null 2>&1; then
+        systemctl restart containarium 2>/dev/null || true
+    fi
+    return 0
+}
+
 # ==========================================================================
 # FAST PATH: If this is a restart (not first boot), skip software install.
 # The sentinel restarts the stopped VM — boot disk is preserved, everything
@@ -39,6 +140,15 @@ ZFS_ENCRYPTION_KEYFILE="${zfs_encryption_keyfile}"
 if [ -f /opt/containarium/.setup_complete ]; then
     echo "==> RESTART detected (setup_complete marker exists), using fast path"
     date > /opt/containarium/.last_restart_timestamp
+
+    # Reconcile the binary to the desired version BEFORE starting the daemon.
+    # The .setup_complete marker now gates only the heavy host setup
+    # (Incus/ZFS/packages); the binary is version-checked on every boot so an
+    # "apply (version bump) + reboot" actually upgrades, and a spot-recovery
+    # can't be left on a stale binary (#385). Best-effort — never blocks start.
+    # `|| true` also suspends `set -e` inside the function, so an internal
+    # command failure can't abort the boot before services start.
+    reconcile_containarium_binary || true
 
     # Ensure critical services are running
     systemctl start incus 2>/dev/null || true
@@ -559,43 +669,10 @@ echo "==> Creating Containarium directory structure..."
 mkdir -p /opt/containarium/{bin,config,logs}
 chmod 755 /opt/containarium
 
-# Install Containarium daemon
+# Install Containarium daemon. Version-aware + downgrade-safe via the shared
+# reconcile helper (defined near the top so the fast path uses it too) — #385.
 echo "==> Installing Containarium daemon..."
-CONTAINARIUM_VERSION="${containarium_version}"
-CONTAINARIUM_BINARY_URL="${containarium_binary_url}"
-SENTINEL_BINARY_URL="${sentinel_binary_url}"
-
-BINARY_INSTALLED=false
-
-# Try sentinel binary server first (internal network, fast)
-if [ -n "$SENTINEL_BINARY_URL" ] && [ "$BINARY_INSTALLED" = "false" ]; then
-    echo "Downloading from sentinel: $SENTINEL_BINARY_URL"
-    # Retry up to 10 times (sentinel may still be booting)
-    for i in {1..10}; do
-        if curl -fsSL --connect-timeout 5 "$SENTINEL_BINARY_URL" -o /usr/local/bin/containarium; then
-            chmod +x /usr/local/bin/containarium
-            echo "✓ Containarium downloaded from sentinel"
-            BINARY_INSTALLED=true
-            break
-        fi
-        echo "  Sentinel not ready yet, retrying... ($i/10)"
-        sleep 10
-    done
-fi
-
-# Fallback to explicit URL (e.g., GitHub releases, GCS)
-if [ -n "$CONTAINARIUM_BINARY_URL" ] && [ "$BINARY_INSTALLED" = "false" ]; then
-    echo "Downloading from: $CONTAINARIUM_BINARY_URL"
-    curl -fsSL "$CONTAINARIUM_BINARY_URL" -o /usr/local/bin/containarium
-    chmod +x /usr/local/bin/containarium
-    echo "✓ Containarium daemon downloaded"
-    BINARY_INSTALLED=true
-fi
-
-if [ "$BINARY_INSTALLED" = "false" ]; then
-    echo "⚠ No Containarium binary source available, daemon not installed"
-    echo "  You can manually install it later by copying the binary to /usr/local/bin/containarium"
-fi
+reconcile_containarium_binary || true
 
 # Verify installation
 if [ -f /usr/local/bin/containarium ]; then

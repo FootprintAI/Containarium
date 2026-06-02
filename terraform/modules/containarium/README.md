@@ -75,3 +75,44 @@ omitting them will not error `plan`. Two need a closer read:
   requires Terraform >= 1.2.)
 
 [#341]: https://github.com/FootprintAI/Containarium/issues/341
+
+## Upgrading the daemon (`containarium_version`)
+
+The startup script reconciles the installed binary to `containarium_version`
+on **every boot**: it compares `containarium version` against the requested
+value (substring match) and only re-downloads + `systemctl restart
+containarium` when they differ. So bumping the version *does* upgrade the
+daemon — with two caveats that bit a prod sentinel-HA deployment ([#385]):
+
+- **A metadata-only `terraform apply` does not restart the instance.** The new
+  `startup-script` lands in instance metadata but only runs on the next boot.
+  To upgrade an existing VM either reboot it, let a preemption-recovery cycle
+  it, or force a replacement:
+
+  ```sh
+  # workhorse (spot VM); use ...sentinel[0] for the sentinel
+  terraform apply -replace='module.containarium.google_compute_instance.jump_server_spot[0]'
+  ```
+
+- **Sentinel-HA recovery can't silently downgrade anymore.** A recovered
+  workhorse pulls from the sentinel's `:8888` binary server first, but now
+  **declines** a sentinel-served binary whose version doesn't match
+  `containarium_version`, falling back to `containarium_binary_url` (the
+  authoritative source for a pinned version). Still, **upgrade the sentinel
+  first** so its `:8888` server hands out the matching version and the
+  workhorse can take the fast same-version path on recovery.
+
+  > The sentinel's own binary is still existence-aware on its boot path;
+  > applying the same version-aware reconcile to `startup-sentinel.sh` is a
+  > tracked follow-up. Until then, upgrade the sentinel via `-replace` (or the
+  > out-of-band swap below) so it serves the intended version.
+
+**Out-of-band swap** (when you can't reboot, e.g. a live upgrade): on the
+**sentinel first**, then the workhorse — `curl` the release binary to
+`/usr/local/bin/containarium.new`, `chmod +x`, verify `.new version`, atomic
+`mv` over `/usr/local/bin/containarium`, then `systemctl restart containarium`
+(workhorse) / `containarium-sentinel` (sentinel). The sentinel's admin sshd is
+on **port 2222** (22 is sshpiper), and restarting the sentinel briefly serves a
+self-signed cert on the public `:443`.
+
+[#385]: https://github.com/FootprintAI/Containarium/issues/385
