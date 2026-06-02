@@ -3599,6 +3599,41 @@
         ]
       }
     },
+    "/v1/validate-gpu": {
+      "post": {
+        "summary": "Validate GPU passthrough",
+        "description": "Launches a throwaway nvidia.runtime LXC on the backend, runs nvidia-smi inside, and returns whether the GPU is usable (status, model, driver). Admin-only.",
+        "operationId": "ContainerService_ValidateGPU",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ValidateGPUResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ValidateGPURequest asks a backend to prove GPU passthrough works from inside\nan LXC. See #316.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ValidateGPURequest"
+            }
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/zap/alerts": {
       "get": {
         "summary": "List ZAP alerts",
@@ -5618,6 +5653,17 @@
       "default": "GPU_MODEL_UNSPECIFIED",
       "description": "- GPU_MODEL_NVIDIA_RTX_4090: NVIDIA Consumer\n - GPU_MODEL_NVIDIA_A100: NVIDIA Datacenter\n - GPU_MODEL_AMD_MI300X: AMD\n - GPU_MODEL_INTEL_MAX_1550: Intel",
       "title": "GPU model enum (common datacenter and workstation GPUs)"
+    },
+    "GPUStatus": {
+      "type": "string",
+      "enum": [
+        "GPU_STATUS_UNSPECIFIED",
+        "GPU_STATUS_OK",
+        "GPU_STATUS_UNAVAILABLE",
+        "GPU_STATUS_DEGRADED"
+      ],
+      "default": "GPU_STATUS_UNSPECIFIED",
+      "title": "- GPU_STATUS_OK: nvidia-smi saw the GPU inside the LXC\n - GPU_STATUS_UNAVAILABLE: no GPU / passthrough not visible / setup failed\n - GPU_STATUS_DEGRADED: reserved (e.g. present but reporting errors)"
     },
     "GPUVendor": {
       "type": "string",
@@ -8264,6 +8310,45 @@
           "title": "Status message"
         }
       }
+    },
+    "ValidateGPURequest": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Backend to validate. Empty = the local/primary daemon's own host."
+        },
+        "pci": {
+          "type": "string",
+          "description": "Specific GPU PCI address (e.g. \"0000:01:00.0\"). Empty = pass through all\nGPUs. Prefer PCI over a DRM index — it's stable across kernel upgrades."
+        }
+      },
+      "description": "ValidateGPURequest asks a backend to prove GPU passthrough works from inside\nan LXC. See #316."
+    },
+    "ValidateGPUResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/GPUStatus"
+        },
+        "gpuModel": {
+          "type": "string",
+          "title": "e.g. \"NVIDIA GeForce RTX 3090\""
+        },
+        "driverVersion": {
+          "type": "string",
+          "title": "e.g. \"570.211.01\""
+        },
+        "detail": {
+          "type": "string",
+          "title": "populated when status != OK"
+        },
+        "backendId": {
+          "type": "string",
+          "title": "echoes the validated backend (\"\" = local)"
+        }
+      },
+      "description": "ValidateGPUResponse reports whether the GPU is usable from inside an LXC on\nthe backend: the daemon launches a throwaway nvidia.runtime LXC, runs\nnvidia-smi inside, tears it down, and returns the parsed model + driver."
     },
     "WebhookDelivery": {
       "type": "object",

@@ -1645,6 +1645,68 @@ func (s *ContainerServer) GetLatestRelease(ctx context.Context, req *pb.GetLates
 	}, nil
 }
 
+// ValidateGPU launches a throwaway nvidia.runtime LXC on the target backend,
+// runs nvidia-smi inside, tears it down, and reports whether the GPU is usable.
+// Admin-only. An empty (or local) backend_id runs the check on this daemon's
+// own host; a peer backend_id forwards to that peer's daemon, which runs the
+// same check locally on its host. See #316.
+func (s *ContainerServer) ValidateGPU(ctx context.Context, req *pb.ValidateGPURequest) (*pb.ValidateGPUResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Remote backend → forward to the owning peer (it validates its own GPU).
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		body, err := protojson.Marshal(req)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "marshal validate-gpu request: %v", err)
+		}
+		respBody, st, err := peer.ForwardRequest("POST", "/v1/validate-gpu", extractAuthToken(ctx), body)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward validate-gpu to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for validate-gpu", req.BackendId, st)
+		}
+		var resp pb.ValidateGPUResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s validate-gpu response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	// Local backend.
+	res := s.manager.ValidateGPU(req.Pci)
+	return &pb.ValidateGPUResponse{
+		Status:        gpuValidationStatusToProto(res.Status),
+		GpuModel:      res.Model,
+		DriverVersion: res.DriverVersion,
+		Detail:        res.Detail,
+		BackendId:     req.BackendId,
+	}, nil
+}
+
+// gpuValidationStatusToProto maps the manager's GPU validation status string to
+// the proto enum.
+func gpuValidationStatusToProto(s string) pb.ValidateGPUResponse_GPUStatus {
+	switch s {
+	case container.GPUStatusOK:
+		return pb.ValidateGPUResponse_GPU_STATUS_OK
+	case container.GPUStatusUnavailable:
+		return pb.ValidateGPUResponse_GPU_STATUS_UNAVAILABLE
+	default:
+		return pb.ValidateGPUResponse_GPU_STATUS_UNSPECIFIED
+	}
+}
+
 // GetSystemInfo gets information about the Incus host
 func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error) {
 	// Admin-only: exposes fleet-internal details (hostname, OS,

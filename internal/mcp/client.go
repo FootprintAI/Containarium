@@ -572,6 +572,42 @@ func (c *Client) GetLatestRelease() (*LatestReleaseResponse, error) {
 	return &resp, nil
 }
 
+// ValidateGPURequest is the typed /v1/validate-gpu request body. snake_case
+// tags match the daemon's grpc-gateway field names. #316.
+type ValidateGPURequest struct {
+	BackendID string `json:"backend_id,omitempty"`
+	Pci       string `json:"pci,omitempty"`
+}
+
+// ValidateGPUResult mirrors the /v1/validate-gpu (ValidateGPU) response. Status
+// is the proto enum name, e.g. "GPU_STATUS_OK". #316.
+type ValidateGPUResult struct {
+	Status        string `json:"status"`
+	GpuModel      string `json:"gpuModel"`
+	DriverVersion string `json:"driverVersion"`
+	Detail        string `json:"detail"`
+	BackendID     string `json:"backendId"`
+}
+
+// ValidateGPU asks the daemon to prove GPU passthrough works inside an LXC on a
+// backend (empty backendID = local; a peer id forwards to that peer). The
+// daemon creates and deletes a short-lived nvidia.runtime container, so this
+// can take ~30s. #316.
+func (c *Client) ValidateGPU(backendID, pci string) (*ValidateGPUResult, error) {
+	respBody, err := c.doRequest("POST", "/v1/validate-gpu", ValidateGPURequest{
+		BackendID: backendID,
+		Pci:       pci,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp ValidateGPUResult
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // AddRoute creates a domain → container:port mapping in the sentinel
 // reverse proxy. Used by the expose_port tool to make a container
 // reachable on the public internet under a chosen hostname.

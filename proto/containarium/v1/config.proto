@@ -303,6 +303,35 @@ message GetLatestReleaseResponse {
   bool update_available = 3;
 }
 
+// ValidateGPURequest asks a backend to prove GPU passthrough works from inside
+// an LXC. See #316.
+message ValidateGPURequest {
+  // Backend to validate. Empty = the local/primary daemon's own host.
+  string backend_id = 1;
+
+  // Specific GPU PCI address (e.g. "0000:01:00.0"). Empty = pass through all
+  // GPUs. Prefer PCI over a DRM index — it's stable across kernel upgrades.
+  string pci = 2;
+}
+
+// ValidateGPUResponse reports whether the GPU is usable from inside an LXC on
+// the backend: the daemon launches a throwaway nvidia.runtime LXC, runs
+// nvidia-smi inside, tears it down, and returns the parsed model + driver.
+message ValidateGPUResponse {
+  enum GPUStatus {
+    GPU_STATUS_UNSPECIFIED = 0;
+    GPU_STATUS_OK = 1;          // nvidia-smi saw the GPU inside the LXC
+    GPU_STATUS_UNAVAILABLE = 2; // no GPU / passthrough not visible / setup failed
+    GPU_STATUS_DEGRADED = 3;    // reserved (e.g. present but reporting errors)
+  }
+
+  GPUStatus status = 1;
+  string gpu_model = 2;      // e.g. "NVIDIA GeForce RTX 3090"
+  string driver_version = 3; // e.g. "570.211.01"
+  string detail = 4;         // populated when status != OK
+  string backend_id = 5;     // echoes the validated backend ("" = local)
+}
+
 // BackendType represents the type of backend instance
 enum BackendType {
   BACKEND_TYPE_UNSPECIFIED = 0;

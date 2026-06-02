@@ -557,6 +557,29 @@ func (s *Server) registerTools() {
 			Handler: handleGetBackend,
 		},
 		{
+			Name: "backend_validate_gpu",
+			Description: "Check that GPU passthrough works inside an LXC on a backend. The " +
+				"daemon launches a throwaway nvidia.runtime LXC, runs nvidia-smi inside, " +
+				"tears it down, and returns status + GPU model + driver version. Use before " +
+				"provisioning a GPU container, or after a VFIO/driver change. Omit backend_id " +
+				"for the local/primary host; pass a peer id (from list_backends) to validate " +
+				"that peer's GPU. Admin-only; creates and deletes a short-lived container (~30s).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"backend_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Backend to validate (from list_backends). Empty = local/primary host.",
+					},
+					"pci": map[string]interface{}{
+						"type":        "string",
+						"description": "Validate a specific GPU by PCI address (e.g. '0000:01:00.0'). Empty = all GPUs.",
+					},
+				},
+			},
+			Handler: handleBackendValidateGPU,
+		},
+		{
 			Name: "push",
 			Description: "Push committed git history into a container via real `git push` over " +
 				"SSH (laptop -> sentinel -> sshpiper -> container). On first call, sets up a " +
@@ -1005,6 +1028,9 @@ func toolScopeAssignments() map[string]string {
 		"check_for_updates": auth.ScopeContainersRead,
 		"list_backends":     auth.ScopeContainersRead,
 		"get_backend":       auth.ScopeContainersRead,
+		// validate-gpu creates+deletes a throwaway container (a write op);
+		// the daemon additionally enforces admin role.
+		"backend_validate_gpu": auth.ScopeContainersWrite,
 		// secrets
 		"set_secret":      auth.ScopeSecretsWrite,
 		"delete_secret":   auth.ScopeSecretsWrite,
@@ -1473,6 +1499,26 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 	}
 
 	return result, nil
+}
+
+func handleBackendValidateGPU(client *Client, args map[string]interface{}) (string, error) {
+	backendID, _ := args["backend_id"].(string)
+	pci, _ := args["pci"].(string)
+
+	resp, err := client.ValidateGPU(backendID, pci)
+	if err != nil {
+		return "", fmt.Errorf("validate GPU: %w", err)
+	}
+
+	target := resp.BackendID
+	if target == "" {
+		target = "(local)"
+	}
+	if resp.Status == "GPU_STATUS_OK" {
+		return fmt.Sprintf("✓ GPU passthrough OK on %s: %s (driver %s)", target, resp.GpuModel, resp.DriverVersion), nil
+	}
+	status := strings.TrimPrefix(resp.Status, "GPU_STATUS_")
+	return fmt.Sprintf("✗ GPU passthrough %s on %s: %s", status, target, resp.Detail), nil
 }
 
 func handleCheckForUpdates(client *Client, args map[string]interface{}) (string, error) {

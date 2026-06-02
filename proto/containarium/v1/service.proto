@@ -399,6 +399,22 @@ service ContainerService {
     };
   }
 
+  // ValidateGPU proves GPU passthrough works from inside an LXC on a backend:
+  // the daemon launches a throwaway nvidia.runtime LXC, runs nvidia-smi inside,
+  // tears it down, and returns the parsed model + driver. Admin-only; the check
+  // creates and deletes a short-lived container. See #316.
+  rpc ValidateGPU(ValidateGPURequest) returns (ValidateGPUResponse) {
+    option (google.api.http) = {
+      post: "/v1/validate-gpu"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Validate GPU passthrough";
+      description: "Launches a throwaway nvidia.runtime LXC on the backend, runs nvidia-smi inside, and returns whether the GPU is usable (status, model, driver). Admin-only.";
+      tags: "System";
+    };
+  }
+
   // GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
   rpc GetMonitoringInfo(GetMonitoringInfoRequest) returns (GetMonitoringInfoResponse) {
     option (google.api.http) = {

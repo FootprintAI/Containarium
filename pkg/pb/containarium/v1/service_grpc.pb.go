@@ -43,6 +43,7 @@ const (
 	ContainerService_ListStacks_FullMethodName             = "/containarium.v1.ContainerService/ListStacks"
 	ContainerService_GetSystemInfo_FullMethodName          = "/containarium.v1.ContainerService/GetSystemInfo"
 	ContainerService_GetLatestRelease_FullMethodName       = "/containarium.v1.ContainerService/GetLatestRelease"
+	ContainerService_ValidateGPU_FullMethodName            = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_GetMonitoringInfo_FullMethodName      = "/containarium.v1.ContainerService/GetMonitoringInfo"
 	ContainerService_CreateAlertRule_FullMethodName        = "/containarium.v1.ContainerService/CreateAlertRule"
 	ContainerService_ListAlertRules_FullMethodName         = "/containarium.v1.ContainerService/ListAlertRules"
@@ -158,6 +159,11 @@ type ContainerServiceClient interface {
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
 	GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error)
+	// ValidateGPU proves GPU passthrough works from inside an LXC on a backend:
+	// the daemon launches a throwaway nvidia.runtime LXC, runs nvidia-smi inside,
+	// tears it down, and returns the parsed model + driver. Admin-only; the check
+	// creates and deletes a short-lived container. See #316.
+	ValidateGPU(ctx context.Context, in *ValidateGPURequest, opts ...grpc.CallOption) (*ValidateGPUResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
 	// CreateAlertRule creates a new custom alert rule
@@ -450,6 +456,16 @@ func (c *containerServiceClient) GetLatestRelease(ctx context.Context, in *GetLa
 	return out, nil
 }
 
+func (c *containerServiceClient) ValidateGPU(ctx context.Context, in *ValidateGPURequest, opts ...grpc.CallOption) (*ValidateGPUResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateGPUResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ValidateGPU_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetMonitoringInfoResponse)
@@ -707,6 +723,11 @@ type ContainerServiceServer interface {
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
 	GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error)
+	// ValidateGPU proves GPU passthrough works from inside an LXC on a backend:
+	// the daemon launches a throwaway nvidia.runtime LXC, runs nvidia-smi inside,
+	// tears it down, and returns the parsed model + driver. Admin-only; the check
+	// creates and deletes a short-lived container. See #316.
+	ValidateGPU(context.Context, *ValidateGPURequest) (*ValidateGPUResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
 	// CreateAlertRule creates a new custom alert rule
@@ -830,6 +851,9 @@ func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSy
 }
 func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLatestRelease not implemented")
+}
+func (UnimplementedContainerServiceServer) ValidateGPU(context.Context, *ValidateGPURequest) (*ValidateGPUResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidateGPU not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
@@ -1332,6 +1356,24 @@ func _ContainerService_GetLatestRelease_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_ValidateGPU_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateGPURequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ValidateGPU(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ValidateGPU_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ValidateGPU(ctx, req.(*ValidateGPURequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetMonitoringInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetMonitoringInfoRequest)
 	if err := dec(in); err != nil {
@@ -1722,6 +1764,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetLatestRelease",
 			Handler:    _ContainerService_GetLatestRelease_Handler,
+		},
+		{
+			MethodName: "ValidateGPU",
+			Handler:    _ContainerService_ValidateGPU_Handler,
 		},
 		{
 			MethodName: "GetMonitoringInfo",
