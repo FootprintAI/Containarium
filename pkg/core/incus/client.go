@@ -876,6 +876,44 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 	return info, nil
 }
 
+// execMaxAttempts bounds retries of an incus exec on the transient
+// PID-tracking failure (see isTransientExecErr). 4 attempts with the
+// linear backoff below is ~1s total — enough to ride out the race
+// without masking a genuinely wedged container.
+const execMaxAttempts = 4
+
+// execBackoffBase is the linear backoff unit between exec retries. A var
+// (not const) so tests can zero it; production keeps the default.
+var execBackoffBase = 150 * time.Millisecond
+
+// isTransientExecErr reports whether an incus exec error is the transient
+// "Failed to retrieve PID of executing child process". incus intermittently
+// fails to track the forked process — notably right after a container
+// launches (init/cgroup not fully settled) or under concurrent exec load —
+// so the command never actually ran. Retrying the exec absorbs it. The
+// daemon's provisioning commands (systemctl enable, apt/pip install, etc.)
+// are idempotent, so a retry is safe. A real non-zero command exit is a
+// DIFFERENT error and is deliberately NOT matched here, so we never silently
+// re-run a command that genuinely failed.
+func isTransientExecErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Failed to retrieve PID of executing child process")
+}
+
+// execWithRetry runs attempt up to execMaxAttempts times, retrying ONLY the
+// transient PID-tracking error with a linear backoff. attempt returns nil on
+// success; any other (non-transient) error returns immediately.
+func execWithRetry(what string, attempt func() error) error {
+	var err error
+	for i := 1; i <= execMaxAttempts; i++ {
+		if err = attempt(); err == nil || !isTransientExecErr(err) || i == execMaxAttempts {
+			return err
+		}
+		log.Printf("[incus] %s: transient exec error (attempt %d/%d), retrying: %v", what, i, execMaxAttempts, err)
+		time.Sleep(time.Duration(i) * execBackoffBase)
+	}
+	return err
+}
+
 // Exec executes a command inside a container
 func (c *Client) Exec(containerName string, command []string) error {
 	req := api.InstanceExecPost{
@@ -883,17 +921,16 @@ func (c *Client) Exec(containerName string, command []string) error {
 		WaitForWS:   true,
 		Interactive: false,
 	}
-
-	op, err := c.server.ExecInstance(containerName, req, nil)
-	if err != nil {
-		return fmt.Errorf("failed to execute command: %w", err)
-	}
-
-	if err := op.Wait(); err != nil {
-		return fmt.Errorf("command execution failed: %w", err)
-	}
-
-	return nil
+	return execWithRetry("exec "+containerName, func() error {
+		op, err := c.server.ExecInstance(containerName, req, nil)
+		if err != nil {
+			return fmt.Errorf("failed to execute command: %w", err)
+		}
+		if err := op.Wait(); err != nil {
+			return fmt.Errorf("command execution failed: %w", err)
+		}
+		return nil
+	})
 }
 
 // WaitForNetwork waits for the container to have a network IP
@@ -1698,32 +1735,31 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 		// We capture output via the args.Stdout/Stderr instead
 	}
 
-	// Create exec args with stdio handlers to capture output
-	args := &incus.InstanceExecArgs{
-		Stdout: &stdout,
-		Stderr: &stderr,
-	}
+	err := execWithRetry("exec "+containerName, func() error {
+		// Reset the capture buffers each attempt so a retried command's
+		// output replaces (not appends to) a failed attempt's partial output.
+		stdout.Reset()
+		stderr.Reset()
+		args := &incus.InstanceExecArgs{Stdout: &stdout, Stderr: &stderr}
 
-	op, err := c.server.ExecInstance(containerName, req, args)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to execute command: %w", err)
-	}
-
-	// Wait for the operation to complete
-	err = op.Wait()
-	if err != nil {
-		return stdout.String(), stderr.String(), fmt.Errorf("command execution failed: %w", err)
-	}
-
-	// Check exit code
-	opMeta := op.Get()
-	if opMeta.Metadata != nil {
-		if returnVal, ok := opMeta.Metadata["return"].(float64); ok && returnVal != 0 {
-			return stdout.String(), stderr.String(), fmt.Errorf("command exited with code %d", int(returnVal))
+		op, err := c.server.ExecInstance(containerName, req, args)
+		if err != nil {
+			return fmt.Errorf("failed to execute command: %w", err)
 		}
-	}
-
-	return stdout.String(), stderr.String(), nil
+		if err := op.Wait(); err != nil {
+			return fmt.Errorf("command execution failed: %w", err)
+		}
+		// A non-zero exit is a genuine command failure, not the transient
+		// PID race — return it so execWithRetry does NOT retry it.
+		opMeta := op.Get()
+		if opMeta.Metadata != nil {
+			if returnVal, ok := opMeta.Metadata["return"].(float64); ok && returnVal != 0 {
+				return fmt.Errorf("command exited with code %d", int(returnVal))
+			}
+		}
+		return nil
+	})
+	return stdout.String(), stderr.String(), err
 }
 
 // CleanupDisk frees disk space inside a container by removing temp files,
