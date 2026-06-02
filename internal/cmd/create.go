@@ -17,6 +17,7 @@ import (
 
 var (
 	sshKeyPath               string
+	noSSHKey                 bool
 	cpuLimit                 string
 	memoryLimit              string
 	diskLimit                string
@@ -64,6 +65,10 @@ Examples:
   # Create with full stack web development tools
   containarium create dave --ssh-key ~/.ssh/id_rsa.pub --stack fullstack
 
+  # Create a platform-managed service tenant with NO SSH key (access via
+  # incus exec / the daemon only — no private key needs to exist)
+  containarium create cloud-cp --no-ssh-key --podman
+
   # Create with labels
   containarium create charlie --ssh-key ~/.ssh/id_rsa.pub --labels team=dev,project=web
 
@@ -76,8 +81,16 @@ Examples:
 func init() {
 	rootCmd.AddCommand(createCmd)
 
-	createCmd.Flags().StringVar(&sshKeyPath, "ssh-key", "", "Path to SSH public key file (REQUIRED for secure access)")
-	createCmd.MarkFlagRequired("ssh-key") // SSH key is required for security
+	createCmd.Flags().StringVar(&sshKeyPath, "ssh-key", "", "Path to SSH public key file (required unless --no-ssh-key)")
+	createCmd.Flags().BoolVar(&noSSHKey, "no-ssh-key", false,
+		"Create a platform-managed service tenant with NO SSH key seeded into "+
+			"authorized_keys. Access is via the platform only (incus exec / daemon "+
+			"RPCs), so no private key needs to exist anywhere. Mutually exclusive "+
+			"with --ssh-key; one of the two is required.")
+	// --ssh-key is required for human dev boxes, but a service tenant opts out
+	// with --no-ssh-key. Enforce "exactly one of the two" in runCreate (cobra's
+	// MarkFlagRequired can't express the either/or).
+	createCmd.MarkFlagsMutuallyExclusive("ssh-key", "no-ssh-key")
 	createCmd.Flags().StringVar(&cpuLimit, "cpu", "4", "CPU limit (number of cores)")
 	createCmd.Flags().StringVar(&memoryLimit, "memory", "4GB", "Memory limit (e.g., 4GB, 2048MB)")
 	createCmd.Flags().StringVar(&diskLimit, "disk", "50GB", "Disk limit (e.g., 50GB, 100GB)")
@@ -104,6 +117,20 @@ func init() {
 	createCmd.Flags().StringVar(&createGitRef, "git-ref", "", "Exact ref to check out for --git-source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.")
 	createCmd.Flags().StringVar(&createGitCredentialFile, "git-credential-file", "", "Path to a file holding a bearer token for a private --git-source. Used daemon-side for one fetch; never written to the box's .git/config.")
 	createCmd.Flags().StringVar(&createWorkspacePath, "workspace-path", "", "Where --git-source lands inside the box. Empty defaults to /workspace.")
+}
+
+// validateSSHKeyMode enforces "exactly one of --ssh-key / --no-ssh-key".
+// cobra's MarkFlagsMutuallyExclusive also rejects setting both at parse time;
+// this is the authoritative rule and additionally covers the neither case
+// (which a required flag can't express once --no-ssh-key exists). See #388.
+func validateSSHKeyMode(noSSHKey bool, sshKeyPath string) error {
+	if noSSHKey && sshKeyPath != "" {
+		return fmt.Errorf("--ssh-key and --no-ssh-key are mutually exclusive")
+	}
+	if !noSSHKey && sshKeyPath == "" {
+		return fmt.Errorf("--ssh-key is required (or pass --no-ssh-key for a platform-managed service tenant accessed only via incus exec / the daemon)")
+	}
+	return nil
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
@@ -145,27 +172,43 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Read SSH key (now required)
-	// Expand home directory
-	expandedPath := sshKeyPath
-	if len(sshKeyPath) >= 2 && sshKeyPath[:2] == "~/" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("failed to get home directory: %w", err)
+	// Resolve the SSH key, unless this is a keyless (platform-managed) service
+	// tenant. Exactly one of --ssh-key / --no-ssh-key must be supplied.
+	if err := validateSSHKeyMode(noSSHKey, sshKeyPath); err != nil {
+		return err
+	}
+
+	var sshKey string
+	var sshKeys []string
+	if noSSHKey {
+		// Service tenant: seed no authorized_keys. The manager still adds the
+		// platform's jump-server key for daemon/ProxyJump reachability — no
+		// per-user private key is created or stored anywhere.
+		if verbose {
+			fmt.Println("  Keyless mode (--no-ssh-key): no SSH key will be seeded; access via platform only")
 		}
-		expandedPath = filepath.Join(homeDir, sshKeyPath[2:])
-	}
+	} else {
+		// Expand home directory
+		expandedPath := sshKeyPath
+		if len(sshKeyPath) >= 2 && sshKeyPath[:2] == "~/" {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to get home directory: %w", err)
+			}
+			expandedPath = filepath.Join(homeDir, sshKeyPath[2:])
+		}
 
-	if verbose {
-		fmt.Printf("  Reading SSH key from: %s\n", expandedPath)
-	}
+		if verbose {
+			fmt.Printf("  Reading SSH key from: %s\n", expandedPath)
+		}
 
-	keyBytes, err := os.ReadFile(expandedPath)
-	if err != nil {
-		return fmt.Errorf("failed to read SSH key from %s: %w\nPlease ensure the file exists and is readable", expandedPath, err)
+		keyBytes, err := os.ReadFile(expandedPath)
+		if err != nil {
+			return fmt.Errorf("failed to read SSH key from %s: %w\nPlease ensure the file exists and is readable", expandedPath, err)
+		}
+		sshKey = string(keyBytes)
+		sshKeys = []string{sshKey}
 	}
-	sshKey := string(keyBytes)
-	sshKeys := []string{sshKey}
 
 	// Handle --force flag: delete existing container if it exists
 	if forceRecreate {
@@ -248,10 +291,11 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create jump server account (only in local mode)
-	// This creates a proxy-only user account with /usr/sbin/nologin shell
-	// The account allows SSH ProxyJump but prevents direct shell access
-	if serverAddr == "" {
+	// Create jump server account (only in local mode, and only when a key was
+	// provided). This creates a proxy-only user account with /usr/sbin/nologin
+	// shell — it allows SSH ProxyJump but prevents direct shell access. A
+	// keyless service tenant has no SSH path, so there's no jump account to seed.
+	if serverAddr == "" && !noSSHKey {
 		if verbose {
 			fmt.Println()
 			fmt.Println("Setting up jump server access...")
@@ -307,7 +351,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// Success!
 	fmt.Println()
 	fmt.Printf("✓ Container %s created successfully!\n", info.Name)
-	if serverAddr == "" {
+	if serverAddr == "" && !noSSHKey {
 		fmt.Printf("✓ Jump server account: %s (proxy-only, no shell access)\n", username)
 	}
 	fmt.Println()
@@ -331,7 +375,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
-	if info.IPAddress != "" {
+	if noSSHKey {
+		fmt.Println("Platform-managed service tenant (--no-ssh-key):")
+		fmt.Println("  No SSH key was seeded. Operate this tenant via the platform:")
+		fmt.Printf("    incus exec %s -- <command>\n", info.Name)
+		fmt.Println("  (or the daemon RPCs / containarium subcommands). No private key exists.")
+		fmt.Println()
+	} else if info.IPAddress != "" {
 		fmt.Println("SSH Access (via ProxyJump):")
 		fmt.Println()
 		fmt.Println("Add to your ~/.ssh/config:")
