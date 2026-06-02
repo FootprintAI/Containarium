@@ -91,17 +91,18 @@ func testCreateContainerWithQuota(t *testing.T, ctx context.Context, grpcClient 
 	container, err := grpcClient.CreateContainer(
 		username,
 		"images:ubuntu/24.04",
-		"2",                            // 2 CPUs
-		"2GB",                          // 2GB RAM
-		fmt.Sprintf("%dGB", quotaGB),   // 10GB disk
-		[]string{},                     // No SSH keys for test
-		false,                          // No Podman
-		"",                             // No stack
-		"",                             // No GPU
-		0,                              // Default OS type
-		false,                          // No monitoring
-		"",                             // No pool
-		"",                             // No backend ID
+		"2",                          // 2 CPUs
+		"2GB",                        // 2GB RAM
+		fmt.Sprintf("%dGB", quotaGB), // 10GB disk
+		[]string{},                   // No SSH keys for test
+		false,                        // No Podman
+		"",                           // No stack
+		"",                           // No GPU
+		0,                            // Default OS type
+		false,                        // No monitoring
+		"",                           // No pool
+		"",                           // No backend ID
+		client.GitSourceOpts{},       // No git provisioning
 	)
 	require.NoError(t, err, "Failed to create container")
 	require.NotNil(t, container)
@@ -147,8 +148,9 @@ func testQuotaEnforcement(t *testing.T, ctx context.Context, grpcClient *client.
 		"",
 		0, // Default OS type
 		false,
-		"", // No pool
-		"", // No backend ID
+		"",                     // No pool
+		"",                     // No backend ID
+		client.GitSourceOpts{}, // No git provisioning
 	)
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -185,11 +187,11 @@ func testMultiContainerIsolation(t *testing.T, ctx context.Context, grpcClient *
 	t.Log("Creating multiple containers to test quota isolation...")
 
 	// Create two containers with different quotas
-	_, err := grpcClient.CreateContainer(user1, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", "", 0, false, "", "")
+	_, err := grpcClient.CreateContainer(user1, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", "", 0, false, "", "", client.GitSourceOpts{})
 	require.NoError(t, err)
 	defer grpcClient.DeleteContainer(user1, true)
 
-	_, err = grpcClient.CreateContainer(user2, "images:ubuntu/24.04", "1", "1GB", "15GB", []string{}, false, "", "", 0, false, "", "")
+	_, err = grpcClient.CreateContainer(user2, "images:ubuntu/24.04", "1", "1GB", "15GB", []string{}, false, "", "", 0, false, "", "", client.GitSourceOpts{})
 	require.NoError(t, err)
 	defer grpcClient.DeleteContainer(user2, true)
 
@@ -215,7 +217,7 @@ func testCompression(t *testing.T, ctx context.Context, grpcClient *client.GRPCC
 
 	t.Log("Creating container to test compression...")
 
-	_, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", "", 0, false, "", "")
+	_, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", "", 0, false, "", "", client.GitSourceOpts{})
 	require.NoError(t, err)
 	defer grpcClient.DeleteContainer(username, true)
 
@@ -238,7 +240,7 @@ func testPrepareRebootData(t *testing.T, ctx context.Context, grpcClient *client
 	t.Logf("Creating container for persistence test: %s", username)
 
 	// Create container
-	container, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "2", "2GB", "20GB", []string{}, false, "", "", 0, false, "", "")
+	container, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "2", "2GB", "20GB", []string{}, false, "", "", 0, false, "", "", client.GitSourceOpts{})
 	require.NoError(t, err)
 	require.NotNil(t, container)
 
@@ -251,11 +253,11 @@ func testPrepareRebootData(t *testing.T, ctx context.Context, grpcClient *client
 
 	// Save test state for post-reboot verification
 	state := RebootTestState{
-		Username:     username,
+		Username:      username,
 		ContainerName: info.Name,
-		TestData:     testData,
-		TestDataHash: testDataHash,
-		CreatedAt:    time.Now(),
+		TestData:      testData,
+		TestDataHash:  testDataHash,
+		CreatedAt:     time.Now(),
 	}
 
 	err = saveRebootTestState(stateFile, &state)
