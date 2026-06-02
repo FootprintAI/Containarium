@@ -8,8 +8,16 @@ throwaway VM, where the relevant daemons can't run on a dev host (e.g. macOS).
 `sshpiper-reload-301.sh` answers the one runtime question the fix hinges on:
 does the `sshpiperd` YAML plugin pick up `config.yaml` changes for **new**
 connections **without** a restart, while leaving **existing** sessions alive?
-(Today `RestartSSHPiper()` does `systemctl restart sshpiper`, which drops every
-live session on each container create/delete.)
+
+> **Resolved — Option A, confirmed from upstream source.** The `sshpiperd`
+> `yaml` plugin's `listPipe` calls `loadConfig()` (an `os.ReadFile` + parse of
+> `config.yaml`) on **every** incoming connection — there is no in-memory cache
+> and no restart/SIGHUP needed to pick up new routes, while in-flight
+> TCP-proxied sessions are untouched. See `plugin/yaml/skel.go`
+> (`listPipe` → `loadConfig`) and `plugin/yaml/yaml.go` in
+> `github.com/tg123/sshpiper`. The fix — delete the `RestartSSHPiper()` calls
+> and just write `config.yaml` — shipped accordingly. This harness now serves as
+> an empirical re-confirmation against the fleet's exact `sshpiperd` build.
 
 It stands up a hermetic sshpiper + a throwaway upstream sshd, holds a live
 session, rewrites the config to add a route, and checks Option A (hot-reload,

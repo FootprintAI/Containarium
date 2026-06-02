@@ -664,8 +664,10 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	if err := m.keyStore.Apply(); err != nil {
 		log.Printf("[sentinel] key apply on proxy switch failed: %v", err)
 	} else {
+		// Apply() rewrote config.yaml; sshpiperd's yaml plugin re-reads it per
+		// connection, so no restart is needed (and a restart would drop every
+		// live session — issue #301).
 		log.Printf("[sentinel] key sync on proxy switch: %d users", m.keyStore.SyncedCount())
-		m.keyStore.RestartSSHPiper()
 	}
 
 	// Handle port 443 via ConnMux if available (tunnel/hybrid mode)
@@ -1075,12 +1077,12 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 
 	log.Printf("[sentinel] tunnel disconnected: %s (remaining backends: %d)", backendID, m.backends.Count())
 
-	// Remove this backend's users from sshpiper config
+	// Remove this backend's users from sshpiper config. Apply() rewrites
+	// config.yaml, which sshpiperd's yaml plugin re-reads per connection — no
+	// restart needed (a restart would drop every live session, issue #301).
 	m.keyStore.RemoveBackend(backendID)
 	if err := m.keyStore.Apply(); err != nil {
 		log.Printf("[sentinel] key apply after tunnel disconnect failed: %v", err)
-	} else {
-		m.keyStore.RestartSSHPiper()
 	}
 
 	// If this was the primary, failover

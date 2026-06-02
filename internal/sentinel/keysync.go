@@ -8,9 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -124,7 +122,8 @@ func (ks *KeyStore) Apply() error {
 	var routes []userRoute
 
 	// Collect from all backends — sort backend IDs for deterministic iteration
-	// so the generated config is stable and doesn't cause unnecessary sshpiper restarts.
+	// so the generated config is byte-stable and we can skip the rewrite when
+	// nothing actually changed.
 	backendIDs := make([]string, 0, len(ks.backends))
 	for id := range ks.backends {
 		backendIDs = append(backendIDs, id)
@@ -255,19 +254,6 @@ func (ks *KeyStore) PushSentinelKey(backendIP string, httpPort int) error {
 	return nil
 }
 
-// RestartSSHPiper restarts the sshpiper systemd service.
-func (ks *KeyStore) RestartSSHPiper() error {
-	if runtime.GOOS != "linux" {
-		log.Printf("[keysync] sshpiper restart: skipping on %s", runtime.GOOS)
-		return nil
-	}
-	if err := exec.Command("systemctl", "restart", "sshpiper").Run(); err != nil {
-		return fmt.Errorf("failed to restart sshpiper: %w", err)
-	}
-	log.Printf("[keysync] sshpiper restarted")
-	return nil
-}
-
 // RunSyncLoop periodically syncs keys from a specific backend.
 // Blocks until ctx is cancelled.
 func (ks *KeyStore) RunSyncLoop(ctx context.Context, backendID, backendIP string, httpPort int, interval time.Duration) {
@@ -321,10 +307,14 @@ func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) {
 	changed := ks.configChanged
 	ks.mu.RUnlock()
 
+	// No sshpiper restart on a routing change. The sshpiperd `yaml` plugin
+	// re-reads /etc/sshpiper/config.yaml on every incoming connection (its
+	// listPipe → loadConfig path does an os.ReadFile per connect), so a fresh
+	// config is picked up by new connections automatically while in-flight
+	// sessions stay live. The previous `systemctl restart sshpiper` tore down
+	// every live SSH session on each container create/delete (issue #301).
 	if changed {
-		if err := ks.RestartSSHPiper(); err != nil {
-			log.Printf("[keysync] sshpiper restart failed: %v", err)
-		}
+		log.Printf("[keysync] sshpiper routing table updated; new connections pick it up on next connect (no restart)")
 	}
 }
 
