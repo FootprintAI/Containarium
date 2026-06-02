@@ -25,6 +25,11 @@ type ProxyManager struct {
 	// HTTP-01 + TLS-ALPN-01. Configured via WithDNSChallenge /
 	// DNSChallengeFromEnv. See issue #378.
 	dnsChallenge *CaddyACMEChallenges
+	// proxyProtocolTrusted records the CIDRs passed to the last successful
+	// EnableProxyProtocol, so the self-healing reconcile (EnsureBaseConfig)
+	// can re-install the PROXY listener wrappers after the bundled Caddy
+	// reverts to its stub Caddyfile. Empty = PROXY protocol not enabled. #400.
+	proxyProtocolTrusted []string
 }
 
 // RouteProtocol represents the protocol type for a route
@@ -801,7 +806,83 @@ func (p *ProxyManager) EnableProxyProtocol(trustedCIDRs []string) error {
 	if err := p.loadConfig(config); err != nil {
 		return fmt.Errorf("load config with proxy_protocol: %w", err)
 	}
+	// Remember the trusted set so EnsureBaseConfig can re-apply the wrappers
+	// after a stub-Caddyfile revert (#400).
+	p.proxyProtocolTrusted = append(p.proxyProtocolTrusted[:0], trustedCIDRs...)
 	return nil
+}
+
+// EnsureBaseConfig re-asserts the base Caddy edge config — the http app, the
+// `srv0` server, the tls app, and (when configured) the PROXY listener
+// wrappers — rebuilding them when the bundled Caddy has reverted to its stub
+// Caddyfile (`{ admin :2019 }`).
+//
+// The bundled `*-core-caddy` boots from that stub and is configured entirely
+// over the admin API; any caddy reload/restart/crash drops the running config
+// back to the stub, which wipes the http app. The periodic route sync then
+// loops on `400 invalid traversal path` and :443 goes permanently dark with no
+// self-heal (issue #400). Calling this at the top of every sync makes the edge
+// reconcile itself: once the base is rebuilt, the normal route/L4 diff
+// repopulates HTTP routes (with TLS subjects, via AddRoute→ProvisionTLS) and
+// re-activates layer4.
+//
+// It is cheap when the config is intact (a single GET) and only issues writes
+// on a detected revert. Returns whether it rebuilt.
+func (p *ProxyManager) EnsureBaseConfig() (bool, error) {
+	intact, err := p.baseConfigIntact()
+	if err != nil {
+		return false, err
+	}
+	if intact {
+		return false, nil
+	}
+	if err := p.EnsureServerConfig(); err != nil {
+		return false, fmt.Errorf("rebuild base server config: %w", err)
+	}
+	if len(p.proxyProtocolTrusted) > 0 {
+		if err := p.EnableProxyProtocol(p.proxyProtocolTrusted); err != nil {
+			return true, fmt.Errorf("re-apply PROXY protocol after rebuild: %w", err)
+		}
+	}
+	return true, nil
+}
+
+// baseConfigIntact reports whether the Caddy http server `srv0` is present and
+// (when PROXY protocol is configured) still carries its listener wrappers. A
+// false return means Caddy has reverted to the stub Caddyfile and the base
+// config must be rebuilt. See EnsureBaseConfig (#400).
+func (p *ProxyManager) baseConfigIntact() (bool, error) {
+	url := fmt.Sprintf("%s/config/apps/http/servers/%s", p.caddyAdminURL, p.serverName)
+	resp, err := p.httpClient.Get(url)
+	if err != nil {
+		return false, fmt.Errorf("probe http server config: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
+		return false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("probe http server config: status %d: %s", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" || trimmed == "null" {
+		return false, nil
+	}
+	// When PROXY protocol is enabled the server must keep its listener wrappers;
+	// a rebuilt-but-bare server (no wrappers) means the wrappers were wiped too.
+	if len(p.proxyProtocolTrusted) > 0 {
+		var srv map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(trimmed), &srv); err != nil {
+			// Malformed — treat as reverted so we rebuild from a known-good base.
+			return false, nil
+		}
+		if _, ok := srv["listener_wrappers"]; !ok {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // toAnySlice converts a []string into []interface{} for embedding into raw

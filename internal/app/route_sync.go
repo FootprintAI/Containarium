@@ -25,10 +25,10 @@ type RouteSyncJob struct {
 	wakeTracker    WakeTracker     // optional; when set, sleeping containers route to daemon's wake handler
 	interval       time.Duration
 
-	mu       sync.Mutex
-	running  bool
-	stopCh   chan struct{}
-	doneCh   chan struct{}
+	mu      sync.Mutex
+	running bool
+	stopCh  chan struct{}
+	doneCh  chan struct{}
 }
 
 // NewRouteSyncJob creates a new route sync job
@@ -138,6 +138,19 @@ func (j *RouteSyncJob) run(ctx context.Context) {
 
 // sync performs the actual synchronization from PostgreSQL to Caddy
 func (j *RouteSyncJob) sync(ctx context.Context) error {
+	// Self-heal the base Caddy config first. The bundled Caddy boots from a stub
+	// Caddyfile and is configured entirely over the admin API; any caddy
+	// reload/restart/crash reverts the running config to that stub, wiping the
+	// http app. Without this, the route diff below would loop on
+	// "400 invalid traversal path" and :443 would stay dark (issue #400).
+	// Rebuilding the base lets the diff repopulate HTTP routes (+ TLS subjects)
+	// and re-activate layer4 on this same tick. Cheap (one GET) when intact.
+	if rebuilt, err := j.proxyManager.EnsureBaseConfig(); err != nil {
+		log.Printf("[RouteSyncJob] Base Caddy config reconcile failed: %v", err)
+	} else if rebuilt {
+		log.Printf("[RouteSyncJob] Caddy reverted to stub config — rebuilt base edge config; routes/TLS/L4 will be repopulated this sync (#400)")
+	}
+
 	// Get routes from PostgreSQL (source of truth)
 	dbRoutes, err := j.routeStore.List(ctx, true) // activeOnly = true
 	if err != nil {
