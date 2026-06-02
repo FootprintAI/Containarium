@@ -246,20 +246,26 @@ func (j *RouteSyncJob) syncHTTPRoutes(dbRoutes []*RouteRecord) error {
 // syncL4Routes synchronizes TLS passthrough routes to the Caddy L4 layer.
 // L4 is lazily activated when passthrough routes exist and deactivated when empty.
 func (j *RouteSyncJob) syncL4Routes(dbRoutes []*RouteRecord) error {
-	if len(dbRoutes) == 0 {
-		// No passthrough routes — deactivate L4 if active
-		if j.l4ProxyManager.IsL4Active() {
-			if err := j.l4ProxyManager.DeactivateL4(); err != nil {
-				log.Printf("[RouteSyncJob] Failed to deactivate L4: %v", err)
-			} else {
-				log.Printf("[RouteSyncJob] L4 deactivated (no passthrough routes)")
-			}
-		}
-		return nil
-	}
-
-	// Passthrough routes exist — ensure L4 is active
+	// L4 ownership of :443 is a one-way latch. Activating L4 moves the HTTP
+	// server off :443 onto the fallback port and hands :443 to the layer4
+	// app; deactivating reverses it. BOTH rewrite the :443 listen address,
+	// which restarts the :443 listener and drops every in-flight TLS
+	// connection on it — including the response of a concurrent container
+	// create (issue #416: edge create returns "tls: internal error" while
+	// the box itself is provisioned). The 5s reconcile previously toggled
+	// activate/deactivate on every 0<->1 transition in the passthrough-route
+	// set, so any container's route churn bounced :443 for everyone.
+	//
+	// Fix: once L4 is active, keep it active. When the route set empties we
+	// drain the SNI routes down to the catch-all (handled by the diff below)
+	// instead of deactivating. A layer4 server holding only the catch-all is
+	// behaviourally identical to the HTTP-on-:443 baseline — non-matching SNI
+	// already falls through to the HTTP fallback — but it never rewrites the
+	// listen address, so the listener is never restarted under live traffic.
 	if !j.l4ProxyManager.IsL4Active() {
+		if len(dbRoutes) == 0 {
+			return nil // never activated and nothing to route — stay lazy
+		}
 		if err := j.l4ProxyManager.ActivateL4(); err != nil {
 			return fmt.Errorf("failed to activate L4: %w", err)
 		}
