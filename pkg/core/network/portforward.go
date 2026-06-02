@@ -78,6 +78,14 @@ func (pf *PortForwarder) SetupPortForwarding() error {
 		log.Printf("  Warning: failed to set route_localnet=1: %v (tunneled-primary loopback path may not work)", err)
 	}
 
+	// Clear Caddy DNAT/MASQUERADE rules that point at a *different* IP than the
+	// current one. When core-caddy is recreated it comes back with a new
+	// container IP; the per-rule existence checks below would then ADD rules for
+	// the new IP while leaving the old ones in place. The stale rule sorts first
+	// in the chain and matches, so all :443 traffic is DNAT'd to a container
+	// that no longer exists and the TLS handshake returns nothing (#400).
+	pf.reconcileStaleRules()
+
 	// Each rule is added independently with its own existence check.
 	// An older deploy may have PREROUTING but not OUTPUT — we want to
 	// add the missing one without duplicating what's already there.
@@ -250,6 +258,105 @@ func (pf *PortForwarder) removeMasqueradeRule() {
 	cmd := exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING",
 		"-d", pf.caddyIP, "-j", "MASQUERADE")
 	cmd.Run() // Ignore errors - rule might not exist
+}
+
+// reconcileStaleRules deletes Caddy port-forward DNAT/MASQUERADE rules whose
+// target IP is not pf.caddyIP. Best-effort: enumerates the nat table with
+// `iptables -t nat -S`, computes the stale deletions, and runs each. Failures
+// are logged, not fatal — the subsequent ensure*Rule calls still install the
+// current rules. See SetupPortForwarding / issue #400.
+func (pf *PortForwarder) reconcileStaleRules() {
+	out, err := exec.Command("iptables", "-t", "nat", "-S").CombinedOutput()
+	if err != nil {
+		log.Printf("  Warning: could not enumerate nat rules to clear stale Caddy targets: %v", err)
+		return
+	}
+	for _, args := range staleCaddyNATRules(string(out), pf.caddyIP) {
+		if e := exec.Command("iptables", args...).Run(); e != nil {
+			log.Printf("  Warning: failed to delete stale Caddy rule (%v): %v", args, e)
+		} else {
+			log.Printf("  Cleared stale Caddy port-forward rule pointing away from %s: %v", pf.caddyIP, args)
+		}
+	}
+}
+
+// staleCaddyNATRules scans `iptables -t nat -S` output and returns the argument
+// lists (ready to pass to `iptables`, with the leading `-A` turned into `-D`)
+// for Caddy port-forward rules that point at an IP other than currentIP:
+//
+//   - PREROUTING/OUTPUT DNAT rules whose --dport is 80 or 443 (the dport gate
+//     keeps passthrough-route DNATs, which use other ports, untouched), and
+//   - the POSTROUTING MASQUERADE rule of the form `-d <ip> -j MASQUERADE`
+//     with no -p/--dport (passthrough MASQUERADE rules carry -p/--dport, so
+//     they're left alone).
+//
+// Pure/string-only so it can be unit-tested without touching the host firewall.
+func staleCaddyNATRules(saveOutput, currentIP string) [][]string {
+	var dels [][]string
+	for _, raw := range strings.Split(saveOutput, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "-A ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		chain := fields[1]
+
+		var toIP, dport, dstIP string
+		isMasq := false
+		for i, f := range fields {
+			switch f {
+			case "--to-destination":
+				if i+1 < len(fields) {
+					toIP = hostOnly(fields[i+1])
+				}
+			case "--dport":
+				if i+1 < len(fields) {
+					dport = fields[i+1]
+				}
+			case "-d":
+				if i+1 < len(fields) {
+					dstIP = stripCIDR(fields[i+1])
+				}
+			case "MASQUERADE":
+				isMasq = true
+			}
+		}
+
+		stale := false
+		switch {
+		case (chain == "PREROUTING" || chain == "OUTPUT") && toIP != "" && (dport == "80" || dport == "443"):
+			stale = toIP != currentIP
+		case chain == "POSTROUTING" && isMasq && dport == "":
+			stale = dstIP != "" && dstIP != currentIP
+		}
+		if !stale {
+			continue
+		}
+
+		// Re-issue the exact rule spec as a delete: -t nat -D <chain> <rest>.
+		del := append([]string{"-t", "nat", "-D"}, fields[1:]...)
+		dels = append(dels, del)
+	}
+	return dels
+}
+
+// stripCIDR drops a trailing /prefix from an address ("10.0.3.5/32" → "10.0.3.5").
+func stripCIDR(s string) string {
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// hostOnly drops a trailing :port ("10.0.3.5:443" → "10.0.3.5").
+func hostOnly(s string) string {
+	if i := strings.LastIndexByte(s, ':'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // CheckIPTablesAvailable checks if iptables is available on the system
