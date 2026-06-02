@@ -35,6 +35,7 @@ type MockBackend struct {
 	WriteFileFunc            func(containerName, path string, content []byte, mode string) error
 	ReadFileFunc             func(containerName, path string) ([]byte, error)
 	SetConfigFunc            func(containerName, key, value string) error
+	SetCPULimitFunc          func(containerName, cpu string) error
 	UnsetConfigFunc          func(containerName, key string) error
 	SetDeviceSizeFunc        func(containerName, deviceName, size string) error
 	ResolveGPUInputToPCIFunc func(input string) (string, error)
@@ -168,6 +169,13 @@ func (m *MockBackend) ReadFile(containerName, path string) ([]byte, error) {
 func (m *MockBackend) SetConfig(containerName, key, value string) error {
 	if m.SetConfigFunc != nil {
 		return m.SetConfigFunc(containerName, key, value)
+	}
+	return nil
+}
+
+func (m *MockBackend) SetCPULimit(containerName, cpu string) error {
+	if m.SetCPULimitFunc != nil {
+		return m.SetCPULimitFunc(containerName, cpu)
 	}
 	return nil
 }

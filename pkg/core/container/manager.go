@@ -924,7 +924,7 @@ func (m *Manager) Resize(containerName, cpu, memory, disk string, verbose bool) 
 		if verbose {
 			fmt.Printf("  Setting CPU limit: %s\n", cpu)
 		}
-		if err := m.incus.SetConfig(containerName, "limits.cpu", cpu); err != nil {
+		if err := m.incus.SetCPULimit(containerName, cpu); err != nil {
 			if strings.Contains(err.Error(), "disk quota exceeded") || strings.Contains(err.Error(), "no space left") {
 				return fmt.Errorf("container disk is full. Include a larger disk size in the resize request, or clean up disk space first")
 			}

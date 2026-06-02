@@ -48,6 +48,7 @@ type Backend interface {
 
 	// Config & devices
 	SetConfig(containerName, key, value string) error
+	SetCPULimit(containerName, cpu string) error
 	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
 	UpdateContainerConfig(name, key, value string) error
@@ -474,9 +475,20 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 	// Set container configuration
 	req.Config = make(map[string]string)
 
-	// Resource limits
+	// Resource limits. CPU may be a whole-core count, a CPU set, or a
+	// fractional request (millicpu / decimal) — translate to the correct
+	// Incus key (limits.cpu vs limits.cpu.allowance). See issue #401.
 	if config.CPU != "" {
-		req.Config["limits.cpu"] = config.CPU
+		cl, err := parseCPULimit(config.CPU)
+		if err != nil {
+			return err
+		}
+		if cl.Count != "" {
+			req.Config["limits.cpu"] = cl.Count
+		}
+		if cl.Allowance != "" {
+			req.Config["limits.cpu.allowance"] = cl.Allowance
+		}
 	}
 	if config.Memory != "" {
 		req.Config["limits.memory"] = config.Memory
@@ -631,7 +643,7 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 		}
 
 		// Get CPU and memory limits from config
-		if cpu, ok := inst.Config["limits.cpu"]; ok {
+		if cpu := formatCPULimitFromConfig(inst.Config); cpu != "" {
 			info.CPU = cpu
 		}
 		if mem, ok := inst.Config["limits.memory"]; ok {
@@ -759,7 +771,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 	}
 
 	// Get resource limits
-	if cpu, ok := inst.Config["limits.cpu"]; ok {
+	if cpu := formatCPULimitFromConfig(inst.Config); cpu != "" {
 		info.CPU = cpu
 	}
 	if mem, ok := inst.Config["limits.memory"]; ok {
@@ -1192,6 +1204,41 @@ func (c *Client) GetContainerImageFingerprint(containerName string) (string, err
 		return "", fmt.Errorf("get instance for fingerprint: %w", err)
 	}
 	return inst.Config["volatile.base_image"], nil
+}
+
+// SetCPULimit updates a container's CPU limit, translating the request into
+// the correct Incus key — limits.cpu for whole-core counts and CPU sets, or
+// limits.cpu.allowance for fractional requests (millicpu / decimal). It clears
+// the other key first so a fractional→whole-core resize (or vice versa) never
+// leaves a stale, conflicting limit behind. See issue #401.
+func (c *Client) SetCPULimit(containerName, cpu string) error {
+	cl, err := parseCPULimit(cpu)
+	if err != nil {
+		return err
+	}
+
+	inst, etag, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get container: %w", err)
+	}
+
+	delete(inst.Config, "limits.cpu")
+	delete(inst.Config, "limits.cpu.allowance")
+	if cl.Count != "" {
+		inst.Config["limits.cpu"] = cl.Count
+	}
+	if cl.Allowance != "" {
+		inst.Config["limits.cpu.allowance"] = cl.Allowance
+	}
+
+	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if err != nil {
+		return fmt.Errorf("failed to update container config: %w", err)
+	}
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("failed to wait for config update: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) SetConfig(containerName, key, value string) error {
