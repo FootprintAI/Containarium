@@ -272,6 +272,9 @@ func (pf *PortForwarder) reconcileStaleRules() {
 		return
 	}
 	for _, args := range staleCaddyNATRules(string(out), pf.caddyIP) {
+		// #nosec G204 -- args are iptables rule specs read back from this host's
+		// own `iptables -t nat -S` output and re-issued verbatim as -D deletes;
+		// not external/user input.
 		if e := exec.Command("iptables", args...).Run(); e != nil {
 			log.Printf("  Warning: failed to delete stale Caddy rule (%v): %v", args, e)
 		} else {
