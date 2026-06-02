@@ -54,6 +54,11 @@ asyncpg = ["opentelemetry-instrumentation-asyncpg>=0.48b0"]
 psycopg = ["opentelemetry-instrumentation-psycopg>=0.48b0"]
 redis = ["opentelemetry-instrumentation-redis>=0.48b0"]
 logging = ["opentelemetry-instrumentation-logging>=0.48b0"]
+# `grpc` adds the OTLP gRPC exporter, for collectors that listen on OTLP
+# gRPC :4317 instead of HTTP :4318. Selected at runtime via
+# OTEL_EXPORTER_OTLP_PROTOCOL=grpc (#386). The HTTP exporter is a core
+# dependency, so the default transport needs no extra.
+grpc = ["opentelemetry-exporter-otlp-proto-grpc>=1.27.0"]
 # `all` is the convenience bundle — recommended default for greenfield
 # apps. Tenants with image-size sensitivity pin individual extras.
 all = [
@@ -74,6 +79,8 @@ dev = [
     # Used by integration tests for the instrumentor auto-discovery path.
     "flask>=2.0",
     "opentelemetry-instrumentation-flask>=0.48b0",
+    # So the test suite can exercise the OTLP gRPC exporter path (#386).
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
 ]
 
 # `containarium-instrument` is always installed (D8) — it's a console
