@@ -51,6 +51,59 @@ fi
 BINARY_SIZE=$(du -h "$BINARY" | cut -f1)
 echo "==> Binary: $BINARY ($BINARY_SIZE)"
 
+# 1b. Preflight: the sentinel↔daemon HMAC secret must already be provisioned.
+#
+# v0.19.0+ gates the sentinel-facing endpoints (/authorized-keys, /certs,
+# /authorized-keys/sentinel) behind an HMAC over CONTAINARIUM_SENTINEL_AUTH_SECRET
+# (>=32 bytes), loaded from /etc/containarium/env.secrets via a systemd
+# EnvironmentFile drop-in. Swapping a v0.19.0+ binary onto a host that lacks the
+# secret silently 401s every sentinel keysync/certsync cycle — sshpiper config
+# freezes, upstream pointers go stale, and tenants get locked out for hours
+# before anyone finds the 401 (issue #341). Refuse to swap the binary until the
+# secret is in place rather than recreate that outage.
+#
+# Set ALLOW_MISSING_SENTINEL_SECRET=1 to bypass (deliberate pre-HMAC rollback,
+# or an unsecured single-node dev box). See docs/SENTINEL-AUTH-SECRET.md for how
+# to generate and distribute the secret.
+SECRET_FILE="/etc/containarium/env.secrets"
+SECRET_MIN_LEN=32
+RUNBOOK="docs/SENTINEL-AUTH-SECRET.md"
+# grep emits SECRET_OK iff env.secrets holds a CONTAINARIUM_SENTINEL_AUTH_SECRET
+# value of at least SECRET_MIN_LEN chars; SECRET_MISSING otherwise (incl. no file).
+SECRET_CHECK_CMD="sudo grep -Eq '^CONTAINARIUM_SENTINEL_AUTH_SECRET=.{${SECRET_MIN_LEN},}' '$SECRET_FILE' 2>/dev/null && echo SECRET_OK || echo SECRET_MISSING"
+
+if [[ "${ALLOW_MISSING_SENTINEL_SECRET:-0}" == "1" ]]; then
+    echo "==> ALLOW_MISSING_SENTINEL_SECRET=1 — skipping HMAC secret preflight (#341)"
+else
+    echo "==> Preflight: checking CONTAINARIUM_SENTINEL_AUTH_SECRET on sentinel + primary (#341)..."
+    missing=()
+
+    sentinel_secret=$(gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
+        --tunnel-through-iap --ssh-flag="-p 2222" --command="$SECRET_CHECK_CMD" 2>/dev/null || echo SECRET_MISSING)
+    [[ "$sentinel_secret" == *SECRET_OK* ]] || missing+=("sentinel ($SENTINEL_VM)")
+
+    primary_secret=$(gcloud compute ssh "$PRIMARY_VM" --zone="$ZONE" --project="$PROJECT" \
+        --tunnel-through-iap --command="$SECRET_CHECK_CMD" 2>/dev/null || echo SECRET_MISSING)
+    [[ "$primary_secret" == *SECRET_OK* ]] || missing+=("primary ($PRIMARY_VM)")
+
+    if (( ${#missing[@]} > 0 )); then
+        echo ""
+        echo "ERROR: CONTAINARIUM_SENTINEL_AUTH_SECRET (>=${SECRET_MIN_LEN} bytes) is not provisioned on:"
+        for h in "${missing[@]}"; do echo "         - $h"; done
+        echo ""
+        echo "  Deploying a v0.19.0+ binary here would silently 401 every sentinel"
+        echo "  keysync/certsync cycle and can SSH-lock tenants for hours (#341)."
+        echo ""
+        echo "  Provision the secret first (one per cluster, same value on every host):"
+        echo "    see $RUNBOOK"
+        echo ""
+        echo "  To bypass intentionally (pre-HMAC rollback / unsecured dev box):"
+        echo "    ALLOW_MISSING_SENTINEL_SECRET=1 $0 $*"
+        exit 1
+    fi
+    echo "  OK: secret present on sentinel and primary"
+fi
+
 # 2. Upload to sentinel
 echo "==> Uploading to sentinel..."
 gcloud compute scp "$BINARY" "$SENTINEL_VM:/tmp/containarium" \
@@ -94,3 +147,8 @@ echo ""
 echo "  NOTE: If peers have --sentinel-url configured, they will auto-update"
 echo "        from the sentinel within 5 minutes. Otherwise, run the printed"
 echo "        commands with sudo on each peer."
+echo ""
+echo "  NOTE: Peer daemons also need CONTAINARIUM_SENTINEL_AUTH_SECRET set to the"
+echo "        same cluster secret (the preflight above only gates sentinel +"
+echo "        primary). Verify each peer has it before they take sentinel"
+echo "        keysync/certsync traffic — see $RUNBOOK."
