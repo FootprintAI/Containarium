@@ -149,6 +149,14 @@ func (j *RouteSyncJob) sync(ctx context.Context) error {
 		log.Printf("[RouteSyncJob] Base Caddy config reconcile failed: %v", err)
 	} else if rebuilt {
 		log.Printf("[RouteSyncJob] Caddy reverted to stub config — rebuilt base edge config; routes/TLS/L4 will be repopulated this sync (#400)")
+		// Per-route TLS subjects come back via the diff below, but the
+		// `*.<base-domain>` wildcard isn't tied to a route — re-provision it
+		// here so a Caddy reload doesn't silently drop wildcard coverage (#389).
+		if j.proxyManager.HasDNSChallenge() {
+			if err := j.proxyManager.ProvisionWildcardTLS(); err != nil {
+				log.Printf("[RouteSyncJob] re-provision wildcard TLS after rebuild failed: %v", err)
+			}
+		}
 	}
 
 	// Get routes from PostgreSQL (source of truth)

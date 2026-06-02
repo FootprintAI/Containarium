@@ -578,6 +578,21 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							}
 						}
 
+						// With DNS-01 configured, provision a single `*.<base-domain>`
+						// wildcard so every per-region / subdomain endpoint
+						// (region-a.<base>, …) gets a cert from one issuance — no
+						// per-hostname HTTP-01, which sidesteps both the HTTP-01
+						// redirect failure and Let's Encrypt per-domain rate limits
+						// as regions scale (#389). Best-effort; per-route ProvisionTLS
+						// still covers individual hostnames if this is skipped.
+						if proxyManager.HasDNSChallenge() {
+							if err := proxyManager.ProvisionWildcardTLS(); err != nil {
+								log.Printf("Warning: failed to provision wildcard TLS (*.%s): %v", config.BaseDomain, err)
+							} else {
+								log.Printf("Caddy TLS: provisioned wildcard *.%s via DNS-01", config.BaseDomain)
+							}
+						}
+
 						// Create L4ProxyManager for TLS passthrough (SNI-based) routing
 						l4ProxyManager := app.NewL4ProxyManager(caddyAdminURL)
 						if config.ProxyProtocol {

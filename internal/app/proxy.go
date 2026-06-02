@@ -90,6 +90,14 @@ func (p *ProxyManager) WithDNSChallenge(dns *CaddyACMEChallenges) *ProxyManager 
 	return p
 }
 
+// HasDNSChallenge reports whether the manager is configured to solve ACME
+// DNS-01 — i.e. whether a wildcard certificate can be issued (HTTP-01 /
+// TLS-ALPN-01 cannot). Callers use this to decide whether to provision a
+// `*.<base-domain>` wildcard for per-region/subdomain endpoints. See #389.
+func (p *ProxyManager) HasDNSChallenge() bool {
+	return p.dnsChallenge != nil
+}
+
 // SetServerName sets the Caddy server name (useful when Caddy uses a custom server name)
 func (p *ProxyManager) SetServerName(name string) {
 	p.serverName = name
