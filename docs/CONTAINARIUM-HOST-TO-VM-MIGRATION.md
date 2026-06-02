@@ -172,6 +172,20 @@ sudo virt-install --name containarium-vm \
 
 **Gate:** VM is up, has a LAN IP, Tailscale-reachable, `nvidia-smi` sees the GPU, Incus is initialized.
 
+> Verify GPU passthrough end-to-end — that the GPU is usable from inside an
+> **LXC**, not just from the VM shell — with the standalone gate script (no
+> daemon needed). It launches a throwaway `nvidia.runtime=true` LXC, runs
+> `nvidia-smi` inside, parses the model + driver, and tears it down:
+>
+> ```sh
+> sudo ./scripts/validate-gpu-passthrough.sh            # or --pci 0000:01:00.0, --json
+> # → ✓ GPU PASSTHROUGH OK: NVIDIA GeForce RTX 4090 (driver 570.x)
+> ```
+>
+> A non-zero exit here is the **D6 rollback trigger** — abort the migration
+> rather than continue with a broken GPU. Re-run it after any VFIO bind or
+> driver upgrade too. (#316)
+
 ### Phase 4 — LXC migration (host → VM)
 
 For each container, in this order (platform first, then CPU-only user containers, GPU container last):
