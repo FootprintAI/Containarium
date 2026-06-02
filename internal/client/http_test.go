@@ -1,9 +1,54 @@
 package client
 
 import (
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
+
+// trackBody records whether it was read to EOF and closed, so a test can
+// assert drainClose's drain-before-close behaviour.
+type trackBody struct {
+	r         io.Reader
+	readToEOF bool
+	closed    bool
+}
+
+func (b *trackBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err == io.EOF {
+		b.readToEOF = true
+	}
+	return n, err
+}
+
+func (b *trackBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+// TestDrainClose_DrainsThenCloses guards the HTTP/2 hygiene fix
+// (FootprintAI/Containarium#422): a response body must be drained to EOF
+// before Close so Go doesn't emit a stream-cancelling RST_STREAM/PING that
+// a fronting edge (Cloudflare) treats as abusive.
+func TestDrainClose_DrainsThenCloses(t *testing.T) {
+	body := &trackBody{r: strings.NewReader("unread payload")}
+	drainClose(&http.Response{Body: body})
+	if !body.readToEOF {
+		t.Error("drainClose must read the body to EOF before closing")
+	}
+	if !body.closed {
+		t.Error("drainClose must close the body")
+	}
+}
+
+// TestDrainClose_NilSafe: drainClose must tolerate a nil response or body
+// (some methods return early before assigning resp).
+func TestDrainClose_NilSafe(t *testing.T) {
+	drainClose(nil)
+	drainClose(&http.Response{})
+}
 
 // TestNewHTTPClient_PinsHTTP1 is the regression guard for
 // FootprintAI/Containarium#422: the REST client must NOT negotiate

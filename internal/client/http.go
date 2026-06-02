@@ -88,9 +88,27 @@ func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body in
 	return c.httpClient.Do(req)
 }
 
+// drainClose fully drains then closes an HTTP response body. Draining
+// before Close matters for HTTP/2: a body closed while still unread makes
+// Go send a RST_STREAM (plus a PING) to cancel the stream, which
+// Cloudflare and similar edges treat as abusive client behaviour and
+// answer by tearing down the whole connection (GOAWAY ENHANCE_YOUR_CALM)
+// — see FootprintAI/Containarium#422 and
+// https://blog.cloudflare.com/go-and-enhance-your-calm/. This REST client
+// is pinned to HTTP/1.1 today (where the concern is moot), but draining on
+// every path keeps it correct if HTTP/2 is ever re-enabled, and it's a
+// no-op cost when the caller already read the body to EOF.
+func drainClose(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
 // parseResponse reads and parses the response body
 func parseResponse[T any](resp *http.Response) (*T, error) {
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -303,7 +321,7 @@ func (c *HTTPClient) ToggleAutoSleep(username string, enabled bool, idleThreshol
 	if err != nil {
 		return nil, fmt.Errorf("toggle auto-sleep: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -343,7 +361,7 @@ func (c *HTTPClient) StartContainer(username string, waitForReady bool, readyTim
 	if err != nil {
 		return nil, fmt.Errorf("start container: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -374,7 +392,7 @@ func (c *HTTPClient) StopContainer(username string, force bool) (*pb.StopContain
 	if err != nil {
 		return nil, fmt.Errorf("stop container: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -409,7 +427,7 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	if err != nil {
 		return "", false, fmt.Errorf("toggle monitoring: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -444,7 +462,7 @@ func (c *HTTPClient) RefreshToken(refreshTok string) (string, string, int64, int
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("refresh token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return "", "", 0, 0, parseErr(b, resp.StatusCode, "refresh token")
@@ -496,7 +514,7 @@ func (c *HTTPClient) ListRevokedTokens(limit int32, includeExpired bool, jtiPref
 	if err != nil {
 		return nil, fmt.Errorf("list revoked tokens: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, parseErr(b, resp.StatusCode, "list revoked tokens")
@@ -528,7 +546,7 @@ func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("revoke token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return "", parseErr(b, resp.StatusCode, "revoke token")
@@ -560,7 +578,7 @@ func (c *HTTPClient) SetSecret(username, name, value, delivery string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("set secret: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return "", parseErr(b, resp.StatusCode, "set secret")
@@ -581,7 +599,7 @@ func (c *HTTPClient) GetSecret(username, name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get secret: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return "", parseErr(b, resp.StatusCode, "get secret")
@@ -604,7 +622,7 @@ func (c *HTTPClient) ListSecrets(username string) ([]map[string]interface{}, err
 	if err != nil {
 		return nil, fmt.Errorf("list secrets: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, parseErr(b, resp.StatusCode, "list secrets")
@@ -625,7 +643,7 @@ func (c *HTTPClient) DeleteSecret(username, name string) error {
 	if err != nil {
 		return fmt.Errorf("delete secret: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return parseErr(b, resp.StatusCode, "delete secret")
@@ -642,7 +660,7 @@ func (c *HTTPClient) RefreshSecrets(username string) (string, int32, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("refresh secrets: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return "", 0, parseErr(b, resp.StatusCode, "refresh secrets")
@@ -687,7 +705,7 @@ func (c *HTTPClient) ResizeContainer(username, cpu, memory, disk string) (string
 	if err != nil {
 		return "", fmt.Errorf("resize container: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -723,7 +741,7 @@ func (c *HTTPClient) DeleteContainer(username string, force bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete container: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -773,7 +791,7 @@ func (c *HTTPClient) DebugContainer(username string) (*pb.DebugContainerResponse
 	if err != nil {
 		return nil, fmt.Errorf("failed to debug container: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -831,7 +849,7 @@ func (c *HTTPClient) InstallStack(username, stackID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to install stack: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -856,7 +874,7 @@ func (c *HTTPClient) ListRecipes() ([]*pb.Recipe, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list recipes: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -879,7 +897,7 @@ func (c *HTTPClient) GetRecipe(id string) (*pb.Recipe, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get recipe: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -910,7 +928,7 @@ func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	if err != nil {
 		return nil, fmt.Errorf("deploy recipe: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -956,7 +974,7 @@ func (c *HTTPClient) SetLabels(username string, labels map[string]string) error 
 	if err != nil {
 		return fmt.Errorf("failed to set labels: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -983,7 +1001,7 @@ func (c *HTTPClient) RemoveLabel(username string, key string) error {
 	if err != nil {
 		return fmt.Errorf("failed to remove label: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
