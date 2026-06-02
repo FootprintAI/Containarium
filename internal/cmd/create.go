@@ -202,6 +202,8 @@ func runCreate(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  Reading SSH key from: %s\n", expandedPath)
 		}
 
+		// #nosec G304 -- operator-supplied --ssh-key path; reading it is the
+		// documented purpose of the flag (same trust as --git-credential-file).
 		keyBytes, err := os.ReadFile(expandedPath)
 		if err != nil {
 			return fmt.Errorf("failed to read SSH key from %s: %w\nPlease ensure the file exists and is readable", expandedPath, err)
