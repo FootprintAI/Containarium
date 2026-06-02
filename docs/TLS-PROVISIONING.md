@@ -127,6 +127,40 @@ For wildcard certificates (e.g., `*.example.com`), use DNS-01 challenge:
 
 See [CADDY-SETUP.md](CADDY-SETUP.md) for detailed DNS provider configuration.
 
+## Per-region / multi-hostname HTTPS (DNS-01 — supported path)
+
+The Caddyfile above is illustrative; the daemon manages its bundled `core-caddy`
+entirely over the **admin API** (no Caddyfile), so a multi-region control plane
+that serves each node at a per-region hostname (`region-a.example.com`,
+`region-b.example.com`, …) is configured via env + flags:
+
+1. **Serve the hostnames.** The daemon fronts every domain passed via the
+   repeatable `--public-base-domain` flag (in addition to `--base-domain`);
+   each gets a route to the daemon's REST endpoint (#213).
+2. **Enable DNS-01.** Set `CONTAINARIUM_ACME_DNS_PROVIDER=cloudflare` (plus the
+   provider token, e.g. `CF_API_TOKEN`). The daemon builds `core-caddy` with the
+   matching `caddy-dns` module and configures the ACME/ZeroSSL issuers to solve
+   DNS-01 (#378).
+3. **Wildcard is auto-provisioned.** With DNS-01 configured, the daemon adds a
+   single `*.<base-domain>` wildcard subject to TLS automation at edge startup
+   (and re-adds it after a Caddy reload). One DNS-01 issuance then covers every
+   current and future per-region subdomain — no per-hostname issuance, no
+   HTTP-01 (#389).
+
+**This is the supported path for per-region / wildcard HTTPS.**
+
+### HTTP-01 caveat (when DNS-01 is *not* configured)
+
+Without a DNS provider, each additional hostname falls back to per-hostname
+HTTP-01. HTTP-01 is fragile for this edge: the ACME validator fetches
+`http://<host>/.well-known/acme-challenge/<token>` on :80 and must **not** be
+redirected to HTTPS (RFC 8555 §8.3), but auto-HTTPS / route ordering on the
+shared :80/:443 server can shadow the challenge, and issuance then fails with
+`tls: internal error`. A hardened HTTP-01 carve-out for the multi-hostname edge
+is **not shipped** — it needs a live Let's Encrypt round-trip to verify safely,
+and a wrong edge-TLS change risks every hostname. For per-region / multiple
+hostnames, **use DNS-01** (above). The HTTP-01 carve-out is tracked in #389.
+
 ## Troubleshooting
 
 ### Certificate Not Issued
