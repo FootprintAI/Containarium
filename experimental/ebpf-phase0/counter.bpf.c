@@ -9,8 +9,10 @@
 // If those three hold, Phase A productionalizes; if any fails, the
 // design needs to be revised before the user-facing work starts.
 //
-// Build:
-//   clang -O2 -g -target bpf -c counter.bpf.c -o counter.bpf.o
+// Build (the multiarch -I lets clang's bpf target find <asm/types.h>,
+// which linux/bpf.h pulls in; without it the build fails on stock Ubuntu):
+//   clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
+//       -c counter.bpf.c -o counter.bpf.o
 //
 // Requires kernel ≥ 5.4 with BPF + CLS_BPF enabled (Ubuntu 24.04 is
 // fine out of the box).

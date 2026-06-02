@@ -75,7 +75,12 @@ trap cleanup EXIT
 
 echo "==> 1/5: building BPF object"
 cd "$SCRIPT_DIR"
-clang -O2 -g -target bpf -c counter.bpf.c -o counter.bpf.o
+# linux/bpf.h pulls in <asm/types.h>, which on Debian/Ubuntu lives under the
+# multiarch dir (/usr/include/x86_64-linux-gnu/asm/) — clang's `-target bpf`
+# default search path doesn't include it, so add it explicitly. Without this
+# the build fails on a stock Ubuntu 24.04 with "asm/types.h file not found".
+MULTIARCH_INC="/usr/include/$(uname -m)-linux-gnu"
+clang -O2 -g -target bpf -I"$MULTIARCH_INC" -c counter.bpf.c -o counter.bpf.o
 echo "    OK: counter.bpf.o ($(stat -c%s counter.bpf.o) bytes)"
 
 echo "==> 2/5: attaching to $BRIDGE"
