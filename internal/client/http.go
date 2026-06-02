@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,11 +33,27 @@ func NewHTTPClient(baseURL string, token string) (*HTTPClient, error) {
 	// Remove trailing slash
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
+	// Pin HTTP/1.1. Go's default client negotiates HTTP/2 via ALPN against
+	// an HTTPS server, but a long-running request (a container create can
+	// take minutes) carried on an HTTP/2 connection through a fronting TLS
+	// edge intermittently gets the connection reset with
+	// `remote error: tls: internal error` — the server still completes the
+	// work (the box is provisioned), only the response connection dies. The
+	// identical request over HTTP/1.1 (e.g. curl's default) is clean. This
+	// REST client issues one request per process, so HTTP/2 multiplexing
+	// buys nothing here. Clearing TLSNextProto on a cloned default transport
+	// is the documented way to force HTTP/1.1 on net/http while keeping the
+	// default dial/timeout/proxy behaviour. See FootprintAI/Containarium#422.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
+
 	return &HTTPClient{
 		baseURL: baseURL,
 		token:   token,
 		httpClient: &http.Client{
-			Timeout: 15 * time.Minute, // Match gRPC client timeout for container creation
+			Timeout:   15 * time.Minute, // Match gRPC client timeout for container creation
+			Transport: transport,
 		},
 	}, nil
 }
