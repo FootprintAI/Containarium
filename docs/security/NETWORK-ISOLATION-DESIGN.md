@@ -259,13 +259,32 @@ traffic, so Phase A starts from the corrected per-container-veth
 The companion `CLOUD-ACTUATION-CLIENT-DESIGN.md` (in review) adds a daemon mode
 where a cloud control plane pushes *desired-state* container assignments to a
 registered host; the host reconciles them into Incus and reports observed state
-back. Multiple **customers'** containers then land on **one shared host bridge** —
-which is precisely the threat this design was written for. In single-tenant
-self-host the "malicious / compromised tenant scanning a neighbour" model is
-hypothetical; on a shared cloud host it is the operating reality. So per-tenant
-isolation is not merely compatible with the cloud — it is the cloud's
-load-bearing isolation layer, and a multi-customer host **must** run the enforcer
-armed.
+back. Multiple **customers' (orgs')** containers then run on one host fleet.
+
+### Reconciliation with the cloud's existing isolation model
+
+The cloud already has a network-isolation design, and it is **not** this one.
+`Containarium-cloud`'s `prd/cloud/data-isolation.md` defines a seven-layer
+defense-in-depth model; **Layer 4 (network isolation) is per-org Linux bridges** —
+each org gets its own bridge, per-container veths land only on the owning org's
+bridge, and there is no cross-bridge routing inside the host. Cross-org L2/L3
+lateral movement is therefore owned by **bridge topology** (designed + a CI
+breach sentry built, `cmd/isolation-sentry`, cloud #191), not by eBPF. This
+design's `allow_intra_tenant` / `ip_tenant` cross-tenant machinery is redundant
+there — on a per-org bridge every peer is already same-org by construction.
+
+What per-org bridges do **not** provide — and what `data-isolation.md` explicitly
+scopes *out* ("egress filtering … belongs elsewhere") — is the rest of this
+design: an **egress allow-list (CIDR + domain), cloud-metadata default-deny, and
+per-flow deny observability**. No cloud mechanism owns that today. **That is
+eBPF's role on the cloud:** the per-veth egress + metadata + audit layer that
+sits *on top of* per-org bridges, not a replacement for them. On a real cloud
+instance the metadata block is load-bearing — `169.254.169.254` hands out the
+host's cloud credentials.
+
+So the cloud posture is: **bridges for cross-org, eBPF for egress.** A
+multi-customer host runs the enforcer armed (`enforce` mode) with each org's
+egress policy; cross-org isolation continues to come from Layer 4.
 
 ### The blocker: tenant identity is name-derived
 
@@ -275,30 +294,35 @@ entirely** (no policy, no veth attach). The cloud-actuation design proposes
 naming cloud-assigned containers `cld-<short-uuid>` so they don't collide with
 operator-managed `alice-container` names.
 
-Consequence: **cloud-assigned containers would today get zero isolation** —
-`tenantOf("cld-1a2b3c")` returns `""`, the enforcer ignores them, and every
-customer's container shares the bridge wide open. Closing this is a prerequisite
-for any multi-customer cloud host.
+Consequence: **cloud-assigned containers would get no egress policy** —
+`tenantOf("cld-1a2b3c")` returns `""`, the enforcer skips them, so they reach the
+internet (and the metadata service) unrestricted. (Cross-org reachability is
+still blocked by the per-org bridge — that's Layer 4 — but egress is wide open.)
+Closing this is a prerequisite for applying egress policy to any cloud container.
 
 ### Integration points
 
-1. **Decouple tenant identity from the container name.** Incus already supports
-   per-instance labels (`user.containarium.*`). When the actuation reconciler
-   creates a `cld-<uuid>` container it stamps `user.containarium.tenant=<customer>`
-   from the assignment; the enforcer's `gather()` reads tenant from that label,
-   falling back to the `<tenant>-container` name convention for operator-managed
-   containers. One small change to tenant derivation serves both worlds — and it
-   removes the brittle "tenant == name prefix" coupling regardless of cloud.
+1. **Decouple tenant identity from the container name.** ✅ **Done** (the
+   enforcer's `gather()` reads `incus.ContainerInfo.Tenant` from the
+   `user.containarium.tenant` label, falling back to the `<tenant>-container`
+   name). What's still missing is the **writer**: the actuation `Assignment`
+   proto carries no `org_id` today (only `container_id`, `name`, `image`,
+   resources, `desired_state`), so the reconciler has nothing to stamp the label
+   *from* yet. Cloud-side prerequisite: add `org_id` to `Assignment`, then the
+   reconciler sets `user.containarium.tenant=<org_id>` on each `cld-<uuid>`
+   container at create.
 
 2. **NetworkPolicy becomes cloud desired-state, not just local CLI.** Today a
    policy is authored via `containarium network-policy set` into the host's
-   Postgres. In the cloud the policy is the control plane's concern, so it rides
-   the actuation channel: the assignment/desired-state contract carries each
-   tenant's `NetworkPolicy`, and the reconciler writes it into the local
-   `NetworkPolicyStore`. The existing enforcer reconcile loop then applies it
+   Postgres. In the cloud the egress policy is the control plane's concern, so it
+   should ride the actuation channel — but the `Assignment` message has **no
+   network-policy field today** (it's container-spec only). Cloud-side
+   prerequisite: a `NetworkPolicy` (or egress-allowlist) message on the
+   assignment/desired-state contract; the OSS reconciler then writes it into the
+   local `NetworkPolicyStore` and the existing enforcer reconcile loop applies it
    unchanged — same desired/observed split the actuation client already uses for
-   containers. This is a **proto-first, cross-repo** change: the field lands in
-   the cloud repo's actuation proto before the OSS client consumes it.
+   containers. Proto-first, lands in `Containarium-cloud` before the OSS client
+   consumes it.
 
 3. **Default to enforce, deny-by-default, on cloud hosts.** The two opt-ins
    (`CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` to observe, then
@@ -317,12 +341,16 @@ for any multi-customer cloud host.
 
 ### Cross-repo dependency
 
-The tenant↔customer model (one customer = one tenant? customer-ID shape? does the
-control plane already carry a network-policy concept?) lives in the cloud repo's
-[`prd/cloud/multi-tenancy.md`](https://github.com/FootprintAI/Containarium-cloud/blob/main/prd/cloud/multi-tenancy.md).
-Integration points 1 and 2 depend on that contract, and point 2's proto field
-lands there first. That PRD plus `CLOUD-ACTUATION-CLIENT-DESIGN.md` are the
-prerequisites; this section is the OSS-side contract they plug into.
+The tenant model lives in `Containarium-cloud`: one **org** is the tenant
+(`org_id` on every control-plane row), and network isolation is
+[`prd/cloud/data-isolation.md`](https://github.com/FootprintAI/Containarium-cloud/blob/main/prd/cloud/data-isolation.md)
+Layer 4 (per-org bridges) + [`prd/cloud/multi-tenancy.md`](https://github.com/FootprintAI/Containarium-cloud/blob/main/prd/cloud/multi-tenancy.md).
+The two cloud-side prerequisites for points 1–2 are both proto additions to
+[`actuation_service.proto`](https://github.com/FootprintAI/Containarium-cloud/blob/main/proto/containarium/cloud/v1/actuation_service.proto):
+an `org_id` on `Assignment` (so the reconciler can stamp the tenant label) and a
+network-policy / egress-allowlist message (so egress policy rides desired-state).
+Both land in `Containarium-cloud` first; this section plus
+`CLOUD-ACTUATION-CLIENT-DESIGN.md` are the OSS-side contract they plug into.
 
 ## What this is NOT
 
