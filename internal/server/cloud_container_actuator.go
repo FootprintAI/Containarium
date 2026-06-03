@@ -111,6 +111,12 @@ func buildContainerConfig(spec cloud.ContainerSpec) incus.ContainerConfig {
 	if spec.GPUCount > 0 {
 		cfg.GPU = &incus.GPUDevice{} // empty = pass through all GPUs
 	}
+	if len(spec.SecretEnv) > 0 {
+		cfg.Env = make(map[string]string, len(spec.SecretEnv))
+		for k, v := range spec.SecretEnv {
+			cfg.Env[k] = v
+		}
+	}
 	return cfg
 }
 

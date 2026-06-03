@@ -10,7 +10,11 @@ func TestBuildContainerConfig(t *testing.T) {
 	cfg := buildContainerConfig(cloud.ContainerSpec{
 		LocalName: "cld-abc", Image: "ubuntu:24.04",
 		RAMMB: 2048, DiskGB: 40, GPUCount: 1,
+		SecretEnv: map[string]string{"API_TOKEN": "shh"},
 	})
+	if cfg.Env["API_TOKEN"] != "shh" {
+		t.Errorf("secret_env not injected as container env: %v", cfg.Env)
+	}
 	if cfg.Name != "cld-abc" || cfg.Image != "ubuntu:24.04" {
 		t.Errorf("name/image wrong: %+v", cfg)
 	}

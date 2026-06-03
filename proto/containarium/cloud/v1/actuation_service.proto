@@ -124,7 +124,26 @@ message Assignment {
   int32 disk_gb = 13;
   int32 gpu_count = 14;
 
+  // Routes to expose for this container (hostname → container port). The host
+  // registers each with its edge (Caddy) so the workload is reachable. Full set
+  // for the container; empty = no inbound routes.
+  repeated PortRoute routes = 15;
+
+  // Secret environment variables to inject into the container (name → value).
+  // Carried so the host stamps them at create. EMPTY for now — the cloud has no
+  // per-container secrets model yet; this is the forward contract the OSS host
+  // already applies (as container env) once the cloud populates it.
+  map<string, string> secret_env = 16;
+
   google.protobuf.Timestamp updated_at = 20;
+}
+
+// PortRoute is one hostname→container-port exposure (mirrors the cloud Route
+// model: Domain, TargetPort, Protocol).
+message PortRoute {
+  string domain = 1;
+  int32 target_port = 2;
+  string protocol = 3; // "http" | "https" | "tcp"; empty defaults to http
 }
 
 // NetworkPolicyMode controls whether an org's egress policy is enforced or only
