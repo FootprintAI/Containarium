@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/autosleep"
+	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/internal/collaborator"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
@@ -176,6 +177,7 @@ type DualServer struct {
 	ttlSweeperManager     *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
 	secretsReconciler     *secretsReconciler     // Phase 4.3 Phase B-3
 	networkPolicyEnforcer *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	cloudClient           *cloud.Client          // #354 — cloud-actuation client (nil unless host is enrolled)
 	startTime             time.Time
 }
 
@@ -302,6 +304,32 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	npServer := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
+
+	// Cloud-actuation client (#354): if this host is enrolled with a cloud
+	// control plane, run the actuation client. It heartbeats and consumes
+	// WatchAssignments, syncing each org's egress network policy into the
+	// NetworkPolicyServer's store (closing the #315 cloud-extension loop:
+	// cloud-authored policy → on-box enforcer). Unenrolled (no cloud.yaml) → the
+	// daemon is single-tenant and makes no outbound calls. The sink holds
+	// npServer so it always writes to the current store (post-Postgres-swap).
+	var cloudClient *cloud.Client
+	cloudCfgPath := os.Getenv("CONTAINARIUM_CLOUD_CONFIG")
+	if cloudCfgPath == "" {
+		if p, perr := cloud.DefaultPath(); perr == nil {
+			cloudCfgPath = p
+		}
+	}
+	if cloudCfg, cerr := cloud.Load(cloudCfgPath); cerr != nil {
+		log.Printf("Warning: failed to read cloud-actuation config %s: %v (running single-tenant)", cloudCfgPath, cerr)
+	} else if cloudCfg != nil {
+		if cc, nerr := cloud.New(cloudCfg, newCloudPolicySink(npServer)); nerr != nil {
+			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
+		} else {
+			cloudClient = cc
+			log.Printf("Cloud-actuation client configured (host=%s control-plane=%s); starts with the daemon",
+				cloudCfg.HostID, cloudCfg.ControlPlane)
+		}
+	}
 
 	// Create TrafficServer (always available, but conntrack only works on Linux)
 	var trafficServer *TrafficServer
@@ -1312,6 +1340,7 @@ skipAppHosting:
 		zapStore:              zapStore,
 		peerPool:              NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer: networkPolicyEnforcer,
+		cloudClient:           cloudClient,
 		startTime:             time.Now(),
 	}
 
@@ -1688,6 +1717,18 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start the cloud-actuation client if the host is enrolled (#354). A dial
+	// failure is logged and the daemon serves on — cloud connectivity must never
+	// block local serving.
+	if ds.cloudClient != nil {
+		if err := ds.cloudClient.Start(ctx); err != nil {
+			log.Printf("Warning: cloud-actuation client failed to start: %v (continuing without it)", err)
+			ds.cloudClient = nil
+		} else {
+			log.Printf("Cloud-actuation client started")
+		}
+	}
+
 	// Ensure a management route per served base domain persists in
 	// PostgreSQL (RouteSyncJob pushes each to Caddy — host matcher + TLS
 	// subject). One route per PublicBaseDomains entry, so the daemon
@@ -1799,6 +1840,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.trafficCollector != nil {
 			ds.trafficCollector.Stop()
+		}
+		if ds.cloudClient != nil {
+			ds.cloudClient.Stop()
 		}
 		if ds.networkPolicyEnforcer != nil {
 			ds.networkPolicyEnforcer.Stop()
