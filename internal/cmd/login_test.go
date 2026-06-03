@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -167,6 +168,65 @@ func newFakeDeviceFlow(t *testing.T, approveAfter int32) *fakeDeviceFlowServer {
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// TestCreateSession_DecodesCloudCamelCaseWire pins the POST /v1/cli/sessions
+// WIRE contract with HAND-WRITTEN lowerCamelCase JSON (captured from the live
+// cloud's grpc-gateway output) — NOT marshaled from createSessionResp. The
+// fakeDeviceFlowServer round-trips the struct, so it can't catch a tag drift;
+// this can. An earlier snake_case version of the struct decoded this body to
+// all-zero and login failed with "incomplete session".
+func TestCreateSession_DecodesCloudCamelCaseWire(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sessionId":"sess-1","userCode":"WXYZ-1234",` +
+			`"verificationUrl":"https://cloud.example/cli/authorize?code=WXYZ-1234",` +
+			`"expiresInSeconds":600,"pollingIntervalSeconds":5,"expiresAt":"2026-06-03T08:43:25Z"}`))
+	}))
+	defer srv.Close()
+
+	got, err := createSession(context.Background(), srv.Client(), srv.URL, "cloud-mcp")
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+	if got.SessionID != "sess-1" || got.UserCode != "WXYZ-1234" {
+		t.Errorf("sessionId/userCode not decoded: %+v", got)
+	}
+	if got.VerificationURL == "" {
+		t.Error("verificationUrl not decoded (would trip the incomplete-session guard)")
+	}
+	if got.ExpiresIn != 600 {
+		t.Errorf("expiresInSeconds = %d, want 600", got.ExpiresIn)
+	}
+}
+
+// TestFetchSessionStatus_NormalizesProtoEnum pins two wire facts: (1) the
+// cloud emits CLISessionStatus as the proto-enum NAME
+// ("CLI_SESSION_STATUS_APPROVED"), which the handler folds to the short token
+// the poll loop switches on; (2) the status response carries NO email/org —
+// the cloud's GetCLISessionStatusResponse has only status/token/expires_at/
+// approved_at, so identity rides the token, not these fields.
+func TestFetchSessionStatus_NormalizesProtoEnum(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"CLI_SESSION_STATUS_APPROVED","token":"ctnr_test",` +
+			`"expiresAt":"2026-06-03T08:53:30Z"}`))
+	}))
+	defer srv.Close()
+
+	st, err := fetchSessionStatus(context.Background(), srv.Client(), srv.URL+"/status")
+	if err != nil {
+		t.Fatalf("fetchSessionStatus: %v", err)
+	}
+	if st.Status != "approved" {
+		t.Errorf("Status = %q, want normalized %q", st.Status, "approved")
+	}
+	if st.Token != "ctnr_test" {
+		t.Errorf("Token = %q, want ctnr_test", st.Token)
+	}
+	if st.UserEmail != "" || st.OrgID != "" {
+		t.Errorf("email/org must be empty (cloud status response omits them): email=%q org=%q", st.UserEmail, st.OrgID)
+	}
 }
 
 func TestLogin_HappyPath_WritesCredentials(t *testing.T) {

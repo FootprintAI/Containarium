@@ -194,20 +194,34 @@ type createSessionReq struct {
 	DeviceName string `json:"device_name"`
 }
 
+// JSON tags are lowerCamelCase: the cloud's CLISessionService is served
+// through grpc-gateway, whose protojson marshaler emits proto field names
+// in camelCase (sessionId, verificationUrl, …), NOT the snake_case proto
+// names. An earlier version used snake_case and silently decoded every
+// field to its zero value (→ "incomplete session"). Names mirror the
+// cloud CLISessionService's grpc-gateway JSON.
 type createSessionResp struct {
-	SessionID       string `json:"session_id"`
-	UserCode        string `json:"user_code"`
-	VerificationURL string `json:"verification_url"`
-	ExpiresIn       int    `json:"expires_in"`
+	SessionID       string `json:"sessionId"`
+	UserCode        string `json:"userCode"`
+	VerificationURL string `json:"verificationUrl"`
+	// Proto field expires_in_seconds → expiresInSeconds on the wire.
+	ExpiresIn int `json:"expiresInSeconds"`
 }
 
 type sessionStatusResp struct {
-	Status    string `json:"status"` // pending | approved | denied | expired
-	Token     string `json:"token,omitempty"`
-	UserEmail string `json:"user_email,omitempty"`
-	OrgID     string `json:"org_id,omitempty"`
+	// Status is a CLISessionStatus proto enum; grpc-gateway emits it as the
+	// enum NAME ("CLI_SESSION_STATUS_APPROVED"), so it is normalized to the
+	// short form (pending|approved|denied|expired) in fetchSessionStatus.
+	Status string `json:"status"`
+	Token  string `json:"token,omitempty"`
+	// UserEmail / OrgID are NOT in the cloud's GetCLISessionStatusResponse
+	// (it carries only status/token/expires_at/approved_at), so they stay
+	// empty here — identity is carried by the token itself. Retained so the
+	// credentials write + whoami display compile; tags are harmless.
+	UserEmail string `json:"userEmail,omitempty"`
+	OrgID     string `json:"orgId,omitempty"`
 	// ExpiresAt is RFC3339; absent or empty means non-expiring.
-	ExpiresAt string `json:"expires_at,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
 }
 
 // loginHTTPClient is the unauthenticated HTTP client used by the
@@ -571,7 +585,18 @@ func fetchSessionStatus(ctx context.Context, hc *http.Client, url string) (*sess
 	if err := json.Unmarshal(rb, &out); err != nil {
 		return nil, fmt.Errorf("decode status response: %w", err)
 	}
+	out.Status = normalizeSessionStatus(out.Status)
 	return &out, nil
+}
+
+// normalizeSessionStatus folds the cloud's CLISessionStatus proto-enum wire
+// form ("CLI_SESSION_STATUS_APPROVED") down to the short lowercase token the
+// poll loop switches on ("approved"). Tolerant of the short form too, so it
+// is a no-op if the wire ever emits the shorter shape. Empty stays empty
+// (treated as "pending" by the caller).
+func normalizeSessionStatus(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.TrimPrefix(s, "cli_session_status_")
 }
 
 func runLogout(cmd *cobra.Command, args []string) error {
