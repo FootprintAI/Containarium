@@ -134,3 +134,20 @@ audited as `network_policy.deny_dropped`. Safety properties:
 Validated on a Linux backend: with enforce armed and `--allow-cidr 8.8.8.8/32`,
 `ping 8.8.8.8` succeeds and `ping 1.1.1.1` sees 100% packet loss (dropped), while
 a policy-less neighbour container is unaffected.
+
+## Phase C — egress by domain
+
+A policy's `egress_domains` (`containarium network-policy set <tenant>
+--egress-domain api.github.com`) are resolved to IPv4 and folded into the same
+egress allow-list as /32 entries, refreshed on a loop (default 60s). The
+reconcile's `diffEgress` prunes IPs a domain stops resolving to; a failed lookup
+keeps the prior IPs so a DNS blip doesn't thrash the allow-list (or, under
+enforce, blackhole the domain). Resolve the DNS resolver / gateway too — name
+resolution itself must be allowed.
+
+Validated on a Linux backend: with enforce armed and only `--allow-domain
+one.one.one.one` (no CIDRs), `ping 1.1.1.1` (the resolved IP) succeeds and
+`ping 8.8.8.8` sees 100% packet loss.
+
+> TTL: a fixed refresh interval for now; per-record DNS-TTL refresh (raw DNS) is
+> a follow-up.
