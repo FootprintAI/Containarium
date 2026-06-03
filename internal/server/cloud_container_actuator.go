@@ -80,14 +80,7 @@ func (a *cloudContainerActuator) EnsureDeleted(_ context.Context, localName stri
 
 // create makes the instance (stopped) and stamps the tenant label before start.
 func (a *cloudContainerActuator) create(spec cloud.ContainerSpec) error {
-	cfg := incus.ContainerConfig{
-		Name:  spec.LocalName,
-		Image: spec.Image,
-	}
-	if spec.RAMMB > 0 {
-		cfg.Memory = fmt.Sprintf("%dMB", spec.RAMMB)
-	}
-	if err := a.incus.CreateContainer(cfg); err != nil {
+	if err := a.incus.CreateContainer(buildContainerConfig(spec)); err != nil {
 		return fmt.Errorf("create %s: %w", spec.LocalName, err)
 	}
 	// Stamp the owning org as the tenant label so the network-policy enforcer
@@ -98,6 +91,27 @@ func (a *cloudContainerActuator) create(spec cloud.ContainerSpec) error {
 		}
 	}
 	return nil
+}
+
+// buildContainerConfig maps a cloud ContainerSpec to the Incus create config.
+// It wires the resource options the actuation contract carries: memory (RAMMB),
+// root-disk size (DiskGB), and GPU passthrough (GPUCount > 0 → pass through all
+// GPUs, the cloud-v1 "this is a GPU box" semantics — per-GPU pinning needs host
+// GPU inventory the assignment doesn't carry). CPU isn't in the assignment;
+// routes/secrets aren't in the actuation contract, so they're not set here.
+// Pure (no Incus calls) so the mapping is unit-testable.
+func buildContainerConfig(spec cloud.ContainerSpec) incus.ContainerConfig {
+	cfg := incus.ContainerConfig{Name: spec.LocalName, Image: spec.Image}
+	if spec.RAMMB > 0 {
+		cfg.Memory = fmt.Sprintf("%dMB", spec.RAMMB)
+	}
+	if spec.DiskGB > 0 {
+		cfg.Disk = &incus.DiskDevice{Path: "/", Pool: "default", Size: fmt.Sprintf("%dGB", spec.DiskGB)}
+	}
+	if spec.GPUCount > 0 {
+		cfg.GPU = &incus.GPUDevice{} // empty = pass through all GPUs
+	}
+	return cfg
 }
 
 // isRunning matches Incus's running state case-insensitively.

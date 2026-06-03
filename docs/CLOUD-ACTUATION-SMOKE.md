@@ -149,7 +149,7 @@ containarium cloud logout            # removes ~/.containarium/cloud.yaml
 - **Policy sync is upsert-only** — a policy *removed* on the cloud is not yet
   cleared on the host (distinguishing cloud- from CLI-authored policies needs a
   source marker). Re-authoring with an empty allow-list is the current workaround.
-- **Container reconcile is minimal** — create/start/stop/delete + the tenant
-  label, but not the richer create options the user-facing ContainerService
-  offers (routes, secrets, GPU/disk devices beyond memory). Cloud-assigned boxes
-  are v1 minimal workloads.
+- **Container reconcile** wires the resource options the actuation contract
+  carries — memory, root-disk size, and GPU passthrough — plus the tenant label.
+  It does not set routes, secrets, or CPU limits (not in the `Assignment`
+  contract); those remain a follow-up if cloud workloads need them.
