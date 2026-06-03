@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **GPU passthrough validation** — `ValidateGPU` RPC + `containarium backends validate-gpu` CLI + `backend_validate_gpu` MCP tool launch a throwaway `nvidia.runtime` LXC, run `nvidia-smi`, and report usable/model/driver (forwarding to the owning peer for remote backends); plus a standalone `scripts/validate-gpu-passthrough.sh` host→VM migration gate. Hardware-verified on an RTX 3090. (#316, #413, #415)
+- **`containarium create --no-ssh-key`** — keyless, platform-managed service tenants: no `authorized_keys` seeded, operated via `incus exec` / the daemon, so no private key has to exist. (#388)
+- **`containarium backends versions`** — cluster version overview: each backend's daemon version vs the latest release, with a per-backend current/behind status. (#354)
+- **Python telemetry distro exports traces + OTLP gRPC** — installs a real `TracerProvider`/`BatchSpanProcessor` (was a no-op that dropped spans) and selects the gRPC vs HTTP exporter from `OTEL_EXPORTER_OTLP_PROTOCOL`, via a new `grpc` extra. (#386)
+- **Managed `*.<base-domain>` wildcard TLS** — with DNS-01 configured, the daemon auto-provisions (and self-heals) the wildcard subject at edge startup, covering per-region / subdomain HTTPS endpoints from a single issuance; docs document DNS-01 as the supported per-region path. (#389)
+- **Podman tenant reboot durability** — `--podman` create now enables the system + per-user `podman-restart.service` and `loginctl enable-linger`, so workloads created with a restart policy come back after a host reboot/preemption. (#387)
+- **Deploy guard for the sentinel HMAC secret** — `scripts/deploy-binary.sh` refuses to swap a v0.19.0+ binary onto a host missing a ≥32-byte `CONTAINARIUM_SENTINEL_AUTH_SECRET` (the silent 401-lockout), with a new `docs/SENTINEL-AUTH-SECRET.md` runbook. (#341)
+
+### Fixed
+
+- **Fractional CPU requests** — `resources.cpu` in millicpu/decimal (`250m`, `0.25`) now maps to `limits.cpu.allowance`; whole cores still use `limits.cpu`. Previously fractional requests failed async provisioning with "Invalid CPU limit syntax". (#401)
+- **sshpiper no longer drops live SSH sessions** on container create/delete — keysync stopped issuing `systemctl restart sshpiper`; the yaml plugin re-reads its config per connection, so routes update without tearing down in-flight sessions. (#301)
+- **Caddy edge self-heals after a stub-Caddyfile revert** — the route sync rebuilds the base config (was a permanent dead `:443` / admin-API 400-loop, with a daemon restart only partially recovering), and stale `:80/:443` DNAT to a recreated Caddy container IP is reconciled away. (#400)
+- **Terraform `containarium_version` upgrades take effect** — the spot and sentinel startup scripts reconcile the installed binary to the requested version on every boot (it was effectively write-once), and a recovered workhorse declines a stale sentinel-served binary to avoid a silent downgrade. (#385)
+- **eBPF Phase 0 `validate.sh` builds on stock Ubuntu** — added the multiarch include path so `clang -target bpf` finds `<asm/types.h>`. (The on-backend run also surfaced that the bridge master's tc-egress hook doesn't observe inter-container forwarded traffic — a Phase A design input, tracked in #315.) (#315)
+- **Edge layer4 no longer deactivates on an empty route set**, fixing a create-flap. (#416)
+- **`--http` CLI hardened against HTTP/2 edge resets** — pins HTTP/1.1 and drains response bodies. (#422)
+- **Incus exec retries the transient "Failed to retrieve PID" error.** (#425)
+
 ## [0.22.0] - 2026-05-31
 
 Minor release: managed DNS-01 wildcard TLS, multi-domain Caddy apex management, fleet version visibility, and multi-key collaborators.
