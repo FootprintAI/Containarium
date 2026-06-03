@@ -9028,6 +9028,10 @@
         "allowMetadata": {
           "type": "boolean",
           "description": "Allow reaching the cloud metadata service (169.254.169.254). Default false:\nthe metadata IP is denied even if egress_cidrs/egress_domains would\notherwise cover it (deny-beats-allow for this one sensitive IP, since it\nhands out cloud credentials). Set true only for a tenant that legitimately\nneeds instance metadata. #315 Phase D."
+        },
+        "source": {
+          "type": "string",
+          "description": "Source identifies who authored this policy: \"\" / \"cli\" for an operator via\n`containarium network-policy set`, \"cloud\" for one synced from a cloud\ncontrol plane (#354). The cloud-actuation reconciler converges only its own\n(\"cloud\") policies — so removing a policy cloud-side clears it on the host\nwithout clobbering an operator's CLI-authored policy. Informational on\nget/list."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."

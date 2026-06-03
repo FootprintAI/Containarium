@@ -102,6 +102,7 @@ type netPolicyJSON struct {
 	EgressDomains    []string `json:"egressDomains"`
 	AllowMetadata    bool     `json:"allowMetadata"`
 	Mode             string   `json:"mode"`
+	Source           string   `json:"source"`
 }
 
 type setNetworkPolicyRequest struct {
@@ -229,6 +230,9 @@ func printPolicy(w io.Writer, p netPolicyJSON) {
 	fmt.Fprintf(w, "  mode:               %s\n", shortMode(p.Mode))
 	fmt.Fprintf(w, "  allow-intra-tenant: %v\n", p.AllowIntraTenant)
 	fmt.Fprintf(w, "  allow-metadata:     %v\n", p.AllowMetadata)
+	if p.Source != "" {
+		fmt.Fprintf(w, "  source:             %s\n", p.Source)
+	}
 	if len(p.EgressCidrs) > 0 {
 		fmt.Fprintf(w, "  egress-cidrs:       %s\n", strings.Join(p.EgressCidrs, ", "))
 	}

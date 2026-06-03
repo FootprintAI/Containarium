@@ -1665,6 +1665,13 @@ type NetworkPolicy struct {
 	// hands out cloud credentials). Set true only for a tenant that legitimately
 	// needs instance metadata. #315 Phase D.
 	AllowMetadata bool `protobuf:"varint,6,opt,name=allow_metadata,json=allowMetadata,proto3" json:"allow_metadata,omitempty"`
+	// Source identifies who authored this policy: "" / "cli" for an operator via
+	// `containarium network-policy set`, "cloud" for one synced from a cloud
+	// control plane (#354). The cloud-actuation reconciler converges only its own
+	// ("cloud") policies — so removing a policy cloud-side clears it on the host
+	// without clobbering an operator's CLI-authored policy. Informational on
+	// get/list.
+	Source        string `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1739,6 +1746,13 @@ func (x *NetworkPolicy) GetAllowMetadata() bool {
 		return x.AllowMetadata
 	}
 	return false
+}
+
+func (x *NetworkPolicy) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
 }
 
 type SetNetworkPolicyRequest struct {
@@ -2469,14 +2483,15 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x16GPU_STATUS_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rGPU_STATUS_OK\x10\x01\x12\x1a\n" +
 	"\x16GPU_STATUS_UNAVAILABLE\x10\x02\x12\x17\n" +
-	"\x13GPU_STATUS_DEGRADED\x10\x03\"\xfe\x01\n" +
+	"\x13GPU_STATUS_DEGRADED\x10\x03\"\x96\x02\n" +
 	"\rNetworkPolicy\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
 	"\fegress_cidrs\x18\x03 \x03(\tR\vegressCidrs\x12%\n" +
 	"\x0eegress_domains\x18\x04 \x03(\tR\regressDomains\x126\n" +
 	"\x04mode\x18\x05 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\x04mode\x12%\n" +
-	"\x0eallow_metadata\x18\x06 \x01(\bR\rallowMetadata\"Q\n" +
+	"\x0eallow_metadata\x18\x06 \x01(\bR\rallowMetadata\x12\x16\n" +
+	"\x06source\x18\a \x01(\tR\x06source\"Q\n" +
 	"\x17SetNetworkPolicyRequest\x126\n" +
 	"\x06policy\x18\x01 \x01(\v2\x1e.containarium.v1.NetworkPolicyR\x06policy\"R\n" +
 	"\x18SetNetworkPolicyResponse\x126\n" +

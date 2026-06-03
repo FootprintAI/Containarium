@@ -19,26 +19,32 @@ type cloudPolicySink struct {
 	np *NetworkPolicyServer
 }
 
+// cloudPolicySource marks a stored policy as cloud-authored, so convergence
+// only ever deletes the cloud's own policies — never an operator's CLI-authored
+// one (which carries an empty source). Matches pb.NetworkPolicy.Source.
+const cloudPolicySource = "cloud"
+
 func newCloudPolicySink(np *NetworkPolicyServer) *cloudPolicySink {
 	return &cloudPolicySink{np: np}
 }
 
-// SyncNetworkPolicies upserts each org's policy into the store. The org_id is the
-// tenant key — cloud containers are labelled user.containarium.tenant=<org_id>
-// (container reconcile, a follow-up), so the enforcer matches them. Upsert-only:
-// a policy removed cloud-side is not deleted locally yet (distinguishing
-// cloud-authored from CLI-authored policies needs a source marker — a follow-up);
-// upsert keeps the common rollout path correct without risking clobbering a
-// self-hosted operator's CLI-authored policy.
+// SyncNetworkPolicies converges the store to the cloud's current set: upsert
+// each org's policy (tagged source="cloud"; org_id is the tenant key, matching
+// the user.containarium.tenant label the container reconcile stamps), then
+// delete any previously cloud-authored policy no longer in the batch. Policies
+// authored locally via the CLI (empty source) are never touched — so a mixed
+// host (cloud + operator policies) stays correct.
 func (s *cloudPolicySink) SyncNetworkPolicies(ctx context.Context, policies []*cloudv1.NetworkPolicy) error {
 	store := s.np.Store()
 	if store == nil {
 		return nil
 	}
+	desired := make(map[string]bool, len(policies))
 	for _, np := range policies {
 		if np.GetOrgId() == "" {
 			continue
 		}
+		desired[np.GetOrgId()] = true
 		if err := store.Set(ctx, &pb.NetworkPolicy{
 			Tenant:           np.GetOrgId(),
 			AllowIntraTenant: np.GetAllowIntraTenant(),
@@ -46,8 +52,22 @@ func (s *cloudPolicySink) SyncNetworkPolicies(ctx context.Context, policies []*c
 			EgressDomains:    np.GetEgressDomains(),
 			AllowMetadata:    np.GetAllowMetadata(),
 			Mode:             pb.NetworkPolicyMode(int32(np.GetMode())), // same enum values (vendored from one source)
+			Source:           cloudPolicySource,
 		}); err != nil {
 			return err
+		}
+	}
+
+	// Convergence: drop cloud-authored policies the cloud no longer sends.
+	existing, err := store.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range existing {
+		if p.GetSource() == cloudPolicySource && !desired[p.GetTenant()] {
+			if err := store.Delete(ctx, p.GetTenant()); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

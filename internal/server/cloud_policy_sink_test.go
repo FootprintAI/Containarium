@@ -39,4 +39,39 @@ func TestCloudPolicySink_WritesIntoStore(t *testing.T) {
 	if got.GetAllowMetadata() {
 		t.Errorf("metadata must stay denied")
 	}
+	if got.GetSource() != cloudPolicySource {
+		t.Errorf("cloud-synced policy must be tagged source=cloud, got %q", got.GetSource())
+	}
+}
+
+func TestCloudPolicySink_ConvergesWithoutClobberingCLI(t *testing.T) {
+	np := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
+	ctx := context.Background()
+	store := np.Store()
+
+	// An operator's CLI-authored policy (empty source) + an initial cloud policy.
+	if err := store.Set(ctx, &pb.NetworkPolicy{Tenant: "local-team", EgressCidrs: []string{"10.0.0.0/8"}}); err != nil {
+		t.Fatal(err)
+	}
+	sink := newCloudPolicySink(np)
+	if err := sink.SyncNetworkPolicies(ctx, []*cloudv1.NetworkPolicy{
+		{OrgId: "org-a"}, {OrgId: "org-b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Next batch drops org-b → it must be deleted; org-a kept; local-team untouched.
+	if err := sink.SyncNetworkPolicies(ctx, []*cloudv1.NetworkPolicy{{OrgId: "org-a"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Get(ctx, "org-a"); err != nil {
+		t.Errorf("org-a should remain: %v", err)
+	}
+	if _, err := store.Get(ctx, "org-b"); err == nil {
+		t.Errorf("org-b should be converged away (removed cloud-side)")
+	}
+	if _, err := store.Get(ctx, "local-team"); err != nil {
+		t.Errorf("CLI-authored local-team must NOT be clobbered by cloud convergence: %v", err)
+	}
 }
