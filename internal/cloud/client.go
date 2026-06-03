@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,15 +39,48 @@ type PolicySink interface {
 	SyncNetworkPolicies(ctx context.Context, policies []*cloudv1.NetworkPolicy) error
 }
 
+// ContainerSpec is the host-local shape of one cloud assignment the actuator
+// acts on. LocalName is the Incus instance name (cld-<short-uuid>); OrgID is
+// stamped as the container's user.containarium.tenant label so the network-policy
+// enforcer identifies it.
+type ContainerSpec struct {
+	LocalName string
+	OrgID     string
+	Image     string
+	RAMMB     int32
+	DiskGB    int32
+	GPUCount  int32
+}
+
+// ContainerActuator drives local Incus state toward an assignment's
+// desired_state. The daemon implements it (create/start/stop/delete + stamp the
+// tenant label); the interface keeps internal/cloud free of an Incus dependency
+// and lets the reconcile decision be unit-tested with a fake. Each method is
+// idempotent — the reconciler may call it for an already-converged container.
+type ContainerActuator interface {
+	EnsureRunning(ctx context.Context, spec ContainerSpec) error
+	EnsureStopped(ctx context.Context, localName string) error
+	EnsureDeleted(ctx context.Context, localName string) error
+}
+
+// Deps are the daemon-provided collaborators. Both are optional: nil Policies
+// skips network-policy sync, nil Containers skips container reconcile. With both
+// nil the client is heartbeat-only.
+type Deps struct {
+	Policies   PolicySink
+	Containers ContainerActuator
+}
+
 // Client is the host-side cloud-actuation client. Slice 3 implements the
 // heartbeat; WatchAssignments + the reconciler land in slice 4. The actuation
 // proto is vendored (proto/containarium/cloud/v1), so this builds in the default
 // OSS binary with no private dependency; it is inert unless the host is enrolled
 // (~/.containarium/cloud.yaml present).
 type Client struct {
-	cfg      *Config
-	interval time.Duration
-	sink     PolicySink // optional; nil = heartbeat only (no policy reconcile)
+	cfg        *Config
+	interval   time.Duration
+	sink       PolicySink        // optional; nil = no policy reconcile
+	containers ContainerActuator // optional; nil = no container reconcile
 
 	conn *grpc.ClientConn
 	ac   cloudv1.ActuationServiceClient
@@ -59,13 +93,13 @@ type Client struct {
 	failures int // consecutive heartbeat failures, for observability
 }
 
-// New builds a client from a validated config. sink may be nil (heartbeat only);
-// pass a PolicySink to converge per-org network policies from WatchAssignments.
-func New(cfg *Config, sink PolicySink) (*Client, error) {
+// New builds a client from a validated config. deps are optional collaborators
+// (see Deps) — both nil makes the client heartbeat-only.
+func New(cfg *Config, deps Deps) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Client{cfg: cfg, interval: defaultHeartbeatInterval, sink: sink}, nil
+	return &Client{cfg: cfg, interval: defaultHeartbeatInterval, sink: deps.Policies, containers: deps.Containers}, nil
 }
 
 // Start dials the control plane and launches the heartbeat loop. A dial error is
@@ -82,12 +116,13 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.wg.Add(1)
 	go c.heartbeatLoop()
-	if c.sink != nil {
+	watch := c.sink != nil || c.containers != nil
+	if watch {
 		c.wg.Add(1)
 		go c.watchLoop()
 	}
 	log.Printf("[cloud] actuation client started: host=%s control-plane=%s (heartbeat %s, watch=%v)",
-		c.cfg.HostID, c.cfg.ControlPlane, c.interval, c.sink != nil)
+		c.cfg.HostID, c.cfg.ControlPlane, c.interval, watch)
 	return nil
 }
 
@@ -213,15 +248,76 @@ func (c *Client) watchOnce() error {
 	}
 }
 
-// reconcile applies one batch. Slice 4 converges per-org network policies into
-// the sink (closing the #315 cloud-extension loop: cloud-authored egress policy
-// → host enforcer). Container desired-state reconciliation (create/start/stop/
-// delete) is a separate follow-up.
+// reconcile applies one batch: (1) converge per-org network policies into the
+// sink (the #315 cloud-extension loop), then (2) reconcile each assignment's
+// container toward its desired_state.
 func (c *Client) reconcile(batch *cloudv1.AssignmentBatch) {
-	if c.sink == nil {
-		return
+	if c.sink != nil {
+		if err := c.sink.SyncNetworkPolicies(c.ctx, batch.GetNetworkPolicies()); err != nil {
+			log.Printf("[cloud] sync network policies: %v", err)
+		}
 	}
-	if err := c.sink.SyncNetworkPolicies(c.ctx, batch.GetNetworkPolicies()); err != nil {
-		log.Printf("[cloud] sync network policies: %v", err)
+	if c.containers != nil {
+		for _, a := range batch.GetAssignments() {
+			c.reconcileAssignment(a)
+		}
 	}
+}
+
+// reconcileAssignment drives one container toward its desired_state and reports
+// the observed state back. The reconcile is idempotent (the actuator no-ops a
+// converged container), so re-sent snapshots are safe.
+func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
+	name := localContainerName(a.GetContainerId())
+	switch a.GetDesiredState() {
+	case "running":
+		if err := c.containers.EnsureRunning(c.ctx, ContainerSpec{
+			LocalName: name, OrgID: a.GetOrgId(), Image: a.GetImage(),
+			RAMMB: a.GetRamMb(), DiskGB: a.GetDiskGb(), GPUCount: a.GetGpuCount(),
+		}); err != nil {
+			log.Printf("[cloud] ensure running %s: %v", name, err)
+			return // leave the cloud's observed state stale; next snapshot retries
+		}
+		c.report(a.GetContainerId(), "active")
+	case "stopped":
+		if err := c.containers.EnsureStopped(c.ctx, name); err != nil {
+			log.Printf("[cloud] ensure stopped %s: %v", name, err)
+			return
+		}
+		c.report(a.GetContainerId(), "stopped")
+	case "deleted":
+		if err := c.containers.EnsureDeleted(c.ctx, name); err != nil {
+			log.Printf("[cloud] ensure deleted %s: %v", name, err)
+		}
+		// No state report — the cloud releases the assignment once the host
+		// stops reporting it (there is no "deleted" observed-state value).
+	default:
+		// Unknown / empty desired_state — leave it alone (informational only).
+	}
+}
+
+// report sends observed container state back to the cloud (best-effort).
+func (c *Client) report(containerID, state string) {
+	ctx, cancel := context.WithTimeout(c.authContext(c.ctx), 10*time.Second)
+	defer cancel()
+	if _, err := c.ac.ReportContainerState(ctx, &cloudv1.ReportContainerStateRequest{
+		ContainerId: containerID, State: state,
+	}); err != nil {
+		log.Printf("[cloud] report state %s=%s: %v", containerID, state, err)
+	}
+}
+
+// localContainerName maps a cloud container UUID to the host-local Incus name.
+// The cld- prefix keeps cloud-assigned containers from colliding with
+// operator-managed <tenant>-container names. Best-effort short form; the cloud
+// container_id is the durable key carried in ReportContainerState.
+func localContainerName(containerID string) string {
+	short := strings.ReplaceAll(containerID, "-", "")
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	if short == "" {
+		short = "unknown"
+	}
+	return "cld-" + short
 }

@@ -322,7 +322,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	if cloudCfg, cerr := cloud.Load(cloudCfgPath); cerr != nil {
 		log.Printf("Warning: failed to read cloud-actuation config %s: %v (running single-tenant)", cloudCfgPath, cerr)
 	} else if cloudCfg != nil {
-		if cc, nerr := cloud.New(cloudCfg, newCloudPolicySink(npServer)); nerr != nil {
+		cloudDeps := cloud.Deps{Policies: newCloudPolicySink(npServer)}
+		if cloudActuator, actErr := newCloudContainerActuator(); actErr != nil {
+			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
+		} else {
+			cloudDeps.Containers = cloudActuator // only set when non-nil (avoid nil-iface trap)
+		}
+		if cc, nerr := cloud.New(cloudCfg, cloudDeps); nerr != nil {
 			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
 		} else {
 			cloudClient = cc

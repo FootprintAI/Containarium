@@ -91,13 +91,23 @@ until daemon restart.)
 ## Step 6 — observe enforcement
 
 The enforcer matches a container to its tenant by the
-`user.containarium.tenant` label. The cloud **container reconcile** that stamps
-this label on cloud-assigned containers is a separate follow-up, so for the smoke
-**label a test container manually** to exercise the loop:
+`user.containarium.tenant` label. The cloud **container reconcile** stamps this
+label automatically: a container the cloud assigns to this host (desired_state
+`running`) is created locally as `cld-<short-uuid>` with
+`user.containarium.tenant=<org-id>` set, then started. So the clean path is to
+create a container for the org **in the cloud dashboard** and watch it appear:
+
+```sh
+incus list                                   # a cld-<short-uuid> instance appears, owned by <org-id>
+incus config get cld-<short-uuid> user.containarium.tenant   # == <org-id>
+```
+
+To exercise just the policy/enforcer path **without** a cloud assignment, you can
+still hand-label a local container (what the reconcile does for you):
 
 ```sh
 incus launch images:ubuntu/24.04 smoke-box
-incus config set smoke-box user.containarium.tenant <org-id>   # what the reconcile will do automatically later
+incus config set smoke-box user.containarium.tenant <org-id>
 ```
 
 Within one enforcer reconcile (≤ a few seconds) the policy applies. From inside
@@ -134,12 +144,12 @@ containarium cloud logout            # removes ~/.containarium/cloud.yaml
 # cloud sysadmin: tombstone the host (DeleteHost)
 ```
 
-## Known gaps exercised-around here
+## Known gaps
 
-- **Container reconcile** (create/start/stop/delete + auto-stamp the tenant
-  label) isn't built yet — hence the manual `incus config set …tenant` in Step 6.
-  Once it lands, cloud-assigned `cld-<uuid>` containers carry the label and Step 6
-  needs no manual labelling.
 - **Policy sync is upsert-only** — a policy *removed* on the cloud is not yet
   cleared on the host (distinguishing cloud- from CLI-authored policies needs a
   source marker). Re-authoring with an empty allow-list is the current workaround.
+- **Container reconcile is minimal** — create/start/stop/delete + the tenant
+  label, but not the richer create options the user-facing ContainerService
+  offers (routes, secrets, GPU/disk devices beyond memory). Cloud-assigned boxes
+  are v1 minimal workloads.

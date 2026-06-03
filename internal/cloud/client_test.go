@@ -17,9 +17,11 @@ import (
 // fakeActuation records the host-bearer metadata it saw on Heartbeat.
 type fakeActuation struct {
 	cloudv1.UnimplementedActuationServiceServer
-	mu     sync.Mutex
-	bearer string
-	beats  int
+	mu            sync.Mutex
+	bearer        string
+	beats         int
+	reportedID    string
+	reportedState string
 }
 
 func (f *fakeActuation) Heartbeat(ctx context.Context, _ *cloudv1.HeartbeatRequest) (*cloudv1.HeartbeatResponse, error) {
@@ -42,6 +44,42 @@ func (f *fakeActuation) WatchAssignments(_ *cloudv1.WatchAssignmentsRequest, str
 			{OrgId: "org-1", EgressCidrs: []string{"8.8.8.8/32"}, Mode: cloudv1.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE},
 		},
 	})
+}
+
+// ReportContainerState records what the client reported.
+func (f *fakeActuation) ReportContainerState(ctx context.Context, req *cloudv1.ReportContainerStateRequest) (*cloudv1.ReportContainerStateResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reportedID = req.GetContainerId()
+	f.reportedState = req.GetState()
+	return &cloudv1.ReportContainerStateResponse{}, nil
+}
+
+// fakeActuator records the container actions the reconciler drove.
+type fakeActuator struct {
+	mu      sync.Mutex
+	running []ContainerSpec
+	stopped []string
+	deleted []string
+}
+
+func (a *fakeActuator) EnsureRunning(_ context.Context, s ContainerSpec) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.running = append(a.running, s)
+	return nil
+}
+func (a *fakeActuator) EnsureStopped(_ context.Context, name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stopped = append(a.stopped, name)
+	return nil
+}
+func (a *fakeActuator) EnsureDeleted(_ context.Context, name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.deleted = append(a.deleted, name)
+	return nil
 }
 
 // recordingSink captures the policies handed to it.
@@ -102,7 +140,7 @@ func TestHeartbeatSendsHostBearer(t *testing.T) {
 }
 
 func TestNewRejectsIncompleteConfig(t *testing.T) {
-	if _, err := New(&Config{HostID: "h", Token: "t"}, nil); err == nil {
+	if _, err := New(&Config{HostID: "h", Token: "t"}, Deps{}); err == nil {
 		t.Error("New must reject a config missing control_plane")
 	}
 }
@@ -129,8 +167,76 @@ func TestWatchOnceSyncsNetworkPolicies(t *testing.T) {
 	}
 }
 
-func TestReconcileNilSinkIsNoop(t *testing.T) {
-	c := &Client{} // no sink
+func TestReconcileNilDepsIsNoop(t *testing.T) {
+	c := &Client{} // no sink, no actuator
 	c.ctx = context.Background()
-	c.reconcile(&cloudv1.AssignmentBatch{NetworkPolicies: []*cloudv1.NetworkPolicy{{OrgId: "x"}}}) // must not panic
+	c.reconcile(&cloudv1.AssignmentBatch{
+		NetworkPolicies: []*cloudv1.NetworkPolicy{{OrgId: "x"}},
+		Assignments:     []*cloudv1.Assignment{{ContainerId: "c", DesiredState: "running"}},
+	}) // must not panic
+}
+
+func TestReconcileAssignment_RunningCreatesAndReports(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "h", Token: "h.b"}
+	c, fake := newTestClient(t, cfg)
+	act := &fakeActuator{}
+	c.containers = act
+
+	c.reconcileAssignment(&cloudv1.Assignment{
+		ContainerId:  "11111111-2222-3333-4444-555555555555",
+		OrgId:        "org-9",
+		DesiredState: "running",
+		Image:        "ubuntu:24.04",
+		RamMb:        512,
+	})
+
+	act.mu.Lock()
+	defer act.mu.Unlock()
+	if len(act.running) != 1 {
+		t.Fatalf("expected 1 EnsureRunning, got %d", len(act.running))
+	}
+	got := act.running[0]
+	if got.OrgID != "org-9" || got.Image != "ubuntu:24.04" || got.RAMMB != 512 {
+		t.Errorf("spec not propagated: %+v", got)
+	}
+	if got.LocalName != "cld-111111112222" {
+		t.Errorf("local name = %q, want cld-111111112222", got.LocalName)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.reportedState != "active" || fake.reportedID != "11111111-2222-3333-4444-555555555555" {
+		t.Errorf("report = (%q,%q), want (container-id, active)", fake.reportedID, fake.reportedState)
+	}
+}
+
+func TestReconcileAssignment_DesiredStates(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "h", Token: "h.b"}
+	c, _ := newTestClient(t, cfg)
+	act := &fakeActuator{}
+	c.containers = act
+
+	c.reconcileAssignment(&cloudv1.Assignment{ContainerId: "aaaa", DesiredState: "stopped"})
+	c.reconcileAssignment(&cloudv1.Assignment{ContainerId: "bbbb", DesiredState: "deleted"})
+
+	act.mu.Lock()
+	defer act.mu.Unlock()
+	if len(act.stopped) != 1 || act.stopped[0] != "cld-aaaa" {
+		t.Errorf("stopped = %v, want [cld-aaaa]", act.stopped)
+	}
+	if len(act.deleted) != 1 || act.deleted[0] != "cld-bbbb" {
+		t.Errorf("deleted = %v, want [cld-bbbb]", act.deleted)
+	}
+}
+
+func TestLocalContainerName(t *testing.T) {
+	cases := map[string]string{
+		"11111111-2222-3333-4444-555555555555": "cld-111111112222",
+		"short":                                "cld-short",
+		"":                                     "cld-unknown",
+	}
+	for in, want := range cases {
+		if got := localContainerName(in); got != want {
+			t.Errorf("localContainerName(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
