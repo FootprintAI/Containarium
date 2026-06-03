@@ -208,9 +208,9 @@ type ContainerConfig struct {
 	Image                  string
 	CPU                    string
 	Memory                 string
-	Disk                   *DiskDevice    // Root disk configuration
-	NIC                    *NICDevice     // Network interface configuration
-	GPU                    *GPUDevice     // GPU device configuration for passthrough
+	Disk                   *DiskDevice      // Root disk configuration
+	NIC                    *NICDevice       // Network interface configuration
+	GPU                    *GPUDevice       // GPU device configuration for passthrough
 	InstanceType           api.InstanceType // Container (LXC) or VM (QEMU/KVM). Defaults to Container.
 	EnableNesting          bool
 	EnablePodmanPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
@@ -232,18 +232,27 @@ const LabelPrefix = "user.containarium.label."
 // RoleKey is the Incus config key used to tag core containers by role.
 const RoleKey = "user.containarium.role"
 
+// TenantLabelKey is the Incus config key that names a container's owning tenant
+// explicitly, decoupling tenant identity from the <tenant>-container naming
+// convention. The network-policy enforcer (#315) prefers this label and falls
+// back to the name. Stamped by the cloud-actuation reconciler from the
+// assignment (multi-tenant cloud), or by an operator for a container that
+// doesn't follow the naming convention. See NETWORK-ISOLATION-DESIGN.md
+// "Cloud extension".
+const TenantLabelKey = "user.containarium.tenant"
+
 // Role is a typed string for core container roles.
 type Role string
 
 // Core container roles
 const (
-	RoleNone              Role = ""
-	RolePostgres          Role = "core-postgres"
-	RoleCaddy             Role = "core-caddy"
-	RoleVictoriaMetrics   Role = "core-victoriametrics"
-	RoleSecurity          Role = "core-security"
-	RoleGuacamole         Role = "core-guacamole"
-	RoleOTelCollector     Role = "core-otelcollector"
+	RoleNone            Role = ""
+	RolePostgres        Role = "core-postgres"
+	RoleCaddy           Role = "core-caddy"
+	RoleVictoriaMetrics Role = "core-victoriametrics"
+	RoleSecurity        Role = "core-security"
+	RoleGuacamole       Role = "core-guacamole"
+	RoleOTelCollector   Role = "core-otelcollector"
 )
 
 // IsCoreRole returns true if the role represents a core container.
@@ -263,6 +272,7 @@ type ContainerInfo struct {
 	InstanceType string // "container" or "virtual-machine"
 	Labels       map[string]string
 	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
+	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
 	CreatedAt    time.Time
 	BackendID    string // Backend this container runs on (populated by PeerPool fan-out)
 
@@ -370,13 +380,13 @@ func parseTTLExpiresAt(cfg map[string]string) time.Time {
 // ContainerMetrics holds runtime metrics for a container
 type ContainerMetrics struct {
 	Name             string
-	CPUUsageSeconds  int64   // CPU usage in seconds
-	MemoryUsageBytes int64   // Current memory usage in bytes
-	MemoryLimitBytes int64   // Memory limit in bytes
-	DiskUsageBytes   int64   // Root disk usage in bytes
-	NetworkRxBytes   int64   // Network bytes received
-	NetworkTxBytes   int64   // Network bytes transmitted
-	ProcessCount     int32   // Number of running processes
+	CPUUsageSeconds  int64 // CPU usage in seconds
+	MemoryUsageBytes int64 // Current memory usage in bytes
+	MemoryLimitBytes int64 // Memory limit in bytes
+	DiskUsageBytes   int64 // Root disk usage in bytes
+	NetworkRxBytes   int64 // Network bytes received
+	NetworkTxBytes   int64 // Network bytes transmitted
+	ProcessCount     int32 // Number of running processes
 }
 
 // ServerInfo holds information about the Incus server
@@ -635,6 +645,7 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 			CreatedAt:            inst.CreatedAt,
 			Labels:               extractLabelsFromConfig(inst.Config),
 			Role:                 Role(inst.Config[RoleKey]),
+			Tenant:               inst.Config[TenantLabelKey],
 			MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
@@ -763,6 +774,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		CreatedAt:            inst.CreatedAt,
 		Labels:               extractLabelsFromConfig(inst.Config),
 		Role:                 Role(inst.Config[RoleKey]),
+		Tenant:               inst.Config[TenantLabelKey],
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
@@ -1076,12 +1088,12 @@ type GPUInfo struct {
 
 // SystemResources holds system resource information
 type SystemResources struct {
-	TotalCPUs          int32
-	TotalMemoryBytes   int64
-	UsedMemoryBytes    int64
-	TotalDiskBytes     int64
-	UsedDiskBytes      int64
-	UptimeSeconds      int64
+	TotalCPUs        int32
+	TotalMemoryBytes int64
+	UsedMemoryBytes  int64
+	TotalDiskBytes   int64
+	UsedDiskBytes    int64
+	UptimeSeconds    int64
 	// CPU load averages (from /proc/loadavg)
 	CPULoad1Min  float64
 	CPULoad5Min  float64

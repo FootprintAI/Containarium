@@ -17,6 +17,24 @@ func compiled(t *testing.T, p *pb.NetworkPolicy) netpolicy.CompiledPolicy {
 	return c
 }
 
+func TestResolveTenant(t *testing.T) {
+	cases := []struct {
+		label, name, want string
+	}{
+		{"acme", "cld-1a2b3c", "acme"},          // label wins for a cloud-named container
+		{"acme", "alice-container", "acme"},     // label wins over name
+		{"", "alice-container", "alice"},        // fall back to name convention
+		{"  ", "alice-container", "alice"},      // blank label ignored
+		{"", "cld-1a2b3c", ""},                  // cloud name, no label → unmanaged
+		{" tenant7 ", "x-container", "tenant7"}, // label trimmed
+	}
+	for _, c := range cases {
+		if got := resolveTenant(c.label, c.name); got != c.want {
+			t.Errorf("resolveTenant(%q, %q) = %q, want %q", c.label, c.name, got, c.want)
+		}
+	}
+}
+
 func TestTenantOf(t *testing.T) {
 	cases := map[string]string{
 		"alice-container": "alice",

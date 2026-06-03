@@ -332,7 +332,7 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	views := make([]containerView, 0, len(containers))
 	idName := make(map[uint32]string)
 	for _, c := range containers {
-		tenant := tenantOf(c.Name)
+		tenant := resolveTenant(c.Tenant, c.Name)
 		if tenant == "" {
 			continue
 		}
@@ -409,6 +409,19 @@ func (e *NetworkPolicyEnforcer) refreshDomains() {
 	cctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 	e.resolver.Refresh(cctx, domains)
+}
+
+// resolveTenant determines a container's owning tenant. An explicit tenant
+// label (user.containarium.tenant) wins — it decouples tenant identity from the
+// container name, which is what lets cloud-assigned containers (named
+// cld-<uuid>, not <tenant>-container) be policed too (#315 "Cloud extension").
+// Falls back to the <tenant>-container naming convention; "" if neither yields
+// a tenant (the container is then left unmanaged).
+func resolveTenant(tenantLabel, containerName string) string {
+	if t := strings.TrimSpace(tenantLabel); t != "" {
+		return t
+	}
+	return tenantOf(containerName)
 }
 
 // tenantOf extracts the tenant name from a container name, or "" if it doesn't
