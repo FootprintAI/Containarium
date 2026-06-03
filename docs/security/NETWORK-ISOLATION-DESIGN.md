@@ -83,9 +83,37 @@ at the application:
   isolation. Their architecture doc would be the right reference.
 
 Containarium isn't k8s and shouldn't pull Cilium. The right shape is
-**a small set of tc-bpf programs attached to `incusbr0`** that
-implement the policy from a per-tenant rule set the daemon
-maintains.
+**a small set of tc-bpf programs attached at each container's
+host-side veth in `TC_INGRESS`** that implement the policy from a
+per-tenant rule set the daemon maintains.
+
+## Phase 0 validation findings — the attach point (#315)
+
+Phase 0 ran on a real backend (Ubuntu 24.04, kernel 6.8, Incus 6.23) and
+**ruled out the obvious `incusbr0` attach point.** Two on-hardware runs:
+
+- **Bridge master (`incusbr0`), `TC_INGRESS` + `TC_EGRESS`** — on an A→B ping
+  the ingress counter incremented but **egress stayed 0**: a Linux bridge
+  forwards frames between ports without them traversing the bridge device's
+  tc-egress hook.
+- **Per-container host veth, `TC_INGRESS` + `TC_EGRESS`** — A's veth *ingress*
+  saw A's outbound; A's veth *egress* stayed 0 even though B's **5/5** replies
+  flowed (they were counted at **B's** veth ingress). So bridge-forwarded
+  *inbound* bypasses the destination veth's tc-egress too.
+
+**Conclusion:** `TC_EGRESS` on bridge / bridge-slave devices is not a reliable
+hook for inter-container traffic. The reliable, sufficient point is
+**`TC_INGRESS` on each container's host veth** — it sees that container's
+*entire* outbound, which is the **sender side of every flow**. Therefore:
+
+- **Observation** = the union of every container's veth-ingress hook (each flow
+  counted once, at its sender).
+- **Enforcement** = a container's egress policy is enforced at *its* veth
+  ingress; to block Y→X you drop at **Y's** veth ingress. All enforcement lives
+  at the sender's veth ingress — no egress hook needed.
+
+The Phase 0 / 0.5 harnesses (`experimental/ebpf-phase0/validate.sh`,
+`validate-veth.sh`) reproduce both results.
 
 ## Architecture sketch
 
@@ -108,9 +136,9 @@ maintains.
                   │   └── allow_intra_tenant     │
                   └──────────────────────────────┘
                             ▲
-                            │ tc-bpf (ingress + egress)
-                            │
-              incusbr0 ─────┴──── tenant containers
+                            │ tc-bpf (TC_INGRESS) on each
+                            │ container's host veth
+         container veths ───┴──── tenant containers (enslaved to incusbr0)
                             │
                             v
                   ┌──────────────────────────────┐
@@ -124,9 +152,17 @@ maintains.
 1. **Policy data model** — `NetworkPolicy { tenant, allow_intra_tenant: bool, egress_cidrs: [CIDR], egress_domains: [string] }`. Proto-first per the
    project convention.
 2. **BPF programs** — small tc-bpf programs (~200-400 LOC C or Rust)
-   attached to `incusbr0` in TC_INGRESS and TC_EGRESS. Lookup
-   src/dst against BPF maps; pass on allow, drop + perf_event on
-   deny.
+   attached to **each container's host-side veth in TC_INGRESS** (the
+   point where the container's outbound packets enter the host stack;
+   see the Phase 0 findings — bridge/veth TC_EGRESS doesn't observe
+   bridge-forwarded traffic, so all enforcement is at the sender's veth
+   ingress). Lookup src/dst against BPF maps; pass on allow, drop +
+   perf_event on deny.
+2a. **Veth discovery + lifecycle** — resolve each container's host veth
+   (Incus exposes it as `volatile.eth0.host_name`; fall back to mapping
+   the container's `eth0` `iflink` to a host interface) and (de)attach
+   the program as containers come and go. New attach point vs. a single
+   bridge program: one program instance per container veth.
 3. **Map-update plumbing in the daemon** — Go side uses
    `github.com/cilium/ebpf` (popular, well-maintained, no Cilium
    runtime dependency) to load programs and update maps.
@@ -144,17 +180,18 @@ maintains.
 
 | Phase | Scope | Bound |
 | --- | --- | --- |
-| **0 — discovery** | Stand up a throwaway tc-bpf program that counts cross-container packets on a test backend. Validate the assumption that the bridge is the right attach point. Not user-facing. | 1 week |
+| **0 — discovery** | ✅ **Done.** Threw a tc-bpf counter at a real backend (kernel 6.8 / Incus 6.23). Outcome: the bridge is the *wrong* attach point (TC_EGRESS on bridge/veth doesn't see forwarded traffic) — corrected to **per-container veth TC_INGRESS** (see "Phase 0 validation findings" above). | done |
 | **A — observation only** | Land the BPF programs + map-update plumbing in `log_only` mode. Every denied flow would generate an audit row but no packets are actually dropped. Operators learn what real traffic looks like. | 2 weeks |
 | **B — policy enforcement** | Flip from log-only to drop on a per-tenant `CONTAINARIUM_ENFORCE_NETWORK_POLICY=true`. Default off until ≥1 production tenant has soaked it. | 1 week |
 | **C — egress allowlist** | Domain → CIDR resolver + DNS-TTL refresh loop. Egress now constrainable to a list. | 1 week |
 | **D — cloud metadata block** | Default-deny on `169.254.169.254/32` unless the tenant opts in. | 2 days |
 | **E — CLI / MCP / runbook** | Operator surface + docs. | 1 week |
 
-Total bounded estimate: **5-6 weeks** of focused work. Phase 0 is
-the load-bearing risk — if the bridge attach point doesn't work
-cleanly with Incus's network management, the design needs revisiting
-before any of the user-facing work starts.
+Total bounded estimate: **5-6 weeks** of focused work. Phase 0 was
+the load-bearing risk and it paid off: the bridge attach point the
+design originally assumed does **not** work for inter-container
+traffic, so Phase A starts from the corrected per-container-veth
+`TC_INGRESS` model above rather than discovering that mid-build.
 
 ## Honest tradeoffs
 
