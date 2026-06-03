@@ -445,8 +445,25 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		go func() {
 			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
 				log.Printf("Warning: failed to create jump server account for %s: %v", req.Username, err)
-			} else {
-				log.Printf("Jump server account ensured for %s", req.Username)
+				return
+			}
+			log.Printf("Jump server account ensured for %s", req.Username)
+
+			// Write the create-request ssh_keys to the HOST-SIDE
+			// authorized_keys (the jump-server account's file), the same
+			// file AddSSHKey writes and ServeAuthorizedKeys serves to the
+			// sentinel keysync. EnsureJumpServerAccount only creates the
+			// account with an empty .ssh; the request keys were applied to
+			// the LXC-internal authorized_keys (via Container.SSHKeys) but
+			// NOT here — so a box created with ssh_keys was reachable on the
+			// box itself yet REJECTED at the sentinel (publickey), because
+			// sshpiper validates the client against the host-side file. Mirror
+			// the request keys here so the sentinel authorizes exactly the
+			// keys the box does. Keys are already validated above. (#470)
+			for _, key := range req.SshKeys {
+				if err := container.AddAuthorizedKey(req.Username, key); err != nil {
+					log.Printf("Warning: failed to sync create-request ssh key to jump account for %s: %v", req.Username, err)
+				}
 			}
 		}()
 	}
