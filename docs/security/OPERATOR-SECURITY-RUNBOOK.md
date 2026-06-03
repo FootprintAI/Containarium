@@ -21,6 +21,7 @@ If a procedure here is wrong, update it.
 - [Enabling KMS envelope encryption for secrets](#enabling-kms-envelope-encryption-for-secrets)
 - [Pinning and verifying container image digests](#pinning-and-verifying-container-image-digests)
 - [Locking down `/wake/` to a known load balancer](#locking-down-wake-to-a-known-load-balancer)
+- [Pinning per-tenant network policy](#pinning-per-tenant-network-policy)
 - [Auditing recent administrative actions](#auditing-recent-administrative-actions)
 - [Verifying the audit-log hash chain](#verifying-the-audit-log-hash-chain)
 
@@ -912,6 +913,107 @@ If `CONTAINARIUM_WAKE_TRUSTED_PROXIES` is unset and Caddy is NOT on
 the same host, you'll see the startup `WARNING` log line and every
 non-loopback source will be accepted (pre-1.9 behavior). Setting the
 env var is the safe default.
+
+---
+
+## Pinning per-tenant network policy
+
+Per-tenant network isolation (eBPF, #315) fences what a tenant's containers can
+reach: deny-by-default container-to-container traffic plus an egress allow-list
+by CIDR and domain, enforced at each container's host veth. Design detail:
+[`NETWORK-ISOLATION-DESIGN.md`](NETWORK-ISOLATION-DESIGN.md). It is **off unless
+you opt in**, and dropping is a **second** opt-in on top of that — so rolling it
+out can never silently cut a tenant off.
+
+### The two opt-ins
+
+```bash
+# Set in the daemon's systemd Environment= (or EnvironmentFile), then restart.
+
+# 1. Enable the enforcer — OBSERVE only. Resolves policies, attaches the BPF
+#    program, audits would-deny flows. Drops NOTHING.
+CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/etc/containarium/netpolicy.bpf.o
+
+# 2. Arm enforcement — only now does `--mode enforce` actually drop. Without
+#    this, a stored enforce policy stays observation-only.
+CONTAINARIUM_NETWORK_POLICY_ENFORCE=1
+```
+
+Build the object once per backend (kernel ≥ 6.6 for TCX) from
+`experimental/ebpf-phaseA/netpolicy.bpf.c`:
+
+```bash
+clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
+    -c netpolicy.bpf.c -o /etc/containarium/netpolicy.bpf.o
+```
+
+### Authoring a policy
+
+```bash
+# Allow only the listed egress; deny everything else (incl. other tenants).
+containarium network-policy set alice \
+    --egress-cidr 10.0.0.0/8 \
+    --egress-domain api.github.com \
+    --allow-intra-tenant \
+    --mode log_only          # start in log_only — see the soak workflow below
+
+containarium network-policy get alice
+containarium network-policy list
+```
+
+A container is matched to its tenant by the `<tenant>-container` name; a
+container whose tenant has **no** policy is left in log_only (never dropped), so
+enabling enforcement only affects tenants you've written a policy for.
+
+### Soak before you arm (the safe rollout)
+
+Enforcement is only as good as the allow-list, and an allow-list that forgets a
+dependency will **break the tenant** once armed. So soak first:
+
+1. Set the policy with `--mode log_only` and enable opt-in #1 (not #2).
+2. Run the tenant's normal workload and watch the daemon log for the flows that
+   *would* be denied:
+   ```bash
+   journalctl -u containarium -f | grep '\[netpolicy\] deny:'
+   # deny: tenant="alice" src=… dst=140.82.112.3 proto=6 dport=443 log_only (not dropped)
+   ```
+   These are also audit rows — `action=network_policy.deny_logged`:
+   ```bash
+   containarium audit query --action network_policy.deny_logged --limit 200
+   ```
+3. For every legitimate destination, add it to the allow-list (`--egress-cidr` /
+   `--egress-domain`). **Include the tenant's DNS resolver / bridge gateway** —
+   an enforce policy that omits its resolver blackholes the container (name
+   resolution itself is egress). Re-run `set` until the would-deny stream is
+   empty for normal operation.
+4. Flip the policy to `--mode enforce` and set opt-in #2. Denied flows now drop,
+   audited as `action=network_policy.deny_dropped`:
+   ```bash
+   containarium audit query --action network_policy.deny_dropped --limit 200
+   ```
+
+`--mode enforce` and `--mode log_only` can be flipped per tenant at any time; you
+can keep some tenants observing while others enforce.
+
+### Cloud metadata is denied by default
+
+The metadata service (`169.254.169.254`) hands out instance credentials and is
+**denied even if your egress allow-list would otherwise cover it** (including a
+broad `0.0.0.0/0`). A tenant that genuinely needs instance metadata must opt in
+explicitly:
+
+```bash
+containarium network-policy set alice --allow-metadata …
+```
+
+### Removing a policy
+
+```bash
+containarium network-policy delete alice
+```
+
+The container drops back to log_only on the next reconcile (≤ a few seconds);
+the egress map entries are pruned automatically.
 
 ---
 
