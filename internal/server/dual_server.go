@@ -295,6 +295,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterRecipeServiceServer(grpcServer, NewRecipeServer(containerServer, networkServer))
 	log.Printf("Recipe service enabled")
 
+	// NetworkPolicyService — Phase A control-plane CRUD for per-tenant network
+	// isolation policies (#315). Registered here (before the Postgres pool is
+	// set up below) with an in-memory store; persistence (swap to
+	// PostgresNetworkPolicyStore once the pool exists) and the per-veth
+	// TC_INGRESS BPF loader that consumes these policies are follow-up
+	// increments. Admin-gated in the handler.
+	pb.RegisterNetworkPolicyServiceServer(grpcServer, NewNetworkPolicyServer(NewMemNetworkPolicyStore()))
+	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
+
 	// Create TrafficServer (always available, but conntrack only works on Linux)
 	var trafficServer *TrafficServer
 	var trafficCollector *traffic.Collector

@@ -371,6 +371,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register recipe service gateway: %w", err)
 	}
 
+	// Register NetworkPolicyService gateway handler (#315)
+	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register network policy service gateway: %w", err)
+	}
+
 	// Register TrafficService gateway handler
 	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
 		return fmt.Errorf("failed to register traffic service gateway: %w", err)

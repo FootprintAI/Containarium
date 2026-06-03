@@ -33,6 +33,9 @@
       "name": "EventService"
     },
     {
+      "name": "NetworkPolicyService"
+    },
+    {
       "name": "PentestService"
     },
     {
@@ -1867,6 +1870,124 @@
         ],
         "tags": [
           "Monitoring"
+        ]
+      }
+    },
+    "/v1/network-policies": {
+      "get": {
+        "summary": "List network policies",
+        "description": "List every tenant's network-isolation policy. Admin-only.",
+        "operationId": "NetworkPolicyService_ListNetworkPolicies",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListNetworkPoliciesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "NetworkPolicy"
+        ]
+      },
+      "post": {
+        "summary": "Set network policy",
+        "description": "Create or replace a tenant's network-isolation policy (validated + normalized). Admin-only.",
+        "operationId": "NetworkPolicyService_SetNetworkPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetNetworkPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetNetworkPolicyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
+    "/v1/network-policies/{tenant}": {
+      "get": {
+        "summary": "Get network policy",
+        "description": "Return a tenant's network-isolation policy. Admin-only.",
+        "operationId": "NetworkPolicyService_GetNetworkPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetNetworkPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      },
+      "delete": {
+        "summary": "Delete network policy",
+        "description": "Remove a tenant's network-isolation policy (idempotent). Admin-only.",
+        "operationId": "NetworkPolicyService_DeleteNetworkPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteNetworkPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
         ]
       }
     },
@@ -5241,6 +5362,9 @@
       },
       "title": "DeleteContainerResponse is the response from deleting a container"
     },
+    "DeleteNetworkPolicyResponse": {
+      "type": "object"
+    },
     "DeletePassthroughRouteResponse": {
       "type": "object",
       "properties": {
@@ -5884,6 +6008,14 @@
       },
       "title": "GetMonitoringInfoResponse is the response with monitoring configuration"
     },
+    "GetNetworkPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/NetworkPolicy"
+        }
+      }
+    },
     "GetNetworkTopologyResponse": {
       "type": "object",
       "properties": {
@@ -6309,6 +6441,18 @@
       },
       "title": "ListDefaultAlertRulesResponse returns the built-in default alert rules"
     },
+    "ListNetworkPoliciesResponse": {
+      "type": "object",
+      "properties": {
+        "policies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NetworkPolicy"
+          }
+        }
+      }
+    },
     "ListPassthroughRoutesResponse": {
       "type": "object",
       "properties": {
@@ -6647,6 +6791,48 @@
         }
       },
       "title": "NetworkNode represents a node in the network topology"
+    },
+    "NetworkPolicy": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "description": "Tenant this policy applies to (required)."
+        },
+        "allowIntraTenant": {
+          "type": "boolean",
+          "description": "Allow container↔container traffic within the same tenant. When false, even\nsame-tenant peers can't reach each other."
+        },
+        "egressCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed egress destination CIDRs (e.g. \"10.0.0.0/8\", \"1.2.3.4/32\")."
+        },
+        "egressDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed egress domains (e.g. \"api.github.com\"); the daemon resolves these\nto CIDRs on a refresh loop and folds them into the egress allow set."
+        },
+        "mode": {
+          "$ref": "#/definitions/NetworkPolicyMode",
+          "description": "Enforcement mode. Unspecified is treated as LOG_ONLY in Phase A."
+        }
+      },
+      "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."
+    },
+    "NetworkPolicyMode": {
+      "type": "string",
+      "enum": [
+        "NETWORK_POLICY_MODE_UNSPECIFIED",
+        "NETWORK_POLICY_MODE_LOG_ONLY",
+        "NETWORK_POLICY_MODE_ENFORCE"
+      ],
+      "default": "NETWORK_POLICY_MODE_UNSPECIFIED",
+      "description": "NetworkPolicyMode controls whether a tenant's network policy is enforced or\nonly observed. Phase A ships log_only; Phase B flips to enforce. See\ndocs/security/NETWORK-ISOLATION-DESIGN.md (#315).\n\n - NETWORK_POLICY_MODE_UNSPECIFIED: treated as LOG_ONLY in Phase A\n - NETWORK_POLICY_MODE_LOG_ONLY: observe + audit denied flows; drop nothing\n - NETWORK_POLICY_MODE_ENFORCE: actually drop denied flows"
     },
     "NetworkTopology": {
       "type": "object",
@@ -7542,6 +7728,23 @@
         }
       },
       "description": "SetContainerTTLResponse reports the new TTL state."
+    },
+    "SetNetworkPolicyRequest": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/NetworkPolicy"
+        }
+      }
+    },
+    "SetNetworkPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/NetworkPolicy",
+          "description": "The stored policy (echoed back in its normalized form)."
+        }
+      }
     },
     "SetSecretRequest": {
       "type": "object",

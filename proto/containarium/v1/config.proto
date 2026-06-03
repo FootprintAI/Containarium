@@ -363,6 +363,33 @@ message NetworkPolicy {
   NetworkPolicyMode mode = 5;
 }
 
+// --- NetworkPolicyService request/response messages (#315) ---
+
+message SetNetworkPolicyRequest {
+  NetworkPolicy policy = 1;
+}
+message SetNetworkPolicyResponse {
+  // The stored policy (echoed back in its normalized form).
+  NetworkPolicy policy = 1;
+}
+
+message GetNetworkPolicyRequest {
+  string tenant = 1;
+}
+message GetNetworkPolicyResponse {
+  NetworkPolicy policy = 1;
+}
+
+message ListNetworkPoliciesRequest {}
+message ListNetworkPoliciesResponse {
+  repeated NetworkPolicy policies = 1;
+}
+
+message DeleteNetworkPolicyRequest {
+  string tenant = 1;
+}
+message DeleteNetworkPolicyResponse {}
+
 // BackendType represents the type of backend instance
 enum BackendType {
   BACKEND_TYPE_UNSPECIFIED = 0;

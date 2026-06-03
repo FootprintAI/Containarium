@@ -82,6 +82,23 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 	}, nil
 }
 
+// ToProto renders a CompiledPolicy back into a NetworkPolicy message — the
+// normalized form to persist and echo to callers (masked/deduped/sorted CIDRs,
+// normalized domains, resolved mode).
+func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
+	cidrs := make([]string, len(c.EgressCIDRs))
+	for i, p := range c.EgressCIDRs {
+		cidrs[i] = p.String()
+	}
+	return &pb.NetworkPolicy{
+		Tenant:           c.Tenant,
+		AllowIntraTenant: c.AllowIntraTenant,
+		EgressCidrs:      cidrs,
+		EgressDomains:    append([]string(nil), c.EgressDomains...),
+		Mode:             c.Mode,
+	}
+}
+
 // compileCIDRs parses each egress CIDR, masks it to its network address (so
 // "1.2.3.4/24" canonicalizes to "1.2.3.0/24"), dedupes, and sorts.
 func compileCIDRs(raw []string) ([]netip.Prefix, error) {

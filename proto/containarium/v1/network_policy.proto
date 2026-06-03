@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "containarium/v1/config.proto";
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// NetworkPolicyService — the control-plane CRUD for per-tenant network
+// isolation policies (Phase A of the eBPF network-isolation design, #315).
+//
+// This is the policy *store* surface: operators (and the cloud control plane)
+// set/get/list/delete a tenant's NetworkPolicy here; the per-veth TC_INGRESS
+// BPF loader (a later increment) consumes the stored policies and programs the
+// kernel. Admin-only — policies are fleet-shaping config, not tenant-editable.
+service NetworkPolicyService {
+  // SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
+  // The policy is validated + normalized; the stored form is echoed back.
+  rpc SetNetworkPolicy(SetNetworkPolicyRequest) returns (SetNetworkPolicyResponse) {
+    option (google.api.http) = {
+      post: "/v1/network-policies"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set network policy";
+      description: "Create or replace a tenant's network-isolation policy (validated + normalized). Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+
+  // GetNetworkPolicy returns a tenant's policy, or NotFound if none is set.
+  rpc GetNetworkPolicy(GetNetworkPolicyRequest) returns (GetNetworkPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/network-policies/{tenant}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get network policy";
+      description: "Return a tenant's network-isolation policy. Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+
+  // ListNetworkPolicies returns every tenant's policy.
+  rpc ListNetworkPolicies(ListNetworkPoliciesRequest) returns (ListNetworkPoliciesResponse) {
+    option (google.api.http) = {
+      get: "/v1/network-policies"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List network policies";
+      description: "List every tenant's network-isolation policy. Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+
+  // DeleteNetworkPolicy removes a tenant's policy. Idempotent — deleting a
+  // missing policy is not an error.
+  rpc DeleteNetworkPolicy(DeleteNetworkPolicyRequest) returns (DeleteNetworkPolicyResponse) {
+    option (google.api.http) = {
+      delete: "/v1/network-policies/{tenant}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete network policy";
+      description: "Remove a tenant's network-isolation policy (idempotent). Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+}
