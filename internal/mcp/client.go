@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 // Client is a REST API client for Containarium. Carries a small amount
@@ -161,6 +163,12 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	// Advertise the client version so the daemon can log it and, if it
+	// chooses, gate on a minimum-supported client. Both the conventional
+	// User-Agent and the explicit header are set; a server reads whichever
+	// it prefers.
+	req.Header.Set("User-Agent", version.UserAgent())
+	req.Header.Set(version.ClientVersionHeader, version.GetVersion())
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

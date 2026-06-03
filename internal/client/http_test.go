@@ -1,10 +1,14 @@
 package client
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 // trackBody records whether it was read to EOF and closed, so a test can
@@ -83,5 +87,36 @@ func TestNewHTTPClient_PinsHTTP1(t *testing.T) {
 	// (not a zero-value transport with no timeouts).
 	if tr.DialContext == nil {
 		t.Error("expected DialContext preserved from http.DefaultTransport clone")
+	}
+}
+
+// TestDoRequest_AdvertisesClientVersion guards that every CLI→daemon request
+// carries the client version — a conventional User-Agent ("containarium/<ver>")
+// plus the explicit X-Containarium-Client-Version header — so a server can log
+// or gate on it.
+func TestDoRequest_AdvertisesClientVersion(t *testing.T) {
+	var gotUA, gotVer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotVer = r.Header.Get(version.ClientVersionHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	resp, err := c.doRequest(context.Background(), http.MethodGet, "/test", nil)
+	if err != nil {
+		t.Fatalf("doRequest: %v", err)
+	}
+	drainClose(resp)
+
+	if !strings.HasPrefix(gotUA, "containarium/") {
+		t.Errorf("User-Agent = %q; want containarium/<version> prefix", gotUA)
+	}
+	if gotVer != version.GetVersion() {
+		t.Errorf("%s = %q; want %q", version.ClientVersionHeader, gotVer, version.GetVersion())
 	}
 }

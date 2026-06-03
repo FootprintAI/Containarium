@@ -5,8 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,6 +61,12 @@ func TestClientDoRequest(t *testing.T) {
 
 				// Verify content type
 				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+				// Verify the client advertises its version: a conventional
+				// User-Agent ("containarium/<ver>") plus the explicit header.
+				assert.True(t, strings.HasPrefix(r.Header.Get("User-Agent"), "containarium/"),
+					"User-Agent must be containarium/<version>, got %q", r.Header.Get("User-Agent"))
+				assert.Equal(t, version.GetVersion(), r.Header.Get(version.ClientVersionHeader))
 
 				w.WriteHeader(tt.serverStatus)
 				w.Write([]byte(tt.serverResponse))

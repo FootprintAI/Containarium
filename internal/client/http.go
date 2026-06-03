@@ -14,6 +14,7 @@ import (
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -84,6 +85,12 @@ func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body in
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
+	// Advertise the client version so the daemon can log it and, if it
+	// chooses, gate on a minimum-supported client. Both the conventional
+	// User-Agent and the explicit header are set; a server reads whichever
+	// it prefers.
+	req.Header.Set("User-Agent", version.UserAgent())
+	req.Header.Set(version.ClientVersionHeader, version.GetVersion())
 
 	return c.httpClient.Do(req)
 }
