@@ -53,6 +53,16 @@ type ContainerSpec struct {
 	// SecretEnv are name→value pairs the actuator injects as container
 	// environment (from Assignment.secret_env).
 	SecretEnv map[string]string
+	// Routes are the hostname→port exposures for this container (from
+	// Assignment.routes); the actuator registers them at the host edge.
+	Routes []RouteSpec
+}
+
+// RouteSpec is one hostname→container-port exposure (from cloudv1.PortRoute).
+type RouteSpec struct {
+	Domain     string
+	TargetPort int32
+	Protocol   string
 }
 
 // ContainerActuator drives local Incus state toward an assignment's
@@ -274,16 +284,14 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 	name := localContainerName(a.GetContainerId())
 	switch a.GetDesiredState() {
 	case "running":
-		// Routes ride the assignment (Assignment.routes); applying them to the
-		// host edge (Caddy) needs the daemon's route machinery — a follow-up.
-		// Log so the gap is visible rather than silent.
-		if len(a.GetRoutes()) > 0 {
-			log.Printf("[cloud] %s: %d route(s) received; edge route application is not yet wired", name, len(a.GetRoutes()))
+		routes := make([]RouteSpec, 0, len(a.GetRoutes()))
+		for _, r := range a.GetRoutes() {
+			routes = append(routes, RouteSpec{Domain: r.GetDomain(), TargetPort: r.GetTargetPort(), Protocol: r.GetProtocol()})
 		}
 		if err := c.containers.EnsureRunning(c.ctx, ContainerSpec{
 			LocalName: name, OrgID: a.GetOrgId(), Image: a.GetImage(),
 			RAMMB: a.GetRamMb(), DiskGB: a.GetDiskGb(), GPUCount: a.GetGpuCount(),
-			SecretEnv: a.GetSecretEnv(),
+			SecretEnv: a.GetSecretEnv(), Routes: routes,
 		}); err != nil {
 			log.Printf("[cloud] ensure running %s: %v", name, err)
 			return // leave the cloud's observed state stale; next snapshot retries

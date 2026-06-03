@@ -312,37 +312,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
 
-	// Cloud-actuation client (#354): if this host is enrolled with a cloud
-	// control plane, run the actuation client. It heartbeats and consumes
-	// WatchAssignments, syncing each org's egress network policy into the
-	// NetworkPolicyServer's store (closing the #315 cloud-extension loop:
-	// cloud-authored policy → on-box enforcer). Unenrolled (no cloud.yaml) → the
-	// daemon is single-tenant and makes no outbound calls. The sink holds
-	// npServer so it always writes to the current store (post-Postgres-swap).
+	// Cloud-actuation client (#354) is constructed later, once routeStore is
+	// finalized — the container actuator needs it to expose cloud routes at the
+	// host edge. Declared here so it's in scope for the DualServer assembly.
 	var cloudClient *cloud.Client
-	cloudCfgPath := os.Getenv("CONTAINARIUM_CLOUD_CONFIG")
-	if cloudCfgPath == "" {
-		if p, perr := cloud.DefaultPath(); perr == nil {
-			cloudCfgPath = p
-		}
-	}
-	if cloudCfg, cerr := cloud.Load(cloudCfgPath); cerr != nil {
-		log.Printf("Warning: failed to read cloud-actuation config %s: %v (running single-tenant)", cloudCfgPath, cerr)
-	} else if cloudCfg != nil {
-		cloudDeps := cloud.Deps{Policies: newCloudPolicySink(npServer)}
-		if cloudActuator, actErr := newCloudContainerActuator(); actErr != nil {
-			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
-		} else {
-			cloudDeps.Containers = cloudActuator // only set when non-nil (avoid nil-iface trap)
-		}
-		if cc, nerr := cloud.New(cloudCfg, cloudDeps); nerr != nil {
-			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
-		} else {
-			cloudClient = cc
-			log.Printf("Cloud-actuation client configured (host=%s control-plane=%s); starts with the daemon",
-				cloudCfg.HostID, cloudCfg.ControlPlane)
-		}
-	}
 
 	// Create TrafficServer (always available, but conntrack only works on Linux)
 	var trafficServer *TrafficServer
@@ -835,6 +808,37 @@ skipAppHosting:
 					log.Printf("Network service updated with route store (standalone)")
 				}
 			}
+		}
+	}
+
+	// Cloud-actuation client (#354): if this host is enrolled with a cloud
+	// control plane, run the actuation client — heartbeat + WatchAssignments,
+	// syncing each org's egress policy into the NetworkPolicyServer store
+	// (closing the #315 loop), reconciling assigned containers, and exposing their
+	// routes at the host edge via routeStore. Unenrolled (no cloud.yaml) → the
+	// daemon is single-tenant and makes no outbound calls. Built here (not at
+	// npServer setup) so the actuator has the finalized routeStore.
+	cloudCfgPath := os.Getenv("CONTAINARIUM_CLOUD_CONFIG")
+	if cloudCfgPath == "" {
+		if p, perr := cloud.DefaultPath(); perr == nil {
+			cloudCfgPath = p
+		}
+	}
+	if cloudCfg, cerr := cloud.Load(cloudCfgPath); cerr != nil {
+		log.Printf("Warning: failed to read cloud-actuation config %s: %v (running single-tenant)", cloudCfgPath, cerr)
+	} else if cloudCfg != nil {
+		cloudDeps := cloud.Deps{Policies: newCloudPolicySink(npServer)}
+		if cloudActuator, actErr := newCloudContainerActuator(routeStore); actErr != nil {
+			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
+		} else {
+			cloudDeps.Containers = cloudActuator // only set when non-nil (avoid nil-iface trap)
+		}
+		if cc, nerr := cloud.New(cloudCfg, cloudDeps); nerr != nil {
+			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
+		} else {
+			cloudClient = cc
+			log.Printf("Cloud-actuation client configured (host=%s control-plane=%s); starts with the daemon",
+				cloudCfg.HostID, cloudCfg.ControlPlane)
 		}
 	}
 

@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
@@ -15,27 +17,29 @@ import (
 // the container to its org's egress policy (cloud names are cld-<uuid>, not
 // <tenant>-container, so the label — not the name — carries the tenant).
 //
-// Scope: create / start / stop / delete to converge to desired_state. It does
-// NOT manage routes, secrets, or the richer create options the user-facing
+// Scope: create / start / stop / delete to converge to desired_state, plus
+// exposing the container's routes at the host edge (routeStore → Caddy) and
+// injecting secret_env. Not the richer create options the user-facing
 // ContainerService offers — cloud-assigned boxes are minimal v1 workloads.
 type cloudContainerActuator struct {
-	incus *incus.Client
+	incus  *incus.Client
+	routes *app.RouteStore // nil when the host has no route store (no Postgres/Caddy) → routes skipped
 }
 
-// newCloudContainerActuator builds an actuator with its own Incus client.
-// Returns an error (→ caller runs policy-sync-only) if Incus is unavailable,
-// e.g. on a non-Linux dev box.
-func newCloudContainerActuator() (*cloudContainerActuator, error) {
+// newCloudContainerActuator builds an actuator with its own Incus client and the
+// daemon's route store (may be nil — then route exposure is skipped). Returns an
+// error (→ caller runs policy-sync-only) if Incus is unavailable, e.g. non-Linux.
+func newCloudContainerActuator(routes *app.RouteStore) (*cloudContainerActuator, error) {
 	c, err := incus.New()
 	if err != nil {
 		return nil, fmt.Errorf("incus client: %w", err)
 	}
-	return &cloudContainerActuator{incus: c}, nil
+	return &cloudContainerActuator{incus: c, routes: routes}, nil
 }
 
-// EnsureRunning creates the container (stamping the tenant label) if absent, then
-// ensures it is started. Idempotent.
-func (a *cloudContainerActuator) EnsureRunning(_ context.Context, spec cloud.ContainerSpec) error {
+// EnsureRunning creates the container (stamping the tenant label) if absent,
+// ensures it is started, and converges its edge routes. Idempotent.
+func (a *cloudContainerActuator) EnsureRunning(ctx context.Context, spec cloud.ContainerSpec) error {
 	info, err := a.incus.GetContainer(spec.LocalName)
 	if err != nil {
 		// Treat any lookup failure as "not present" and try to create — a real
@@ -44,11 +48,13 @@ func (a *cloudContainerActuator) EnsureRunning(_ context.Context, spec cloud.Con
 			return cerr
 		}
 	} else if isRunning(info.State) {
-		return nil // already converged
+		a.applyRoutes(ctx, spec) // already running — still converge routes
+		return nil
 	}
 	if err := a.incus.StartContainer(spec.LocalName); err != nil {
 		return fmt.Errorf("start %s: %w", spec.LocalName, err)
 	}
+	a.applyRoutes(ctx, spec)
 	return nil
 }
 
@@ -67,8 +73,9 @@ func (a *cloudContainerActuator) EnsureStopped(_ context.Context, localName stri
 	return nil
 }
 
-// EnsureDeleted deletes the container if it exists. Idempotent.
-func (a *cloudContainerActuator) EnsureDeleted(_ context.Context, localName string) error {
+// EnsureDeleted removes the container's edge routes, then deletes it. Idempotent.
+func (a *cloudContainerActuator) EnsureDeleted(ctx context.Context, localName string) error {
+	a.removeRoutes(ctx, localName)
 	if _, err := a.incus.GetContainer(localName); err != nil {
 		return nil // already gone
 	}
@@ -122,3 +129,90 @@ func buildContainerConfig(spec cloud.ContainerSpec) incus.ContainerConfig {
 
 // isRunning matches Incus's running state case-insensitively.
 func isRunning(state string) bool { return strings.EqualFold(state, "running") }
+
+// applyRoutes converges the container's edge routes to spec.Routes: upsert each
+// (pointing at the container's current IP) and delete any cloud route for this
+// container the cloud no longer sends. Best-effort — route errors are logged,
+// never fail the reconcile (the loop retries). No-op when there's no route store.
+//
+// The container IP is read fresh: right after first start it may be empty (DHCP
+// lag), in which case routes are skipped this pass and applied on the next
+// reconcile once the lease lands.
+func (a *cloudContainerActuator) applyRoutes(ctx context.Context, spec cloud.ContainerSpec) {
+	if a.routes == nil || len(spec.Routes) == 0 {
+		// Still converge-away stale routes even if the desired set is now empty.
+		if a.routes != nil {
+			a.pruneRoutes(ctx, spec.LocalName, nil)
+		}
+		return
+	}
+	info, err := a.incus.GetContainer(spec.LocalName)
+	if err != nil || info.IPAddress == "" {
+		log.Printf("[cloud] %s: IP not ready, deferring route exposure to next reconcile", spec.LocalName)
+		return
+	}
+	desired := make(map[string]bool, len(spec.Routes))
+	for _, r := range spec.Routes {
+		if r.Domain == "" {
+			continue
+		}
+		desired[r.Domain] = true
+		rec := routeRecordFor(spec.LocalName, info.IPAddress, r)
+		if err := a.routes.Save(ctx, rec); err != nil {
+			log.Printf("[cloud] expose route %s → %s:%d: %v", r.Domain, info.IPAddress, r.TargetPort, err)
+		}
+	}
+	a.pruneRoutes(ctx, spec.LocalName, desired)
+}
+
+// pruneRoutes deletes this container's cloud-created routes whose domain isn't in
+// `keep`. Only touches routes created_by="cloud" so it won't remove an operator's
+// manually-exposed route on the same container.
+func (a *cloudContainerActuator) pruneRoutes(ctx context.Context, localName string, keep map[string]bool) {
+	existing, err := a.routes.ListByContainer(ctx, localName)
+	if err != nil {
+		return
+	}
+	for _, r := range existing {
+		if r.CreatedBy == cloudRouteCreatedBy && !keep[r.FullDomain] {
+			if err := a.routes.Delete(ctx, r.FullDomain); err != nil {
+				log.Printf("[cloud] prune route %s: %v", r.FullDomain, err)
+			}
+		}
+	}
+}
+
+// removeRoutes deletes all of this container's cloud-created routes (on delete).
+func (a *cloudContainerActuator) removeRoutes(ctx context.Context, localName string) {
+	if a.routes != nil {
+		a.pruneRoutes(ctx, localName, nil)
+	}
+}
+
+// cloudRouteCreatedBy tags routes the cloud actuator owns, so convergence/cleanup
+// never touches operator-authored routes on the same container.
+const cloudRouteCreatedBy = "cloud-actuation"
+
+// routeRecordFor maps a cloud route + the container's IP to a daemon RouteRecord.
+// Protocol: the daemon edge speaks http/grpc; grpc passes through, everything
+// else (http/https/"") becomes http. Pure → unit-testable.
+func routeRecordFor(localName, ip string, r cloud.RouteSpec) *app.RouteRecord {
+	proto := "http"
+	if strings.EqualFold(r.Protocol, "grpc") {
+		proto = "grpc"
+	}
+	sub := r.Domain
+	if i := strings.IndexByte(sub, '.'); i > 0 {
+		sub = sub[:i]
+	}
+	return &app.RouteRecord{
+		Subdomain:     sub,
+		FullDomain:    r.Domain,
+		TargetIP:      ip,
+		TargetPort:    int(r.TargetPort),
+		Protocol:      proto,
+		ContainerName: localName,
+		Active:        true,
+		CreatedBy:     cloudRouteCreatedBy,
+	}
+}

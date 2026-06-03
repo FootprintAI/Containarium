@@ -29,6 +29,31 @@ func TestBuildContainerConfig(t *testing.T) {
 	}
 }
 
+func TestRouteRecordFor(t *testing.T) {
+	rec := routeRecordFor("cld-abc", "10.100.0.42", cloud.RouteSpec{
+		Domain: "web.acme.example.com", TargetPort: 8080, Protocol: "http",
+	})
+	if rec.FullDomain != "web.acme.example.com" || rec.Subdomain != "web" {
+		t.Errorf("domain/subdomain wrong: full=%q sub=%q", rec.FullDomain, rec.Subdomain)
+	}
+	if rec.TargetIP != "10.100.0.42" || rec.TargetPort != 8080 {
+		t.Errorf("target wrong: %s:%d", rec.TargetIP, rec.TargetPort)
+	}
+	if rec.Protocol != "http" || rec.ContainerName != "cld-abc" {
+		t.Errorf("proto/container wrong: %q %q", rec.Protocol, rec.ContainerName)
+	}
+	if rec.CreatedBy != cloudRouteCreatedBy || !rec.Active {
+		t.Errorf("must be tagged cloud-created + active: by=%q active=%v", rec.CreatedBy, rec.Active)
+	}
+	// grpc passes through; anything else → http.
+	if g := routeRecordFor("c", "1.2.3.4", cloud.RouteSpec{Domain: "g.x", TargetPort: 9, Protocol: "grpc"}); g.Protocol != "grpc" {
+		t.Errorf("grpc protocol should pass through, got %q", g.Protocol)
+	}
+	if h := routeRecordFor("c", "1.2.3.4", cloud.RouteSpec{Domain: "h.x", TargetPort: 9, Protocol: "https"}); h.Protocol != "http" {
+		t.Errorf("https should map to http edge, got %q", h.Protocol)
+	}
+}
+
 func TestBuildContainerConfig_MinimalOmitsDevices(t *testing.T) {
 	cfg := buildContainerConfig(cloud.ContainerSpec{LocalName: "cld-x", Image: "alpine"})
 	if cfg.Memory != "" {
