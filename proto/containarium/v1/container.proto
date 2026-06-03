@@ -179,6 +179,22 @@ message Container {
   // margin). Used by the containarium-run GitHub Action's
   // "keep on failure" path to schedule auto-deletion of debug boxes.
   google.protobuf.Timestamp ttl_expires_at = 22;
+
+  // The host:port a client should SSH to in order to reach this
+  // container, as computed by the daemon from its own routing config —
+  // so a client never has to infer the SSH target from other fields:
+  //
+  //   - direct mode  → the container's reachable IP (same value as
+  //     network.ip_address);
+  //   - sentinel-jump mode → the configured sentinel's public host,
+  //     e.g. "region-a.example.com".
+  //
+  // Combined with `username`, this is the connect target
+  // `username@ssh_host`. Empty means "no explicit host — fall back to
+  // network.ip_address". Clients (the ssh_config generator, a future
+  // `connect` verb) should USE this verbatim rather than reconstructing
+  // a host from the IP / sentinel config themselves.
+  string ssh_host = 23;
 }
 
 // ContainerMetrics contains runtime metrics for a container

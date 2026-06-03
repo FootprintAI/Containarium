@@ -413,7 +413,22 @@ type Container struct {
 	// ttl_expires_at has elapsed (with a small clock-skew grace
 	// margin). Used by the containarium-run GitHub Action's
 	// "keep on failure" path to schedule auto-deletion of debug boxes.
-	TtlExpiresAt  *timestamppb.Timestamp `protobuf:"bytes,22,opt,name=ttl_expires_at,json=ttlExpiresAt,proto3" json:"ttl_expires_at,omitempty"`
+	TtlExpiresAt *timestamppb.Timestamp `protobuf:"bytes,22,opt,name=ttl_expires_at,json=ttlExpiresAt,proto3" json:"ttl_expires_at,omitempty"`
+	// The host:port a client should SSH to in order to reach this
+	// container, as computed by the daemon from its own routing config —
+	// so a client never has to infer the SSH target from other fields:
+	//
+	//   - direct mode  → the container's reachable IP (same value as
+	//     network.ip_address);
+	//   - sentinel-jump mode → the configured sentinel's public host,
+	//     e.g. "region-a.example.com".
+	//
+	// Combined with `username`, this is the connect target
+	// `username@ssh_host`. Empty means "no explicit host — fall back to
+	// network.ip_address". Clients (the ssh_config generator, a future
+	// `connect` verb) should USE this verbatim rather than reconstructing
+	// a host from the IP / sentinel config themselves.
+	SshHost       string `protobuf:"bytes,23,opt,name=ssh_host,json=sshHost,proto3" json:"ssh_host,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -600,6 +615,13 @@ func (x *Container) GetTtlExpiresAt() *timestamppb.Timestamp {
 		return x.TtlExpiresAt
 	}
 	return nil
+}
+
+func (x *Container) GetSshHost() string {
+	if x != nil {
+		return x.SshHost
+	}
+	return ""
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -3982,7 +4004,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xc8\a\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xe3\a\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -4012,7 +4034,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x04pool\x18\x13 \x01(\tR\x04pool\x12,\n" +
 	"\x12auto_sleep_enabled\x18\x14 \x01(\bR\x10autoSleepEnabled\x124\n" +
 	"\x16idle_threshold_minutes\x18\x15 \x01(\x05R\x14idleThresholdMinutes\x12@\n" +
-	"\x0ettl_expires_at\x18\x16 \x01(\v2\x1a.google.protobuf.TimestampR\fttlExpiresAt\x1a9\n" +
+	"\x0ettl_expires_at\x18\x16 \x01(\v2\x1a.google.protobuf.TimestampR\fttlExpiresAt\x12\x19\n" +
+	"\bssh_host\x18\x17 \x01(\tR\asshHost\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +

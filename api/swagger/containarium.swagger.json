@@ -5202,6 +5202,11 @@
           "type": "string",
           "format": "date-time",
           "description": "Wall-clock time at which the daemon's TTL sweeper will delete\nthis container. Unset = no TTL, container persists indefinitely.\nSet via SetContainerTTL. Consumed by internal/ttlsweeper which\nruns once a minute and force-deletes any container whose\nttl_expires_at has elapsed (with a small clock-skew grace\nmargin). Used by the containarium-run GitHub Action's\n\"keep on failure\" path to schedule auto-deletion of debug boxes."
+        },
+        "sshHost": {
+          "type": "string",
+          "description": "- direct mode  → the container's reachable IP (same value as\n    network.ip_address);\n  - sentinel-jump mode → the configured sentinel's public host,\n    e.g. \"region-a.example.com\".\n\nCombined with `username`, this is the connect target\n`username@ssh_host`. Empty means \"no explicit host — fall back to\nnetwork.ip_address\". Clients (the ssh_config generator, a future\n`connect` verb) should USE this verbatim rather than reconstructing\na host from the IP / sentinel config themselves.",
+          "title": "The host:port a client should SSH to in order to reach this\ncontainer, as computed by the daemon from its own routing config —\nso a client never has to infer the SSH target from other fields:"
         }
       },
       "title": "Container represents a complete container instance"

@@ -107,6 +107,13 @@ type DualServerConfig struct {
 	PublicBaseDomains []string // suffix-match anchors advertised to the sentinel; <anything>.<one-of-these> routes here. List multiple to host workloads under different parent domains on the same backend (see docs/PER-POOL-BASE-DOMAIN.md)
 	PublicPort        int      // TLS port the sentinel forwards to (typically 443)
 
+	// SSHHost is the public host clients dial to SSH into this daemon's
+	// containers — the sentinel's SSH endpoint (e.g. region-a.example.com),
+	// from --ssh-host. Surfaced on each Container.ssh_host so clients build
+	// the connect target username@ssh_host without inferring it. Empty =
+	// direct mode: ssh_host is left empty and clients use the container IP.
+	SSHHost string
+
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
 	AlertWebhookSecret string // HMAC-SHA256 signing secret for webhook payloads (optional)
@@ -1494,6 +1501,13 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		Port:              ds.config.PublicPort,
 		BackendID:         ds.config.LocalBackendID,
 	})
+
+	// Surface the SSH host on every Container.ssh_host. Independent of peer
+	// discovery (a single-backend daemon still fronts a sentinel), so wire
+	// it unconditionally; empty --ssh-host leaves ssh_host empty.
+	if ds.containerServer != nil {
+		ds.containerServer.SetSSHHost(ds.config.SSHHost)
+	}
 
 	// Start peer discovery for multi-backend support
 	if ds.peerPool != nil {

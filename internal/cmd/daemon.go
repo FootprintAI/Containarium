@@ -48,6 +48,7 @@ var (
 	alertWebhookURL    string
 	alertWebhookSecret string
 	sentinelURL        string
+	sshHost            string
 	peerAddrs          []string
 	localBackendID     string
 	pool               string
@@ -136,6 +137,7 @@ func init() {
 
 	// Multi-backend peer settings
 	daemonCmd.Flags().StringVar(&sentinelURL, "sentinel-url", "", "Sentinel URL for auto-discovering tunnel peers (e.g., http://10.128.0.5:8081)")
+	daemonCmd.Flags().StringVar(&sshHost, "ssh-host", "", "Public SSH host clients dial to reach containers (the sentinel's SSH endpoint, e.g. region-a.example.com). Surfaced on each Container.ssh_host so clients build the target username@ssh_host. Empty = direct mode: ssh_host is left empty and clients use the container IP.")
 	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses (e.g., 10.128.0.5:18001)")
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
@@ -479,6 +481,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		AlertWebhookURL:      alertWebhookURL,
 		AlertWebhookSecret:   alertWebhookSecret,
 		SentinelURL:          sentinelURL,
+		SSHHost:              sshHost,
 		Peers:                peerAddrs,
 		LocalBackendID:       resolveBackendID(localBackendID),
 		Pool:                 pool,

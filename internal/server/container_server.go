@@ -104,6 +104,15 @@ type ContainerServer struct {
 	guacamoleClient *guacamole.Client
 	guacamoleUser   string // Guacamole admin username
 	guacamolePass   string // Guacamole admin password
+
+	// sshHost is the public host clients dial to SSH into containers this
+	// daemon fronts — the sentinel's SSH endpoint (e.g. "region-a.example.com"),
+	// set by DualServer wiring from --ssh-host. Stamped onto Container.ssh_host
+	// in the read path (alongside Pool) so a client builds its connect target
+	// `username@ssh_host` without inferring the host from the IP / config.
+	// Empty (direct mode / no sentinel) leaves ssh_host empty and clients fall
+	// back to network.ip_address.
+	sshHost string
 }
 
 // NewContainerServer creates a new container server
@@ -407,6 +416,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// Convert to protobuf
 	protoContainer := toProtoContainer(info)
 	protoContainer.Pool = s.resolvePool(protoContainer.BackendId)
+	protoContainer.SshHost = s.sshHost
 
 	// Emit container created event
 	s.emitter.EmitContainerCreated(protoContainer)
@@ -529,6 +539,7 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 	for i := range filtered {
 		pc := toProtoContainer(&filtered[i])
 		pc.Pool = s.resolvePool(pc.BackendId)
+		pc.SshHost = s.sshHost
 		protoContainers = append(protoContainers, pc)
 	}
 
@@ -539,6 +550,7 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		for i := range peerContainers {
 			pc := toProtoContainer(&peerContainers[i])
 			pc.Pool = s.resolvePool(pc.BackendId)
+			pc.SshHost = s.sshHost
 			protoContainers = append(protoContainers, pc)
 		}
 	}
@@ -605,6 +617,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 				if pc.Name == containerName {
 					proto := toProtoContainer(&pc)
 					proto.Pool = s.resolvePool(proto.BackendId)
+					proto.SshHost = s.sshHost
 					return &pb.GetContainerResponse{
 						Container: proto,
 					}, nil
@@ -630,6 +643,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 
 	protoInfo := toProtoContainer(info)
 	protoInfo.Pool = s.resolvePool(protoInfo.BackendId)
+	protoInfo.SshHost = s.sshHost
 	return &pb.GetContainerResponse{
 		Container: protoInfo,
 		// TODO: Add metrics
@@ -2124,6 +2138,14 @@ func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 // report the local backend's uptime. Called once from DualServer setup.
 func (s *ContainerServer) SetStartTime(t time.Time) {
 	s.startTime = t
+}
+
+// SetSSHHost wires the public SSH host clients dial to reach this daemon's
+// containers (the sentinel's SSH endpoint, from --ssh-host). Stamped onto
+// Container.ssh_host in the read path. Empty leaves ssh_host empty so clients
+// fall back to the container IP. Called once from DualServer setup.
+func (s *ContainerServer) SetSSHHost(host string) {
+	s.sshHost = host
 }
 
 // SetOTelCollectorEndpoint wires the OTLP/HTTP URL of this daemon's
