@@ -46,6 +46,8 @@ func main() {
 	)
 	var allow cidrList
 	flag.Var(&allow, "allow-cidr", "Allowed egress CIDR (repeatable)")
+	var allowDomain cidrList
+	flag.Var(&allowDomain, "allow-domain", "Allowed egress domain, resolved to IPs (repeatable, Phase C)")
 	flag.Parse()
 
 	incusClient, err := incus.New()
@@ -63,11 +65,13 @@ func main() {
 		Tenant:           *tenant,
 		AllowIntraTenant: *allowIntra,
 		EgressCidrs:      []string(allow),
+		EgressDomains:    []string(allowDomain),
 		Mode:             mode,
 	}); err != nil {
 		log.Fatalf("seed policy: %v", err)
 	}
-	log.Printf("seeded policy: tenant=%q mode=%v allow_intra=%v egress=%v", *tenant, mode, *allowIntra, []string(allow))
+	log.Printf("seeded policy: tenant=%q mode=%v allow_intra=%v egress_cidrs=%v egress_domains=%v",
+		*tenant, mode, *allowIntra, []string(allow), []string(allowDomain))
 
 	// Real enforcer: Mem store + Mem registry + real Incus + no audit store
 	// (would-deny flows surface as log lines via OnDenyEvent) + the global bus.

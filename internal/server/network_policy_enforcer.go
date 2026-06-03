@@ -27,6 +27,12 @@ const containerSuffix = "-container"
 // reconcile for latency.
 const defaultNetPolicyReconcileInterval = 10 * time.Second
 
+// defaultDomainRefreshInterval is how often egress_domains are re-resolved to
+// IPs (Phase C). A fixed interval rather than per-record DNS TTL — TTL-aware
+// refresh (raw DNS) is a future enhancement; for now a short fixed cadence keeps
+// the allow-list reasonably fresh without a DNS library.
+const defaultDomainRefreshInterval = 60 * time.Second
+
 // containerInspector is the slice of the Incus client the enforcer needs.
 type containerInspector interface {
 	ListContainers() ([]incus.ContainerInfo, error)
@@ -51,6 +57,9 @@ type NetworkPolicyEnforcer struct {
 	interval       time.Duration
 	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
 
+	resolver      *DomainResolver // Phase C: egress_domains -> IPs
+	domainRefresh time.Duration
+
 	loader *netbpf.Loader
 
 	mu              sync.Mutex
@@ -74,6 +83,8 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		bus:             bus,
 		interval:        defaultNetPolicyReconcileInterval,
 		enforceEnabled:  enforceEnabled,
+		resolver:        NewDomainResolver(nil),
+		domainRefresh:   defaultDomainRefreshInterval,
 		attached:        make(map[int]string),
 		idName:          make(map[uint32]string),
 		enforced:        make(map[uint32]bool),
@@ -93,9 +104,31 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	e.loader = loader
 	e.ctx, e.cancel = context.WithCancel(ctx)
 
+	// Resolve egress_domains once before the first reconcile so the initial
+	// allow-list already includes domain IPs.
+	e.refreshDomains()
+
 	if err := e.reconcile(e.ctx); err != nil {
 		log.Printf("[netpolicy] initial reconcile: %v", err)
 	}
+
+	// Domain refresh loop (Phase C): re-resolve egress_domains on a cadence. The
+	// next reconcile folds the refreshed IPs into the egress map (and diffEgress
+	// prunes IPs a domain no longer resolves to).
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		t := time.NewTicker(e.domainRefresh)
+		defer t.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-t.C:
+				e.refreshDomains()
+			}
+		}
+	}()
 
 	// Perf consumer: would-deny events -> audit rows.
 	rd, err := perf.NewReader(loader.EventsMap(), 4096)
@@ -344,9 +377,38 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 			log.Printf("[netpolicy] compile policy for %q: %v", p.GetTenant(), err)
 			continue
 		}
+		// Phase C: fold each egress_domain's currently-resolved IPs into the
+		// allow-list as /32 CIDRs. planReconcile/CompileEgress then treat them as
+		// ordinary egress entries; diffEgress prunes IPs a domain stopped
+		// resolving to on the next pass.
+		for _, dom := range c.EgressDomains {
+			for _, ip := range e.resolver.IPs(dom) {
+				c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
+			}
+		}
 		out[c.Tenant] = c
 	}
 	return out, nil
+}
+
+// refreshDomains re-resolves every egress_domain across all stored policies into
+// the resolver cache. Best-effort: store/lookup errors are logged, not fatal.
+func (e *NetworkPolicyEnforcer) refreshDomains() {
+	stored, err := e.store.List(e.ctx)
+	if err != nil {
+		log.Printf("[netpolicy] domain refresh: list policies: %v", err)
+		return
+	}
+	var domains []string
+	for _, p := range stored {
+		domains = append(domains, p.GetEgressDomains()...)
+	}
+	if len(domains) == 0 {
+		return
+	}
+	cctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+	defer cancel()
+	e.resolver.Refresh(cctx, domains)
 }
 
 // tenantOf extracts the tenant name from a container name, or "" if it doesn't
