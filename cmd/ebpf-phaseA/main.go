@@ -23,8 +23,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"log"
@@ -38,17 +36,6 @@ import (
 
 	"github.com/footprintai/containarium/internal/netbpf"
 )
-
-// denyEvent mirrors `struct deny_event` in netpolicy.bpf.c.
-type denyEvent struct {
-	Ifindex  uint32
-	TenantID uint32
-	Saddr    uint32
-	Daddr    uint32
-	Dport    uint16
-	Proto    uint8
-	Pad      uint8
-}
 
 type cidrList []string
 
@@ -153,13 +140,13 @@ func run(objPath, veth string, tenant uint32, allowIntra bool, allow cidrList, p
 				log.Printf("perf: lost %d samples", rec.LostSamples)
 				continue
 			}
-			var ev denyEvent
-			if err := binary.Read(bytes.NewReader(rec.RawSample), binary.NativeEndian, &ev); err != nil {
+			ev, err := netbpf.ParseDenyEvent(rec.RawSample)
+			if err != nil {
 				log.Printf("perf: decode: %v", err)
 				continue
 			}
 			log.Printf("WOULD-DENY src=%s dst=%s proto=%d dport=%d (tenant=%d ifindex=%d)",
-				ipv4(ev.Saddr), ipv4(ev.Daddr), ev.Proto, ev.Dport, ev.TenantID, ev.Ifindex)
+				ev.Src(), ev.Dst(), ev.Proto, ev.Dport, ev.TenantID, ev.Ifindex)
 		}
 	}()
 
@@ -181,12 +168,4 @@ func run(objPath, veth string, tenant uint32, allowIntra bool, allow cidrList, p
 			return nil
 		}
 	}
-}
-
-// ipv4 renders a network-byte-order __u32 (as carried in the BPF event) as a
-// dotted-quad string.
-func ipv4(be uint32) string {
-	var b [4]byte
-	binary.NativeEndian.PutUint32(b[:], be)
-	return netip.AddrFrom4(b).String()
 }
