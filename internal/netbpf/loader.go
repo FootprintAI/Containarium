@@ -181,13 +181,14 @@ func (l *Loader) Close() error {
 // --- byte-layout helpers (kept next to the C struct definitions they mirror) ---
 
 // vethPolicyValue serializes a PolicyConfig into the 8-byte `struct policy_cfg`
-// layout: u32 tenant_id, u8 mode, u8 allow_intra, u8 pad[2]. Native byte order
-// (the kernel reads the map value with native loads).
+// layout: u32 tenant_id, u8 mode, u8 allow_intra, u8 allow_metadata, u8 pad.
+// Native byte order (the kernel reads the map value with native loads).
 func vethPolicyValue(cfg PolicyConfig) [8]byte {
 	var b [8]byte
 	binary.NativeEndian.PutUint32(b[0:4], cfg.TenantID)
 	b[4] = cfg.Mode
 	b[5] = cfg.AllowIntra
+	b[6] = cfg.AllowMetadata
 	return b
 }
 

@@ -151,3 +151,18 @@ one.one.one.one` (no CIDRs), `ping 1.1.1.1` (the resolved IP) succeeds and
 
 > TTL: a fixed refresh interval for now; per-record DNS-TTL refresh (raw DNS) is
 > a follow-up.
+
+## Phase D — cloud metadata default-deny
+
+The cloud metadata service (`169.254.169.254`) hands out instance credentials, so
+it is denied by default — checked *before* the egress allow-list, so even a broad
+`--egress-cidr 0.0.0.0/0` can't expose it. A tenant that genuinely needs metadata
+opts in explicitly:
+
+```sh
+containarium network-policy set <tenant> --allow-metadata ...
+```
+
+Validated on a Linux backend: under enforce with `--allow-cidr 0.0.0.0/0`, traffic
+to `8.8.8.8` passes but `169.254.169.254` is dropped (`deny … dst=169.254.169.254
+… DROPPED`); adding `--allow-metadata` lets it through.

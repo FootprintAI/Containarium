@@ -361,6 +361,13 @@ message NetworkPolicy {
 
   // Enforcement mode. Unspecified is treated as LOG_ONLY in Phase A.
   NetworkPolicyMode mode = 5;
+
+  // Allow reaching the cloud metadata service (169.254.169.254). Default false:
+  // the metadata IP is denied even if egress_cidrs/egress_domains would
+  // otherwise cover it (deny-beats-allow for this one sensitive IP, since it
+  // hands out cloud credentials). Set true only for a tenant that legitimately
+  // needs instance metadata. #315 Phase D.
+  bool allow_metadata = 6;
 }
 
 // --- NetworkPolicyService request/response messages (#315) ---

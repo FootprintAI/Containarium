@@ -43,6 +43,7 @@ func main() {
 		tenant     = flag.String("tenant", "smoketest", "Tenant to seed a policy for (container must be <tenant>-container)")
 		allowIntra = flag.Bool("allow-intra", false, "Allow same-tenant intra-backend traffic")
 		enforce    = flag.Bool("enforce", false, "Arm enforcement: seed an enforce-mode policy and let the enforcer DROP denied flows (Phase B). Default off = observation-only.")
+		allowMeta  = flag.Bool("allow-metadata", false, "Allow the cloud metadata service 169.254.169.254 (Phase D); default deny")
 	)
 	var allow cidrList
 	flag.Var(&allow, "allow-cidr", "Allowed egress CIDR (repeatable)")
@@ -66,6 +67,7 @@ func main() {
 		AllowIntraTenant: *allowIntra,
 		EgressCidrs:      []string(allow),
 		EgressDomains:    []string(allowDomain),
+		AllowMetadata:    *allowMeta,
 		Mode:             mode,
 	}); err != nil {
 		log.Fatalf("seed policy: %v", err)

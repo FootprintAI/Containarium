@@ -18,9 +18,10 @@ const (
 // map (keyed by the container's host veth ifindex). Field layout mirrors
 // `struct policy_cfg` in netpolicy.bpf.c.
 type PolicyConfig struct {
-	TenantID   uint32
-	Mode       uint8
-	AllowIntra uint8
+	TenantID      uint32
+	Mode          uint8
+	AllowIntra    uint8
+	AllowMetadata uint8
 }
 
 // EgressEntry is one allowed-egress LPM-trie entry the loader writes into the
@@ -51,7 +52,11 @@ func CompileConfig(tenantID uint32, c netpolicy.CompiledPolicy) PolicyConfig {
 	if c.AllowIntraTenant {
 		allow = 1
 	}
-	return PolicyConfig{TenantID: tenantID, Mode: mode, AllowIntra: allow}
+	var meta uint8
+	if c.AllowMetadata {
+		meta = 1
+	}
+	return PolicyConfig{TenantID: tenantID, Mode: mode, AllowIntra: allow, AllowMetadata: meta}
 }
 
 // CompileEgress renders the tenant's egress allow-list (the already-parsed,

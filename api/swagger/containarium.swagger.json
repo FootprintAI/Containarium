@@ -6929,6 +6929,10 @@
         "mode": {
           "$ref": "#/definitions/NetworkPolicyMode",
           "description": "Enforcement mode. Unspecified is treated as LOG_ONLY in Phase A."
+        },
+        "allowMetadata": {
+          "type": "boolean",
+          "description": "Allow reaching the cloud metadata service (169.254.169.254). Default false:\nthe metadata IP is denied even if egress_cidrs/egress_domains would\notherwise cover it (deny-beats-allow for this one sensitive IP, since it\nhands out cloud credentials). Set true only for a tenant that legitimately\nneeds instance metadata. #315 Phase D."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."

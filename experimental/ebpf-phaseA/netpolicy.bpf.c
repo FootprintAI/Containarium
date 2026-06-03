@@ -39,8 +39,13 @@ struct policy_cfg {
     __u32 tenant_id;     // the owning tenant (sender side)
     __u8  mode;          // MODE_LOG_ONLY | MODE_ENFORCE
     __u8  allow_intra;   // 1 = same-tenant container↔container allowed
-    __u8  pad[2];
+    __u8  allow_metadata; // 1 = may reach 169.254.169.254 (default 0 = denied)
+    __u8  pad;
 };
+
+// Cloud metadata service IP (169.254.169.254). Compared against the packet's
+// network-byte-order daddr via bpf_htonl. #315 Phase D.
+#define METADATA_IPV4 0xA9FEA9FE
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -144,21 +149,29 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     // Decide whether this flow is allowed under the sender's policy.
     int allowed = 0;
 
-    __u32 *dst_tenant = bpf_map_lookup_elem(&ip_tenant, &daddr);
-    if (dst_tenant) {
-        // Intra-backend: destination is another managed container. Allowed only
-        // if it's the same tenant and intra-tenant traffic is permitted.
-        if (*dst_tenant == cfg->tenant_id && cfg->allow_intra)
-            allowed = 1;
+    // Cloud metadata service is deny-by-default and overrides the egress
+    // allow-list: even a broad allow CIDR must not expose 169.254.169.254
+    // unless the tenant explicitly opted in (#315 Phase D). Checked first so an
+    // allow can't win.
+    if (daddr == bpf_htonl(METADATA_IPV4)) {
+        allowed = cfg->allow_metadata ? 1 : 0;
     } else {
-        // External destination: allowed iff it matches the tenant's egress
-        // allow-list.
-        struct egress_key k = {};
-        k.prefixlen = 32 + 32; // full tenant match + full /32 dst (LPM shortens)
-        k.tenant_id = cfg->tenant_id;
-        k.addr = daddr;
-        if (bpf_map_lookup_elem(&egress_cidr, &k))
-            allowed = 1;
+        __u32 *dst_tenant = bpf_map_lookup_elem(&ip_tenant, &daddr);
+        if (dst_tenant) {
+            // Intra-backend: destination is another managed container. Allowed
+            // only if it's the same tenant and intra-tenant traffic is permitted.
+            if (*dst_tenant == cfg->tenant_id && cfg->allow_intra)
+                allowed = 1;
+        } else {
+            // External destination: allowed iff it matches the tenant's egress
+            // allow-list.
+            struct egress_key k = {};
+            k.prefixlen = 32 + 32; // full tenant match + full /32 dst (LPM shortens)
+            k.tenant_id = cfg->tenant_id;
+            k.addr = daddr;
+            if (bpf_map_lookup_elem(&egress_cidr, &k))
+                allowed = 1;
+        }
     }
 
     if (allowed)

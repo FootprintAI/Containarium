@@ -30,6 +30,19 @@ func TestCompileConfig(t *testing.T) {
 	}
 }
 
+func TestCompileConfig_Metadata(t *testing.T) {
+	// Default: metadata denied (AllowMetadata 0).
+	def := CompileConfig(1, mustCompile(t, &pb.NetworkPolicy{Tenant: "a"}))
+	if def.AllowMetadata != 0 {
+		t.Errorf("default AllowMetadata = %d, want 0 (deny)", def.AllowMetadata)
+	}
+	// Explicit opt-in.
+	on := CompileConfig(1, mustCompile(t, &pb.NetworkPolicy{Tenant: "a", AllowMetadata: true}))
+	if on.AllowMetadata != 1 {
+		t.Errorf("opted-in AllowMetadata = %d, want 1", on.AllowMetadata)
+	}
+}
+
 func TestCompileConfig_DefaultsLogOnly(t *testing.T) {
 	// Unspecified mode resolves to LOG_ONLY in Compile; AllowIntra false.
 	c := mustCompile(t, &pb.NetworkPolicy{Tenant: "bob"})

@@ -27,6 +27,7 @@ type CompiledPolicy struct {
 	AllowIntraTenant bool
 	EgressCIDRs      []netip.Prefix // parsed, masked-to-network, deduped, sorted
 	EgressDomains    []string       // lowercased, trimmed, deduped, sorted
+	AllowMetadata    bool           // may reach the cloud metadata service (default deny)
 	Mode             pb.NetworkPolicyMode
 	// LogOnly is true unless Mode is ENFORCE — i.e. UNSPECIFIED and LOG_ONLY
 	// both observe-only (Phase A default), only ENFORCE drops packets.
@@ -77,6 +78,7 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		AllowIntraTenant: p.GetAllowIntraTenant(),
 		EgressCIDRs:      cidrs,
 		EgressDomains:    domains,
+		AllowMetadata:    p.GetAllowMetadata(),
 		Mode:             mode,
 		LogOnly:          mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
 	}, nil
@@ -95,6 +97,7 @@ func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
 		AllowIntraTenant: c.AllowIntraTenant,
 		EgressCidrs:      cidrs,
 		EgressDomains:    append([]string(nil), c.EgressDomains...),
+		AllowMetadata:    c.AllowMetadata,
 		Mode:             c.Mode,
 	}
 }

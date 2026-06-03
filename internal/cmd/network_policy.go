@@ -40,6 +40,7 @@ var (
 	npEgressCidrs      []string
 	npEgressDomains    []string
 	npMode             string
+	npAllowMetadata    bool
 )
 
 var networkPolicySetCmd = &cobra.Command{
@@ -83,6 +84,8 @@ func init() {
 		"Allowed egress domain (repeatable, e.g. --egress-domain api.github.com)")
 	networkPolicySetCmd.Flags().StringVar(&npMode, "mode", "log_only",
 		"Enforcement mode: log_only | enforce")
+	networkPolicySetCmd.Flags().BoolVar(&npAllowMetadata, "allow-metadata", false,
+		"Allow reaching the cloud metadata service (169.254.169.254); default deny even if a CIDR would cover it")
 	networkPolicySetCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output the stored policy as JSON")
 
 	networkPolicyGetCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output as JSON")
@@ -97,6 +100,7 @@ type netPolicyJSON struct {
 	AllowIntraTenant bool     `json:"allowIntraTenant"`
 	EgressCidrs      []string `json:"egressCidrs"`
 	EgressDomains    []string `json:"egressDomains"`
+	AllowMetadata    bool     `json:"allowMetadata"`
 	Mode             string   `json:"mode"`
 }
 
@@ -136,6 +140,7 @@ func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 		AllowIntraTenant: npAllowIntraTenant,
 		EgressCidrs:      npEgressCidrs,
 		EgressDomains:    npEgressDomains,
+		AllowMetadata:    npAllowMetadata,
 		Mode:             mode,
 	}}
 	var out policyEnvelope
@@ -223,6 +228,7 @@ func printPolicy(w io.Writer, p netPolicyJSON) {
 	fmt.Fprintf(w, "  tenant:             %s\n", p.Tenant)
 	fmt.Fprintf(w, "  mode:               %s\n", shortMode(p.Mode))
 	fmt.Fprintf(w, "  allow-intra-tenant: %v\n", p.AllowIntraTenant)
+	fmt.Fprintf(w, "  allow-metadata:     %v\n", p.AllowMetadata)
 	if len(p.EgressCidrs) > 0 {
 		fmt.Fprintf(w, "  egress-cidrs:       %s\n", strings.Join(p.EgressCidrs, ", "))
 	}
