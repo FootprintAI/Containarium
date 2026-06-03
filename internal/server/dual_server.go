@@ -1049,8 +1049,21 @@ skipAppHosting:
 		} else {
 			tenantRegistry = NewMemTenantRegistry()
 		}
-		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus())
-		log.Printf("NetworkPolicy enforcer configured (obj=%s); starts with the daemon", bpfObj)
+		// Second opt-in: enforcement (packet drops) only happens when the operator
+		// also arms it. Without this, even a stored `--mode enforce` policy stays
+		// observation-only — so an operator soaks in log_only, watches the
+		// would-deny logs, finishes the allow-list, then arms enforce.
+		enforceArmed := false
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))) {
+		case "1", "true", "yes", "on":
+			enforceArmed = true
+		}
+		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
+		if enforceArmed {
+			log.Printf("NetworkPolicy enforcer configured (obj=%s); ENFORCE ARMED — enforce-mode policies will drop packets", bpfObj)
+		} else {
+			log.Printf("NetworkPolicy enforcer configured (obj=%s); observation-only (set CONTAINARIUM_NETWORK_POLICY_ENFORCE=1 to arm drops)", bpfObj)
+		}
 	}
 
 	// Setup alert store and manager

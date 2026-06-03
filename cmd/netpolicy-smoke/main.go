@@ -42,6 +42,7 @@ func main() {
 		obj        = flag.String("obj", "netpolicy.bpf.o", "Path to the compiled netpolicy.bpf.o")
 		tenant     = flag.String("tenant", "smoketest", "Tenant to seed a policy for (container must be <tenant>-container)")
 		allowIntra = flag.Bool("allow-intra", false, "Allow same-tenant intra-backend traffic")
+		enforce    = flag.Bool("enforce", false, "Arm enforcement: seed an enforce-mode policy and let the enforcer DROP denied flows (Phase B). Default off = observation-only.")
 	)
 	var allow cidrList
 	flag.Var(&allow, "allow-cidr", "Allowed egress CIDR (repeatable)")
@@ -53,20 +54,25 @@ func main() {
 	}
 
 	// Seed an in-memory policy for the test tenant.
+	mode := pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
+	if *enforce {
+		mode = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE
+	}
 	store := server.NewMemNetworkPolicyStore()
 	if err := store.Set(context.Background(), &pb.NetworkPolicy{
 		Tenant:           *tenant,
 		AllowIntraTenant: *allowIntra,
 		EgressCidrs:      []string(allow),
-		Mode:             pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+		Mode:             mode,
 	}); err != nil {
 		log.Fatalf("seed policy: %v", err)
 	}
-	log.Printf("seeded log_only policy: tenant=%q allow_intra=%v egress=%v", *tenant, *allowIntra, []string(allow))
+	log.Printf("seeded policy: tenant=%q mode=%v allow_intra=%v egress=%v", *tenant, mode, *allowIntra, []string(allow))
 
 	// Real enforcer: Mem store + Mem registry + real Incus + no audit store
 	// (would-deny flows surface as log lines via OnDenyEvent) + the global bus.
-	enforcer := server.NewNetworkPolicyEnforcer(*obj, store, server.NewMemTenantRegistry(), incusClient, nil, events.GetBus())
+	// The last arg arms enforcement (drops); off = observation-only.
+	enforcer := server.NewNetworkPolicyEnforcer(*obj, store, server.NewMemTenantRegistry(), incusClient, nil, events.GetBus(), *enforce)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -37,7 +37,15 @@ type reconcilePlan struct {
 // views and the compiled per-tenant policies. A container with no stored policy
 // gets the Phase A default (log-only, no intra-tenant, empty egress) so its
 // outbound is observed rather than silently unmanaged.
-func planReconcile(views []containerView, policies map[string]netpolicy.CompiledPolicy) reconcilePlan {
+//
+// enforceEnabled is the daemon-wide safety guard (Phase B): when false, a
+// policy's ENFORCE mode is downgraded to LOG_ONLY before it reaches the kernel,
+// so a stored `--mode enforce` policy is still observation-only until the
+// operator explicitly arms enforcement. This prevents a misconfigured policy
+// (e.g. one that forgot to allow DNS) from blackholing a container the moment
+// it's set; operators soak in log_only, watch the would-deny logs, complete the
+// allow-list, then arm enforce.
+func planReconcile(views []containerView, policies map[string]netpolicy.CompiledPolicy, enforceEnabled bool) reconcilePlan {
 	plan := reconcilePlan{
 		ipTenant:   make(map[[4]byte]uint32),
 		vethPolicy: make(map[int]netbpf.PolicyConfig),
@@ -59,6 +67,10 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 				cfg = netbpf.CompileConfig(v.TenantID, policy)
 			} else {
 				cfg = netbpf.PolicyConfig{TenantID: v.TenantID, Mode: netbpf.ModeLogOnly}
+			}
+			// Safety guard: enforcement only drops when armed daemon-wide.
+			if cfg.Mode == netbpf.ModeEnforce && !enforceEnabled {
+				cfg.Mode = netbpf.ModeLogOnly
 			}
 			plan.vethPolicy[v.Ifindex] = cfg
 			plan.ifName[v.Ifindex] = v.Name
@@ -84,3 +96,25 @@ func subEvents(sub *events.Subscriber) <-chan *pb.Event {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// diffEgress computes the egress LPM entries to add and to delete so the kernel
+// map converges to the desired set: add anything desired but not installed,
+// delete anything installed but no longer desired. Deleting stale entries is
+// what makes a removed allow-CIDR actually stop allowing — load-bearing once a
+// tenant is in enforce mode. EgressEntry is comparable, so it keys the sets
+// directly.
+func diffEgress(installed map[netbpf.EgressEntry]bool, desired []netbpf.EgressEntry) (toAdd, toDel []netbpf.EgressEntry) {
+	desiredSet := make(map[netbpf.EgressEntry]bool, len(desired))
+	for _, e := range desired {
+		desiredSet[e] = true
+		if !installed[e] {
+			toAdd = append(toAdd, e)
+		}
+	}
+	for e := range installed {
+		if !desiredSet[e] {
+			toDel = append(toDel, e)
+		}
+	}
+	return toAdd, toDel
+}

@@ -52,7 +52,7 @@ func TestPlanReconcile(t *testing.T) {
 		{Name: "carol-container", Tenant: "carol", TenantID: 3, IP: [4]byte{10, 100, 0, 30}, HasIP: true, Running: false},
 	}
 
-	plan := planReconcile(views, policies)
+	plan := planReconcile(views, policies, true)
 
 	// ip_tenant: all four containers with IPs.
 	if len(plan.ipTenant) != 4 {
@@ -86,5 +86,52 @@ func TestPlanReconcile(t *testing.T) {
 	e := plan.egress[0]
 	if e.TenantID != 1 || e.Addr != [4]byte{8, 8, 8, 8} || e.PrefixLen != 32+32 {
 		t.Errorf("egress entry = %+v, want tenant=1 8.8.8.8 prefixlen=64", e)
+	}
+}
+
+func TestPlanReconcile_EnforceGuard(t *testing.T) {
+	policies := map[string]netpolicy.CompiledPolicy{
+		"alice": compiled(t, &pb.NetworkPolicy{
+			Tenant: "alice",
+			Mode:   pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
+		}),
+	}
+	views := []containerView{
+		{Name: "alice-container", Tenant: "alice", TenantID: 1, Ifindex: 11, HasVeth: true, Running: true},
+	}
+
+	// Guard off → ENFORCE downgraded to LOG_ONLY (no accidental blackhole).
+	off := planReconcile(views, policies, false)
+	if off.vethPolicy[11].Mode != netbpf.ModeLogOnly {
+		t.Errorf("enforce-disabled: mode = %d, want ModeLogOnly", off.vethPolicy[11].Mode)
+	}
+
+	// Guard on → ENFORCE preserved.
+	on := planReconcile(views, policies, true)
+	if on.vethPolicy[11].Mode != netbpf.ModeEnforce {
+		t.Errorf("enforce-armed: mode = %d, want ModeEnforce", on.vethPolicy[11].Mode)
+	}
+}
+
+func TestDiffEgress(t *testing.T) {
+	a := netbpf.EgressEntry{PrefixLen: 64, TenantID: 1, Addr: [4]byte{8, 8, 8, 8}}
+	b := netbpf.EgressEntry{PrefixLen: 64, TenantID: 1, Addr: [4]byte{1, 1, 1, 1}}
+	c := netbpf.EgressEntry{PrefixLen: 40, TenantID: 2, Addr: [4]byte{10, 0, 0, 0}}
+
+	installed := map[netbpf.EgressEntry]bool{a: true, b: true}
+	desired := []netbpf.EgressEntry{a, c} // keep a, drop b, add c
+
+	toAdd, toDel := diffEgress(installed, desired)
+	if len(toAdd) != 1 || toAdd[0] != c {
+		t.Errorf("toAdd = %+v, want [c]", toAdd)
+	}
+	if len(toDel) != 1 || toDel[0] != b {
+		t.Errorf("toDel = %+v, want [b]", toDel)
+	}
+
+	// Converged state → no churn.
+	add2, del2 := diffEgress(map[netbpf.EgressEntry]bool{a: true, c: true}, []netbpf.EgressEntry{a, c})
+	if len(add2) != 0 || len(del2) != 0 {
+		t.Errorf("converged diff should be empty, got add=%v del=%v", add2, del2)
 	}
 }

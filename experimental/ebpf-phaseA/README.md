@@ -104,6 +104,33 @@ export CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/path/to/netpolicy.bpf.o
 When set, the daemon loads the program, reconciles every tenant's stored policy
 (`containarium network-policy set ...`) and live containers into the BPF maps on
 a periodic loop (and on container events), attaches to each container's veth, and
-writes a `network_policy.deny` audit row per would-deny flow. Unset → the daemon
-behaves exactly as before. Still observation-only: nothing is dropped until
-Phase B.
+writes a `network_policy.deny_logged` audit row per would-deny flow. Unset → the
+daemon behaves exactly as before.
+
+## Phase B — enforcement (dropping)
+
+By default the enforcer is observation-only even for `--mode enforce` policies.
+To actually drop, the operator arms a **second** opt-in:
+
+```sh
+export CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/path/to/netpolicy.bpf.o
+export CONTAINARIUM_NETWORK_POLICY_ENFORCE=1   # arm drops
+# restart the daemon
+```
+
+Then a tenant's `--mode enforce` policy drops denied flows (`TC_ACT_SHOT`),
+audited as `network_policy.deny_dropped`. Safety properties:
+
+- **Two opt-ins.** The object path enables observation; the enforce env enables
+  drops. Soak in log_only first, watch the deny logs, complete the allow-list
+  (including DNS / the bridge gateway — an enforce policy that omits its
+  resolver will cut the container off), *then* arm enforce.
+- **No-policy containers are never dropped** — they stay log_only regardless, so
+  the blast radius is exactly the tenants with an explicit enforce policy.
+- **The egress allow-list converges** — a CIDR removed from a policy is deleted
+  from the kernel map on the next reconcile, so tightening a policy actually
+  takes effect.
+
+Validated on a Linux backend: with enforce armed and `--allow-cidr 8.8.8.8/32`,
+`ping 8.8.8.8` succeeds and `ping 1.1.1.1` sees 100% packet loss (dropped), while
+a policy-less neighbour container is unaffected.

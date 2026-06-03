@@ -119,6 +119,21 @@ func (l *Loader) AddEgress(e EgressEntry) error {
 	return nil
 }
 
+// DeleteEgress removes an egress allow-list LPM entry. Used by the reconcile
+// loop to converge the map when a CIDR is removed from a policy — a stale allow
+// entry is a security hole once a tenant is in enforce mode. A missing key is
+// not an error (the desired state is already reached).
+func (l *Loader) DeleteEgress(e EgressEntry) error {
+	key := egressKeyBytes(e)
+	if err := l.coll.Maps[mapEgressCIDR].Delete(key[:]); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netbpf: delete egress_cidr: %w", err)
+	}
+	return nil
+}
+
 // SetIPTenant maps a managed container IP (network byte order, 4 bytes) to its
 // tenant ID, so the program can distinguish same-tenant peers from external
 // destinations.

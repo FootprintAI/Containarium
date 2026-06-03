@@ -42,36 +42,42 @@ type containerInspector interface {
 // Phase A is observation-only: the program never drops, it emits would-deny
 // events that this enforcer's perf consumer turns into audit rows.
 type NetworkPolicyEnforcer struct {
-	objPath  string
-	store    NetworkPolicyStore
-	registry TenantRegistry
-	insp     containerInspector
-	audit    *audit.Store
-	bus      *events.Bus
-	interval time.Duration
+	objPath        string
+	store          NetworkPolicyStore
+	registry       TenantRegistry
+	insp           containerInspector
+	audit          *audit.Store
+	bus            *events.Bus
+	interval       time.Duration
+	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
 
 	loader *netbpf.Loader
 
-	mu       sync.Mutex
-	attached map[int]string // ifindex -> container name currently attached
-	idName   map[uint32]string
+	mu              sync.Mutex
+	attached        map[int]string              // ifindex -> container name currently attached
+	idName          map[uint32]string           // tenant id -> name (for audit/log)
+	enforced        map[uint32]bool             // tenant ids whose effective mode is ENFORCE (deny == dropped)
+	egressInstalled map[netbpf.EgressEntry]bool // egress LPM entries currently in the map
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
-func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry TenantRegistry, insp containerInspector, auditStore *audit.Store, bus *events.Bus) *NetworkPolicyEnforcer {
+func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry TenantRegistry, insp containerInspector, auditStore *audit.Store, bus *events.Bus, enforceEnabled bool) *NetworkPolicyEnforcer {
 	return &NetworkPolicyEnforcer{
-		objPath:  objPath,
-		store:    store,
-		registry: registry,
-		insp:     insp,
-		audit:    auditStore,
-		bus:      bus,
-		interval: defaultNetPolicyReconcileInterval,
-		attached: make(map[int]string),
-		idName:   make(map[uint32]string),
+		objPath:         objPath,
+		store:           store,
+		registry:        registry,
+		insp:            insp,
+		audit:           auditStore,
+		bus:             bus,
+		interval:        defaultNetPolicyReconcileInterval,
+		enforceEnabled:  enforceEnabled,
+		attached:        make(map[int]string),
+		idName:          make(map[uint32]string),
+		enforced:        make(map[uint32]bool),
+		egressInstalled: make(map[netbpf.EgressEntry]bool),
 	}
 }
 
@@ -138,7 +144,11 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		}
 	}()
 
-	log.Printf("[netpolicy] enforcer started (obj=%s, interval=%s, observation-only)", e.objPath, e.interval)
+	mode := "observation-only (log_only)"
+	if e.enforceEnabled {
+		mode = "ENFORCE ARMED — enforce-mode policies WILL DROP packets"
+	}
+	log.Printf("[netpolicy] enforcer started (obj=%s, interval=%s, %s)", e.objPath, e.interval, mode)
 	return nil
 }
 
@@ -161,20 +171,30 @@ func (e *NetworkPolicyEnforcer) Stop() {
 func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyEvent) {
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
+	dropped := e.enforced[ev.TenantID]
 	e.mu.Unlock()
-	// Always log the would-deny flow — in log_only mode this line IS the
-	// operator-visible signal that a flow would be blocked. The audit row below
-	// is the durable record (when an audit store is configured).
-	log.Printf("[netpolicy] would-deny: tenant=%q src=%s dst=%s proto=%d dport=%d (log_only)",
-		tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport)
+	// Always log the denied flow. The program emits the event whether or not it
+	// drops, so the action depends on the tenant's effective mode: a DROP under
+	// enforce, an observation under log_only. This line is the operator's signal.
+	action := "log_only (not dropped)"
+	if dropped {
+		action = "DROPPED (enforce)"
+	}
+	log.Printf("[netpolicy] deny: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
+		tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
 	if e.audit == nil {
 		return
 	}
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
-		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) + `}`
+		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) +
+		`,"dropped":` + boolStr(dropped) + `}`
+	action2 := "network_policy.deny_logged"
+	if dropped {
+		action2 = "network_policy.deny_dropped"
+	}
 	entry := &audit.AuditEntry{
 		Username:     "_system",
-		Action:       "network_policy.deny",
+		Action:       action2,
 		ResourceType: "network_policy",
 		ResourceID:   tenant,
 		Detail:       detail,
@@ -199,7 +219,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	plan := planReconcile(views, policies)
+	plan := planReconcile(views, policies, e.enforceEnabled)
 
 	// ip_tenant: every managed container's IP -> its tenant id.
 	for ip, tid := range plan.ipTenant {
@@ -207,16 +227,33 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 			log.Printf("[netpolicy] set ip_tenant: %v", err)
 		}
 	}
-	// egress allow-list per tenant.
-	for _, ee := range plan.egress {
+	// egress allow-list: converge the map (add new, delete stale). Deleting
+	// removed CIDRs is what makes a tightened policy actually take effect in
+	// enforce mode.
+	toAdd, toDel := diffEgress(e.egressInstalled, plan.egress)
+	for _, ee := range toAdd {
 		if err := e.loader.AddEgress(ee); err != nil {
 			log.Printf("[netpolicy] add egress: %v", err)
+			continue
 		}
+		e.egressInstalled[ee] = true
 	}
-	// Per-veth config + attach.
+	for _, ee := range toDel {
+		if err := e.loader.DeleteEgress(ee); err != nil {
+			log.Printf("[netpolicy] delete egress: %v", err)
+			continue
+		}
+		delete(e.egressInstalled, ee)
+	}
+	// Per-veth config + attach. Track which tenants end up in effective-enforce
+	// mode, so OnDenyEvent can label a denied flow as dropped vs observed.
+	enforced := make(map[uint32]bool)
 	e.mu.Lock()
 	present := make(map[int]bool, len(plan.vethPolicy))
 	for ifindex, cfg := range plan.vethPolicy {
+		if cfg.Mode == netbpf.ModeEnforce {
+			enforced[cfg.TenantID] = true
+		}
 		if err := e.loader.SetVethPolicy(ifindex, cfg); err != nil {
 			log.Printf("[netpolicy] set veth_policy ifindex %d: %v", ifindex, err)
 			continue
@@ -238,8 +275,17 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		}
 	}
 	e.idName = idName
+	e.enforced = enforced
 	e.mu.Unlock()
 	return nil
+}
+
+// boolStr renders a bool as a JSON literal for the audit detail.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // gather snapshots the running containers into reconcile views, resolving each
