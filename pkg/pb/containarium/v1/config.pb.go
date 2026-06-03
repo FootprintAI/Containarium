@@ -194,6 +194,58 @@ func (GPUModel) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_config_proto_rawDescGZIP(), []int{1}
 }
 
+// NetworkPolicyMode controls whether a tenant's network policy is enforced or
+// only observed. Phase A ships log_only; Phase B flips to enforce. See
+// docs/security/NETWORK-ISOLATION-DESIGN.md (#315).
+type NetworkPolicyMode int32
+
+const (
+	NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED NetworkPolicyMode = 0 // treated as LOG_ONLY in Phase A
+	NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY    NetworkPolicyMode = 1 // observe + audit denied flows; drop nothing
+	NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE     NetworkPolicyMode = 2 // actually drop denied flows
+)
+
+// Enum value maps for NetworkPolicyMode.
+var (
+	NetworkPolicyMode_name = map[int32]string{
+		0: "NETWORK_POLICY_MODE_UNSPECIFIED",
+		1: "NETWORK_POLICY_MODE_LOG_ONLY",
+		2: "NETWORK_POLICY_MODE_ENFORCE",
+	}
+	NetworkPolicyMode_value = map[string]int32{
+		"NETWORK_POLICY_MODE_UNSPECIFIED": 0,
+		"NETWORK_POLICY_MODE_LOG_ONLY":    1,
+		"NETWORK_POLICY_MODE_ENFORCE":     2,
+	}
+)
+
+func (x NetworkPolicyMode) Enum() *NetworkPolicyMode {
+	p := new(NetworkPolicyMode)
+	*p = x
+	return p
+}
+
+func (x NetworkPolicyMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (NetworkPolicyMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_config_proto_enumTypes[2].Descriptor()
+}
+
+func (NetworkPolicyMode) Type() protoreflect.EnumType {
+	return &file_containarium_v1_config_proto_enumTypes[2]
+}
+
+func (x NetworkPolicyMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NetworkPolicyMode.Descriptor instead.
+func (NetworkPolicyMode) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{2}
+}
+
 // BackendType represents the type of backend instance
 type BackendType int32
 
@@ -228,11 +280,11 @@ func (x BackendType) String() string {
 }
 
 func (BackendType) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_config_proto_enumTypes[2].Descriptor()
+	return file_containarium_v1_config_proto_enumTypes[3].Descriptor()
 }
 
 func (BackendType) Type() protoreflect.EnumType {
-	return &file_containarium_v1_config_proto_enumTypes[2]
+	return &file_containarium_v1_config_proto_enumTypes[3]
 }
 
 func (x BackendType) Number() protoreflect.EnumNumber {
@@ -241,7 +293,7 @@ func (x BackendType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use BackendType.Descriptor instead.
 func (BackendType) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{3}
 }
 
 type ValidateGPUResponse_GPUStatus int32
@@ -280,11 +332,11 @@ func (x ValidateGPUResponse_GPUStatus) String() string {
 }
 
 func (ValidateGPUResponse_GPUStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_config_proto_enumTypes[3].Descriptor()
+	return file_containarium_v1_config_proto_enumTypes[4].Descriptor()
 }
 
 func (ValidateGPUResponse_GPUStatus) Type() protoreflect.EnumType {
-	return &file_containarium_v1_config_proto_enumTypes[3]
+	return &file_containarium_v1_config_proto_enumTypes[4]
 }
 
 func (x ValidateGPUResponse_GPUStatus) Number() protoreflect.EnumNumber {
@@ -1590,6 +1642,92 @@ func (x *ValidateGPUResponse) GetBackendId() string {
 	return ""
 }
 
+// NetworkPolicy is a tenant's network-isolation policy, enforced at each of the
+// tenant's container host-veth TC_INGRESS hooks (the sender side of every flow;
+// see the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315.
+type NetworkPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Tenant this policy applies to (required).
+	Tenant string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// Allow container↔container traffic within the same tenant. When false, even
+	// same-tenant peers can't reach each other.
+	AllowIntraTenant bool `protobuf:"varint,2,opt,name=allow_intra_tenant,json=allowIntraTenant,proto3" json:"allow_intra_tenant,omitempty"`
+	// Allowed egress destination CIDRs (e.g. "10.0.0.0/8", "1.2.3.4/32").
+	EgressCidrs []string `protobuf:"bytes,3,rep,name=egress_cidrs,json=egressCidrs,proto3" json:"egress_cidrs,omitempty"`
+	// Allowed egress domains (e.g. "api.github.com"); the daemon resolves these
+	// to CIDRs on a refresh loop and folds them into the egress allow set.
+	EgressDomains []string `protobuf:"bytes,4,rep,name=egress_domains,json=egressDomains,proto3" json:"egress_domains,omitempty"`
+	// Enforcement mode. Unspecified is treated as LOG_ONLY in Phase A.
+	Mode          NetworkPolicyMode `protobuf:"varint,5,opt,name=mode,proto3,enum=containarium.v1.NetworkPolicyMode" json:"mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NetworkPolicy) Reset() {
+	*x = NetworkPolicy{}
+	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NetworkPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkPolicy) ProtoMessage() {}
+
+func (x *NetworkPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkPolicy.ProtoReflect.Descriptor instead.
+func (*NetworkPolicy) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *NetworkPolicy) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *NetworkPolicy) GetAllowIntraTenant() bool {
+	if x != nil {
+		return x.AllowIntraTenant
+	}
+	return false
+}
+
+func (x *NetworkPolicy) GetEgressCidrs() []string {
+	if x != nil {
+		return x.EgressCidrs
+	}
+	return nil
+}
+
+func (x *NetworkPolicy) GetEgressDomains() []string {
+	if x != nil {
+		return x.EgressDomains
+	}
+	return nil
+}
+
+func (x *NetworkPolicy) GetMode() NetworkPolicyMode {
+	if x != nil {
+		return x.Mode
+	}
+	return NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED
+}
+
 // BackendInfo contains information about a backend instance
 type BackendInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1607,7 +1745,7 @@ type BackendInfo struct {
 
 func (x *BackendInfo) Reset() {
 	*x = BackendInfo{}
-	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	mi := &file_containarium_v1_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1619,7 +1757,7 @@ func (x *BackendInfo) String() string {
 func (*BackendInfo) ProtoMessage() {}
 
 func (x *BackendInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	mi := &file_containarium_v1_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1632,7 +1770,7 @@ func (x *BackendInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendInfo.ProtoReflect.Descriptor instead.
 func (*BackendInfo) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *BackendInfo) GetId() string {
@@ -1672,7 +1810,7 @@ type ListBackendsRequest struct {
 
 func (x *ListBackendsRequest) Reset() {
 	*x = ListBackendsRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[18]
+	mi := &file_containarium_v1_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1684,7 +1822,7 @@ func (x *ListBackendsRequest) String() string {
 func (*ListBackendsRequest) ProtoMessage() {}
 
 func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[18]
+	mi := &file_containarium_v1_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1697,7 +1835,7 @@ func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{19}
 }
 
 // ListBackendsResponse is the response from listing backends
@@ -1711,7 +1849,7 @@ type ListBackendsResponse struct {
 
 func (x *ListBackendsResponse) Reset() {
 	*x = ListBackendsResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[19]
+	mi := &file_containarium_v1_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1723,7 +1861,7 @@ func (x *ListBackendsResponse) String() string {
 func (*ListBackendsResponse) ProtoMessage() {}
 
 func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[19]
+	mi := &file_containarium_v1_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1736,7 +1874,7 @@ func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
@@ -1859,7 +1997,13 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x16GPU_STATUS_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rGPU_STATUS_OK\x10\x01\x12\x1a\n" +
 	"\x16GPU_STATUS_UNAVAILABLE\x10\x02\x12\x17\n" +
-	"\x13GPU_STATUS_DEGRADED\x10\x03\"\x85\x01\n" +
+	"\x13GPU_STATUS_DEGRADED\x10\x03\"\xd7\x01\n" +
+	"\rNetworkPolicy\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
+	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
+	"\fegress_cidrs\x18\x03 \x03(\tR\vegressCidrs\x12%\n" +
+	"\x0eegress_domains\x18\x04 \x03(\tR\regressDomains\x126\n" +
+	"\x04mode\x18\x05 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\x04mode\"\x85\x01\n" +
 	"\vBackendInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x1c.containarium.v1.BackendTypeR\x04type\x12\x18\n" +
@@ -1898,7 +2042,11 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x14GPU_MODEL_AMD_MI250X\x10\xad\x02\x12\x1e\n" +
 	"\x19GPU_MODEL_AMD_RX_7900_XTX\x10\xae\x02\x12\x1d\n" +
 	"\x18GPU_MODEL_INTEL_MAX_1550\x10\x90\x03\x12\x1d\n" +
-	"\x18GPU_MODEL_INTEL_ARC_A770\x10\x91\x03*Z\n" +
+	"\x18GPU_MODEL_INTEL_ARC_A770\x10\x91\x03*{\n" +
+	"\x11NetworkPolicyMode\x12#\n" +
+	"\x1fNETWORK_POLICY_MODE_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cNETWORK_POLICY_MODE_LOG_ONLY\x10\x01\x12\x1f\n" +
+	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x02*Z\n" +
 	"\vBackendType\x12\x1c\n" +
 	"\x18BACKEND_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10BACKEND_TYPE_GCP\x10\x01\x12\x17\n" +
@@ -1916,59 +2064,62 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_config_proto_rawDescData
 }
 
-var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                     // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                      // 1: containarium.v1.GPUModel
-	(BackendType)(0),                   // 2: containarium.v1.BackendType
-	(ValidateGPUResponse_GPUStatus)(0), // 3: containarium.v1.ValidateGPUResponse.GPUStatus
-	(*Config)(nil),                     // 4: containarium.v1.Config
-	(*IncusConfig)(nil),                // 5: containarium.v1.IncusConfig
-	(*NetworkConfig)(nil),              // 6: containarium.v1.NetworkConfig
-	(*StorageConfig)(nil),              // 7: containarium.v1.StorageConfig
-	(*SecurityConfig)(nil),             // 8: containarium.v1.SecurityConfig
-	(*GetConfigRequest)(nil),           // 9: containarium.v1.GetConfigRequest
-	(*GetConfigResponse)(nil),          // 10: containarium.v1.GetConfigResponse
-	(*UpdateConfigRequest)(nil),        // 11: containarium.v1.UpdateConfigRequest
-	(*UpdateConfigResponse)(nil),       // 12: containarium.v1.UpdateConfigResponse
-	(*SystemInfo)(nil),                 // 13: containarium.v1.SystemInfo
-	(*GPUInfo)(nil),                    // 14: containarium.v1.GPUInfo
-	(*GetSystemInfoRequest)(nil),       // 15: containarium.v1.GetSystemInfoRequest
-	(*GetSystemInfoResponse)(nil),      // 16: containarium.v1.GetSystemInfoResponse
-	(*GetLatestReleaseRequest)(nil),    // 17: containarium.v1.GetLatestReleaseRequest
-	(*GetLatestReleaseResponse)(nil),   // 18: containarium.v1.GetLatestReleaseResponse
-	(*ValidateGPURequest)(nil),         // 19: containarium.v1.ValidateGPURequest
-	(*ValidateGPUResponse)(nil),        // 20: containarium.v1.ValidateGPUResponse
-	(*BackendInfo)(nil),                // 21: containarium.v1.BackendInfo
-	(*ListBackendsRequest)(nil),        // 22: containarium.v1.ListBackendsRequest
-	(*ListBackendsResponse)(nil),       // 23: containarium.v1.ListBackendsResponse
-	(*ResourceLimits)(nil),             // 24: containarium.v1.ResourceLimits
-	(OSType)(0),                        // 25: containarium.v1.OSType
+	(NetworkPolicyMode)(0),             // 2: containarium.v1.NetworkPolicyMode
+	(BackendType)(0),                   // 3: containarium.v1.BackendType
+	(ValidateGPUResponse_GPUStatus)(0), // 4: containarium.v1.ValidateGPUResponse.GPUStatus
+	(*Config)(nil),                     // 5: containarium.v1.Config
+	(*IncusConfig)(nil),                // 6: containarium.v1.IncusConfig
+	(*NetworkConfig)(nil),              // 7: containarium.v1.NetworkConfig
+	(*StorageConfig)(nil),              // 8: containarium.v1.StorageConfig
+	(*SecurityConfig)(nil),             // 9: containarium.v1.SecurityConfig
+	(*GetConfigRequest)(nil),           // 10: containarium.v1.GetConfigRequest
+	(*GetConfigResponse)(nil),          // 11: containarium.v1.GetConfigResponse
+	(*UpdateConfigRequest)(nil),        // 12: containarium.v1.UpdateConfigRequest
+	(*UpdateConfigResponse)(nil),       // 13: containarium.v1.UpdateConfigResponse
+	(*SystemInfo)(nil),                 // 14: containarium.v1.SystemInfo
+	(*GPUInfo)(nil),                    // 15: containarium.v1.GPUInfo
+	(*GetSystemInfoRequest)(nil),       // 16: containarium.v1.GetSystemInfoRequest
+	(*GetSystemInfoResponse)(nil),      // 17: containarium.v1.GetSystemInfoResponse
+	(*GetLatestReleaseRequest)(nil),    // 18: containarium.v1.GetLatestReleaseRequest
+	(*GetLatestReleaseResponse)(nil),   // 19: containarium.v1.GetLatestReleaseResponse
+	(*ValidateGPURequest)(nil),         // 20: containarium.v1.ValidateGPURequest
+	(*ValidateGPUResponse)(nil),        // 21: containarium.v1.ValidateGPUResponse
+	(*NetworkPolicy)(nil),              // 22: containarium.v1.NetworkPolicy
+	(*BackendInfo)(nil),                // 23: containarium.v1.BackendInfo
+	(*ListBackendsRequest)(nil),        // 24: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),       // 25: containarium.v1.ListBackendsResponse
+	(*ResourceLimits)(nil),             // 26: containarium.v1.ResourceLimits
+	(OSType)(0),                        // 27: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
-	5,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	24, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
-	6,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
-	7,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
-	8,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	25, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
-	4,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
-	4,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
-	4,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
-	14, // 9: containarium.v1.SystemInfo.gpus:type_name -> containarium.v1.GPUInfo
+	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
+	26, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
+	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
+	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
+	27, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
+	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
+	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
+	15, // 9: containarium.v1.SystemInfo.gpus:type_name -> containarium.v1.GPUInfo
 	0,  // 10: containarium.v1.GPUInfo.vendor:type_name -> containarium.v1.GPUVendor
 	1,  // 11: containarium.v1.GPUInfo.model:type_name -> containarium.v1.GPUModel
-	13, // 12: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
-	13, // 13: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
-	3,  // 14: containarium.v1.ValidateGPUResponse.status:type_name -> containarium.v1.ValidateGPUResponse.GPUStatus
-	2,  // 15: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
-	21, // 16: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	14, // 12: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
+	14, // 13: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
+	4,  // 14: containarium.v1.ValidateGPUResponse.status:type_name -> containarium.v1.ValidateGPUResponse.GPUStatus
+	2,  // 15: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
+	3,  // 16: containarium.v1.BackendInfo.type:type_name -> containarium.v1.BackendType
+	23, // 17: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -1982,8 +2133,8 @@ func file_containarium_v1_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   20,
+			NumEnums:      5,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

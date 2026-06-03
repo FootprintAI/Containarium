@@ -332,6 +332,37 @@ message ValidateGPUResponse {
   string backend_id = 5;     // echoes the validated backend ("" = local)
 }
 
+// NetworkPolicyMode controls whether a tenant's network policy is enforced or
+// only observed. Phase A ships log_only; Phase B flips to enforce. See
+// docs/security/NETWORK-ISOLATION-DESIGN.md (#315).
+enum NetworkPolicyMode {
+  NETWORK_POLICY_MODE_UNSPECIFIED = 0; // treated as LOG_ONLY in Phase A
+  NETWORK_POLICY_MODE_LOG_ONLY = 1;    // observe + audit denied flows; drop nothing
+  NETWORK_POLICY_MODE_ENFORCE = 2;     // actually drop denied flows
+}
+
+// NetworkPolicy is a tenant's network-isolation policy, enforced at each of the
+// tenant's container host-veth TC_INGRESS hooks (the sender side of every flow;
+// see the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315.
+message NetworkPolicy {
+  // Tenant this policy applies to (required).
+  string tenant = 1;
+
+  // Allow container↔container traffic within the same tenant. When false, even
+  // same-tenant peers can't reach each other.
+  bool allow_intra_tenant = 2;
+
+  // Allowed egress destination CIDRs (e.g. "10.0.0.0/8", "1.2.3.4/32").
+  repeated string egress_cidrs = 3;
+
+  // Allowed egress domains (e.g. "api.github.com"); the daemon resolves these
+  // to CIDRs on a refresh loop and folds them into the egress allow set.
+  repeated string egress_domains = 4;
+
+  // Enforcement mode. Unspecified is treated as LOG_ONLY in Phase A.
+  NetworkPolicyMode mode = 5;
+}
+
 // BackendType represents the type of backend instance
 enum BackendType {
   BACKEND_TYPE_UNSPECIFIED = 0;
