@@ -185,7 +185,7 @@ The Phase 0 / 0.5 harnesses (`experimental/ebpf-phase0/validate.sh`,
 | **B — policy enforcement** | ✅ **Done.** A tenant's `--mode enforce` policy now drops denied flows (`TC_ACT_SHOT`). Gated by a daemon-wide second opt-in `CONTAINARIUM_NETWORK_POLICY_ENFORCE=1` — without it, even a stored enforce policy stays observation-only (soak in log_only first). No-policy containers are never enforced, so the blast radius is exactly the tenants with an explicit enforce policy; the reconcile loop converges the egress allow-list (removed CIDRs are deleted, not just added). Hardware-validated: allow-listed dst passes, denied dst sees 100% loss, other tenants stay log_only. | 1 week |
 | **C — egress allowlist (domains)** | ✅ **Done.** `egress_domains` (e.g. `api.github.com`) are resolved to IPv4 and folded into the egress allow-list as /32 entries, refreshed on a loop; the reconcile's `diffEgress` prunes IPs a domain stops resolving to. A failed lookup keeps the prior IPs (no allow-list thrash on a DNS blip). Fixed refresh interval for now; per-record DNS-TTL refresh is a noted follow-up. Hardware-validated: with only `--allow-domain one.one.one.one` under enforce, `ping 1.1.1.1` (resolved) passes and `ping 8.8.8.8` is dropped. | 1 week |
 | **D — cloud metadata block** | ✅ **Done.** `169.254.169.254` is denied by default — checked *before* the egress allow-list so even a broad `0.0.0.0/0` allow can't expose it (deny-beats-allow for the credential-bearing metadata IP). A per-tenant `allow_metadata` opt-in (proto + CLI `--allow-metadata`) lets a tenant that legitimately needs it through. Hardware-validated: under enforce + `--allow-cidr 0.0.0.0/0`, metadata is dropped while `8.8.8.8` passes; with `--allow-metadata` it passes. | 2 days |
-| **E — CLI / MCP / runbook** | Operator surface + docs. | 1 week |
+| **E — CLI / MCP / runbook** | ✅ **Done.** `containarium network-policy set/get/list/delete` (the MCP server wraps the same REST endpoints for free); operator runbook section "[Pinning per-tenant network policy](OPERATOR-SECURITY-RUNBOOK.md#pinning-per-tenant-network-policy)" covers the two opt-ins, the soak→arm workflow, the DNS footgun, reading deny audit rows, and metadata opt-in. | 1 week |
 
 Total bounded estimate: **5-6 weeks** of focused work. Phase 0 was
 the load-bearing risk and it paid off: the bridge attach point the
@@ -260,6 +260,6 @@ traffic, so Phase A starts from the corrected per-container-veth
 
 ## Related
 
-- [`security/OPERATOR-SECURITY-RUNBOOK.md`](OPERATOR-SECURITY-RUNBOOK.md) — operator-facing security ops; will get a "Pinning per-tenant network policy" section when this lands.
+- [`security/OPERATOR-SECURITY-RUNBOOK.md`](OPERATOR-SECURITY-RUNBOOK.md) — operator-facing security ops; see "[Pinning per-tenant network policy](OPERATOR-SECURITY-RUNBOOK.md#pinning-per-tenant-network-policy)".
 - [`security/ZERO-TRUST-AUDIT.md`](ZERO-TRUST-AUDIT.md) — original audit; didn't flag this gap, would be amended on landing.
 - [`../EPHEMERAL-SANDBOX-DESIGN.md`](../EPHEMERAL-SANDBOX-DESIGN.md) — answers "what network does a sandbox get" (probably: tenant netns; this design covers what that netns can reach).
