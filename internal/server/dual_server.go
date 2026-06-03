@@ -301,7 +301,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// PostgresNetworkPolicyStore once the pool exists) and the per-veth
 	// TC_INGRESS BPF loader that consumes these policies are follow-up
 	// increments. Admin-gated in the handler.
-	pb.RegisterNetworkPolicyServiceServer(grpcServer, NewNetworkPolicyServer(NewMemNetworkPolicyStore()))
+	npServer := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
+	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
 
 	// Create TrafficServer (always available, but conntrack only works on Linux)
@@ -820,6 +821,24 @@ skipAppHosting:
 				networkServer.passthroughStore = passthroughStore
 				log.Printf("Passthrough route persistence enabled with %v sync interval", syncInterval)
 			}
+		}
+	}
+
+	// Upgrade the NetworkPolicy service from its initial in-memory store to a
+	// Postgres-backed one now that postgresConnString is finalized. Best-effort:
+	// on any failure we keep the in-memory store (policies won't survive a
+	// restart, but the service stays up). Swap happens before grpcServer.Serve,
+	// so it races with no live RPCs.
+	if postgresConnString != "" {
+		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
+		if poolErr != nil {
+			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
+		} else if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
+			log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
+			pool.Close()
+		} else {
+			npServer.SetStore(pgStore)
+			log.Printf("NetworkPolicy persistence enabled (Postgres store)")
 		}
 	}
 

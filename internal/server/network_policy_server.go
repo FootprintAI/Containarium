@@ -26,6 +26,14 @@ func NewNetworkPolicyServer(store NetworkPolicyStore) *NetworkPolicyServer {
 	return &NetworkPolicyServer{store: store}
 }
 
+// SetStore swaps the backing store. Intended for startup only — called during
+// NewDualServer (before the gRPC server starts serving) to upgrade the initial
+// in-memory store to the Postgres-backed one once the DB connection string is
+// resolved. Not safe to call concurrently with live RPCs.
+func (s *NetworkPolicyServer) SetStore(store NetworkPolicyStore) {
+	s.store = store
+}
+
 func (s *NetworkPolicyServer) SetNetworkPolicy(ctx context.Context, req *pb.SetNetworkPolicyRequest) (*pb.SetNetworkPolicyResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
