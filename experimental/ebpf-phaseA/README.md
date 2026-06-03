@@ -75,9 +75,20 @@ incus exec <container> -- ping -c3 1.1.1.1   # not allowed → WOULD-DENY events
 
 ## Status
 
-`netpolicy.bpf.c`, the loader, and this validator are **hardware-pending**: they
-compile in CI, the pure-Go map translation (`internal/netbpf`) is unit-tested,
-but the BPF program + TCX attach have **not** yet been run on a backend. Do not
-wire the loader into the daemon (the denied-flow→audit consumer + container
-lifecycle integration) until this validator passes on a Linux backend — the same
-discipline that made Phase 0 catch a wrong attach point before it shipped.
+**Validated on a Linux backend** (kernel 6.8, Incus 6.23, TCX attach). The run,
+against a throwaway Ubuntu 24.04 container with `--allow-cidr 8.8.8.8/32`:
+
+- program loaded (verifier passed) and attached to the container's host veth in
+  `TC_INGRESS` via TCX; existing container networking undisturbed;
+- `seen` incremented by exactly the container's outbound packets;
+- ICMP to `8.8.8.8` (allow-listed) produced **no** would-deny — the tenant-scoped
+  `egress_cidr` LPM trie matched and passed it;
+- ICMP to `1.1.1.1` (not listed) produced `would_deny` counts + `WOULD-DENY` perf
+  events carrying the correct `src`/`dst`/`proto`/`tenant`/`ifindex` (C↔Go struct
+  layout and byte order confirmed);
+- log_only dropped nothing — all pings succeeded.
+
+This validates the load-bearing eBPF path. The remaining Phase A work — the
+denied-flow→audit consumer + container-lifecycle integration in the daemon
+(attach on create/start, detach on stop/delete, populate maps from stored
+policies + container IPs) — builds on the now-proven loader.
