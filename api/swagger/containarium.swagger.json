@@ -18,6 +18,9 @@
       "name": "ContainerService"
     },
     {
+      "name": "ActuationService"
+    },
+    {
       "name": "NetworkService"
     },
     {
@@ -62,6 +65,82 @@
     "application/json"
   ],
   "paths": {
+    "/v1/actuation/containers/{containerId}/state": {
+      "post": {
+        "summary": "ReportContainerState records the calling host's observed state\nfor one of its assigned containers. The cloud uses this to\nsurface the user-facing containers.state field and (in a future\nslice) to react to FAILED reports with reassignment.",
+        "description": "Errors:\n  - InvalidArgument: malformed container_id, empty / unknown state.\n  - NotFound: no live assignment for that container belongs to\n    the calling host. Single error code for \"container unknown\"\n    and \"container is on a different host\" — the calling host\n    can't distinguish, by design.\n  - Unauthenticated: missing / invalid host-bearer.",
+        "operationId": "ActuationService_ReportContainerState",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ReportContainerStateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerId",
+            "description": "The container the host is reporting about. The host must hold a\nlive container_assignments row for this container; cross-host\nreports collapse to NotFound for probe resistance (the calling\nhost can't tell whether the container exists on another host).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ReportContainerStateBody"
+            }
+          }
+        ],
+        "tags": [
+          "ActuationService"
+        ]
+      }
+    },
+    "/v1/actuation/heartbeat": {
+      "post": {
+        "summary": "Heartbeat updates hosts.last_heartbeat_at for the calling host.\nA stale gap (\u003e2 × the host's expected interval) marks the host\nfor the HostSweeper, which reassigns its containers. Hosts are\nexpected to call this every N seconds with N \u003c\u003c the staleness\nthreshold.",
+        "description": "Auth: requires a valid `host-bearer` header. Returns\nUnauthenticated if missing / malformed / tombstoned. The\nmethod is otherwise idempotent.",
+        "operationId": "ActuationService_Heartbeat",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/HeartbeatResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "HeartbeatRequest is intentionally empty for v1. The host's identity\ncomes from the bearer; there's nothing else the cloud needs to\nknow to bump last_heartbeat_at. Future fields (current observed\nstate, host-side health flags) are additive.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/HeartbeatRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ActuationService"
+        ]
+      }
+    },
     "/v1/alerts": {
       "get": {
         "summary": "List alert rules",
@@ -6107,7 +6186,7 @@
       "type": "object",
       "properties": {
         "policy": {
-          "$ref": "#/definitions/NetworkPolicy"
+          "$ref": "#/definitions/containarium.v1.NetworkPolicy"
         }
       }
     },
@@ -6274,6 +6353,20 @@
         "filename": {
           "type": "string",
           "title": "Suggested filename"
+        }
+      }
+    },
+    "HeartbeatRequest": {
+      "type": "object",
+      "description": "HeartbeatRequest is intentionally empty for v1. The host's identity\ncomes from the bearer; there's nothing else the cloud needs to\nknow to bump last_heartbeat_at. Future fields (current observed\nstate, host-side health flags) are additive."
+    },
+    "HeartbeatResponse": {
+      "type": "object",
+      "properties": {
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server time when the heartbeat was recorded. Useful for hosts\nthat want to skew-correct their heartbeat scheduling against\nthe cloud's clock."
         }
       }
     },
@@ -6557,7 +6650,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/NetworkPolicy"
+            "$ref": "#/definitions/containarium.v1.NetworkPolicy"
           }
         }
       }
@@ -6900,52 +6993,6 @@
         }
       },
       "title": "NetworkNode represents a node in the network topology"
-    },
-    "NetworkPolicy": {
-      "type": "object",
-      "properties": {
-        "tenant": {
-          "type": "string",
-          "description": "Tenant this policy applies to (required)."
-        },
-        "allowIntraTenant": {
-          "type": "boolean",
-          "description": "Allow container↔container traffic within the same tenant. When false, even\nsame-tenant peers can't reach each other."
-        },
-        "egressCidrs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Allowed egress destination CIDRs (e.g. \"10.0.0.0/8\", \"1.2.3.4/32\")."
-        },
-        "egressDomains": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Allowed egress domains (e.g. \"api.github.com\"); the daemon resolves these\nto CIDRs on a refresh loop and folds them into the egress allow set."
-        },
-        "mode": {
-          "$ref": "#/definitions/NetworkPolicyMode",
-          "description": "Enforcement mode. Unspecified is treated as LOG_ONLY in Phase A."
-        },
-        "allowMetadata": {
-          "type": "boolean",
-          "description": "Allow reaching the cloud metadata service (169.254.169.254). Default false:\nthe metadata IP is denied even if egress_cidrs/egress_domains would\notherwise cover it (deny-beats-allow for this one sensitive IP, since it\nhands out cloud credentials). Set true only for a tenant that legitimately\nneeds instance metadata. #315 Phase D."
-        }
-      },
-      "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."
-    },
-    "NetworkPolicyMode": {
-      "type": "string",
-      "enum": [
-        "NETWORK_POLICY_MODE_UNSPECIFIED",
-        "NETWORK_POLICY_MODE_LOG_ONLY",
-        "NETWORK_POLICY_MODE_ENFORCE"
-      ],
-      "default": "NETWORK_POLICY_MODE_UNSPECIFIED",
-      "description": "NetworkPolicyMode controls whether a tenant's network policy is enforced or\nonly observed. Phase A ships log_only; Phase B flips to enforce. See\ndocs/security/NETWORK-ISOLATION-DESIGN.md (#315).\n\n - NETWORK_POLICY_MODE_UNSPECIFIED: treated as LOG_ONLY in Phase A\n - NETWORK_POLICY_MODE_LOG_ONLY: observe + audit denied flows; drop nothing\n - NETWORK_POLICY_MODE_ENFORCE: actually drop denied flows"
     },
     "NetworkTopology": {
       "type": "object",
@@ -7580,6 +7627,31 @@
       },
       "title": "RemoveSSHKeyResponse is the response from removing an SSH key"
     },
+    "ReportContainerStateBody": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "Observed state. Must match one of the AssignmentState* values\n(pending / active / stopping / stopped). Empty rejected with\nInvalidArgument; values outside the enum also InvalidArgument."
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the host observed this state. Optional — defaults to the\nserver's clock at write time when zero. The server stamps its\nown updated_at regardless; observed_at carries the host's view\nfor skew analysis but isn't currently used to gate writes."
+        }
+      },
+      "description": "ReportContainerStateRequest is a host's push of its current\nobservation about a container it's been assigned."
+    },
+    "ReportContainerStateResponse": {
+      "type": "object",
+      "properties": {
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server time when the report was recorded."
+        }
+      }
+    },
     "ResizeContainerBody": {
       "type": "object",
       "properties": {
@@ -7846,7 +7918,7 @@
       "type": "object",
       "properties": {
         "policy": {
-          "$ref": "#/definitions/NetworkPolicy"
+          "$ref": "#/definitions/containarium.v1.NetworkPolicy"
         }
       }
     },
@@ -7854,7 +7926,7 @@
       "type": "object",
       "properties": {
         "policy": {
-          "$ref": "#/definitions/NetworkPolicy",
+          "$ref": "#/definitions/containarium.v1.NetworkPolicy",
           "description": "The stored policy (echoed back in its normalized form)."
         }
       }
@@ -8923,6 +8995,52 @@
         }
       },
       "title": "ZapScanRun represents a single ZAP scan execution"
+    },
+    "containarium.v1.NetworkPolicy": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "description": "Tenant this policy applies to (required)."
+        },
+        "allowIntraTenant": {
+          "type": "boolean",
+          "description": "Allow container↔container traffic within the same tenant. When false, even\nsame-tenant peers can't reach each other."
+        },
+        "egressCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed egress destination CIDRs (e.g. \"10.0.0.0/8\", \"1.2.3.4/32\")."
+        },
+        "egressDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed egress domains (e.g. \"api.github.com\"); the daemon resolves these\nto CIDRs on a refresh loop and folds them into the egress allow set."
+        },
+        "mode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "Enforcement mode. Unspecified is treated as LOG_ONLY in Phase A."
+        },
+        "allowMetadata": {
+          "type": "boolean",
+          "description": "Allow reaching the cloud metadata service (169.254.169.254). Default false:\nthe metadata IP is denied even if egress_cidrs/egress_domains would\notherwise cover it (deny-beats-allow for this one sensitive IP, since it\nhands out cloud credentials). Set true only for a tenant that legitimately\nneeds instance metadata. #315 Phase D."
+        }
+      },
+      "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."
+    },
+    "containarium.v1.NetworkPolicyMode": {
+      "type": "string",
+      "enum": [
+        "NETWORK_POLICY_MODE_UNSPECIFIED",
+        "NETWORK_POLICY_MODE_LOG_ONLY",
+        "NETWORK_POLICY_MODE_ENFORCE"
+      ],
+      "default": "NETWORK_POLICY_MODE_UNSPECIFIED",
+      "description": "NetworkPolicyMode controls whether a tenant's network policy is enforced or\nonly observed. Phase A ships log_only; Phase B flips to enforce. See\ndocs/security/NETWORK-ISOLATION-DESIGN.md (#315).\n\n - NETWORK_POLICY_MODE_UNSPECIFIED: treated as LOG_ONLY in Phase A\n - NETWORK_POLICY_MODE_LOG_ONLY: observe + audit denied flows; drop nothing\n - NETWORK_POLICY_MODE_ENFORCE: actually drop denied flows"
     },
     "rpc.Status": {
       "type": "object",

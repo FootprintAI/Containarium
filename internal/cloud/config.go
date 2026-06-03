@@ -36,6 +36,10 @@ type Config struct {
 	// Token is the opaque, single-host-scoped host bearer. Sent as the
 	// host-bearer gRPC metadata on every actuation RPC; never parsed here.
 	Token string `yaml:"token"`
+	// Insecure dials the control plane without TLS. Default false (TLS). Only
+	// for a self-hosted plaintext control plane or local dev — never for a
+	// public cloud endpoint.
+	Insecure bool `yaml:"insecure,omitempty"`
 }
 
 // DefaultPath resolves $HOME/.containarium/cloud.yaml.

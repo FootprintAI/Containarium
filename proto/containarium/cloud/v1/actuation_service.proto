@@ -1,0 +1,239 @@
+// VENDORED from Containarium-cloud: proto/containarium/cloud/v1/actuation_service.proto
+// (cloud↔host actuation contract). Source of truth is the cloud repo; this copy
+// lets the OSS daemon generate the host-side gRPC client WITHOUT depending on the
+// private cloud Go module (which would break the public repo's go-mod-tidy CI gate
+// + fork builds). Keep in sync with the cloud repo when the actuation contract
+// changes. See docs/CLOUD-ACTUATION-CLIENT-DESIGN.md.
+// actuation_service.proto — platform-daemon ⇄ cloud-daemon channel
+// (host-side surface). See prd/cloud/container-actuation.md.
+//
+// Where host.proto carries the **registry** (sysadmin CRUD on the
+// `hosts` table from the cloud operator's side), this proto carries
+// the **runtime** (the platform-daemon's calls back to the cloud once
+// it's registered).
+//
+// Auth is intentionally distinct: every RPC here is gated by the
+// `host-bearer` metadata header (`HostBearerInterceptor` in
+// internal/auth), not the user-facing JWT. The interceptor stamps
+// the authenticated host's ID onto the context; handlers read it
+// from ctx, not from request fields, so a malicious / buggy host
+// can't masquerade as another by lying about its id in the body.
+//
+// Slice 1 ships **Heartbeat**. Slice 2 adds **ReportContainerState**
+// (host's push of observed state). Slice 3 adds **WatchAssignments**
+// — the cloud's push of desired state to the host over a server
+// stream. Together these three RPCs are the full v1 actuation
+// channel; the only remaining work is splitting `state` into
+// desired/observed columns (separate migration) and wiring the
+// scheduler to react to FAILED reports with reassignment.
+
+syntax = "proto3";
+
+package containarium.cloud.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+// HeartbeatRequest is intentionally empty for v1. The host's identity
+// comes from the bearer; there's nothing else the cloud needs to
+// know to bump last_heartbeat_at. Future fields (current observed
+// state, host-side health flags) are additive.
+message HeartbeatRequest {}
+
+message HeartbeatResponse {
+  // Server time when the heartbeat was recorded. Useful for hosts
+  // that want to skew-correct their heartbeat scheduling against
+  // the cloud's clock.
+  google.protobuf.Timestamp received_at = 1;
+}
+
+// ReportContainerStateRequest is a host's push of its current
+// observation about a container it's been assigned.
+message ReportContainerStateRequest {
+  // The container the host is reporting about. The host must hold a
+  // live container_assignments row for this container; cross-host
+  // reports collapse to NotFound for probe resistance (the calling
+  // host can't tell whether the container exists on another host).
+  string container_id = 1;
+
+  // Observed state. Must match one of the AssignmentState* values
+  // (pending / active / stopping / stopped). Empty rejected with
+  // InvalidArgument; values outside the enum also InvalidArgument.
+  string state = 2;
+
+  // When the host observed this state. Optional — defaults to the
+  // server's clock at write time when zero. The server stamps its
+  // own updated_at regardless; observed_at carries the host's view
+  // for skew analysis but isn't currently used to gate writes.
+  google.protobuf.Timestamp observed_at = 3;
+}
+
+message ReportContainerStateResponse {
+  // Server time when the report was recorded.
+  google.protobuf.Timestamp received_at = 1;
+}
+
+// WatchAssignmentsRequest carries no fields in v1 — the calling host's
+// identity comes from the host-bearer header, and the response is
+// always the full set of live assignments for that host.
+message WatchAssignmentsRequest {}
+
+// Assignment is the cloud's view of one container the host should be
+// actuating. The fields needed to actually run the workload (name,
+// image, capacity) are embedded so the host doesn't need a separate
+// fetch round-trip.
+message Assignment {
+  // Server-allocated id of the container_assignments row. Hosts use
+  // this for idempotency / dedup across reconnects.
+  string assignment_id = 1;
+  // Container the assignment targets. Used by the host as the key
+  // when calling ReportContainerState.
+  string container_id = 2;
+  // Host-observed state — what ReportContainerState last wrote
+  // (pending / active / stopping / stopped). Echoed back to the
+  // host so a freshly-connected daemon can see what the cloud
+  // currently believes.
+  string state = 3;
+  // Cloud-driven user intent (running / stopped / deleted). The
+  // host's reconciliation loop reads THIS field to decide whether
+  // to start, stop, or tear down the container. Distinct from
+  // `state` (observed) — see prd/cloud/container-actuation.md for
+  // the desired_state vs observed_state split rationale.
+  //
+  // Slice 1 surfaces the field; the OSS daemon does not yet act
+  // on it (cross-repo follow-up). Until then, this field is
+  // informational — useful for the dashboard but the host keeps
+  // running whatever it was already running.
+  string desired_state = 4;
+
+  // Owning org (tenant) of this container. A host serves many orgs; the
+  // host-side daemon uses this to (a) stamp the container's
+  // `user.containarium.tenant` label so its per-tenant network-policy enforcer
+  // can identify it (cloud containers are named `cld-<uuid>`, not
+  // `<tenant>-container`), and (b) select which org's egress policy in
+  // network_policies (on the batch) applies. See the OSS repo's
+  // docs/security/NETWORK-ISOLATION-DESIGN.md "Cloud extension".
+  string org_id = 5;
+
+  // Container spec — embedded so the host doesn't need to fetch.
+  string name = 10;
+  string image = 11;
+  int32 ram_mb = 12;
+  int32 disk_gb = 13;
+  int32 gpu_count = 14;
+
+  google.protobuf.Timestamp updated_at = 20;
+}
+
+// NetworkPolicyMode controls whether an org's egress policy is enforced or only
+// observed on the host. Mirrors the OSS daemon's NetworkPolicyMode (the host's
+// eBPF enforcer consumes it). Cross-org L2/L3 isolation is NOT this — that's the
+// per-org bridge (data-isolation.md Layer 4). This policy is the EGRESS layer
+// (allow-list + cloud-metadata block) the bridges don't provide.
+enum NetworkPolicyMode {
+  NETWORK_POLICY_MODE_UNSPECIFIED = 0; // host treats as LOG_ONLY
+  NETWORK_POLICY_MODE_LOG_ONLY = 1;    // observe + audit denied flows; drop nothing
+  NETWORK_POLICY_MODE_ENFORCE = 2;     // actually drop denied egress
+}
+
+// NetworkPolicy is one org's egress policy, applied on the host by the eBPF
+// network-policy enforcer to every container of that org. It is org-scoped, not
+// per-container — all of an org's containers share it. The host writes it into
+// its local NetworkPolicyStore keyed by org_id; the enforcer's reconcile loop
+// then applies it unchanged.
+message NetworkPolicy {
+  // Org this policy applies to (matches Assignment.org_id).
+  string org_id = 1;
+  // Allow container↔container traffic within the same org. On a per-org bridge
+  // this is effectively always true (every peer is same-org); carried for
+  // completeness and for shared-bridge deployments.
+  bool allow_intra_tenant = 2;
+  // Allowed egress destination CIDRs (e.g. "10.0.0.0/8", "1.2.3.4/32").
+  repeated string egress_cidrs = 3;
+  // Allowed egress domains (e.g. "api.github.com"); the host resolves these to
+  // IPs on a refresh loop and folds them into the egress allow-set.
+  repeated string egress_domains = 4;
+  // Allow reaching the cloud metadata service (169.254.169.254). Default false:
+  // denied even if egress_cidrs/egress_domains would cover it (it hands out the
+  // instance's cloud credentials).
+  bool allow_metadata = 5;
+  // Enforcement mode. Unspecified is treated as LOG_ONLY.
+  NetworkPolicyMode mode = 6;
+}
+
+// AssignmentBatch is a full-state snapshot, not a delta. Each batch
+// replaces the host's understanding entirely — the cloud is the
+// authority. v1 always sends the complete set so the host can
+// converge with a single pass; future slices may introduce deltas
+// once the protocol grows generation numbers per assignment.
+message AssignmentBatch {
+  // Full set of live assignments for the calling host.
+  repeated Assignment assignments = 1;
+  // Server time when this batch was assembled. Useful for hosts
+  // diagnosing skew against their own clock; not currently used to
+  // gate writes.
+  google.protobuf.Timestamp generated_at = 2;
+  // Egress policy for every org with containers on this host (org-scoped). A
+  // full snapshot like assignments — the host converges its NetworkPolicyStore
+  // to exactly this set. Empty until the cloud authors policies; an org absent
+  // here gets the host's default (deny-by-default in enforce, observe in
+  // log_only). #315 cloud extension.
+  repeated NetworkPolicy network_policies = 3;
+}
+
+service ActuationService {
+  // Heartbeat updates hosts.last_heartbeat_at for the calling host.
+  // A stale gap (>2 × the host's expected interval) marks the host
+  // for the HostSweeper, which reassigns its containers. Hosts are
+  // expected to call this every N seconds with N << the staleness
+  // threshold.
+  //
+  // Auth: requires a valid `host-bearer` header. Returns
+  // Unauthenticated if missing / malformed / tombstoned. The
+  // method is otherwise idempotent.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {
+    option (google.api.http) = {
+      post: "/v1/actuation/heartbeat"
+      body: "*"
+    };
+  }
+
+  // ReportContainerState records the calling host's observed state
+  // for one of its assigned containers. The cloud uses this to
+  // surface the user-facing containers.state field and (in a future
+  // slice) to react to FAILED reports with reassignment.
+  //
+  // Errors:
+  //   - InvalidArgument: malformed container_id, empty / unknown state.
+  //   - NotFound: no live assignment for that container belongs to
+  //     the calling host. Single error code for "container unknown"
+  //     and "container is on a different host" — the calling host
+  //     can't distinguish, by design.
+  //   - Unauthenticated: missing / invalid host-bearer.
+  rpc ReportContainerState(ReportContainerStateRequest) returns (ReportContainerStateResponse) {
+    option (google.api.http) = {
+      post: "/v1/actuation/containers/{container_id}/state"
+      body: "*"
+    };
+  }
+
+  // WatchAssignments is a long-lived server stream. The host opens
+  // it on startup and keeps it open; the cloud sends:
+  //   1. an immediate snapshot of the host's current assignments,
+  //   2. a fresh snapshot on each subsequent change.
+  //
+  // v1 implementation polls the store on a fixed interval and sends
+  // a batch every tick. Hosts treat each batch as authoritative
+  // and apply it idempotently. A future slice replaces the poll
+  // with a notification bus that wakes the loop on assignment
+  // mutations (currently scheduler-create / host-retire-cascade /
+  // stale-host-sweeper).
+  //
+  // No HTTP gateway annotation — grpc-gateway's SSE bridge for
+  // server-streams is awkward enough that hosts (which are always
+  // platform-daemons speaking real gRPC) should just use the
+  // native channel.
+  rpc WatchAssignments(WatchAssignmentsRequest) returns (stream AssignmentBatch);
+}
