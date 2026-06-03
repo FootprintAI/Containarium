@@ -159,12 +159,17 @@ func (e *NetworkPolicyEnforcer) Stop() {
 // audit log. Action network_policy.deny; the tenant name is resolved from the
 // id->name map built during reconcile.
 func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyEvent) {
-	if e.audit == nil {
-		return
-	}
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
 	e.mu.Unlock()
+	// Always log the would-deny flow — in log_only mode this line IS the
+	// operator-visible signal that a flow would be blocked. The audit row below
+	// is the durable record (when an audit store is configured).
+	log.Printf("[netpolicy] would-deny: tenant=%q src=%s dst=%s proto=%d dport=%d (log_only)",
+		tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport)
+	if e.audit == nil {
+		return
+	}
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
 		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) + `}`
 	entry := &audit.AuditEntry{
