@@ -24,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.10'
+          go-version: '1.25.11'
 
       - name: Run sentinel + app tests
         # The skipped tests are pre-existing failures on unprivileged Linux
@@ -47,7 +47,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.10'
+          go-version: '1.25.11'
 
       - name: Cache built caddy binary
         id: cache-caddy

@@ -18,7 +18,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.10'
+          go-version: '1.25.11'
 
       - name: Install buf
         # `make build-release` transitively runs `make proto`, which
@@ -163,7 +163,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.10'
+          go-version: '1.25.11'
 
       - name: Install buf
         run: go install github.com/bufbuild/buf/cmd/buf@latest
