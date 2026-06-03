@@ -34,6 +34,12 @@ func (s *NetworkPolicyServer) SetStore(store NetworkPolicyStore) {
 	s.store = store
 }
 
+// Store returns the backing store. Used by the network-policy enforcer to read
+// stored policies for reconcile; call after any startup-time SetStore swap.
+func (s *NetworkPolicyServer) Store() NetworkPolicyStore {
+	return s.store
+}
+
 func (s *NetworkPolicyServer) SetNetworkPolicy(ctx context.Context, req *pb.SetNetworkPolicyRequest) (*pb.SetNetworkPolicyResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err

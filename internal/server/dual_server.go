@@ -143,42 +143,43 @@ func managementRouteDomains(cfg *DualServerConfig) []string {
 
 // DualServer runs both gRPC and HTTP/REST servers
 type DualServer struct {
-	config               *DualServerConfig
-	grpcServer           *grpc.Server
-	containerServer      *ContainerServer
-	appServer            *AppServer
-	networkServer        *NetworkServer
-	trafficServer        *TrafficServer
-	trafficCollector     *traffic.Collector
-	gatewayServer        *gateway.GatewayServer
-	tokenManager         *auth.TokenManager
-	authMiddleware       *auth.AuthMiddleware
-	routeStore           *app.RouteStore
-	routeSyncJob         *app.RouteSyncJob
-	passthroughStore     network.PassthroughStore
-	passthroughSyncJob   *network.PassthroughSyncJob
-	collaboratorStore    *collaborator.Store
-	daemonConfigStore    *app.DaemonConfigStore
-	metricsCollector     *metrics.Collector
-	securityScanner      *security.Scanner
-	securityStore        *security.Store
-	securityServer       *SecurityServer
-	auditStore           *audit.Store
-	auditEventSubscriber *audit.EventSubscriber
-	sshCollector         *audit.SSHCollector
-	revocationStore      *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
-	alertStore           *alert.Store
-	alertManager         *alert.Manager
-	alertDeliveryStore   *alert.DeliveryStore
-	pentestManager       *pentest.Manager
-	pentestStore         *pentest.Store
-	zapManager           *zapscanner.Manager
-	zapStore             *zapscanner.Store
-	peerPool             *PeerPool
-	autoSleepManager     *autosleep.Manager
-	ttlSweeperManager    *ttlsweeper.Manager // ephemeral CI box auto-delete (#299)
-	secretsReconciler    *secretsReconciler  // Phase 4.3 Phase B-3
-	startTime            time.Time
+	config                *DualServerConfig
+	grpcServer            *grpc.Server
+	containerServer       *ContainerServer
+	appServer             *AppServer
+	networkServer         *NetworkServer
+	trafficServer         *TrafficServer
+	trafficCollector      *traffic.Collector
+	gatewayServer         *gateway.GatewayServer
+	tokenManager          *auth.TokenManager
+	authMiddleware        *auth.AuthMiddleware
+	routeStore            *app.RouteStore
+	routeSyncJob          *app.RouteSyncJob
+	passthroughStore      network.PassthroughStore
+	passthroughSyncJob    *network.PassthroughSyncJob
+	collaboratorStore     *collaborator.Store
+	daemonConfigStore     *app.DaemonConfigStore
+	metricsCollector      *metrics.Collector
+	securityScanner       *security.Scanner
+	securityStore         *security.Store
+	securityServer        *SecurityServer
+	auditStore            *audit.Store
+	auditEventSubscriber  *audit.EventSubscriber
+	sshCollector          *audit.SSHCollector
+	revocationStore       *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
+	alertStore            *alert.Store
+	alertManager          *alert.Manager
+	alertDeliveryStore    *alert.DeliveryStore
+	pentestManager        *pentest.Manager
+	pentestStore          *pentest.Store
+	zapManager            *zapscanner.Manager
+	zapStore              *zapscanner.Store
+	peerPool              *PeerPool
+	autoSleepManager      *autosleep.Manager
+	ttlSweeperManager     *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
+	secretsReconciler     *secretsReconciler     // Phase 4.3 Phase B-3
+	networkPolicyEnforcer *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	startTime             time.Time
 }
 
 // NewDualServer creates a new dual server instance
@@ -1028,6 +1029,33 @@ skipAppHosting:
 		}
 	}
 
+	// Setup the eBPF network-policy enforcer (#315 Phase A). OFF by default:
+	// only constructed when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points at a
+	// compiled netpolicy.bpf.o. When unset, an existing deployment is entirely
+	// unaffected. Observation-only — the program never drops, it audits
+	// would-deny flows. The tenant→u32 ID registry is persisted in Postgres when
+	// available (IDs must be stable across restarts) and in-memory otherwise.
+	var networkPolicyEnforcer *NetworkPolicyEnforcer
+	if bpfObj := os.Getenv("CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT"); bpfObj != "" && networkIncusClient != nil {
+		var tenantRegistry TenantRegistry
+		if postgresConnString != "" {
+			if regPool, perr := connectToPostgres(postgresConnString, 5, 3*time.Second); perr != nil {
+				log.Printf("Warning: tenant registry Postgres connect failed (%v); using in-memory IDs", perr)
+				tenantRegistry = NewMemTenantRegistry()
+			} else if pgReg, rerr := NewPostgresTenantRegistry(context.Background(), regPool); rerr != nil {
+				log.Printf("Warning: tenant registry init failed (%v); using in-memory IDs", rerr)
+				regPool.Close()
+				tenantRegistry = NewMemTenantRegistry()
+			} else {
+				tenantRegistry = pgReg
+			}
+		} else {
+			tenantRegistry = NewMemTenantRegistry()
+		}
+		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus())
+		log.Printf("NetworkPolicy enforcer configured (obj=%s); starts with the daemon", bpfObj)
+	}
+
 	// Setup alert store and manager
 	var alertStore *alert.Store
 	var alertManager *alert.Manager
@@ -1241,39 +1269,40 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
-		config:               config,
-		grpcServer:           grpcServer,
-		containerServer:      containerServer,
-		appServer:            appServer,
-		networkServer:        networkServer,
-		trafficServer:        trafficServer,
-		trafficCollector:     trafficCollector,
-		gatewayServer:        gatewayServer,
-		tokenManager:         tokenManager,
-		authMiddleware:       authMiddleware,
-		routeStore:           routeStore,
-		routeSyncJob:         routeSyncJob,
-		passthroughStore:     passthroughStore,
-		passthroughSyncJob:   passthroughSyncJob,
-		collaboratorStore:    collabStore,
-		daemonConfigStore:    config.DaemonConfigStore,
-		metricsCollector:     metricsCollector,
-		securityScanner:      securityScanner,
-		securityStore:        securityStore,
-		securityServer:       securityServerInstance,
-		auditStore:           auditStore,
-		auditEventSubscriber: auditEventSubscriber,
-		sshCollector:         sshCollector,
-		revocationStore:      revocationStoreLocal,
-		alertStore:           alertStore,
-		alertManager:         alertManager,
-		alertDeliveryStore:   containerServer.alertDeliveryStore,
-		pentestManager:       pentestManager,
-		pentestStore:         pentestStore,
-		zapManager:           zapManager,
-		zapStore:             zapStore,
-		peerPool:             NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
-		startTime:            time.Now(),
+		config:                config,
+		grpcServer:            grpcServer,
+		containerServer:       containerServer,
+		appServer:             appServer,
+		networkServer:         networkServer,
+		trafficServer:         trafficServer,
+		trafficCollector:      trafficCollector,
+		gatewayServer:         gatewayServer,
+		tokenManager:          tokenManager,
+		authMiddleware:        authMiddleware,
+		routeStore:            routeStore,
+		routeSyncJob:          routeSyncJob,
+		passthroughStore:      passthroughStore,
+		passthroughSyncJob:    passthroughSyncJob,
+		collaboratorStore:     collabStore,
+		daemonConfigStore:     config.DaemonConfigStore,
+		metricsCollector:      metricsCollector,
+		securityScanner:       securityScanner,
+		securityStore:         securityStore,
+		securityServer:        securityServerInstance,
+		auditStore:            auditStore,
+		auditEventSubscriber:  auditEventSubscriber,
+		sshCollector:          sshCollector,
+		revocationStore:       revocationStoreLocal,
+		alertStore:            alertStore,
+		alertManager:          alertManager,
+		alertDeliveryStore:    containerServer.alertDeliveryStore,
+		pentestManager:        pentestManager,
+		pentestStore:          pentestStore,
+		zapManager:            zapManager,
+		zapStore:              zapStore,
+		peerPool:              NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
+		networkPolicyEnforcer: networkPolicyEnforcer,
+		startTime:             time.Now(),
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -1731,6 +1760,19 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		log.Printf("Passthrough sync job started")
 	}
 
+	// Start the eBPF network-policy enforcer if configured (#315 Phase A). A
+	// load failure (e.g. not on Linux, missing object, verifier reject) is
+	// logged and the daemon continues without enforcement — it must never block
+	// the daemon from serving.
+	if ds.networkPolicyEnforcer != nil {
+		if err := ds.networkPolicyEnforcer.Start(ctx); err != nil {
+			log.Printf("Warning: network-policy enforcer failed to start: %v (continuing without it)", err)
+			ds.networkPolicyEnforcer = nil
+		} else {
+			log.Printf("NetworkPolicy enforcer started")
+		}
+	}
+
 	// Ensure a management route per served base domain persists in
 	// PostgreSQL (RouteSyncJob pushes each to Caddy — host matcher + TLS
 	// subject). One route per PublicBaseDomains entry, so the daemon
@@ -1842,6 +1884,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.trafficCollector != nil {
 			ds.trafficCollector.Stop()
+		}
+		if ds.networkPolicyEnforcer != nil {
+			ds.networkPolicyEnforcer.Stop()
 		}
 		if ds.metricsCollector != nil {
 			ds.metricsCollector.Stop()

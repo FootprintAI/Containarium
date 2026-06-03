@@ -88,7 +88,22 @@ against a throwaway Ubuntu 24.04 container with `--allow-cidr 8.8.8.8/32`:
   layout and byte order confirmed);
 - log_only dropped nothing — all pings succeeded.
 
-This validates the load-bearing eBPF path. The remaining Phase A work — the
-denied-flow→audit consumer + container-lifecycle integration in the daemon
-(attach on create/start, detach on stop/delete, populate maps from stored
-policies + container IPs) — builds on the now-proven loader.
+This validates the load-bearing eBPF path. The daemon-side integration (enforcer
++ denied-flow→audit consumer + reconcile loop) now consumes this proven loader.
+
+## Enabling the enforcer in the daemon
+
+The daemon wires all of this up but keeps it **OFF by default**. To turn it on,
+build the object on the backend (above) and point the daemon at it:
+
+```sh
+export CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/path/to/netpolicy.bpf.o
+# restart the daemon
+```
+
+When set, the daemon loads the program, reconciles every tenant's stored policy
+(`containarium network-policy set ...`) and live containers into the BPF maps on
+a periodic loop (and on container events), attaches to each container's veth, and
+writes a `network_policy.deny` audit row per would-deny flow. Unset → the daemon
+behaves exactly as before. Still observation-only: nothing is dropped until
+Phase B.
