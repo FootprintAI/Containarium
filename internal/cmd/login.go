@@ -72,6 +72,11 @@ var loginPromptReader io.Reader = os.Stdin
 // the production constant.
 var pollIntervalOverride = loginPollInterval
 
+// maxWaitOverride lets tests shrink the overall approval window so the
+// timeout path (and its #456 collision guidance) is exercisable in
+// milliseconds. Defaults to the production constant.
+var maxWaitOverride = loginMaxWait
+
 var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Authenticate against a Containarium server via browser device flow",
@@ -302,7 +307,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	srv := pickLoginServer(loginServer)
 	out := cmd.OutOrStdout()
 	hc := loginHTTPClient()
-	ctx, cancel := context.WithTimeout(context.Background(), loginMaxWait+loginHTTPTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), maxWaitOverride+loginHTTPTimeout)
 	defer cancel()
 
 	// 1. Open a session.
@@ -322,8 +327,23 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "(polls every %s, max %s)\n", loginPollInterval, loginMaxWait)
 
 	// 2. Poll status until terminal.
-	status, err := pollSession(ctx, hc, srv, sess.SessionID, pollIntervalOverride, loginMaxWait)
+	status, err := pollSession(ctx, out, hc, srv, sess.SessionID, pollIntervalOverride, maxWaitOverride)
 	if err != nil {
+		// A timeout most often means the browser approval never landed.
+		// The single most common reason it silently fails: the token
+		// the approval mints is named after --device-name, and a token
+		// with that name already exists in the org, so the server
+		// refuses the approve and the session just sits pending until it
+		// expires (#456). The CLI can't see that approve-side error
+		// (it's unauthenticated and only polls status), so spell out the
+		// remedy instead of leaving the user staring at a bare timeout.
+		if errors.Is(err, errPollTimeout) {
+			dev := deviceName(loginDeviceName)
+			base := strings.TrimRight(srv, "/")
+			fmt.Fprintf(out, "\nApproval didn't complete in time.\n")
+			fmt.Fprintf(out, "If you've signed in as %q before, that device name may already be in use —\n", dev)
+			fmt.Fprintf(out, "revoke the old token at %s/settings/api-tokens, or rerun with a different --device-name.\n", base)
+		}
 		return err
 	}
 
@@ -524,19 +544,57 @@ func createSession(ctx context.Context, hc *http.Client, server, device string) 
 }
 
 // pollSession GETs /v1/cli/sessions/{id}/status every interval and
-// returns the final non-pending status (or an error if the deadline
-// elapses or the server reports denied/expired).
-func pollSession(ctx context.Context, hc *http.Client, server, sessionID string, interval, maxWait time.Duration) (*sessionStatusResp, error) {
+// returns the final non-pending status. It rides out transient errors
+// (network blips, 5xx, 408/429) until the maxWait deadline rather than
+// aborting on the first one — a momentary DNS or connectivity hiccup
+// must not kill a multi-minute login while the user is mid-approval in
+// the browser (#455). Terminal conditions stop immediately: a gone
+// session (404), a non-retryable HTTP error, denied/expired status, or
+// a cancelled context. Progress notices for transient retries go to
+// out (nil-safe).
+func pollSession(ctx context.Context, out io.Writer, hc *http.Client, server, sessionID string, interval, maxWait time.Duration) (*sessionStatusResp, error) {
 	deadline := time.Now().Add(maxWait)
 	url := fmt.Sprintf("%s/v1/cli/sessions/%s/status", server, sessionID)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	var consecutiveTransient int
 	for {
 		st, err := fetchSessionStatus(ctx, hc, url)
 		if err != nil {
-			return nil, fmt.Errorf("poll session status: %w", err)
+			// Terminal: the session is gone — stop, consistent with the
+			// "expired" status branch below.
+			if errors.Is(err, errSessionGone) {
+				return nil, fmt.Errorf("login session expired before approval")
+			}
+			// Terminal: a non-retryable HTTP error (bad request, auth,
+			// etc.). Retrying won't change the answer.
+			var he httpStatusError
+			if errors.As(err, &he) && !he.retryable() {
+				return nil, fmt.Errorf("poll session status: %w", err)
+			}
+			// Transient: network error, 5xx, or 408/429. Keep polling
+			// until the deadline, but bail if they pile up consecutively
+			// (server down for good) so we fail faster than maxWait.
+			consecutiveTransient++
+			if consecutiveTransient >= maxConsecutivePollFailures {
+				return nil, fmt.Errorf("poll session status: %d consecutive failures, last: %w", consecutiveTransient, err)
+			}
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("%w (after %s); last error: %v", errPollTimeout, maxWait, err)
+			}
+			if out != nil {
+				fmt.Fprintf(out, "  (transient error polling status, retrying: %v)\n", err)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-ticker.C:
+			}
+			continue
 		}
+		consecutiveTransient = 0
+
 		switch st.Status {
 		case "approved":
 			if st.Token == "" {
@@ -554,7 +612,7 @@ func pollSession(ctx context.Context, hc *http.Client, server, sessionID string,
 		}
 
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for approval (after %s)", maxWait)
+			return nil, fmt.Errorf("%w (after %s)", errPollTimeout, maxWait)
 		}
 		select {
 		case <-ctx.Done():
@@ -576,10 +634,14 @@ func fetchSessionStatus(ctx context.Context, hc *http.Client, url string) (*sess
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("session not found (id may have expired)")
+		// Terminal: the session row is gone (expired / swept / unknown
+		// id). Re-polling can't bring it back.
+		return nil, errSessionGone
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		// Carry the code so pollSession can decide retry-vs-give-up by
+		// class (5xx / 408 / 429 are transient; other 4xx aren't).
+		return nil, httpStatusError{code: resp.StatusCode, body: strings.TrimSpace(string(rb))}
 	}
 	var out sessionStatusResp
 	if err := json.Unmarshal(rb, &out); err != nil {
@@ -588,6 +650,50 @@ func fetchSessionStatus(ctx context.Context, hc *http.Client, url string) (*sess
 	out.Status = normalizeSessionStatus(out.Status)
 	return &out, nil
 }
+
+// errSessionGone is the terminal "this session no longer exists" signal
+// — a 404 from the status endpoint (expired, swept, or unknown id).
+// pollSession stops on it rather than retrying.
+var errSessionGone = errors.New("session not found (id may have expired)")
+
+// errPollTimeout marks the "ran out the maxWait window without an
+// approval" case so runLogin can attach actionable guidance (the most
+// common real cause is a device-name collision — see #456) without
+// string-matching the error text.
+var errPollTimeout = errors.New("timed out waiting for approval")
+
+// httpStatusError carries a non-2xx status from the status endpoint so
+// pollSession can classify it. A bare fmt.Errorf would force the loop
+// to string-match the code, which is exactly the brittleness #455 is
+// about.
+type httpStatusError struct {
+	code int
+	body string
+}
+
+func (e httpStatusError) Error() string {
+	if e.body != "" {
+		return fmt.Sprintf("status %d: %s", e.code, e.body)
+	}
+	return fmt.Sprintf("status %d", e.code)
+}
+
+// retryable reports whether re-polling could plausibly succeed: a
+// transient server fault (5xx) or a back-pressure signal (408, 429).
+// Any other 4xx is a client/contract problem that won't self-heal.
+func (e httpStatusError) retryable() bool {
+	return e.code >= 500 ||
+		e.code == http.StatusRequestTimeout ||
+		e.code == http.StatusTooManyRequests
+}
+
+// maxConsecutivePollFailures bounds how many back-to-back transient
+// poll failures we ride out before giving up. The maxWait deadline is
+// the real ceiling; this just fails faster when the server is
+// unreachable for good instead of silently retrying the whole window.
+// ~10 failures at the 5s default poll interval ≈ under a minute of
+// solid errors before we bail.
+const maxConsecutivePollFailures = 10
 
 // normalizeSessionStatus folds the cloud's CLISessionStatus proto-enum wire
 // form ("CLI_SESSION_STATUS_APPROVED") down to the short lowercase token the

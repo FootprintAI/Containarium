@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -480,3 +481,137 @@ func setPollInterval(d time.Duration) { pollIntervalOverride = d }
 func loginPollIntervalForTest() time.Duration { return pollIntervalOverride }
 
 func restorePollInterval(d time.Duration) { pollIntervalOverride = d }
+
+// --- #455: pollSession transient-error resilience ---
+
+// statusServer stands up a programmable /status endpoint. handler is
+// invoked with the 1-based poll count so a test can vary the reply by
+// attempt (e.g. "fail 3 times, then approve"). Returns the server and a
+// pointer to the live poll counter.
+func statusServer(t *testing.T, sessionID string, handler func(n int32, w http.ResponseWriter)) (*httptest.Server, *int32) {
+	t.Helper()
+	var n int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/cli/sessions/"+sessionID+"/status", func(w http.ResponseWriter, r *http.Request) {
+		handler(atomic.AddInt32(&n, 1), w)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, &n
+}
+
+// TestPollSession_RidesTransientErrors is the core #455 regression: a
+// 5xx on the first polls must NOT abort the login. Pre-fix, pollSession
+// returned on poll #1; now it rides through and succeeds once the
+// server recovers.
+func TestPollSession_RidesTransientErrors(t *testing.T) {
+	srv, _ := statusServer(t, "sess-1", func(n int32, w http.ResponseWriter) {
+		if n <= 3 {
+			http.Error(w, "upstream hiccup", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(sessionStatusResp{Status: "approved", Token: "ctnr_ok"})
+	})
+	var out bytes.Buffer
+	st, err := pollSession(context.Background(), &out, srv.Client(), srv.URL, "sess-1", time.Millisecond, 5*time.Second)
+	if err != nil {
+		t.Fatalf("pollSession should ride out transient 5xx then approve, got err: %v", err)
+	}
+	if st.Token != "ctnr_ok" {
+		t.Fatalf("Token = %q, want ctnr_ok", st.Token)
+	}
+	if !strings.Contains(out.String(), "retrying") {
+		t.Errorf("expected a transient-retry notice in output, got:\n%s", out.String())
+	}
+}
+
+// TestPollSession_GivesUpAfterConsecutiveFailures: a server that's down
+// for good must fail fast at the consecutive cap, not silently retry
+// the entire maxWait window.
+func TestPollSession_GivesUpAfterConsecutiveFailures(t *testing.T) {
+	srv, n := statusServer(t, "sess-1", func(_ int32, w http.ResponseWriter) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	})
+	_, err := pollSession(context.Background(), nil, srv.Client(), srv.URL, "sess-1", time.Millisecond, 30*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "consecutive failures") {
+		t.Fatalf("want consecutive-failures error, got %v", err)
+	}
+	if got := atomic.LoadInt32(n); got != int32(maxConsecutivePollFailures) {
+		t.Errorf("polled %d times, want exactly %d (the cap)", got, maxConsecutivePollFailures)
+	}
+}
+
+// TestPollSession_SessionGoneIsTerminal: a 404 is terminal — stop at
+// once (surfaced as the expired message), never retry.
+func TestPollSession_SessionGoneIsTerminal(t *testing.T) {
+	srv, n := statusServer(t, "sess-1", func(_ int32, w http.ResponseWriter) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := pollSession(context.Background(), nil, srv.Client(), srv.URL, "sess-1", time.Millisecond, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "expired before approval") {
+		t.Fatalf("want terminal expired error, got %v", err)
+	}
+	if got := atomic.LoadInt32(n); got != 1 {
+		t.Errorf("polled %d times on a 404, want exactly 1 (no retry)", got)
+	}
+}
+
+// TestPollSession_TimeoutWrapsSentinel: a forever-pending session over
+// a tiny window returns errPollTimeout, so runLogin can distinguish a
+// timeout (→ #456 guidance) from other failures.
+func TestPollSession_TimeoutWrapsSentinel(t *testing.T) {
+	srv, _ := statusServer(t, "sess-1", func(_ int32, w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(sessionStatusResp{Status: "pending"})
+	})
+	_, err := pollSession(context.Background(), nil, srv.Client(), srv.URL, "sess-1", 5*time.Millisecond, 25*time.Millisecond)
+	if !errors.Is(err, errPollTimeout) {
+		t.Fatalf("want errPollTimeout, got %v", err)
+	}
+}
+
+// --- #456: actionable guidance on the timeout path ---
+
+// TestLogin_Timeout_PrintsCollisionGuidance: when approval never lands
+// (the device-name-collision symptom), runLogin must point the user at
+// the remedy — revoke the old token or pick a different --device-name —
+// instead of leaving a bare timeout.
+func TestLogin_Timeout_PrintsCollisionGuidance(t *testing.T) {
+	withTempHome(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/cli/sessions", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(createSessionResp{
+			SessionID:       "sess-1",
+			UserCode:        "WXYZ-1234",
+			VerificationURL: "http://example.invalid/cli/authorize?code=WXYZ-1234",
+			ExpiresIn:       600,
+		})
+	})
+	mux.HandleFunc("/v1/cli/sessions/sess-1/status", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(sessionStatusResp{Status: "pending"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	loginServer = srv.URL
+	loginNoBrowser = true
+	loginDeviceName = "cloud-mcp"
+
+	oldPoll, oldWait := pollIntervalOverride, maxWaitOverride
+	defer func() { pollIntervalOverride = oldPoll; maxWaitOverride = oldWait; loginDeviceName = "" }()
+	pollIntervalOverride = 5 * time.Millisecond
+	maxWaitOverride = 25 * time.Millisecond
+
+	var out bytes.Buffer
+	loginCmd.SetOut(&out)
+	loginCmd.SetErr(&out)
+	err := runLogin(loginCmd, nil)
+	if !errors.Is(err, errPollTimeout) {
+		t.Fatalf("want errPollTimeout from runLogin, got %v", err)
+	}
+	o := out.String()
+	for _, want := range []string{"already be in use", "cloud-mcp", "--device-name", "/settings/api-tokens"} {
+		if !strings.Contains(o, want) {
+			t.Errorf("timeout guidance missing %q:\n%s", want, o)
+		}
+	}
+}
