@@ -249,6 +249,81 @@ traffic, so Phase A starts from the corrected per-container-veth
   rollouts (KMS, image digest verify). No upgrade can degrade an
   existing deployment.
 
+## Cloud extension
+
+> Status: **Forward-looking.** The single-tenant feature (Phases 0–E) is
+> implemented and hardware-validated. This section records how it extends to the
+> multi-tenant cloud once the cloud-actuation client lands. It is the integration
+> contract, not yet built.
+
+The companion `CLOUD-ACTUATION-CLIENT-DESIGN.md` (in review) adds a daemon mode
+where a cloud control plane pushes *desired-state* container assignments to a
+registered host; the host reconciles them into Incus and reports observed state
+back. Multiple **customers'** containers then land on **one shared host bridge** —
+which is precisely the threat this design was written for. In single-tenant
+self-host the "malicious / compromised tenant scanning a neighbour" model is
+hypothetical; on a shared cloud host it is the operating reality. So per-tenant
+isolation is not merely compatible with the cloud — it is the cloud's
+load-bearing isolation layer, and a multi-customer host **must** run the enforcer
+armed.
+
+### The blocker: tenant identity is name-derived
+
+The enforcer derives a container's tenant from its **name** — `tenantOf()` strips
+the `<tenant>-container` suffix, and a name that doesn't match is **skipped
+entirely** (no policy, no veth attach). The cloud-actuation design proposes
+naming cloud-assigned containers `cld-<short-uuid>` so they don't collide with
+operator-managed `alice-container` names.
+
+Consequence: **cloud-assigned containers would today get zero isolation** —
+`tenantOf("cld-1a2b3c")` returns `""`, the enforcer ignores them, and every
+customer's container shares the bridge wide open. Closing this is a prerequisite
+for any multi-customer cloud host.
+
+### Integration points
+
+1. **Decouple tenant identity from the container name.** Incus already supports
+   per-instance labels (`user.containarium.*`). When the actuation reconciler
+   creates a `cld-<uuid>` container it stamps `user.containarium.tenant=<customer>`
+   from the assignment; the enforcer's `gather()` reads tenant from that label,
+   falling back to the `<tenant>-container` name convention for operator-managed
+   containers. One small change to tenant derivation serves both worlds — and it
+   removes the brittle "tenant == name prefix" coupling regardless of cloud.
+
+2. **NetworkPolicy becomes cloud desired-state, not just local CLI.** Today a
+   policy is authored via `containarium network-policy set` into the host's
+   Postgres. In the cloud the policy is the control plane's concern, so it rides
+   the actuation channel: the assignment/desired-state contract carries each
+   tenant's `NetworkPolicy`, and the reconciler writes it into the local
+   `NetworkPolicyStore`. The existing enforcer reconcile loop then applies it
+   unchanged — same desired/observed split the actuation client already uses for
+   containers. This is a **proto-first, cross-repo** change: the field lands in
+   the cloud repo's actuation proto before the OSS client consumes it.
+
+3. **Default to enforce, deny-by-default, on cloud hosts.** The two opt-ins
+   (`CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` to observe, then
+   `CONTAINARIUM_NETWORK_POLICY_ENFORCE=1` to drop) exist so this rollout is safe.
+   A cloud host arms both; the control plane ships every customer an enforce-mode
+   policy whose allow-list is bootstrapped from what the customer declares, and
+   `allow_metadata` stays default-deny — load-bearing on real cloud instances,
+   which actually have a credential-bearing `169.254.169.254`.
+
+4. **Report denied flows back to the control plane.** The enforcer already emits
+   `network_policy.deny_dropped` / `deny_logged` audit rows + logs. Those security
+   events should ride the same back-channel the cloud uses for observed
+   container state (and the planned resource-accounting feed), so the dashboard
+   shows customers what is being blocked — the observability half of the design,
+   at cloud scale.
+
+### Cross-repo dependency
+
+The tenant↔customer model (one customer = one tenant? customer-ID shape? does the
+control plane already carry a network-policy concept?) lives in the cloud repo's
+[`prd/cloud/multi-tenancy.md`](https://github.com/FootprintAI/Containarium-cloud/blob/main/prd/cloud/multi-tenancy.md).
+Integration points 1 and 2 depend on that contract, and point 2's proto field
+lands there first. That PRD plus `CLOUD-ACTUATION-CLIENT-DESIGN.md` are the
+prerequisites; this section is the OSS-side contract they plug into.
+
 ## What this is NOT
 
 - A k8s NetworkPolicy implementation. Different threat model
