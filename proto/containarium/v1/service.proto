@@ -385,6 +385,24 @@ service ContainerService {
     };
   }
 
+  // ListBackends returns the cluster topology — the local daemon plus any
+  // tunnel-connected peers — with per-backend health, version, OS, running
+  // container count, and GPU inventory. Admin-only: the response discloses
+  // fleet topology (peer IDs, hostnames, GPU inventory), which is operator-
+  // grade, not tenant-grade. This replaces the former hand-coded
+  // /v1/backends HTTP handler with the proto-first, gateway-generated
+  // contract (proto-first convention; #354).
+  rpc ListBackends(ListBackendsRequest) returns (ListBackendsResponse) {
+    option (google.api.http) = {
+      get: "/v1/backends"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List backends";
+      description: "Lists every backend in the fleet (local daemon + tunnel peers) with health, version, OS, running container count, and GPU inventory. Admin-only — discloses fleet topology.";
+      tags: "System";
+    };
+  }
+
   // GetLatestRelease reports the latest Containarium release on GitHub vs the
   // running version, so operators see "update available" without SSHing in.
   // The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.

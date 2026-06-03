@@ -42,6 +42,7 @@ const (
 	ContainerService_InstallStack_FullMethodName           = "/containarium.v1.ContainerService/InstallStack"
 	ContainerService_ListStacks_FullMethodName             = "/containarium.v1.ContainerService/ListStacks"
 	ContainerService_GetSystemInfo_FullMethodName          = "/containarium.v1.ContainerService/GetSystemInfo"
+	ContainerService_ListBackends_FullMethodName           = "/containarium.v1.ContainerService/ListBackends"
 	ContainerService_GetLatestRelease_FullMethodName       = "/containarium.v1.ContainerService/GetLatestRelease"
 	ContainerService_ValidateGPU_FullMethodName            = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_GetMonitoringInfo_FullMethodName      = "/containarium.v1.ContainerService/GetMonitoringInfo"
@@ -155,6 +156,14 @@ type ContainerServiceClient interface {
 	ListStacks(ctx context.Context, in *ListStacksRequest, opts ...grpc.CallOption) (*ListStacksResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(ctx context.Context, in *GetSystemInfoRequest, opts ...grpc.CallOption) (*GetSystemInfoResponse, error)
+	// ListBackends returns the cluster topology — the local daemon plus any
+	// tunnel-connected peers — with per-backend health, version, OS, running
+	// container count, and GPU inventory. Admin-only: the response discloses
+	// fleet topology (peer IDs, hostnames, GPU inventory), which is operator-
+	// grade, not tenant-grade. This replaces the former hand-coded
+	// /v1/backends HTTP handler with the proto-first, gateway-generated
+	// contract (proto-first convention; #354).
+	ListBackends(ctx context.Context, in *ListBackendsRequest, opts ...grpc.CallOption) (*ListBackendsResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -446,6 +455,16 @@ func (c *containerServiceClient) GetSystemInfo(ctx context.Context, in *GetSyste
 	return out, nil
 }
 
+func (c *containerServiceClient) ListBackends(ctx context.Context, in *ListBackendsRequest, opts ...grpc.CallOption) (*ListBackendsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBackendsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListBackends_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetLatestReleaseResponse)
@@ -719,6 +738,14 @@ type ContainerServiceServer interface {
 	ListStacks(context.Context, *ListStacksRequest) (*ListStacksResponse, error)
 	// GetSystemInfo gets information about the Incus host
 	GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error)
+	// ListBackends returns the cluster topology — the local daemon plus any
+	// tunnel-connected peers — with per-backend health, version, OS, running
+	// container count, and GPU inventory. Admin-only: the response discloses
+	// fleet topology (peer IDs, hostnames, GPU inventory), which is operator-
+	// grade, not tenant-grade. This replaces the former hand-coded
+	// /v1/backends HTTP handler with the proto-first, gateway-generated
+	// contract (proto-first convention; #354).
+	ListBackends(context.Context, *ListBackendsRequest) (*ListBackendsResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -848,6 +875,9 @@ func (UnimplementedContainerServiceServer) ListStacks(context.Context, *ListStac
 }
 func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSystemInfoRequest) (*GetSystemInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSystemInfo not implemented")
+}
+func (UnimplementedContainerServiceServer) ListBackends(context.Context, *ListBackendsRequest) (*ListBackendsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBackends not implemented")
 }
 func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLatestRelease not implemented")
@@ -1338,6 +1368,24 @@ func _ContainerService_GetSystemInfo_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_ListBackends_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBackendsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListBackends(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListBackends_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListBackends(ctx, req.(*ListBackendsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetLatestRelease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetLatestReleaseRequest)
 	if err := dec(in); err != nil {
@@ -1760,6 +1808,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetSystemInfo",
 			Handler:    _ContainerService_GetSystemInfo_Handler,
+		},
+		{
+			MethodName: "ListBackends",
+			Handler:    _ContainerService_ListBackends_Handler,
 		},
 		{
 			MethodName: "GetLatestRelease",

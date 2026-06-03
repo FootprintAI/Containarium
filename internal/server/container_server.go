@@ -62,6 +62,11 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  *app.DaemonConfigStore
 	peerPool           *PeerPool
+	// startTime is when this daemon process started; ListBackends reports
+	// the local backend's uptime from it. Set by DualServer wiring
+	// (SetStartTime); zero on a server that was never wired, in which case
+	// uptime is reported as 0.
+	startTime time.Time
 	// Route / Caddy cleanup deps (set by DualServer wiring, may be nil if
 	// the daemon was started without --app-hosting). Used by DeleteContainer
 	// to cascade-remove the routes / TLS-automation subjects a container
@@ -1830,6 +1835,103 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	}, nil
 }
 
+// ListBackends returns the fleet topology — the local daemon plus any
+// tunnel-connected peers — with per-backend health, version, OS, running
+// container count, and GPU inventory. This is the proto-first replacement
+// for the former hand-coded /v1/backends HTTP handler (#354): the wire
+// shape is now generated from BackendInfo, so the CLI / MCP clients and
+// the cloud control plane all share one contract that cannot drift.
+//
+// Admin-only: the response discloses fleet topology (peer IDs, hostnames,
+// GPU inventory), which is operator-grade, not tenant-grade. The cloud
+// control plane redacts it per-tenant at its own boundary.
+func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRequest) (*pb.ListBackendsResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Without a peer pool this daemon has no backend identity to report
+	// (the local backend ID comes from the pool), so the fleet view is
+	// empty — same behavior as the handler this replaced.
+	if s.peerPool == nil {
+		return &pb.ListBackendsResponse{}, nil
+	}
+
+	backends := make([]*pb.BackendInfo, 0, 1+len(s.peerPool.Peers()))
+
+	// Local backend. OS / container count / GPUs come from GetSystemInfo;
+	// uptime from the wired process start time.
+	local := &pb.BackendInfo{
+		Id:      s.peerPool.LocalBackendID(),
+		Type:    "local",
+		Healthy: true,
+		Version: version.GetVersion(),
+	}
+	if !s.startTime.IsZero() {
+		local.UptimeSeconds = int64(time.Since(s.startTime).Seconds())
+	}
+	// OS / container count / GPUs come from GetSystemInfo, which needs the
+	// container manager + Incus. Guard the nil manager so a daemon (or test)
+	// without one still reports the local backend's identity + health
+	// instead of panicking.
+	if s.manager != nil {
+		if sysResp, err := s.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{}); err == nil && sysResp.Info != nil {
+			local.Hostname = sysResp.Info.Hostname
+			local.Os = sysResp.Info.Os
+			local.ContainerCount = sysResp.Info.ContainersRunning
+			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
+		}
+	}
+	backends = append(backends, local)
+
+	// Peer backends. Forward GetSystemInfo to each healthy peer using the
+	// caller's (admin) token — the same mechanism GetSystemInfo's peer
+	// fan-out uses.
+	authToken := extractAuthToken(ctx)
+	for _, peer := range s.peerPool.Peers() {
+		pi := &pb.BackendInfo{
+			Id:      peer.ID,
+			Type:    "tunnel",
+			Healthy: peer.Healthy,
+		}
+		if !peer.LastSeenAt.IsZero() {
+			pi.LastSeenAt = peer.LastSeenAt.UTC().Format(time.RFC3339)
+		}
+		if peer.Healthy {
+			if body, err := peer.ForwardGetSystemInfo(authToken); err == nil {
+				var peerResp pb.GetSystemInfoResponse
+				if protojson.Unmarshal(body, &peerResp) == nil && peerResp.Info != nil {
+					pi.Hostname = peerResp.Info.Hostname
+					pi.Os = peerResp.Info.Os
+					pi.Version = peerResp.Info.DaemonVersion
+					pi.ContainerCount = peerResp.Info.ContainersRunning
+					pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
+				}
+			}
+		}
+		backends = append(backends, pi)
+	}
+
+	return &pb.ListBackendsResponse{Backends: backends}, nil
+}
+
+// backendGPUsFromSystemInfo projects a SystemInfo's GPU list onto the
+// BackendInfo GPU wire shape (vendor string, model name, VRAM bytes).
+func backendGPUsFromSystemInfo(info *pb.SystemInfo) []*pb.BackendGPU {
+	if len(info.Gpus) == 0 {
+		return nil
+	}
+	out := make([]*pb.BackendGPU, 0, len(info.Gpus))
+	for _, g := range info.Gpus {
+		out = append(out, &pb.BackendGPU{
+			Vendor:    g.Vendor.String(),
+			ModelName: g.ModelName,
+			VramBytes: g.VramBytes,
+		})
+	}
+	return out
+}
+
 // mapGPUVendor maps a vendor string to the proto enum.
 func mapGPUVendor(vendor string) pb.GPUVendor {
 	v := strings.ToLower(vendor)
@@ -2016,6 +2118,12 @@ func extractAuthToken(ctx context.Context) string {
 // SetPeerPool sets the peer pool for multi-backend support
 func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 	s.peerPool = pool
+}
+
+// SetStartTime wires the daemon's process start time so ListBackends can
+// report the local backend's uptime. Called once from DualServer setup.
+func (s *ContainerServer) SetStartTime(t time.Time) {
+	s.startTime = t
 }
 
 // SetOTelCollectorEndpoint wires the OTLP/HTTP URL of this daemon's

@@ -1,13 +1,24 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/footprintai/containarium/internal/auth"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-func TestBackendsHandler_ListBackends(t *testing.T) {
+// TestContainerServer_ListBackends exercises the proto-first ListBackends
+// RPC that replaced the hand-coded /v1/backends list handler (#354): the
+// local backend plus any tunnel peers, with health and type. The local
+// GetSystemInfo enrichment (OS / container count / GPUs) needs Incus, so a
+// nil manager here degrades to identity + health — which is exactly what
+// the method must return on a daemon that can't reach its manager.
+func TestContainerServer_ListBackends(t *testing.T) {
 	pool := NewPeerPool("local-spot", "", nil, "")
 	pool.mu.Lock()
 	pool.peers["tunnel-gpu"] = &PeerClient{
@@ -17,65 +28,33 @@ func TestBackendsHandler_ListBackends(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	// Simulate the handler logic (same as DualServer.backendsHandler)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		type backendInfo struct {
-			ID      string `json:"id"`
-			Type    string `json:"type"`
-			Healthy bool   `json:"healthy"`
-		}
-		var backends []backendInfo
-		backends = append(backends, backendInfo{
-			ID:      pool.LocalBackendID(),
-			Type:    "local",
-			Healthy: true,
-		})
-		for _, peer := range pool.Peers() {
-			backends = append(backends, backendInfo{
-				ID:      peer.ID,
-				Type:    "tunnel",
-				Healthy: peer.Healthy,
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"backends": backends})
-	})
+	s := &ContainerServer{peerPool: pool, startTime: time.Now().Add(-time.Minute)}
+	ctx := auth.ContextWithTestSubject(context.Background(), "ops", auth.RoleAdmin)
 
-	req := httptest.NewRequest("GET", "/v1/backends", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != 200 {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	resp, err := s.ListBackends(ctx, &pb.ListBackendsRequest{})
+	if err != nil {
+		t.Fatalf("ListBackends: %v", err)
 	}
-
-	var resp struct {
-		Backends []struct {
-			ID      string `json:"id"`
-			Type    string `json:"type"`
-			Healthy bool   `json:"healthy"`
-		} `json:"backends"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
 	if len(resp.Backends) != 2 {
 		t.Fatalf("expected 2 backends, got %d", len(resp.Backends))
 	}
 
-	// Local backend
-	if resp.Backends[0].ID != "local-spot" {
-		t.Errorf("expected local backend ID 'local-spot', got %q", resp.Backends[0].ID)
+	// Local backend is first, healthy, with uptime derived from startTime.
+	local := resp.Backends[0]
+	if local.Id != "local-spot" || local.Type != "local" {
+		t.Errorf("local backend wrong: id=%q type=%q", local.Id, local.Type)
 	}
-	if resp.Backends[0].Type != "local" {
-		t.Errorf("expected type 'local', got %q", resp.Backends[0].Type)
+	if !local.Healthy {
+		t.Error("local backend should be healthy")
+	}
+	if local.UptimeSeconds <= 0 {
+		t.Errorf("expected positive uptime, got %d", local.UptimeSeconds)
 	}
 
-	// Tunnel backend
+	// Tunnel peer present, typed, healthy.
 	found := false
 	for _, b := range resp.Backends {
-		if b.ID == "tunnel-gpu" {
+		if b.Id == "tunnel-gpu" {
 			found = true
 			if b.Type != "tunnel" {
 				t.Errorf("expected type 'tunnel', got %q", b.Type)
@@ -87,6 +66,16 @@ func TestBackendsHandler_ListBackends(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected to find tunnel-gpu in backends list")
+	}
+}
+
+// TestContainerServer_ListBackends_RequiresAdmin proves the admin gate: a
+// non-admin token never enumerates the fleet (topology is operator-grade).
+func TestContainerServer_ListBackends_RequiresAdmin(t *testing.T) {
+	s := &ContainerServer{peerPool: NewPeerPool("local-spot", "", nil, "")}
+	ctx := auth.ContextWithTestSubject(context.Background(), "tenant", "member")
+	if _, err := s.ListBackends(ctx, &pb.ListBackendsRequest{}); err == nil {
+		t.Fatal("expected RequireRole to reject a non-admin caller")
 	}
 }
 

@@ -397,19 +397,53 @@ enum BackendType {
   BACKEND_TYPE_TUNNEL = 2;
 }
 
-// BackendInfo contains information about a backend instance
+// BackendInfo describes one backend in the fleet — the local daemon
+// plus any tunnel-connected peers. Emitted by ListBackends (GET
+// /v1/backends). The field shape is the wire contract the CLI and MCP
+// clients consume; it supersedes the hand-coded /v1/backends handler
+// this RPC replaced (see #354).
 message BackendInfo {
-  // Unique backend identifier (e.g., "gcp-spot", "tunnel-node-a-gpu")
+  // Unique backend identifier (e.g., "gcp-spot", "tunnel-node-a").
   string id = 1;
 
-  // Backend type
-  BackendType type = 2;
+  // Backend kind: "local" for this daemon, "tunnel" for a peer.
+  string type = 2;
 
-  // Whether the backend is currently healthy
+  // Whether the backend is currently healthy / reachable.
   bool healthy = 3;
 
-  // Priority (lower = preferred, GCP=0, tunnel=10)
-  int32 priority = 4;
+  // Containarium daemon version running on this backend (e.g. "0.21.0").
+  string version = 4;
+
+  // Hostname of the backend.
+  string hostname = 5;
+
+  // Seconds this backend has been up (local backend only).
+  int64 uptime_seconds = 6;
+
+  // RFC3339 timestamp this backend was last seen (peers).
+  string last_seen_at = 7;
+
+  // Operating-system string of the backend.
+  string os = 8;
+
+  // Number of containers currently running on this backend.
+  int32 container_count = 9;
+
+  // GPUs present on this backend.
+  repeated BackendGPU gpus = 10;
+}
+
+// BackendGPU describes one GPU on a backend.
+message BackendGPU {
+  // GPU vendor string (e.g. "GPU_VENDOR_NVIDIA").
+  string vendor = 1;
+
+  // Human-readable GPU model name.
+  string model_name = 2;
+
+  // Total VRAM in bytes.
+  int64 vram_bytes = 3;
 }
 
 // ListBackendsRequest is the request to list available backends

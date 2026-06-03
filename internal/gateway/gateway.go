@@ -626,15 +626,23 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		log.Printf("Audit logs endpoint enabled at /v1/audit/logs")
 	}
 
-	// Backends endpoint — JWT-authenticated, same as /v1/containers et al.
-	// Previously left open with the comment "for web UI backend selector",
-	// but the web UI never actually called this endpoint, and an
-	// unauthenticated /v1/backends leaks fleet topology (peer IDs,
-	// hostnames, GPU inventory) to anyone who can reach the gateway.
+	// Backends endpoint. The LIST (GET /v1/backends) is now the proto-first
+	// ContainerService.ListBackends RPC — it flows through the grpc-gateway
+	// (corsHandler) like every other /v1/ route, so the wire shape is
+	// generated from BackendInfo and can't drift from the CLI / MCP / cloud
+	// consumers (#354, proto-first convention). We register the exact path
+	// explicitly so http.ServeMux does NOT 301-redirect it into the
+	// trailing-slash subtree below.
+	//
+	// The per-backend forward (GET /v1/backends/{id}/system-info) is still
+	// the hand-coded handler — it proxies to a specific peer rather than
+	// returning a generated message — mounted on the subtree only. Auth on
+	// the RPC path is the gRPC ListBackends admin check + JWT interceptor
+	// (RequireRole admin); the subtree keeps its own JWT middleware.
+	httpMux.Handle("/v1/backends", corsHandler)
 	if gs.backendsHandler != nil {
 		authed := gs.authMiddleware.HTTPMiddleware(http.HandlerFunc(gs.backendsHandler))
 		httpMux.Handle("/v1/backends/", authed)
-		httpMux.Handle("/v1/backends", authed)
 	}
 
 	// Sentinel-facing endpoints: /certs and /authorized-keys[/sentinel].

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -41,11 +40,9 @@ import (
 	"github.com/footprintai/containarium/pkg/core/network"
 	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
-	"github.com/footprintai/containarium/pkg/version"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // DualServerConfig holds configuration for the dual server
@@ -1282,8 +1279,11 @@ skipAppHosting:
 }
 
 // Start starts both gRPC and HTTP servers
-// backendsHandler returns an HTTP handler for the /v1/backends endpoint.
-// It also handles /v1/backends/{id}/system-info for per-backend system info.
+// backendsHandler serves /v1/backends/{id}/system-info — forwarding a
+// per-backend system-info request to a specific peer. The list
+// (GET /v1/backends) is no longer here: it is now the proto-first
+// ContainerService.ListBackends RPC served via the grpc-gateway (#354),
+// so this handler is mounted on the /v1/backends/ subtree only.
 //
 // Admin-only (Phase 1.4 / audit finding A-MED-4). The endpoint
 // discloses fleet topology — peer IDs, hostnames, OS versions,
@@ -1304,106 +1304,6 @@ func (ds *DualServer) backendsHandler() http.HandlerFunc {
 		if strings.Contains(path, "/system-info") {
 			backendID := strings.Split(path, "/")[0]
 			ds.handleBackendSystemInfo(w, r, backendID)
-			return
-		}
-
-		// /v1/backends — list all backends
-		if path == "" {
-			type gpuInfo struct {
-				Vendor    string `json:"vendor,omitempty"`
-				ModelName string `json:"modelName,omitempty"`
-				VRAMBytes int64  `json:"vramBytes,omitempty"`
-			}
-			type backendInfo struct {
-				ID             string    `json:"id"`
-				Type           string    `json:"type"`
-				Healthy        bool      `json:"healthy"`
-				Version        string    `json:"version,omitempty"`
-				Hostname       string    `json:"hostname,omitempty"`
-				UptimeSeconds  int64     `json:"uptimeSeconds,omitempty"`
-				LastSeenAt     string    `json:"lastSeenAt,omitempty"`
-				OS             string    `json:"os,omitempty"`
-				ContainerCount int32     `json:"containerCount"`
-				GPUs           []gpuInfo `json:"gpus,omitempty"`
-			}
-
-			var backends []backendInfo
-
-			if ds.peerPool != nil {
-				// Local backend info
-				hostname, _ := os.Hostname()
-				localInfo := backendInfo{
-					ID:            ds.peerPool.LocalBackendID(),
-					Type:          "local",
-					Healthy:       true,
-					Version:       version.GetVersion(),
-					Hostname:      hostname,
-					UptimeSeconds: int64(time.Since(ds.startTime).Seconds()),
-					LastSeenAt:    time.Now().UTC().Format(time.RFC3339),
-				}
-
-				// Get local system info for OS and container count
-				if ds.containerServer != nil {
-					sysResp, err := ds.containerServer.GetSystemInfo(context.Background(), &pb.GetSystemInfoRequest{})
-					if err == nil && sysResp.Info != nil {
-						localInfo.OS = sysResp.Info.Os
-						localInfo.ContainerCount = sysResp.Info.ContainersRunning
-						for _, g := range sysResp.Info.Gpus {
-							localInfo.GPUs = append(localInfo.GPUs, gpuInfo{
-								Vendor:    g.Vendor.String(),
-								ModelName: g.ModelName,
-								VRAMBytes: g.VramBytes,
-							})
-						}
-					}
-				}
-
-				backends = append(backends, localInfo)
-
-				// Peer backends — generate service token for peer API calls
-				serviceToken := ""
-				if ds.tokenManager != nil {
-					if t, err := ds.tokenManager.GenerateToken("_system", []string{"admin"}, 30*time.Second); err == nil {
-						serviceToken = t
-					}
-				}
-
-				for _, peer := range ds.peerPool.Peers() {
-					peerInfo := backendInfo{
-						ID:      peer.ID,
-						Type:    "tunnel",
-						Healthy: peer.Healthy,
-					}
-					if !peer.LastSeenAt.IsZero() {
-						peerInfo.LastSeenAt = peer.LastSeenAt.UTC().Format(time.RFC3339)
-					}
-					// Fetch live system info from peer using service token
-					if peer.Healthy && serviceToken != "" {
-						if body, err := peer.ForwardGetSystemInfo(serviceToken); err == nil {
-							var peerResp pb.GetSystemInfoResponse
-							if protojson.Unmarshal(body, &peerResp) == nil && peerResp.Info != nil {
-								peerInfo.Hostname = peerResp.Info.Hostname
-								peerInfo.OS = peerResp.Info.Os
-								peerInfo.Version = peerResp.Info.DaemonVersion // #354: per-backend version
-								peerInfo.ContainerCount = peerResp.Info.ContainersRunning
-								for _, g := range peerResp.Info.Gpus {
-									peerInfo.GPUs = append(peerInfo.GPUs, gpuInfo{
-										Vendor:    g.Vendor.String(),
-										ModelName: g.ModelName,
-										VRAMBytes: g.VramBytes,
-									})
-								}
-							}
-						}
-					}
-					backends = append(backends, peerInfo)
-				}
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"backends": backends,
-			})
 			return
 		}
 
@@ -1533,6 +1433,8 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		ds.peerPool.StartDiscovery(ctx)
 		ds.containerServer.SetPeerPool(ds.peerPool)
+		// Local-backend uptime for ListBackends (GET /v1/backends).
+		ds.containerServer.SetStartTime(ds.startTime)
 
 		// Migration runner: shells out to `incus snapshot/copy/...`.
 		// Only useful in conjunction with peerPool (you can't migrate

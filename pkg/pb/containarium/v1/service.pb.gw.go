@@ -1033,6 +1033,27 @@ func local_request_ContainerService_GetSystemInfo_0(ctx context.Context, marshal
 	return msg, metadata, err
 }
 
+func request_ContainerService_ListBackends_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListBackendsRequest
+		metadata runtime.ServerMetadata
+	)
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.ListBackends(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_ListBackends_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListBackendsRequest
+		metadata runtime.ServerMetadata
+	)
+	msg, err := server.ListBackends(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_ContainerService_GetLatestRelease_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq GetLatestReleaseRequest
@@ -2111,6 +2132,26 @@ func RegisterContainerServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_GetSystemInfo_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_ContainerService_ListBackends_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/ListBackends", runtime.WithHTTPPathPattern("/v1/backends"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_ListBackends_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_ListBackends_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_ContainerService_GetLatestRelease_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -2919,6 +2960,23 @@ func RegisterContainerServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_GetSystemInfo_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_ContainerService_ListBackends_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/ListBackends", runtime.WithHTTPPathPattern("/v1/backends"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_ListBackends_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_ListBackends_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_ContainerService_GetLatestRelease_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -3253,6 +3311,7 @@ var (
 	pattern_ContainerService_InstallStack_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "install-stack"}, ""))
 	pattern_ContainerService_ListStacks_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "stacks"}, ""))
 	pattern_ContainerService_GetSystemInfo_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "info"}, ""))
+	pattern_ContainerService_ListBackends_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "backends"}, ""))
 	pattern_ContainerService_GetLatestRelease_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "releases", "latest"}, ""))
 	pattern_ContainerService_ValidateGPU_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "validate-gpu"}, ""))
 	pattern_ContainerService_GetMonitoringInfo_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "monitoring"}, ""))
@@ -3298,6 +3357,7 @@ var (
 	forward_ContainerService_InstallStack_0           = runtime.ForwardResponseMessage
 	forward_ContainerService_ListStacks_0             = runtime.ForwardResponseMessage
 	forward_ContainerService_GetSystemInfo_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_ListBackends_0           = runtime.ForwardResponseMessage
 	forward_ContainerService_GetLatestRelease_0       = runtime.ForwardResponseMessage
 	forward_ContainerService_ValidateGPU_0            = runtime.ForwardResponseMessage
 	forward_ContainerService_GetMonitoringInfo_0      = runtime.ForwardResponseMessage

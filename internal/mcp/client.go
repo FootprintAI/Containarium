@@ -1066,11 +1066,12 @@ type GetSystemInfoResponse struct {
 	Info SystemInfo `json:"info"`
 }
 
-// ListBackendsResponse mirrors the hand-coded /v1/backends handler. The
-// shape isn't proto-generated, so JSON tag conventions follow what the
-// handler emits (camelCase, not snake_case). int64 fields here are
-// emitted as numbers (the handler is hand-coded, not grpc-gateway), so
-// no `,string` tags needed.
+// ListBackendsResponse mirrors the /v1/backends wire shape — now the
+// proto-first ContainerService.ListBackends RPC (BackendInfo), which
+// replaced the former hand-coded handler (#354). The MCP client keeps its
+// own struct rather than importing the generated type; the field tags are
+// the grpc-gateway camelCase the gateway emits, and int64 fields arrive as
+// numbers, so no `,string` tags are needed.
 type ListBackendsResponse struct {
 	Backends []Backend `json:"backends"`
 }

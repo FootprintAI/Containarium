@@ -617,6 +617,30 @@
         ]
       }
     },
+    "/v1/backends": {
+      "get": {
+        "summary": "List backends",
+        "description": "Lists every backend in the fleet (local daemon + tunnel peers) with health, version, OS, running container count, and GPU inventory. Admin-only — discloses fleet topology.",
+        "operationId": "ContainerService_ListBackends",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListBackendsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/containers": {
       "get": {
         "summary": "List all containers",
@@ -4559,6 +4583,77 @@
       "description": "- APP_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - APP_STATE_UPLOADING: Source code is being uploaded\n - APP_STATE_BUILDING: Container image is being built (using Podman)\n - APP_STATE_RUNNING: App is running and healthy\n - APP_STATE_STOPPED: App is stopped by user\n - APP_STATE_FAILED: Build or runtime failure\n - APP_STATE_RESTARTING: App is restarting",
       "title": "AppState represents the lifecycle state of an application"
     },
+    "BackendGPU": {
+      "type": "object",
+      "properties": {
+        "vendor": {
+          "type": "string",
+          "description": "GPU vendor string (e.g. \"GPU_VENDOR_NVIDIA\")."
+        },
+        "modelName": {
+          "type": "string",
+          "description": "Human-readable GPU model name."
+        },
+        "vramBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total VRAM in bytes."
+        }
+      },
+      "description": "BackendGPU describes one GPU on a backend."
+    },
+    "BackendInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique backend identifier (e.g., \"gcp-spot\", \"tunnel-node-a\")."
+        },
+        "type": {
+          "type": "string",
+          "description": "Backend kind: \"local\" for this daemon, \"tunnel\" for a peer."
+        },
+        "healthy": {
+          "type": "boolean",
+          "description": "Whether the backend is currently healthy / reachable."
+        },
+        "version": {
+          "type": "string",
+          "description": "Containarium daemon version running on this backend (e.g. \"0.21.0\")."
+        },
+        "hostname": {
+          "type": "string",
+          "description": "Hostname of the backend."
+        },
+        "uptimeSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Seconds this backend has been up (local backend only)."
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp this backend was last seen (peers)."
+        },
+        "os": {
+          "type": "string",
+          "description": "Operating-system string of the backend."
+        },
+        "containerCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of containers currently running on this backend."
+        },
+        "gpus": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BackendGPU"
+          },
+          "description": "GPUs present on this backend."
+        }
+      },
+      "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
+    },
     "BuildpackOptions": {
       "type": "object",
       "properties": {
@@ -6349,6 +6444,20 @@
           "title": "Total count"
         }
       }
+    },
+    "ListBackendsResponse": {
+      "type": "object",
+      "properties": {
+        "backends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BackendInfo"
+          },
+          "title": "List of available backends"
+        }
+      },
+      "title": "ListBackendsResponse is the response from listing backends"
     },
     "ListClamavReportsResponse": {
       "type": "object",
