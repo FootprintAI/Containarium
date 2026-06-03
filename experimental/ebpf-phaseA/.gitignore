@@ -1,0 +1,2 @@
+# Compiled BPF object — build on the backend, never commit.
+*.bpf.o
