@@ -31,6 +31,14 @@
 #   RUNNER_LABELS (optional) comma-separated runner labels; defaults
 #               to "containarium,ephemeral". Workflows target with
 #               `runs-on: [self-hosted, containarium, ephemeral]`.
+#   RUNNER_DNS  (optional) space-separated DNS server(s) to pin the box's
+#               resolver to, e.g. "8.8.8.8 8.8.4.4". Use when the box is
+#               handed a split-horizon / internal record for a host it
+#               must reach over public egress (e.g. a tenant box whose
+#               bridge DNS resolves the control plane to a stale internal
+#               IP). Unset (default) leaves the box's DNS untouched — the
+#               correct default for GHES / air-gapped runners that rely on
+#               their own internal resolver.
 #
 # Usage from outside the box:
 #
@@ -80,12 +88,45 @@ RUNNER_VERSION="${RUNNER_VERSION:-2.319.1}"
 RUNNER_USER="${RUNNER_USER:-ghrunner}"
 RUNNER_HOME="${RUNNER_HOME:-/opt/actions-runner}"
 
+RUNNER_DNS="${RUNNER_DNS:-}"
+
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64) RUNNER_ARCH=x64 ;;
   aarch64|arm64) RUNNER_ARCH=arm64 ;;
   *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
+
+# ---- optional: pin the box resolver (RUNNER_DNS) ----
+# Some environments hand the box a split-horizon / internal DNS record for a
+# host it actually has to reach over public egress — e.g. a Containarium
+# tenant box whose bridge resolver maps cloud.containarium.dev to a private
+# control-plane IP that goes stale after a control-plane redeploy, so
+# `containarium create` fails with curl exit 7 ("couldn't connect"). Pinning
+# a public resolver makes the box resolve such hosts to their public address
+# and reach them over its normal egress. Done before anything network-heavy
+# so the whole install uses the intended resolver. No-op when RUNNER_DNS is
+# unset (the right default for GHES / air-gapped runners).
+if [ -n "$RUNNER_DNS" ]; then
+  if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    mkdir -p /etc/systemd/resolved.conf.d
+    # Domains=~. routes ALL lookups to these servers, overriding the
+    # per-link DNS that DHCP set from the bridge.
+    cat > /etc/systemd/resolved.conf.d/zz-containarium-runner-dns.conf <<EOF
+[Resolve]
+DNS=${RUNNER_DNS}
+Domains=~.
+EOF
+    systemctl restart systemd-resolved
+  else
+    # No systemd-resolved (stub at 127.0.0.53) — write resolv.conf directly,
+    # replacing any managed symlink so our entries actually take effect.
+    rm -f /etc/resolv.conf
+    : > /etc/resolv.conf
+    for ns in $RUNNER_DNS; do echo "nameserver ${ns}" >> /etc/resolv.conf; done
+  fi
+  echo "Pinned box resolver to: ${RUNNER_DNS}"
+fi
 
 # ---- system deps ----
 # `sudo` is required so the runner user can be granted passwordless sudo
