@@ -224,10 +224,25 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}
 
 	if len(opts.SSHKeys) > 0 {
-		// Use the first SSH key for the jump server account
+		// Seed the jump-server account with the first key.
 		if err := CreateJumpServerAccount(opts.Username, opts.SSHKeys[0], opts.Verbose); err != nil {
 			_ = m.cleanup(containerName)
 			return nil, fmt.Errorf("failed to create jump server account: %w", err)
+		}
+		// Then authorize the REST of the keys host-side. CreateJumpServerAccount
+		// only seeds the host /home/<user>/.ssh/authorized_keys with SSHKeys[0];
+		// without this loop the remaining keys land in the CONTAINER's
+		// authorized_keys (addSSHKeys, step 7) but NOT in the host jump-user
+		// file that ServeAuthorizedKeys exposes and the sentinel syncs into
+		// sshpiper. A client using any key other than SSHKeys[0] is then
+		// rejected at the sentinel (publickey) even though the box would accept
+		// it — e.g. an automation/runner key that sorts after a registered key.
+		// Mirrors the seed-then-authorize-the-rest pattern in collaborator.go.
+		for _, key := range opts.SSHKeys[1:] {
+			if err := AddAuthorizedKey(opts.Username, key); err != nil {
+				_ = m.cleanup(containerName)
+				return nil, fmt.Errorf("failed to authorize additional jump-server ssh key: %w", err)
+			}
 		}
 	} else {
 		if opts.Verbose {
