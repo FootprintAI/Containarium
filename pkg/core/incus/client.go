@@ -262,7 +262,13 @@ func (r Role) IsCoreRole() bool {
 
 // ContainerInfo holds information about a container
 type ContainerInfo struct {
-	Name         string
+	Name string
+	// Username is the SSH login the daemon assigned to this container. It
+	// may differ from the requested name (e.g. a control plane that mints a
+	// generated username at create time), and it's what the daemon's SSH
+	// front routes by — so callers doing SSH/install must use this, not the
+	// requested name. Empty when the daemon doesn't report it.
+	Username     string
 	State        string
 	IPAddress    string
 	CPU          string

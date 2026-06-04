@@ -146,6 +146,14 @@ type RunnerStatus struct {
 	// got a name.
 	BoxID string
 
+	// SSHUser is the login the daemon assigned to the box (which can
+	// differ from Name when a control plane mints a generated username).
+	// It's the handle the box is actually reachable/addressable by — the
+	// SSH/install steps use it, and callers need it to clean up a box
+	// whose requested name doesn't resolve. Falls back to Name when the
+	// daemon doesn't report a distinct username.
+	SSHUser string
+
 	// State is one of: "provisioned" (full success — box up,
 	// service installed, runner registered), "registering"
 	// (install succeeded, GitHub poll timed out — usually
@@ -189,8 +197,12 @@ type BoxManager interface {
 
 	// Create provisions a new box with the given name. The
 	// implementation supplies whatever sensible defaults the
-	// caller doesn't override (CPU/mem/disk, image, etc.).
-	Create(ctx context.Context, name, sshKey string) (boxID string, err error)
+	// caller doesn't override (CPU/mem/disk, image, etc.). It
+	// returns the box ID and the daemon-assigned SSH username,
+	// which may differ from name (a control plane can mint a
+	// generated username) and is what subsequent SSH/install steps
+	// must use. username is empty when the daemon doesn't report one.
+	Create(ctx context.Context, name, sshKey string) (boxID, username string, err error)
 
 	// Delete tears down the box. force is the same semantics as
 	// `containarium delete --force`.
@@ -390,6 +402,16 @@ func Provision(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 func provisionOne(ctx context.Context, deps Deps, opts Options, name string) RunnerStatus {
 	st := RunnerStatus{Name: name}
 
+	// sshUser is the login the install step SSHes as. It defaults to the
+	// requested name (correct for OSS daemons, which use the name as the
+	// container username) but is overridden below by the daemon-assigned
+	// username from the create response when they differ: a control plane
+	// mints a generated username and its SSH front routes by THAT, not the
+	// requested name — so SSHing as name would always fail with
+	// [none publickey] and orphan the box. (#482)
+	sshUser := name
+	st.SSHUser = name
+
 	// Step 1+2: idempotent box create.
 	createCtx, cancelCreate := context.WithTimeout(ctx, opts.BoxCreateTimeout)
 	defer cancelCreate()
@@ -403,13 +425,17 @@ func provisionOne(ctx context.Context, deps Deps, opts Options, name string) Run
 	if exists {
 		st.BoxID = name // best-effort, the daemon's canonical ID may differ but matches in practice
 	} else {
-		boxID, err := deps.Boxes.Create(createCtx, name, opts.SSHKey)
+		boxID, username, err := deps.Boxes.Create(createCtx, name, opts.SSHKey)
 		if err != nil {
 			st.State = "failed"
 			st.LastError = fmt.Sprintf("create box: %v", err)
 			return st
 		}
 		st.BoxID = boxID
+		if username != "" {
+			sshUser = username
+			st.SSHUser = username
+		}
 	}
 
 	// Step 3+4: idempotent runner install.
@@ -420,7 +446,7 @@ func provisionOne(ctx context.Context, deps Deps, opts Options, name string) Run
 	// window — a fresh box is briefly unreachable (publickey/dial) before
 	// its key is live in sshpiper. Bounded by installCtx (InstallTimeout)
 	// and DefaultSSHReadyTimeout. (#475)
-	installed, err := waitForSSHInstalled(installCtx, deps.SSH, name, DefaultSSHReadyTimeout)
+	installed, err := waitForSSHInstalled(installCtx, deps.SSH, sshUser, DefaultSSHReadyTimeout)
 	if err != nil {
 		st.State = "failed"
 		st.LastError = fmt.Sprintf("check install state: %v", err)
@@ -439,7 +465,7 @@ func provisionOne(ctx context.Context, deps Deps, opts Options, name string) Run
 			"RUNNER_NAME":   name,
 			"RUNNER_LABELS": opts.Labels,
 		}
-		if err := deps.SSH.Install(installCtx, name, InstallScript, env); err != nil {
+		if err := deps.SSH.Install(installCtx, sshUser, InstallScript, env); err != nil {
 			st.State = "failed"
 			st.LastError = fmt.Sprintf("install runner: %v", err)
 			return st

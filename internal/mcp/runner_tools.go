@@ -186,7 +186,7 @@ func (a *mcpDaemonAPI) DeleteContainer(username string, force bool) error {
 // internal/runner with the same orchestrator.
 func buildMCPRunnerDeps(client *Client, sentinel, sshKeyPath string, withSSH bool) (runner.Deps, string, error) {
 	api := &mcpDaemonAPI{c: client}
-	creator := func(_ context.Context, name, sshPubKey string) (string, error) {
+	creator := func(_ context.Context, name, sshPubKey string) (string, string, error) {
 		req := CreateContainerRequest{
 			Username: name,
 			Resources: &ResourceLimits{
@@ -200,9 +200,11 @@ func buildMCPRunnerDeps(client *Client, sentinel, sshKeyPath string, withSSH boo
 		}
 		resp, err := client.CreateContainer(req)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return resp.Container.Name, nil
+		// Return the daemon-assigned username (≠ requested name when a
+		// control plane mints one) so the install step SSHes as it. (#482)
+		return resp.Container.Name, resp.Container.Username, nil
 	}
 	boxes := runner.NewDaemonBoxManager(api, creator)
 

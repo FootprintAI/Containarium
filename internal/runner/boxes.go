@@ -23,10 +23,16 @@ type DaemonAPI interface {
 // DaemonCreator narrows down "the bit of the daemon client that
 // makes a new container." Real implementations have richer
 // signatures; we just need name + ssh key + a return of the box
-// ID. Done as a function shape so callers can curry their full
-// create call (with all the labels/cpu/etc baked in) into
-// something this package can drive.
-type DaemonCreator func(ctx context.Context, name, sshKey string) (boxID string, err error)
+// ID and the daemon-assigned SSH username. Done as a function shape
+// so callers can curry their full create call (with all the
+// labels/cpu/etc baked in) into something this package can drive.
+//
+// username is the login the daemon actually assigned to the box (which
+// may differ from the requested name — a control plane can mint a
+// generated username at create); it is what the daemon's SSH front
+// routes by, so the install step must SSH as it, not as name. Empty when
+// the daemon doesn't report one (then callers fall back to name).
+type DaemonCreator func(ctx context.Context, name, sshKey string) (boxID, username string, err error)
 
 // NewDaemonBoxManager wraps a (DaemonAPI, DaemonCreator) pair as
 // a BoxManager. The split lets callers reuse their existing
@@ -63,7 +69,7 @@ func (m *daemonBoxManager) Exists(_ context.Context, name string) (bool, error) 
 	return true, nil
 }
 
-func (m *daemonBoxManager) Create(ctx context.Context, name, sshKey string) (string, error) {
+func (m *daemonBoxManager) Create(ctx context.Context, name, sshKey string) (boxID, username string, err error) {
 	return m.create(ctx, name, sshKey)
 }
 
