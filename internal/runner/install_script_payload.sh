@@ -88,9 +88,17 @@ case "$ARCH" in
 esac
 
 # ---- system deps ----
+# `sudo` is required so the runner user can be granted passwordless sudo
+# (below): both FootprintAI/containarium-run (its `install-cli.sh | sudo
+# bash` step) and a workflow's own dependency-install steps shell out to
+# sudo, and a bare ubuntu/24.04 box may not ship it. We deliberately do NOT
+# pre-install repo-specific job tools (rsync, yq, ...) here — once the runner
+# user has sudo, the *workflow* installs whatever it needs, keeping the
+# runner image generic and repo-agnostic. jq stays because the respawn loop
+# itself needs it (to parse the registration-token response) before any job.
 apt-get update
 apt-get install -y --no-install-recommends \
-  ca-certificates curl jq git build-essential libicu-dev
+  ca-certificates curl jq git build-essential libicu-dev sudo
 
 # ---- toolchains ----
 # Go (matches Containarium repo's go.mod pinning convention; bumps are
@@ -132,6 +140,18 @@ fi
 if ! id "$RUNNER_USER" >/dev/null 2>&1; then
   useradd -m -d "$RUNNER_HOME" -s /bin/bash "$RUNNER_USER"
 fi
+
+# Passwordless sudo for the runner user. The actions-runner agent runs as
+# $RUNNER_USER (systemd User= below), and CI job steps frequently shell out
+# to `sudo` (the dogfood workflow's prerequisite step is the canonical
+# example). Without this they fail with "sudo: a password is required"
+# because an Actions step has no controlling TTY. Validate with `visudo -c`
+# so a malformed drop-in can never lock sudo out entirely.
+cat > "/etc/sudoers.d/90-${RUNNER_USER}" <<EOF
+${RUNNER_USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+chmod 0440 "/etc/sudoers.d/90-${RUNNER_USER}"
+visudo -cf "/etc/sudoers.d/90-${RUNNER_USER}"
 
 if [ ! -x "$RUNNER_HOME/run.sh" ]; then
   mkdir -p "$RUNNER_HOME"
@@ -189,6 +209,16 @@ if [ -z "$REG_TOKEN" ] || [ "$REG_TOKEN" = "null" ]; then
   echo "GH_API_BASE in use: ${GH_API_BASE}" >&2
   exit 1
 fi
+
+# Clear any stale local registration left by a previous ephemeral job whose
+# run.sh exited UNcleanly (box restart, OOM-kill, SIGKILL): config.sh aborts
+# with "Cannot configure ... already configured" whenever .runner exists, and
+# --replace does NOT bypass that local guard — it only resolves a server-side
+# name collision. Without this cleanup the service crash-loops forever on
+# "already configured" and never reaches run.sh, so the runner silently drops
+# offline and CI jobs queue indefinitely. Removing these is safe: --replace
+# below re-claims the name on GitHub's side.
+rm -f .runner .credentials .credentials_rsaparams
 
 # Register, run ONE job, exit. --replace overwrites any stale
 # registration with the same name. --ephemeral makes run.sh exit
