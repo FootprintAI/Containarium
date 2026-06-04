@@ -215,6 +215,7 @@ type systemInfo struct {
 func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
 		Name:                 c.Name,
+		Username:             c.Username,
 		State:                c.State,
 		Labels:               c.Labels,
 		MonitoringEnabled:    c.MonitoringEnabled,

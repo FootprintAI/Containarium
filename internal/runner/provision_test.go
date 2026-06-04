@@ -13,12 +13,16 @@ import (
 // fakeBoxes implements BoxManager. Tracks calls so tests can
 // assert on what the orchestrator did.
 type fakeBoxes struct {
-	mu       sync.Mutex
-	existing map[string]bool // box name -> already present
-	created  []string
-	deleted  []string
-	listOut  []string
+	mu         sync.Mutex
+	existing   map[string]bool // box name -> already present
+	created    []string
+	deleted    []string
+	listOut    []string
 	failCreate map[string]error
+	// assignUsername maps a requested name → the username the daemon
+	// "assigns" at create (≠ name), to exercise the control-plane case
+	// where SSH must target the assigned username, not the request. (#482)
+	assignUsername map[string]string
 }
 
 func (f *fakeBoxes) Exists(_ context.Context, name string) (bool, error) {
@@ -27,15 +31,22 @@ func (f *fakeBoxes) Exists(_ context.Context, name string) (bool, error) {
 	return f.existing[name], nil
 }
 
-func (f *fakeBoxes) Create(_ context.Context, name, _ string) (string, error) {
+func (f *fakeBoxes) Create(_ context.Context, name, _ string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err, ok := f.failCreate[name]; ok {
-		return "", err
+		return "", "", err
 	}
 	f.created = append(f.created, name)
 	f.existing[name] = true
-	return name, nil
+	// Default: the daemon uses the requested name as the username (OSS
+	// daemon behaviour). A test can override via assignUsername to model a
+	// control plane that mints a generated username at create. (#482)
+	username := name
+	if u, ok := f.assignUsername[name]; ok {
+		username = u
+	}
+	return name, username, nil
 }
 
 func (f *fakeBoxes) Delete(_ context.Context, name string, _ bool) error {
@@ -54,11 +65,11 @@ func (f *fakeBoxes) List(_ context.Context) ([]string, error) {
 // got an install call and lets tests pre-seed "already installed"
 // status to exercise the idempotent path.
 type fakeInstaller struct {
-	mu             sync.Mutex
+	mu               sync.Mutex
 	alreadyInstalled map[string]bool
-	installed      []string
-	failInstall    map[string]error
-	gotEnv         map[string]map[string]string
+	installed        []string
+	failInstall      map[string]error
+	gotEnv           map[string]map[string]string
 }
 
 func (f *fakeInstaller) IsInstalled(_ context.Context, name string) (bool, error) {
@@ -132,8 +143,8 @@ func (f *fakeGitHub) RemoveRunner(_ context.Context, _, _ string, id int64) erro
 // fakeClock advances on each Sleep so tests don't actually pause
 // and the registration loop hits its deadline deterministically.
 type fakeClock struct {
-	now      time.Time
-	sleeps   []time.Duration
+	now    time.Time
+	sleeps []time.Duration
 }
 
 func newFakeClock() *fakeClock {
@@ -293,6 +304,70 @@ func TestProvisionHappyPath(t *testing.T) {
 	}
 	if installer.gotEnv["ci-runner-2"]["RUNNER_NAME"] != "ci-runner-2" {
 		t.Errorf("RUNNER_NAME mismatch: %+v", installer.gotEnv["ci-runner-2"])
+	}
+}
+
+// TestProvision_UsesAssignedUsernameForSSH_482 verifies that when the
+// daemon assigns a container username different from the requested name
+// (a control plane minting a generated username at create), the SSH
+// install step targets the ASSIGNED username — not the requested name.
+// SSHing as the requested name fails [none publickey] and orphans the
+// box. RUNNER_NAME and the GitHub-registration poll keep the requested
+// name. (#482)
+func TestProvision_UsesAssignedUsernameForSSH_482(t *testing.T) {
+	const requested = "ci-runner-1"
+	const assigned = "assigned-7f3a2b" // daemon-minted username, ≠ requested
+	boxes := &fakeBoxes{
+		existing:       map[string]bool{},
+		assignUsername: map[string]string{requested: assigned},
+	}
+	installer := &fakeInstaller{alreadyInstalled: map[string]bool{}}
+	// Registration polls by the requested name (the GitHub runner name).
+	gh := &fakeGitHub{registerOnAttempt: map[string]int{requested: 1}}
+	clock := newFakeClock()
+
+	res, err := Provision(context.Background(), Deps{
+		Boxes: boxes, SSH: installer, GitHub: gh, Clock: clock,
+	}, Options{
+		Repo:       "footprintai/containarium",
+		PAT:        "ghp_test",
+		Count:      1,
+		NamePrefix: "ci-runner",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Runners) != 1 {
+		t.Fatalf("expected 1 runner, got %d", len(res.Runners))
+	}
+	r := res.Runners[0]
+	if r.State != "provisioned" {
+		t.Fatalf("expected provisioned, got %s (err=%s)", r.State, r.LastError)
+	}
+
+	// The whole bug: the install must run against the ASSIGNED username,
+	// never the requested name.
+	if len(installer.installed) != 1 || installer.installed[0] != assigned {
+		t.Fatalf("install target = %v, want SSH as assigned username %q (not requested %q)",
+			installer.installed, assigned, requested)
+	}
+	if _, leaked := installer.gotEnv[requested]; leaked {
+		t.Errorf("install was attempted against the requested name %q — must never SSH as it", requested)
+	}
+
+	// Identity surfaced for cleanup: SSHUser is the assigned username; the
+	// runner is still named after the request.
+	if r.SSHUser != assigned {
+		t.Errorf("RunnerStatus.SSHUser = %q, want %q", r.SSHUser, assigned)
+	}
+	if r.Name != requested {
+		t.Errorf("RunnerStatus.Name = %q, want %q", r.Name, requested)
+	}
+
+	// RUNNER_NAME (the GitHub runner name) keeps the requested name even
+	// though SSH targeted the assigned username.
+	if got := installer.gotEnv[assigned]["RUNNER_NAME"]; got != requested {
+		t.Errorf("RUNNER_NAME env = %q, want %q", got, requested)
 	}
 }
 
@@ -597,7 +672,7 @@ func TestRemove_DeregistersAndDeletes(t *testing.T) {
 func TestRemove_GitHubFailureDoesNotBlockBoxDelete(t *testing.T) {
 	boxes := &fakeBoxes{existing: map[string]bool{"ci-runner-1": true}}
 	gh := &fakeGitHub{
-		listed:  []string{"ci-runner-1"},
+		listed:    []string{"ci-runner-1"},
 		removeErr: errors.New("github 500"),
 	}
 

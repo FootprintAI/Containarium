@@ -365,7 +365,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			get:    httpClient.GetContainer,
 			delete: httpClient.DeleteContainer,
 		}
-		creator := func(_ context.Context, name, sshKey string) (string, error) {
+		creator := func(_ context.Context, name, sshKey string) (string, string, error) {
 			info, err := httpClient.CreateContainer(
 				name,
 				"images:ubuntu/24.04",
@@ -383,9 +383,9 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				client.GitSourceOpts{}, // no git-source for runner boxes
 			)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
-			return info.Name, nil
+			return info.Name, info.Username, nil
 		}
 		return api, creator, nil
 	}
@@ -399,7 +399,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 		get:    grpcClient.GetContainer,
 		delete: grpcClient.DeleteContainer,
 	}
-	creator := func(_ context.Context, name, sshKey string) (string, error) {
+	creator := func(_ context.Context, name, sshKey string) (string, string, error) {
 		info, err := grpcClient.CreateContainer(
 			name,
 			"images:ubuntu/24.04",
@@ -417,9 +417,9 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			client.GitSourceOpts{}, // no git-source for runner boxes
 		)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return info.Name, nil
+		return info.Name, info.Username, nil
 	}
 	return api, creator, nil
 }

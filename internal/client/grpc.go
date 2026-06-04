@@ -114,6 +114,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 	for _, container := range resp.Containers {
 		info := incus.ContainerInfo{
 			Name:                 container.Name,
+			Username:             container.Username,
 			State:                container.State.String(),
 			MonitoringEnabled:    container.MonitoringEnabled,
 			AutoSleepEnabled:     container.AutoSleepEnabled,
@@ -177,8 +178,9 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:  container.Name,
-		State: container.State.String(),
+		Name:     container.Name,
+		Username: container.Username,
+		State:    container.State.String(),
 	}
 
 	if container.Network != nil {
@@ -394,6 +396,7 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	container := resp.Container
 	info := &incus.ContainerInfo{
 		Name:                 container.Name,
+		Username:             container.Username,
 		State:                container.State.String(),
 		MonitoringEnabled:    container.MonitoringEnabled,
 		AutoSleepEnabled:     container.AutoSleepEnabled,
