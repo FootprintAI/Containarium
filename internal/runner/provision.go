@@ -29,6 +29,55 @@ const DefaultBoxCreateTimeout = 5 * time.Minute
 // over a slow link. 10 min is "generous-but-bounded".
 const DefaultInstallTimeout = 10 * time.Minute
 
+// DefaultSSHReadyTimeout bounds how long provision waits for a freshly-
+// created box to become reachable via the sentinel before the first
+// install-state probe. A new box isn't SSH-able the instant it reaches
+// RUNNING: its sshd has to come up AND the sentinel keysync has to
+// propagate the box's host-side authorized_keys into sshpiper's per-box
+// gate — a periodic poll that can take a couple of minutes. Until then
+// the probe is rejected publickey / dial-refused, which is transient, not
+// a real failure. Comfortably over the observed keysync interval. (#475)
+const DefaultSSHReadyTimeout = 5 * time.Minute
+
+// sshProbeInitialBackoff is the first inter-probe wait in
+// waitForSSHInstalled; it doubles up to sshProbeMaxBackoff. A package var
+// so tests can shrink it to keep the retry loop instant.
+var sshProbeInitialBackoff = 3 * time.Second
+
+const sshProbeMaxBackoff = 15 * time.Second
+
+// waitForSSHInstalled retries the install-state probe until the box is
+// reachable via the sentinel (sshd up + keysync done) or readyTimeout /
+// ctx expires. A freshly-created box's first probes fail publickey/dial;
+// those are transient here, so we back off and retry rather than failing
+// the whole provision on the first miss. Returns IsInstalled's result once
+// SSH succeeds. (#475)
+func waitForSSHInstalled(ctx context.Context, ssh RunnerInstaller, name string, readyTimeout time.Duration) (bool, error) {
+	deadline := time.Now().Add(readyTimeout)
+	backoff := sshProbeInitialBackoff
+	var lastErr error
+	for {
+		installed, err := ssh.IsInstalled(ctx, name)
+		if err == nil {
+			return installed, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return false, fmt.Errorf("box not reachable via sentinel within %s (sshd/keysync not ready): %w", readyTimeout, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("box not reachable via sentinel: %w", lastErr)
+		case <-time.After(backoff):
+		}
+		if backoff < sshProbeMaxBackoff {
+			if backoff *= 2; backoff > sshProbeMaxBackoff {
+				backoff = sshProbeMaxBackoff
+			}
+		}
+	}
+}
+
 // DefaultRegistrationTimeout caps the post-install poll waiting
 // for the runner to appear in GitHub's runners list. systemd
 // usually starts the service within a couple of seconds; we give
@@ -78,9 +127,9 @@ type Options struct {
 
 	// BoxCreateTimeout / InstallTimeout / RegistrationTimeout are
 	// per-step deadlines. Zero falls back to the Default* values.
-	BoxCreateTimeout       time.Duration
-	InstallTimeout         time.Duration
-	RegistrationTimeout    time.Duration
+	BoxCreateTimeout    time.Duration
+	InstallTimeout      time.Duration
+	RegistrationTimeout time.Duration
 }
 
 // RunnerStatus is the per-runner outcome shape returned by
@@ -123,8 +172,8 @@ type RunnerStatus struct {
 // have to inspect the error to find the partial state, which is
 // the same dynamic-typing footgun CLAUDE.md warns about.
 type Result struct {
-	Runners         []RunnerStatus
-	PartialFailure  bool
+	Runners        []RunnerStatus
+	PartialFailure bool
 }
 
 // BoxManager abstracts the create/exists/delete operations on
@@ -213,10 +262,10 @@ func (realClock) Sleep(d time.Duration) { time.Sleep(d) }
 // tests can build a fully-wired dependency graph in one place
 // and the function signature stays narrow.
 type Deps struct {
-	Boxes   BoxManager
-	SSH     RunnerInstaller
-	GitHub  GitHubAPI
-	Clock   Clock
+	Boxes  BoxManager
+	SSH    RunnerInstaller
+	GitHub GitHubAPI
+	Clock  Clock
 }
 
 // repoPattern matches GitHub's "owner/repo" shape. Owner and repo
@@ -367,7 +416,11 @@ func provisionOne(ctx context.Context, deps Deps, opts Options, name string) Run
 	installCtx, cancelInstall := context.WithTimeout(ctx, opts.InstallTimeout)
 	defer cancelInstall()
 
-	installed, err := deps.SSH.IsInstalled(installCtx, name)
+	// Retry the first probe across the sshd-startup + sentinel-keysync
+	// window — a fresh box is briefly unreachable (publickey/dial) before
+	// its key is live in sshpiper. Bounded by installCtx (InstallTimeout)
+	// and DefaultSSHReadyTimeout. (#475)
+	installed, err := waitForSSHInstalled(installCtx, deps.SSH, name, DefaultSSHReadyTimeout)
 	if err != nil {
 		st.State = "failed"
 		st.LastError = fmt.Sprintf("check install state: %v", err)
