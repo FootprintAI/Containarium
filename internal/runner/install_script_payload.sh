@@ -17,8 +17,15 @@
 #   GH_PAT      personal access token with `repo` scope; used to mint
 #               short-lived runner-registration tokens at the start of
 #               each loop iteration. Pick from
-#               https://github.com/settings/tokens (classic) or App
+#               ${GH_BASE_URL}/settings/tokens (classic) or App
 #               installation tokens.
+#   GH_BASE_URL (optional) base URL of the GitHub server. Defaults to
+#               https://github.com. Set this to your GHES URL for
+#               GitHub Enterprise Server deployments, e.g.
+#               https://github.your-company.internal. The API URL is
+#               derived from this (api.github.com for github.com,
+#               ${GH_BASE_URL}/api/v3 for GHES). See
+#               docs/GHES.md inside the air-gapped install bundle.
 #   RUNNER_NAME (optional) name for this runner; defaults to the box
 #               hostname. Visible in GitHub's Actions → Runners list.
 #   RUNNER_LABELS (optional) comma-separated runner labels; defaults
@@ -31,6 +38,14 @@
 #   ssh runner-1 'curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/runner/install.sh \
 #     | sudo GH_REPO=FootprintAI/Containarium-cloud GH_PAT=ghp_xxx bash'
 #
+# Against GitHub Enterprise Server:
+#
+#   ssh runner-1 'sudo \
+#     GH_REPO=org/repo \
+#     GH_PAT=ghp_xxx \
+#     GH_BASE_URL=https://github.your-company.internal \
+#     ./hacks/runner/install.sh'
+#
 # After this runs, the runner registers itself within ~30s and starts
 # accepting jobs. Verify at
 # https://github.com/<owner>/<repo>/settings/actions/runners.
@@ -40,6 +55,24 @@ set -euo pipefail
 # ---- input validation ----
 : "${GH_REPO:?GH_REPO is required (org/repo)}"
 : "${GH_PAT:?GH_PAT is required (PAT with repo scope)}"
+
+# GH_BASE_URL — the GitHub server URL. Defaults to github.com; set to
+# your GHES URL for on-prem deployments (e.g.
+# https://github.your-company.internal). Added per
+# prd/cloud/air-gapped-install-bundle.md (E3a §"GHES support").
+GH_BASE_URL="${GH_BASE_URL:-https://github.com}"
+
+# Strip any trailing slash so downstream concatenation is consistent
+# regardless of whether the operator typed it with or without.
+GH_BASE_URL="${GH_BASE_URL%/}"
+
+# Derive the API base URL. github.com hosts the API at the separate
+# api.github.com hostname; GHES collapses both under one host at /api/v3.
+if [ "$GH_BASE_URL" = "https://github.com" ]; then
+  GH_API_BASE="https://api.github.com"
+else
+  GH_API_BASE="${GH_BASE_URL}/api/v3"
+fi
 
 RUNNER_NAME="${RUNNER_NAME:-$(hostname -s)}"
 RUNNER_LABELS="${RUNNER_LABELS:-containarium,ephemeral}"
@@ -83,10 +116,16 @@ if ! command -v buf >/dev/null 2>&1; then
     "github.com/bufbuild/buf/cmd/buf@v${BUF_VERSION}"
 fi
 
-# golangci-lint v2 (latest minor; pin if reproducibility matters)
+# golangci-lint v2 — install via `go install` from the module proxy, NOT the
+# upstream curl|sh install.sh. That script's tarball download intermittently
+# fails its OWN sha256 verify ("hash_sha256_verify … did not verify"), which
+# under `set -e` aborts the entire runner install before the actions-runner
+# is even set up. `go install` has no tarball/checksum step. Pin for
+# reproducibility; mirrors the buf install above.
+GOLANGCI_VERSION="${GOLANGCI_VERSION:-2.12.2}"
 if ! command -v golangci-lint >/dev/null 2>&1; then
-  curl -fsSL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-    | sh -s -- -b /usr/local/bin
+  GOBIN=/usr/local/bin /usr/local/go/bin/go install \
+    "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${GOLANGCI_VERSION}"
 fi
 
 # ---- runner user + binary ----
@@ -109,11 +148,19 @@ fi
 cat > /etc/containarium-runner.env <<EOF
 GH_REPO=${GH_REPO}
 GH_PAT=${GH_PAT}
+GH_BASE_URL=${GH_BASE_URL}
+GH_API_BASE=${GH_API_BASE}
 RUNNER_NAME=${RUNNER_NAME}
 RUNNER_LABELS=${RUNNER_LABELS}
 RUNNER_HOME=${RUNNER_HOME}
 EOF
 chmod 600 /etc/containarium-runner.env
+# The respawn loop runs as $RUNNER_USER (systemd `User=` below) and `source`s
+# this file, so it must be readable by that user — not just root. Owning it by
+# $RUNNER_USER with mode 600 keeps the PAT unreadable to everyone else while
+# letting the loop read it. Without this the service crash-loops on
+# "source /etc/containarium-runner.env: Permission denied".
+chown "$RUNNER_USER:$RUNNER_USER" /etc/containarium-runner.env
 
 # ---- run-loop script ----
 install -m 0755 /dev/stdin /usr/local/bin/containarium-runner-loop <<'EOF'
@@ -124,15 +171,22 @@ source /etc/containarium-runner.env
 
 cd "$RUNNER_HOME"
 
+# GH_API_BASE and GH_BASE_URL come from /etc/containarium-runner.env;
+# they default to github.com / api.github.com when not set (back-compat
+# for old env files written before GHES support landed).
+GH_API_BASE="${GH_API_BASE:-https://api.github.com}"
+GH_BASE_URL="${GH_BASE_URL:-https://github.com}"
+
 # Mint a short-lived runner-registration token (valid ~1h).
 REG_TOKEN=$(curl -sX POST \
   -H "Authorization: token $GH_PAT" \
   -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/${GH_REPO}/actions/runners/registration-token" \
+  "${GH_API_BASE}/repos/${GH_REPO}/actions/runners/registration-token" \
   | jq -r '.token')
 
 if [ -z "$REG_TOKEN" ] || [ "$REG_TOKEN" = "null" ]; then
   echo "Failed to mint registration token — check GH_PAT scope (needs 'repo')" >&2
+  echo "GH_API_BASE in use: ${GH_API_BASE}" >&2
   exit 1
 fi
 
@@ -140,7 +194,7 @@ fi
 # registration with the same name. --ephemeral makes run.sh exit
 # after the first job completes (success or failure).
 ./config.sh \
-  --url "https://github.com/${GH_REPO}" \
+  --url "${GH_BASE_URL}/${GH_REPO}" \
   --token "$REG_TOKEN" \
   --name "$RUNNER_NAME" \
   --labels "$RUNNER_LABELS" \
@@ -180,7 +234,8 @@ systemctl enable --now containarium-runner.service
 echo
 echo "================================================================"
 echo "  Runner '${RUNNER_NAME}' is registering with ${GH_REPO}."
-echo "  Verify at: https://github.com/${GH_REPO}/settings/actions/runners"
+echo "  GitHub server: ${GH_BASE_URL}"
+echo "  Verify at: ${GH_BASE_URL}/${GH_REPO}/settings/actions/runners"
 echo
 echo "  Service: containarium-runner.service"
 echo "  Logs:    journalctl -u containarium-runner -f"

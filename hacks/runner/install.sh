@@ -116,10 +116,16 @@ if ! command -v buf >/dev/null 2>&1; then
     "github.com/bufbuild/buf/cmd/buf@v${BUF_VERSION}"
 fi
 
-# golangci-lint v2 (latest minor; pin if reproducibility matters)
+# golangci-lint v2 — install via `go install` from the module proxy, NOT the
+# upstream curl|sh install.sh. That script's tarball download intermittently
+# fails its OWN sha256 verify ("hash_sha256_verify … did not verify"), which
+# under `set -e` aborts the entire runner install before the actions-runner
+# is even set up. `go install` has no tarball/checksum step. Pin for
+# reproducibility; mirrors the buf install above.
+GOLANGCI_VERSION="${GOLANGCI_VERSION:-2.12.2}"
 if ! command -v golangci-lint >/dev/null 2>&1; then
-  curl -fsSL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-    | sh -s -- -b /usr/local/bin
+  GOBIN=/usr/local/bin /usr/local/go/bin/go install \
+    "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${GOLANGCI_VERSION}"
 fi
 
 # ---- runner user + binary ----
@@ -149,6 +155,12 @@ RUNNER_LABELS=${RUNNER_LABELS}
 RUNNER_HOME=${RUNNER_HOME}
 EOF
 chmod 600 /etc/containarium-runner.env
+# The respawn loop runs as $RUNNER_USER (systemd `User=` below) and `source`s
+# this file, so it must be readable by that user — not just root. Owning it by
+# $RUNNER_USER with mode 600 keeps the PAT unreadable to everyone else while
+# letting the loop read it. Without this the service crash-loops on
+# "source /etc/containarium-runner.env: Permission denied".
+chown "$RUNNER_USER:$RUNNER_USER" /etc/containarium-runner.env
 
 # ---- run-loop script ----
 install -m 0755 /dev/stdin /usr/local/bin/containarium-runner-loop <<'EOF'
