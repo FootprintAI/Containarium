@@ -130,6 +130,17 @@ type Options struct {
 	BoxCreateTimeout    time.Duration
 	InstallTimeout      time.Duration
 	RegistrationTimeout time.Duration
+
+	// MaxTotal is the system-wide ceiling on how many runner boxes
+	// (names matching NamePrefix) may exist at once, across every
+	// caller. Provision counts the live fleet and creates at most
+	// (MaxTotal - live) net-new boxes; the remainder of a request is
+	// DEFERRED (returned as "queued" rows, see Result.Deferred) rather
+	// than failed — the jobs wait in GitHub's queue until an ephemeral
+	// runner frees a slot. Zero falls back to MaxRunnersTotal() (env
+	// MAX_RUNNERS_TOTAL or DefaultMaxRunnersTotal). Distinct from
+	// MaxRunnerCount, which bounds a single call's Count.
+	MaxTotal int
 }
 
 // RunnerStatus is the per-runner outcome shape returned by
@@ -174,6 +185,15 @@ type RunnerStatus struct {
 type Result struct {
 	Runners        []RunnerStatus
 	PartialFailure bool
+
+	// Deferred is how many of the requested runners were NOT created
+	// because doing so would exceed Options.MaxTotal. These appear in
+	// Runners with State "queued". Deferral is backpressure, not
+	// failure: it never sets PartialFailure and Provision returns a
+	// nil error. The deferred jobs wait in GitHub's own queue until an
+	// ephemeral runner finishes and a `runner reconcile` tick (or the
+	// next provision call) tops the pool back up.
+	Deferred int
 }
 
 // BoxManager abstracts the create/exists/delete operations on
@@ -321,6 +341,9 @@ func applyDefaults(opts Options) Options {
 	if opts.RegistrationTimeout == 0 {
 		opts.RegistrationTimeout = DefaultRegistrationTimeout
 	}
+	if opts.MaxTotal <= 0 {
+		opts.MaxTotal = MaxRunnersTotal()
+	}
 	return opts
 }
 
@@ -371,8 +394,29 @@ func Provision(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 		Runners: make([]RunnerStatus, 0, opts.Count),
 	}
 
+	// Enforce the system-wide cap. Count the live runner fleet (boxes
+	// matching NamePrefix — the same signal the cap is billed against)
+	// and create at most (MaxTotal - live) net-new boxes this call.
+	// Anything beyond headroom is DEFERRED, not failed: it comes back
+	// as a "queued" row so the caller (notably `runner reconcile`)
+	// knows the job is waiting on GitHub's queue, not broken.
+	live, err := CountLiveRunners(ctx, deps, opts.NamePrefix)
+	if err != nil {
+		return nil, err
+	}
+	headroom := opts.MaxTotal - live
+	if headroom < 0 {
+		headroom = 0
+	}
+
 	for i := 1; i <= opts.Count; i++ {
 		name := RenderName(opts.NameTemplate, opts.NamePrefix, i)
+		if i > headroom {
+			// Past the cap — queue rather than create.
+			res.Runners = append(res.Runners, RunnerStatus{Name: name, State: "queued"})
+			res.Deferred++
+			continue
+		}
 		status := provisionOne(ctx, deps, opts, name)
 		if status.State == "failed" {
 			res.PartialFailure = true

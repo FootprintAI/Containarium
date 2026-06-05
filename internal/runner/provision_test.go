@@ -661,6 +661,9 @@ func TestEmbeddedInstallScriptNonEmpty(t *testing.T) {
 // -----------------------------------------------------------------
 
 func TestApplyDefaults(t *testing.T) {
+	// Force the cap to its built-in default regardless of the ambient
+	// environment so MaxTotal is deterministic.
+	t.Setenv("MAX_RUNNERS_TOTAL", "")
 	got := applyDefaults(Options{Repo: "owner/repo", PAT: "x", Count: 1})
 	want := Options{
 		Repo:                "owner/repo",
@@ -672,6 +675,7 @@ func TestApplyDefaults(t *testing.T) {
 		BoxCreateTimeout:    DefaultBoxCreateTimeout,
 		InstallTimeout:      DefaultInstallTimeout,
 		RegistrationTimeout: DefaultRegistrationTimeout,
+		MaxTotal:            DefaultMaxRunnersTotal,
 	}
 	if got != want {
 		t.Errorf("applyDefaults mismatch:\n  got:  %+v\n  want: %+v", got, want)
