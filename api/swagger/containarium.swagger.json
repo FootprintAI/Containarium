@@ -8229,7 +8229,7 @@
         },
         "delivery": {
           "type": "string",
-          "description": "Phase 4.3 — how the secret is delivered into the container.\n\"env\" (default): stamped as environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC,\nvisible to every process in the container via /proc/\u003cpid\u003e/environ.\n\"file\": (planned) written to a per-container tmpfs at\n/run/secrets/\u003cNAME\u003e, file mode 0400 owned by the app user. Same\ntenant isolation, narrower in-container access surface. See\ndocs/security/SECRETS-ENV-VAR-RISK.md.\n\nRead-only on the API surface today — Phase A lands the field\nshape; the file delivery path is wired in Phase B."
+          "description": "Phase 4.3 — how the secret is delivered into the container.\n\"env\" (default): stamped as environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC,\nvisible to every process in the container via /proc/\u003cpid\u003e/environ.\n\"file\": written to a per-container tmpfs at /run/secrets/\u003cNAME\u003e,\nfile mode 0440 root:\u003ctenant\u003e. Same tenant isolation, narrower\nin-container access surface.\n\"compose\": written to a shared dotenv file at\n/run/containarium/secrets.env (mode 0400, tmpfs) that nested\ndocker / docker-compose apps consume via `env_file:` — they don't\ninherit the LXC environment (the same gap OTel solved). Single-line\nvalues only; rejected at set-time otherwise. See\ndocs/security/SECRETS-ENV-VAR-RISK.md."
         }
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
@@ -8290,7 +8290,7 @@
         },
         "delivery": {
           "type": "string",
-          "description": "Phase 4.3 — delivery mode for the secret. Accepts \"env\"\n(default; same behavior as pre-4.3) or \"file\" (planned;\ntmpfs-mounted per-file delivery). Unknown values are\nrejected at the API boundary. Phase A allows setting the\nmode but the daemon still stamps env vars for everyone;\nPhase B switches behavior based on this field."
+          "description": "Phase 4.3 — delivery mode for the secret. Accepts \"env\"\n(default; same behavior as pre-4.3), \"file\" (per-secret tmpfs\n/run/secrets/\u003cNAME\u003e), or \"compose\" (shared dotenv at\n/run/containarium/secrets.env for docker-compose `env_file:`;\nsingle-line values only). Unknown values are rejected at the\nAPI boundary."
         }
       },
       "description": "SetSecretRequest creates or updates a tenant secret. Idempotent —\nrepeated calls with the same (username, name) bump the version and\nreplace the value."

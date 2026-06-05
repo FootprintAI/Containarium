@@ -172,6 +172,45 @@ idempotent (writing the same content over the same path
 is a no-op at the bytes level), so periodic re-stamps
 cost nothing when state is already correct.
 
+## `compose` delivery — reaching nested docker / docker-compose
+
+`env` and `file` delivery both miss one common app shape: a
+**docker-compose stack running inside the LXC**. A docker
+container does not inherit the LXC's Incus-config environment,
+and it doesn't see `/run/secrets/<NAME>` unless that path is
+explicitly mounted in. This is the same gap OTel monitoring hit
+(#370) and solved with a dotenv file consumed via `env_file:`.
+
+`--delivery compose` closes it for secrets the same way:
+
+- The daemon renders the tenant's `compose`-mode secrets into a
+  single dotenv file at `/run/containarium/secrets.env`, mode
+  `0400` root, on `/run` (tmpfs — evicted on stop, never on the
+  writable rootfs).
+- A compose service references it: `env_file: /run/containarium/secrets.env`.
+  The compose runtime (root) reads the file at container-create
+  time and injects the values as env into the app container —
+  the app process never reads the file itself, so `0400 root` is
+  both safe and sufficient.
+
+Exposure profile vs the other modes:
+
+- **vs `env`**: does NOT leak via `incus config show` (the
+  dotenv file isn't in the Incus config). Same in-container
+  exposure once injected.
+- **vs `file`**: one shared file instead of per-secret files;
+  meant for compose ingestion, not per-process file ACLs.
+
+Constraint: **values must be single-line.** A dotenv `KEY=value`
+line can't represent a newline, and the `env_file:` parser would
+mangle it — so a multi-line value is rejected at
+`containarium secrets set --delivery compose` time. Use
+`--delivery file` (`/run/secrets/<NAME>`) for multi-line blobs.
+
+Built on the shared `EnvFile` delivery helper (#492); see
+`pkg/core/container/{envfile,secrets_envfile}.go` and the
+`compose` branch in `stampSecretsOnLXC`.
+
 ## References
 
 - Audit finding **C-MED-4** in
