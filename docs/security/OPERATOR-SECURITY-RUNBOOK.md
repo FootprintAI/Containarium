@@ -423,6 +423,7 @@ Pick a backend via `CONTAINARIUM_KMS_BACKEND`. Supported:
 | `inproc`   | In-process wrap under the master key. Dev/test mostly — protection level is unchanged from legacy, but it writes envelope-shaped rows so a future cutover to a real KMS doesn't re-touch every row. |
 | `vault`    | Vault Transit secret engine over HTTP. See setup below. |
 | `gcp`      | Google Cloud KMS via the REST API. See setup below. |
+| `aws`      | AWS KMS via the REST API (SigV4-signed). See setup below. |
 
 ### Vault Transit setup
 
@@ -643,6 +644,82 @@ version is baked into the ciphertext); Cloud KMS
 transparently decrypts under whichever version each row
 was wrapped against. To force re-wrap under the new
 primary:
+
+```bash
+containarium secrets migrate-to-envelope
+```
+
+### AWS KMS setup
+
+```bash
+# 1. Create a symmetric KMS key and a friendly alias. The
+#    key never leaves AWS; the daemon only ever calls
+#    Encrypt/Decrypt against it.
+KEY_ID=$(aws kms create-key \
+    --description "containarium secrets KEK" \
+    --query KeyMetadata.KeyId --output text)
+aws kms create-alias \
+    --alias-name alias/containarium-secrets \
+    --target-key-id "$KEY_ID"
+
+# 2. Grant the daemon's IAM principal the narrowest policy:
+#    kms:Encrypt + kms:Decrypt against THIS key only (not a
+#    wildcard resource — the blast radius matters). Attach
+#    to the IAM user / role the daemon runs as, e.g.:
+#    {
+#      "Effect": "Allow",
+#      "Action": ["kms:Encrypt", "kms:Decrypt"],
+#      "Resource": "arn:aws:kms:us-west-2:<acct>:key/<KEY_ID>"
+#    }
+
+# 3. Deliver credentials. The daemon signs requests with
+#    SigV4 from an access-key / secret pair (+ optional
+#    session token for STS temp creds). The secret is the
+#    sensitive part — keep it 0600 and out of the env where
+#    practical:
+#
+#    On EC2/EKS, an IRSA or IMDS sidecar refreshes temp creds
+#    into files the daemon reads:
+#      aws sts assume-role ... | jq -r .Credentials.SecretAccessKey \
+#        | sudo install -m 0600 /dev/stdin /etc/containarium/aws-kms.secret
+#      (and likewise the SessionToken file)
+#    Off-cloud: a static IAM user's secret in the file, no
+#    session token.
+
+# 4. Configure the daemon. Add to systemd Environment=:
+CONTAINARIUM_KMS_BACKEND=aws
+CONTAINARIUM_AWS_KMS_REGION=us-west-2
+CONTAINARIUM_AWS_KMS_KEY_ID=alias/containarium-secrets
+CONTAINARIUM_AWS_ACCESS_KEY_ID=AKIA...
+CONTAINARIUM_AWS_SECRET_ACCESS_KEY_FILE=/etc/containarium/aws-kms.secret
+# Optional: CONTAINARIUM_AWS_SESSION_TOKEN_FILE=/etc/containarium/aws-kms.session
+#           (required when the access key is an STS temp cred)
+# Optional: CONTAINARIUM_AWS_KMS_ENDPOINT (override for a
+#           VPC endpoint / air-gapped deployment).
+# Optional: CONTAINARIUM_AWS_KMS_TIMEOUT=5s
+
+# 5. Restart the daemon. Confirm the startup log shows:
+#    Secrets store ready (file-keyed AES-256-GCM, envelope: aws kms (region=... key=...))
+sudo systemctl restart containarium
+```
+
+Migration and Phase E retirement work the same as the Vault
+and GCP paths — `containarium secrets migrate-to-envelope`
+re-wraps legacy rows under the AWS KEK; `envelope-coverage`
+reports progress; `CONTAINARIUM_REQUIRE_ENVELOPE=true`
+rejects any remaining legacy rows.
+
+### Rotating the AWS KMS key
+
+```bash
+# Enable annual automatic rotation (recommended):
+aws kms enable-key-rotation --key-id alias/containarium-secrets
+```
+
+Existing wrapped DEKs reference the prior key material (the
+version is baked into the CiphertextBlob); AWS KMS
+transparently decrypts under whichever backing key each row
+was wrapped against. To force re-wrap under the new primary:
 
 ```bash
 containarium secrets migrate-to-envelope
