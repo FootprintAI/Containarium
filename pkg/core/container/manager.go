@@ -828,28 +828,18 @@ func (m *Manager) Exec(containerName string, command []string) error {
 // WriteOTelEnvFile drops the monitoring env vars as a dotenv file at
 // OTelEnvFilePath inside the container, so docker-compose / nested
 // docker apps can consume them via `env_file:` — they don't inherit
-// the LXC's Incus-config environment. Creates the parent dir first
-// (incus file-push doesn't). See #370.
+// the LXC's Incus-config environment. See #370. Thin shim over the
+// shared WriteEnvFile delivery (#492).
 func (m *Manager) WriteOTelEnvFile(containerName string, env map[string]string) error {
-	if len(env) == 0 {
-		return nil
-	}
-	// mkdir -p the parent; harmless if it already exists.
-	if err := m.Exec(containerName, []string{"mkdir", "-p", OTelEnvFileDir}); err != nil {
-		return fmt.Errorf("mkdir %s: %w", OTelEnvFileDir, err)
-	}
-	if err := m.WriteFile(containerName, OTelEnvFilePath, RenderOTelEnvFile(env), "0644"); err != nil {
-		return fmt.Errorf("write %s: %w", OTelEnvFilePath, err)
-	}
-	return nil
+	return m.WriteEnvFile(containerName, OTelEnvFile, env)
 }
 
 // RemoveOTelEnvFile deletes the dotenv file written by
 // WriteOTelEnvFile. Used on the monitoring-disable path so a stale
 // endpoint doesn't linger. Best-effort by nature (rm -f); a missing
-// file is not an error.
+// file is not an error. Thin shim over the shared RemoveEnvFile (#492).
 func (m *Manager) RemoveOTelEnvFile(containerName string) error {
-	return m.Exec(containerName, []string{"rm", "-f", OTelEnvFilePath})
+	return m.RemoveEnvFile(containerName, OTelEnvFile)
 }
 
 func (m *Manager) Get(username string) (*incus.ContainerInfo, error) {
