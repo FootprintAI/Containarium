@@ -21,6 +21,7 @@ type GRPCClient struct {
 	appClient     pb.AppServiceClient
 	networkClient pb.NetworkServiceClient
 	recipeClient  pb.RecipeServiceClient
+	backupClient  pb.BackupServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -73,6 +74,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	appClient := pb.NewAppServiceClient(conn)
 	networkClient := pb.NewNetworkServiceClient(conn)
 	recipeClient := pb.NewRecipeServiceClient(conn)
+	backupClient := pb.NewBackupServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -80,6 +82,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		appClient:     appClient,
 		networkClient: networkClient,
 		recipeClient:  recipeClient,
+		backupClient:  backupClient,
 	}, nil
 }
 
@@ -531,6 +534,66 @@ func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	resp, err := c.recipeClient.DeployRecipe(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deploy recipe: %w", err)
+	}
+	return resp, nil
+}
+
+// CreateBackup dumps a tenant's database and stores it off-host via gRPC.
+func (c *GRPCClient) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // large dumps + upload can take time
+	defer cancel()
+
+	resp, err := c.backupClient.CreateBackup(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create backup: %w", err)
+	}
+	return resp, nil
+}
+
+// ListBackups lists stored backups via gRPC.
+func (c *GRPCClient) ListBackups(username string) ([]*pb.BackupRecord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.backupClient.ListBackups(ctx, &pb.ListBackupsRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list backups: %w", err)
+	}
+	return resp.Records, nil
+}
+
+// GetBackup fetches a single backup record via gRPC.
+func (c *GRPCClient) GetBackup(id string) (*pb.BackupRecord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.backupClient.GetBackup(ctx, &pb.GetBackupRequest{Id: id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get backup: %w", err)
+	}
+	return resp.Record, nil
+}
+
+// RestoreBackup restores a stored dump via gRPC.
+func (c *GRPCClient) RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBackupResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // download + pg_restore can take time
+	defer cancel()
+
+	resp, err := c.backupClient.RestoreBackup(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to restore backup: %w", err)
+	}
+	return resp, nil
+}
+
+// DeleteBackup removes a stored dump and its index entry via gRPC.
+func (c *GRPCClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.backupClient.DeleteBackup(ctx, &pb.DeleteBackupRequest{Id: id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete backup: %w", err)
 	}
 	return resp, nil
 }

@@ -302,6 +302,14 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterRecipeServiceServer(grpcServer, NewRecipeServer(containerServer, networkServer))
 	log.Printf("Recipe service enabled")
 
+	// Register BackupService — logical (pg_dump) database backups for the
+	// databases running inside containers, stored off-host (local dir or
+	// GCS). Orchestration over the container manager; the GCS uploader is
+	// best-effort (LOCAL-only if `gcloud` is absent). See
+	// docs/DB-BACKUP-OPERATIONS.md.
+	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
+	log.Printf("Backup service enabled")
+
 	// NetworkPolicyService — Phase A control-plane CRUD for per-tenant network
 	// isolation policies (#315). Registered here (before the Postgres pool is
 	// set up below) with an in-memory store; persistence (swap to

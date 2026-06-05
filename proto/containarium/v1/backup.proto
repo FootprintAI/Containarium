@@ -1,0 +1,229 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// BackupDestination is where a logical dump is stored *off* the database
+// host. The whole point of the feature is getting the data off-box, so a
+// destination is always required — there is no "stay on the same disk"
+// option (a dump that shares a failure domain with the database it came
+// from is not a backup; see docs/DB-BACKUP-OPERATIONS.md).
+enum BackupDestination {
+  // Unset — the daemon rejects a create with this value.
+  BACKUP_DESTINATION_UNSPECIFIED = 0;
+
+  // A backup directory on the daemon host, distinct from the container's
+  // own data disk. Survives container/disk loss but NOT host loss — use
+  // for dev or as a staging tier in front of an off-host copy.
+  BACKUP_DESTINATION_LOCAL = 1;
+
+  // A Google Cloud Storage bucket, written via the host's `gcloud`
+  // (`gcloud storage cp`). True off-host durability; the recommended
+  // production destination.
+  BACKUP_DESTINATION_GCS = 2;
+}
+
+// BackupRecord is the metadata index entry for one stored dump. The dump
+// itself lives at `location`; this record is persisted as a small JSON
+// sidecar in the daemon's backup directory so `ListBackups` works without
+// a database dependency (the thing we are backing up may itself be down).
+message BackupRecord {
+  // Stable identifier: "<username>-<database>-<UTC timestamp>"
+  // (e.g. "alice-app-20260605T130405Z"). Used by Get/Restore/Delete.
+  string id = 1;
+
+  // Tenant (username) whose container's database was dumped.
+  string username = 2;
+
+  // Logical database name that was dumped.
+  string database = 3;
+
+  // RFC3339 UTC timestamp of when the dump completed.
+  string created_at = 4;
+
+  // Size of the compressed custom-format dump, in bytes.
+  int64 size_bytes = 5;
+
+  // SHA-256 of the dump bytes, for integrity verification on restore.
+  string sha256 = 6;
+
+  // Where the dump is stored.
+  BackupDestination destination = 7;
+
+  // Concrete location of the dump: a host path for LOCAL, a gs:// URI
+  // for GCS.
+  string location = 8;
+
+  // Database engine. "postgres" is the only engine in v1.
+  string engine = 9;
+}
+
+// PgConnection carries the connection parameters pg_dump / pg_restore use
+// *inside the container*. Defaults target a per-container local Postgres
+// reached over loopback. db_password is never logged and is passed to the
+// child process via the PGPASSWORD environment variable, not argv.
+message PgConnection {
+  // Logical database to dump or restore into. Required.
+  string database = 1;
+
+  // Postgres role. Defaults to "postgres" when empty.
+  string user = 2;
+
+  // Password for the role. Optional (empty for trust/peer auth or when a
+  // PGPASSFILE is configured in the container). Never logged.
+  string password = 3;
+
+  // Host as seen from *inside* the container. Defaults to "127.0.0.1".
+  string host = 4;
+
+  // Port. Defaults to 5432 when zero.
+  int32 port = 5;
+}
+
+// CreateBackupRequest dumps a container's database and stores it at the
+// chosen destination.
+message CreateBackupRequest {
+  // Tenant (username) whose container holds the database.
+  string username = 1;
+
+  // Connection parameters for pg_dump inside the container.
+  PgConnection connection = 2;
+
+  // Where to store the dump.
+  BackupDestination destination = 3;
+
+  // For GCS: the destination bucket/prefix, e.g. "gs://my-backups/pg".
+  // Ignored for LOCAL. The object key is appended as "<id>.dump".
+  string gcs_bucket = 4;
+}
+
+message CreateBackupResponse {
+  // Operator-facing summary.
+  string message = 1;
+
+  // The committed backup record.
+  BackupRecord record = 2;
+}
+
+// ListBackupsRequest enumerates stored backups, newest first.
+message ListBackupsRequest {
+  // Optional tenant filter. Empty lists backups for all tenants
+  // (admin view).
+  string username = 1;
+}
+
+message ListBackupsResponse {
+  repeated BackupRecord records = 1;
+}
+
+// GetBackupRequest fetches a single backup record by ID.
+message GetBackupRequest {
+  string id = 1;
+}
+
+message GetBackupResponse {
+  BackupRecord record = 1;
+}
+
+// RestoreBackupRequest streams a stored dump back into a container's
+// database via pg_restore. Destructive: with `clean` set it drops and
+// recreates objects before loading.
+message RestoreBackupRequest {
+  // Backup to restore.
+  string id = 1;
+
+  // Connection parameters for pg_restore inside the target container.
+  // If connection.database is empty, the backup record's database is
+  // used (restore in place).
+  PgConnection connection = 2;
+
+  // Pass --clean --if-exists to pg_restore (drop objects before
+  // recreating). Off by default so a restore into a fresh database
+  // does not error on missing objects.
+  bool clean = 3;
+}
+
+message RestoreBackupResponse {
+  string message = 1;
+}
+
+// DeleteBackupRequest removes a stored dump and its index entry.
+message DeleteBackupRequest {
+  string id = 1;
+}
+
+message DeleteBackupResponse {
+  string message = 1;
+}
+
+// BackupService provides logical (pg_dump) database backups for the
+// databases running inside Containarium containers, stored off-host.
+// See docs/DB-BACKUP-OPERATIONS.md for the operational runbook and the
+// ISO 27001 A.8.13 control mapping.
+service BackupService {
+  // CreateBackup dumps a container's database and stores it off-host.
+  rpc CreateBackup(CreateBackupRequest) returns (CreateBackupResponse) {
+    option (google.api.http) = {
+      post: "/v1/backups"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create a backup";
+      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS).";
+      tags: "Backups";
+    };
+  }
+
+  // ListBackups returns stored backup records, newest first.
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse) {
+    option (google.api.http) = {
+      get: "/v1/backups"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List backups";
+      description: "Lists stored backup records (newest first), optionally filtered by tenant.";
+      tags: "Backups";
+    };
+  }
+
+  // GetBackup returns a single backup record by ID.
+  rpc GetBackup(GetBackupRequest) returns (GetBackupResponse) {
+    option (google.api.http) = {
+      get: "/v1/backups/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a backup";
+      description: "Returns the metadata for a single stored backup.";
+      tags: "Backups";
+    };
+  }
+
+  // RestoreBackup loads a stored dump back into a container's database.
+  rpc RestoreBackup(RestoreBackupRequest) returns (RestoreBackupResponse) {
+    option (google.api.http) = {
+      post: "/v1/backups/{id}/restore"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Restore a backup";
+      description: "Streams a stored dump back into a container's database via pg_restore. Destructive when clean=true.";
+      tags: "Backups";
+    };
+  }
+
+  // DeleteBackup removes a stored dump and its index entry.
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse) {
+    option (google.api.http) = {
+      delete: "/v1/backups/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a backup";
+      description: "Deletes a stored dump and its metadata. Retention enforcement is the caller's responsibility.";
+      tags: "Backups";
+    };
+  }
+}

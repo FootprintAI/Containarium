@@ -825,6 +825,29 @@ func (m *Manager) Exec(containerName string, command []string) error {
 	return fmt.Errorf("Exec not supported on this incus backend (mock?)")
 }
 
+// ExecWithOutput runs a command inside the container and returns its
+// stdout/stderr. Used by the backup server to surface pg_dump /
+// pg_restore diagnostics (which go to stderr) when the command fails.
+// Type-asserts to the concrete client.
+func (m *Manager) ExecWithOutput(containerName string, command []string) (string, string, error) {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.ExecWithOutput(containerName, command)
+	}
+	return "", "", fmt.Errorf("ExecWithOutput not supported on this incus backend (mock?)")
+}
+
+// ReadFile pulls a file from inside the container into host memory.
+// Used by the backup server to retrieve a pg_dump artifact written to
+// the container's /tmp before shipping it off-host. Suitable for
+// logical dumps (typically MBs); not for arbitrarily large files.
+// Type-asserts to the concrete client.
+func (m *Manager) ReadFile(containerName, path string) ([]byte, error) {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.ReadFile(containerName, path)
+	}
+	return nil, fmt.Errorf("ReadFile not supported on this incus backend (mock?)")
+}
+
 // WriteOTelEnvFile drops the monitoring env vars as a dotenv file at
 // OTelEnvFilePath inside the container, so docker-compose / nested
 // docker apps can consume them via `env_file:` — they don't inherit

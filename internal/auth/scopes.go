@@ -38,6 +38,13 @@ const (
 	ScopeSecretsRead  = "secrets:read"
 	ScopeSecretsWrite = "secrets:write"
 
+	// database backups (BackupServer). Separate from containers:
+	// a backup read returns dump locations/checksums, and a write
+	// can exfiltrate a tenant's whole database off-host or restore
+	// (destructively) over it — both warrant their own grant.
+	ScopeBackupsRead  = "backups:read"
+	ScopeBackupsWrite = "backups:write"
+
 	// routes / expose (network surface)
 	ScopeRoutesRead  = "routes:read"
 	ScopeRoutesWrite = "routes:write"

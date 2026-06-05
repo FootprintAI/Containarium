@@ -27,6 +27,9 @@
       "name": "AppService"
     },
     {
+      "name": "BackupService"
+    },
+    {
       "name": "ComposeAutostartService"
     },
     {
@@ -717,6 +720,175 @@
         },
         "tags": [
           "System"
+        ]
+      }
+    },
+    "/v1/backups": {
+      "get": {
+        "summary": "List backups",
+        "description": "Lists stored backup records (newest first), optionally filtered by tenant.",
+        "operationId": "BackupService_ListBackups",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListBackupsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Optional tenant filter. Empty lists backups for all tenants\n(admin view).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      },
+      "post": {
+        "summary": "Create a backup",
+        "description": "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS).",
+        "operationId": "BackupService_CreateBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CreateBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateBackupRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      }
+    },
+    "/v1/backups/{id}": {
+      "get": {
+        "summary": "Get a backup",
+        "description": "Returns the metadata for a single stored backup.",
+        "operationId": "BackupService_GetBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a backup",
+        "description": "Deletes a stored dump and its metadata. Retention enforcement is the caller's responsibility.",
+        "operationId": "BackupService_DeleteBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      }
+    },
+    "/v1/backups/{id}/restore": {
+      "post": {
+        "summary": "Restore a backup",
+        "description": "Streams a stored dump back into a container's database via pg_restore. Destructive when clean=true.",
+        "operationId": "BackupService_RestoreBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RestoreBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Backup to restore.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RestoreBackupBody"
+            }
+          }
+        ],
+        "tags": [
+          "Backups"
         ]
       }
     },
@@ -4733,6 +4905,59 @@
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
     },
+    "BackupDestination": {
+      "type": "string",
+      "enum": [
+        "BACKUP_DESTINATION_UNSPECIFIED",
+        "BACKUP_DESTINATION_LOCAL",
+        "BACKUP_DESTINATION_GCS"
+      ],
+      "default": "BACKUP_DESTINATION_UNSPECIFIED",
+      "description": "BackupDestination is where a logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination."
+    },
+    "BackupRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier: \"\u003cusername\u003e-\u003cdatabase\u003e-\u003cUTC timestamp\u003e\"\n(e.g. \"alice-app-20260605T130405Z\"). Used by Get/Restore/Delete."
+        },
+        "username": {
+          "type": "string",
+          "description": "Tenant (username) whose container's database was dumped."
+        },
+        "database": {
+          "type": "string",
+          "description": "Logical database name that was dumped."
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "RFC3339 UTC timestamp of when the dump completed."
+        },
+        "sizeBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Size of the compressed custom-format dump, in bytes."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "SHA-256 of the dump bytes, for integrity verification on restore."
+        },
+        "destination": {
+          "$ref": "#/definitions/BackupDestination",
+          "description": "Where the dump is stored."
+        },
+        "location": {
+          "type": "string",
+          "description": "Concrete location of the dump: a host path for LOCAL, a gs:// URI\nfor GCS."
+        },
+        "engine": {
+          "type": "string",
+          "description": "Database engine. \"postgres\" is the only engine in v1."
+        }
+      },
+      "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
+    },
     "BuildpackOptions": {
       "type": "object",
       "properties": {
@@ -5330,6 +5555,41 @@
       },
       "title": "CreateAlertRuleResponse returns the created alert rule"
     },
+    "CreateBackupRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Tenant (username) whose container holds the database."
+        },
+        "connection": {
+          "$ref": "#/definitions/PgConnection",
+          "description": "Connection parameters for pg_dump inside the container."
+        },
+        "destination": {
+          "$ref": "#/definitions/BackupDestination",
+          "description": "Where to store the dump."
+        },
+        "gcsBucket": {
+          "type": "string",
+          "description": "For GCS: the destination bucket/prefix, e.g. \"gs://my-backups/pg\".\nIgnored for LOCAL. The object key is appended as \"\u003cid\u003e.dump\"."
+        }
+      },
+      "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
+    },
+    "CreateBackupResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary."
+        },
+        "record": {
+          "$ref": "#/definitions/BackupRecord",
+          "description": "The committed backup record."
+        }
+      }
+    },
     "CreateContainerRequest": {
       "type": "object",
       "properties": {
@@ -5524,6 +5784,14 @@
         "message": {
           "type": "string",
           "title": "Status message"
+        }
+      }
+    },
+    "DeleteBackupResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
         }
       }
     },
@@ -6050,6 +6318,14 @@
         }
       }
     },
+    "GetBackupResponse": {
+      "type": "object",
+      "properties": {
+        "record": {
+          "$ref": "#/definitions/BackupRecord"
+        }
+      }
+    },
     "GetClamavSummaryResponse": {
       "type": "object",
       "properties": {
@@ -6556,6 +6832,18 @@
         }
       },
       "title": "ListBackendsResponse is the response from listing backends"
+    },
+    "ListBackupsResponse": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BackupRecord"
+          }
+        }
+      }
     },
     "ListClamavReportsResponse": {
       "type": "object",
@@ -7310,6 +7598,33 @@
       },
       "title": "PentestScanRun represents a single penetration test scan execution"
     },
+    "PgConnection": {
+      "type": "object",
+      "properties": {
+        "database": {
+          "type": "string",
+          "description": "Logical database to dump or restore into. Required."
+        },
+        "user": {
+          "type": "string",
+          "description": "Postgres role. Defaults to \"postgres\" when empty."
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for the role. Optional (empty for trust/peer auth or when a\nPGPASSFILE is configured in the container). Never logged."
+        },
+        "host": {
+          "type": "string",
+          "description": "Host as seen from *inside* the container. Defaults to \"127.0.0.1\"."
+        },
+        "port": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Port. Defaults to 5432 when zero."
+        }
+      },
+      "description": "PgConnection carries the connection parameters pg_dump / pg_restore use\n*inside the container*. Defaults target a per-container local Postgres\nreached over loopback. db_password is never logged and is passed to the\nchild process via the PGPASSWORD environment variable, not argv."
+    },
     "Protocol": {
       "type": "string",
       "enum": [
@@ -7739,6 +8054,28 @@
         "message": {
           "type": "string",
           "title": "Status message"
+        }
+      }
+    },
+    "RestoreBackupBody": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "$ref": "#/definitions/PgConnection",
+          "description": "Connection parameters for pg_restore inside the target container.\nIf connection.database is empty, the backup record's database is\nused (restore in place)."
+        },
+        "clean": {
+          "type": "boolean",
+          "description": "Pass --clean --if-exists to pg_restore (drop objects before\nrecreating). Off by default so a restore into a fresh database\ndoes not error on missing objects."
+        }
+      },
+      "description": "RestoreBackupRequest streams a stored dump back into a container's\ndatabase via pg_restore. Destructive: with `clean` set it drops and\nrecreates objects before loading."
+    },
+    "RestoreBackupResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
         }
       }
     },

@@ -1039,6 +1039,11 @@ func (s *Server) registerTools() {
 	// runner_tools.go alongside their handlers.
 	s.tools = append(s.tools, runnerTools()...)
 
+	// Database-backup tools (CLI-mirrored). Defined in backup_tools.go
+	// alongside their handlers; thin wrappers over the BackupService
+	// gateway that `containarium backup` also calls.
+	s.tools = append(s.tools, backupTools()...)
+
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
 	// the security policy lives in one auditable spot. New
@@ -1089,6 +1094,10 @@ func toolScopeAssignments() map[string]string {
 		// recipes — declarative GPU/app deploys
 		"list_recipes":  auth.ScopeContainersRead,
 		"deploy_recipe": auth.ScopeContainersWrite,
+		// database backups
+		"create_backup":  auth.ScopeBackupsWrite,
+		"restore_backup": auth.ScopeBackupsWrite,
+		"list_backups":   auth.ScopeBackupsRead,
 		// security tools
 		"security_scan":      auth.ScopeSecurityWrite,
 		"security_remediate": auth.ScopeSecurityWrite,

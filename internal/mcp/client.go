@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -287,6 +288,107 @@ func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, e
 		return nil, err
 	}
 	var resp DeployRecipeResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// --- database backups (BackupService) ---
+
+// PgConnectionBody carries pg_dump/pg_restore connection params. Snake_case
+// tags match the proto field names, which grpc-gateway accepts on input.
+type PgConnectionBody struct {
+	Database string `json:"database,omitempty"`
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Port     int32  `json:"port,omitempty"`
+}
+
+// CreateBackupRequest is the body for POST /v1/backups. Destination is the
+// proto enum NAME ("BACKUP_DESTINATION_LOCAL" / "BACKUP_DESTINATION_GCS").
+type CreateBackupRequest struct {
+	Username    string            `json:"username"`
+	Connection  *PgConnectionBody `json:"connection,omitempty"`
+	Destination string            `json:"destination"`
+	GCSBucket   string            `json:"gcs_bucket,omitempty"`
+}
+
+// BackupRecord mirrors the proto BackupRecord on the response side
+// (proto JSON → lowerCamelCase field names).
+type BackupRecord struct {
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	Database    string `json:"database"`
+	CreatedAt   string `json:"createdAt"`
+	SizeBytes   string `json:"sizeBytes"` // int64 is encoded as a string in proto JSON
+	SHA256      string `json:"sha256"`
+	Destination string `json:"destination"`
+	Location    string `json:"location"`
+	Engine      string `json:"engine"`
+}
+
+// CreateBackupResponse is the result of a backup create.
+type CreateBackupResponse struct {
+	Message string        `json:"message"`
+	Record  *BackupRecord `json:"record"`
+}
+
+// ListBackupsResponse is the /v1/backups response.
+type ListBackupsResponse struct {
+	Records []BackupRecord `json:"records"`
+}
+
+// RestoreBackupRequest is the body for POST /v1/backups/{id}/restore.
+type RestoreBackupRequest struct {
+	ID         string            `json:"id"`
+	Connection *PgConnectionBody `json:"connection,omitempty"`
+	Clean      bool              `json:"clean,omitempty"`
+}
+
+// RestoreBackupResponse is the result of a restore.
+type RestoreBackupResponse struct {
+	Message string `json:"message"`
+}
+
+// CreateBackup dumps a tenant's database and stores it off-host.
+func (c *Client) CreateBackup(req CreateBackupRequest) (*CreateBackupResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/backups", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp CreateBackupResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// ListBackups lists stored backups, optionally filtered by tenant.
+func (c *Client) ListBackups(username string) (*ListBackupsResponse, error) {
+	path := "/v1/backups"
+	if username != "" {
+		path += "?username=" + url.QueryEscape(username)
+	}
+	respBody, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListBackupsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// RestoreBackup streams a stored dump back into a container's database.
+func (c *Client) RestoreBackup(req RestoreBackupRequest) (*RestoreBackupResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/backups/"+req.ID+"/restore", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp RestoreBackupResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
