@@ -14,7 +14,7 @@ const guestBinaryPath = "/usr/local/bin/containarium"
 
 // guestTokenPath is the perm-tight file the in-guest tunnel reads its
 // token from (never passed on argv / kernel cmdline).
-const guestTokenPath = "/etc/containarium/tunnel.token"
+const guestTokenPath = "/etc/containarium/tunnel.token" // #nosec G101 -- filesystem path to the token file, not a credential value
 
 // Manager orchestrates node-VM lifecycle over the incus CLI.
 type Manager struct {
