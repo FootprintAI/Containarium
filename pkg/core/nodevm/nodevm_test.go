@@ -105,7 +105,7 @@ func (f *fakeRunner) Run(args ...string) (string, error) {
 	if f.failOn != "" && strings.Contains(joined, f.failOn) {
 		return "", fmt.Errorf("forced failure on %q", f.failOn)
 	}
-	if strings.HasPrefix(joined, "list --vm") {
+	if strings.HasPrefix(joined, "list type=virtual-machine") {
 		return f.listOut, nil
 	}
 	return "", nil

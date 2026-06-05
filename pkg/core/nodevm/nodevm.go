@@ -117,7 +117,12 @@ func gpuDeviceArgs(name, pci string) []string {
 }
 
 func destroyArgs(name string) []string { return []string{"delete", "-f", name} }
-func listArgs() []string               { return []string{"list", "--vm", "--format", "csv", "-c", "ns"} }
+
+// listArgs lists only VMs. Note: `--vm` is a `launch`/`init` flag, NOT a
+// `list` flag — VM filtering on `list` uses the positional `type=` filter.
+func listArgs() []string {
+	return []string{"list", "type=virtual-machine", "--format", "csv", "-c", "ns"}
+}
 
 // RenderBootstrap produces the in-guest bootstrap script — the
 // setup-peer.sh-equivalent run inside the VM on first provision. It does
