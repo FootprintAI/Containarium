@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// VolumeService manages shared, multi-writer data volumes (#384).
+//
+// The only storage mechanism that lets N containers mount the SAME volume
+// read-write without corruption is a CephFS custom (filesystem) volume:
+// CephFS's MDS + capability/lease protocol coordinates concurrent POSIX
+// writers, which a block device on a non-cluster filesystem (ext4/xfs/zfs)
+// cannot. So this service is capability-gated: it only works on hosts
+// backed by a `cephfs` Incus storage pool, and rejects create/attach on
+// single-node ZFS hosts (today's default) with a clear error. Callers
+// check support via ListVolumes.shared_volumes_supported.
+//
+// NOTE: this is a single-writer-safe DATA volume, not an instance rootfs
+// (Incus restricts the cephfs driver to custom volumes).
+service VolumeService {
+  // CreateVolume provisions a CephFS custom filesystem volume with a quota.
+  rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse) {
+    option (google.api.http) = {
+      post: "/v1/volumes"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create a shared volume";
+      description: "Creates a CephFS custom (filesystem) volume that can be attached read-write to multiple containers. Rejected on non-CephFS hosts.";
+      tags: "Volumes";
+    };
+  }
+
+  // ListVolumes lists shared volumes and reports whether this host can
+  // serve them at all (a CephFS pool is present).
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse) {
+    option (google.api.http) = {
+      get: "/v1/volumes"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List shared volumes";
+      description: "Lists shared volumes and reports shared_volumes_supported for this backend (true only when a CephFS pool exists).";
+      tags: "Volumes";
+    };
+  }
+
+  // GetVolume returns a single volume's metadata + attachments.
+  rpc GetVolume(GetVolumeRequest) returns (GetVolumeResponse) {
+    option (google.api.http) = {
+      get: "/v1/volumes/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a shared volume";
+      tags: "Volumes";
+    };
+  }
+
+  // DeleteVolume removes a volume. Refuses while attached unless force.
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse) {
+    option (google.api.http) = {
+      delete: "/v1/volumes/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a shared volume";
+      tags: "Volumes";
+    };
+  }
+
+  // AttachVolume mounts a volume into a container (read-write by default).
+  rpc AttachVolume(AttachVolumeRequest) returns (AttachVolumeResponse) {
+    option (google.api.http) = {
+      post: "/v1/volumes/{volume}/attach"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Attach a shared volume to a container";
+      description: "Mounts the CephFS volume into the container at mount_path. Multiple containers may attach the same volume RW concurrently.";
+      tags: "Volumes";
+    };
+  }
+
+  // DetachVolume removes a volume's mount from a container.
+  rpc DetachVolume(DetachVolumeRequest) returns (DetachVolumeResponse) {
+    option (google.api.http) = {
+      post: "/v1/volumes/{volume}/detach"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Detach a shared volume from a container";
+      tags: "Volumes";
+    };
+  }
+}
+
+// VolumeAttachment is one container a volume is mounted into.
+message VolumeAttachment {
+  // Container (tenant) the volume is mounted into.
+  string container = 1;
+  // Mount path inside the container.
+  string mount_path = 2;
+  // Whether the mount is read-only.
+  bool read_only = 3;
+}
+
+// Volume is a CephFS custom (filesystem) volume.
+message Volume {
+  // Volume name (unique within the pool).
+  string name = 1;
+  // CephFS storage pool backing the volume.
+  string pool = 2;
+  // Quota in bytes (ceph.quota.max_bytes). 0 means unset/unknown.
+  int64 size_bytes = 3;
+  // Incus content type — always "filesystem" for a shared volume.
+  string content_type = 4;
+  // Containers this volume is currently attached to.
+  repeated VolumeAttachment attachments = 5;
+}
+
+message CreateVolumeRequest {
+  // Volume name.
+  string name = 1;
+  // Quota in bytes. Required (> 0) so a shared scratch space can't grow
+  // unbounded on the cluster.
+  int64 size_bytes = 2;
+  // CephFS pool. Empty = the daemon's detected default CephFS pool.
+  string pool = 3;
+}
+
+message CreateVolumeResponse {
+  Volume volume = 1;
+  string message = 2;
+}
+
+message ListVolumesRequest {
+  // Optional pool filter. Empty lists the detected CephFS pool.
+  string pool = 1;
+}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+  // True only when this backend has a CephFS pool and can serve shared
+  // volumes. False on single-node ZFS hosts (today's default).
+  bool shared_volumes_supported = 2;
+  // Human-readable explanation (e.g. the detected pool, or why support
+  // is unavailable).
+  string capability_detail = 3;
+}
+
+message GetVolumeRequest {
+  string name = 1;
+  string pool = 2;
+}
+
+message GetVolumeResponse {
+  Volume volume = 1;
+}
+
+message DeleteVolumeRequest {
+  string name = 1;
+  string pool = 2;
+  // Force deletion even if the volume is still attached to containers.
+  bool force = 3;
+}
+
+message DeleteVolumeResponse {
+  string message = 1;
+}
+
+message AttachVolumeRequest {
+  // Volume name.
+  string volume = 1;
+  // CephFS pool. Empty = detected default.
+  string pool = 2;
+  // Container (tenant) to attach into.
+  string container = 3;
+  // Mount path inside the container.
+  string mount_path = 4;
+  // Mount read-only instead of read-write.
+  bool read_only = 5;
+}
+
+message AttachVolumeResponse {
+  string message = 1;
+}
+
+message DetachVolumeRequest {
+  string volume = 1;
+  string container = 2;
+}
+
+message DetachVolumeResponse {
+  string message = 1;
+}

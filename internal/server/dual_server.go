@@ -310,6 +310,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
 	log.Printf("Backup service enabled")
 
+	// Register VolumeService — shared, multi-writer CephFS volumes (#384).
+	// Capability-gated: create/attach are rejected unless the host has a
+	// cephfs storage pool (single-node ZFS hosts get a clear error).
+	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
+	log.Printf("Volume service enabled")
+
 	// NetworkPolicyService — Phase A control-plane CRUD for per-tenant network
 	// isolation policies (#315). Registered here (before the Postgres pool is
 	// set up below) with an in-memory store; persistence (swap to

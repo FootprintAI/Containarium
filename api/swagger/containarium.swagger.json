@@ -54,6 +54,9 @@
       "name": "TokensService"
     },
     {
+      "name": "VolumeService"
+    },
+    {
       "name": "ZapService"
     }
   ],
@@ -4030,6 +4033,230 @@
         ]
       }
     },
+    "/v1/volumes": {
+      "get": {
+        "summary": "List shared volumes",
+        "description": "Lists shared volumes and reports shared_volumes_supported for this backend (true only when a CephFS pool exists).",
+        "operationId": "VolumeService_ListVolumes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListVolumesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "pool",
+            "description": "Optional pool filter. Empty lists the detected CephFS pool.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Volumes"
+        ]
+      },
+      "post": {
+        "summary": "Create a shared volume",
+        "description": "Creates a CephFS custom (filesystem) volume that can be attached read-write to multiple containers. Rejected on non-CephFS hosts.",
+        "operationId": "VolumeService_CreateVolume",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CreateVolumeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateVolumeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Volumes"
+        ]
+      }
+    },
+    "/v1/volumes/{name}": {
+      "get": {
+        "summary": "Get a shared volume",
+        "operationId": "VolumeService_GetVolume",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetVolumeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "pool",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Volumes"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a shared volume",
+        "operationId": "VolumeService_DeleteVolume",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteVolumeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "pool",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "force",
+            "description": "Force deletion even if the volume is still attached to containers.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Volumes"
+        ]
+      }
+    },
+    "/v1/volumes/{volume}/attach": {
+      "post": {
+        "summary": "Attach a shared volume to a container",
+        "description": "Mounts the CephFS volume into the container at mount_path. Multiple containers may attach the same volume RW concurrently.",
+        "operationId": "VolumeService_AttachVolume",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AttachVolumeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "volume",
+            "description": "Volume name.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AttachVolumeBody"
+            }
+          }
+        ],
+        "tags": [
+          "Volumes"
+        ]
+      }
+    },
+    "/v1/volumes/{volume}/detach": {
+      "post": {
+        "summary": "Detach a shared volume from a container",
+        "operationId": "VolumeService_DetachVolume",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DetachVolumeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "volume",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/DetachVolumeBody"
+            }
+          }
+        ],
+        "tags": [
+          "Volumes"
+        ]
+      }
+    },
     "/v1/zap/alerts": {
       "get": {
         "summary": "List ZAP alerts",
@@ -4833,6 +5060,35 @@
       "default": "APP_STATE_UNSPECIFIED",
       "description": "- APP_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - APP_STATE_UPLOADING: Source code is being uploaded\n - APP_STATE_BUILDING: Container image is being built (using Podman)\n - APP_STATE_RUNNING: App is running and healthy\n - APP_STATE_STOPPED: App is stopped by user\n - APP_STATE_FAILED: Build or runtime failure\n - APP_STATE_RESTARTING: App is restarting",
       "title": "AppState represents the lifecycle state of an application"
+    },
+    "AttachVolumeBody": {
+      "type": "object",
+      "properties": {
+        "pool": {
+          "type": "string",
+          "description": "CephFS pool. Empty = detected default."
+        },
+        "container": {
+          "type": "string",
+          "description": "Container (tenant) to attach into."
+        },
+        "mountPath": {
+          "type": "string",
+          "description": "Mount path inside the container."
+        },
+        "readOnly": {
+          "type": "boolean",
+          "description": "Mount read-only instead of read-write."
+        }
+      }
+    },
+    "AttachVolumeResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
     },
     "BackendGPU": {
       "type": "object",
@@ -5703,6 +5959,35 @@
       },
       "title": "CreateContainerResponse is the response from creating a container"
     },
+    "CreateVolumeRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Volume name."
+        },
+        "sizeBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Quota in bytes. Required (\u003e 0) so a shared scratch space can't grow\nunbounded on the cluster."
+        },
+        "pool": {
+          "type": "string",
+          "description": "CephFS pool. Empty = the daemon's detected default CephFS pool."
+        }
+      }
+    },
+    "CreateVolumeResponse": {
+      "type": "object",
+      "properties": {
+        "volume": {
+          "$ref": "#/definitions/Volume"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "DNSRecord": {
       "type": "object",
       "properties": {
@@ -5831,6 +6116,14 @@
       }
     },
     "DeleteSecretResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "DeleteVolumeResponse": {
       "type": "object",
       "properties": {
         "message": {
@@ -5972,6 +6265,22 @@
         }
       },
       "title": "DestinationStats provides traffic statistics for a destination"
+    },
+    "DetachVolumeBody": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string"
+        }
+      }
+    },
+    "DetachVolumeResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
     },
     "DetectedLanguage": {
       "type": "object",
@@ -6604,6 +6913,14 @@
         }
       }
     },
+    "GetVolumeResponse": {
+      "type": "object",
+      "properties": {
+        "volume": {
+          "$ref": "#/definitions/Volume"
+        }
+      }
+    },
     "GetZapAlertSummaryResponse": {
       "type": "object",
       "properties": {
@@ -7047,6 +7364,26 @@
         }
       },
       "description": "ListStacksResponse returns all configured software stacks."
+    },
+    "ListVolumesResponse": {
+      "type": "object",
+      "properties": {
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Volume"
+          }
+        },
+        "sharedVolumesSupported": {
+          "type": "boolean",
+          "description": "True only when this backend has a CephFS pool and can serve shared\nvolumes. False on single-node ZFS hosts (today's default)."
+        },
+        "capabilityDetail": {
+          "type": "string",
+          "description": "Human-readable explanation (e.g. the detected pool, or why support\nis unavailable)."
+        }
+      }
     },
     "ListWebhookDeliveriesResponse": {
       "type": "object",
@@ -9079,6 +9416,55 @@
         }
       },
       "description": "ValidateGPUResponse reports whether the GPU is usable from inside an LXC on\nthe backend: the daemon launches a throwaway nvidia.runtime LXC, runs\nnvidia-smi inside, tears it down, and returns the parsed model + driver."
+    },
+    "Volume": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Volume name (unique within the pool)."
+        },
+        "pool": {
+          "type": "string",
+          "description": "CephFS storage pool backing the volume."
+        },
+        "sizeBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Quota in bytes (ceph.quota.max_bytes). 0 means unset/unknown."
+        },
+        "contentType": {
+          "type": "string",
+          "description": "Incus content type — always \"filesystem\" for a shared volume."
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/VolumeAttachment"
+          },
+          "description": "Containers this volume is currently attached to."
+        }
+      },
+      "description": "Volume is a CephFS custom (filesystem) volume."
+    },
+    "VolumeAttachment": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string",
+          "description": "Container (tenant) the volume is mounted into."
+        },
+        "mountPath": {
+          "type": "string",
+          "description": "Mount path inside the container."
+        },
+        "readOnly": {
+          "type": "boolean",
+          "description": "Whether the mount is read-only."
+        }
+      },
+      "description": "VolumeAttachment is one container a volume is mounted into."
     },
     "WebhookDelivery": {
       "type": "object",

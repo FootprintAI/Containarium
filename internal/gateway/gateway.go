@@ -376,6 +376,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register backup service gateway: %w", err)
 	}
 
+	// Register VolumeService gateway handler (#384)
+	if err := pb.RegisterVolumeServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register volume service gateway: %w", err)
+	}
+
 	// Register NetworkPolicyService gateway handler (#315)
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)

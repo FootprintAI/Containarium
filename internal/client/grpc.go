@@ -22,6 +22,7 @@ type GRPCClient struct {
 	networkClient pb.NetworkServiceClient
 	recipeClient  pb.RecipeServiceClient
 	backupClient  pb.BackupServiceClient
+	volumeClient  pb.VolumeServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -75,6 +76,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	networkClient := pb.NewNetworkServiceClient(conn)
 	recipeClient := pb.NewRecipeServiceClient(conn)
 	backupClient := pb.NewBackupServiceClient(conn)
+	volumeClient := pb.NewVolumeServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -83,6 +85,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		networkClient: networkClient,
 		recipeClient:  recipeClient,
 		backupClient:  backupClient,
+		volumeClient:  volumeClient,
 	}, nil
 }
 
@@ -599,6 +602,41 @@ func (c *GRPCClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
 		return nil, fmt.Errorf("failed to delete backup: %w", err)
 	}
 	return resp, nil
+}
+
+// CreateVolume creates a shared CephFS volume via gRPC.
+func (c *GRPCClient) CreateVolume(req *pb.CreateVolumeRequest) (*pb.CreateVolumeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return c.volumeClient.CreateVolume(ctx, req)
+}
+
+// ListVolumes lists shared volumes (and capability) via gRPC.
+func (c *GRPCClient) ListVolumes(pool string) (*pb.ListVolumesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.volumeClient.ListVolumes(ctx, &pb.ListVolumesRequest{Pool: pool})
+}
+
+// DeleteVolume deletes a shared volume via gRPC.
+func (c *GRPCClient) DeleteVolume(name, pool string, force bool) (*pb.DeleteVolumeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.volumeClient.DeleteVolume(ctx, &pb.DeleteVolumeRequest{Name: name, Pool: pool, Force: force})
+}
+
+// AttachVolume mounts a shared volume into a container via gRPC.
+func (c *GRPCClient) AttachVolume(req *pb.AttachVolumeRequest) (*pb.AttachVolumeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return c.volumeClient.AttachVolume(ctx, req)
+}
+
+// DetachVolume unmounts a shared volume from a container via gRPC.
+func (c *GRPCClient) DetachVolume(volume, container string) (*pb.DetachVolumeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.volumeClient.DetachVolume(ctx, &pb.DetachVolumeRequest{Volume: volume, Container: container})
 }
 
 // ListApps lists all applications via gRPC
