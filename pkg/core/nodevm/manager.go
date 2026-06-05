@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // guestBinaryPath is where the containarium binary lands inside the node VM.
@@ -21,15 +22,18 @@ type Manager struct {
 	// BinaryPath is the local containarium binary pushed into each node VM
 	// (so the node matches the operator's version exactly).
 	BinaryPath string
-	// waitAttempts/waitSleepSecs bound the agent-readiness poll; small in
-	// tests. Zero values fall back to sane defaults.
+	// waitAttempts / waitSleep bound the agent-readiness poll. A VM takes
+	// tens of seconds to boot its incus-agent, so we must sleep between
+	// probes — without it the retries burn out in milliseconds. Small/zero
+	// in tests (success on the first probe never reaches the sleep).
 	waitAttempts int
+	waitSleep    time.Duration
 }
 
 // NewManager builds a Manager. binaryPath is the local containarium binary
 // to push into node VMs (empty = skip the push, e.g. for a dry run).
 func NewManager(r Runner, binaryPath string) *Manager {
-	return &Manager{run: r, BinaryPath: binaryPath, waitAttempts: 30}
+	return &Manager{run: r, BinaryPath: binaryPath, waitAttempts: 60, waitSleep: 4 * time.Second}
 }
 
 // Node is one node VM as listed on the host.
@@ -124,8 +128,11 @@ func (m *Manager) waitAgent(name string) error {
 		if _, err := m.run.Run("exec", name, "--", "true"); err == nil {
 			return nil
 		}
+		if i < attempts-1 && m.waitSleep > 0 {
+			time.Sleep(m.waitSleep)
+		}
 	}
-	return fmt.Errorf("VM %s agent did not become ready", name)
+	return fmt.Errorf("VM %s agent did not become ready after %d attempts", name, attempts)
 }
 
 func (m *Manager) vmExists(name string) (bool, error) {
