@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corecrypto "github.com/footprintai/containarium/pkg/core/secrets"
@@ -36,18 +37,37 @@ type SecretMetadata struct {
 const (
 	DeliveryEnv  = "env"
 	DeliveryFile = "file"
+	// DeliveryCompose writes the secret into a shared dotenv file
+	// (/run/containarium/secrets.env) that nested docker /
+	// docker-compose apps consume via `env_file:` — they don't
+	// inherit the LXC's Incus-config environment (the same gap OTel
+	// solved, #370/#492). Values must be single-line; see Set.
+	DeliveryCompose = "compose"
 )
 
-// ValidateDelivery returns nil for "" (defaults to env at
-// the storage layer), "env", or "file". Anything else is
-// caller-error and rejected at the API boundary.
+// ValidateDelivery returns nil for "" (defaults to env at the storage
+// layer), "env", "file", or "compose". Anything else is caller-error
+// and rejected at the API boundary.
 func ValidateDelivery(mode string) error {
 	switch mode {
-	case "", DeliveryEnv, DeliveryFile:
+	case "", DeliveryEnv, DeliveryFile, DeliveryCompose:
 		return nil
 	}
-	return fmt.Errorf("secrets: delivery must be %q or %q; got %q",
-		DeliveryEnv, DeliveryFile, mode)
+	return fmt.Errorf("secrets: delivery must be %q, %q, or %q; got %q",
+		DeliveryEnv, DeliveryFile, DeliveryCompose, mode)
+}
+
+// ValidateValueForDelivery rejects a value that the chosen delivery mode
+// can't represent. compose renders into a dotenv file (KEY=value lines),
+// so a value with a newline would corrupt the file / be mangled by the
+// `env_file:` parser — reject it at set-time and point at "file" delivery
+// (per-secret tmpfs) for multi-line blobs. Pure function for testing.
+func ValidateValueForDelivery(delivery, value string) error {
+	if delivery == DeliveryCompose && strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("secrets: delivery %q requires a single-line value (no newlines); use %q delivery for multi-line secrets",
+			DeliveryCompose, DeliveryFile)
+	}
+	return nil
 }
 
 // Store handles per-tenant secret persistence.
@@ -213,6 +233,11 @@ func (s *Store) Set(ctx context.Context, username, name, value, delivery string)
 		return nil, err
 	}
 	if err := ValidateDelivery(delivery); err != nil {
+		return nil, err
+	}
+	// compose delivery renders into a dotenv file; reject multi-line
+	// values at set-time rather than silently corrupt it (#491).
+	if err := ValidateValueForDelivery(delivery, value); err != nil {
 		return nil, err
 	}
 	// Storage layer normalizes "" → "env" so the column is

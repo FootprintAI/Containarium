@@ -8,6 +8,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/secrets"
+	"github.com/footprintai/containarium/pkg/core/container"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -253,8 +254,15 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 		}
 	}
 
+	// compose-delivery secrets are batched into a single dotenv file
+	// (written once, after the loop) for docker-compose `env_file:`
+	// consumption — the same mechanism OTel uses (#491/#492).
+	composeEnv := map[string]string{}
+
 	for k, sv := range secretMap {
 		switch sv.Delivery {
+		case secrets.DeliveryCompose:
+			composeEnv[k] = sv.Value
 		case secrets.DeliveryFile:
 			if !hasFileMode {
 				continue
@@ -292,6 +300,19 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 		}
 		stamped++
 	}
+
+	// Deliver (or tear down) the compose dotenv file once for the whole
+	// tenant. WriteEnvFile is a no-op for an empty map, so the explicit
+	// Remove on the empty branch is what cleans up a stale file after
+	// the last compose secret is deleted or switched to another mode.
+	if len(composeEnv) > 0 {
+		if err := s.manager.WriteEnvFile(containerName, container.SecretsEnvFile, composeEnv); err != nil {
+			log.Printf("[secrets] failed to write compose env_file on %s: %v", containerName, err)
+		}
+	} else if err := s.manager.RemoveEnvFile(containerName, container.SecretsEnvFile); err != nil {
+		log.Printf("[secrets] failed to remove compose env_file on %s: %v (best-effort)", containerName, err)
+	}
+
 	return stamped, nil
 }
 

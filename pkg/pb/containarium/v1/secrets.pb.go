@@ -40,13 +40,15 @@ type SecretMetadata struct {
 	// Phase 4.3 — how the secret is delivered into the container.
 	// "env" (default): stamped as environment.<NAME>=<value> on the LXC,
 	// visible to every process in the container via /proc/<pid>/environ.
-	// "file": (planned) written to a per-container tmpfs at
-	// /run/secrets/<NAME>, file mode 0400 owned by the app user. Same
-	// tenant isolation, narrower in-container access surface. See
+	// "file": written to a per-container tmpfs at /run/secrets/<NAME>,
+	// file mode 0440 root:<tenant>. Same tenant isolation, narrower
+	// in-container access surface.
+	// "compose": written to a shared dotenv file at
+	// /run/containarium/secrets.env (mode 0400, tmpfs) that nested
+	// docker / docker-compose apps consume via `env_file:` — they don't
+	// inherit the LXC environment (the same gap OTel solved). Single-line
+	// values only; rejected at set-time otherwise. See
 	// docs/security/SECRETS-ENV-VAR-RISK.md.
-	//
-	// Read-only on the API surface today — Phase A lands the field
-	// shape; the file delivery path is wired in Phase B.
 	Delivery      string `protobuf:"bytes,6,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -139,11 +141,11 @@ type SetSecretRequest struct {
 	// (decision #2). Never logged.
 	Value string `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
 	// Phase 4.3 — delivery mode for the secret. Accepts "env"
-	// (default; same behavior as pre-4.3) or "file" (planned;
-	// tmpfs-mounted per-file delivery). Unknown values are
-	// rejected at the API boundary. Phase A allows setting the
-	// mode but the daemon still stamps env vars for everyone;
-	// Phase B switches behavior based on this field.
+	// (default; same behavior as pre-4.3), "file" (per-secret tmpfs
+	// /run/secrets/<NAME>), or "compose" (shared dotenv at
+	// /run/containarium/secrets.env for docker-compose `env_file:`;
+	// single-line values only). Unknown values are rejected at the
+	// API boundary.
 	Delivery      string `protobuf:"bytes,4,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

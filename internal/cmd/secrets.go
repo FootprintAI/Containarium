@@ -99,9 +99,11 @@ func init() {
 	secretsCmd.AddCommand(secretsSetCmd)
 	secretsSetCmd.Flags().StringVar(&secretsDelivery, "delivery", "",
 		`How the secret reaches the container. "env" (default) stamps `+
-			`environment.<NAME>=<value> on the LXC; "file" (Phase 4.3 — `+
-			`not yet wired) plans tmpfs-mount delivery for narrower `+
-			`in-container access. See docs/security/SECRETS-ENV-VAR-RISK.md.`)
+			`environment.<NAME>=<value> on the LXC; "file" writes a per-`+
+			`secret tmpfs file at /run/secrets/<NAME>; "compose" writes a `+
+			`shared dotenv file at /run/containarium/secrets.env that nested `+
+			`docker/docker-compose apps consume via env_file: (single-line `+
+			`values only). See docs/security/SECRETS-ENV-VAR-RISK.md.`)
 	secretsCmd.AddCommand(secretsGetCmd)
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsDeleteCmd)
