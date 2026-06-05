@@ -1288,6 +1288,12 @@ type Container struct {
 	PodmanEnabled bool              `json:"podmanEnabled"`
 	BackendID     string            `json:"backendId,omitempty"`
 	Pool          string            `json:"pool,omitempty"`
+	// SSHHost is the public SSH endpoint (the sentinel) clients dial to reach
+	// this container: `ssh <username>@<SSHHost>`. The daemon stamps it per
+	// container from its --ssh-host, so it is the source of truth for which
+	// sentinel a container belongs to. Empty in direct / no-sentinel
+	// deployments, where clients fall back to the container IP.
+	SSHHost string `json:"sshHost,omitempty"`
 }
 
 type NetworkInfo struct {

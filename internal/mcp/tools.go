@@ -1214,7 +1214,15 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 			result += fmt.Sprintf("  ~/.containarium/keys/%s\n\n", resp.Container.Username)
 		}
 		result += "To SSH in:\n"
-		sentinelHost := client.SentinelHost
+		// Prefer the per-container sentinel the daemon stamps onto ssh_host —
+		// the daemon knows which sentinel each container belongs to, so the
+		// agent gets a reachable host straight from create_container with no
+		// env config. Fall back to the deployment-wide CONTAINARIUM_SENTINEL_HOST
+		// (client.SentinelHost), then a placeholder when neither is known.
+		sentinelHost := resp.Container.SSHHost
+		if sentinelHost == "" {
+			sentinelHost = client.SentinelHost
+		}
 		if sentinelHost == "" {
 			sentinelHost = "<sentinel-host>"
 		}

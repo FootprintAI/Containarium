@@ -122,6 +122,19 @@ func TestWireFormat_CreateContainer(t *testing.T) {
 	assert.Equal(t, int64(1771209160), resp.Container.CreatedAt)
 }
 
+// TestWireFormat_ContainerSSHHost guards a regression: the daemon stamps the
+// per-container sentinel onto ssh_host (from --ssh-host), but the MCP client's
+// Container struct lacked the field, so json.Unmarshal silently dropped the
+// reachable host and create_container fell back to the (often unset)
+// CONTAINARIUM_SENTINEL_HOST env — surfacing a "<sentinel-host>" placeholder
+// even though the daemon knew the real host all along.
+func TestWireFormat_ContainerSSHHost(t *testing.T) {
+	var c Container
+	require.NoError(t, json.Unmarshal(
+		[]byte(`{"username":"cld-30dc0e41","sshHost":"asia-east1.example.com"}`), &c))
+	assert.Equal(t, "asia-east1.example.com", c.SSHHost)
+}
+
 func TestWireFormat_ListBackends(t *testing.T) {
 	var resp ListBackendsResponse
 	require.NoError(t, json.Unmarshal(loadFixture(t, "list_backends_response.json"), &resp))
