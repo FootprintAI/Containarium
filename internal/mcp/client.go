@@ -395,6 +395,87 @@ func (c *Client) RestoreBackup(req RestoreBackupRequest) (*RestoreBackupResponse
 	return &resp, nil
 }
 
+// --- KMS admin (KmsService) ---
+
+// KMSStatusResponse is the /v1/kms/status response.
+type KMSStatusResponse struct {
+	Backend         string `json:"backend"`
+	Description     string `json:"description"`
+	KmsConfigured   bool   `json:"kmsConfigured"`
+	RequireEnvelope bool   `json:"requireEnvelope"`
+}
+
+// EnvelopeCoverageResponse is the /v1/kms/envelope-coverage response.
+// Counts are int64, encoded as strings in proto JSON.
+type EnvelopeCoverageResponse struct {
+	Total    string `json:"total"`
+	Legacy   string `json:"legacy"`
+	Envelope string `json:"envelope"`
+}
+
+// MigrateToEnvelopeBody is the POST /v1/kms/migrate-to-envelope body.
+type MigrateToEnvelopeBody struct {
+	DryRun  bool  `json:"dryRun,omitempty"`
+	MaxRows int64 `json:"maxRows,omitempty"`
+}
+
+// MigrateRowError names a row that failed migration.
+type MigrateRowError struct {
+	Username string `json:"username"`
+	Name     string `json:"name"`
+	Error    string `json:"error"`
+}
+
+// MigrateToEnvelopeResponse is the migration result. Counts are
+// int64, encoded as strings in proto JSON.
+type MigrateToEnvelopeResponse struct {
+	Scanned     string            `json:"scanned"`
+	Migrated    string            `json:"migrated"`
+	AlreadyDone string            `json:"alreadyDone"`
+	Failed      string            `json:"failed"`
+	DryRun      bool              `json:"dryRun"`
+	Errors      []MigrateRowError `json:"errors"`
+}
+
+// GetKMSStatus reports the active KMS backend + envelope state.
+func (c *Client) GetKMSStatus() (*KMSStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/kms/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp KMSStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetEnvelopeCoverage reports secret counts by encryption mode.
+func (c *Client) GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/kms/envelope-coverage", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp EnvelopeCoverageResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// MigrateToEnvelope triggers the legacy→envelope re-wrap.
+func (c *Client) MigrateToEnvelope(req MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/kms/migrate-to-envelope", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp MigrateToEnvelopeResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 // One layer deeper than the agent's raw ssh error — surfaces host-side
 // state the agent can't see directly (user account, shell file, sshd logs).

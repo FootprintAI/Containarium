@@ -1044,6 +1044,10 @@ func (s *Server) registerTools() {
 	// gateway that `containarium backup` also calls.
 	s.tools = append(s.tools, backupTools()...)
 
+	// KMS admin tools (kms_tools.go) — thin wrappers over the
+	// KmsService gateway that `containarium kms` also calls.
+	s.tools = append(s.tools, kmsTools()...)
+
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
 	// the security policy lives in one auditable spot. New
@@ -1098,6 +1102,10 @@ func toolScopeAssignments() map[string]string {
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
 		"list_backups":   auth.ScopeBackupsRead,
+		// KMS envelope-encryption administration (admin-only)
+		"kms_status":              auth.ScopeKMSAdmin,
+		"kms_envelope_coverage":   auth.ScopeKMSAdmin,
+		"kms_migrate_to_envelope": auth.ScopeKMSAdmin,
 		// security tools
 		"security_scan":      auth.ScopeSecurityWrite,
 		"security_remediate": auth.ScopeSecurityWrite,

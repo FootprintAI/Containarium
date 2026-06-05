@@ -1086,6 +1086,76 @@ func (c *HTTPClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
 	return out, nil
 }
 
+// GetKMSStatus reports the active KMS backend + envelope state via HTTP.
+func (c *HTTPClient) GetKMSStatus() (*pb.GetKMSStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/kms/status", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get kms status: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get kms status")
+	}
+	out := &pb.GetKMSStatusResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// GetEnvelopeCoverage reports secret counts by encryption mode via HTTP.
+func (c *HTTPClient) GetEnvelopeCoverage() (*pb.GetEnvelopeCoverageResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/kms/envelope-coverage", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get envelope coverage: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get envelope coverage")
+	}
+	out := &pb.GetEnvelopeCoverageResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// MigrateToEnvelope triggers the legacy→envelope re-wrap via HTTP.
+func (c *HTTPClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.MigrateToEnvelopeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/kms/migrate-to-envelope", json.RawMessage(body))
+	if err != nil {
+		return nil, fmt.Errorf("migrate to envelope: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "migrate to envelope")
+	}
+	out := &pb.MigrateToEnvelopeResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // httpError extracts a JSON {"error": ...} message from a gateway error body,
 // falling back to the status code.
 func httpError(bodyBytes []byte, statusCode int, op string) error {

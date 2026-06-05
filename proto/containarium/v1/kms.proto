@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// KmsService exposes read + migration-trigger operations for the
+// tenant-secrets envelope-encryption layer (see
+// docs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT
+// expose backend *configuration* — selecting a KMS backend and
+// supplying its credentials stays an operator/systemd concern
+// (CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an
+// over-the-wire action. Every RPC requires the `kms:admin` scope
+// AND the admin role; these are platform-wide, not tenant-scoped.
+service KmsService {
+  // GetKMSStatus reports the active backend and the
+  // envelope-retirement gate. Read-only; safe to poll from a
+  // dashboard.
+  rpc GetKMSStatus(GetKMSStatusRequest) returns (GetKMSStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/kms/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Report the active KMS backend and envelope-retirement state";
+      description: "Returns the configured backend (none|inproc|vault|gcp|aws), a human-readable description, whether a real KMS is active, and whether CONTAINARIUM_REQUIRE_ENVELOPE is set. Admin + kms:admin scope.";
+      tags: "KMS";
+    };
+  }
+
+  // GetEnvelopeCoverage counts stored secrets by encryption mode.
+  // Legacy=0 means every row is envelope-wrapped — the precondition
+  // for retiring the on-host master key.
+  rpc GetEnvelopeCoverage(GetEnvelopeCoverageRequest) returns (GetEnvelopeCoverageResponse) {
+    option (google.api.http) = {
+      get: "/v1/kms/envelope-coverage"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Count secrets by encryption mode (legacy vs envelope)";
+      description: "Reports total / legacy / envelope row counts. When legacy=0 the deployment is fully migrated. Admin + kms:admin scope.";
+      tags: "KMS";
+    };
+  }
+
+  // MigrateToEnvelope re-wraps legacy rows under the active KMS KEK.
+  // Idempotent and resumable: already-envelope rows are skipped, and
+  // max_rows lets a large backlog be chunked across windows. Fails
+  // with FailedPrecondition if no KMS backend is configured.
+  rpc MigrateToEnvelope(MigrateToEnvelopeRequest) returns (MigrateToEnvelopeResponse) {
+    option (google.api.http) = {
+      post: "/v1/kms/migrate-to-envelope"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Re-wrap legacy secrets under the active KMS KEK";
+      description: "Batches legacy rows and rewrites them to envelope form, verifying each round-trips before committing. dry_run walks + verifies without writing. Admin + kms:admin scope.";
+      tags: "KMS";
+    };
+  }
+}
+
+message GetKMSStatusRequest {}
+
+message GetKMSStatusResponse {
+  // Configured backend: none | inproc | vault | gcp | aws.
+  string backend = 1;
+  // Human-readable description, e.g. "aws kms (region=us-west-2 key=alias/...)".
+  string description = 2;
+  // True when a real KMS backend is active (backend != none and no
+  // config error).
+  bool kms_configured = 3;
+  // True when CONTAINARIUM_REQUIRE_ENVELOPE is set (legacy rows
+  // rejected on read).
+  bool require_envelope = 4;
+}
+
+message GetEnvelopeCoverageRequest {}
+
+message GetEnvelopeCoverageResponse {
+  int64 total = 1;
+  int64 legacy = 2;
+  int64 envelope = 3;
+}
+
+message MigrateToEnvelopeRequest {
+  // When true, walk + verify every legacy row would round-trip but
+  // issue no UPDATE.
+  bool dry_run = 1;
+  // Rows scanned per page. 0 → server default (100).
+  int64 batch_size = 2;
+  // Cap on total rows processed in one call. 0 → unlimited.
+  int64 max_rows = 3;
+}
+
+message MigrateToEnvelopeResponse {
+  int64 scanned = 1;
+  int64 migrated = 2;
+  int64 already_done = 3;
+  int64 failed = 4;
+  bool dry_run = 5;
+  repeated MigrateRowError errors = 6;
+}
+
+message MigrateRowError {
+  string username = 1;
+  string name = 2;
+  string error = 3;
+}

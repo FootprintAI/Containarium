@@ -377,6 +377,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register backup service gateway: %w", err)
 	}
 
+	// Register KmsService gateway handler (KMS status / envelope
+	// coverage / migration).
+	if err := pb.RegisterKmsServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register kms service gateway: %w", err)
+	}
+
 	// Register NetworkPolicyService gateway handler (#315)
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)

@@ -39,6 +39,9 @@
       "name": "EventService"
     },
     {
+      "name": "KmsService"
+    },
+    {
       "name": "NetworkPolicyService"
     },
     {
@@ -2079,6 +2082,88 @@
         ],
         "tags": [
           "Events"
+        ]
+      }
+    },
+    "/v1/kms/envelope-coverage": {
+      "get": {
+        "summary": "Count secrets by encryption mode (legacy vs envelope)",
+        "description": "Reports total / legacy / envelope row counts. When legacy=0 the deployment is fully migrated. Admin + kms:admin scope.",
+        "operationId": "KmsService_GetEnvelopeCoverage",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetEnvelopeCoverageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "KMS"
+        ]
+      }
+    },
+    "/v1/kms/migrate-to-envelope": {
+      "post": {
+        "summary": "Re-wrap legacy secrets under the active KMS KEK",
+        "description": "Batches legacy rows and rewrites them to envelope form, verifying each round-trips before committing. dry_run walks + verifies without writing. Admin + kms:admin scope.",
+        "operationId": "KmsService_MigrateToEnvelope",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/MigrateToEnvelopeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MigrateToEnvelopeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "KMS"
+        ]
+      }
+    },
+    "/v1/kms/status": {
+      "get": {
+        "summary": "Report the active KMS backend and envelope-retirement state",
+        "description": "Returns the configured backend (none|inproc|vault|gcp|aws), a human-readable description, whether a real KMS is active, and whether CONTAINARIUM_REQUIRE_ENVELOPE is set. Admin + kms:admin scope.",
+        "operationId": "KmsService_GetKMSStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetKMSStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "KMS"
         ]
       }
     },
@@ -6413,6 +6498,44 @@
       },
       "title": "GetContainerResponse is the response from getting a container"
     },
+    "GetEnvelopeCoverageResponse": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "string",
+          "format": "int64"
+        },
+        "legacy": {
+          "type": "string",
+          "format": "int64"
+        },
+        "envelope": {
+          "type": "string",
+          "format": "int64"
+        }
+      }
+    },
+    "GetKMSStatusResponse": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "description": "Configured backend: none | inproc | vault | gcp | aws."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description, e.g. \"aws kms (region=us-west-2 key=alias/...)\"."
+        },
+        "kmsConfigured": {
+          "type": "boolean",
+          "description": "True when a real KMS backend is active (backend != none and no\nconfig error)."
+        },
+        "requireEnvelope": {
+          "type": "boolean",
+          "description": "True when CONTAINARIUM_REQUIRE_ENVELOPE is set (legacy rows\nrejected on read)."
+        }
+      }
+    },
     "GetLatestReleaseResponse": {
       "type": "object",
       "properties": {
@@ -7110,6 +7233,70 @@
         }
       },
       "title": "MetricsEvent contains metrics update data"
+    },
+    "MigrateRowError": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "MigrateToEnvelopeRequest": {
+      "type": "object",
+      "properties": {
+        "dryRun": {
+          "type": "boolean",
+          "description": "When true, walk + verify every legacy row would round-trip but\nissue no UPDATE."
+        },
+        "batchSize": {
+          "type": "string",
+          "format": "int64",
+          "description": "Rows scanned per page. 0 → server default (100)."
+        },
+        "maxRows": {
+          "type": "string",
+          "format": "int64",
+          "description": "Cap on total rows processed in one call. 0 → unlimited."
+        }
+      }
+    },
+    "MigrateToEnvelopeResponse": {
+      "type": "object",
+      "properties": {
+        "scanned": {
+          "type": "string",
+          "format": "int64"
+        },
+        "migrated": {
+          "type": "string",
+          "format": "int64"
+        },
+        "alreadyDone": {
+          "type": "string",
+          "format": "int64"
+        },
+        "failed": {
+          "type": "string",
+          "format": "int64"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/MigrateRowError"
+          }
+        }
+      }
     },
     "MoveContainerBody": {
       "type": "object",

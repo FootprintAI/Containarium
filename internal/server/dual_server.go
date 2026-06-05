@@ -310,6 +310,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
 	log.Printf("Backup service enabled")
 
+	// KMS admin service — read the active backend, envelope
+	// coverage, and trigger legacy→envelope migration. Backed by
+	// the same secrets Store; backend *config* stays in env/systemd.
+	pb.RegisterKmsServiceServer(grpcServer, NewKmsServer(containerServer))
+
 	// NetworkPolicyService — Phase A control-plane CRUD for per-tenant network
 	// isolation policies (#315). Registered here (before the Postgres pool is
 	// set up below) with an in-memory store; persistence (swap to
@@ -550,6 +555,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						// backend is configured — fail-closed at
 						// startup is the only safe shape.
 						requireEnvelope := envBool("CONTAINARIUM_REQUIRE_ENVELOPE")
+						// Snapshot KMS status for the KmsService
+						// GetKMSStatus RPC, regardless of whether the
+						// store ends up wired (the status is about
+						// config, not store health).
+						containerServer.SetKMSStatus(os.Getenv("CONTAINARIUM_KMS_BACKEND"), kdesc, kms != nil, requireEnvelope)
 						if requireEnvelope && kms == nil {
 							log.Printf("FATAL: CONTAINARIUM_REQUIRE_ENVELOPE=true but no KMS backend is configured. Set CONTAINARIUM_KMS_BACKEND=vault (or inproc for dev) before enabling retirement mode. Secrets disabled.")
 							secretsPool.Close()
