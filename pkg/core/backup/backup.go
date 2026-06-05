@@ -172,6 +172,12 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	}
 
 	id := fmt.Sprintf("%s-%s-%s", opts.Username, conn.Database, m.now().UTC().Format("20060102T150405Z"))
+	// The id becomes a path component (sidecar, temp files). A
+	// username or database carrying a separator would let it
+	// escape m.dir — reject rather than silently mangle.
+	if err := validateBackupID(id); err != nil {
+		return nil, fmt.Errorf("cannot derive a safe backup id: %w", err)
+	}
 	inContainerPath := "/tmp/containarium-backup-" + id + ".dump"
 
 	// 1. Dump inside the container (custom format = compressed + selective
@@ -266,10 +272,27 @@ func (m *Manager) List(username string) ([]*Record, error) {
 
 // Get returns a single record by ID.
 func (m *Manager) Get(id string) (*Record, error) {
-	if id == "" {
-		return nil, fmt.Errorf("id is required")
+	if err := validateBackupID(id); err != nil {
+		return nil, err
 	}
 	return m.readSidecar(m.sidecarPath(id))
+}
+
+// validateBackupID rejects ids that could escape the backup
+// directory once joined into a path. Ids are generated as
+// "<username>-<database>-<timestamp>" (see Create), but on the
+// Get / Delete / Restore paths the id arrives from the API
+// caller, so we re-check it before it ever reaches
+// filepath.Join. The filepath.Base equality check catches any
+// separator or "." / ".." component on every platform.
+func validateBackupID(id string) error {
+	if id == "" {
+		return fmt.Errorf("id is required")
+	}
+	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") || id != filepath.Base(id) {
+		return fmt.Errorf("invalid backup id %q", id)
+	}
+	return nil
 }
 
 // Delete removes a stored dump and its index entry.
@@ -318,7 +341,7 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		if err := m.uploader.Download(r.Location, tmp); err != nil {
 			return fmt.Errorf("failed to download %s: %w", r.Location, err)
 		}
-		data, err = os.ReadFile(tmp)
+		data, err = os.ReadFile(tmp) // #nosec G304 -- tmp is filepath.Join(m.dir, ...) with a validated record id
 		_ = os.Remove(tmp)
 		if err != nil {
 			return fmt.Errorf("failed to read downloaded dump: %w", err)
@@ -376,7 +399,7 @@ func (m *Manager) writeSidecar(r *Record) error {
 }
 
 func (m *Manager) readSidecar(path string) (*Record, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- path is m.sidecarPath(id); id validated in Get/Create via validateBackupID
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("backup not found")

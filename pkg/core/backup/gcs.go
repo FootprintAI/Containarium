@@ -29,6 +29,9 @@ func NewGcloudUploader() (*GcloudUploader, error) {
 	}
 	u := &GcloudUploader{bin: bin}
 	u.run = func(args ...string) (string, error) {
+		// #nosec G204 -- u.bin is resolved via exec.LookPath("gcloud"); callers
+		// pass fixed verbs ("storage", "cp", ...) plus gs:// URIs validated by
+		// validateGSURI and host-internal paths. No shell is involved.
 		out, err := exec.Command(u.bin, args...).CombinedOutput()
 		return string(out), err
 	}
