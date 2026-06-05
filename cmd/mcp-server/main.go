@@ -64,7 +64,6 @@ func printUsage() {
 	log.Println("")
 	log.Println("Optional environment variables:")
 	log.Println("  CONTAINARIUM_DEBUG           - Enable debug logging (true/false)")
-	log.Println("  CONTAINARIUM_SENTINEL_HOST   - Public SSH endpoint, shown in create_container responses")
 	log.Println("")
 	log.Println("Example usage:")
 	log.Println("  export CONTAINARIUM_SERVER_URL='http://localhost:8080'")

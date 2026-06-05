@@ -16,9 +16,7 @@ import (
 	"github.com/footprintai/containarium/pkg/version"
 )
 
-// Client is a REST API client for Containarium. Carries a small amount
-// of non-HTTP deployment metadata (SentinelHost) so tool handlers that
-// need it can read it without a separate config plumbing layer.
+// Client is a REST API client for Containarium.
 type Client struct {
 	baseURL string
 
@@ -41,13 +39,6 @@ type Client struct {
 	// to the caller rather than buried in the startup log. Audit
 	// C-HIGH-1.
 	tlsConfigErr error
-
-	// SentinelHost, when set, is the public SSH endpoint for this
-	// deployment (e.g. "sentinel.example.com" or "34.42.156.100").
-	// create_container's response uses it to construct a complete
-	// ready-to-paste ssh command. Empty means the response falls
-	// back to a placeholder.
-	SentinelHost string
 }
 
 // NewClient creates a new Containarium REST API client.

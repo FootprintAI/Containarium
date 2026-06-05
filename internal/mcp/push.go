@@ -91,17 +91,20 @@ func handleSync(client *Client, args map[string]interface{}) (string, error) {
 	), nil
 }
 
-// pickSentinel prefers an explicit "sentinel" arg, then falls back to the
-// client's configured SentinelHost (which itself comes from
-// CONTAINARIUM_SENTINEL_HOST). Returning "" lets transfer.Options.resolve
-// fall back to the env var directly, which keeps the error message
-// uniform across both code paths.
+// pickSentinel prefers an explicit "sentinel" arg, then the target
+// container's daemon-stamped ssh_host — the sentinel it actually belongs
+// to. Returning "" (a direct / no-sentinel deployment, or a lookup miss)
+// lets transfer.Options.resolve surface the uniform "pass --sentinel" error.
 func pickSentinel(client *Client, args map[string]interface{}) string {
 	if h := getStringArg(args, "sentinel", ""); h != "" {
 		return h
 	}
-	if client != nil && client.SentinelHost != "" {
-		return client.SentinelHost
+	if client != nil {
+		if u := getStringArg(args, "username", ""); u != "" {
+			if resp, err := client.GetContainer(u); err == nil && resp.Container.SSHHost != "" {
+				return resp.Container.SSHHost
+			}
+		}
 	}
 	return ""
 }

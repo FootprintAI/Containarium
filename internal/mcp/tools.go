@@ -635,7 +635,7 @@ func (s *Server) registerTools() {
 					},
 					"sentinel": map[string]interface{}{
 						"type":        "string",
-						"description": "Sentinel SSH host override. Default uses CONTAINARIUM_SENTINEL_HOST env.",
+						"description": "Sentinel SSH host override. Default: the container's ssh_host (the sentinel it belongs to, reported by the daemon).",
 					},
 					"key_path": map[string]interface{}{
 						"type":        "string",
@@ -688,7 +688,7 @@ func (s *Server) registerTools() {
 					},
 					"sentinel": map[string]interface{}{
 						"type":        "string",
-						"description": "Sentinel SSH host override. Default uses CONTAINARIUM_SENTINEL_HOST env.",
+						"description": "Sentinel SSH host override. Default: the container's ssh_host (the sentinel it belongs to, reported by the daemon).",
 					},
 					"key_path": map[string]interface{}{
 						"type":        "string",
@@ -1214,15 +1214,11 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 			result += fmt.Sprintf("  ~/.containarium/keys/%s\n\n", resp.Container.Username)
 		}
 		result += "To SSH in:\n"
-		// Prefer the per-container sentinel the daemon stamps onto ssh_host —
-		// the daemon knows which sentinel each container belongs to, so the
-		// agent gets a reachable host straight from create_container with no
-		// env config. Fall back to the deployment-wide CONTAINARIUM_SENTINEL_HOST
-		// (client.SentinelHost), then a placeholder when neither is known.
+		// The daemon stamps ssh_host with the sentinel this container belongs
+		// to (from its --ssh-host), so the agent gets a reachable host straight
+		// from create_container — no env, no config. Empty means a direct /
+		// no-sentinel deployment, where the container IP is the way in.
 		sentinelHost := resp.Container.SSHHost
-		if sentinelHost == "" {
-			sentinelHost = client.SentinelHost
-		}
 		if sentinelHost == "" {
 			sentinelHost = "<sentinel-host>"
 		}
@@ -1234,9 +1230,10 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		result += "~/.ssh/, and sshpiper's failtoban counts each rejected offer toward\n"
 		result += "the ban quota. Workstations with several keys can get banned on a\n"
 		result += "single ssh attempt.\n\n"
-		if client.SentinelHost == "" {
-			result += "(Sentinel host not configured — set CONTAINARIUM_SENTINEL_HOST in the\n"
-			result += "MCP server's env, or call sync_ssh_config for an alias-based setup.)\n\n"
+		if resp.Container.SSHHost == "" {
+			result += "(The daemon reported no ssh_host for this container — a direct /\n"
+			result += "no-sentinel deployment. SSH to the container's IP directly, or call\n"
+			result += "sync_ssh_config for an alias-based setup.)\n\n"
 		}
 		// Include the key text regardless of save outcome — even on success
 		// it's useful for one-off copy to other machines (vendor laptop,

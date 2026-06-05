@@ -23,7 +23,6 @@ func NewServer(config *Config) (*Server, error) {
 	if config.JWTTokenFile != "" {
 		client.SetTokenFile(config.JWTTokenFile)
 	}
-	client.SentinelHost = config.SentinelHost
 
 	server := &Server{
 		config: config,

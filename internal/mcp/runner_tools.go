@@ -74,7 +74,7 @@ func runnerTools() []Tool {
 					},
 					"sentinel": map[string]interface{}{
 						"type":        "string",
-						"description": "Sentinel SSH host (default $CONTAINARIUM_SENTINEL_HOST). The install step SSHes into each new box through sshpiper at this address.",
+						"description": "Sentinel SSH host override. Default: each box's ssh_host (the sentinel it belongs to). The install step SSHes into each new box through sshpiper at this address.",
 					},
 					"ssh_key_path": map[string]interface{}{
 						"type":        "string",
@@ -215,12 +215,6 @@ func buildMCPRunnerDeps(client *Client, sentinel, sshKeyPath string, withSSH boo
 
 	var sshPubKey string
 	if withSSH {
-		if sentinel == "" {
-			sentinel = client.SentinelHost
-		}
-		if sentinel == "" {
-			return runner.Deps{}, "", fmt.Errorf("sentinel host is required (pass `sentinel` arg or set CONTAINARIUM_SENTINEL_HOST in the MCP env)")
-		}
 		pubPath, privPath, err := resolveMCPSSHKey(sshKeyPath)
 		if err != nil {
 			return runner.Deps{}, "", err
@@ -236,9 +230,21 @@ func buildMCPRunnerDeps(client *Client, sentinel, sshKeyPath string, withSSH boo
 		sshPubKey = string(pubBytes)
 		installer, err := runner.NewSSHInstaller(runner.SSHInstallerConfig{
 			Endpoint: runner.SSHEndpointFunc(func(_ context.Context, boxName string) (string, string, error) {
-				host, port, err := net.SplitHostPort(sentinel)
+				// Resolve this box's sentinel from its own daemon-stamped
+				// ssh_host (the sentinel it belongs to); an explicit `sentinel`
+				// arg overrides. No env var anywhere.
+				sh := sentinel
+				if sh == "" {
+					if resp, gcErr := client.GetContainer(boxName); gcErr == nil {
+						sh = resp.Container.SSHHost
+					}
+				}
+				if sh == "" {
+					return "", "", fmt.Errorf("no sentinel for box %s: daemon reported no ssh_host; pass the `sentinel` arg", boxName)
+				}
+				host, port, err := net.SplitHostPort(sh)
 				if err != nil {
-					host = sentinel
+					host = sh
 					port = "22"
 				}
 				return boxName, net.JoinHostPort(host, port), nil
