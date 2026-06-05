@@ -135,6 +135,106 @@ it must carry a per-container bearer token, stamped the same
 way OTel stamps `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer`,
 mapped daemon-side to the tenant.)
 
+Socket provenance answers *who is asking*. It does **not** by
+itself answer *may this caller open this particular wrapped
+DEK* — that is the ownership question below.
+
+## Key hierarchy and DEK ownership
+
+Envelope encryption is layered; the KEK never holds or sees
+application data:
+
+```
+1 KEK   (lives in Vault/GCP/AWS KMS, HSM-backed, never extractable)
+   │  wraps
+   ▼
+N DEKs  (one fresh 32-byte key per object/secret — thousands, all unique)
+   │  encrypt
+   ▼
+application data  (the actual values)
+```
+
+The KEK is a **wrapping key**: it only ever sees 32-byte DEKs,
+never plaintext. The values are encrypted by the many per-object
+DEKs. So a single KEK serving every tenant does not mean "one
+key holds all the data" — it means one key wraps thousands of
+independent DEKs.
+
+### The oracle risk
+
+Without an ownership binding the broker is a decryption oracle.
+With a KEK shared across tenants:
+
+1. Tenant A wraps `DEK_A` → `wrapped_A`, stored beside its
+   ciphertext.
+2. Tenant B obtains `wrapped_A` (exfiltrates A's DB, a shared
+   volume, a leaked backup).
+3. B sends `unwrap(wrapped_A)` on its own broker socket.
+4. The KEK decrypts anything wrapped under it → the broker
+   hands `DEK_A` to B.
+
+Socket provenance tells the broker B is asking, but nothing yet
+binds `wrapped_A` to tenant A.
+
+### Resolution: tenant-bound encryption context (AAD)
+
+When the broker wraps, it passes the **tenant id as the KMS
+encryption context / AAD**, derived from socket provenance —
+*never* from caller input. The KMS binds it into the ciphertext.
+On unwrap the broker supplies the caller's tenant id again; if
+it differs from what was bound, **the KMS itself refuses to
+decrypt**. B unwrapping `wrapped_A` fails: context `B` ≠ bound
+context `A`.
+
+- AWS KMS: `EncryptionContext`. GCP KMS:
+  `additionalAuthenticatedData`. Vault Transit: `context`
+  (derived keys). All three providers we support expose it.
+- This extends the AAD pattern already used one layer down —
+  `Cipher.Encrypt` binds `username\x00name` as AAD
+  (`pkg/core/secrets/crypto.go`). The current `Wrap`/`Unwrap`
+  do **not** yet pass a context; adding it is the one interface
+  change this requires (see below).
+- Stateless: **the KMS enforces ownership.** No registry to
+  store, back up, or keep consistent.
+
+### One shared KEK is the default; per-tenant KEK is opt-in
+
+Isolation comes from the AAD binding, not from key separation,
+so **one KEK + AAD** is the sensible default. The KEK can't be
+extracted (it lives in the HSM), so "compromise the KEK" means
+compromising the KMS itself, and rotation is a single operation
+(old wrapped DEKs keep decrypting — the version is baked into
+the blob, as the AWS/GCP/Vault backends already document).
+
+Move to a **key per tenant** only for needs AAD can't serve:
+
+| Need | One KEK + AAD | Key per tenant |
+| --- | --- | --- |
+| Tenant data isolation | ✅ (via AAD) | ✅ (separate key) |
+| **Crypto-shred one tenant** (delete key → data instantly unrecoverable; right-to-be-forgotten) | ❌ must delete their DEKs/data | ✅ delete the one key |
+| Independently revoke/disable a tenant's crypto | ❌ | ✅ disable that key |
+| Per-tenant KMS audit log / cost attribution | ❌ aggregated | ✅ separated |
+| Operational simplicity, lower KMS cost | ✅ one key | ❌ N keys to provision/rotate |
+
+Both models fit the same interface: `kek_id` already encodes
+*which* key, so the broker just selects the key from socket
+provenance, and shared-and-per-tenant deployments can coexist.
+
+### Implementation implication
+
+Ownership-by-AAD means the `KMSClient` contract gains a
+context/AAD parameter:
+
+```go
+Wrap(ctx, plaintextDEK, aad []byte) (wrapped []byte, kekID string, err error)
+Unwrap(ctx, wrapped []byte, kekID string, aad []byte) (plaintextDEK []byte, err error)
+```
+
+The broker sets `aad = []byte(tenantFor(container))`. The
+tenant-facing wire protocol below is **unchanged** — the AAD is
+server-derived, never sent by the client, so a caller cannot
+forge another tenant's context.
+
 ## Wire protocol
 
 Newline-delimited JSON over the unix socket — small,
@@ -160,12 +260,13 @@ type kmsBroker struct {
 }
 
 func (b *kmsBroker) handle(container string, req kmsReq) kmsResp {
+    aad := []byte(b.tenantFor(container)) // server-derived; binds ownership
     switch req.Op {
     case "wrap":
-        wrapped, kekID, err := b.kms.Wrap(ctx, dek)
-        // ... scope/record under tenantFor(container)
+        wrapped, kekID, err := b.kms.Wrap(ctx, dek, aad)
     case "unwrap":
-        dek, err := b.kms.Unwrap(ctx, wrapped, req.KEKID)
+        dek, err := b.kms.Unwrap(ctx, req.Wrapped, req.KEKID, aad)
+        // wrong tenant → context mismatch → KMS refuses
     }
 }
 ```
@@ -267,9 +368,14 @@ at rest.
 
 ## Build phases
 
+0. **`KMSClient` AAD parameter** — add the context/AAD argument
+   to `Wrap`/`Unwrap` across all four backends (a no-op `nil`
+   AAD keeps existing envelope callers unchanged). Prerequisite
+   for ownership binding.
 1. **Broker + `KMSClient` reuse** — daemon-side listener and
-   wire protocol, no tenant surface yet. Fully testable with a
-   fake socket client and the existing `inproc` backend.
+   wire protocol, server-derived AAD = tenant id, no tenant
+   surface yet. Fully testable with a fake socket client and the
+   existing `inproc` backend.
 2. **`containarium kms-broker enable/disable/status`** — disk
    device + `WriteEnvFile`/`SetEnv`, mirroring the `--monitoring`
    path; MCP wrapper over the same function.
@@ -280,11 +386,15 @@ at rest.
 
 ## Open questions
 
-- **DEK ownership model.** Does the broker mint/track DEKs per
-  tenant (so `unwrap` can verify the wrapped DEK belongs to the
-  caller), or is it a stateless wrap/unwrap oracle scoped only
-  by `kek_id` prefix? The former is safer but needs a small
-  per-tenant DEK registry.
+- **DEK ownership model** — *resolved*, see
+  [Key hierarchy and DEK ownership](#key-hierarchy-and-dek-ownership):
+  stateless, with the tenant id bound as KMS encryption-context
+  (AAD) so the KMS itself enforces ownership; one shared KEK by
+  default, per-tenant KEK opt-in for crypto-shred / independent
+  revocation. The remaining sub-decision is **default
+  encryption-context content** — bare tenant id, or
+  `tenant + purpose` so a tenant can't cross-use a DEK between
+  its own contexts.
 - **Non-compose, non-Python consumers.** The wire protocol is
   language-agnostic; a Go/Rust/Node client is the same ~30
   lines. Do we ship more than Python at v1? (Default: no.)
