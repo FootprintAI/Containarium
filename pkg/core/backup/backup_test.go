@@ -242,6 +242,50 @@ func TestCreateValidation(t *testing.T) {
 	}
 }
 
+func TestRejectsPathTraversalID(t *testing.T) {
+	m := newTestManager(t, newFakeOps([]byte("x")))
+	// Ids that would escape m.dir once joined into a path must
+	// be refused before they ever reach filepath.Join.
+	bad := []string{
+		"../../etc/passwd",
+		"..",
+		"a/b",
+		`a\b`,
+		"sub/../../escape",
+		"",
+	}
+	for _, id := range bad {
+		if _, err := m.Get(id); err == nil {
+			t.Errorf("Get(%q): expected rejection", id)
+		}
+		if err := m.Delete(id); err == nil {
+			t.Errorf("Delete(%q): expected rejection", id)
+		}
+		if err := m.Restore(RestoreOptions{ContainerName: "c", ID: id}); err == nil {
+			t.Errorf("Restore(%q): expected rejection", id)
+		}
+	}
+	// A well-formed id is accepted by the validator (the lookup
+	// then fails only because no such record exists).
+	if err := validateBackupID("alice-appdb-20260605T103000Z"); err != nil {
+		t.Errorf("well-formed id rejected: %v", err)
+	}
+}
+
+func TestCreateRejectsUnsafeDerivedID(t *testing.T) {
+	m := newTestManager(t, newFakeOps([]byte("x")))
+	// A username or database carrying a path separator would
+	// produce an id that escapes m.dir; Create must refuse.
+	if _, err := m.Create(CreateOptions{
+		Username:      "../evil",
+		ContainerName: "c",
+		Conn:          PgConn{Database: "d"},
+		Destination:   DestLocal,
+	}); err == nil {
+		t.Error("Create with separator in username should fail")
+	}
+}
+
 func TestCreateGCS(t *testing.T) {
 	ops := newFakeOps([]byte("archive"))
 	up := &fakeUploader{}
