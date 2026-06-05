@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -66,8 +67,8 @@ func seedCreds(t *testing.T, home string, defServer string, srvs map[string]cred
 func TestResolveAuthToken_PrecedenceChain(t *testing.T) {
 	home := withTempHome(t)
 	_ = seedCreds(t, home, "https://cloud.containarium.dev", map[string]credentials.ServerCreds{
-		"https://cloud.containarium.dev":     {Token: "file-default"},
-		"https://self-hosted.example.com":    {Token: "file-self"},
+		"https://cloud.containarium.dev":  {Token: "file-default"},
+		"https://self-hosted.example.com": {Token: "file-self"},
 	})
 
 	cases := []struct {
@@ -467,6 +468,55 @@ func TestDeviceName_FallbacksAreNonEmpty(t *testing.T) {
 	}
 	if deviceName("") == "" {
 		t.Fatal("deviceName fallback returned empty string")
+	}
+}
+
+// TestDeviceName_DefaultIsAutoDisambiguated guards the #456 fix: the
+// default device name carries a per-login suffix so repeat logins from
+// one host don't collide with a still-live token of the same name.
+func TestDeviceName_DefaultIsAutoDisambiguated(t *testing.T) {
+	// Explicit override is verbatim — no suffix, byte-for-byte.
+	if got := deviceName("cloud-mcp"); got != "cloud-mcp" {
+		t.Fatalf("explicit override mutated: %q", got)
+	}
+
+	// The default name starts with the stable "<user>@<host>" base and
+	// appends "-<suffix>".
+	base := defaultDeviceBase()
+	a := deviceName("")
+	if !strings.HasPrefix(a, base+"-") {
+		t.Fatalf("default %q should start with base %q + '-'", a, base)
+	}
+
+	// Two successive default names must differ (collision-avoidance is
+	// the whole point) and only in the suffix.
+	b := deviceName("")
+	if a == b {
+		t.Fatalf("two default device names collided: %q == %q", a, b)
+	}
+	for _, n := range []string{a, b} {
+		suffix := strings.TrimPrefix(n, base+"-")
+		if len(suffix) != 6 {
+			t.Errorf("suffix %q (from %q) is not 6 chars", suffix, n)
+		}
+	}
+}
+
+func TestShortDeviceSuffix_HexAndVaries(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		s := shortDeviceSuffix()
+		if len(s) != 6 {
+			t.Fatalf("suffix %q not 6 chars", s)
+		}
+		if _, err := hex.DecodeString(s); err != nil {
+			t.Fatalf("suffix %q not hex: %v", s, err)
+		}
+		seen[s] = true
+	}
+	// 100 draws from 24 bits should essentially never all collide.
+	if len(seen) < 90 {
+		t.Errorf("suffix not varying enough: %d unique of 100", len(seen))
 	}
 }
 

@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
 )
@@ -11,6 +14,7 @@ import (
 var (
 	cfgFile        string
 	verbose        bool
+	versionCheck   bool
 	serverAddr     string
 	certsDir       string
 	insecure       bool
@@ -85,7 +89,6 @@ func SetVersionInfo(ver, build string) {
 	// See Makefile for usage
 }
 
-
 // initConfig reads in config file and ENV variables if set
 func initConfig() {
 	// TODO: implement config file reading with viper
@@ -106,7 +109,30 @@ Use --verbose flag for detailed build information including Git commit, build ti
 		} else {
 			fmt.Println(version.String())
 		}
+		if versionCheck {
+			runVersionCheck(cmd)
+		}
 	},
+}
+
+// runVersionCheck queries GitHub for the latest published release and
+// reports whether this binary is behind it (#354). Server-less — it asks
+// GitHub directly, so it works without a daemon configured.
+func runVersionCheck(cmd *cobra.Command) {
+	ctx, cancel := context.WithTimeout(cmd.Context(), 12*time.Second)
+	defer cancel()
+	rel, _, err := releases.NewClient().Latest(ctx)
+	if err != nil {
+		fmt.Printf("\nCould not check for updates: %v\n", err)
+		return
+	}
+	cur := version.GetVersion()
+	fmt.Printf("\ncurrent: %s\nlatest:  %s\n", cur, rel.TagName)
+	if releases.IsBehind(cur, rel.TagName) {
+		fmt.Printf("⚠ a newer release is available: %s\n", rel.HTMLURL)
+	} else {
+		fmt.Println("✓ up to date")
+	}
 }
 
 func init() {
@@ -129,5 +155,6 @@ func init() {
 
 	// Version command with verbose flag
 	versionCmd.Flags().BoolVar(&verboseVersion, "verbose", false, "show detailed version information")
+	versionCmd.Flags().BoolVar(&versionCheck, "check", false, "check GitHub for a newer release and report drift")
 	rootCmd.AddCommand(versionCmd)
 }

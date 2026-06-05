@@ -86,6 +86,15 @@ type ContainerServer struct {
 	// stamp environment.<NAME>=<value> at LXC start time.
 	secretsStore *secrets.Store
 
+	// KMS status snapshot for the KmsService GetKMSStatus RPC.
+	// Set once at startup in dual_server.go alongside the secrets
+	// store. Read-only after wiring; reflects CONTAINARIUM_KMS_BACKEND
+	// + CONTAINARIUM_REQUIRE_ENVELOPE as resolved at boot.
+	kmsBackend      string
+	kmsDescription  string
+	kmsConfigured   bool
+	requireEnvelope bool
+
 	// wakeRouter applies the Caddy route swap when a container is
 	// auto-slept (SwapToWake) and woken back up (SwapToDirect).
 	// Nil on daemons without app hosting or with auto-sleep disabled;

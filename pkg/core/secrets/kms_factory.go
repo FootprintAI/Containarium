@@ -30,6 +30,7 @@ const (
 	KMSBackendInProc = "inproc"
 	KMSBackendVault  = "vault"
 	KMSBackendGCP    = "gcp"
+	KMSBackendAWS    = "aws"
 )
 
 // LoadKMSClient picks a backend based on
@@ -78,8 +79,18 @@ func LoadKMSClient(masterKey []byte) (KMSClient, string, error) {
 			return nil, "", fmt.Errorf("KMS backend gcp: %w", err)
 		}
 		return k, fmt.Sprintf("gcp cloud kms (key=%s)", cfg.KeyName), nil
+	case KMSBackendAWS:
+		cfg, err := awsConfigFromEnv()
+		if err != nil {
+			return nil, "", fmt.Errorf("KMS backend aws: %w", err)
+		}
+		k, err := NewAWSKMS(cfg)
+		if err != nil {
+			return nil, "", fmt.Errorf("KMS backend aws: %w", err)
+		}
+		return k, fmt.Sprintf("aws kms (region=%s key=%s)", cfg.Region, cfg.KeyID), nil
 	default:
-		return nil, "", fmt.Errorf("KMS backend: unrecognized value %q (expected: none, inproc, vault, gcp)", backend)
+		return nil, "", fmt.Errorf("KMS backend: unrecognized value %q (expected: none, inproc, vault, gcp, aws)", backend)
 	}
 }
 
@@ -163,6 +174,69 @@ func gcpConfigFromEnv() (GCPConfig, error) {
 		d, err := time.ParseDuration(t)
 		if err != nil {
 			return cfg, fmt.Errorf("CONTAINARIUM_GCP_KMS_TIMEOUT: %w", err)
+		}
+		cfg.Timeout = d
+	}
+	return cfg, nil
+}
+
+// awsConfigFromEnv reads the AWS KMS config from env.
+// Required: CONTAINARIUM_AWS_KMS_REGION,
+// CONTAINARIUM_AWS_KMS_KEY_ID, CONTAINARIUM_AWS_ACCESS_KEY_ID,
+// and one of CONTAINARIUM_AWS_SECRET_ACCESS_KEY / _FILE.
+// Optional: CONTAINARIUM_AWS_SESSION_TOKEN / _FILE (STS temp
+// creds), CONTAINARIUM_AWS_KMS_ENDPOINT (VPC-endpoint /
+// air-gapped deployments override this),
+// CONTAINARIUM_AWS_KMS_TIMEOUT (default 5s).
+func awsConfigFromEnv() (AWSConfig, error) {
+	cfg := AWSConfig{
+		Region:      strings.TrimSpace(os.Getenv("CONTAINARIUM_AWS_KMS_REGION")),
+		KeyID:       strings.TrimSpace(os.Getenv("CONTAINARIUM_AWS_KMS_KEY_ID")),
+		AccessKeyID: strings.TrimSpace(os.Getenv("CONTAINARIUM_AWS_ACCESS_KEY_ID")),
+		Endpoint:    strings.TrimSpace(os.Getenv("CONTAINARIUM_AWS_KMS_ENDPOINT")),
+	}
+	if cfg.Region == "" {
+		return cfg, fmt.Errorf("CONTAINARIUM_AWS_KMS_REGION is required")
+	}
+	if cfg.KeyID == "" {
+		return cfg, fmt.Errorf("CONTAINARIUM_AWS_KMS_KEY_ID is required (key id, ARN, or alias/<name>)")
+	}
+	if cfg.AccessKeyID == "" {
+		return cfg, fmt.Errorf("CONTAINARIUM_AWS_ACCESS_KEY_ID is required")
+	}
+
+	// Secret access key: env wins over file. File is the
+	// recommended long-lived path — an IRSA / IMDS sidecar
+	// refreshes the credential and writes it atomically.
+	if sk := os.Getenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY"); sk != "" {
+		cfg.SecretAccessKey = sk
+	} else if path := strings.TrimSpace(os.Getenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY_FILE")); path != "" {
+		sk, err := readBearerLikeFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read CONTAINARIUM_AWS_SECRET_ACCESS_KEY_FILE: %w", err)
+		}
+		cfg.SecretAccessKey = sk
+	}
+	if cfg.SecretAccessKey == "" {
+		return cfg, fmt.Errorf("set either CONTAINARIUM_AWS_SECRET_ACCESS_KEY or CONTAINARIUM_AWS_SECRET_ACCESS_KEY_FILE")
+	}
+
+	// Session token: optional (only for STS temp creds).
+	// Same env-wins-over-file contract.
+	if st := os.Getenv("CONTAINARIUM_AWS_SESSION_TOKEN"); st != "" {
+		cfg.SessionToken = st
+	} else if path := strings.TrimSpace(os.Getenv("CONTAINARIUM_AWS_SESSION_TOKEN_FILE")); path != "" {
+		st, err := readBearerLikeFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read CONTAINARIUM_AWS_SESSION_TOKEN_FILE: %w", err)
+		}
+		cfg.SessionToken = st
+	}
+
+	if t := strings.TrimSpace(os.Getenv("CONTAINARIUM_AWS_KMS_TIMEOUT")); t != "" {
+		d, err := time.ParseDuration(t)
+		if err != nil {
+			return cfg, fmt.Errorf("CONTAINARIUM_AWS_KMS_TIMEOUT: %w", err)
 		}
 		cfg.Timeout = d
 	}

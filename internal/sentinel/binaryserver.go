@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 const defaultBinaryPath = "/usr/local/bin/containarium"
@@ -75,6 +76,17 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
+	})
+
+	// Version endpoint (#354) — lets the webui's Versions panel show the
+	// sentinel's running version alongside each backend's (from the
+	// daemon's /v1/backends) and the latest GitHub release (from the
+	// daemon's /v1/releases/latest). Unauthenticated: it reveals only the
+	// build version, the same as the binary the sentinel already serves at
+	// /containarium for peers to pull.
+	mux.HandleFunc("/sentinel/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(version.Get())
 	})
 
 	// Peers endpoint — for daemon multi-backend discovery

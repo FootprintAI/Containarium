@@ -1044,6 +1044,10 @@ func (s *Server) registerTools() {
 	// gateway that `containarium backup` also calls.
 	s.tools = append(s.tools, backupTools()...)
 
+	// KMS admin tools (kms_tools.go) — thin wrappers over the
+	// KmsService gateway that `containarium kms` also calls.
+	s.tools = append(s.tools, kmsTools()...)
+
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
 	// the security policy lives in one auditable spot. New
@@ -1098,6 +1102,10 @@ func toolScopeAssignments() map[string]string {
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
 		"list_backups":   auth.ScopeBackupsRead,
+		// KMS envelope-encryption administration (admin-only)
+		"kms_status":              auth.ScopeKMSAdmin,
+		"kms_envelope_coverage":   auth.ScopeKMSAdmin,
+		"kms_migrate_to_envelope": auth.ScopeKMSAdmin,
 		// security tools
 		"security_scan":      auth.ScopeSecurityWrite,
 		"security_remediate": auth.ScopeSecurityWrite,
@@ -1647,7 +1655,7 @@ func writeBackendDetail(b *strings.Builder, bk *Backend) {
 	}
 	fmt.Fprintf(b, "   Containers: %d running\n", bk.ContainerCount)
 	if bk.UptimeSeconds > 0 {
-		fmt.Fprintf(b, "   Uptime:     %s\n", formatUptime(bk.UptimeSeconds))
+		fmt.Fprintf(b, "   Uptime:     %s\n", formatUptime(int64(bk.UptimeSeconds)))
 	}
 	if bk.LastSeenAt != "" && bk.Type != "local" {
 		fmt.Fprintf(b, "   Last seen:  %s\n", bk.LastSeenAt)
@@ -1657,7 +1665,7 @@ func writeBackendDetail(b *strings.Builder, bk *Backend) {
 		for _, g := range bk.GPUs {
 			vram := ""
 			if g.VRAMBytes > 0 {
-				vram = fmt.Sprintf(" — %s VRAM", humanBytes(g.VRAMBytes))
+				vram = fmt.Sprintf(" — %s VRAM", humanBytes(int64(g.VRAMBytes)))
 			}
 			fmt.Fprintf(b, "     - %s %s%s\n", g.Vendor, g.ModelName, vram)
 		}

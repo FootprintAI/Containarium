@@ -120,6 +120,11 @@ systemctl --user is-enabled podman-restart.service     # user   (rootless)
 loginctl show-user <tenant-user> -p Linger             # -> Linger=yes
 ```
 
-A real end-to-end check reboots the host (or simulates a spot preemption +
-sentinel recovery) and asserts the workload is `RUNNING` again with no manual
-intervention — see the reboot-survival case in the acceptance suite.
+A real end-to-end check reboots the host and asserts the workload is
+`RUNNING` again with no manual intervention:
+`TestE2EPodmanRebootSurvival` in
+[`test/integration/e2e_podman_reboot_test.go`](../test/integration/e2e_podman_reboot_test.go).
+It is gated on `GCP_PROJECT` (it creates and reboots a real GCE instance)
+and skipped in `-short`, like the rest of the integration suite. The
+daemon's provisioning of the restart chain is additionally unit-covered in
+`pkg/core/container/podman_restart_test.go`.

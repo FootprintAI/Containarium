@@ -25,6 +25,15 @@ func clearKMSEnv(t *testing.T) {
 		"CONTAINARIUM_GCP_KMS_TOKEN_FILE",
 		"CONTAINARIUM_GCP_KMS_ENDPOINT",
 		"CONTAINARIUM_GCP_KMS_TIMEOUT",
+		"CONTAINARIUM_AWS_KMS_REGION",
+		"CONTAINARIUM_AWS_KMS_KEY_ID",
+		"CONTAINARIUM_AWS_ACCESS_KEY_ID",
+		"CONTAINARIUM_AWS_SECRET_ACCESS_KEY",
+		"CONTAINARIUM_AWS_SECRET_ACCESS_KEY_FILE",
+		"CONTAINARIUM_AWS_SESSION_TOKEN",
+		"CONTAINARIUM_AWS_SESSION_TOKEN_FILE",
+		"CONTAINARIUM_AWS_KMS_ENDPOINT",
+		"CONTAINARIUM_AWS_KMS_TIMEOUT",
 	} {
 		t.Setenv(k, "")
 	}
@@ -261,6 +270,135 @@ func TestLoadKMSClient_GCPTimeoutParse(t *testing.T) {
 		t.Fatalf("valid duration should parse; got %v", err)
 	}
 	t.Setenv("CONTAINARIUM_GCP_KMS_TIMEOUT", "garbage")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("malformed duration should error")
+	}
+}
+
+// --- AWS KMS factory cases ---
+
+func setAWSBaseEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "aws")
+	t.Setenv("CONTAINARIUM_AWS_KMS_REGION", "us-west-2")
+	t.Setenv("CONTAINARIUM_AWS_KMS_KEY_ID", "alias/containarium-secrets")
+	t.Setenv("CONTAINARIUM_AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+}
+
+func TestLoadKMSClient_AWSFromEnvSucceeds(t *testing.T) {
+	clearKMSEnv(t)
+	setAWSBaseEnv(t)
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY", "secret-key-xyz")
+	c, desc, err := LoadKMSClient(mkMaster(t))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if _, ok := c.(*AWSKMS); !ok {
+		t.Fatalf("expected *AWSKMS; got %T", c)
+	}
+	if desc == "" || desc[:3] != "aws" {
+		t.Fatalf("description should announce aws backend; got %q", desc)
+	}
+}
+
+func TestLoadKMSClient_AWSRequiresRegion(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "aws")
+	t.Setenv("CONTAINARIUM_AWS_KMS_KEY_ID", "alias/k")
+	t.Setenv("CONTAINARIUM_AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY", "secret-key-xyz")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("missing AWS_KMS_REGION should error")
+	}
+}
+
+func TestLoadKMSClient_AWSRequiresKeyID(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "aws")
+	t.Setenv("CONTAINARIUM_AWS_KMS_REGION", "us-west-2")
+	t.Setenv("CONTAINARIUM_AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY", "secret-key-xyz")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("missing AWS_KMS_KEY_ID should error")
+	}
+}
+
+func TestLoadKMSClient_AWSRequiresAccessKey(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "aws")
+	t.Setenv("CONTAINARIUM_AWS_KMS_REGION", "us-west-2")
+	t.Setenv("CONTAINARIUM_AWS_KMS_KEY_ID", "alias/k")
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY", "secret-key-xyz")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("missing AWS_ACCESS_KEY_ID should error")
+	}
+}
+
+func TestLoadKMSClient_AWSRequiresSecret(t *testing.T) {
+	clearKMSEnv(t)
+	setAWSBaseEnv(t)
+	// No secret env or file.
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("missing AWS secret (env or file) should error")
+	}
+}
+
+func TestLoadKMSClient_AWSSecretFromFile(t *testing.T) {
+	clearKMSEnv(t)
+	setAWSBaseEnv(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "aws.secret")
+	if err := os.WriteFile(p, []byte("secret-key-xyz\n"), 0o600); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY_FILE", p)
+	c, _, err := LoadKMSClient(mkMaster(t))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if _, ok := c.(*AWSKMS); !ok {
+		t.Fatalf("expected *AWSKMS from secret-file path; got %T", c)
+	}
+}
+
+func TestLoadKMSClient_AWSSecretFileWithBadPerms(t *testing.T) {
+	clearKMSEnv(t)
+	setAWSBaseEnv(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "aws.secret")
+	if err := os.WriteFile(p, []byte("secret-key-xyz\n"), 0o644); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY_FILE", p)
+	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
+		t.Fatal("0644 secret file should be rejected (defense-in-depth, same as Vault/GCP)")
+	}
+}
+
+func TestLoadKMSClient_AWSSessionTokenFromFile(t *testing.T) {
+	clearKMSEnv(t)
+	setAWSBaseEnv(t)
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY", "secret-key-xyz")
+	dir := t.TempDir()
+	p := filepath.Join(dir, "aws.session")
+	if err := os.WriteFile(p, []byte("session-token-abc\n"), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+	t.Setenv("CONTAINARIUM_AWS_SESSION_TOKEN_FILE", p)
+	if _, _, err := LoadKMSClient(mkMaster(t)); err != nil {
+		t.Fatalf("session token from file should be accepted; got %v", err)
+	}
+}
+
+func TestLoadKMSClient_AWSTimeoutParse(t *testing.T) {
+	clearKMSEnv(t)
+	setAWSBaseEnv(t)
+	t.Setenv("CONTAINARIUM_AWS_SECRET_ACCESS_KEY", "secret-key-xyz")
+	t.Setenv("CONTAINARIUM_AWS_KMS_TIMEOUT", "10s")
+	if _, _, err := LoadKMSClient(mkMaster(t)); err != nil {
+		t.Fatalf("valid duration should parse; got %v", err)
+	}
+	t.Setenv("CONTAINARIUM_AWS_KMS_TIMEOUT", "garbage")
 	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
 		t.Fatal("malformed duration should error")
 	}

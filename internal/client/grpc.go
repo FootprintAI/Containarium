@@ -23,6 +23,7 @@ type GRPCClient struct {
 	recipeClient  pb.RecipeServiceClient
 	backupClient  pb.BackupServiceClient
 	volumeClient  pb.VolumeServiceClient
+	kmsClient     pb.KmsServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -77,6 +78,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	recipeClient := pb.NewRecipeServiceClient(conn)
 	backupClient := pb.NewBackupServiceClient(conn)
 	volumeClient := pb.NewVolumeServiceClient(conn)
+	kmsClient := pb.NewKmsServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -86,6 +88,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		recipeClient:  recipeClient,
 		backupClient:  backupClient,
 		volumeClient:  volumeClient,
+		kmsClient:     kmsClient,
 	}, nil
 }
 
@@ -637,6 +640,41 @@ func (c *GRPCClient) DetachVolume(volume, container string) (*pb.DetachVolumeRes
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return c.volumeClient.DetachVolume(ctx, &pb.DetachVolumeRequest{Volume: volume, Container: container})
+}
+
+// GetKMSStatus reports the active KMS backend + envelope state via gRPC.
+func (c *GRPCClient) GetKMSStatus() (*pb.GetKMSStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.kmsClient.GetKMSStatus(ctx, &pb.GetKMSStatusRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get kms status: %w", err)
+	}
+	return resp, nil
+}
+
+// GetEnvelopeCoverage reports secret counts by encryption mode via gRPC.
+func (c *GRPCClient) GetEnvelopeCoverage() (*pb.GetEnvelopeCoverageResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.kmsClient.GetEnvelopeCoverage(ctx, &pb.GetEnvelopeCoverageRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get envelope coverage: %w", err)
+	}
+	return resp, nil
+}
+
+// MigrateToEnvelope triggers the legacy→envelope re-wrap via gRPC. A
+// large backlog can exceed the default deadline; the timeout scales
+// loosely with maxRows (0 = unlimited → a generous ceiling).
+func (c *GRPCClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.MigrateToEnvelopeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	resp, err := c.kmsClient.MigrateToEnvelope(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("migrate to envelope: %w", err)
+	}
+	return resp, nil
 }
 
 // ListApps lists all applications via gRPC

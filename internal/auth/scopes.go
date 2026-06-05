@@ -38,6 +38,13 @@ const (
 	ScopeSecretsRead  = "secrets:read"
 	ScopeSecretsWrite = "secrets:write"
 
+	// KMS / envelope-encryption administration (KmsService).
+	// Platform-wide, not tenant-scoped: reports the active KMS
+	// backend, envelope coverage, and triggers legacy→envelope
+	// migration. Admin role is ALSO required on the server side —
+	// this scope just narrows what an admin token CAN do.
+	ScopeKMSAdmin = "kms:admin"
+
 	// database backups (BackupServer). Separate from containers:
 	// a backup read returns dump locations/checksums, and a write
 	// can exfiltrate a tenant's whole database off-host or restore

@@ -20,6 +20,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -32,20 +33,20 @@ import (
 
 // GatewayServer implements the HTTP/REST gateway for the gRPC service
 type GatewayServer struct {
-	grpcAddress        string
-	httpPort           int
-	authMiddleware     *auth.AuthMiddleware
-	swaggerDir         string
-	certsDir           string // Optional: for mTLS connection to gRPC server
-	caddyCertDir       string // Optional: Caddy certificate directory for /certs endpoint
-	grafanaBackendURL      string // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
-	alertmanagerBackendURL string // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
-	securityStore      *security.Store // Optional: for CSV export endpoint
-	auditStore         *audit.Store    // Optional: for HTTP audit middleware
-	terminalHandler     *TerminalHandler
-	labelHandler        *LabelHandler
-	eventHandler        *EventHandler
-	coreServicesHandler *CoreServicesHandler
+	grpcAddress            string
+	httpPort               int
+	authMiddleware         *auth.AuthMiddleware
+	swaggerDir             string
+	certsDir               string          // Optional: for mTLS connection to gRPC server
+	caddyCertDir           string          // Optional: Caddy certificate directory for /certs endpoint
+	grafanaBackendURL      string          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
+	alertmanagerBackendURL string          // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
+	securityStore          *security.Store // Optional: for CSV export endpoint
+	auditStore             *audit.Store    // Optional: for HTTP audit middleware
+	terminalHandler        *TerminalHandler
+	labelHandler           *LabelHandler
+	eventHandler           *EventHandler
+	coreServicesHandler    *CoreServicesHandler
 
 	// Guacamole reverse proxy (browser-based RDP for Windows VMs)
 	guacamoleBackendURL string
@@ -107,12 +108,12 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 	eventHandler := NewEventHandler(events.GetBus())
 
 	return &GatewayServer{
-		grpcAddress:     grpcAddress,
-		httpPort:        httpPort,
-		authMiddleware:  authMiddleware,
-		swaggerDir:      swaggerDir,
-		certsDir:        certsDir,
-		caddyCertDir:    caddyCertDir,
+		grpcAddress:         grpcAddress,
+		httpPort:            httpPort,
+		authMiddleware:      authMiddleware,
+		swaggerDir:          swaggerDir,
+		certsDir:            certsDir,
+		caddyCertDir:        caddyCertDir,
 		terminalHandler:     terminalHandler,
 		labelHandler:        labelHandler,
 		eventHandler:        eventHandler,
@@ -381,6 +382,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register volume service gateway: %w", err)
 	}
 
+	// Register KmsService gateway handler (KMS status / envelope
+	// coverage / migration).
+	if err := pb.RegisterKmsServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register kms service gateway: %w", err)
+	}
+
 	// Register NetworkPolicyService gateway handler (#315)
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
@@ -635,6 +642,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		registerAuditEndpoint(httpMux, gs.auditStore, gs.authMiddleware)
 		log.Printf("Audit logs endpoint enabled at /v1/audit/logs")
 	}
+
+	// Version-visibility endpoint (#354): this daemon's version + the latest
+	// published GitHub release (cached 1h) so the webui / CLI can show drift.
+	registerVersionEndpoints(httpMux, releases.NewClient(), gs.authMiddleware)
+	log.Printf("Version endpoint enabled at /v1/releases/latest")
 
 	// Backends endpoint. The LIST (GET /v1/backends) is now the proto-first
 	// ContainerService.ListBackends RPC — it flows through the grpc-gateway

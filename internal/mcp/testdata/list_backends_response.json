@@ -6,7 +6,7 @@
       "healthy": true,
       "version": "0.16.4",
       "hostname": "demo-backend-local",
-      "uptimeSeconds": 345600,
+      "uptimeSeconds": "345600",
       "lastSeenAt": "2026-05-10T19:00:00Z",
       "os": "Ubuntu 24.04.1 LTS",
       "containerCount": 16
@@ -20,7 +20,7 @@
       "os": "Ubuntu 24.04.1 LTS",
       "containerCount": 4,
       "gpus": [
-        {"vendor": "NVIDIA", "modelName": "GeForce RTX 3090", "vramBytes": 25769803776}
+        {"vendor": "NVIDIA", "modelName": "GeForce RTX 3090", "vramBytes": "25769803776"}
       ]
     },
     {
@@ -32,7 +32,7 @@
       "os": "Ubuntu 24.04.1 LTS",
       "containerCount": 0,
       "gpus": [
-        {"vendor": "NVIDIA", "modelName": "GeForce RTX 4090", "vramBytes": 25769803776}
+        {"vendor": "NVIDIA", "modelName": "GeForce RTX 4090", "vramBytes": "25769803776"}
       ]
     }
   ]

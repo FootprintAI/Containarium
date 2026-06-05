@@ -134,20 +134,21 @@ func TestWireFormat_ListBackends(t *testing.T) {
 	assert.True(t, local.Healthy)
 	assert.Equal(t, "0.16.4", local.Version)
 	assert.Equal(t, int32(16), local.ContainerCount)
-	// uptimeSeconds is int64 but emitted as a JSON NUMBER here (not a
-	// string) — the /v1/backends handler is hand-coded, not
-	// grpc-gateway, so it doesn't string-encode int64. Confirm decode.
-	assert.Equal(t, int64(345600), local.UptimeSeconds)
+	// uptimeSeconds is int64, which the proto-first /v1/backends RPC
+	// (grpc-gateway protojson, #354) string-encodes ("345600"). flexInt64
+	// decodes that string form; EqualValues compares the numeric value
+	// regardless of the flexInt64 vs int64 type.
+	assert.EqualValues(t, 345600, local.UptimeSeconds)
 
-	// Second backend is a tunnel peer with a GPU. VRAMBytes is also
-	// int64-as-number, not int64-as-string.
+	// Second backend is a tunnel peer with a GPU. VRAMBytes is likewise an
+	// int64 string-encoded by protojson.
 	gpuPeer := resp.Backends[1]
 	assert.Equal(t, "tunnel", gpuPeer.Type)
 	assert.True(t, gpuPeer.Healthy)
 	require.Len(t, gpuPeer.GPUs, 1)
 	assert.Equal(t, "NVIDIA", gpuPeer.GPUs[0].Vendor)
 	assert.Equal(t, "GeForce RTX 3090", gpuPeer.GPUs[0].ModelName)
-	assert.Equal(t, int64(25769803776), gpuPeer.GPUs[0].VRAMBytes) // 24 GiB
+	assert.EqualValues(t, 25769803776, gpuPeer.GPUs[0].VRAMBytes) // 24 GiB
 
 	// Third backend is unhealthy — health flag must round-trip false
 	// (no "omitempty" gotcha eating the field).
