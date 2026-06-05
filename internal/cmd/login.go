@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"os/exec"
 	"os/user"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,7 +169,7 @@ Exit code is non-zero if no token is stored.`,
 
 func init() {
 	loginCmd.Flags().StringVar(&loginServer, "server", "", "server to log in to (default: "+defaultLoginServer+")")
-	loginCmd.Flags().StringVar(&loginDeviceName, "device-name", "", "human label for this session (default: <user>-<host>)")
+	loginCmd.Flags().StringVar(&loginDeviceName, "device-name", "", "human label for this session (default: <user>@<host>-<rand>, auto-disambiguated per login); an explicit name is used verbatim")
 	loginCmd.Flags().BoolVar(&loginNoBrowser, "no-browser", false, "don't try to open a browser; print the URL instead")
 	loginCmd.Flags().BoolVar(&loginWithSSHSetup, "with-ssh-setup", false, "after login, register this machine's SSH public key non-interactively (skips the y/N prompt)")
 	loginCmd.Flags().BoolVar(&loginNoSSHSetup, "no-ssh-setup", false, "after login, skip the SSH-key registration prompt entirely")
@@ -248,14 +251,33 @@ func pickLoginServer(explicit string) string {
 	return defaultLoginServer
 }
 
-// deviceName returns a stable, human-readable label for the
-// session. PRD example: "alice-laptop (alice)". We default to
-// "<user>@<host>" which is close enough — exact format matters
-// only for the cloud's "Active sessions" UI.
+// deviceName returns the label for the CLI session / minted credential.
+//
+// An explicit --device-name is returned verbatim: the user owns that
+// name and may want a stable label (accepting that a re-login under the
+// same name can collide with a still-live token on the server — see
+// the timeout guidance in runLogin and #456).
+//
+// The DEFAULT name — "<user>@<host>" — additionally gets a short random
+// suffix. The CLI polls an unauthenticated status endpoint and can't see
+// the server's credential list, so it can't detect a name collision
+// before the browser approve; when the default name is already taken the
+// approve is refused server-side and the CLI polls to timeout with no
+// actionable signal (#456). Appending a per-login suffix sidesteps that
+// entirely: repeat logins from the same host mint distinct names and
+// "just work". The cost is one extra (revocable) token per login,
+// prunable in the cloud's API-tokens UI — a far better failure mode than
+// a silent 10-minute strand.
 func deviceName(override string) string {
 	if override != "" {
 		return override
 	}
+	return defaultDeviceBase() + "-" + shortDeviceSuffix()
+}
+
+// defaultDeviceBase builds the stable "<user>@<host>" portion of the
+// default device name, with graceful fallbacks when either is missing.
+func defaultDeviceBase() string {
 	var who, host string
 	if u, err := user.Current(); err == nil {
 		who = u.Username
@@ -270,6 +292,18 @@ func deviceName(override string) string {
 		return who
 	}
 	return "containarium-cli"
+}
+
+// shortDeviceSuffix returns a short, unique-enough token (6 hex chars)
+// used to disambiguate repeat logins from one host. Falls back to a
+// nanosecond-derived value if the system RNG is unavailable — that still
+// varies per call, preserving the no-collision property.
+func shortDeviceSuffix() string {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return strconv.FormatInt(time.Now().UnixNano()&0xffffff, 16)
 }
 
 // openBrowser fires-and-forgets the platform-native URL opener. We
@@ -310,8 +344,11 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), maxWaitOverride+loginHTTPTimeout)
 	defer cancel()
 
-	// 1. Open a session.
-	sess, err := createSession(ctx, hc, srv, deviceName(loginDeviceName))
+	// 1. Open a session. Compute the device name once so the value sent
+	//    to the server matches what we surface in any later message (the
+	//    default name carries a random suffix — see deviceName).
+	dev := deviceName(loginDeviceName)
+	sess, err := createSession(ctx, hc, srv, dev)
 	if err != nil {
 		return fmt.Errorf("open CLI session: %w", err)
 	}
@@ -338,11 +375,16 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		// (it's unauthenticated and only polls status), so spell out the
 		// remedy instead of leaving the user staring at a bare timeout.
 		if errors.Is(err, errPollTimeout) {
-			dev := deviceName(loginDeviceName)
 			base := strings.TrimRight(srv, "/")
 			fmt.Fprintf(out, "\nApproval didn't complete in time.\n")
-			fmt.Fprintf(out, "If you've signed in as %q before, that device name may already be in use —\n", dev)
-			fmt.Fprintf(out, "revoke the old token at %s/settings/api-tokens, or rerun with a different --device-name.\n", base)
+			if loginDeviceName != "" {
+				// Only explicit --device-name can still collide; the
+				// default name is auto-disambiguated (see deviceName).
+				fmt.Fprintf(out, "The device name %q may already be in use —\n", dev)
+				fmt.Fprintf(out, "revoke the old token at %s/settings/api-tokens, or rerun with a different --device-name (or omit it to auto-disambiguate).\n", base)
+			} else {
+				fmt.Fprintf(out, "Revoke any stale tokens at %s/settings/api-tokens and try again.\n", base)
+			}
 		}
 		return err
 	}
@@ -401,11 +443,11 @@ func runLogin(cmd *cobra.Command, args []string) error {
 
 // maybeRunPostLoginSSHSetup implements the A7 contract:
 //
-//   --no-ssh-setup        skip silently
-//   --with-ssh-setup      run setup non-interactively (assume yes)
-//   neither (default)     prompt "Register this machine's SSH key
-//                         as 'X' for SSH access to your boxes? [Y/n]"
-//                         — empty answer = yes, anything else parsed
+//	--no-ssh-setup        skip silently
+//	--with-ssh-setup      run setup non-interactively (assume yes)
+//	neither (default)     prompt "Register this machine's SSH key
+//	                      as 'X' for SSH access to your boxes? [Y/n]"
+//	                      — empty answer = yes, anything else parsed
 //
 // In non-TTY environments (CI, pipes) we treat an empty/EOF answer
 // as "no" because hitting people with a key-registration in CI
