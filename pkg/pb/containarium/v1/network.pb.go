@@ -488,7 +488,13 @@ type ProxyRoute struct {
 	// Owner username
 	Username string `protobuf:"bytes,8,opt,name=username,proto3" json:"username,omitempty"`
 	// Protocol type (HTTP or gRPC)
-	Protocol      RouteProtocol `protobuf:"varint,9,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
+	Protocol RouteProtocol `protobuf:"varint,9,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
+	// Name of the container this route forwards to (the box behind the
+	// upstream IP), e.g. "cld-abc123". Resolved from the route record or by
+	// reverse-lookup of container_ip. Distinct from app_name (the display
+	// name): a multi-tenant control plane keys its route reconciler on the
+	// container, so it needs the box identity, not just the display label.
+	ContainerName string `protobuf:"bytes,10,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -584,6 +590,13 @@ func (x *ProxyRoute) GetProtocol() RouteProtocol {
 		return x.Protocol
 	}
 	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
+func (x *ProxyRoute) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
 }
 
 // PassthroughRoute represents a direct TCP/UDP port forwarding rule
@@ -2597,7 +2610,7 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\ringress_rules\x18\x05 \x03(\v2\x18.containarium.v1.ACLRuleR\fingressRules\x12;\n" +
 	"\fegress_rules\x18\x06 \x03(\v2\x18.containarium.v1.ACLRuleR\vegressRules\x12\x15\n" +
 	"\x06app_id\x18\a \x01(\tR\x05appId\x12%\n" +
-	"\x0econtainer_name\x18\b \x01(\tR\rcontainerName\"\xa4\x02\n" +
+	"\x0econtainer_name\x18\b \x01(\tR\rcontainerName\"\xcb\x02\n" +
 	"\n" +
 	"ProxyRoute\x12\x1c\n" +
 	"\tsubdomain\x18\x01 \x01(\tR\tsubdomain\x12\x1f\n" +
@@ -2609,7 +2622,9 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x06app_id\x18\x06 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\a \x01(\tR\aappName\x12\x1a\n" +
 	"\busername\x18\b \x01(\tR\busername\x12:\n" +
-	"\bprotocol\x18\t \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\"\x92\x02\n" +
+	"\bprotocol\x18\t \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\x12%\n" +
+	"\x0econtainer_name\x18\n" +
+	" \x01(\tR\rcontainerName\"\x92\x02\n" +
 	"\x10PassthroughRoute\x12#\n" +
 	"\rexternal_port\x18\x01 \x01(\x05R\fexternalPort\x12\x1b\n" +
 	"\ttarget_ip\x18\x02 \x01(\tR\btargetIp\x12\x1f\n" +

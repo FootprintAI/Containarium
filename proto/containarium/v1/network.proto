@@ -152,6 +152,13 @@ message ProxyRoute {
 
   // Protocol type (HTTP or gRPC)
   RouteProtocol protocol = 9;
+
+  // Name of the container this route forwards to (the box behind the
+  // upstream IP), e.g. "cld-abc123". Resolved from the route record or by
+  // reverse-lookup of container_ip. Distinct from app_name (the display
+  // name): a multi-tenant control plane keys its route reconciler on the
+  // container, so it needs the box identity, not just the display label.
+  string container_name = 10;
 }
 
 // PassthroughRoute represents a direct TCP/UDP port forwarding rule

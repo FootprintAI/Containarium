@@ -117,13 +117,14 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 			}
 
 			pbRoute := &pb.ProxyRoute{
-				Subdomain:   route.Subdomain,
-				FullDomain:  route.FullDomain,
-				ContainerIp: route.TargetIP,
-				Port:        int32(route.TargetPort),
-				Active:      route.Active,
-				Protocol:    protocol,
-				AppName:     containerName,
+				Subdomain:     route.Subdomain,
+				FullDomain:    route.FullDomain,
+				ContainerIp:   route.TargetIP,
+				Port:          int32(route.TargetPort),
+				Active:        route.Active,
+				Protocol:      protocol,
+				AppName:       containerName,
+				ContainerName: containerName,
 			}
 			pbRoutes = append(pbRoutes, pbRoute)
 		}
@@ -186,13 +187,14 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 		containerName := ipToContainer[route.UpstreamIP]
 
 		pbRoute := &pb.ProxyRoute{
-			Subdomain:   route.Subdomain,
-			FullDomain:  route.FullDomain,
-			ContainerIp: route.UpstreamIP,
-			Port:        int32(route.UpstreamPort),
-			Active:      true, // If it's in the list, it's active
-			Protocol:    routeProtocolToProto(route.Protocol),
-			AppName:     containerName, // Use container name as app name for display
+			Subdomain:     route.Subdomain,
+			FullDomain:    route.FullDomain,
+			ContainerIp:   route.UpstreamIP,
+			Port:          int32(route.UpstreamPort),
+			Active:        true, // If it's in the list, it's active
+			Protocol:      routeProtocolToProto(route.Protocol),
+			AppName:       containerName, // legacy: container name doubled as app name for display
+			ContainerName: containerName,
 		}
 		pbRoutes = append(pbRoutes, pbRoute)
 	}

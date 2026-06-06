@@ -7676,6 +7676,10 @@
         "protocol": {
           "$ref": "#/definitions/RouteProtocol",
           "title": "Protocol type (HTTP or gRPC)"
+        },
+        "containerName": {
+          "type": "string",
+          "description": "Name of the container this route forwards to (the box behind the\nupstream IP), e.g. \"cld-abc123\". Resolved from the route record or by\nreverse-lookup of container_ip. Distinct from app_name (the display\nname): a multi-tenant control plane keys its route reconciler on the\ncontainer, so it needs the box identity, not just the display label."
         }
       },
       "title": "ProxyRoute represents a DNS/domain to container mapping"
