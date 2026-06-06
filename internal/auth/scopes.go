@@ -52,6 +52,12 @@ const (
 	ScopeBackupsRead  = "backups:read"
 	ScopeBackupsWrite = "backups:write"
 
+	// shared volumes (VolumeServer). A write can create/attach/delete
+	// CephFS volumes mounted RW across tenants — cross-tenant data
+	// surface, so it's gated separately from containers.
+	ScopeVolumesRead  = "volumes:read"
+	ScopeVolumesWrite = "volumes:write"
+
 	// routes / expose (network surface)
 	ScopeRoutesRead  = "routes:read"
 	ScopeRoutesWrite = "routes:write"

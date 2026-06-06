@@ -377,6 +377,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register backup service gateway: %w", err)
 	}
 
+	// Register VolumeService gateway handler (#384)
+	if err := pb.RegisterVolumeServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register volume service gateway: %w", err)
+	}
+
 	// Register KmsService gateway handler (KMS status / envelope
 	// coverage / migration).
 	if err := pb.RegisterKmsServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {

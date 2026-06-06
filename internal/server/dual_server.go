@@ -310,6 +310,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
 	log.Printf("Backup service enabled")
 
+	// Register VolumeService — shared, multi-writer CephFS volumes (#384).
+	// Capability-gated: create/attach are rejected unless the host has a
+	// cephfs storage pool (single-node ZFS hosts get a clear error).
+	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
+	log.Printf("Volume service enabled")
+
 	// KMS admin service — read the active backend, envelope
 	// coverage, and trigger legacy→envelope migration. Backed by
 	// the same secrets Store; backend *config* stays in env/systemd.
