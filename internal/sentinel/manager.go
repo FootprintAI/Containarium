@@ -55,6 +55,14 @@ type Config struct {
 	TunnelMode             bool          // if true, the Manager waits for tunnel connections instead of resolving IP at startup
 	HybridMode             bool          // if true, GCP + tunnel backends coexist
 	ProxyProtocol          bool          // if true, prepend a PROXY v2 header to forwarded HTTPS streams so the downstream Caddy sees the real client IP
+	// AlertWebhookURL, when set, receives a JSON POST when the spot is
+	// preempted ("preempted") and when it comes back ("recovered"). The
+	// on-spot vmalert/VictoriaMetrics stack dies WITH the spot, so the
+	// always-on sentinel is the only thing that can alert on the spot's
+	// own outage — it does so by an outbound webhook, not the on-spot
+	// alert chain (#514 follow-up). Empty disables the webhook; the
+	// /metrics endpoint (counters) is always served regardless.
+	AlertWebhookURL string
 }
 
 // Manager is the core sentinel orchestrator.
@@ -98,7 +106,8 @@ type Manager struct {
 	// Recovery tracking
 	outageStart    time.Time // when the current outage began
 	lastPreemption time.Time // when the last preemption event was detected
-	preemptCount   int       // total preemption events observed
+	preemptCount   int       // total preemption events observed ("down" counter)
+	recoveredCount int       // total returns-to-proxy after an outage ("up" counter); alert on preemptCount-recoveredCount > 0
 
 	// Backoff schedule for periodic recovery retries while stuck in
 	// maintenance (#514). nextRecoveryAttempt gates re-attempts;
@@ -630,8 +639,15 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if err := m.switchToProxy(best); err != nil {
 				log.Printf("[sentinel] failed to switch to proxy: %v", err)
 			}
-			// Recovered — clear the outage + backoff schedule so the next
-			// outage starts fresh (#514).
+			// Recovered — the "instance is back" event. Bump the up-counter
+			// and notify, then clear the outage + backoff schedule so the
+			// next outage starts fresh (#514).
+			outage := time.Duration(0)
+			if !m.outageStart.IsZero() {
+				outage = time.Since(m.outageStart)
+			}
+			m.recoveredCount++
+			m.fireAlert("recovered", best.ID, outage)
 			m.outageStart = time.Time{}
 			m.resetRecovery()
 		}
@@ -972,6 +988,9 @@ func (m *Manager) handleEvent(ctx context.Context, event VMEvent) {
 		m.lastPreemption = event.Timestamp
 		log.Printf("[sentinel] EVENT: PREEMPTION detected at %s (total: %d) — %s",
 			event.Timestamp.Format(time.RFC3339), m.preemptCount, event.Detail)
+		// The "down" event. Notify immediately — the on-spot vmalert is
+		// dying with the VM, so this outbound webhook is the alert path.
+		m.fireAlert("preempted", "gcp", 0)
 
 		if gcpBackend != nil {
 			gcpBackend.Healthy = false
@@ -1239,6 +1258,7 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 
 func (m *Manager) CurrentState() State       { return m.currentState() }
 func (m *Manager) PreemptCount() int         { return m.preemptCount }
+func (m *Manager) RecoveredCount() int       { return m.recoveredCount }
 func (m *Manager) LastPreemption() time.Time { return m.lastPreemption }
 
 // SpotIP returns the primary backend IP (backward compat).

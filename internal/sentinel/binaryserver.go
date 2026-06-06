@@ -168,6 +168,12 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 		json.NewEncoder(w).Encode(status)
 	})
 
+	// Prometheus metrics for the spot preemption/recovery signal (#514
+	// follow-up). Served from the always-on sentinel so an EXTERNAL
+	// scraper can alert on the net — the on-spot VictoriaMetrics dies with
+	// the spot it would be reporting on.
+	mux.HandleFunc("/metrics", manager.MetricsHandler())
+
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", port),
 		Handler:      mux,

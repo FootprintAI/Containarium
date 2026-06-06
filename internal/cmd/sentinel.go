@@ -37,6 +37,7 @@ var (
 	sentinelTunnelToken            string
 	sentinelTunnelTokenPolicies    []string
 	sentinelProxyProtocol          bool
+	sentinelAlertWebhookURL        string
 )
 
 var sentinelCmd = &cobra.Command{
@@ -85,6 +86,7 @@ func init() {
 	sentinelCmd.Flags().DurationVar(&sentinelCertSyncInterval, "cert-sync-interval", 6*time.Hour, "Interval for syncing TLS certificates from backend (0 to use default 6h)")
 	sentinelCmd.Flags().DurationVar(&sentinelKeySyncInterval, "key-sync-interval", 2*time.Minute, "Interval for syncing SSH keys from backend for sshpiper (0 to use default 2m)")
 	sentinelCmd.Flags().BoolVar(&sentinelProxyProtocol, "proxy-protocol", false, "Prepend a PROXY v2 header to forwarded HTTPS streams so the backend Caddy sees the real client IP (requires Caddy with proxy_protocol listener wrapper trusting the sentinel)")
+	sentinelCmd.Flags().StringVar(&sentinelAlertWebhookURL, "alert-webhook-url", os.Getenv("CONTAINARIUM_SENTINEL_ALERT_WEBHOOK"), "Webhook POSTed on spot preempted/recovered (always-on alert path; the on-spot vmalert dies with the VM). Falls back to $CONTAINARIUM_SENTINEL_ALERT_WEBHOOK (#514)")
 }
 
 func runSentinel(cmd *cobra.Command, args []string) error {
@@ -146,6 +148,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 				KeySyncInterval:        sentinelKeySyncInterval,
 				HybridMode:             true,
 				ProxyProtocol:          sentinelProxyProtocol,
+				AlertWebhookURL:        sentinelAlertWebhookURL,
 			}
 
 			manager := sentinel.NewManager(config, gcpProvider)
@@ -234,6 +237,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			KeySyncInterval:        sentinelKeySyncInterval,
 			TunnelMode:             true,
 			ProxyProtocol:          sentinelProxyProtocol,
+			AlertWebhookURL:        sentinelAlertWebhookURL,
 		}
 
 		manager := sentinel.NewManager(config, provider)
@@ -297,6 +301,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		CertSyncInterval:       sentinelCertSyncInterval,
 		KeySyncInterval:        sentinelKeySyncInterval,
 		ProxyProtocol:          sentinelProxyProtocol,
+		AlertWebhookURL:        sentinelAlertWebhookURL,
 	}
 
 	manager := sentinel.NewManager(config, provider)
