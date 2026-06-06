@@ -39,11 +39,22 @@ type Config struct {
 	UnhealthyThreshold int
 	BinaryPort         int           // port to serve containarium binary for spot VM downloads (0 = disabled)
 	RecoveryTimeout    time.Duration // warn if recovery takes longer than this (0 = no warning)
-	CertSyncInterval   time.Duration // interval for syncing TLS certs from backend (0 = default 6h)
-	KeySyncInterval    time.Duration // interval for syncing SSH keys from backend (0 = default 2m)
-	TunnelMode         bool          // if true, the Manager waits for tunnel connections instead of resolving IP at startup
-	HybridMode         bool          // if true, GCP + tunnel backends coexist
-	ProxyProtocol      bool          // if true, prepend a PROXY v2 header to forwarded HTTPS streams so the downstream Caddy sees the real client IP
+	// RecoveryBackoffInitial / RecoveryBackoffMax bound the periodic
+	// re-attempt of StartInstance while the backend is stuck down (e.g.
+	// spot capacity unavailable). Without this the sentinel attempts a
+	// start once at the proxy→maintenance transition and then waits
+	// passively (#514). With it, recovery is retried on an exponential
+	// schedule (Initial, doubling up to Max) so a preempted spot
+	// self-heals when capacity returns, without hammering the cloud API.
+	// Zero values fall back to defaults (30s / 5m). Initial<=0 with a
+	// provider still recovers using the defaults.
+	RecoveryBackoffInitial time.Duration
+	RecoveryBackoffMax     time.Duration
+	CertSyncInterval       time.Duration // interval for syncing TLS certs from backend (0 = default 6h)
+	KeySyncInterval        time.Duration // interval for syncing SSH keys from backend (0 = default 2m)
+	TunnelMode             bool          // if true, the Manager waits for tunnel connections instead of resolving IP at startup
+	HybridMode             bool          // if true, GCP + tunnel backends coexist
+	ProxyProtocol          bool          // if true, prepend a PROXY v2 header to forwarded HTTPS streams so the downstream Caddy sees the real client IP
 }
 
 // Manager is the core sentinel orchestrator.
@@ -88,6 +99,15 @@ type Manager struct {
 	outageStart    time.Time // when the current outage began
 	lastPreemption time.Time // when the last preemption event was detected
 	preemptCount   int       // total preemption events observed
+
+	// Backoff schedule for periodic recovery retries while stuck in
+	// maintenance (#514). nextRecoveryAttempt gates re-attempts;
+	// recoveryBackoff is the current interval, doubled on each failed
+	// StartInstance up to RecoveryBackoffMax and reset when the backend
+	// recovers. Accessed only from the single Run() event-loop goroutine
+	// (healthCheckAll / handleEvent / diagnoseAndRecover), so no lock.
+	recoveryBackoff     time.Duration
+	nextRecoveryAttempt time.Time
 
 	// hmacSecret is the shared HMAC secret used to sign
 	// /sentinel/peers responses (and reused for keysync/certsync
@@ -216,6 +236,18 @@ func (m *Manager) IssuePeerCert(peerID string) (certPEM, keyPEM []byte, err erro
 // response. Tests can override with SetHMACSecret without touching
 // the environment.
 func NewManager(config Config, provider CloudProvider) *Manager {
+	// Recovery-backoff defaults (#514). 30s initial keeps a transient
+	// blip recovering quickly; doubling to a 5m cap stops a sustained
+	// capacity outage from hammering the cloud API every tick.
+	if config.RecoveryBackoffInitial <= 0 {
+		config.RecoveryBackoffInitial = 30 * time.Second
+	}
+	if config.RecoveryBackoffMax <= 0 {
+		config.RecoveryBackoffMax = 5 * time.Minute
+	}
+	if config.RecoveryBackoffMax < config.RecoveryBackoffInitial {
+		config.RecoveryBackoffMax = config.RecoveryBackoffInitial
+	}
 	m := &Manager{
 		config:    config,
 		provider:  provider,
@@ -498,6 +530,12 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		case <-ticker.C:
 			m.healthCheckAll(ctx)
+			// Periodic recovery while stuck in maintenance: re-attempt
+			// StartInstance on the backoff schedule so a preempted spot
+			// self-heals when capacity returns (#514). No-op outside
+			// maintenance or before the backoff window elapses.
+			m.maybeRetryRecovery(ctx)
+			m.checkRecoveryTimeout()
 		}
 	}
 }
@@ -592,15 +630,21 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if err := m.switchToProxy(best); err != nil {
 				log.Printf("[sentinel] failed to switch to proxy: %v", err)
 			}
+			// Recovered — clear the outage + backoff schedule so the next
+			// outage starts fresh (#514).
+			m.outageStart = time.Time{}
+			m.resetRecovery()
 		}
 	}
 	if !anyHealthy && m.currentState() == StateProxy {
 		log.Printf("[sentinel] all backends unhealthy, switching to maintenance")
 		m.outageStart = time.Now()
+		m.resetRecovery() // fresh backoff for this outage
 		if err := m.switchToMaintenance(); err != nil {
 			log.Printf("[sentinel] failed to switch to maintenance: %v", err)
 		}
-		// Try to recover GCP backend
+		// First recovery attempt immediately; maybeRetryRecovery then
+		// re-attempts on the backoff schedule while we stay in maintenance.
 		for _, b := range backends {
 			if b.Type == BackendGCP && b.Provider != nil {
 				m.diagnoseAndRecover(ctx, b)
@@ -983,15 +1027,32 @@ func (m *Manager) checkRecoveryTimeout() {
 	}
 }
 
-func (m *Manager) diagnoseAndRecover(ctx context.Context, b *Backend) {
+// recoveryOutcome reports what diagnoseAndRecover did, so the periodic
+// retry driver (maybeRetryRecovery) can manage the backoff schedule.
+type recoveryOutcome int
+
+const (
+	recoveryNoop        recoveryOutcome = iota // nothing to start (running/provisioning) or no provider
+	recoveryStartOK                            // StartInstance command accepted
+	recoveryStartFailed                        // StartInstance errored (e.g. no spot capacity)
+)
+
+// diagnoseAndRecover inspects the backend's cloud status and, if it's
+// stopped/terminated, attempts to start it. It then advances the backoff
+// schedule based on the outcome (#514) so subsequent maybeRetryRecovery
+// ticks re-attempt on an exponential cadence rather than once-and-wait.
+func (m *Manager) diagnoseAndRecover(ctx context.Context, b *Backend) recoveryOutcome {
 	if b.Provider == nil {
-		return
+		return recoveryNoop
 	}
 
 	status, err := b.Provider.GetInstanceStatus(ctx)
 	if err != nil {
 		log.Printf("[sentinel] failed to get status for %s: %v", b.ID, err)
-		return
+		// Treat an unreadable status like a failed attempt: keep trying,
+		// but backed off, rather than hammering the status API.
+		m.advanceRecoveryBackoff()
+		return recoveryStartFailed
 	}
 
 	log.Printf("[sentinel] backend %s status: %s", b.ID, status)
@@ -1000,15 +1061,83 @@ func (m *Manager) diagnoseAndRecover(ctx context.Context, b *Backend) {
 	case StatusStopped, StatusTerminated:
 		log.Printf("[sentinel] attempting to start %s...", b.ID)
 		if err := b.Provider.StartInstance(ctx); err != nil {
-			log.Printf("[sentinel] failed to start %s: %v", b.ID, err)
-		} else {
-			log.Printf("[sentinel] start command sent for %s", b.ID)
+			log.Printf("[sentinel] failed to start %s: %v (will retry, backing off)", b.ID, err)
+			m.advanceRecoveryBackoff()
+			return recoveryStartFailed
 		}
+		log.Printf("[sentinel] start command sent for %s", b.ID)
+		// Start accepted — re-probe soon (initial interval) so we catch
+		// it either coming healthy or, if capacity is then lost again,
+		// retrying without a long stall.
+		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
+		return recoveryStartOK
 	case StatusProvisioning:
 		log.Printf("[sentinel] %s is provisioning...", b.ID)
+		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
+		return recoveryNoop
 	case StatusRunning:
+		// Cloud says running but TCP health failed — starting won't help;
+		// the health check will flip it healthy when the daemon answers.
 		log.Printf("[sentinel] %s reports running but health check failed", b.ID)
+		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
+		return recoveryNoop
 	}
+	return recoveryNoop
+}
+
+// scheduleRecovery sets the current backoff and the next-attempt time.
+func (m *Manager) scheduleRecovery(d time.Duration) {
+	if d <= 0 {
+		d = m.config.RecoveryBackoffInitial
+	}
+	m.recoveryBackoff = d
+	m.nextRecoveryAttempt = time.Now().Add(d)
+}
+
+// advanceRecoveryBackoff doubles the backoff (capped at Max) and schedules
+// the next attempt. Called on a failed start / unreadable status.
+func (m *Manager) advanceRecoveryBackoff() {
+	next := m.recoveryBackoff * 2
+	if m.recoveryBackoff == 0 {
+		next = m.config.RecoveryBackoffInitial
+	}
+	if next > m.config.RecoveryBackoffMax {
+		next = m.config.RecoveryBackoffMax
+	}
+	m.scheduleRecovery(next)
+}
+
+// resetRecovery clears the backoff schedule — called when the backend
+// recovers (switch back to proxy), so the next outage starts fresh.
+func (m *Manager) resetRecovery() {
+	m.recoveryBackoff = 0
+	m.nextRecoveryAttempt = time.Time{}
+}
+
+// maybeRetryRecovery re-attempts recovery while the sentinel is stuck in
+// maintenance with a provider-backed (GCP) backend, gated by the backoff
+// schedule. This is the periodic counterpart to the one-shot recovery at
+// the proxy→maintenance transition: it lets a preempted spot self-heal
+// when capacity returns, without a start attempt every health-check tick
+// (#514). Called from the Run() loop's tick, single-goroutine.
+func (m *Manager) maybeRetryRecovery(ctx context.Context) {
+	if m.currentState() != StateMaintenance {
+		return
+	}
+	if !m.nextRecoveryAttempt.IsZero() && time.Now().Before(m.nextRecoveryAttempt) {
+		return // backoff window not elapsed yet
+	}
+	var target *Backend
+	for _, b := range m.backends.All() {
+		if b.Type == BackendGCP && b.Provider != nil && !b.Healthy {
+			target = b
+			break
+		}
+	}
+	if target == nil {
+		return // nothing provider-backed to recover (e.g. pure tunnel mode)
+	}
+	m.diagnoseAndRecover(ctx, target)
 }
 
 func (m *Manager) cleanup() {

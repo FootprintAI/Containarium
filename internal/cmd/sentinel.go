@@ -16,25 +16,27 @@ import (
 )
 
 var (
-	sentinelProvider           string
-	sentinelSpotVM             string
-	sentinelZone               string
-	sentinelProject            string
-	sentinelBackendAddr        string
-	sentinelHealthPort         int
-	sentinelCheckInterval      time.Duration
-	sentinelHTTPPort           int
-	sentinelHTTPSPort          int
-	sentinelForwardedPorts     string
-	sentinelHealthyThreshold   int
-	sentinelUnhealthyThreshold int
-	sentinelBinaryPort         int
-	sentinelRecoveryTimeout    time.Duration
-	sentinelCertSyncInterval   time.Duration
-	sentinelKeySyncInterval    time.Duration
-	sentinelTunnelToken         string
-	sentinelTunnelTokenPolicies []string
-	sentinelProxyProtocol       bool
+	sentinelProvider               string
+	sentinelSpotVM                 string
+	sentinelZone                   string
+	sentinelProject                string
+	sentinelBackendAddr            string
+	sentinelHealthPort             int
+	sentinelCheckInterval          time.Duration
+	sentinelHTTPPort               int
+	sentinelHTTPSPort              int
+	sentinelForwardedPorts         string
+	sentinelHealthyThreshold       int
+	sentinelUnhealthyThreshold     int
+	sentinelBinaryPort             int
+	sentinelRecoveryTimeout        time.Duration
+	sentinelRecoveryBackoffInitial time.Duration
+	sentinelRecoveryBackoffMax     time.Duration
+	sentinelCertSyncInterval       time.Duration
+	sentinelKeySyncInterval        time.Duration
+	sentinelTunnelToken            string
+	sentinelTunnelTokenPolicies    []string
+	sentinelProxyProtocol          bool
 )
 
 var sentinelCmd = &cobra.Command{
@@ -78,6 +80,8 @@ func init() {
 	sentinelCmd.Flags().IntVar(&sentinelUnhealthyThreshold, "unhealthy-threshold", 2, "Consecutive unhealthy checks before switching to maintenance")
 	sentinelCmd.Flags().IntVar(&sentinelBinaryPort, "binary-port", 8888, "Port to serve containarium binary for spot VM downloads (0 to disable)")
 	sentinelCmd.Flags().DurationVar(&sentinelRecoveryTimeout, "recovery-timeout", 10*time.Minute, "Warn if recovery takes longer than this (0 to disable)")
+	sentinelCmd.Flags().DurationVar(&sentinelRecoveryBackoffInitial, "recovery-backoff-initial", 30*time.Second, "Initial interval between StartInstance retries while a backend is down (#514)")
+	sentinelCmd.Flags().DurationVar(&sentinelRecoveryBackoffMax, "recovery-backoff-max", 5*time.Minute, "Max interval between StartInstance retries (exponential backoff cap)")
 	sentinelCmd.Flags().DurationVar(&sentinelCertSyncInterval, "cert-sync-interval", 6*time.Hour, "Interval for syncing TLS certificates from backend (0 to use default 6h)")
 	sentinelCmd.Flags().DurationVar(&sentinelKeySyncInterval, "key-sync-interval", 2*time.Minute, "Interval for syncing SSH keys from backend for sshpiper (0 to use default 2m)")
 	sentinelCmd.Flags().BoolVar(&sentinelProxyProtocol, "proxy-protocol", false, "Prepend a PROXY v2 header to forwarded HTTPS streams so the backend Caddy sees the real client IP (requires Caddy with proxy_protocol listener wrapper trusting the sentinel)")
@@ -127,19 +131,21 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			log.Printf("[sentinel] hybrid mode: GCP + tunnel (ConnMux on port %d)", sentinelHTTPSPort)
 
 			config := sentinel.Config{
-				HealthPort:         sentinelHealthPort,
-				CheckInterval:      sentinelCheckInterval,
-				HTTPPort:           sentinelHTTPPort,
-				HTTPSPort:          sentinelHTTPSPort,
-				ForwardedPorts:     ports,
-				HealthyThreshold:   sentinelHealthyThreshold,
-				UnhealthyThreshold: sentinelUnhealthyThreshold,
-				BinaryPort:         sentinelBinaryPort,
-				RecoveryTimeout:    sentinelRecoveryTimeout,
-				CertSyncInterval:   sentinelCertSyncInterval,
-				KeySyncInterval:    sentinelKeySyncInterval,
-				HybridMode:         true,
-				ProxyProtocol:      sentinelProxyProtocol,
+				HealthPort:             sentinelHealthPort,
+				CheckInterval:          sentinelCheckInterval,
+				HTTPPort:               sentinelHTTPPort,
+				HTTPSPort:              sentinelHTTPSPort,
+				ForwardedPorts:         ports,
+				HealthyThreshold:       sentinelHealthyThreshold,
+				UnhealthyThreshold:     sentinelUnhealthyThreshold,
+				BinaryPort:             sentinelBinaryPort,
+				RecoveryTimeout:        sentinelRecoveryTimeout,
+				RecoveryBackoffInitial: sentinelRecoveryBackoffInitial,
+				RecoveryBackoffMax:     sentinelRecoveryBackoffMax,
+				CertSyncInterval:       sentinelCertSyncInterval,
+				KeySyncInterval:        sentinelKeySyncInterval,
+				HybridMode:             true,
+				ProxyProtocol:          sentinelProxyProtocol,
 			}
 
 			manager := sentinel.NewManager(config, gcpProvider)
@@ -213,19 +219,21 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		provider = sentinel.NewTunnelProvider(registry, "")
 
 		config := sentinel.Config{
-			HealthPort:         sentinelHealthPort,
-			CheckInterval:      sentinelCheckInterval,
-			HTTPPort:           sentinelHTTPPort,
-			HTTPSPort:          sentinelHTTPSPort,
-			ForwardedPorts:     ports,
-			HealthyThreshold:   sentinelHealthyThreshold,
-			UnhealthyThreshold: sentinelUnhealthyThreshold,
-			BinaryPort:         sentinelBinaryPort,
-			RecoveryTimeout:    sentinelRecoveryTimeout,
-			CertSyncInterval:   sentinelCertSyncInterval,
-			KeySyncInterval:    sentinelKeySyncInterval,
-			TunnelMode:         true,
-			ProxyProtocol:      sentinelProxyProtocol,
+			HealthPort:             sentinelHealthPort,
+			CheckInterval:          sentinelCheckInterval,
+			HTTPPort:               sentinelHTTPPort,
+			HTTPSPort:              sentinelHTTPSPort,
+			ForwardedPorts:         ports,
+			HealthyThreshold:       sentinelHealthyThreshold,
+			UnhealthyThreshold:     sentinelUnhealthyThreshold,
+			BinaryPort:             sentinelBinaryPort,
+			RecoveryTimeout:        sentinelRecoveryTimeout,
+			RecoveryBackoffInitial: sentinelRecoveryBackoffInitial,
+			RecoveryBackoffMax:     sentinelRecoveryBackoffMax,
+			CertSyncInterval:       sentinelCertSyncInterval,
+			KeySyncInterval:        sentinelKeySyncInterval,
+			TunnelMode:             true,
+			ProxyProtocol:          sentinelProxyProtocol,
 		}
 
 		manager := sentinel.NewManager(config, provider)
@@ -275,18 +283,20 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 	}
 
 	config := sentinel.Config{
-		HealthPort:         sentinelHealthPort,
-		CheckInterval:      sentinelCheckInterval,
-		HTTPPort:           sentinelHTTPPort,
-		HTTPSPort:          sentinelHTTPSPort,
-		ForwardedPorts:     ports,
-		HealthyThreshold:   sentinelHealthyThreshold,
-		UnhealthyThreshold: sentinelUnhealthyThreshold,
-		BinaryPort:         sentinelBinaryPort,
-		RecoveryTimeout:    sentinelRecoveryTimeout,
-		CertSyncInterval:   sentinelCertSyncInterval,
-		KeySyncInterval:    sentinelKeySyncInterval,
-		ProxyProtocol:      sentinelProxyProtocol,
+		HealthPort:             sentinelHealthPort,
+		CheckInterval:          sentinelCheckInterval,
+		HTTPPort:               sentinelHTTPPort,
+		HTTPSPort:              sentinelHTTPSPort,
+		ForwardedPorts:         ports,
+		HealthyThreshold:       sentinelHealthyThreshold,
+		UnhealthyThreshold:     sentinelUnhealthyThreshold,
+		BinaryPort:             sentinelBinaryPort,
+		RecoveryTimeout:        sentinelRecoveryTimeout,
+		RecoveryBackoffInitial: sentinelRecoveryBackoffInitial,
+		RecoveryBackoffMax:     sentinelRecoveryBackoffMax,
+		CertSyncInterval:       sentinelCertSyncInterval,
+		KeySyncInterval:        sentinelKeySyncInterval,
+		ProxyProtocol:          sentinelProxyProtocol,
 	}
 
 	manager := sentinel.NewManager(config, provider)
