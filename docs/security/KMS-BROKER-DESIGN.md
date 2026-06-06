@@ -1,11 +1,31 @@
 # In-Container KMS Broker (design note)
 
-This is a design note for letting **tenant workloads inside a
-container** perform envelope encrypt/decrypt against the
-platform's KMS — *without* ever handing those workloads the
-KEK or the cloud KMS credentials. Documentation lands ahead of
-implementation; treat the code references here as the
-intended shape, not a description of what exists today.
+This is a design note for letting **workloads** — tenant
+containers AND the cloud control plane itself — use the
+platform's KMS through a host-mounted socket, *without* ever
+handing those workloads the KEK or the cloud KMS credentials.
+The broker offers two families of operation:
+
+- **Envelope crypto** (`wrap` / `unwrap`) — a workload encrypts
+  its *own* data under a platform-managed key.
+- **Secret custody** (`get_secret` / `sign`) — the broker holds
+  the secret/private key and exposes only the *result*: the
+  decrypted value, or a signature whose key never leaves KMS.
+
+Documentation lands ahead of implementation; treat the code
+references here as the intended shape, not a description of
+what exists today.
+
+> **Status (2026-06).** Only the **envelope floor is shipped** —
+> `secrets.KMSClient` (`wrap`/`unwrap`) with `inproc`/`vault`/`gcp`/`aws`
+> backends, plus the cloud's shared-KEK secret envelope
+> (FootprintAI/Containarium-cloud#509, v0.23.1). The **broker socket
+> itself is NOT built** in either repo: there is no host-mounted
+> `get_secret`/`sign` endpoint yet. The cloud control plane's interim
+> is App-key-via-env + self-sign-via-ADC (Containarium-cloud #302/#303)
+> until the broker's `sign` lands. The companion cloud PRD is
+> `prd/cloud/kms-secret-broker.md` (Containarium-cloud #311); this doc
+> is the OSS-daemon half of that contract.
 
 It builds directly on two things already in the tree:
 
@@ -238,38 +258,101 @@ forge another tenant's context.
 ## Wire protocol
 
 Newline-delimited JSON over the unix socket — small,
-language-agnostic, trivially testable with a fake socket:
+language-agnostic, trivially testable with a fake socket. Four
+operations across the two families:
 
 ```
+# --- Envelope crypto (the workload encrypts its own data) ---
 → {"op":"wrap","dek_b64":"..."}
 ← {"wrapped_b64":"...","kek_id":"aws:us-west-2|alias/..."}
 
 → {"op":"unwrap","wrapped_b64":"...","kek_id":"aws:..."}
 ← {"dek_b64":"..."}
 
+# --- Secret custody (the broker holds the secret/key) ---
+# get_secret: decrypt a stored secret under the CALLER's KEK and
+# return the value. name is the caller's own secret namespace; the
+# broker NEVER lets one identity read another's (authz below).
+→ {"op":"get_secret","name":"OPENAI_API_KEY"}
+← {"value_b64":"..."}
+
+# sign: KMS-sign payload with the caller's key. The private key
+# NEVER leaves KMS — only the signature comes back. Powers e.g.
+# the cloud daemon's GitHub-App JWT without a PEM in the workload.
+→ {"op":"sign","payload_b64":"...","alg":"RS256"}
+← {"signature_b64":"...","kek_id":"gcp:projects/.../cryptoKeys/..."}
+
 ← {"error":"..."}   // on failure, non-empty error field
 ```
 
-The broker is a thin adapter over the existing `KMSClient`:
+> **`get_secret` here ≠ the existing REST/MCP `get_secret`.** The
+> platform already has a `get_secret` (`internal/mcp/tools.go`,
+> REST `/v1/secrets/...`) — an *authenticated, audit-logged API*
+> that returns a tenant's stored secret to an admin/agent token.
+> The broker `get_secret` is a *different mechanism*: an unprivileged
+> in-workload call over the host-mounted socket, authenticated by
+> **possession of the socket** (no token), scoped to the caller's
+> own namespace, decrypting under the caller's KEK. Keep the two
+> distinct in code and docs — same verb, different trust model.
+
+The broker is a thin adapter over the existing `KMSClient` plus
+the secrets store:
 
 ```go
 // internal/server/kms_broker.go (sketch)
 type kmsBroker struct {
     kms       secrets.KMSClient        // the Vault/GCP/AWS backend, unchanged
-    tenantFor func(container string) string
+    secrets   *secrets.Store           // for get_secret (per-identity namespace)
+    tenantFor func(socket string) string // identity = socket provenance
 }
 
-func (b *kmsBroker) handle(container string, req kmsReq) kmsResp {
-    aad := []byte(b.tenantFor(container)) // server-derived; binds ownership
+func (b *kmsBroker) handle(id string, req brokerReq) brokerResp {
+    aad := []byte(id) // server-derived; binds ownership + scopes the namespace
     switch req.Op {
     case "wrap":
         wrapped, kekID, err := b.kms.Wrap(ctx, dek, aad)
     case "unwrap":
         dek, err := b.kms.Unwrap(ctx, req.Wrapped, req.KEKID, aad)
-        // wrong tenant → context mismatch → KMS refuses
+        // wrong identity → context mismatch → KMS refuses
+    case "get_secret":
+        // ONLY id's own namespace — a cross-identity name is "not found",
+        // never another identity's value (no existence leak).
+        value, err := b.secrets.GetForIdentity(ctx, id, req.Name)
+    case "sign":
+        // KMS sign under id's key; the private key never leaves KMS.
+        sig, kekID, err := b.kms.Sign(ctx, id, req.Payload, req.Alg)
     }
 }
 ```
+
+`sign` needs a `KMSClient.Sign` the envelope backends don't have
+yet (Vault Transit `sign`, GCP KMS asymmetric-sign, AWS KMS
+`Sign`) — a backend-capability addition, gated behind the
+`sign`-capable backends so a wrap/unwrap-only deployment degrades
+to "sign unsupported" rather than failing closed elsewhere.
+
+## Consumers: tenant workloads AND the cloud control plane
+
+The broker has **one consumer model**, used uniformly:
+
+- **Tenant workloads** — a container's app calls `wrap`/`unwrap`
+  to encrypt its own data, or `get_secret` to read a secret the
+  platform delivered, over the socket mounted into its LXC.
+- **The cloud control plane** — the cloud daemon mounts the same
+  broker socket **like any tenant** and is just another identity:
+  `get_secret` for its own config, `sign` for the GitHub-App JWT.
+  No GCP service account, no creds, no plaintext env-file or
+  mounted PEM in the cloud daemon. The host-mounted socket
+  **dissolves the bootstrap-credential problem** — the daemon
+  authenticates by *possessing the mount*, not by holding a
+  secret it had to get from somewhere first.
+
+The same isolation invariant covers both: an identity (tenant or
+the cloud daemon) can reference only its own namespace, and under
+per-tenant KEKs the wrong key cannot unwrap another's secret even
+if authz were somehow bypassed. So **the cloud daemon cannot read
+a tenant's secrets, and vice versa** — the broker holds no
+"superuser" view. (Cloud PRD: Containarium-cloud #311.)
 
 ## CLI surface (CLI-first)
 
@@ -354,9 +437,16 @@ at rest.
 
 - **No KMS creds in containers.** The only thing delivered is a
   socket path. Compromise of a tenant container yields the
-  ability to wrap/unwrap *that tenant's* DEKs through the broker
-  — bounded by daemon-side authz — and nothing about the KEK or
-  the cloud account.
+  ability to wrap/unwrap *that tenant's* DEKs (and `get_secret`
+  *that tenant's* secrets / `sign` with *that tenant's* key)
+  through the broker — bounded by daemon-side authz — and nothing
+  about the KEK or the cloud account.
+- **`sign` keeps the private key in KMS.** A compromised workload
+  with `sign` access can produce signatures *while it holds the
+  socket*, but never exfiltrates the key — revoking the mount (or
+  the per-identity key) stops it, and there is no PEM on disk to
+  steal. This is the whole reason the cloud daemon's App JWT moves
+  to `sign`.
 - **Quota / abuse.** The broker is a natural rate-limit and
   audit point; per-container request accounting lives here, not
   reachable by bypassing it (there is no direct KMS path).
@@ -383,6 +473,20 @@ at rest.
    add the socket volume mount.
 4. **Thin Python client** — published only once 1–3 exist and a
    concrete tenant asks. Keep it demand-driven.
+5. **`get_secret` over the socket** — broker reads the caller's
+   own namespace from the secrets store and decrypts under its
+   KEK; per-identity scoping (a cross-identity name is "not
+   found"). Lets a workload read platform-delivered secrets
+   without the env-file/`env_file:` delivery at all.
+6. **`KMSClient.Sign` + `sign` op** — add `Sign` to the
+   sign-capable backends (Vault Transit, GCP/AWS asymmetric),
+   gated so wrap/unwrap-only deployments report "sign
+   unsupported." Unblocks the cloud daemon's App-JWT move off the
+   #302/#303 interim.
+7. **Cloud control plane as a consumer** — the cloud daemon mounts
+   the broker socket and uses `get_secret`/`sign` for its own
+   config + App JWT (Containarium-cloud #300/#307). Removes the
+   last bootstrap creds from the daemon.
 
 ## Open questions
 
