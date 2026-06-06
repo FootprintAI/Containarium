@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Birth TTL — `containarium create --ttl <dur>`** — a box can be born with a death date. `CreateContainer` accepts an optional `ttl_seconds`; the daemon stamps `ttl_expires_at` atomically at create time (same persistence + 7-day cap as `ttl set`), so the `ttlsweeper` reaps the box even if the client dies the instant after create — no separate `ttl set` call to forget. Closes the leak window where an ephemeral/CI box runs forever because its TTL was never set. If the TTL can't be stamped the box is deleted rather than left to leak (default-dead). (#523)
 - **`ProxyRoute.container_name`** — `GetRoutes` now returns the container behind each route in a dedicated field instead of overloading `app_name` (the display name), so a multi-tenant control plane can key its route reconciler on the box identity. Additive; `app_name` unchanged. (#511)
 
 ## [0.23.1] - 2026-06-06

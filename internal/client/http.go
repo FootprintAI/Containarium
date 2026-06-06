@@ -280,7 +280,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -306,6 +306,13 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		reqBody["gitRef"] = git.Ref
 		reqBody["gitCredential"] = git.Credential
 		reqBody["workspacePath"] = git.WorkspacePath
+	}
+	// Birth TTL (#523): only include when set, so an unset TTL stays absent
+	// on the wire (0 = no TTL) rather than forcing a "ttlSeconds":0 the
+	// daemon would treat the same but that needlessly differs from a plain
+	// create's body.
+	if ttlSeconds > 0 {
+		reqBody["ttlSeconds"] = ttlSeconds
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", reqBody)

@@ -803,6 +803,14 @@ type CreateContainerRequest struct {
 	// workspace_path: where in the box to place the source. Empty
 	// defaults to "/workspace".
 	WorkspacePath string `protobuf:"bytes,19,opt,name=workspace_path,json=workspacePath,proto3" json:"workspace_path,omitempty"`
+	// Birth TTL (optional) — seconds from creation after which the box is
+	// auto-deleted. When > 0, the daemon stamps ttl_expires_at = now() +
+	// ttl_seconds at create time (same persistence as SetContainerTTL), so
+	// the box is born with a death date and the ttlsweeper reaps it even if
+	// the client dies right after create — no separate `ttl set` call needed
+	// (#523). 0 = no TTL (today's behavior). Capped at 604800 (7 days);
+	// larger values return InvalidArgument, same bound as SetContainerTTL.
+	TtlSeconds    int64 `protobuf:"varint,20,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -968,6 +976,13 @@ func (x *CreateContainerRequest) GetWorkspacePath() string {
 		return x.WorkspacePath
 	}
 	return ""
+}
+
+func (x *CreateContainerRequest) GetTtlSeconds() int64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -4047,7 +4062,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xe4\x06\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\x85\a\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -4072,7 +4087,9 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"git_source\x18\x10 \x01(\tR\tgitSource\x12\x17\n" +
 	"\agit_ref\x18\x11 \x01(\tR\x06gitRef\x12%\n" +
 	"\x0egit_credential\x18\x12 \x01(\tR\rgitCredential\x12%\n" +
-	"\x0eworkspace_path\x18\x13 \x01(\tR\rworkspacePath\x1a9\n" +
+	"\x0eworkspace_path\x18\x13 \x01(\tR\rworkspacePath\x12\x1f\n" +
+	"\vttl_seconds\x18\x14 \x01(\x03R\n" +
+	"ttlSeconds\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +

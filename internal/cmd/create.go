@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -37,6 +38,7 @@ var (
 	createGitRef             string
 	createGitCredentialFile  string
 	createWorkspacePath      string
+	createTTL                string
 )
 
 var createCmd = &cobra.Command{
@@ -117,6 +119,7 @@ func init() {
 	createCmd.Flags().StringVar(&createGitRef, "git-ref", "", "Exact ref to check out for --git-source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.")
 	createCmd.Flags().StringVar(&createGitCredentialFile, "git-credential-file", "", "Path to a file holding a bearer token for a private --git-source. Used daemon-side for one fetch; never written to the box's .git/config.")
 	createCmd.Flags().StringVar(&createWorkspacePath, "workspace-path", "", "Where --git-source lands inside the box. Empty defaults to /workspace.")
+	createCmd.Flags().StringVar(&createTTL, "ttl", "", "Birth TTL — auto-delete the box this long after creation (Go duration: '30m', '1h', '24h'; max 168h/7 days). The death date is stamped atomically at create, so the box is reaped even if the client dies right after — no separate 'ttl set' needed (#523). Empty = no TTL.")
 }
 
 // validateSSHKeyMode enforces "exactly one of --ssh-key / --no-ssh-key".
@@ -146,6 +149,18 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// Parse labels from key=value format
 	parsedLabels := parseLabels(labels)
 
+	// Birth TTL (#523): parse the optional --ttl with the SAME parser +
+	// cap as `containarium ttl set` (parseTTL), so create and set agree on
+	// format and the 7-day bound. Empty = no TTL (today's behavior).
+	var ttlSeconds int64
+	if createTTL != "" {
+		d, err := parseTTL(createTTL)
+		if err != nil {
+			return err
+		}
+		ttlSeconds = int64(d.Seconds())
+	}
+
 	fmt.Printf("Creating container for user: %s\n", username)
 	if verbose {
 		fmt.Printf("  CPU: %s\n", cpuLimit)
@@ -163,6 +178,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 		if gpuDevice != "" {
 			fmt.Printf("  GPU: %s\n", gpuDevice)
+		}
+		if ttlSeconds > 0 {
+			fmt.Printf("  TTL: %s (auto-delete at create+TTL)\n", createTTL)
 		}
 		if len(parsedLabels) > 0 {
 			fmt.Printf("  Labels:\n")
@@ -327,13 +345,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
-		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts)
+		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds)
 		if err != nil {
 			return fmt.Errorf("failed to create container via HTTP API: %w", err)
 		}
 	} else if serverAddr != "" {
 		// Remote mode via gRPC
-		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts)
+		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds)
 		if err != nil {
 			return fmt.Errorf("failed to create container via remote server: %w", err)
 		}
@@ -342,7 +360,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if verbose {
 			fmt.Println("Creating container...")
 		}
-		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevice, osType, monitoring, gitOpts)
+		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevice, osType, monitoring, gitOpts, ttlSeconds)
 		if err != nil {
 			// Cleanup jump server account on failure
 			_ = container.DeleteJumpServerAccount(username, false)
@@ -484,7 +502,7 @@ func resolveGitSourceOpts() (client.GitSourceOpts, error) {
 }
 
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, git client.GitSourceOpts) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64) (*incus.ContainerInfo, error) {
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -513,7 +531,26 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 		WorkspacePath:          git.WorkspacePath,
 	}
 
-	return mgr.Create(opts)
+	info, err := mgr.Create(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Birth TTL (#523), local path. The daemon's CreateContainer stamps this
+	// server-side; in local Incus mode we stamp the same key+format directly
+	// so the box is born with its death date (reaped by whichever daemon
+	// manages this host's ttlsweeper). On failure delete the box rather than
+	// leave an ephemeral box that would leak — default-dead (#522), matching
+	// the server path.
+	if ttlSeconds > 0 {
+		expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second).UTC()
+		if serr := mgr.SetConfig(info.Name, incus.TTLExpiresAtKey, expiresAt.Format(time.RFC3339)); serr != nil {
+			_ = deleteLocal(username, true)
+			return nil, fmt.Errorf("failed to set birth TTL on %s (box deleted to avoid a leak): %w", info.Name, serr)
+		}
+	}
+
+	return info, nil
 }
 
 // parseLabels parses labels from key=value format
@@ -533,23 +570,23 @@ func parseLabels(labelSlice []string) map[string]string {
 }
 
 // createRemote creates a container using remote gRPC server
-func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts) (*incus.ContainerInfo, error) {
+func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64) (*incus.ContainerInfo, error) {
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
 	defer grpcClient.Close()
 
-	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git)
+	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds)
 }
 
 // createRemoteHTTP creates a container using remote HTTP API
-func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts) (*incus.ContainerInfo, error) {
+func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64) (*incus.ContainerInfo, error) {
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
 	if err != nil {
 		return nil, err
 	}
 	defer httpClient.Close()
 
-	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git)
+	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds)
 }

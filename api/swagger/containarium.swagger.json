@@ -6085,6 +6085,11 @@
         "workspacePath": {
           "type": "string",
           "description": "workspace_path: where in the box to place the source. Empty\ndefaults to \"/workspace\"."
+        },
+        "ttlSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Birth TTL (optional) — seconds from creation after which the box is\nauto-deleted. When \u003e 0, the daemon stamps ttl_expires_at = now() +\nttl_seconds at create time (same persistence as SetContainerTTL), so\nthe box is born with a death date and the ttlsweeper reaps it even if\nthe client dies right after create — no separate `ttl set` call needed\n(#523). 0 = no TTL (today's behavior). Capped at 604800 (7 days);\nlarger values return InvalidArgument, same bound as SetContainerTTL."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"

@@ -180,6 +180,12 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err := validateCreateContainerBounds(req); err != nil {
 		return nil, err
 	}
+	// Birth TTL (#523): reject an out-of-range TTL before we provision
+	// anything — fail fast rather than create a box and then reject its
+	// death date. Same bound (7 days) as SetContainerTTL; 0 = no TTL.
+	if err := validateTTLSeconds(req.TtlSeconds); err != nil {
+		return nil, err
+	}
 
 	// Pool resolution — if a pool is requested, either validate that
 	// the explicit backend_id belongs to that pool, or pick any
@@ -374,6 +380,19 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				}
 			}
 
+			// Birth TTL (#523), async path. The CREATING response already
+			// returned, so a failure can't reach the caller via the response
+			// body — it surfaces through the pending state (Done=true,
+			// Error=<ttl>) the same way the digest-mismatch path above does.
+			// stampBirthTTL deletes the box on failure so an ephemeral box
+			// never leaks just because the async stamp lost a race.
+			if err == nil && info != nil && req.TtlSeconds > 0 {
+				if terr := s.stampBirthTTL(info.Name, req.Username, req.TtlSeconds); terr != nil {
+					err = terr
+					info = nil
+				}
+			}
+
 			s.pendingMu.Lock()
 			if pending, exists := s.pendingCreations[req.Username]; exists {
 				pending.Done = true
@@ -428,6 +447,17 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 			log.Printf("[image-digest] failed to delete container %q after post-pull mismatch: %v", info.Name, delErr)
 		}
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+
+	// Birth TTL (#523): stamp the death date now that the box exists, before
+	// any best-effort setup, so the ttlsweeper reaps it even if the client
+	// dies the instant create returns. stampBirthTTL deletes the box and
+	// errors if it can't honor the requested TTL — an ephemeral box that
+	// would leak is worse than no box.
+	if req.TtlSeconds > 0 {
+		if err := s.stampBirthTTL(info.Name, req.Username, req.TtlSeconds); err != nil {
+			return nil, err
+		}
 	}
 
 	// Stamp tenant secrets into the LXC's env (best-effort — a

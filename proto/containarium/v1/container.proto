@@ -311,6 +311,15 @@ message CreateContainerRequest {
   // workspace_path: where in the box to place the source. Empty
   // defaults to "/workspace".
   string workspace_path = 19;
+
+  // Birth TTL (optional) — seconds from creation after which the box is
+  // auto-deleted. When > 0, the daemon stamps ttl_expires_at = now() +
+  // ttl_seconds at create time (same persistence as SetContainerTTL), so
+  // the box is born with a death date and the ttlsweeper reaps it even if
+  // the client dies right after create — no separate `ttl set` call needed
+  // (#523). 0 = no TTL (today's behavior). Capped at 604800 (7 days);
+  // larger values return InvalidArgument, same bound as SetContainerTTL.
+  int64 ttl_seconds = 20;
 }
 
 // CreateContainerResponse is the response from creating a container

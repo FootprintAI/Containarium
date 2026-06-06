@@ -47,11 +47,8 @@ func (s *ContainerServer) SetContainerTTL(ctx context.Context, req *pb.SetContai
 	if req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "name is required")
 	}
-	if req.DurationSeconds < 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "duration_seconds must be >= 0, got %d", req.DurationSeconds)
-	}
-	if req.DurationSeconds > maxTTLSeconds {
-		return nil, status.Errorf(codes.InvalidArgument, "duration_seconds %d exceeds maximum of %d (7 days)", req.DurationSeconds, maxTTLSeconds)
+	if err := validateTTLSeconds(req.DurationSeconds); err != nil {
+		return nil, err
 	}
 
 	// Treat req.Name as the bare username (matches the per-container
@@ -87,11 +84,62 @@ func (s *ContainerServer) SetContainerTTL(ctx context.Context, req *pb.SetContai
 	// Set: stamp now() + duration in UTC RFC3339 so the sweeper's
 	// time.Parse round-trips with the same precision. Capping is
 	// already enforced above.
-	expiresAt := time.Now().Add(time.Duration(req.DurationSeconds) * time.Second).UTC()
-	if err := s.manager.SetConfig(containerName, incus.TTLExpiresAtKey, expiresAt.Format(time.RFC3339)); err != nil {
+	expiresAt, err := s.stampTTL(containerName, req.DurationSeconds)
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.TTLExpiresAtKey, err)
 	}
 	log.Printf("[ttl] set container=%s expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), req.DurationSeconds)
 	resp.TtlExpiresAt = timestamppb.New(expiresAt)
 	return resp, nil
+}
+
+// validateTTLSeconds checks a requested TTL duration against the bounds
+// shared by SetContainerTTL and the birth-TTL path in CreateContainer (#523).
+// Zero is always valid — it means "no TTL" on create and "clear the TTL" on
+// set, so callers handle the zero case themselves. Negative and over-cap
+// (> maxTTLSeconds, 7 days) return InvalidArgument so the two entry points
+// reject identical input identically.
+func validateTTLSeconds(seconds int64) error {
+	if seconds < 0 {
+		return status.Errorf(codes.InvalidArgument, "ttl seconds must be >= 0, got %d", seconds)
+	}
+	if seconds > maxTTLSeconds {
+		return status.Errorf(codes.InvalidArgument, "ttl seconds %d exceeds maximum of %d (7 days)", seconds, maxTTLSeconds)
+	}
+	return nil
+}
+
+// stampBirthTTL applies a create-time TTL (#523) to a just-created box so it
+// is born with a death date the ttlsweeper honors — closing the leak window
+// where a box exists with no TTL because the separate `ttl set` call never
+// ran. On failure it DELETES the box and returns an error rather than hand
+// back a box that was asked to be ephemeral but would otherwise leak forever:
+// default-dead, not default-alive (#522). ttlSeconds must be > 0 (the zero
+// case is "no TTL" and never reaches here). containerName is the incus name
+// (info.Name) for the config write + logs; username is what manager.Delete
+// keys on.
+func (s *ContainerServer) stampBirthTTL(containerName, username string, ttlSeconds int64) error {
+	expiresAt, err := s.stampTTL(containerName, ttlSeconds)
+	if err != nil {
+		if delErr := s.manager.Delete(username, true); delErr != nil {
+			log.Printf("[ttl] birth TTL stamp failed AND cleanup-delete failed for %s: stamp=%v delete=%v", containerName, err, delErr)
+		}
+		return status.Errorf(codes.Internal, "failed to set birth TTL on %s (box deleted to avoid a leak): %v", containerName, err)
+	}
+	log.Printf("[ttl] birth TTL set container=%s expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), ttlSeconds)
+	return nil
+}
+
+// stampTTL writes now()+duration as a UTC RFC3339 wall-clock expiry onto the
+// container's Incus config under user.containarium.ttl_expires_at — the exact
+// key + format the ttlsweeper reads, so create and set agree byte-for-byte.
+// durationSeconds MUST be > 0 (validated via validateTTLSeconds); the zero
+// case is the caller's responsibility (clear on set, skip on create). Shared
+// by SetContainerTTL and CreateContainer's birth-TTL path (#523).
+func (s *ContainerServer) stampTTL(containerName string, durationSeconds int64) (time.Time, error) {
+	expiresAt := time.Now().Add(time.Duration(durationSeconds) * time.Second).UTC()
+	if err := s.manager.SetConfig(containerName, incus.TTLExpiresAtKey, expiresAt.Format(time.RFC3339)); err != nil {
+		return time.Time{}, err
+	}
+	return expiresAt, nil
 }
