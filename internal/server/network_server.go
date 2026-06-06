@@ -120,7 +120,7 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 				Subdomain:     route.Subdomain,
 				FullDomain:    route.FullDomain,
 				ContainerIp:   route.TargetIP,
-				Port:          int32(route.TargetPort),
+				Port:          int32(route.TargetPort), // #nosec G115 -- TCP port, always in [0,65535]
 				Active:        route.Active,
 				Protocol:      protocol,
 				AppName:       containerName,
@@ -190,7 +190,7 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 			Subdomain:     route.Subdomain,
 			FullDomain:    route.FullDomain,
 			ContainerIp:   route.UpstreamIP,
-			Port:          int32(route.UpstreamPort),
+			Port:          int32(route.UpstreamPort), // #nosec G115 -- TCP port, always in [0,65535]
 			Active:        true, // If it's in the list, it's active
 			Protocol:      routeProtocolToProto(route.Protocol),
 			AppName:       containerName, // legacy: container name doubled as app name for display
