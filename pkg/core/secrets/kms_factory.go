@@ -153,21 +153,22 @@ func gcpConfigFromEnv() (GCPConfig, error) {
 		return cfg, fmt.Errorf("CONTAINARIUM_GCP_KMS_KEY_NAME is required (e.g. projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>)")
 	}
 
-	// Token: env wins over file. File is the recommended
-	// long-lived path — a sidecar refreshes
-	// `gcloud auth print-access-token` or hits the GCE
-	// metadata server and writes the result atomically.
-	if tok := strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TOKEN")); tok != "" {
-		cfg.Token = tok
-	} else if path := strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TOKEN_FILE")); path != "" {
-		tok, err := readBearerLikeFile(path)
-		if err != nil {
+	// Token source: a static token (CONTAINARIUM_GCP_KMS_TOKEN) or — recommended
+	// for long-running daemons — a file (CONTAINARIUM_GCP_KMS_TOKEN_FILE) an
+	// out-of-band sidecar refreshes (gcloud auth print-access-token / the GCE
+	// metadata server, written atomically). The backend re-reads the file before
+	// each call, so a refresh takes effect without a daemon restart. #300.
+	cfg.Token = strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TOKEN"))
+	cfg.TokenFile = strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TOKEN_FILE"))
+	if cfg.Token == "" && cfg.TokenFile == "" {
+		return cfg, fmt.Errorf("set either CONTAINARIUM_GCP_KMS_TOKEN or CONTAINARIUM_GCP_KMS_TOKEN_FILE")
+	}
+	if cfg.TokenFile != "" {
+		// Fail fast on an unreadable / insecurely-permissioned token file at
+		// startup; the backend then re-reads it per call to honor refreshes.
+		if _, err := readBearerLikeFile(cfg.TokenFile); err != nil {
 			return cfg, fmt.Errorf("read CONTAINARIUM_GCP_KMS_TOKEN_FILE: %w", err)
 		}
-		cfg.Token = tok
-	}
-	if cfg.Token == "" {
-		return cfg, fmt.Errorf("set either CONTAINARIUM_GCP_KMS_TOKEN or CONTAINARIUM_GCP_KMS_TOKEN_FILE")
 	}
 
 	if t := strings.TrimSpace(os.Getenv("CONTAINARIUM_GCP_KMS_TIMEOUT")); t != "" {

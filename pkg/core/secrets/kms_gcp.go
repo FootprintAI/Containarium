@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -75,6 +76,12 @@ type GCPConfig struct {
 	// Agent with the gcp secret engine).
 	Token string
 
+	// TokenFile, when set, is a path the backend RE-READS before each Cloud
+	// KMS call (cached briefly) so an out-of-band refresh sidecar's rotations
+	// are honored without restarting the daemon. Takes precedence over Token.
+	// Without it, Token is frozen at startup and expires within the hour. #300.
+	TokenFile string
+
 	// Endpoint is the Cloud KMS API base URL. Defaults to
 	// the public production endpoint; the field exists so
 	// tests can point at a httptest.Server and so
@@ -90,6 +97,11 @@ type GCPKMS struct {
 	cfg    GCPConfig
 	client *http.Client
 	kekID  string // cached, set in NewGCPKMS
+
+	// tokMu guards the brief token cache used when cfg.TokenFile is set.
+	tokMu     sync.Mutex
+	cachedTok string
+	cachedAt  time.Time
 }
 
 // gcpKEKPrefix labels a kek_id as "wrap was done by GCP
@@ -124,8 +136,8 @@ func NewGCPKMS(cfg GCPConfig) (*GCPKMS, error) {
 		!strings.Contains(cfg.KeyName, "/cryptoKeys/") {
 		return nil, fmt.Errorf("gcp KMS: key name %q is not a CryptoKey resource path (want projects/.../cryptoKeys/...)", cfg.KeyName)
 	}
-	if cfg.Token == "" {
-		return nil, errors.New("gcp KMS: access token required")
+	if cfg.Token == "" && cfg.TokenFile == "" {
+		return nil, errors.New("gcp KMS: access token or token file required")
 	}
 	cfg.Endpoint = strings.TrimRight(strings.TrimSpace(cfg.Endpoint), "/")
 	if cfg.Endpoint == "" {
@@ -202,6 +214,38 @@ func (g *GCPKMS) Unwrap(ctx context.Context, wrappedDEK []byte, kekID string) ([
 	return dek, nil
 }
 
+// gcpTokenCacheTTL bounds how long a token read from TokenFile is reused before
+// re-reading — short enough to pick up a sidecar refresh promptly, long enough
+// to avoid a file read on every Cloud KMS call.
+const gcpTokenCacheTTL = 30 * time.Second
+
+// token returns the current bearer token. With TokenFile set it re-reads the
+// file (cached for gcpTokenCacheTTL) so a refresh sidecar's rotations are
+// honored without a daemon restart; otherwise it returns the static Token.
+// On a transient read error it serves the last-good token rather than failing.
+func (g *GCPKMS) token() (string, error) {
+	if g.cfg.TokenFile == "" {
+		return g.cfg.Token, nil
+	}
+	g.tokMu.Lock()
+	defer g.tokMu.Unlock()
+	if g.cachedTok != "" && time.Since(g.cachedAt) < gcpTokenCacheTTL {
+		return g.cachedTok, nil
+	}
+	// readBearerLikeFile enforces 0600-ish perms + trims + rejects empty —
+	// the same defense-in-depth the Vault/AWS token-file paths use.
+	tok, err := readBearerLikeFile(g.cfg.TokenFile)
+	if err != nil {
+		if g.cachedTok != "" {
+			return g.cachedTok, nil // serve last-good through a transient read error
+		}
+		return "", err
+	}
+	g.cachedTok = tok
+	g.cachedAt = time.Now()
+	return tok, nil
+}
+
 // do POSTs to the encrypt/decrypt endpoint and decodes
 // the JSON response. Centralized so error mapping and
 // future telemetry sit in one place.
@@ -218,7 +262,11 @@ func (g *GCPKMS) do(ctx context.Context, op string, body, out any) error {
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+g.cfg.Token)
+	tok, err := g.token()
+	if err != nil {
+		return fmt.Errorf("gcp kms token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := g.client.Do(req)
 	if err != nil {
