@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-06-06
+
 ### Added
 
 - **`ProxyRoute.container_name`** — `GetRoutes` now returns the container behind each route in a dedicated field instead of overloading `app_name` (the display name), so a multi-tenant control plane can key its route reconciler on the box identity. Additive; `app_name` unchanged. (#511)
+
+### Fixed
+
+- **Sentinel periodic recovery retry** — a backend that goes down is retried with backoff instead of being given up on after the first failed recovery attempt. (#515)
+- **Spot VMs are private-by-default in sentinel mode** — `spot_vm_external_ip=false` so a spot backend no longer gets a public IP it doesn't need; the sentinel fronts it. (#518)
 
 ## [0.23.1] - 2026-06-06
 
