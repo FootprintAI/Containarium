@@ -332,6 +332,62 @@ message ValidateGPUResponse {
   string backend_id = 5;     // echoes the validated backend ("" = local)
 }
 
+// TriggerUpgradeRequest asks a backend to upgrade its daemon binary now instead
+// of waiting for the periodic auto-update tick. The daemon pulls the binary the
+// sentinel currently serves (SHA-verified), smoke-tests it, swaps atomically
+// (keeping the previous binary as .old), and restarts. See #354 Phase B.
+message TriggerUpgradeRequest {
+  // Backend to upgrade. Empty = the local/primary daemon's own host.
+  string backend_id = 1;
+
+  // Upgrade even if the sentinel-served binary already matches the running one.
+  bool force = 2;
+}
+
+// TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
+// runs asynchronously (the daemon restarts), so callers poll GetUpgradeStatus
+// or watch the backend's version in ListBackends for the outcome. See #354.
+message TriggerUpgradeResponse {
+  // Opaque id for polling via GetUpgradeStatus.
+  string upgrade_id = 1;
+
+  // Status at acknowledgement time: "in_progress" (started) or "noop"
+  // (already up to date and force=false).
+  string status = 2;
+
+  // The daemon version running when the upgrade was triggered.
+  string current_version = 3;
+
+  // Human-readable detail (e.g. why it was a noop).
+  string message = 4;
+
+  // Echoes the targeted backend ("" = local).
+  string backend_id = 5;
+}
+
+// GetUpgradeStatusRequest polls an upgrade started by TriggerUpgrade.
+message GetUpgradeStatusRequest {
+  string upgrade_id = 1;
+}
+
+// GetUpgradeStatusResponse reports an upgrade's progress. Note: a local
+// self-upgrade restarts the daemon, dropping in-memory job state — after a
+// restart this returns status "unknown" and callers should compare the
+// backend's version in ListBackends instead. See #354.
+message GetUpgradeStatusResponse {
+  // One of: "in_progress", "completed", "failed", "noop", "unknown".
+  string status = 1;
+
+  // Daemon version recorded when the upgrade was triggered.
+  string current_version = 2;
+
+  // Error detail when status == "failed".
+  string error = 3;
+
+  // RFC3339 completion time when status is "completed" or "failed".
+  string completed_at = 4;
+}
+
 // NetworkPolicyMode controls whether a tenant's network policy is enforced or
 // only observed. Phase A ships log_only; Phase B flips to enforce. See
 // docs/security/NETWORK-ISOLATION-DESIGN.md (#315).

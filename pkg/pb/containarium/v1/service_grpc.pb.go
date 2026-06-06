@@ -45,6 +45,8 @@ const (
 	ContainerService_ListBackends_FullMethodName           = "/containarium.v1.ContainerService/ListBackends"
 	ContainerService_GetLatestRelease_FullMethodName       = "/containarium.v1.ContainerService/GetLatestRelease"
 	ContainerService_ValidateGPU_FullMethodName            = "/containarium.v1.ContainerService/ValidateGPU"
+	ContainerService_TriggerUpgrade_FullMethodName         = "/containarium.v1.ContainerService/TriggerUpgrade"
+	ContainerService_GetUpgradeStatus_FullMethodName       = "/containarium.v1.ContainerService/GetUpgradeStatus"
 	ContainerService_GetMonitoringInfo_FullMethodName      = "/containarium.v1.ContainerService/GetMonitoringInfo"
 	ContainerService_CreateAlertRule_FullMethodName        = "/containarium.v1.ContainerService/CreateAlertRule"
 	ContainerService_ListAlertRules_FullMethodName         = "/containarium.v1.ContainerService/ListAlertRules"
@@ -173,6 +175,17 @@ type ContainerServiceClient interface {
 	// tears it down, and returns the parsed model + driver. Admin-only; the check
 	// creates and deletes a short-lived container. See #316.
 	ValidateGPU(ctx context.Context, in *ValidateGPURequest, opts ...grpc.CallOption) (*ValidateGPUResponse, error)
+	// TriggerUpgrade upgrades a backend's daemon now rather than waiting for the
+	// periodic auto-update tick: the daemon pulls the binary the sentinel
+	// currently serves (SHA-verified), smoke-tests it, swaps atomically (keeping
+	// .old), and restarts. Admin-only. Async — poll GetUpgradeStatus or watch the
+	// version in ListBackends. backend_id in the body, empty = local. #354 Phase B.
+	TriggerUpgrade(ctx context.Context, in *TriggerUpgradeRequest, opts ...grpc.CallOption) (*TriggerUpgradeResponse, error)
+	// GetUpgradeStatus polls an upgrade started by TriggerUpgrade. A local
+	// self-upgrade restarts the daemon and loses in-memory job state, so after a
+	// restart this returns "unknown" — compare the backend version in
+	// ListBackends instead. #354.
+	GetUpgradeStatus(ctx context.Context, in *GetUpgradeStatusRequest, opts ...grpc.CallOption) (*GetUpgradeStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
 	// CreateAlertRule creates a new custom alert rule
@@ -485,6 +498,26 @@ func (c *containerServiceClient) ValidateGPU(ctx context.Context, in *ValidateGP
 	return out, nil
 }
 
+func (c *containerServiceClient) TriggerUpgrade(ctx context.Context, in *TriggerUpgradeRequest, opts ...grpc.CallOption) (*TriggerUpgradeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TriggerUpgradeResponse)
+	err := c.cc.Invoke(ctx, ContainerService_TriggerUpgrade_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetUpgradeStatus(ctx context.Context, in *GetUpgradeStatusRequest, opts ...grpc.CallOption) (*GetUpgradeStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetUpgradeStatusResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetUpgradeStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetMonitoringInfoResponse)
@@ -755,6 +788,17 @@ type ContainerServiceServer interface {
 	// tears it down, and returns the parsed model + driver. Admin-only; the check
 	// creates and deletes a short-lived container. See #316.
 	ValidateGPU(context.Context, *ValidateGPURequest) (*ValidateGPUResponse, error)
+	// TriggerUpgrade upgrades a backend's daemon now rather than waiting for the
+	// periodic auto-update tick: the daemon pulls the binary the sentinel
+	// currently serves (SHA-verified), smoke-tests it, swaps atomically (keeping
+	// .old), and restarts. Admin-only. Async — poll GetUpgradeStatus or watch the
+	// version in ListBackends. backend_id in the body, empty = local. #354 Phase B.
+	TriggerUpgrade(context.Context, *TriggerUpgradeRequest) (*TriggerUpgradeResponse, error)
+	// GetUpgradeStatus polls an upgrade started by TriggerUpgrade. A local
+	// self-upgrade restarts the daemon and loses in-memory job state, so after a
+	// restart this returns "unknown" — compare the backend version in
+	// ListBackends instead. #354.
+	GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
 	// CreateAlertRule creates a new custom alert rule
@@ -884,6 +928,12 @@ func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *Ge
 }
 func (UnimplementedContainerServiceServer) ValidateGPU(context.Context, *ValidateGPURequest) (*ValidateGPUResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ValidateGPU not implemented")
+}
+func (UnimplementedContainerServiceServer) TriggerUpgrade(context.Context, *TriggerUpgradeRequest) (*TriggerUpgradeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TriggerUpgrade not implemented")
+}
+func (UnimplementedContainerServiceServer) GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetUpgradeStatus not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
@@ -1422,6 +1472,42 @@ func _ContainerService_ValidateGPU_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_TriggerUpgrade_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TriggerUpgradeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).TriggerUpgrade(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_TriggerUpgrade_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).TriggerUpgrade(ctx, req.(*TriggerUpgradeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetUpgradeStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUpgradeStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetUpgradeStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetUpgradeStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetUpgradeStatus(ctx, req.(*GetUpgradeStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetMonitoringInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetMonitoringInfoRequest)
 	if err := dec(in); err != nil {
@@ -1820,6 +1906,14 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ValidateGPU",
 			Handler:    _ContainerService_ValidateGPU_Handler,
+		},
+		{
+			MethodName: "TriggerUpgrade",
+			Handler:    _ContainerService_TriggerUpgrade_Handler,
+		},
+		{
+			MethodName: "GetUpgradeStatus",
+			Handler:    _ContainerService_GetUpgradeStatus_Handler,
 		},
 		{
 			MethodName: "GetMonitoringInfo",

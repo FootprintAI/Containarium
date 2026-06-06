@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -50,55 +51,81 @@ func (u *AutoUpdater) Run(ctx context.Context) {
 			log.Printf("[auto-update] stopped")
 			return
 		case <-ticker.C:
-			if err := u.checkAndUpdate(ctx); err != nil {
+			if _, err := u.checkAndUpdate(ctx, false); err != nil {
 				log.Printf("[auto-update] check failed: %v", err)
 			}
 		}
 	}
 }
 
-func (u *AutoUpdater) checkAndUpdate(ctx context.Context) error {
+// TriggerNow runs an upgrade check immediately instead of waiting for the next
+// tick. Returns whether the binary was swapped. With force=true it re-pulls and
+// swaps even when the sentinel-served binary already matches the running one
+// (useful to force a restart onto the sentinel's binary). On success the daemon
+// restarts, so callers should treat a nil error as "upgrade started" and
+// confirm via the post-restart version. #354 Phase B.
+func (u *AutoUpdater) TriggerNow(ctx context.Context, force bool) (bool, error) {
+	return u.checkAndUpdate(ctx, force)
+}
+
+func (u *AutoUpdater) checkAndUpdate(ctx context.Context, force bool) (bool, error) {
 	// 1. Get remote checksum
 	remoteChecksum, err := u.getRemoteChecksum(ctx)
 	if err != nil {
-		return fmt.Errorf("get remote checksum: %w", err)
+		return false, fmt.Errorf("get remote checksum: %w", err)
 	}
 
 	// 2. Get local checksum
 	localChecksum, err := u.getLocalChecksum()
 	if err != nil {
-		return fmt.Errorf("get local checksum: %w", err)
+		return false, fmt.Errorf("get local checksum: %w", err)
 	}
 
 	// 3. Compare
-	if remoteChecksum == localChecksum {
-		return nil // up to date
+	if remoteChecksum == localChecksum && !force {
+		return false, nil // up to date
 	}
-
-	log.Printf("[auto-update] new version detected (local=%s..., remote=%s...)", localChecksum[:12], remoteChecksum[:12])
+	if remoteChecksum == localChecksum {
+		log.Printf("[auto-update] forced upgrade; binary already matches sentinel (%s...)", localChecksum[:12])
+	} else {
+		log.Printf("[auto-update] new version detected (local=%s..., remote=%s...)", localChecksum[:12], remoteChecksum[:12])
+	}
 
 	// 4. Download new binary
 	tmpPath := u.binaryPath + ".new"
 	if err := u.downloadBinary(ctx, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("download: %w", err)
+		return false, fmt.Errorf("download: %w", err)
 	}
 
 	// 5. Verify downloaded binary checksum
 	dlChecksum, err := checksumFile(tmpPath)
 	if err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("verify download: %w", err)
+		return false, fmt.Errorf("verify download: %w", err)
 	}
 	if dlChecksum != remoteChecksum {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("checksum mismatch after download (got %s, want %s)", dlChecksum[:12], remoteChecksum[:12])
+		return false, fmt.Errorf("checksum mismatch after download (got %s, want %s)", dlChecksum[:12], remoteChecksum[:12])
 	}
 
 	// 6. Make executable
 	if err := os.Chmod(tmpPath, 0755); err != nil { // #nosec G302 -- executable binary needs 0755
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("chmod: %w", err)
+		return false, fmt.Errorf("chmod: %w", err)
+	}
+
+	// 6b. Smoke-test the downloaded binary before committing the swap: it must
+	// at least execute and print its version. Guards against a corrupt or
+	// incompatible binary that would otherwise leave the host running a daemon
+	// that won't start. The previous binary is kept as .old for manual
+	// rollback. #354 — pre-swap safety.
+	smokeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	smokeOut, smokeErr := exec.CommandContext(smokeCtx, tmpPath, "version").CombinedOutput() // #nosec G204 -- tmpPath derived from trusted binaryPath
+	cancel()
+	if smokeErr != nil {
+		_ = os.Remove(tmpPath)
+		return false, fmt.Errorf("smoke test failed (new binary did not run `version`): %w; output: %s", smokeErr, strings.TrimSpace(string(smokeOut)))
 	}
 
 	// 7. Replace: rename running binary to .old, move new one in place
@@ -106,12 +133,12 @@ func (u *AutoUpdater) checkAndUpdate(ctx context.Context) error {
 	_ = os.Remove(oldPath)
 	if err := os.Rename(u.binaryPath, oldPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rename old binary: %w", err)
+		return false, fmt.Errorf("rename old binary: %w", err)
 	}
 	if err := os.Rename(tmpPath, u.binaryPath); err != nil {
 		// Try to restore old binary
 		_ = os.Rename(oldPath, u.binaryPath)
-		return fmt.Errorf("rename new binary: %w", err)
+		return false, fmt.Errorf("rename new binary: %w", err)
 	}
 
 	log.Printf("[auto-update] binary replaced successfully, restarting...")
@@ -132,7 +159,7 @@ func (u *AutoUpdater) checkAndUpdate(ctx context.Context) error {
 		}
 	}()
 
-	return nil
+	return true, nil
 }
 
 func (u *AutoUpdater) getRemoteChecksum(ctx context.Context) (string, error) {

@@ -1642,6 +1642,270 @@ func (x *ValidateGPUResponse) GetBackendId() string {
 	return ""
 }
 
+// TriggerUpgradeRequest asks a backend to upgrade its daemon binary now instead
+// of waiting for the periodic auto-update tick. The daemon pulls the binary the
+// sentinel currently serves (SHA-verified), smoke-tests it, swaps atomically
+// (keeping the previous binary as .old), and restarts. See #354 Phase B.
+type TriggerUpgradeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Backend to upgrade. Empty = the local/primary daemon's own host.
+	BackendId string `protobuf:"bytes,1,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	// Upgrade even if the sentinel-served binary already matches the running one.
+	Force         bool `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TriggerUpgradeRequest) Reset() {
+	*x = TriggerUpgradeRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TriggerUpgradeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TriggerUpgradeRequest) ProtoMessage() {}
+
+func (x *TriggerUpgradeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TriggerUpgradeRequest.ProtoReflect.Descriptor instead.
+func (*TriggerUpgradeRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *TriggerUpgradeRequest) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
+func (x *TriggerUpgradeRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+// TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
+// runs asynchronously (the daemon restarts), so callers poll GetUpgradeStatus
+// or watch the backend's version in ListBackends for the outcome. See #354.
+type TriggerUpgradeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque id for polling via GetUpgradeStatus.
+	UpgradeId string `protobuf:"bytes,1,opt,name=upgrade_id,json=upgradeId,proto3" json:"upgrade_id,omitempty"`
+	// Status at acknowledgement time: "in_progress" (started) or "noop"
+	// (already up to date and force=false).
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// The daemon version running when the upgrade was triggered.
+	CurrentVersion string `protobuf:"bytes,3,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"`
+	// Human-readable detail (e.g. why it was a noop).
+	Message string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	// Echoes the targeted backend ("" = local).
+	BackendId     string `protobuf:"bytes,5,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TriggerUpgradeResponse) Reset() {
+	*x = TriggerUpgradeResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TriggerUpgradeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TriggerUpgradeResponse) ProtoMessage() {}
+
+func (x *TriggerUpgradeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TriggerUpgradeResponse.ProtoReflect.Descriptor instead.
+func (*TriggerUpgradeResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *TriggerUpgradeResponse) GetUpgradeId() string {
+	if x != nil {
+		return x.UpgradeId
+	}
+	return ""
+}
+
+func (x *TriggerUpgradeResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *TriggerUpgradeResponse) GetCurrentVersion() string {
+	if x != nil {
+		return x.CurrentVersion
+	}
+	return ""
+}
+
+func (x *TriggerUpgradeResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *TriggerUpgradeResponse) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
+// GetUpgradeStatusRequest polls an upgrade started by TriggerUpgrade.
+type GetUpgradeStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UpgradeId     string                 `protobuf:"bytes,1,opt,name=upgrade_id,json=upgradeId,proto3" json:"upgrade_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUpgradeStatusRequest) Reset() {
+	*x = GetUpgradeStatusRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUpgradeStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUpgradeStatusRequest) ProtoMessage() {}
+
+func (x *GetUpgradeStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUpgradeStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetUpgradeStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetUpgradeStatusRequest) GetUpgradeId() string {
+	if x != nil {
+		return x.UpgradeId
+	}
+	return ""
+}
+
+// GetUpgradeStatusResponse reports an upgrade's progress. Note: a local
+// self-upgrade restarts the daemon, dropping in-memory job state — after a
+// restart this returns status "unknown" and callers should compare the
+// backend's version in ListBackends instead. See #354.
+type GetUpgradeStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// One of: "in_progress", "completed", "failed", "noop", "unknown".
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	// Daemon version recorded when the upgrade was triggered.
+	CurrentVersion string `protobuf:"bytes,2,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"`
+	// Error detail when status == "failed".
+	Error string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	// RFC3339 completion time when status is "completed" or "failed".
+	CompletedAt   string `protobuf:"bytes,4,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUpgradeStatusResponse) Reset() {
+	*x = GetUpgradeStatusResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUpgradeStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUpgradeStatusResponse) ProtoMessage() {}
+
+func (x *GetUpgradeStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUpgradeStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetUpgradeStatusResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *GetUpgradeStatusResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *GetUpgradeStatusResponse) GetCurrentVersion() string {
+	if x != nil {
+		return x.CurrentVersion
+	}
+	return ""
+}
+
+func (x *GetUpgradeStatusResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *GetUpgradeStatusResponse) GetCompletedAt() string {
+	if x != nil {
+		return x.CompletedAt
+	}
+	return ""
+}
+
 // NetworkPolicy is a tenant's network-isolation policy, enforced at each of the
 // tenant's container host-veth TC_INGRESS hooks (the sender side of every flow;
 // see the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315.
@@ -1678,7 +1942,7 @@ type NetworkPolicy struct {
 
 func (x *NetworkPolicy) Reset() {
 	*x = NetworkPolicy{}
-	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	mi := &file_containarium_v1_config_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1690,7 +1954,7 @@ func (x *NetworkPolicy) String() string {
 func (*NetworkPolicy) ProtoMessage() {}
 
 func (x *NetworkPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[17]
+	mi := &file_containarium_v1_config_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1703,7 +1967,7 @@ func (x *NetworkPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkPolicy.ProtoReflect.Descriptor instead.
 func (*NetworkPolicy) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *NetworkPolicy) GetTenant() string {
@@ -1764,7 +2028,7 @@ type SetNetworkPolicyRequest struct {
 
 func (x *SetNetworkPolicyRequest) Reset() {
 	*x = SetNetworkPolicyRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[18]
+	mi := &file_containarium_v1_config_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1776,7 +2040,7 @@ func (x *SetNetworkPolicyRequest) String() string {
 func (*SetNetworkPolicyRequest) ProtoMessage() {}
 
 func (x *SetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[18]
+	mi := &file_containarium_v1_config_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1789,7 +2053,7 @@ func (x *SetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNetworkPolicyRequest.ProtoReflect.Descriptor instead.
 func (*SetNetworkPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SetNetworkPolicyRequest) GetPolicy() *NetworkPolicy {
@@ -1809,7 +2073,7 @@ type SetNetworkPolicyResponse struct {
 
 func (x *SetNetworkPolicyResponse) Reset() {
 	*x = SetNetworkPolicyResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[19]
+	mi := &file_containarium_v1_config_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1821,7 +2085,7 @@ func (x *SetNetworkPolicyResponse) String() string {
 func (*SetNetworkPolicyResponse) ProtoMessage() {}
 
 func (x *SetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[19]
+	mi := &file_containarium_v1_config_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1834,7 +2098,7 @@ func (x *SetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNetworkPolicyResponse.ProtoReflect.Descriptor instead.
 func (*SetNetworkPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SetNetworkPolicyResponse) GetPolicy() *NetworkPolicy {
@@ -1853,7 +2117,7 @@ type GetNetworkPolicyRequest struct {
 
 func (x *GetNetworkPolicyRequest) Reset() {
 	*x = GetNetworkPolicyRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[20]
+	mi := &file_containarium_v1_config_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1865,7 +2129,7 @@ func (x *GetNetworkPolicyRequest) String() string {
 func (*GetNetworkPolicyRequest) ProtoMessage() {}
 
 func (x *GetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[20]
+	mi := &file_containarium_v1_config_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1878,7 +2142,7 @@ func (x *GetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkPolicyRequest.ProtoReflect.Descriptor instead.
 func (*GetNetworkPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{20}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetNetworkPolicyRequest) GetTenant() string {
@@ -1897,7 +2161,7 @@ type GetNetworkPolicyResponse struct {
 
 func (x *GetNetworkPolicyResponse) Reset() {
 	*x = GetNetworkPolicyResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[21]
+	mi := &file_containarium_v1_config_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1909,7 +2173,7 @@ func (x *GetNetworkPolicyResponse) String() string {
 func (*GetNetworkPolicyResponse) ProtoMessage() {}
 
 func (x *GetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[21]
+	mi := &file_containarium_v1_config_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1922,7 +2186,7 @@ func (x *GetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkPolicyResponse.ProtoReflect.Descriptor instead.
 func (*GetNetworkPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{21}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetNetworkPolicyResponse) GetPolicy() *NetworkPolicy {
@@ -1940,7 +2204,7 @@ type ListNetworkPoliciesRequest struct {
 
 func (x *ListNetworkPoliciesRequest) Reset() {
 	*x = ListNetworkPoliciesRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[22]
+	mi := &file_containarium_v1_config_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1952,7 +2216,7 @@ func (x *ListNetworkPoliciesRequest) String() string {
 func (*ListNetworkPoliciesRequest) ProtoMessage() {}
 
 func (x *ListNetworkPoliciesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[22]
+	mi := &file_containarium_v1_config_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1965,7 +2229,7 @@ func (x *ListNetworkPoliciesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkPoliciesRequest.ProtoReflect.Descriptor instead.
 func (*ListNetworkPoliciesRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{22}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{26}
 }
 
 type ListNetworkPoliciesResponse struct {
@@ -1977,7 +2241,7 @@ type ListNetworkPoliciesResponse struct {
 
 func (x *ListNetworkPoliciesResponse) Reset() {
 	*x = ListNetworkPoliciesResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[23]
+	mi := &file_containarium_v1_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1989,7 +2253,7 @@ func (x *ListNetworkPoliciesResponse) String() string {
 func (*ListNetworkPoliciesResponse) ProtoMessage() {}
 
 func (x *ListNetworkPoliciesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[23]
+	mi := &file_containarium_v1_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2002,7 +2266,7 @@ func (x *ListNetworkPoliciesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkPoliciesResponse.ProtoReflect.Descriptor instead.
 func (*ListNetworkPoliciesResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{23}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListNetworkPoliciesResponse) GetPolicies() []*NetworkPolicy {
@@ -2021,7 +2285,7 @@ type DeleteNetworkPolicyRequest struct {
 
 func (x *DeleteNetworkPolicyRequest) Reset() {
 	*x = DeleteNetworkPolicyRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[24]
+	mi := &file_containarium_v1_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2033,7 +2297,7 @@ func (x *DeleteNetworkPolicyRequest) String() string {
 func (*DeleteNetworkPolicyRequest) ProtoMessage() {}
 
 func (x *DeleteNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[24]
+	mi := &file_containarium_v1_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2046,7 +2310,7 @@ func (x *DeleteNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkPolicyRequest.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{24}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DeleteNetworkPolicyRequest) GetTenant() string {
@@ -2064,7 +2328,7 @@ type DeleteNetworkPolicyResponse struct {
 
 func (x *DeleteNetworkPolicyResponse) Reset() {
 	*x = DeleteNetworkPolicyResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[25]
+	mi := &file_containarium_v1_config_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2076,7 +2340,7 @@ func (x *DeleteNetworkPolicyResponse) String() string {
 func (*DeleteNetworkPolicyResponse) ProtoMessage() {}
 
 func (x *DeleteNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[25]
+	mi := &file_containarium_v1_config_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2089,7 +2353,7 @@ func (x *DeleteNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkPolicyResponse.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{25}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{29}
 }
 
 // BackendInfo describes one backend in the fleet — the local daemon
@@ -2125,7 +2389,7 @@ type BackendInfo struct {
 
 func (x *BackendInfo) Reset() {
 	*x = BackendInfo{}
-	mi := &file_containarium_v1_config_proto_msgTypes[26]
+	mi := &file_containarium_v1_config_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2137,7 +2401,7 @@ func (x *BackendInfo) String() string {
 func (*BackendInfo) ProtoMessage() {}
 
 func (x *BackendInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[26]
+	mi := &file_containarium_v1_config_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2150,7 +2414,7 @@ func (x *BackendInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendInfo.ProtoReflect.Descriptor instead.
 func (*BackendInfo) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{26}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *BackendInfo) GetId() string {
@@ -2238,7 +2502,7 @@ type BackendGPU struct {
 
 func (x *BackendGPU) Reset() {
 	*x = BackendGPU{}
-	mi := &file_containarium_v1_config_proto_msgTypes[27]
+	mi := &file_containarium_v1_config_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2250,7 +2514,7 @@ func (x *BackendGPU) String() string {
 func (*BackendGPU) ProtoMessage() {}
 
 func (x *BackendGPU) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[27]
+	mi := &file_containarium_v1_config_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2263,7 +2527,7 @@ func (x *BackendGPU) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendGPU.ProtoReflect.Descriptor instead.
 func (*BackendGPU) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{27}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *BackendGPU) GetVendor() string {
@@ -2296,7 +2560,7 @@ type ListBackendsRequest struct {
 
 func (x *ListBackendsRequest) Reset() {
 	*x = ListBackendsRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[28]
+	mi := &file_containarium_v1_config_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2308,7 +2572,7 @@ func (x *ListBackendsRequest) String() string {
 func (*ListBackendsRequest) ProtoMessage() {}
 
 func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[28]
+	mi := &file_containarium_v1_config_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2321,7 +2585,7 @@ func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{28}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{32}
 }
 
 // ListBackendsResponse is the response from listing backends
@@ -2335,7 +2599,7 @@ type ListBackendsResponse struct {
 
 func (x *ListBackendsResponse) Reset() {
 	*x = ListBackendsResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[29]
+	mi := &file_containarium_v1_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2347,7 +2611,7 @@ func (x *ListBackendsResponse) String() string {
 func (*ListBackendsResponse) ProtoMessage() {}
 
 func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[29]
+	mi := &file_containarium_v1_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2360,7 +2624,7 @@ func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{29}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
@@ -2483,7 +2747,27 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x16GPU_STATUS_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rGPU_STATUS_OK\x10\x01\x12\x1a\n" +
 	"\x16GPU_STATUS_UNAVAILABLE\x10\x02\x12\x17\n" +
-	"\x13GPU_STATUS_DEGRADED\x10\x03\"\x96\x02\n" +
+	"\x13GPU_STATUS_DEGRADED\x10\x03\"L\n" +
+	"\x15TriggerUpgradeRequest\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x01 \x01(\tR\tbackendId\x12\x14\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\"\xb1\x01\n" +
+	"\x16TriggerUpgradeResponse\x12\x1d\n" +
+	"\n" +
+	"upgrade_id\x18\x01 \x01(\tR\tupgradeId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12'\n" +
+	"\x0fcurrent_version\x18\x03 \x01(\tR\x0ecurrentVersion\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x05 \x01(\tR\tbackendId\"8\n" +
+	"\x17GetUpgradeStatusRequest\x12\x1d\n" +
+	"\n" +
+	"upgrade_id\x18\x01 \x01(\tR\tupgradeId\"\x94\x01\n" +
+	"\x18GetUpgradeStatusResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12'\n" +
+	"\x0fcurrent_version\x18\x02 \x01(\tR\x0ecurrentVersion\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12!\n" +
+	"\fcompleted_at\x18\x04 \x01(\tR\vcompletedAt\"\x96\x02\n" +
 	"\rNetworkPolicy\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
@@ -2582,7 +2866,7 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                      // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                       // 1: containarium.v1.GPUModel
@@ -2606,29 +2890,33 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*GetLatestReleaseResponse)(nil),    // 19: containarium.v1.GetLatestReleaseResponse
 	(*ValidateGPURequest)(nil),          // 20: containarium.v1.ValidateGPURequest
 	(*ValidateGPUResponse)(nil),         // 21: containarium.v1.ValidateGPUResponse
-	(*NetworkPolicy)(nil),               // 22: containarium.v1.NetworkPolicy
-	(*SetNetworkPolicyRequest)(nil),     // 23: containarium.v1.SetNetworkPolicyRequest
-	(*SetNetworkPolicyResponse)(nil),    // 24: containarium.v1.SetNetworkPolicyResponse
-	(*GetNetworkPolicyRequest)(nil),     // 25: containarium.v1.GetNetworkPolicyRequest
-	(*GetNetworkPolicyResponse)(nil),    // 26: containarium.v1.GetNetworkPolicyResponse
-	(*ListNetworkPoliciesRequest)(nil),  // 27: containarium.v1.ListNetworkPoliciesRequest
-	(*ListNetworkPoliciesResponse)(nil), // 28: containarium.v1.ListNetworkPoliciesResponse
-	(*DeleteNetworkPolicyRequest)(nil),  // 29: containarium.v1.DeleteNetworkPolicyRequest
-	(*DeleteNetworkPolicyResponse)(nil), // 30: containarium.v1.DeleteNetworkPolicyResponse
-	(*BackendInfo)(nil),                 // 31: containarium.v1.BackendInfo
-	(*BackendGPU)(nil),                  // 32: containarium.v1.BackendGPU
-	(*ListBackendsRequest)(nil),         // 33: containarium.v1.ListBackendsRequest
-	(*ListBackendsResponse)(nil),        // 34: containarium.v1.ListBackendsResponse
-	(*ResourceLimits)(nil),              // 35: containarium.v1.ResourceLimits
-	(OSType)(0),                         // 36: containarium.v1.OSType
+	(*TriggerUpgradeRequest)(nil),       // 22: containarium.v1.TriggerUpgradeRequest
+	(*TriggerUpgradeResponse)(nil),      // 23: containarium.v1.TriggerUpgradeResponse
+	(*GetUpgradeStatusRequest)(nil),     // 24: containarium.v1.GetUpgradeStatusRequest
+	(*GetUpgradeStatusResponse)(nil),    // 25: containarium.v1.GetUpgradeStatusResponse
+	(*NetworkPolicy)(nil),               // 26: containarium.v1.NetworkPolicy
+	(*SetNetworkPolicyRequest)(nil),     // 27: containarium.v1.SetNetworkPolicyRequest
+	(*SetNetworkPolicyResponse)(nil),    // 28: containarium.v1.SetNetworkPolicyResponse
+	(*GetNetworkPolicyRequest)(nil),     // 29: containarium.v1.GetNetworkPolicyRequest
+	(*GetNetworkPolicyResponse)(nil),    // 30: containarium.v1.GetNetworkPolicyResponse
+	(*ListNetworkPoliciesRequest)(nil),  // 31: containarium.v1.ListNetworkPoliciesRequest
+	(*ListNetworkPoliciesResponse)(nil), // 32: containarium.v1.ListNetworkPoliciesResponse
+	(*DeleteNetworkPolicyRequest)(nil),  // 33: containarium.v1.DeleteNetworkPolicyRequest
+	(*DeleteNetworkPolicyResponse)(nil), // 34: containarium.v1.DeleteNetworkPolicyResponse
+	(*BackendInfo)(nil),                 // 35: containarium.v1.BackendInfo
+	(*BackendGPU)(nil),                  // 36: containarium.v1.BackendGPU
+	(*ListBackendsRequest)(nil),         // 37: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),        // 38: containarium.v1.ListBackendsResponse
+	(*ResourceLimits)(nil),              // 39: containarium.v1.ResourceLimits
+	(OSType)(0),                         // 40: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	35, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	39, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	36, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	40, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -2639,12 +2927,12 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	14, // 13: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
 	4,  // 14: containarium.v1.ValidateGPUResponse.status:type_name -> containarium.v1.ValidateGPUResponse.GPUStatus
 	2,  // 15: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
-	22, // 16: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
-	22, // 17: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	22, // 18: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	22, // 19: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
-	32, // 20: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	31, // 21: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	26, // 16: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
+	26, // 17: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	26, // 18: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	26, // 19: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
+	36, // 20: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	35, // 21: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
 	22, // [22:22] is the sub-list for method output_type
 	22, // [22:22] is the sub-list for method input_type
 	22, // [22:22] is the sub-list for extension type_name
@@ -2664,7 +2952,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   30,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

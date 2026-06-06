@@ -231,6 +231,47 @@ export class ContaineriumClient {
   }
 
   /**
+   * Latest published release vs the running daemon version (cached daemon-side). #354.
+   */
+  async getLatestRelease(): Promise<{ latestRelease: string; currentVersion: string; updateAvailable: boolean }> {
+    const response = await this.client.get('/releases/latest');
+    return {
+      latestRelease: response.data.latestRelease || '',
+      currentVersion: response.data.currentVersion || '',
+      updateAvailable: !!response.data.updateAvailable,
+    };
+  }
+
+  /**
+   * Trigger a daemon upgrade on a backend (empty backendId = the local/primary
+   * daemon). Async — a successful local upgrade restarts the daemon. #354.
+   */
+  async triggerBackendUpgrade(backendId: string, force = false): Promise<{ upgradeId: string; status: string; currentVersion: string; message: string; backendId: string }> {
+    const response = await this.client.post('/backends/upgrade', { backend_id: backendId, force });
+    return {
+      upgradeId: response.data.upgradeId || '',
+      status: response.data.status || '',
+      currentVersion: response.data.currentVersion || '',
+      message: response.data.message || '',
+      backendId: response.data.backendId || '',
+    };
+  }
+
+  /**
+   * Poll an upgrade started by triggerBackendUpgrade. Returns status "unknown"
+   * when the id isn't found (e.g. a local self-upgrade restarted the daemon). #354.
+   */
+  async getUpgradeStatus(upgradeId: string): Promise<{ status: string; currentVersion: string; error: string; completedAt: string }> {
+    const response = await this.client.get('/upgrades/' + encodeURIComponent(upgradeId));
+    return {
+      status: response.data.status || '',
+      currentVersion: response.data.currentVersion || '',
+      error: response.data.error || '',
+      completedAt: response.data.completedAt || '',
+    };
+  }
+
+  /**
    * Poll container until it reaches a final state (Running, Stopped, or Error)
    * Throws an error if the container ends up in Error state
    */

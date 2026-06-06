@@ -525,6 +525,39 @@ func (s *Server) registerTools() {
 			Handler: handleCheckForUpdates,
 		},
 		{
+			Name:        "upgrade_backend",
+			Description: "Upgrade a backend's daemon to the binary the sentinel currently serves, immediately instead of waiting for the periodic auto-update tick. The daemon SHA-verifies and smoke-tests the binary, swaps it atomically (keeping the old one as .old), and restarts. Admin-only. Omit backend_id (or pass the local id) to upgrade this daemon; pass a peer id from list_backends to upgrade that peer. Async: a successful local upgrade restarts the daemon, so confirm the new version via list_backends.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"backend_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Backend to upgrade (from list_backends). Empty = the local/primary daemon.",
+					},
+					"force": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Upgrade even if the sentinel-served binary already matches the running one. Default false.",
+					},
+				},
+			},
+			Handler: handleUpgradeBackend,
+		},
+		{
+			Name:        "get_upgrade_status",
+			Description: "Poll an upgrade started by upgrade_backend. Returns the status (in_progress, completed, failed, noop, unknown), the version at trigger time, and any error. Note: a successful LOCAL upgrade restarts the daemon and drops the job, so this returns 'unknown' afterward — compare the backend version in list_backends to confirm.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"upgrade_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Upgrade id returned by upgrade_backend.",
+					},
+				},
+				"required": []string{"upgrade_id"},
+			},
+			Handler: handleGetUpgradeStatus,
+		},
+		{
 			Name: "list_backends",
 			Description: "List the cluster's backend hosts (the local daemon plus any " +
 				"tunnel-connected peers). Returns id, type (local/tunnel), health, " +
@@ -1067,22 +1100,24 @@ func (s *Server) registerTools() {
 func toolScopeAssignments() map[string]string {
 	return map[string]string{
 		// container lifecycle
-		"create_container":  auth.ScopeContainersWrite,
-		"delete_container":  auth.ScopeContainersWrite,
-		"start_container":   auth.ScopeContainersWrite,
-		"stop_container":    auth.ScopeContainersWrite,
-		"resize_container":  auth.ScopeContainersWrite,
-		"move_container":    auth.ScopeContainersWrite,
-		"toggle_monitoring": auth.ScopeContainersWrite,
-		"toggle_auto_sleep": auth.ScopeContainersWrite,
-		"list_containers":   auth.ScopeContainersRead,
-		"get_container":     auth.ScopeContainersRead,
-		"debug_container":   auth.ScopeContainersRead,
-		"get_metrics":       auth.ScopeContainersRead,
-		"get_system_info":   auth.ScopeContainersRead,
-		"check_for_updates": auth.ScopeContainersRead,
-		"list_backends":     auth.ScopeContainersRead,
-		"get_backend":       auth.ScopeContainersRead,
+		"create_container":   auth.ScopeContainersWrite,
+		"delete_container":   auth.ScopeContainersWrite,
+		"start_container":    auth.ScopeContainersWrite,
+		"stop_container":     auth.ScopeContainersWrite,
+		"resize_container":   auth.ScopeContainersWrite,
+		"move_container":     auth.ScopeContainersWrite,
+		"toggle_monitoring":  auth.ScopeContainersWrite,
+		"toggle_auto_sleep":  auth.ScopeContainersWrite,
+		"list_containers":    auth.ScopeContainersRead,
+		"get_container":      auth.ScopeContainersRead,
+		"debug_container":    auth.ScopeContainersRead,
+		"get_metrics":        auth.ScopeContainersRead,
+		"get_system_info":    auth.ScopeContainersRead,
+		"check_for_updates":  auth.ScopeContainersRead,
+		"upgrade_backend":    auth.ScopeContainersWrite,
+		"get_upgrade_status": auth.ScopeContainersRead,
+		"list_backends":      auth.ScopeContainersRead,
+		"get_backend":        auth.ScopeContainersRead,
 		// validate-gpu creates+deletes a throwaway container (a write op);
 		// the daemon additionally enforces admin role.
 		"backend_validate_gpu": auth.ScopeContainersWrite,
@@ -1605,6 +1640,52 @@ func handleCheckForUpdates(client *Client, args map[string]interface{}) (string,
 		result += fmt.Sprintf("\n⚠ Update available: %s → %s\n", resp.CurrentVersion, resp.LatestRelease)
 	} else {
 		result += "\n✓ Up to date\n"
+	}
+	return result, nil
+}
+
+func handleUpgradeBackend(client *Client, args map[string]interface{}) (string, error) {
+	backendID, _ := args["backend_id"].(string)
+	force, _ := args["force"].(bool)
+	resp, err := client.TriggerUpgrade(backendID, force)
+	if err != nil {
+		return "", fmt.Errorf("failed to trigger upgrade: %w", err)
+	}
+	target := resp.BackendID
+	if target == "" {
+		target = "(local)"
+	}
+	result := fmt.Sprintf("Upgrade %s on %s (job %s)\n", resp.Status, target, resp.UpgradeID)
+	if resp.CurrentVersion != "" {
+		result += fmt.Sprintf("  from version: %s\n", resp.CurrentVersion)
+	}
+	if resp.Message != "" {
+		result += fmt.Sprintf("  %s\n", resp.Message)
+	}
+	return result, nil
+}
+
+func handleGetUpgradeStatus(client *Client, args map[string]interface{}) (string, error) {
+	upgradeID, _ := args["upgrade_id"].(string)
+	if upgradeID == "" {
+		return "", fmt.Errorf("upgrade_id is required")
+	}
+	resp, err := client.GetUpgradeStatus(upgradeID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get upgrade status: %w", err)
+	}
+	result := fmt.Sprintf("Status:   %s\n", resp.Status)
+	if resp.CurrentVersion != "" {
+		result += fmt.Sprintf("Version:  %s\n", resp.CurrentVersion)
+	}
+	if resp.CompletedAt != "" {
+		result += fmt.Sprintf("Done at:  %s\n", resp.CompletedAt)
+	}
+	if resp.Error != "" {
+		result += fmt.Sprintf("Error:    %s\n", resp.Error)
+	}
+	if resp.Status == "unknown" {
+		result += "\n(unknown id — if you just triggered a local upgrade, the daemon restarted and dropped the job; confirm via list_backends.)\n"
 	}
 	return result, nil
 }

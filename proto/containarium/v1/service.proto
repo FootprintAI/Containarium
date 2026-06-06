@@ -433,6 +433,38 @@ service ContainerService {
     };
   }
 
+  // TriggerUpgrade upgrades a backend's daemon now rather than waiting for the
+  // periodic auto-update tick: the daemon pulls the binary the sentinel
+  // currently serves (SHA-verified), smoke-tests it, swaps atomically (keeping
+  // .old), and restarts. Admin-only. Async — poll GetUpgradeStatus or watch the
+  // version in ListBackends. backend_id in the body, empty = local. #354 Phase B.
+  rpc TriggerUpgrade(TriggerUpgradeRequest) returns (TriggerUpgradeResponse) {
+    option (google.api.http) = {
+      post: "/v1/backends/upgrade"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Trigger daemon upgrade on a backend";
+      description: "Upgrades a backend's daemon to the binary the sentinel currently serves, immediately instead of on the periodic tick. SHA-verified and smoke-tested before an atomic swap; the daemon restarts. Admin-only. Returns an upgrade_id for GetUpgradeStatus.";
+      tags: "System";
+    };
+  }
+
+  // GetUpgradeStatus polls an upgrade started by TriggerUpgrade. A local
+  // self-upgrade restarts the daemon and loses in-memory job state, so after a
+  // restart this returns "unknown" — compare the backend version in
+  // ListBackends instead. #354.
+  rpc GetUpgradeStatus(GetUpgradeStatusRequest) returns (GetUpgradeStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/upgrades/{upgrade_id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Poll upgrade status";
+      description: "Returns the status of an upgrade started by TriggerUpgrade. Note: a local self-upgrade restarts the daemon and drops job state, returning 'unknown' afterward; compare the backend version in ListBackends to confirm.";
+      tags: "System";
+    };
+  }
+
   // GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
   rpc GetMonitoringInfo(GetMonitoringInfoRequest) returns (GetMonitoringInfoResponse) {
     option (google.api.http) = {

@@ -729,6 +729,41 @@
         ]
       }
     },
+    "/v1/backends/upgrade": {
+      "post": {
+        "summary": "Trigger daemon upgrade on a backend",
+        "description": "Upgrades a backend's daemon to the binary the sentinel currently serves, immediately instead of on the periodic tick. SHA-verified and smoke-tested before an atomic swap; the daemon restarts. Admin-only. Returns an upgrade_id for GetUpgradeStatus.",
+        "operationId": "ContainerService_TriggerUpgrade",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TriggerUpgradeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "TriggerUpgradeRequest asks a backend to upgrade its daemon binary now instead\nof waiting for the periodic auto-update tick. The daemon pulls the binary the\nsentinel currently serves (SHA-verified), smoke-tests it, swaps atomically\n(keeping the previous binary as .old), and restarts. See #354 Phase B.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TriggerUpgradeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/backups": {
       "get": {
         "summary": "List backups",
@@ -4083,6 +4118,38 @@
         ]
       }
     },
+    "/v1/upgrades/{upgradeId}": {
+      "get": {
+        "summary": "Poll upgrade status",
+        "description": "Returns the status of an upgrade started by TriggerUpgrade. Note: a local self-upgrade restarts the daemon and drops job state, returning 'unknown' afterward; compare the backend version in ListBackends to confirm.",
+        "operationId": "ContainerService_GetUpgradeStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetUpgradeStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "upgradeId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/validate-gpu": {
       "post": {
         "summary": "Validate GPU passthrough",
@@ -7036,6 +7103,28 @@
         }
       }
     },
+    "GetUpgradeStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "One of: \"in_progress\", \"completed\", \"failed\", \"noop\", \"unknown\"."
+        },
+        "currentVersion": {
+          "type": "string",
+          "description": "Daemon version recorded when the upgrade was triggered."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error detail when status == \"failed\"."
+        },
+        "completedAt": {
+          "type": "string",
+          "description": "RFC3339 completion time when status is \"completed\" or \"failed\"."
+        }
+      },
+      "description": "GetUpgradeStatusResponse reports an upgrade's progress. Note: a local\nself-upgrade restarts the daemon, dropping in-memory job state — after a\nrestart this returns status \"unknown\" and callers should compare the\nbackend's version in ListBackends instead. See #354."
+    },
     "GetVolumeResponse": {
       "type": "object",
       "properties": {
@@ -9338,6 +9427,46 @@
           "title": "Human-readable message"
         }
       }
+    },
+    "TriggerUpgradeRequest": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Backend to upgrade. Empty = the local/primary daemon's own host."
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Upgrade even if the sentinel-served binary already matches the running one."
+        }
+      },
+      "description": "TriggerUpgradeRequest asks a backend to upgrade its daemon binary now instead\nof waiting for the periodic auto-update tick. The daemon pulls the binary the\nsentinel currently serves (SHA-verified), smoke-tests it, swaps atomically\n(keeping the previous binary as .old), and restarts. See #354 Phase B."
+    },
+    "TriggerUpgradeResponse": {
+      "type": "object",
+      "properties": {
+        "upgradeId": {
+          "type": "string",
+          "description": "Opaque id for polling via GetUpgradeStatus."
+        },
+        "status": {
+          "type": "string",
+          "description": "Status at acknowledgement time: \"in_progress\" (started) or \"noop\"\n(already up to date and force=false)."
+        },
+        "currentVersion": {
+          "type": "string",
+          "description": "The daemon version running when the upgrade was triggered."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable detail (e.g. why it was a noop)."
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Echoes the targeted backend (\"\" = local)."
+        }
+      },
+      "description": "TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade\nruns asynchronously (the daemon restarts), so callers poll GetUpgradeStatus\nor watch the backend's version in ListBackends for the outcome. See #354."
     },
     "TriggerZapScanRequest": {
       "type": "object",

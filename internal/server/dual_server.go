@@ -1834,6 +1834,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// Start auto-updater if sentinel URL is configured
 	if ds.config.SentinelURL != "" {
 		updater := NewAutoUpdater(ds.config.SentinelURL, "/usr/local/bin/containarium", 5*time.Minute)
+		if ds.containerServer != nil {
+			ds.containerServer.SetAutoUpdater(updater) // enables on-demand TriggerUpgrade (#354)
+		}
 		go updater.Run(ctx)
 	}
 

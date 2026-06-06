@@ -122,6 +122,29 @@ type ContainerServer struct {
 	// Empty (direct mode / no sentinel) leaves ssh_host empty and clients fall
 	// back to network.ip_address.
 	sshHost string
+
+	// autoUpdater drives on-demand daemon upgrades (TriggerUpgrade). Nil on
+	// daemons started without an auto-update source (e.g. no sentinel), in
+	// which case TriggerUpgrade for the local backend returns Unavailable.
+	// upgradeJobs tracks in-flight/terminal upgrade jobs by upgrade_id, and
+	// upgradeBusy guards against concurrent upgrades per backend. A successful
+	// LOCAL upgrade restarts the daemon, so its job state does not survive —
+	// callers confirm via the backend version in ListBackends. #354 Phase B.
+	autoUpdater *AutoUpdater
+	upgradeMu   sync.Mutex
+	upgradeJobs map[string]*upgradeJob
+	upgradeBusy map[string]bool
+}
+
+// upgradeJob is the in-memory record of a daemon upgrade triggered via
+// TriggerUpgrade, polled by GetUpgradeStatus. #354.
+type upgradeJob struct {
+	id             string
+	backendID      string
+	status         string // in_progress | completed | failed | noop
+	currentVersion string
+	errMsg         string
+	completedAt    string
 }
 
 // NewContainerServer creates a new container server
@@ -1752,6 +1775,133 @@ func gpuValidationStatusToProto(s string) pb.ValidateGPUResponse_GPUStatus {
 	}
 }
 
+// TriggerUpgrade upgrades a backend's daemon to the binary the sentinel
+// currently serves, immediately rather than on the periodic auto-update tick.
+// Admin-only. An empty (or local) backend_id upgrades this daemon; a peer
+// backend_id forwards to that peer, which upgrades itself. The upgrade is
+// async: a successful local swap restarts this daemon, so callers confirm the
+// result via the backend version in ListBackends (the in-memory job is lost on
+// restart, so GetUpgradeStatus then returns "unknown"). #354 Phase B.
+func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpgradeRequest) (*pb.TriggerUpgradeResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Remote backend → forward to the owning peer (it upgrades its own daemon).
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		body, err := protojson.Marshal(req)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "marshal upgrade request: %v", err)
+		}
+		respBody, st, err := peer.ForwardRequest("POST", "/v1/backends/upgrade", extractAuthToken(ctx), body)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward upgrade to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for upgrade", req.BackendId, st)
+		}
+		var resp pb.TriggerUpgradeResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s upgrade response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	// Local backend.
+	if s.autoUpdater == nil {
+		return nil, status.Error(codes.Unavailable, "auto-update is not configured on this daemon (no sentinel binary source)")
+	}
+
+	current := version.GetVersion()
+	backendKey := s.localBackendID()
+
+	s.upgradeMu.Lock()
+	if s.upgradeJobs == nil {
+		s.upgradeJobs = make(map[string]*upgradeJob)
+		s.upgradeBusy = make(map[string]bool)
+	}
+	if s.upgradeBusy[backendKey] {
+		s.upgradeMu.Unlock()
+		return nil, status.Error(codes.FailedPrecondition, "an upgrade is already in progress on this backend")
+	}
+	id := fmt.Sprintf("upg-%d", time.Now().UnixNano())
+	job := &upgradeJob{id: id, backendID: req.BackendId, status: "in_progress", currentVersion: current}
+	s.upgradeJobs[id] = job
+	s.upgradeBusy[backendKey] = true
+	s.upgradeMu.Unlock()
+
+	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
+	log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
+
+	// Run async: TriggerNow restarts the daemon on a successful swap, so neither
+	// this goroutine nor the in-memory job survives a local upgrade. We still
+	// record terminal state for the noop/failure paths, which return WITHOUT a
+	// restart.
+	go func() {
+		changed, err := s.autoUpdater.TriggerNow(context.Background(), req.Force)
+		s.upgradeMu.Lock()
+		defer s.upgradeMu.Unlock()
+		s.upgradeBusy[backendKey] = false
+		switch {
+		case err != nil:
+			job.status = "failed"
+			job.errMsg = err.Error()
+			job.completedAt = time.Now().UTC().Format(time.RFC3339)
+			log.Printf("[upgrade] job %s failed: %v", id, err)
+		case !changed:
+			job.status = "noop"
+			job.completedAt = time.Now().UTC().Format(time.RFC3339)
+		default:
+			// changed: restart imminent; leave status "in_progress".
+		}
+	}()
+
+	return &pb.TriggerUpgradeResponse{
+		UpgradeId:      id,
+		Status:         "in_progress",
+		CurrentVersion: current,
+		Message:        "upgrade started; if a new binary is applied the daemon restarts — confirm via the backend version in ListBackends",
+		BackendId:      req.BackendId,
+	}, nil
+}
+
+// GetUpgradeStatus polls an upgrade started by TriggerUpgrade. Admin-only.
+// Returns status "unknown" for an unrecognized id — including the common case
+// where a successful local self-upgrade restarted the daemon and dropped the
+// in-memory job; callers should compare the backend version in ListBackends.
+// #354.
+func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgradeStatusRequest) (*pb.GetUpgradeStatusResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if req.UpgradeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "upgrade_id is required")
+	}
+	s.upgradeMu.Lock()
+	job := s.upgradeJobs[req.UpgradeId]
+	s.upgradeMu.Unlock()
+	if job == nil {
+		return &pb.GetUpgradeStatusResponse{
+			Status:         "unknown",
+			CurrentVersion: version.GetVersion(),
+		}, nil
+	}
+	return &pb.GetUpgradeStatusResponse{
+		Status:         job.status,
+		CurrentVersion: job.currentVersion,
+		Error:          job.errMsg,
+		CompletedAt:    job.completedAt,
+	}, nil
+}
+
 // GetSystemInfo gets information about the Incus host
 func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error) {
 	// Admin-only: exposes fleet-internal details (hostname, OS,
@@ -2172,6 +2322,14 @@ func (s *ContainerServer) SetStartTime(t time.Time) {
 // fall back to the container IP. Called once from DualServer setup.
 func (s *ContainerServer) SetSSHHost(host string) {
 	s.sshHost = host
+}
+
+// SetAutoUpdater wires the daemon's auto-updater so TriggerUpgrade can run an
+// upgrade on demand (vs only on the periodic tick). DualServer calls this when
+// a sentinel binary source is configured; nil leaves local TriggerUpgrade
+// returning Unavailable. #354.
+func (s *ContainerServer) SetAutoUpdater(u *AutoUpdater) {
+	s.autoUpdater = u
 }
 
 // SetOTelCollectorEndpoint wires the OTLP/HTTP URL of this daemon's

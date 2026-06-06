@@ -791,6 +791,63 @@ func (c *Client) ValidateGPU(backendID, pci string) (*ValidateGPUResult, error) 
 	return &resp, nil
 }
 
+// TriggerUpgradeRequest is the typed /v1/backends/upgrade request body. #354.
+type TriggerUpgradeRequest struct {
+	BackendID string `json:"backend_id,omitempty"`
+	Force     bool   `json:"force,omitempty"`
+}
+
+// TriggerUpgradeResponse mirrors the TriggerUpgrade response. #354.
+type TriggerUpgradeResponse struct {
+	UpgradeID      string `json:"upgradeId"`
+	Status         string `json:"status"`
+	CurrentVersion string `json:"currentVersion"`
+	Message        string `json:"message"`
+	BackendID      string `json:"backendId"`
+}
+
+// TriggerUpgrade asks a backend to upgrade its daemon to the sentinel-served
+// binary now (empty backendID = the local/primary daemon; a peer id forwards to
+// that peer). Admin-only daemon-side. Async — a successful local upgrade
+// restarts the daemon, so confirm via the backend version in list_backends. #354.
+func (c *Client) TriggerUpgrade(backendID string, force bool) (*TriggerUpgradeResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/backends/upgrade", TriggerUpgradeRequest{
+		BackendID: backendID,
+		Force:     force,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp TriggerUpgradeResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// UpgradeStatusResponse mirrors the GetUpgradeStatus response. #354.
+type UpgradeStatusResponse struct {
+	Status         string `json:"status"`
+	CurrentVersion string `json:"currentVersion"`
+	Error          string `json:"error"`
+	CompletedAt    string `json:"completedAt"`
+}
+
+// GetUpgradeStatus polls an upgrade started by TriggerUpgrade. Returns status
+// "unknown" when the id isn't found — e.g. a local self-upgrade restarted the
+// daemon and dropped the job; compare the backend version instead. #354.
+func (c *Client) GetUpgradeStatus(upgradeID string) (*UpgradeStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/upgrades/"+upgradeID, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp UpgradeStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // AddRoute creates a domain → container:port mapping in the sentinel
 // reverse proxy. Used by the expose_port tool to make a container
 // reachable on the public internet under a chosen hostname.
