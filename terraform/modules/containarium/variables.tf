@@ -223,9 +223,9 @@ variable "enable_iap_firewall" {
 }
 
 variable "spot_vm_external_ip" {
-  description = "Give spot VM an ephemeral external IP (false = Cloud NAT only)"
+  description = "Give the spot VM an ephemeral external IP. Default false: in sentinel mode the spot must be private (inbound via the sentinel, egress via Cloud NAT) — a public IP on the backend is an unintended exposure. Set true only for a sentinel-less / debug deployment that needs the spot directly reachable. (Non-sentinel deployments ignore this — they always get the static IP.)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 # -----------------------------------------------------------------------------
