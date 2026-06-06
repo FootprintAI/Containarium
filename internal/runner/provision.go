@@ -210,10 +210,12 @@ type Result struct {
 // internal/cmd/create.go's create helpers; the MCP tool's
 // adapter calls the same.
 type BoxManager interface {
-	// Exists returns true if a box with the given name already
-	// exists on the daemon. Used for the idempotent-re-provision
-	// check (skip create if the box is already there).
-	Exists(ctx context.Context, name string) (bool, error)
+	// Exists returns (found, assignedUsername, error). assignedUsername is
+	// the SSH username the daemon assigned to the box (may differ from name
+	// when a control plane mints a generated username like cld-<uuid>).
+	// Empty when found is false. The install step must SSH as assignedUsername,
+	// not name. (#482)
+	Exists(ctx context.Context, name string) (bool, string, error)
 
 	// Create provisions a new box with the given name. The
 	// implementation supplies whatever sensible defaults the
@@ -460,7 +462,7 @@ func provisionOne(ctx context.Context, deps Deps, opts Options, name string) Run
 	createCtx, cancelCreate := context.WithTimeout(ctx, opts.BoxCreateTimeout)
 	defer cancelCreate()
 
-	exists, err := deps.Boxes.Exists(createCtx, name)
+	exists, existingUsername, err := deps.Boxes.Exists(createCtx, name)
 	if err != nil {
 		st.State = "failed"
 		st.LastError = fmt.Sprintf("check box existence: %v", err)
@@ -468,6 +470,13 @@ func provisionOne(ctx context.Context, deps Deps, opts Options, name string) Run
 	}
 	if exists {
 		st.BoxID = name // best-effort, the daemon's canonical ID may differ but matches in practice
+		// Use the daemon-assigned username if the control plane reports one;
+		// an idempotent re-run on an orphaned box must SSH as the same
+		// cld-<uuid> the box was originally given, not the requested name.
+		if existingUsername != "" {
+			sshUser = existingUsername
+			st.SSHUser = existingUsername
+		}
 	} else {
 		boxID, username, err := deps.Boxes.Create(createCtx, name, opts.SSHKey)
 		if err != nil {

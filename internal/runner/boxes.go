@@ -48,12 +48,12 @@ type daemonBoxManager struct {
 	create DaemonCreator
 }
 
-func (m *daemonBoxManager) Exists(_ context.Context, name string) (bool, error) {
+func (m *daemonBoxManager) Exists(_ context.Context, name string) (bool, string, error) {
 	// The daemon's "name" for a user-container is
 	// "<username>-container" — the create flow appends the
 	// suffix server-side. We pass the raw user/runner name to
 	// GetContainer which knows the convention.
-	_, err := m.api.GetContainer(name)
+	info, err := m.api.GetContainer(name)
 	if err != nil {
 		// Best-effort: distinguish "not found" from real
 		// failures. The HTTP/gRPC clients both return errors
@@ -62,11 +62,14 @@ func (m *daemonBoxManager) Exists(_ context.Context, name string) (bool, error) 
 		// (real error misread as not-found) sends us into
 		// Create, which will surface the real error anyway.
 		if isNotFoundError(err) {
-			return false, nil
+			return false, "", nil
 		}
-		return false, err
+		return false, "", err
 	}
-	return true, nil
+	// Return the daemon-assigned username so idempotent re-runs can
+	// SSH as the same cld-<uuid> the box originally got, not the
+	// friendly requested name. (#482)
+	return true, info.Username, nil
 }
 
 func (m *daemonBoxManager) Create(ctx context.Context, name, sshKey string) (boxID, username string, err error) {

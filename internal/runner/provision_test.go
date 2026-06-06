@@ -25,10 +25,19 @@ type fakeBoxes struct {
 	assignUsername map[string]string
 }
 
-func (f *fakeBoxes) Exists(_ context.Context, name string) (bool, error) {
+func (f *fakeBoxes) Exists(_ context.Context, name string) (bool, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.existing[name], nil
+	if !f.existing[name] {
+		return false, "", nil
+	}
+	// Return the assigned username (models the control-plane cld-<uuid>
+	// case). Falls back to name when no override is set (OSS daemon). (#482)
+	username := name
+	if u, ok := f.assignUsername[name]; ok {
+		username = u
+	}
+	return true, username, nil
 }
 
 func (f *fakeBoxes) Create(_ context.Context, name, _ string) (string, string, error) {
@@ -368,6 +377,53 @@ func TestProvision_UsesAssignedUsernameForSSH_482(t *testing.T) {
 	// though SSH targeted the assigned username.
 	if got := installer.gotEnv[assigned]["RUNNER_NAME"]; got != requested {
 		t.Errorf("RUNNER_NAME env = %q, want %q", got, requested)
+	}
+}
+
+// TestProvision_IdempotentRerun_UsesAssignedUsername_482 verifies that when
+// a box ALREADY EXISTS (orphaned from a previous failed provision) AND the
+// daemon assigned it a different username at create (cld-<uuid>), the
+// idempotent re-run SSHes as the assigned username from Exists — not the
+// requested name. The requested-name → cld-uuid mapping is only available
+// via Exists; if Exists didn't return it, we'd SSH as the wrong user and
+// the re-run would fail with [none publickey] indefinitely. (#482)
+func TestProvision_IdempotentRerun_UsesAssignedUsername_482(t *testing.T) {
+	const requested = "ci-runner-1"
+	const assigned = "cld-a7d6560a" // daemon-minted username from the first (failed) create
+	boxes := &fakeBoxes{
+		// Box already exists (was created by a previous provision attempt
+		// that died before the install step).
+		existing:       map[string]bool{requested: true},
+		assignUsername: map[string]string{requested: assigned},
+	}
+	installer := &fakeInstaller{alreadyInstalled: map[string]bool{}}
+	gh := &fakeGitHub{registerOnAttempt: map[string]int{requested: 1}}
+	clock := newFakeClock()
+
+	res, err := Provision(context.Background(), Deps{
+		Boxes: boxes, SSH: installer, GitHub: gh, Clock: clock,
+	}, Options{
+		Repo:       "footprintai/containarium",
+		PAT:        "ghp_test",
+		Count:      1,
+		NamePrefix: "ci-runner",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r := res.Runners[0]
+	if r.State != "provisioned" {
+		t.Fatalf("expected provisioned, got %s (err=%s)", r.State, r.LastError)
+	}
+
+	// The key assertion: the install must target the assigned username from
+	// Exists, not the requested name (which sshpiper has no route for).
+	if len(installer.installed) != 1 || installer.installed[0] != assigned {
+		t.Fatalf("install target = %v, want SSH as assigned username %q (not requested %q)",
+			installer.installed, assigned, requested)
+	}
+	if r.SSHUser != assigned {
+		t.Errorf("RunnerStatus.SSHUser = %q, want %q", r.SSHUser, assigned)
 	}
 }
 
