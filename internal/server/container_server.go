@@ -1844,9 +1844,11 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	// Run async: TriggerNow restarts the daemon on a successful swap, so neither
 	// this goroutine nor the in-memory job survives a local upgrade. We still
 	// record terminal state for the noop/failure paths, which return WITHOUT a
-	// restart.
+	// restart. Detach from the request's cancellation (the handler returns
+	// immediately) while keeping its values — the upgrade must outlive the RPC.
+	upgradeCtx := context.WithoutCancel(ctx)
 	go func() {
-		changed, err := s.autoUpdater.TriggerNow(context.Background(), req.Force)
+		changed, err := s.autoUpdater.TriggerNow(upgradeCtx, req.Force)
 		s.upgradeMu.Lock()
 		defer s.upgradeMu.Unlock()
 		s.upgradeBusy[backendKey] = false
