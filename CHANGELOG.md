@@ -9,23 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **GPU passthrough validation** — `ValidateGPU` RPC + `containarium backends validate-gpu` CLI + `backend_validate_gpu` MCP tool launch a throwaway `nvidia.runtime` LXC, run `nvidia-smi`, and report usable/model/driver (forwarding to the owning peer for remote backends); plus a standalone `scripts/validate-gpu-passthrough.sh` host→VM migration gate. Hardware-verified on an RTX 3090. (#316, #413, #415)
-- **`containarium create --no-ssh-key`** — keyless, platform-managed service tenants: no `authorized_keys` seeded, operated via `incus exec` / the daemon, so no private key has to exist. (#388)
-- **`containarium backends versions`** — cluster version overview: each backend's daemon version vs the latest release, with a per-backend current/behind status. (#354)
-- **Python telemetry distro exports traces + OTLP gRPC** — installs a real `TracerProvider`/`BatchSpanProcessor` (was a no-op that dropped spans) and selects the gRPC vs HTTP exporter from `OTEL_EXPORTER_OTLP_PROTOCOL`, via a new `grpc` extra. (#386)
-- **Managed `*.<base-domain>` wildcard TLS** — with DNS-01 configured, the daemon auto-provisions (and self-heals) the wildcard subject at edge startup, covering per-region / subdomain HTTPS endpoints from a single issuance; docs document DNS-01 as the supported per-region path. (#389)
-- **Podman tenant reboot durability** — `--podman` create now enables the system + per-user `podman-restart.service` and `loginctl enable-linger`, so workloads created with a restart policy come back after a host reboot/preemption. (#387)
-- **Deploy guard for the sentinel HMAC secret** — `scripts/deploy-binary.sh` refuses to swap a v0.19.0+ binary onto a host missing a ≥32-byte `CONTAINARIUM_SENTINEL_AUTH_SECRET` (the silent 401-lockout), with a new `docs/SENTINEL-AUTH-SECRET.md` runbook. (#341)
+- **`ProxyRoute.container_name`** — `GetRoutes` now returns the container behind each route in a dedicated field instead of overloading `app_name` (the display name), so a multi-tenant control plane can key its route reconciler on the box identity. Additive; `app_name` unchanged. (#511)
+
+## [0.23.1] - 2026-06-06
 
 ### Fixed
 
-- **Fractional CPU requests** — `resources.cpu` in millicpu/decimal (`250m`, `0.25`) now maps to `limits.cpu.allowance`; whole cores still use `limits.cpu`. Previously fractional requests failed async provisioning with "Invalid CPU limit syntax". (#401)
-- **sshpiper no longer drops live SSH sessions** on container create/delete — keysync stopped issuing `systemctl restart sshpiper`; the yaml plugin re-reads its config per connection, so routes update without tearing down in-flight sessions. (#301)
-- **Caddy edge self-heals after a stub-Caddyfile revert** — the route sync rebuilds the base config (was a permanent dead `:443` / admin-API 400-loop, with a daemon restart only partially recovering), and stale `:80/:443` DNAT to a recreated Caddy container IP is reconciled away. (#400)
-- **Terraform `containarium_version` upgrades take effect** — the spot and sentinel startup scripts reconcile the installed binary to the requested version on every boot (it was effectively write-once), and a recovered workhorse declines a stale sentinel-served binary to avoid a silent downgrade. (#385)
-- **eBPF Phase 0 `validate.sh` builds on stock Ubuntu** — added the multiarch include path so `clang -target bpf` finds `<asm/types.h>`. (The on-backend run also surfaced that the bridge master's tc-egress hook doesn't observe inter-container forwarded traffic — a Phase A design input, tracked in #315.) (#315)
+- **GCP KMS backend re-reads its token file** — the access token is reloaded per request, so a sidecar-refreshed `CONTAINARIUM_GCP_KMS_TOKEN_FILE` is picked up without a daemon restart. (#509)
+
+## [0.23.0] - 2026-06-06
+
+Minor release: pluggable KMS envelope encryption (with an AWS backend and an admin API), shared CephFS volumes, off-host database backups, node-VM scaffolding, and release-drift visibility. Packages all `main` work since v0.22.10.
+
+### Added
+
+- **KMS envelope encryption for tenant secrets** — pluggable backends (`inproc` / `vault` / `gcp` / `aws`, via `CONTAINARIUM_KMS_BACKEND`) wrap a per-row Data Encryption Key under a KMS-resident Key Encryption Key; legacy rows migrate in place. Includes the **AWS KMS** backend (hand-rolled SigV4, no vendor SDK) and a **`KmsService`** admin API — `GetKMSStatus` / `GetEnvelopeCoverage` / `MigrateToEnvelope` — plus a `containarium kms` CLI and admin-scoped MCP tools. (#490, #504)
+- **Shared multi-writer CephFS volumes** — proto-first `VolumeService` (create / list / delete / attach / detach), capability-gated on a `cephfs` storage pool (single-node ZFS hosts get a clear error). (#500)
+- **Off-host database backups** — `containarium backup` runs `pg_dump` inside a tenant's container and stores the compressed dump on the host or in a GCS bucket (`BackupService` + CLI + MCP); restores verify the dump's SHA-256 first. (#495)
+- **`containarium node`** — carve a host into GPU/CPU node-VMs (design + scaffold). (#502)
+- **Compose secret/OTel delivery via `env_file`** — nested docker/compose apps don't inherit the LXC environment, so the daemon drops a dotenv file at a fixed path they reference via `env_file:`; the OTel-only env-file mechanism was generalized into a shared delivery seam. (#493, #494)
+- **Release-drift visibility** — `GetLatestRelease` endpoints + a CLI update check + a webui Versions panel with per-backend "Upgrade now". (#498, #505)
+- **In-container KMS broker design note** — `docs/security/KMS-BROKER-DESIGN.md`: brokering envelope encrypt/decrypt to tenant workloads without handing them the KEK. (#499)
+- **System-wide GitHub-runner cap + reconcile controller.** (#489)
+
+### Fixed
+
+- **`ssh_host` is the source of truth for SSH** — the daemon's per-container `ssh_host` is authoritative; the MCP/CLI build the connect target (`user@ssh_host`) from it rather than reconstructing a host. (#503)
+- **Login auto-disambiguates a colliding default device name** to avoid a stranded session. (#496)
+- **`list_backends` decodes proto-JSON string-encoded int64.** (#501)
+
+## [0.22.10] - 2026-06-04
+
+Patch-release window (0.22.5 → 0.22.10): GitHub-runner provisioning hardening, jump-server multi-key sync, token-to-shell `connect`, and cloud route/actuation plumbing — plus the features that were pending after 0.22.0.
+
+### Added
+
+- **`containarium connect <box>`** — token-to-shell access with no SSH-key setup (+ MCP tool + Tier-2 sessions). (#466, #467)
+- **Cloud-assigned container routes exposed at the host edge**, with disk + GPU wired into the cloud actuator's create path. (#463, #465, #469)
+- **`RUNNER_DNS`** to pin the GitHub-runner box resolver. (#480)
+- **GPU passthrough validation** — `ValidateGPU` RPC + `containarium backends validate-gpu` CLI + `backend_validate_gpu` MCP tool launch a throwaway `nvidia.runtime` LXC, run `nvidia-smi`, and report usable/model/driver (forwarding to the owning peer for remote backends); plus a standalone `scripts/validate-gpu-passthrough.sh` host→VM migration gate. Hardware-verified on an RTX 3090. (#316, #413, #415)
+- **`containarium create --no-ssh-key`** — keyless, platform-managed service tenants: no `authorized_keys` seeded, operated via `incus exec` / the daemon. (#388)
+- **`containarium backends versions`** — cluster version overview: each backend's daemon version vs the latest release, with a per-backend current/behind status. (#354)
+- **Python telemetry distro exports traces + OTLP gRPC** — installs a real `TracerProvider`/`BatchSpanProcessor` (was a no-op that dropped spans) and selects the gRPC vs HTTP exporter from `OTEL_EXPORTER_OTLP_PROTOCOL`, via a new `grpc` extra. (#386)
+- **Managed `*.<base-domain>` wildcard TLS** — with DNS-01 configured, the daemon auto-provisions (and self-heals) the wildcard subject at edge startup. (#389)
+- **Podman tenant reboot durability** — `--podman` create enables the system + per-user `podman-restart.service` and `loginctl enable-linger`, so restart-policy workloads return after a host reboot/preemption; with a reboot-survival e2e. (#387, #497)
+- **Deploy guard for the sentinel HMAC secret** — `scripts/deploy-binary.sh` refuses to swap a v0.19.0+ binary onto a host missing a ≥32-byte `CONTAINARIUM_SENTINEL_AUTH_SECRET`, with a new `docs/SENTINEL-AUTH-SECRET.md` runbook. (#341)
+
+### Fixed
+
+- **Runner provisioning SSHes as the daemon-assigned username**, not the requested name — previously left boxes orphaned and undeletable-by-name on the multi-tenant cloud. (#483)
+- **Jump-server authorizes ALL request `ssh_keys`**, not just the first, and syncs create-request keys to `authorized_keys`. (#470, #471, #473)
+- **Runner install** grants the runner user sudo + clears stale ephemeral config, and retries the install-state SSH probe across the keysync window. (#476, #478)
+- **Fractional CPU requests** — `resources.cpu` in millicpu/decimal (`250m`, `0.25`) now maps to `limits.cpu.allowance`; whole cores still use `limits.cpu`. (#401)
+- **sshpiper no longer drops live SSH sessions** on container create/delete — the yaml plugin re-reads its config per connection. (#301)
+- **Caddy edge self-heals after a stub-Caddyfile revert** — the route sync rebuilds the base config, and stale `:80/:443` DNAT to a recreated Caddy container IP is reconciled away. (#400)
+- **Terraform `containarium_version` upgrades take effect** — startup scripts reconcile the installed binary to the requested version on every boot. (#385)
+- **eBPF Phase 0 `validate.sh` builds on stock Ubuntu** — added the multiarch include path so `clang -target bpf` finds `<asm/types.h>`. (#315)
 - **Edge layer4 no longer deactivates on an empty route set**, fixing a create-flap. (#416)
-- **`--http` CLI hardened against HTTP/2 edge resets** — pins HTTP/1.1 and drains response bodies. (#422)
+- **`--http` CLI hardened against HTTP/2 edge resets** — pins HTTP/1.1, the ALPN to `http/1.1`, and drains response bodies. (#422, #468)
 - **Incus exec retries the transient "Failed to retrieve PID" error.** (#425)
 
 ## [0.22.0] - 2026-05-31
