@@ -251,3 +251,25 @@ func TestDecide_PureFunction(t *testing.T) {
 		t.Errorf("Decide mutated its input slice")
 	}
 }
+
+// TestDecide_ProtectedSkipped: a protected box (#284) is never reaped, even
+// with a long-expired TTL or an elapsed stopped→delete window. Protection
+// wins over both timers.
+func TestDecide_ProtectedSkipped(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	window := 10 * time.Minute
+	stopped := now.Add(-time.Hour)
+
+	got := Decide([]ContainerView{
+		// Protected with a long-expired absolute TTL → must survive.
+		{Name: "runner-protected", TTLExpiresAt: ptr(now.Add(-time.Hour)), Protected: true},
+		// Protected, stopped past its delete window → must survive.
+		{Name: "runner-protected-stopped", Protected: true, Stopped: true, StoppedAt: &stopped, DeleteAfterStopped: &window},
+		// Control: same expired TTL but unprotected → reaped.
+		{Name: "ephemeral-expired", TTLExpiresAt: ptr(now.Add(-time.Hour))},
+	}, now)
+
+	if len(got) != 1 || got[0] != "ephemeral-expired" {
+		t.Fatalf("Decide = %v; want only [ephemeral-expired] (protected boxes must survive)", got)
+	}
+}

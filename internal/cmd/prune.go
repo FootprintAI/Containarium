@@ -143,7 +143,8 @@ func runPrune(_ *cobra.Command, _ []string) error {
 }
 
 // filterForPrune is the pure selection logic: which containers match the
-// filters. Core containers are NEVER matched (infrastructure safety). Filters
+// filters. Core containers and protected boxes (#284) are NEVER matched
+// (infrastructure + runner safety, regardless of the other filters). Filters
 // combine with AND. olderThan == 0 / state == "" / nameContains == "" /
 // empty labels each mean "don't filter on that". A box with no CreatedAt is
 // excluded by an olderThan filter (can't prove it's old enough). Pure — no IO,
@@ -152,6 +153,12 @@ func filterForPrune(containers []incus.ContainerInfo, state, nameContains string
 	var matches []incus.ContainerInfo
 	for _, c := range containers {
 		if c.Role.IsCoreRole() {
+			continue
+		}
+		// Protected boxes (#284, e.g. persistent runners) are never bulk-deleted
+		// — a "clean up leaked boxes" sweep must not take out a runner. Removing
+		// one takes a deliberate single-box `containarium delete`.
+		if c.DeletePolicy == incus.DeletePolicyProtected {
 			continue
 		}
 		if state == "running" && !strings.EqualFold(c.State, "Running") {

@@ -65,6 +65,8 @@ func (a *ttlsweeperIncusAdapter) ListContainers() ([]ttlsweeper.ContainerView, e
 			d := time.Duration(c.DeleteAfterStoppedSeconds) * time.Second
 			v.DeleteAfterStopped = &d
 		}
+		// Protected boxes (#284) are never auto-reaped, regardless of any timer.
+		v.Protected = c.DeletePolicy == incus.DeletePolicyProtected
 		out = append(out, v)
 	}
 	return out, nil

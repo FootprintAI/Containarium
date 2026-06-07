@@ -36,6 +36,13 @@ type ContainerView struct {
 	// scale-to-zero box that merely sleeps is never reaped for being
 	// stopped). Set + Stopped + StoppedAt+window elapsed → delete.
 	DeleteAfterStopped *time.Duration
+
+	// Protected marks a box that must never be auto-reaped (#284, delete-policy
+	// = protected — e.g. a persistent runner). When true, Decide skips the box
+	// regardless of any TTL or stopped→delete window. Defense in depth: a
+	// protected box should never carry a TTL, but if one is stamped by mistake
+	// the box still survives the sweeper.
+	Protected bool
 }
 
 // graceMargin is subtracted from the comparison clock before checking
@@ -66,11 +73,17 @@ const graceMargin = 30 * time.Second
 //
 // Unset/missing fields skip the corresponding rule, so a box with neither a
 // TTL nor a stopped→delete window is never reaped. A name matching both rules
-// is returned once (the two rules share the append-and-continue).
+// is returned once (the two rules share the append-and-continue). A box marked
+// Protected (#284) is skipped entirely, regardless of either timer.
 func Decide(containers []ContainerView, now time.Time) []string {
 	cutoff := now.Add(-graceMargin)
 	var expired []string
 	for _, c := range containers {
+		// Protected boxes (#284) are never auto-reaped — skip before any timer
+		// check so a stray TTL on a protected box can't delete it.
+		if c.Protected {
+			continue
+		}
 		// Absolute TTL.
 		if c.TTLExpiresAt != nil && !c.TTLExpiresAt.After(cutoff) {
 			expired = append(expired, c.Name)

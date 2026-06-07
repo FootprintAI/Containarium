@@ -105,3 +105,20 @@ func TestPruneDeleteKey(t *testing.T) {
 		t.Errorf("got %q, want alice (name fallback)", got)
 	}
 }
+
+// TestFilterForPrune_SkipsProtected: a protected box (#284) is never selected
+// for prune, even when it matches every other filter — the guard that would
+// have prevented a "clean up leaked boxes" sweep from deleting a runner.
+func TestFilterForPrune_SkipsProtected(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	fleet := []incus.ContainerInfo{
+		{Name: "ci-runner-1", State: "Running", CreatedAt: now.Add(-26 * time.Hour), DeletePolicy: incus.DeletePolicyProtected},
+		{Name: "leaked-box", State: "Running", CreatedAt: now.Add(-26 * time.Hour)},
+	}
+	// Broad filter (all running, >1h old) that matches BOTH boxes on every
+	// axis; only the unprotected one should come back.
+	got := names(filterForPrune(fleet, "running", "", time.Hour, nil, now))
+	if len(got) != 1 || got[0] != "leaked-box" {
+		t.Fatalf("filterForPrune = %v; want only [leaked-box] (protected runner must be skipped)", got)
+	}
+}

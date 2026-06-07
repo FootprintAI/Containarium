@@ -322,6 +322,12 @@ type ContainerInfo struct {
 	// stopped→delete window (#525). 0 = never delete on stop. Independent of
 	// auto-sleep so a scale-to-zero box that merely sleeps is never reaped.
 	DeleteAfterStoppedSeconds int64
+
+	// DeletePolicy mirrors user.containarium.delete_policy (#284). When set to
+	// DeletePolicyProtected, every automated/bulk deletion path (ttlsweeper
+	// auto-reap, `containarium prune`) skips the box — only a deliberate
+	// single-box delete can remove it. Empty = unprotected (today's default).
+	DeletePolicy string
 }
 
 // AutoSleepEnabledKey is the Incus config key storing the per-container
@@ -362,6 +368,20 @@ const StoppedAtKey = "user.containarium.stopped_at"
 // explicitly asked for stopped→delete gets reaped. Absent/0 = never delete on
 // stop (today's behavior).
 const DeleteAfterStoppedSecondsKey = "user.containarium.delete_after_stopped_seconds"
+
+// DeletePolicyKey is the Incus config key carrying a box's delete policy
+// (#284). A box set to DeletePolicyProtected is skipped by every automated /
+// bulk deletion path — the ttlsweeper's auto-reap and `containarium prune` —
+// so a "clean up leaked boxes" sweep can never take out a persistent runner.
+// Absent/empty = unprotected (today's default: eligible for prune + reap).
+const DeletePolicyKey = "user.containarium.delete_policy"
+
+// DeletePolicyProtected marks a box that must never be auto-reaped or
+// bulk-deleted (e.g. a persistent GitHub Actions runner). Deleting it takes a
+// deliberate single-box delete, not a sweep. The value is a stable string
+// contract: operators can set it directly (`incus config set <box>
+// user.containarium.delete_policy protected`) and every deletion path honors it.
+const DeletePolicyProtected = "protected"
 
 // DefaultIdleThresholdMinutes is the fallback used when the threshold
 // config key is missing or unparseable.
@@ -705,20 +725,21 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 		}
 
 		info := ContainerInfo{
-			Name:                 inst.Name,
-			State:                inst.Status,
-			InstanceType:         inst.Type,
-			CreatedAt:            inst.CreatedAt,
-			Labels:               extractLabelsFromConfig(inst.Config),
-			Role:                 Role(inst.Config[RoleKey]),
-			Tenant:               inst.Config[TenantLabelKey],
-			MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
-			AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
+			Name:                      inst.Name,
+			State:                     inst.Status,
+			InstanceType:              inst.Type,
+			CreatedAt:                 inst.CreatedAt,
+			Labels:                    extractLabelsFromConfig(inst.Config),
+			Role:                      Role(inst.Config[RoleKey]),
+			Tenant:                    inst.Config[TenantLabelKey],
+			MonitoringEnabled:         inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
+			AutoSleepEnabled:          inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
 			LastStartedAt:             parseLastStartedAt(inst.Config),
 			TTLExpiresAt:              parseTTLExpiresAt(inst.Config),
 			StoppedAt:                 parseStoppedAt(inst.Config),
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
+			DeletePolicy:              inst.Config[DeletePolicyKey],
 		}
 
 		// Get CPU and memory limits from config
@@ -848,6 +869,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
+		DeletePolicy:         inst.Config[DeletePolicyKey],
 	}
 
 	// Get resource limits
