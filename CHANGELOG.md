@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`containarium prune`** — bulk-delete containers matching a filter, for fleet cleanup (reaping piles of leaked/finished ephemeral boxes one command instead of one-by-one). Filters combine with AND: `--state running|stopped`, `--name-contains`, `--older-than <dur>`, `--label key=value` (repeatable). Safeguards: at least one filter required (no accidental delete-all), core platform containers are never eligible, the matching set is listed before anything happens, and deletion needs confirmation (`--yes` to skip, `--dry-run` to preview). Composes the existing list + delete surface, so it works against the OSS daemon and Containarium Cloud alike. (cloud #264)
 - **`Container.stopped_at` + `Container.delete_after_stopped_seconds`** — the container read API (`GetContainer`/`ListContainers`) now reports the two-phase reaping status (#525) alongside `ttl_expires_at` and `auto_sleep_enabled`, so a reader sees the *full* lifecycle (where a box is in idle→stop→delete) without host access. Read from the Incus config the daemon stamps; `stopped_at` is omitted while the box runs. Completes the read-side of the box-lifecycle model for the fleet-hygiene view (cloud #264). (#525)
+
+### Fixed
+
+- **gRPC `ListContainers` now returns labels** — the gRPC client dropped the `labels` map when converting the response, so label-based filtering (e.g. `containarium prune --label`) saw no labels over gRPC. HTTP already carried them.
 
 ## [0.24.0] - 2026-06-07
 

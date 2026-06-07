@@ -125,6 +125,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 			Name:                 container.Name,
 			Username:             container.Username,
 			State:                container.State.String(),
+			Labels:               container.Labels,
 			MonitoringEnabled:    container.MonitoringEnabled,
 			AutoSleepEnabled:     container.AutoSleepEnabled,
 			IdleThresholdMinutes: container.IdleThresholdMinutes,
