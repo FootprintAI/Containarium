@@ -383,6 +383,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				client.GitSourceOpts{}, // no git-source for runner boxes
 				0,                      // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
 				0,                      // idle-stop: runner boxes are long-lived; not auto-slept
+				0,                      // delete-after-stopped: not applicable to runner boxes
 			)
 			if err != nil {
 				return "", "", err
@@ -419,6 +420,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			client.GitSourceOpts{}, // no git-source for runner boxes
 			0,                      // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
 			0,                      // idle-stop: runner boxes are long-lived; not auto-slept
+			0,                      // delete-after-stopped: not applicable to runner boxes
 		)
 		if err != nil {
 			return "", "", err

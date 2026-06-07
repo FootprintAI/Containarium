@@ -191,6 +191,11 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if req.IdleStopMinutes < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "idle_stop_minutes must be >= 0, got %d", req.IdleStopMinutes)
 	}
+	// Birth stopped→delete (#525): same — reject a negative window early.
+	// 0 = never delete on stop; > 0 reaps a box left stopped that long.
+	if req.DeleteAfterStoppedSeconds < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "delete_after_stopped_seconds must be >= 0, got %d", req.DeleteAfterStoppedSeconds)
+	}
 
 	// Pool resolution — if a pool is requested, either validate that
 	// the explicit backend_id belongs to that pool, or pick any
@@ -404,6 +409,10 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 			if err == nil && info != nil && req.IdleStopMinutes > 0 {
 				s.stampBirthAutoSleep(info.Name, req.IdleStopMinutes)
 			}
+			// Birth stopped→delete (#525), async path. Best-effort like above.
+			if err == nil && info != nil && req.DeleteAfterStoppedSeconds > 0 {
+				s.stampBirthDeleteAfterStopped(info.Name, req.DeleteAfterStoppedSeconds)
+			}
 
 			s.pendingMu.Lock()
 			if pending, exists := s.pendingCreations[req.Username]; exists {
@@ -480,6 +489,15 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// box keeps running (it can be toggled later), it never fails the create.
 	if req.IdleStopMinutes > 0 {
 		s.stampBirthAutoSleep(info.Name, req.IdleStopMinutes)
+	}
+
+	// Birth stopped→delete (#525): record the window so the ttlsweeper reaps
+	// the box once it's been stopped that long. Best-effort like the other
+	// lifecycle stamps. The clock only starts when the box actually stops
+	// (StopContainer stamps stopped_at), so just persisting the window here
+	// is enough.
+	if req.DeleteAfterStoppedSeconds > 0 {
+		s.stampBirthDeleteAfterStopped(info.Name, req.DeleteAfterStoppedSeconds)
 	}
 
 	// Stamp tenant secrets into the LXC's env (best-effort — a
@@ -915,6 +933,15 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		log.Printf("[autosleep] failed to stamp %s on %s: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
 	}
 
+	// Two-phase reaping (#525): the box is running again, so clear stopped_at.
+	// This resets the stopped→delete timer — a box someone keeps waking to
+	// investigate never gets reaped; only a box left continuously stopped past
+	// its window does. Best-effort + idempotent (UnsetConfig of an absent key
+	// is a no-op).
+	if err := s.manager.UnsetConfig(req.Username+"-container", incus.StoppedAtKey); err != nil {
+		log.Printf("[ttl] failed to clear %s on %s: %v (continuing)", incus.StoppedAtKey, req.Username, err)
+	}
+
 	// Re-stamp tenant secrets from the current DB state. Picks up
 	// any rotations that happened while the container was stopped;
 	// existing processes won't see the change (POSIX inherit-at-fork),
@@ -1042,6 +1069,16 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 	info, err := s.manager.Get(req.Username)
 	if err != nil {
 		return nil, fmt.Errorf("container stopped but failed to get info: %w", err)
+	}
+
+	// Two-phase reaping (#525): record when the box became stopped so the
+	// ttlsweeper's stopped→delete timer runs from here. Best-effort — a failed
+	// stamp just means the stopped→delete clock doesn't start until a later
+	// stop restamps it; it never fails the stop. Only matters for boxes that
+	// opted into delete_after_stopped, but stamping unconditionally keeps the
+	// timestamp honest for any box and costs one config write.
+	if serr := s.manager.SetConfig(info.Name, incus.StoppedAtKey, time.Now().UTC().Format(time.RFC3339)); serr != nil {
+		log.Printf("[ttl] failed to stamp %s on %s: %v (stopped→delete timer not started)", incus.StoppedAtKey, info.Name, serr)
 	}
 
 	s.emitter.EmitContainerStopped(toProtoContainer(info))

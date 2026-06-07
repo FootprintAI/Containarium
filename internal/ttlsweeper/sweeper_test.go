@@ -139,6 +139,92 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+// dur is the *time.Duration analogue of ptr — keeps the stopped→delete
+// table literals readable.
+func dur(d time.Duration) *time.Duration { return &d }
+
+// TestDecide_StoppedDelete covers the #525 stopped→delete timer: a box left
+// STOPPED past its opted-in window is deleted (disk reclaim), but only if it's
+// stopped, has a stop timestamp, and opted in. Idle→stop lives in autosleep,
+// so a RUNNING idle box is never returned here.
+func TestDecide_StoppedDelete(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	window := time.Hour
+
+	tests := []struct {
+		name       string
+		containers []ContainerView
+		want       []string
+	}{
+		{
+			name: "running box is never stopped→deleted (idle→stop is autosleep's job)",
+			containers: []ContainerView{
+				// Stopped=false even though it has a window + an old StoppedAt.
+				{Name: "running", Stopped: false, StoppedAt: ptr(now.Add(-24 * time.Hour)), DeleteAfterStopped: dur(window)},
+			},
+			want: nil,
+		},
+		{
+			name: "stopped but young (within window) is kept",
+			containers: []ContainerView{
+				{Name: "young", Stopped: true, StoppedAt: ptr(now.Add(-30 * time.Minute)), DeleteAfterStopped: dur(window)},
+			},
+			want: nil,
+		},
+		{
+			name: "stopped past the window is deleted",
+			containers: []ContainerView{
+				{Name: "old", Stopped: true, StoppedAt: ptr(now.Add(-2 * time.Hour)), DeleteAfterStopped: dur(window)},
+			},
+			want: []string{"old"},
+		},
+		{
+			name: "stopped but never opted in (nil window) is kept — scale-to-zero safety",
+			containers: []ContainerView{
+				{Name: "sleeper", Stopped: true, StoppedAt: ptr(now.Add(-24 * time.Hour)), DeleteAfterStopped: nil},
+			},
+			want: nil,
+		},
+		{
+			name: "woken box has no StoppedAt (cleared on start) → timer reset, kept",
+			containers: []ContainerView{
+				{Name: "woken", Stopped: false, StoppedAt: nil, DeleteAfterStopped: dur(window)},
+			},
+			want: nil,
+		},
+		{
+			name: "stopped exactly at cutoff (StoppedAt+window == now-grace) is deleted",
+			containers: []ContainerView{
+				{Name: "edge", Stopped: true, StoppedAt: ptr(now.Add(-window - graceMargin)), DeleteAfterStopped: dur(window)},
+			},
+			want: []string{"edge"},
+		},
+		{
+			name: "absolute TTL still fires independently of stopped→delete",
+			containers: []ContainerView{
+				// Running, no stopped→delete, but an expired absolute TTL.
+				{Name: "ttl-expired", TTLExpiresAt: ptr(now.Add(-time.Hour))},
+				// Stopped past window AND would also be TTL'd — returned once.
+				{Name: "both", TTLExpiresAt: ptr(now.Add(-time.Hour)), Stopped: true, StoppedAt: ptr(now.Add(-2 * time.Hour)), DeleteAfterStopped: dur(window)},
+			},
+			want: []string{"ttl-expired", "both"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(tc.containers, now)
+			gotSorted := append([]string(nil), got...)
+			wantSorted := append([]string(nil), tc.want...)
+			sort.Strings(gotSorted)
+			sort.Strings(wantSorted)
+			if !reflect.DeepEqual(gotSorted, wantSorted) {
+				t.Errorf("Decide returned %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDecide_PureFunction locks in the "no side effects, no input
 // mutation" contract. Decide is called from a tick loop that holds
 // no locks on the input slice — silently rewriting an element would

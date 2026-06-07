@@ -280,7 +280,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -318,6 +318,10 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 	// auto-sleep, so a plain create's body is unchanged.
 	if idleStopMinutes > 0 {
 		reqBody["idleStopMinutes"] = idleStopMinutes
+	}
+	// Birth stopped→delete (#525): same posture.
+	if deleteAfterStoppedSeconds > 0 {
+		reqBody["deleteAfterStoppedSeconds"] = deleteAfterStoppedSeconds
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", reqBody)

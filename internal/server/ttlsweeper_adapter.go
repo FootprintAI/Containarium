@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/ttlsweeper"
@@ -50,6 +52,18 @@ func (a *ttlsweeperIncusAdapter) ListContainers() ([]ttlsweeper.ContainerView, e
 		if !c.TTLExpiresAt.IsZero() {
 			t := c.TTLExpiresAt
 			v.TTLExpiresAt = &t
+		}
+		// Stopped→delete inputs (#525). Only a genuinely STOPPED box with a
+		// recorded stop time and an opted-in window is eligible; everything
+		// else leaves these nil/false and Decide skips the stopped rule.
+		v.Stopped = strings.EqualFold(c.State, "Stopped")
+		if !c.StoppedAt.IsZero() {
+			s := c.StoppedAt
+			v.StoppedAt = &s
+		}
+		if c.DeleteAfterStoppedSeconds > 0 {
+			d := time.Duration(c.DeleteAfterStoppedSeconds) * time.Second
+			v.DeleteAfterStopped = &d
 		}
 		out = append(out, v)
 	}

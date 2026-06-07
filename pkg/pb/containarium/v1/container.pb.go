@@ -821,8 +821,18 @@ type CreateContainerRequest struct {
 	// behavior). The auto-sleep loop treats an open SSH/exec session as
 	// active, so an actively-debugged box is never stopped mid-session.
 	IdleStopMinutes int32 `protobuf:"varint,21,opt,name=idle_stop_minutes,json=idleStopMinutes,proto3" json:"idle_stop_minutes,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Birth stopped→delete (optional) — seconds the box may remain STOPPED
+	// before it is auto-deleted, reclaiming disk after idle_stop_minutes
+	// already reclaimed CPU/RAM (#525, the second timer of #522's two-phase
+	// lifecycle). The clock runs from the stop transition and RESETS when the
+	// box is woken (accessed), so a box someone keeps investigating is never
+	// reaped; only one left continuously stopped past this window is. This is
+	// a SEPARATE opt-in from idle_stop_minutes / auto-sleep: a scale-to-zero
+	// box that merely sleeps must never be deleted just for being stopped.
+	// 0 = never delete on stop (today's behavior).
+	DeleteAfterStoppedSeconds int64 `protobuf:"varint,22,opt,name=delete_after_stopped_seconds,json=deleteAfterStoppedSeconds,proto3" json:"delete_after_stopped_seconds,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *CreateContainerRequest) Reset() {
@@ -998,6 +1008,13 @@ func (x *CreateContainerRequest) GetTtlSeconds() int64 {
 func (x *CreateContainerRequest) GetIdleStopMinutes() int32 {
 	if x != nil {
 		return x.IdleStopMinutes
+	}
+	return 0
+}
+
+func (x *CreateContainerRequest) GetDeleteAfterStoppedSeconds() int64 {
+	if x != nil {
+		return x.DeleteAfterStoppedSeconds
 	}
 	return 0
 }
@@ -4079,7 +4096,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xb1\a\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xf2\a\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -4107,7 +4124,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x0eworkspace_path\x18\x13 \x01(\tR\rworkspacePath\x12\x1f\n" +
 	"\vttl_seconds\x18\x14 \x01(\x03R\n" +
 	"ttlSeconds\x12*\n" +
-	"\x11idle_stop_minutes\x18\x15 \x01(\x05R\x0fidleStopMinutes\x1a9\n" +
+	"\x11idle_stop_minutes\x18\x15 \x01(\x05R\x0fidleStopMinutes\x12?\n" +
+	"\x1cdelete_after_stopped_seconds\x18\x16 \x01(\x03R\x19deleteAfterStoppedSeconds\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +

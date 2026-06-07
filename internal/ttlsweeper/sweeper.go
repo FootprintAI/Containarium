@@ -20,6 +20,22 @@ type ContainerView struct {
 	// "unset" from "set to the zero time" — important because Decide
 	// must treat unset as "skip" rather than "delete immediately".
 	TTLExpiresAt *time.Time
+
+	// Stopped is true when the container is in the STOPPED state. Only a
+	// stopped box is eligible for the stopped→delete timer (#525); a running
+	// box is reaped only by the absolute TTLExpiresAt above.
+	Stopped bool
+
+	// StoppedAt is when the box most recently became STOPPED (cleared on
+	// start, so a woken box resets the clock). nil = not known to be stopped.
+	// The stopped→delete timer runs from here.
+	StoppedAt *time.Time
+
+	// DeleteAfterStopped is the per-box stopped→delete window (#525). nil =
+	// the box never opted into stopped→delete (the safe default — a
+	// scale-to-zero box that merely sleeps is never reaped for being
+	// stopped). Set + Stopped + StoppedAt+window elapsed → delete.
+	DeleteAfterStopped *time.Duration
 }
 
 // graceMargin is subtracted from the comparison clock before checking
@@ -32,31 +48,42 @@ type ContainerView struct {
 // the same value shows up in tests and operator-facing docs.
 const graceMargin = 30 * time.Second
 
-// Decide returns the names of containers whose TTL has elapsed
+// Decide returns the names of containers that should be deleted now
 // (accounting for graceMargin). Pure function — no IO, no clock, no
 // locks. Safe to call from a goroutine; safe to call repeatedly with
 // the same inputs (idempotent, deterministic).
 //
-// Rules:
-//   - TTLExpiresAt == nil → skip (no TTL set).
-//   - TTLExpiresAt.After(now - graceMargin) → skip (not yet expired).
-//   - Otherwise → include in the returned slice.
+// A container is deleted if EITHER timer has elapsed:
 //
-// The "at or before" comparison (`.After()` returning false on equal)
-// means a TTL exactly at now-graceMargin is treated as expired, which
-// matches an operator's intuition for "TTL of 0 means delete on the
-// next sweep".
+//   - Absolute TTL (#523): TTLExpiresAt set and at/before now-graceMargin.
+//     Fires regardless of running/stopped — the box's hard death date.
+//   - Stopped→delete (#525): the box is Stopped, has a StoppedAt, opted into
+//     a DeleteAfterStopped window, and StoppedAt+window is at/before
+//     now-graceMargin. This is the disk-reclaim half of the two-phase
+//     lifecycle: idle→stop (#524, autosleep) frees CPU/RAM, then a box left
+//     stopped past its window is deleted to free disk. Waking the box clears
+//     StoppedAt (→ nil here), which resets this timer.
+//
+// Unset/missing fields skip the corresponding rule, so a box with neither a
+// TTL nor a stopped→delete window is never reaped. A name matching both rules
+// is returned once (the two rules share the append-and-continue).
 func Decide(containers []ContainerView, now time.Time) []string {
 	cutoff := now.Add(-graceMargin)
 	var expired []string
 	for _, c := range containers {
-		if c.TTLExpiresAt == nil {
+		// Absolute TTL.
+		if c.TTLExpiresAt != nil && !c.TTLExpiresAt.After(cutoff) {
+			expired = append(expired, c.Name)
 			continue
 		}
-		if c.TTLExpiresAt.After(cutoff) {
-			continue
+		// Stopped→delete: only for a stopped box that opted in.
+		if c.Stopped && c.StoppedAt != nil && c.DeleteAfterStopped != nil {
+			deadline := c.StoppedAt.Add(*c.DeleteAfterStopped)
+			if !deadline.After(cutoff) {
+				expired = append(expired, c.Name)
+				continue
+			}
 		}
-		expired = append(expired, c.Name)
 	}
 	return expired
 }

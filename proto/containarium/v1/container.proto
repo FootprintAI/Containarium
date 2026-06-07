@@ -331,6 +331,17 @@ message CreateContainerRequest {
   // behavior). The auto-sleep loop treats an open SSH/exec session as
   // active, so an actively-debugged box is never stopped mid-session.
   int32 idle_stop_minutes = 21;
+
+  // Birth stopped→delete (optional) — seconds the box may remain STOPPED
+  // before it is auto-deleted, reclaiming disk after idle_stop_minutes
+  // already reclaimed CPU/RAM (#525, the second timer of #522's two-phase
+  // lifecycle). The clock runs from the stop transition and RESETS when the
+  // box is woken (accessed), so a box someone keeps investigating is never
+  // reaped; only one left continuously stopped past this window is. This is
+  // a SEPARATE opt-in from idle_stop_minutes / auto-sleep: a scale-to-zero
+  // box that merely sleeps must never be deleted just for being stopped.
+  // 0 = never delete on stop (today's behavior).
+  int64 delete_after_stopped_seconds = 22;
 }
 
 // CreateContainerResponse is the response from creating a container

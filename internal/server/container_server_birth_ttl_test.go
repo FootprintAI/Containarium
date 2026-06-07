@@ -98,6 +98,25 @@ func TestStampBirthAutoSleep_EnablesWithThreshold(t *testing.T) {
 	}
 }
 
+// TestStampBirthDeleteAfterStopped_PersistsWindow — #525: a create-time
+// stopped→delete window is persisted under the Incus key the two-phase reaper
+// reads, so the box is born with its disk-reclaim timer (the clock starts only
+// when it actually stops).
+func TestStampBirthDeleteAfterStopped_PersistsWindow(t *testing.T) {
+	s, calls, _ := newTTLTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	s.stampBirthDeleteAfterStopped("alice-container", 21600) // 6h
+
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 SetConfig call, got %d: %+v", len(*calls), *calls)
+	}
+	c := (*calls)[0]
+	if c.key != incus.DeleteAfterStoppedSecondsKey || c.value != "21600" {
+		t.Errorf("call = %+v, want %s=21600", c, incus.DeleteAfterStoppedSecondsKey)
+	}
+}
+
 // TestValidateTTLSeconds — the bound shared by create and set. Zero is valid
 // (no TTL / clear); negative and over-cap are rejected; the 7-day boundary is
 // inclusive. Keeps the two entry points rejecting identical input identically.

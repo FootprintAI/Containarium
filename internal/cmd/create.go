@@ -40,6 +40,7 @@ var (
 	createWorkspacePath      string
 	createTTL                string
 	createIdleStop           string
+	createDeleteAfterStopped string
 )
 
 var createCmd = &cobra.Command{
@@ -122,6 +123,7 @@ func init() {
 	createCmd.Flags().StringVar(&createWorkspacePath, "workspace-path", "", "Where --git-source lands inside the box. Empty defaults to /workspace.")
 	createCmd.Flags().StringVar(&createTTL, "ttl", "", "Birth TTL — auto-delete the box this long after creation (Go duration: '30m', '1h', '24h'; max 168h/7 days). The death date is stamped atomically at create, so the box is reaped even if the client dies right after — no separate 'ttl set' needed (#523). Empty = no TTL.")
 	createCmd.Flags().StringVar(&createIdleStop, "idle-stop", "", "Birth idle-stop — auto-STOP the box (free CPU/RAM, keep disk; wakes on access) after this long with no activity (Go duration: '20m', '1h'). Enables auto-sleep atomically at create, so a crashed/cancelled job still releases compute — no separate 'toggle_auto_sleep' needed (#524). An active SSH/exec session counts as activity, so a box being debugged is never stopped mid-session. Empty = no auto-sleep.")
+	createCmd.Flags().StringVar(&createDeleteAfterStopped, "delete-after-stopped", "", "Birth stopped→delete — auto-DELETE the box (reclaim disk) once it has been STOPPED this long (Go duration: '6h', '24h'). The second timer of the two-phase lifecycle: pair with --idle-stop to free CPU/RAM fast, then disk after a debug window (#525). The clock resets when the box is woken, so a box you keep investigating is never reaped. Separate opt-in from --idle-stop. Empty = never delete on stop.")
 }
 
 // validateSSHKeyMode enforces "exactly one of --ssh-key / --no-ssh-key".
@@ -181,6 +183,20 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Birth stopped→delete (#525): parse the optional --delete-after-stopped
+	// into seconds (the wire/config unit).
+	var deleteAfterStoppedSeconds int64
+	if createDeleteAfterStopped != "" {
+		d, err := time.ParseDuration(createDeleteAfterStopped)
+		if err != nil {
+			return fmt.Errorf("invalid --delete-after-stopped %q: %w (expected Go duration like '6h', '24h')", createDeleteAfterStopped, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("--delete-after-stopped must be positive, got %s", createDeleteAfterStopped)
+		}
+		deleteAfterStoppedSeconds = int64(d.Seconds())
+	}
+
 	fmt.Printf("Creating container for user: %s\n", username)
 	if verbose {
 		fmt.Printf("  CPU: %s\n", cpuLimit)
@@ -204,6 +220,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 		if idleStopMinutes > 0 {
 			fmt.Printf("  Idle-stop: %dm (auto-sleep when idle)\n", idleStopMinutes)
+		}
+		if deleteAfterStoppedSeconds > 0 {
+			fmt.Printf("  Delete-after-stopped: %s (reclaim disk once stopped)\n", createDeleteAfterStopped)
 		}
 		if len(parsedLabels) > 0 {
 			fmt.Printf("  Labels:\n")
@@ -368,13 +387,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
-		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes)
+		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 		if err != nil {
 			return fmt.Errorf("failed to create container via HTTP API: %w", err)
 		}
 	} else if serverAddr != "" {
 		// Remote mode via gRPC
-		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes)
+		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 		if err != nil {
 			return fmt.Errorf("failed to create container via remote server: %w", err)
 		}
@@ -383,7 +402,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if verbose {
 			fmt.Println("Creating container...")
 		}
-		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevice, osType, monitoring, gitOpts, ttlSeconds, idleStopMinutes)
+		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevice, osType, monitoring, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 		if err != nil {
 			// Cleanup jump server account on failure
 			_ = container.DeleteJumpServerAccount(username, false)
@@ -525,7 +544,7 @@ func resolveGitSourceOpts() (client.GitSourceOpts, error) {
 }
 
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -586,6 +605,14 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 		}
 	}
 
+	// Birth stopped→delete (#525), local path. Best-effort, same as the
+	// server path — persist the window; the clock starts when the box stops.
+	if deleteAfterStoppedSeconds > 0 {
+		if serr := mgr.SetConfig(info.Name, incus.DeleteAfterStoppedSecondsKey, fmt.Sprintf("%d", deleteAfterStoppedSeconds)); serr != nil {
+			fmt.Printf("warning: failed to set birth stopped→delete on %s: %v (continuing; box has no stopped→delete)\n", info.Name, serr)
+		}
+	}
+
 	return info, nil
 }
 
@@ -606,23 +633,23 @@ func parseLabels(labelSlice []string) map[string]string {
 }
 
 // createRemote creates a container using remote gRPC server
-func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32) (*incus.ContainerInfo, error) {
+func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
 	defer grpcClient.Close()
 
-	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes)
+	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 }
 
 // createRemoteHTTP creates a container using remote HTTP API
-func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32) (*incus.ContainerInfo, error) {
+func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
 	if err != nil {
 		return nil, err
 	}
 	defer httpClient.Close()
 
-	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes)
+	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 }

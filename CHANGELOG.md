@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Birth idle-stop — `containarium create --idle-stop <dur>`** — a box can be born with its auto-sleep (idle→stop) timer, not just its delete timer. `CreateContainer` accepts an optional `idle_stop_minutes`; the daemon enables auto-sleep at create with that idle threshold (same persistence as `toggle_auto_sleep`), so a crashed/cancelled job still releases CPU/RAM (disk kept, wakes on access) — no separate `toggle_auto_sleep` call to forget. The stop half of the default-sleep→default-dead model (birth TTL #523 is the delete half). Off by default. (#524)
+- **Two-phase reaping — `containarium create --delete-after-stopped <dur>`** — completes the lifecycle's second timer: a box left STOPPED past this window is auto-deleted (disk reclaim) after idle-stop already reclaimed CPU/RAM. The clock runs from the stop transition and RESETS when the box is woken, so a box you keep investigating is never reaped — only one left continuously stopped is. A **separate opt-in** from idle-stop/auto-sleep: a scale-to-zero box that merely sleeps is never deleted just for being stopped. `ttlsweeper.Decide` now deletes on either the absolute TTL (#523) or the stopped→delete window (#525); the daemon stamps `stopped_at` on stop and clears it on start. Off by default. (#525)
 
 ### Fixed
 

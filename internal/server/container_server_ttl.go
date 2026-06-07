@@ -152,6 +152,22 @@ func (s *ContainerServer) stampBirthAutoSleep(containerName string, idleMinutes 
 	log.Printf("[autosleep] birth auto-sleep enabled container=%s idle_threshold=%dm", containerName, idleMinutes)
 }
 
+// stampBirthDeleteAfterStopped persists the per-box stopped→delete window
+// (#525) at create, so the ttlsweeper reaps the box once it's been STOPPED
+// that long (the disk-reclaim half of #522's two-phase lifecycle; idle→stop
+// is the CPU/RAM half). Best-effort: a failed stamp logs and the box keeps
+// today's behavior (never reaped on stop). The clock only starts when the box
+// actually stops (StopContainer stamps stopped_at), so persisting the window
+// here is all create needs to do. seconds must be > 0 (0 = no stopped→delete,
+// never reaches here).
+func (s *ContainerServer) stampBirthDeleteAfterStopped(containerName string, seconds int64) {
+	if err := s.manager.SetConfig(containerName, incus.DeleteAfterStoppedSecondsKey, strconv.FormatInt(seconds, 10)); err != nil {
+		log.Printf("[ttl] failed to set birth %s on %s: %v (continuing; box has no stopped→delete)", incus.DeleteAfterStoppedSecondsKey, containerName, err)
+		return
+	}
+	log.Printf("[ttl] birth stopped→delete set container=%s delete_after_stopped=%ds", containerName, seconds)
+}
+
 // stampTTL writes now()+duration as a UTC RFC3339 wall-clock expiry onto the
 // container's Incus config under user.containarium.ttl_expires_at — the exact
 // key + format the ttlsweeper reads, so create and set agree byte-for-byte.

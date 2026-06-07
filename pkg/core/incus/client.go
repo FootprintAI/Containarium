@@ -310,6 +310,18 @@ type ContainerInfo struct {
 	// restart, no extra store needed); see internal/ttlsweeper for the
 	// sweep side and server.SetContainerTTL for the writer side.
 	TTLExpiresAt time.Time
+
+	// StoppedAt mirrors user.containarium.stopped_at — when the box most
+	// recently became STOPPED (cleared on start). Zero when running or
+	// unknown. The two-phase reaper measures the stopped→delete window from
+	// here (#525).
+	StoppedAt time.Time
+
+	// DeleteAfterStoppedSeconds mirrors
+	// user.containarium.delete_after_stopped_seconds — the per-box
+	// stopped→delete window (#525). 0 = never delete on stop. Independent of
+	// auto-sleep so a scale-to-zero box that merely sleeps is never reaped.
+	DeleteAfterStoppedSeconds int64
 }
 
 // AutoSleepEnabledKey is the Incus config key storing the per-container
@@ -333,9 +345,57 @@ const LastStartedAtKey = "user.containarium.last_started_at"
 // daemon restart with no extra plumbing.
 const TTLExpiresAtKey = "user.containarium.ttl_expires_at"
 
+// StoppedAtKey is the Incus config key storing the RFC3339 timestamp at
+// which the container most recently transitioned to STOPPED. Written by
+// StopContainer and cleared by StartContainer, so it measures how long a
+// box has been continuously stopped — the clock the two-phase reaper's
+// stopped→delete timer runs against (#525). Waking the box (start) clears
+// it, which resets that timer.
+const StoppedAtKey = "user.containarium.stopped_at"
+
+// DeleteAfterStoppedSecondsKey is the Incus config key storing the
+// per-container stopped→delete window in seconds (#525). When set (> 0) and
+// the box has been STOPPED for longer than this, the ttlsweeper deletes it —
+// reclaiming disk after the idle→stop step (#524) already reclaimed CPU/RAM.
+// This is a SEPARATE opt-in from auto_sleep_enabled: a scale-to-zero box that
+// merely sleeps must never be deleted just for being stopped; only a box that
+// explicitly asked for stopped→delete gets reaped. Absent/0 = never delete on
+// stop (today's behavior).
+const DeleteAfterStoppedSecondsKey = "user.containarium.delete_after_stopped_seconds"
+
 // DefaultIdleThresholdMinutes is the fallback used when the threshold
 // config key is missing or unparseable.
 const DefaultIdleThresholdMinutes = 15
+
+// parseStoppedAt reads the stopped-at timestamp from an Incus config map.
+// Missing/unparseable → zero time ("not known to be stopped"), so a corrupt
+// key never trips a false-positive delete.
+func parseStoppedAt(cfg map[string]string) time.Time {
+	raw, ok := cfg[StoppedAtKey]
+	if !ok || raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// parseDeleteAfterStoppedSeconds reads the stopped→delete window. Missing,
+// unparseable, or <= 0 → 0, which the reaper treats as "no stopped→delete"
+// (the safe default — never reap a stopped box unless it opted in).
+func parseDeleteAfterStoppedSeconds(cfg map[string]string) int64 {
+	raw, ok := cfg[DeleteAfterStoppedSecondsKey]
+	if !ok || raw == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
 
 // parseIdleThresholdMinutes reads the threshold key from an Incus
 // config map, falling back to the default for empty/garbage values.
@@ -654,9 +714,11 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 			Tenant:               inst.Config[TenantLabelKey],
 			MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
-			IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
-			LastStartedAt:        parseLastStartedAt(inst.Config),
-			TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
+			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
+			LastStartedAt:             parseLastStartedAt(inst.Config),
+			TTLExpiresAt:              parseTTLExpiresAt(inst.Config),
+			StoppedAt:                 parseStoppedAt(inst.Config),
+			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 		}
 
 		// Get CPU and memory limits from config
