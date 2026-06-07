@@ -4,36 +4,29 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// TODO(ttl-server-side): The TTL verbs below are CLI-only for now. The
-// server-side enforcement (so a box actually auto-deletes when its TTL
-// expires) still needs to land. Specifically:
+// The TTL verbs below are wired end-to-end:
 //
-//   1. Add a `SetContainerTTL` (and `GetContainerTTL`) RPC to
-//      proto/containarium/v1/container.proto, with a `google.api.http`
-//      annotation so grpc-gateway exposes a REST shim (PUT/GET
-//      /v1/containers/{username}/ttl), and regenerate via `make proto`.
-//   2. Persist `expires_at` (and `ttl_set_at`) on the container row in
-//      the daemon's container metadata store.
-//   3. Add a sweeper goroutine in the daemon's main loop that wakes on
-//      a short tick (e.g. every 30s) and force-deletes any container
-//      whose `expires_at` is in the past.
-//   4. Wire `internal/client/{grpc,http}.go` so SetContainerTTL /
-//      GetContainerTTL hit the new endpoint; then swap the
-//      synthetic-Unimplemented stub in ttlClientStub below for the
-//      real client call.
+//   - set/unset call the SetContainerTTL RPC (POST /v1/containers/{name}/ttl;
+//     duration 0 clears), which stamps user.containarium.ttl_expires_at on the
+//     Incus container — the exact key the daemon's ttlsweeper consumes to
+//     force-delete the box when it elapses (see internal/ttlsweeper +
+//     internal/server/container_server_ttl.go).
+//   - get reads ttl_expires_at off the container via GetContainer (no separate
+//     GetContainerTTL RPC; the field is part of the container view).
 //
-// Until that lands, this verb is wired up so that callers (notably
-// the containarium-run GitHub Action's "keep on failure" feature)
-// can call `containarium ttl set <box> 1h` and get a clean,
-// non-fatal "server does not support TTL yet" message rather than a
-// confusing error. The Action can then proceed; the box just won't
-// auto-delete and will need manual cleanup. Once the server-side
-// lands, the same CLI call will Just Work — no Action change needed.
+// This closes the #264 leak where the containarium-run "keep on failure" path
+// called `containarium ttl set` but the call was a client-side stub (and over
+// REST returned 404), so the kept debug box never got a TTL and never reaped.
+// A daemon too old to implement SetContainerTTL still degrades gracefully:
+// codes.Unimplemented (gRPC) / HTTP 404 mapped to Unimplemented (REST) → the
+// CLI prints a friendly no-op rather than failing the Action.
 
 // maxTTL caps the duration a caller can request. 168h (7 days) is the
 // upper bound: long enough to cover a long weekend debug session on a
@@ -231,27 +224,70 @@ func isUnimplemented(err error) bool {
 	return false
 }
 
-// ttlClientSet / ttlClientGet / ttlClientUnset are the call sites that
-// will become thin wrappers over `internal/client/{grpc,http}.go`
-// methods once the server-side RPCs ship. Until then they synthesize
-// an Unimplemented status so the handler's friendly-warning path
-// exercises end-to-end.
+// ttlClientSet / ttlClientGet / ttlClientUnset are thin wrappers over the
+// transport client (grpc or http per the global httpMode flag), mirroring
+// how scale_down.go's toggleAutoSleepViaServer dispatches.
 //
-// When the real client methods land, replace the body of each with
-// the equivalent of:
-//
-//   if httpMode { return httpClient.SetContainerTTL(username, d) }
-//   return grpcClient.SetContainerTTL(username, d)
-//
-// and the rest of the file stays as-is.
-func ttlClientSet(username string, d time.Duration) error {
-	return status.Errorf(codes.Unimplemented, "SetContainerTTL not implemented by this server")
-}
+// set/unset call the SetContainerTTL RPC (unset = duration 0 = clear). get
+// reads ttl_expires_at off the container via GetContainer — there is no
+// separate GetContainerTTL RPC; the field is part of the container view. A
+// daemon too old to implement SetContainerTTL surfaces codes.Unimplemented
+// (gRPC) or HTTP 404 mapped to Unimplemented (REST), which runTTLSet/Unset
+// degrade to a friendly no-op via isUnimplemented.
 
-func ttlClientGet(username string) (time.Time, bool, error) {
-	return time.Time{}, false, status.Errorf(codes.Unimplemented, "GetContainerTTL not implemented by this server")
+func ttlClientSet(username string, d time.Duration) error {
+	return setContainerTTLViaServer(username, int64(d.Seconds()))
 }
 
 func ttlClientUnset(username string) error {
-	return status.Errorf(codes.Unimplemented, "ClearContainerTTL not implemented by this server")
+	return setContainerTTLViaServer(username, 0)
+}
+
+func setContainerTTLViaServer(username string, durationSeconds int64) error {
+	if httpMode {
+		hc, err := client.NewHTTPClient(serverAddr, authToken)
+		if err != nil {
+			return err
+		}
+		defer hc.Close()
+		_, err = hc.SetContainerTTL(username, durationSeconds)
+		return err
+	}
+	gc, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	if err != nil {
+		return err
+	}
+	defer gc.Close()
+	_, err = gc.SetContainerTTL(username, durationSeconds)
+	return err
+}
+
+// ttlClientGet reads the container's current TTL via GetContainer. A zero
+// expiry means "no TTL set" (ok == false). GetContainer is a long-standing
+// RPC, so no Unimplemented degradation is needed here.
+func ttlClientGet(username string) (time.Time, bool, error) {
+	var info *incus.ContainerInfo
+	var err error
+	if httpMode {
+		hc, e := client.NewHTTPClient(serverAddr, authToken)
+		if e != nil {
+			return time.Time{}, false, e
+		}
+		defer hc.Close()
+		info, err = hc.GetContainer(username)
+	} else {
+		gc, e := client.NewGRPCClient(serverAddr, certsDir, insecure)
+		if e != nil {
+			return time.Time{}, false, e
+		}
+		defer gc.Close()
+		info, err = gc.GetContainer(username)
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if info == nil || info.TTLExpiresAt.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return info.TTLExpiresAt, true, nil
 }

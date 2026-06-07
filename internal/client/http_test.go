@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/pkg/version"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // trackBody records whether it was read to EOF and closed, so a test can
@@ -118,5 +121,60 @@ func TestDoRequest_AdvertisesClientVersion(t *testing.T) {
 	}
 	if gotVer != version.GetVersion() {
 		t.Errorf("%s = %q; want %q", version.ClientVersionHeader, gotVer, version.GetVersion())
+	}
+}
+
+// TestHTTPSetContainerTTL_Success: the client POSTs duration_seconds to
+// /v1/containers/{name}/ttl and parses the returned ttl_expires_at. This is
+// the keep-on-failure path that #264's TTL-404 left broken (the CLI was a
+// client-side stub that never called the endpoint).
+func TestHTTPSetContainerTTL_Success(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		// grpc-gateway emits camelCase JSON; protojson accepts it.
+		_, _ = w.Write([]byte(`{"ttlExpiresAt":"2030-01-01T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	resp, err := c.SetContainerTTL("alice", 3600)
+	if err != nil {
+		t.Fatalf("SetContainerTTL: %v", err)
+	}
+	if gotPath != "/v1/containers/alice/ttl" {
+		t.Errorf("path = %q; want /v1/containers/alice/ttl", gotPath)
+	}
+	// JSON numbers decode as float64.
+	if gotBody["duration_seconds"] != float64(3600) {
+		t.Errorf("duration_seconds = %v; want 3600", gotBody["duration_seconds"])
+	}
+	if resp.GetTtlExpiresAt() == nil {
+		t.Errorf("response ttl_expires_at not parsed")
+	}
+}
+
+// TestHTTPSetContainerTTL_404IsUnimplemented: a daemon too old to expose the
+// endpoint returns 404, which the client maps to codes.Unimplemented so the
+// CLI's soft-degrade path fires (Action doesn't hard-fail).
+func TestHTTPSetContainerTTL_404IsUnimplemented(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	_, err = c.SetContainerTTL("alice", 3600)
+	if status.Code(err) != codes.Unimplemented {
+		t.Errorf("404 mapped to %v; want Unimplemented", status.Code(err))
 	}
 }

@@ -165,17 +165,17 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 			Memory: memory,
 			Disk:   disk,
 		},
-		SshKeys:       sshKeys,
-		Image:         image,
-		EnablePodman:  enablePodman,
-		Stack:         stack,
-		Gpu:           gpu,
-		OsType:        osType,
-		Monitoring:    monitoring,
-		Pool:          pool,
-		BackendId:     backendID,
-		GitSource:     git.Source,
-		GitRef:        git.Ref,
+		SshKeys:                   sshKeys,
+		Image:                     image,
+		EnablePodman:              enablePodman,
+		Stack:                     stack,
+		Gpu:                       gpu,
+		OsType:                    osType,
+		Monitoring:                monitoring,
+		Pool:                      pool,
+		BackendId:                 backendID,
+		GitSource:                 git.Source,
+		GitRef:                    git.Ref,
 		GitCredential:             git.Credential,
 		WorkspacePath:             git.WorkspacePath,
 		TtlSeconds:                ttlSeconds,
@@ -247,6 +247,25 @@ func (c *GRPCClient) ToggleAutoSleep(username string, enabled bool, idleThreshol
 		return nil, fmt.Errorf("failed to toggle auto-sleep: %w", err)
 	}
 	return resp, nil
+}
+
+// SetContainerTTL schedules (durationSeconds > 0) or clears (== 0) a
+// container's auto-delete TTL. The daemon stamps
+// user.containarium.ttl_expires_at, which the ttlsweeper consumes to
+// force-delete the box when it elapses. Used by the containarium-run GitHub
+// Action's keep-on-failure path so a kept debug box self-reaps (#264 TTL-404).
+//
+// The error is returned UNWRAPPED so a daemon too old to implement the RPC
+// surfaces as gRPC codes.Unimplemented, which the `containarium ttl` CLI
+// treats as a soft no-op rather than a hard failure.
+func (c *GRPCClient) SetContainerTTL(username string, durationSeconds int64) (*pb.SetContainerTTLResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return c.client.SetContainerTTL(ctx, &pb.SetContainerTTLRequest{
+		Name:            username,
+		DurationSeconds: durationSeconds,
+	})
 }
 
 // StartContainer starts a stopped container via gRPC. When

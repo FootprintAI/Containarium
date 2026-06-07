@@ -15,6 +15,8 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -371,6 +373,47 @@ func (c *HTTPClient) ToggleAutoSleep(username string, enabled bool, idleThreshol
 	}
 
 	out := &pb.ToggleAutoSleepResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// SetContainerTTL schedules (durationSeconds > 0) or clears (== 0) a
+// container's auto-delete TTL via the REST shim. Used by the containarium-run
+// keep-on-failure path so a kept debug box self-reaps (#264 TTL-404).
+//
+// A 404 (a daemon too old to expose /v1/containers/{name}/ttl) is mapped to
+// gRPC codes.Unimplemented so the `containarium ttl` CLI's isUnimplemented
+// soft-path fires identically across both transports — the box won't auto-
+// delete on an old daemon, but the Action doesn't hard-fail.
+func (c *HTTPClient) SetContainerTTL(username string, durationSeconds int64) (*pb.SetContainerTTLResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/ttl", url.PathEscape(username))
+	body := map[string]interface{}{"duration_seconds": durationSeconds}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("set ttl: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerTTL (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("set ttl: status %d", resp.StatusCode)
+	}
+
+	out := &pb.SetContainerTTLResponse{}
 	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
