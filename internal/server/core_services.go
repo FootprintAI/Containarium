@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -50,6 +52,56 @@ const (
 	// Default Alertmanager port
 	DefaultAlertmanagerPort = 9093
 )
+
+// coreBridgeName is the incus managed bridge the core + tenant containers
+// attach to. Matches the value hard-coded at the GetNetworkSubnet call sites.
+const coreBridgeName = "incusbr0"
+
+// coreStaticIPHostOffsets pins each core container to a stable host number high
+// in the bridge subnet (well clear of the low addresses incus' DHCP hands out
+// first). incus reserves a NIC's ipv4.address and excludes it from the DHCP
+// pool, so these never collide with a tenant lease.
+//
+// Why (#240): core-caddy's IP is hard-coded into the split-horizon dnsmasq
+// record (and historically a host DNAT rule) with NO reconciler. Its DHCP lease
+// changes on recreate, stranding those references — internal clients then
+// resolve every platform hostname under the base domain to a dead IP. A
+// deterministic IP that survives a daemon-driven recreate keeps those
+// references self-consistent. Only caddy is pinned today (it's the one those
+// references point at); the map is keyed by container name so others can opt in.
+var coreStaticIPHostOffsets = map[string]uint32{
+	CoreCaddyContainer: 241,
+}
+
+// coreStaticIP returns the deterministic static IP for a core container within
+// networkCIDR (gateway or network form, e.g. "10.100.0.1/24" — ParseCIDR masks
+// either to the network base). Returns ("", nil) when the container has no
+// assigned offset (caller falls back to DHCP); an error only when the CIDR is
+// unparseable, not IPv4, or too small to hold the offset.
+func coreStaticIP(networkCIDR, containerName string) (string, error) {
+	offset, ok := coreStaticIPHostOffsets[containerName]
+	if !ok {
+		return "", nil
+	}
+	_, ipnet, err := net.ParseCIDR(networkCIDR)
+	if err != nil {
+		return "", fmt.Errorf("parse network cidr %q: %w", networkCIDR, err)
+	}
+	base := ipnet.IP.To4()
+	if base == nil {
+		return "", fmt.Errorf("network %q is not IPv4", networkCIDR)
+	}
+	ones, bits := ipnet.Mask.Size()
+	hostCount := uint32(1) << uint(bits-ones)
+	// Reject the network (.0) and broadcast (last) addresses and anything past
+	// the subnet — a misconfigured tiny subnet shouldn't yield a bogus IP.
+	if offset == 0 || offset >= hostCount-1 {
+		return "", fmt.Errorf("host offset %d out of range for %q", offset, networkCIDR)
+	}
+	out := make(net.IP, net.IPv4len)
+	binary.BigEndian.PutUint32(out, binary.BigEndian.Uint32(base)+offset)
+	return out.String(), nil
+}
 
 // CoreServicesConfig holds configuration for core services
 type CoreServicesConfig struct {
@@ -379,6 +431,16 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 			Pool: "default",
 			Size: "5GB",
 		},
+	}
+
+	// Pin a stable IP so a recreate reuses it — keeps the split-horizon dnsmasq
+	// record / host DNAT that reference caddy's IP valid across recreates (#240).
+	// Best-effort: a compute failure logs and falls back to DHCP (today's behaviour).
+	if staticIP, err := coreStaticIP(cs.config.NetworkCIDR, CoreCaddyContainer); err != nil {
+		log.Printf("Warning: could not compute stable IP for %s (%v); using DHCP", CoreCaddyContainer, err)
+	} else if staticIP != "" {
+		config.NIC = &incus.NICDevice{Name: "eth0", Network: coreBridgeName, IPv4Address: staticIP}
+		log.Printf("Assigning stable IP %s to %s (survives recreate; #240)", staticIP, CoreCaddyContainer)
 	}
 
 	if err := cs.incusClient.CreateContainer(config); err != nil {
