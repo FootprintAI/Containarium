@@ -7,20 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-06-07
+
+Box lifecycle: the full default-sleep → default-dead model (#522). Every box
+can be born with a death date and a stop timer; idle boxes free CPU/RAM, then
+disk, with no manual cleanup and without ever reaping a box someone is actively
+debugging. Plus sentinel preemption/recovery alerting.
+
 ### Added
 
-- **Birth idle-stop — `containarium create --idle-stop <dur>`** — a box can be born with its auto-sleep (idle→stop) timer, not just its delete timer. `CreateContainer` accepts an optional `idle_stop_minutes`; the daemon enables auto-sleep at create with that idle threshold (same persistence as `toggle_auto_sleep`), so a crashed/cancelled job still releases CPU/RAM (disk kept, wakes on access) — no separate `toggle_auto_sleep` call to forget. The stop half of the default-sleep→default-dead model (birth TTL #523 is the delete half). Off by default. (#524)
-- **Two-phase reaping — `containarium create --delete-after-stopped <dur>`** — completes the lifecycle's second timer: a box left STOPPED past this window is auto-deleted (disk reclaim) after idle-stop already reclaimed CPU/RAM. The clock runs from the stop transition and RESETS when the box is woken, so a box you keep investigating is never reaped — only one left continuously stopped is. A **separate opt-in** from idle-stop/auto-sleep: a scale-to-zero box that merely sleeps is never deleted just for being stopped. `ttlsweeper.Decide` now deletes on either the absolute TTL (#523) or the stopped→delete window (#525); the daemon stamps `stopped_at` on stop and clears it on start. Off by default. (#525)
+- **Sentinel preemption/recovery alerting** — the sentinel emits webhook
+  notifications and a `/metrics` endpoint on backend preemption + recovery, so
+  an outage is observable instead of silent. (#514)
+- **Birth TTL — `containarium create --ttl <dur>`** — a box can be born with a
+  death date. `CreateContainer` accepts an optional `ttl_seconds`; the daemon
+  stamps `ttl_expires_at` atomically at create time (same persistence + 7-day
+  cap as `ttl set`), so the `ttlsweeper` reaps the box even if the client dies
+  the instant after create — no separate `ttl set` call to forget. Closes the
+  leak window where an ephemeral/CI box runs forever because its TTL was never
+  set. If the TTL can't be stamped the box is deleted rather than left to leak
+  (default-dead). (#523)
+- **Birth idle-stop — `containarium create --idle-stop <dur>`** — a box can be
+  born with its auto-sleep (idle→stop) timer, not just its delete timer.
+  `CreateContainer` accepts an optional `idle_stop_minutes`; the daemon enables
+  auto-sleep at create with that idle threshold (same persistence as
+  `toggle_auto_sleep`), so a crashed/cancelled job still releases CPU/RAM (disk
+  kept, wakes on access) — no separate `toggle_auto_sleep` call to forget. The
+  stop half of the default-sleep→default-dead model (birth TTL is the delete
+  half). Off by default. (#524)
+- **Two-phase reaping — `containarium create --delete-after-stopped <dur>`** —
+  completes the lifecycle's second timer: a box left STOPPED past this window is
+  auto-deleted (disk reclaim) after idle-stop already reclaimed CPU/RAM. The
+  clock runs from the stop transition and RESETS when the box is woken, so a box
+  you keep investigating is never reaped — only one left continuously stopped
+  is. A **separate opt-in** from idle-stop/auto-sleep: a scale-to-zero box that
+  merely sleeps is never deleted just for being stopped. `ttlsweeper.Decide` now
+  deletes on either the absolute TTL or the stopped→delete window; the daemon
+  stamps `stopped_at` on stop and clears it on start. Off by default. (#525)
 
 ### Fixed
 
-- **Auto-sleep no longer stops a box with an active session.** The idle signal treated a long-lived open connection (e.g. an SSH/exec debug session) as last-active at its *start*, so a session open longer than the idle threshold looked idle and the box was slept mid-debug. An open connection now counts as active-as-of-now; the box stays awake while anyone is connected and becomes sleep-eligible only after the session closes. (#524)
+- **Auto-sleep no longer stops a box with an active session.** The idle signal
+  treated a long-lived open connection (e.g. an SSH/exec debug session) as
+  last-active at its *start*, so a session open longer than the idle threshold
+  looked idle and the box was slept mid-debug. An open connection now counts as
+  active-as-of-now; the box stays awake while anyone is connected and becomes
+  sleep-eligible only after the session closes. (#524)
 
 ## [0.23.2] - 2026-06-06
 
 ### Added
 
-- **Birth TTL — `containarium create --ttl <dur>`** — a box can be born with a death date. `CreateContainer` accepts an optional `ttl_seconds`; the daemon stamps `ttl_expires_at` atomically at create time (same persistence + 7-day cap as `ttl set`), so the `ttlsweeper` reaps the box even if the client dies the instant after create — no separate `ttl set` call to forget. Closes the leak window where an ephemeral/CI box runs forever because its TTL was never set. If the TTL can't be stamped the box is deleted rather than left to leak (default-dead). (#523)
 - **`ProxyRoute.container_name`** — `GetRoutes` now returns the container behind each route in a dedicated field instead of overloading `app_name` (the display name), so a multi-tenant control plane can key its route reconciler on the box identity. Additive; `app_name` unchanged. (#511)
 
 ### Fixed
