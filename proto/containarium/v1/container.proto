@@ -195,6 +195,21 @@ message Container {
   // `connect` verb) should USE this verbatim rather than reconstructing
   // a host from the IP / sentinel config themselves.
   string ssh_host = 23;
+
+  // Two-phase reaping status (#525), read from the Incus config the daemon
+  // stamps. Lets a reader see where a box is in the stopped→delete lifecycle
+  // without host access (#264 fleet hygiene) — alongside ttl_expires_at (the
+  // absolute death date) and auto_sleep_enabled (idle→stop).
+  //
+  // stopped_at: when the box most recently became STOPPED (cleared on start,
+  // so a woken box has none). The stopped→delete timer runs from here. Unset
+  // when running / never stopped.
+  google.protobuf.Timestamp stopped_at = 24;
+
+  // delete_after_stopped_seconds: the box's stopped→delete window. > 0 means
+  // it auto-deletes once it has been stopped that long (reclaiming disk); 0 =
+  // never delete on stop. Opt-in, independent of auto_sleep_enabled.
+  int64 delete_after_stopped_seconds = 25;
 }
 
 // ContainerMetrics contains runtime metrics for a container

@@ -5840,6 +5840,16 @@
           "type": "string",
           "description": "- direct mode  → the container's reachable IP (same value as\n    network.ip_address);\n  - sentinel-jump mode → the configured sentinel's public host,\n    e.g. \"region-a.example.com\".\n\nCombined with `username`, this is the connect target\n`username@ssh_host`. Empty means \"no explicit host — fall back to\nnetwork.ip_address\". Clients (the ssh_config generator, a future\n`connect` verb) should USE this verbatim rather than reconstructing\na host from the IP / sentinel config themselves.",
           "title": "The host:port a client should SSH to in order to reach this\ncontainer, as computed by the daemon from its own routing config —\nso a client never has to infer the SSH target from other fields:"
+        },
+        "stoppedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Two-phase reaping status (#525), read from the Incus config the daemon\nstamps. Lets a reader see where a box is in the stopped→delete lifecycle\nwithout host access (#264 fleet hygiene) — alongside ttl_expires_at (the\nabsolute death date) and auto_sleep_enabled (idle→stop).\n\nstopped_at: when the box most recently became STOPPED (cleared on start,\nso a woken box has none). The stopped→delete timer runs from here. Unset\nwhen running / never stopped."
+        },
+        "deleteAfterStoppedSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "delete_after_stopped_seconds: the box's stopped→delete window. \u003e 0 means\nit auto-deletes once it has been stopped that long (reclaiming disk); 0 =\nnever delete on stop. Opt-in, independent of auto_sleep_enabled."
         }
       },
       "title": "Container represents a complete container instance"

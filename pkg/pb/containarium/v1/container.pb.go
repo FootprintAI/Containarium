@@ -428,9 +428,22 @@ type Container struct {
 	// network.ip_address". Clients (the ssh_config generator, a future
 	// `connect` verb) should USE this verbatim rather than reconstructing
 	// a host from the IP / sentinel config themselves.
-	SshHost       string `protobuf:"bytes,23,opt,name=ssh_host,json=sshHost,proto3" json:"ssh_host,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SshHost string `protobuf:"bytes,23,opt,name=ssh_host,json=sshHost,proto3" json:"ssh_host,omitempty"`
+	// Two-phase reaping status (#525), read from the Incus config the daemon
+	// stamps. Lets a reader see where a box is in the stopped→delete lifecycle
+	// without host access (#264 fleet hygiene) — alongside ttl_expires_at (the
+	// absolute death date) and auto_sleep_enabled (idle→stop).
+	//
+	// stopped_at: when the box most recently became STOPPED (cleared on start,
+	// so a woken box has none). The stopped→delete timer runs from here. Unset
+	// when running / never stopped.
+	StoppedAt *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=stopped_at,json=stoppedAt,proto3" json:"stopped_at,omitempty"`
+	// delete_after_stopped_seconds: the box's stopped→delete window. > 0 means
+	// it auto-deletes once it has been stopped that long (reclaiming disk); 0 =
+	// never delete on stop. Opt-in, independent of auto_sleep_enabled.
+	DeleteAfterStoppedSeconds int64 `protobuf:"varint,25,opt,name=delete_after_stopped_seconds,json=deleteAfterStoppedSeconds,proto3" json:"delete_after_stopped_seconds,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *Container) Reset() {
@@ -622,6 +635,20 @@ func (x *Container) GetSshHost() string {
 		return x.SshHost
 	}
 	return ""
+}
+
+func (x *Container) GetStoppedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StoppedAt
+	}
+	return nil
+}
+
+func (x *Container) GetDeleteAfterStoppedSeconds() int64 {
+	if x != nil {
+		return x.DeleteAfterStoppedSeconds
+	}
+	return 0
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -4053,7 +4080,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xe3\a\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xdf\b\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -4084,7 +4111,10 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x12auto_sleep_enabled\x18\x14 \x01(\bR\x10autoSleepEnabled\x124\n" +
 	"\x16idle_threshold_minutes\x18\x15 \x01(\x05R\x14idleThresholdMinutes\x12@\n" +
 	"\x0ettl_expires_at\x18\x16 \x01(\v2\x1a.google.protobuf.TimestampR\fttlExpiresAt\x12\x19\n" +
-	"\bssh_host\x18\x17 \x01(\tR\asshHost\x1a9\n" +
+	"\bssh_host\x18\x17 \x01(\tR\asshHost\x129\n" +
+	"\n" +
+	"stopped_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tstoppedAt\x12?\n" +
+	"\x1cdelete_after_stopped_seconds\x18\x19 \x01(\x03R\x19deleteAfterStoppedSeconds\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
@@ -4436,33 +4466,34 @@ var file_containarium_v1_container_proto_depIdxs = []int32{
 	0,  // 4: containarium.v1.Container.os_type:type_name -> containarium.v1.OSType
 	1,  // 5: containarium.v1.Container.access_type:type_name -> containarium.v1.AccessType
 	60, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	3,  // 7: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	57, // 8: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
-	0,  // 9: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
-	58, // 10: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
-	5,  // 11: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
-	2,  // 12: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	59, // 13: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
-	5,  // 14: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
-	5,  // 15: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
-	6,  // 16: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	5,  // 17: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
-	5,  // 18: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
-	60, // 19: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	6,  // 20: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	5,  // 21: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
-	35, // 22: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
-	35, // 23: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
-	5,  // 24: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
-	5,  // 25: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
-	46, // 26: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
-	47, // 27: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
-	61, // 28: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	29, // [29:29] is the sub-list for method output_type
-	29, // [29:29] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	28, // [28:29] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	60, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
+	3,  // 8: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
+	57, // 9: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	0,  // 10: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
+	58, // 11: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
+	5,  // 12: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
+	2,  // 13: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
+	59, // 14: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	5,  // 15: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
+	5,  // 16: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
+	6,  // 17: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	5,  // 18: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
+	5,  // 19: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
+	60, // 20: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	6,  // 21: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	5,  // 22: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
+	35, // 23: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
+	35, // 24: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
+	5,  // 25: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
+	5,  // 26: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
+	46, // 27: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
+	47, // 28: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
+	61, // 29: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	30, // [30:30] is the sub-list for method output_type
+	30, // [30:30] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	29, // [29:30] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }

@@ -117,6 +117,36 @@ func TestStampBirthDeleteAfterStopped_PersistsWindow(t *testing.T) {
 	}
 }
 
+// TestToProtoContainer_SurfacesStoppedDeleteStatus — #525/#264: the daemon's
+// container→proto projection surfaces the two-phase reaping status
+// (stopped_at + delete_after_stopped_seconds) read from the Incus config, so a
+// reader sees the full lifecycle without host access. stopped_at is omitted
+// (nil) when the box isn't stopped; the window passes through as-is.
+func TestToProtoContainer_SurfacesStoppedDeleteStatus(t *testing.T) {
+	stoppedAt := time.Now().Add(-15 * time.Minute).UTC().Truncate(time.Second)
+	pc := toProtoContainer(&incus.ContainerInfo{
+		Name:                      "alice-container",
+		State:                     "Stopped",
+		StoppedAt:                 stoppedAt,
+		DeleteAfterStoppedSeconds: 86400,
+	})
+	if pc.GetDeleteAfterStoppedSeconds() != 86400 {
+		t.Errorf("DeleteAfterStoppedSeconds = %d, want 86400", pc.GetDeleteAfterStoppedSeconds())
+	}
+	if pc.GetStoppedAt() == nil || !pc.GetStoppedAt().AsTime().Equal(stoppedAt) {
+		t.Errorf("StoppedAt = %v, want %s", pc.GetStoppedAt(), stoppedAt)
+	}
+
+	// Running box (zero StoppedAt) → no stopped_at on the wire.
+	running := toProtoContainer(&incus.ContainerInfo{Name: "bob-container", State: "Running"})
+	if running.GetStoppedAt() != nil {
+		t.Errorf("running box should have no stopped_at, got %v", running.GetStoppedAt())
+	}
+	if running.GetDeleteAfterStoppedSeconds() != 0 {
+		t.Errorf("unset window should be 0, got %d", running.GetDeleteAfterStoppedSeconds())
+	}
+}
+
 // TestValidateTTLSeconds — the bound shared by create and set. Zero is valid
 // (no TTL / clear); negative and over-cap are rejected; the 7-day boundary is
 // inclusive. Keeps the two entry points rejecting identical input identically.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Container.stopped_at` + `Container.delete_after_stopped_seconds`** — the container read API (`GetContainer`/`ListContainers`) now reports the two-phase reaping status (#525) alongside `ttl_expires_at` and `auto_sleep_enabled`, so a reader sees the *full* lifecycle (where a box is in idle→stop→delete) without host access. Read from the Incus config the daemon stamps; `stopped_at` is omitted while the box runs. Completes the read-side of the box-lifecycle model for the fleet-hygiene view (cloud #264). (#525)
+
 ## [0.24.0] - 2026-06-07
 
 Box lifecycle: the full default-sleep → default-dead model (#522). Every box

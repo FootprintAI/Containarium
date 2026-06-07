@@ -2372,6 +2372,13 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 	if !info.TTLExpiresAt.IsZero() {
 		pc.TtlExpiresAt = timestamppb.New(info.TTLExpiresAt)
 	}
+	// Two-phase reaping status (#525): stopped_at (cleared on start, so unset
+	// while running) + the stopped→delete window. Read from the Incus config;
+	// surfaced so a reader sees the full lifecycle (#264).
+	if !info.StoppedAt.IsZero() {
+		pc.StoppedAt = timestamppb.New(info.StoppedAt)
+	}
+	pc.DeleteAfterStoppedSeconds = info.DeleteAfterStoppedSeconds
 	return pc
 }
 
