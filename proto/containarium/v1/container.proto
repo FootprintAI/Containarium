@@ -320,6 +320,17 @@ message CreateContainerRequest {
   // (#523). 0 = no TTL (today's behavior). Capped at 604800 (7 days);
   // larger values return InvalidArgument, same bound as SetContainerTTL.
   int64 ttl_seconds = 20;
+
+  // Birth idle-stop (optional) — minutes of inactivity after which the box
+  // is auto-STOPPED (freeing CPU/RAM, keeping disk; wakes on next access).
+  // When > 0, the daemon enables auto-sleep at create time with this idle
+  // threshold (same persistence as ToggleAutoSleep), so the box is born
+  // with the stop timer too — no separate `toggle_auto_sleep` call to
+  // forget (#524, the stop half of #522's default-sleep→default-dead
+  // model; ttl_seconds is the delete half). 0 = no auto-sleep (today's
+  // behavior). The auto-sleep loop treats an open SSH/exec session as
+  // active, so an actively-debugged box is never stopped mid-session.
+  int32 idle_stop_minutes = 21;
 }
 
 // CreateContainerResponse is the response from creating a container

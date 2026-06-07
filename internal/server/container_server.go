@@ -186,6 +186,11 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err := validateTTLSeconds(req.TtlSeconds); err != nil {
 		return nil, err
 	}
+	// Birth idle-stop (#524): a negative threshold is nonsense; reject early.
+	// 0 = no auto-sleep; > 0 enables it with that idle threshold (minutes).
+	if req.IdleStopMinutes < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "idle_stop_minutes must be >= 0, got %d", req.IdleStopMinutes)
+	}
 
 	// Pool resolution — if a pool is requested, either validate that
 	// the explicit backend_id belongs to that pool, or pick any
@@ -393,6 +398,13 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				}
 			}
 
+			// Birth idle-stop (#524), async path. Best-effort like the sync
+			// path — auto-sleep is an optimization, not a leak contract, so a
+			// failed stamp never turns a created box into a failed creation.
+			if err == nil && info != nil && req.IdleStopMinutes > 0 {
+				s.stampBirthAutoSleep(info.Name, req.IdleStopMinutes)
+			}
+
 			s.pendingMu.Lock()
 			if pending, exists := s.pendingCreations[req.Username]; exists {
 				pending.Done = true
@@ -458,6 +470,16 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		if err := s.stampBirthTTL(info.Name, req.Username, req.TtlSeconds); err != nil {
 			return nil, err
 		}
+	}
+
+	// Birth idle-stop (#524): enable auto-sleep at create with the requested
+	// idle threshold, so the box is born with the stop timer and the
+	// autosleep loop reclaims its CPU/RAM if a job crashes/cancels without
+	// anyone calling toggle_auto_sleep. Best-effort: unlike the TTL (a leak
+	// contract), auto-sleep is an optimization — a failed stamp logs and the
+	// box keeps running (it can be toggled later), it never fails the create.
+	if req.IdleStopMinutes > 0 {
+		s.stampBirthAutoSleep(info.Name, req.IdleStopMinutes)
 	}
 
 	// Stamp tenant secrets into the LXC's env (best-effort — a

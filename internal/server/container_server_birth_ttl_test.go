@@ -77,6 +77,27 @@ func TestStampBirthTTL_FailureDeletesBox(t *testing.T) {
 	}
 }
 
+// TestStampBirthAutoSleep_EnablesWithThreshold — #524: a create-time idle-stop
+// enables auto-sleep at birth by writing the same two Incus keys ToggleAutoSleep
+// uses, so the box is born with its idle→stop timer (no separate toggle call).
+func TestStampBirthAutoSleep_EnablesWithThreshold(t *testing.T) {
+	s, calls, _ := newTTLTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	s.stampBirthAutoSleep("alice-container", 20)
+
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 SetConfig calls (enable + threshold), got %d: %+v", len(*calls), *calls)
+	}
+	enable, thresh := (*calls)[0], (*calls)[1]
+	if enable.key != incus.AutoSleepEnabledKey || enable.value != "true" {
+		t.Errorf("first call = %+v, want %s=true", enable, incus.AutoSleepEnabledKey)
+	}
+	if thresh.key != incus.IdleThresholdMinutesKey || thresh.value != "20" {
+		t.Errorf("second call = %+v, want %s=20", thresh, incus.IdleThresholdMinutesKey)
+	}
+}
+
 // TestValidateTTLSeconds — the bound shared by create and set. Zero is valid
 // (no TTL / clear); negative and over-cap are rejected; the 7-day boundary is
 // inclusive. Keeps the two entry points rejecting identical input identically.

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Birth idle-stop — `containarium create --idle-stop <dur>`** — a box can be born with its auto-sleep (idle→stop) timer, not just its delete timer. `CreateContainer` accepts an optional `idle_stop_minutes`; the daemon enables auto-sleep at create with that idle threshold (same persistence as `toggle_auto_sleep`), so a crashed/cancelled job still releases CPU/RAM (disk kept, wakes on access) — no separate `toggle_auto_sleep` call to forget. The stop half of the default-sleep→default-dead model (birth TTL #523 is the delete half). Off by default. (#524)
+
+### Fixed
+
+- **Auto-sleep no longer stops a box with an active session.** The idle signal treated a long-lived open connection (e.g. an SSH/exec debug session) as last-active at its *start*, so a session open longer than the idle threshold looked idle and the box was slept mid-debug. An open connection now counts as active-as-of-now; the box stays awake while anyone is connected and becomes sleep-eligible only after the session closes. (#524)
+
 ## [0.23.2] - 2026-06-06
 
 ### Added

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -128,6 +129,27 @@ func (s *ContainerServer) stampBirthTTL(containerName, username string, ttlSecon
 	}
 	log.Printf("[ttl] birth TTL set container=%s expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), ttlSeconds)
 	return nil
+}
+
+// stampBirthAutoSleep enables auto-sleep on a just-created box (#524) with the
+// given idle threshold (minutes), via the same Incus config keys ToggleAutoSleep
+// writes — so the box is born with its idle→stop timer and the autosleep loop
+// reclaims its CPU/RAM if a job crashes/cancels without anyone calling
+// toggle_auto_sleep (the stop half of #522's default-sleep model; birth TTL is
+// the delete half). Best-effort: auto-sleep is an optimization, not a leak
+// contract, so a failed stamp logs and the box keeps running (it can be toggled
+// later) rather than failing the create. idleMinutes must be > 0 (the zero case
+// is "no auto-sleep" and never reaches here).
+func (s *ContainerServer) stampBirthAutoSleep(containerName string, idleMinutes int32) {
+	if err := s.manager.SetConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
+		log.Printf("[autosleep] failed to enable birth auto-sleep on %s: %v (continuing; box has no idle-stop)", containerName, err)
+		return
+	}
+	if err := s.manager.SetConfig(containerName, incus.IdleThresholdMinutesKey, strconv.Itoa(int(idleMinutes))); err != nil {
+		log.Printf("[autosleep] enabled auto-sleep on %s but failed to set idle threshold: %v (autosleep loop falls back to its %dm default)", containerName, err, incus.DefaultIdleThresholdMinutes)
+		return
+	}
+	log.Printf("[autosleep] birth auto-sleep enabled container=%s idle_threshold=%dm", containerName, idleMinutes)
 }
 
 // stampTTL writes now()+duration as a UTC RFC3339 wall-clock expiry onto the

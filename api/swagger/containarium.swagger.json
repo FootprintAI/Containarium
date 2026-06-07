@@ -6090,6 +6090,11 @@
           "type": "string",
           "format": "int64",
           "description": "Birth TTL (optional) — seconds from creation after which the box is\nauto-deleted. When \u003e 0, the daemon stamps ttl_expires_at = now() +\nttl_seconds at create time (same persistence as SetContainerTTL), so\nthe box is born with a death date and the ttlsweeper reaps it even if\nthe client dies right after create — no separate `ttl set` call needed\n(#523). 0 = no TTL (today's behavior). Capped at 604800 (7 days);\nlarger values return InvalidArgument, same bound as SetContainerTTL."
+        },
+        "idleStopMinutes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Birth idle-stop (optional) — minutes of inactivity after which the box\nis auto-STOPPED (freeing CPU/RAM, keeping disk; wakes on next access).\nWhen \u003e 0, the daemon enables auto-sleep at create time with this idle\nthreshold (same persistence as ToggleAutoSleep), so the box is born\nwith the stop timer too — no separate `toggle_auto_sleep` call to\nforget (#524, the stop half of #522's default-sleep→default-dead\nmodel; ttl_seconds is the delete half). 0 = no auto-sleep (today's\nbehavior). The auto-sleep loop treats an open SSH/exec session as\nactive, so an actively-debugged box is never stopped mid-session."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
