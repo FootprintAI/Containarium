@@ -98,7 +98,7 @@ func TestWaitForContainerReady_CtxCancelledBeforeStart(t *testing.T) {
 
 func TestWaitForContainerReady_ListenerImmediatelyOpen(t *testing.T) {
 	ln, port := listenLocal(t)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	s := &ContainerServer{
 		routeStore: &fakeRouteLister{routes: []*app.RouteRecord{{TargetPort: port}}},
 	}

@@ -68,7 +68,7 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 	var octet byte
 	if old, ok := r.spots[spotID]; ok {
 		log.Printf("[tunnel-registry] spot %q reconnecting, reusing IP %s", spotID, old.LocalIP)
-		old.Session.Close()
+		_ = old.Session.Close()
 		localIP = old.LocalIP
 		for o, id := range r.usedIPs {
 			if id == spotID {
@@ -142,7 +142,7 @@ func (r *TunnelRegistry) Unregister(spotID string) {
 		return
 	}
 
-	spot.Session.Close()
+	_ = spot.Session.Close()
 	removeLoopbackAlias(spot.LocalIP)
 	delete(r.spots, spotID)
 
@@ -178,7 +178,7 @@ func (r *TunnelRegistry) DialTunnel(spotID string, port int) (net.Conn, error) {
 	// Same handshake the existing proxyConnection() uses on the loopback path.
 	portBytes := []byte{byte(port >> 8), byte(port & 0xff)}
 	if _, err := stream.Write(portBytes); err != nil {
-		stream.Close()
+		_ = stream.Close()
 		return nil, fmt.Errorf("write port header to spot %q: %w", spotID, err)
 	}
 	return stream, nil

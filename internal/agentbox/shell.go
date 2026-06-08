@@ -93,7 +93,7 @@ func handleShellExec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		}
 	}
 	if execCtx.Err() == context.DeadlineExceeded {
-		stderr.WriteString(fmt.Sprintf("\n[agent-box] command exceeded timeout of %s and was killed", timeout))
+		fmt.Fprintf(&stderr, "\n[agent-box] command exceeded timeout of %s and was killed", timeout)
 	}
 
 	// Encode result as a single text block — agents parse this readily and
@@ -121,7 +121,7 @@ type cappedWriter struct {
 func (w *cappedWriter) Write(p []byte) (int, error) {
 	if w.buf.Len() >= w.limit {
 		if !w.overflow {
-			w.buf.WriteString(fmt.Sprintf("\n[agent-box] output truncated at %d bytes", w.limit))
+			fmt.Fprintf(w.buf, "\n[agent-box] output truncated at %d bytes", w.limit)
 			w.overflow = true
 		}
 		return len(p), nil // pretend we wrote it; the kernel won't EPIPE us
@@ -129,7 +129,7 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 	remaining := w.limit - w.buf.Len()
 	if len(p) > remaining {
 		w.buf.Write(p[:remaining])
-		w.buf.WriteString(fmt.Sprintf("\n[agent-box] output truncated at %d bytes", w.limit))
+		fmt.Fprintf(w.buf, "\n[agent-box] output truncated at %d bytes", w.limit)
 		w.overflow = true
 		return len(p), nil
 	}

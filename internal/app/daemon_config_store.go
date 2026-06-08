@@ -85,7 +85,7 @@ func (s *DaemonConfigStore) SetAll(ctx context.Context, config map[string]string
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	now := time.Now()
 	for k, v := range config {

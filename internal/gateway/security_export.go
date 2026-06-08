@@ -60,11 +60,11 @@ func handleClamavExport(w http.ResponseWriter, r *http.Request, store *security.
 	defer writer.Flush()
 
 	// Header
-	writer.Write([]string{"Container", "Username", "Status", "Findings Count", "Findings", "Scanned At", "Scan Duration"})
+	_ = writer.Write([]string{"Container", "Username", "Status", "Findings Count", "Findings", "Scanned At", "Scan Duration"})
 
 	// Data rows
 	for _, report := range reports {
-		writer.Write([]string{
+		_ = writer.Write([]string{
 			report.ContainerName,
 			report.Username,
 			report.Status,

@@ -138,8 +138,8 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
-			defer rd.Close()
-			go func() { <-e.ctx.Done(); rd.Close() }() // unblock Read on shutdown
+			defer func() { _ = rd.Close() }()
+			go func() { <-e.ctx.Done(); _ = rd.Close() }() // unblock Read on shutdown
 			netbpf.ConsumeDenyEvents(e.ctx, rd, e, func(err error) {
 				log.Printf("[netpolicy] perf: %v", err)
 			})

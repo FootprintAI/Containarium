@@ -94,7 +94,7 @@ func scanPasswd(username string) (bool, string, string) {
 	if err != nil {
 		return false, "", ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		parts := strings.Split(scanner.Text(), ":")
@@ -112,7 +112,7 @@ func readShellForUID(uid string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		parts := strings.Split(scanner.Text(), ":")

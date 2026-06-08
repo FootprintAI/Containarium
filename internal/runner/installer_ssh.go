@@ -131,7 +131,7 @@ func (s *sshInstaller) Install(ctx context.Context, boxName string, script []byt
 		// Shell-quote the value defensively — PATs and labels
 		// can contain characters that would otherwise break the
 		// command line.
-		envPrefix.WriteString(fmt.Sprintf("%s=%s ", k, shellQuote(env[k])))
+		fmt.Fprintf(&envPrefix, "%s=%s ", k, shellQuote(env[k]))
 	}
 	envPrefix.WriteString("bash -s")
 
@@ -170,13 +170,13 @@ func (s *sshInstaller) runCommand(ctx context.Context, boxName, cmd string, inpu
 		return "", "", fmt.Errorf("ssh handshake %s: %w", hostport, err)
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	session, err := client.NewSession()
 	if err != nil {
 		return "", "", fmt.Errorf("ssh session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout

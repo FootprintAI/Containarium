@@ -107,7 +107,7 @@ func TestClientListContainers(t *testing.T) {
 			TotalCount: 1,
 		}
 
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -183,7 +183,7 @@ func TestClientGetContainer(t *testing.T) {
 			},
 		}
 
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -220,7 +220,7 @@ func TestClientCreateContainer(t *testing.T) {
 			Message: "Container created",
 		}
 
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -271,7 +271,7 @@ func TestClientDeleteContainer(t *testing.T) {
 					ContainerName: "alice-container",
 				}
 
-				json.NewEncoder(w).Encode(resp)
+				_ = json.NewEncoder(w).Encode(resp)
 			}))
 			defer server.Close()
 
@@ -312,7 +312,7 @@ func TestClientGetMetrics(t *testing.T) {
 					},
 				}
 
-				json.NewEncoder(w).Encode(resp)
+				_ = json.NewEncoder(w).Encode(resp)
 			}))
 			defer server.Close()
 
@@ -344,7 +344,7 @@ func TestClientGetSystemInfo(t *testing.T) {
 			},
 		}
 
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -377,7 +377,7 @@ func TestClientPreMarshaledBodyNotDoubleEncoded(t *testing.T) {
 			assert.Equal(t, "POST", r.Method)
 			assert.Equal(t, "/v1/containers/alice/monitoring", r.URL.Path)
 			gotBody, _ = io.ReadAll(r.Body)
-			json.NewEncoder(w).Encode(ToggleMonitoringResponse{Message: "ok", MonitoringEnabled: true})
+			_ = json.NewEncoder(w).Encode(ToggleMonitoringResponse{Message: "ok", MonitoringEnabled: true})
 		}))
 		defer server.Close()
 
@@ -398,7 +398,7 @@ func TestClientPreMarshaledBodyNotDoubleEncoded(t *testing.T) {
 		var gotBody []byte
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotBody, _ = io.ReadAll(r.Body)
-			json.NewEncoder(w).Encode(SecretResponse{Message: "ok"})
+			_ = json.NewEncoder(w).Encode(SecretResponse{Message: "ok"})
 		}))
 		defer server.Close()
 
@@ -419,7 +419,7 @@ func TestClientGetLatestRelease(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
 		assert.Equal(t, "/v1/releases/latest", r.URL.Path)
-		json.NewEncoder(w).Encode(LatestReleaseResponse{
+		_ = json.NewEncoder(w).Encode(LatestReleaseResponse{
 			LatestRelease:   "v0.21.2",
 			CurrentVersion:  "0.21.0",
 			UpdateAvailable: true,

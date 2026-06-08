@@ -607,10 +607,14 @@ func backfillCoreContainerLabels(incusClient *incus.Client) {
 			}
 		}
 		if cfg["boot.autostart.priority"] == "" {
-			incusClient.UpdateContainerConfig(c.name, "boot.autostart.priority", c.priority)
+			if err := incusClient.UpdateContainerConfig(c.name, "boot.autostart.priority", c.priority); err != nil {
+				log.Printf("Warning: failed to set boot.autostart.priority on %s: %v", c.name, err)
+			}
 		}
 		if cfg["boot.autostart"] == "" {
-			incusClient.UpdateContainerConfig(c.name, "boot.autostart", "true")
+			if err := incusClient.UpdateContainerConfig(c.name, "boot.autostart", "true"); err != nil {
+				log.Printf("Warning: failed to set boot.autostart on %s: %v", c.name, err)
+			}
 		}
 	}
 }
@@ -679,7 +683,7 @@ func waitForCoreContainers(incusClient *incus.Client, timeout time.Duration) err
 			if err != nil {
 				allReady = false
 			} else {
-				conn.Close()
+				_ = conn.Close()
 			}
 		} else {
 			allReady = false

@@ -269,8 +269,8 @@ chmod +x %s/hooks/post-receive
 // or updating its URL as needed.
 func ensureLocalRemote(repo, name, url string) error {
 	existing, err := runGit(repo, "remote", "get-url", name)
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		if strings.TrimSpace(existing) == url {
 			return nil
 		}

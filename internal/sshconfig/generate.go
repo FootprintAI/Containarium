@@ -147,7 +147,7 @@ func splitHostPort(s string, defaultPort int) (string, int) {
 	if strings.HasPrefix(s, "[") {
 		if idx := strings.LastIndex(s, "]:"); idx > 0 {
 			var port int
-			fmt.Sscanf(s[idx+2:], "%d", &port)
+			_, _ = fmt.Sscanf(s[idx+2:], "%d", &port)
 			if port > 0 {
 				return s[1:idx], port
 			}
@@ -156,7 +156,7 @@ func splitHostPort(s string, defaultPort int) (string, int) {
 	}
 	if idx := strings.LastIndex(s, ":"); idx > 0 && !strings.Contains(s, "::") {
 		var port int
-		fmt.Sscanf(s[idx+1:], "%d", &port)
+		_, _ = fmt.Sscanf(s[idx+1:], "%d", &port)
 		if port > 0 {
 			return s[:idx], port
 		}

@@ -70,29 +70,29 @@ func generateRulesYAML(rules []*AlertRule) string {
 	b.WriteString("    rules:\n")
 
 	for _, rule := range rules {
-		b.WriteString(fmt.Sprintf("      - alert: %s\n", sanitizeAlertName(rule.Name)))
-		b.WriteString(fmt.Sprintf("        expr: %s\n", rule.Expr))
+		fmt.Fprintf(&b, "      - alert: %s\n", sanitizeAlertName(rule.Name))
+		fmt.Fprintf(&b, "        expr: %s\n", rule.Expr)
 		if rule.Duration != "" {
-			b.WriteString(fmt.Sprintf("        for: %s\n", rule.Duration))
+			fmt.Fprintf(&b, "        for: %s\n", rule.Duration)
 		}
 
 		// Labels
 		b.WriteString("        labels:\n")
-		b.WriteString(fmt.Sprintf("          severity: %s\n", rule.Severity))
+		fmt.Fprintf(&b, "          severity: %s\n", rule.Severity)
 		b.WriteString("          source: custom\n")
-		b.WriteString(fmt.Sprintf("          rule_id: %s\n", rule.ID))
+		fmt.Fprintf(&b, "          rule_id: %s\n", rule.ID)
 		for k, v := range rule.Labels {
-			b.WriteString(fmt.Sprintf("          %s: %q\n", k, v))
+			fmt.Fprintf(&b, "          %s: %q\n", k, v)
 		}
 
 		// Annotations
 		if rule.Description != "" || len(rule.Annotations) > 0 {
 			b.WriteString("        annotations:\n")
 			if rule.Description != "" {
-				b.WriteString(fmt.Sprintf("          description: %q\n", rule.Description))
+				fmt.Fprintf(&b, "          description: %q\n", rule.Description)
 			}
 			for k, v := range rule.Annotations {
-				b.WriteString(fmt.Sprintf("          %s: %q\n", k, v))
+				fmt.Fprintf(&b, "          %s: %q\n", k, v)
 			}
 		}
 	}

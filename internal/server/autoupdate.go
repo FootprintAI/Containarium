@@ -206,7 +206,7 @@ func (u *AutoUpdater) downloadBinary(ctx context.Context, destPath string) error
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		return err
@@ -219,7 +219,7 @@ func checksumFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err

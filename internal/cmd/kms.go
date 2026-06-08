@@ -72,7 +72,7 @@ func runKMSStatus(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		resp, err = h.GetKMSStatus()
 		if err != nil {
 			return err
@@ -82,7 +82,7 @@ func runKMSStatus(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer g.Close()
+		defer func() { _ = g.Close() }()
 		resp, err = g.GetKMSStatus()
 		if err != nil {
 			return err
@@ -105,7 +105,7 @@ func runKMSCoverage(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		resp, err = h.GetEnvelopeCoverage()
 		if err != nil {
 			return err
@@ -115,7 +115,7 @@ func runKMSCoverage(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer g.Close()
+		defer func() { _ = g.Close() }()
 		resp, err = g.GetEnvelopeCoverage()
 		if err != nil {
 			return err
@@ -148,7 +148,7 @@ func runKMSMigrate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		resp, err = h.MigrateToEnvelope(req)
 		if err != nil {
 			return err
@@ -158,7 +158,7 @@ func runKMSMigrate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer g.Close()
+		defer func() { _ = g.Close() }()
 		resp, err = g.MigrateToEnvelope(req)
 		if err != nil {
 			return err

@@ -122,7 +122,7 @@ func handleAuditQuery(w http.ResponseWriter, r *http.Request, store *audit.Store
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(auditLogsResponse{
+	_ = json.NewEncoder(w).Encode(auditLogsResponse{
 		Logs:       logs,
 		TotalCount: totalCount,
 	})

@@ -287,7 +287,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create HTTP client: %w", err)
 			}
-			defer httpClient.Close()
+			defer func() { _ = httpClient.Close() }()
 
 			_, err = httpClient.GetContainer(username)
 			containerExists = (err == nil)
@@ -297,7 +297,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to connect to remote server: %w", err)
 			}
-			defer grpcClient.Close()
+			defer func() { _ = grpcClient.Close() }()
 
 			_, err = grpcClient.GetContainer(username)
 			containerExists = (err == nil)
@@ -321,7 +321,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					return fmt.Errorf("failed to create HTTP client: %w", err)
 				}
-				defer httpClient.Close()
+				defer func() { _ = httpClient.Close() }()
 
 				if err := httpClient.DeleteContainer(username, true); err != nil {
 					return fmt.Errorf("failed to delete existing container: %w", err)
@@ -332,7 +332,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					return fmt.Errorf("failed to connect to remote server: %w", err)
 				}
-				defer grpcClient.Close()
+				defer func() { _ = grpcClient.Close() }()
 
 				if err := grpcClient.DeleteContainer(username, true); err != nil {
 					return fmt.Errorf("failed to delete existing container: %w", err)
@@ -499,7 +499,7 @@ func enableAutoRestartCompose(username, dir string) error {
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", serverAddr, err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	c := pb.NewComposeAutostartServiceClient(grpcClient.Conn())
 	resp, err := c.Enable(context.Background(), &pb.EnableRequest{
@@ -638,7 +638,7 @@ func createRemote(username, image, cpu, memory, disk string, sshKeys []string, e
 	if err != nil {
 		return nil, err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 }
@@ -649,7 +649,7 @@ func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []strin
 	if err != nil {
 		return nil, err
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 }

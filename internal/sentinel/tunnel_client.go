@@ -68,7 +68,7 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial sentinel %s: %w", tc.SentinelAddr, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	log.Printf("[tunnel-client] connected to sentinel %s", tc.SentinelAddr)
 
@@ -116,9 +116,9 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 	// Close session when context is cancelled (enables clean shutdown)
 	go func() {
 		<-ctx.Done()
-		session.Close()
+		_ = session.Close()
 	}()
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	log.Printf("[tunnel-client] yamux session established, serving port forwards")
 
@@ -146,7 +146,7 @@ func (tc *TunnelClient) serveStreams(ctx context.Context, session *yamux.Session
 // handleStream reads the 2-byte port header from a yamux stream,
 // then proxies bidirectionally to the local port.
 func (tc *TunnelClient) handleStream(stream net.Conn) {
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// Read 2-byte port header (big-endian)
 	portBuf := make([]byte, 2)
@@ -163,23 +163,23 @@ func (tc *TunnelClient) handleStream(stream net.Conn) {
 		log.Printf("[tunnel-client] failed to connect to local %s: %v", localAddr, err)
 		return
 	}
-	defer localConn.Close()
+	defer func() { _ = localConn.Close() }()
 
 	// Bidirectional copy — when one direction finishes, close both sides
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(localConn, stream)
+		_, _ = io.Copy(localConn, stream)
 		// Close write side of local conn to signal EOF
 		if tc, ok := localConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
+			_ = tc.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(stream, localConn)
+		_, _ = io.Copy(stream, localConn)
 		// Close write side of stream to signal EOF
 		if cs, ok := stream.(interface{ CloseWrite() error }); ok {
-			cs.CloseWrite()
+			_ = cs.CloseWrite()
 		}
 		done <- struct{}{}
 	}()

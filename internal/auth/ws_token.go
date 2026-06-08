@@ -171,7 +171,7 @@ func looksLikeJWT(s string) bool {
 			return false
 		}
 		for _, c := range seg {
-			if !(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '-' && c != '_' && c != '=' {
+			if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '=' {
 				return false
 			}
 		}

@@ -1879,7 +1879,9 @@ apt-get clean 2>/dev/null
 dnf clean all 2>/dev/null
 journalctl --vacuum-size=50M 2>/dev/null
 `
-	c.ExecWithOutput(containerName, []string{"/bin/bash", "-c", cleanupScript})
+	if _, _, err := c.ExecWithOutput(containerName, []string{"/bin/bash", "-c", cleanupScript}); err != nil {
+		log.Printf("[incus] CleanupDisk %s: best-effort cleanup script error (ignored): %v", containerName, err)
+	}
 
 	// Get disk usage after cleanup
 	dfAfter, _, _ := c.ExecWithOutput(containerName, []string{"df", "-B1", "/"})

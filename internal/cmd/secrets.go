@@ -121,7 +121,7 @@ func runSecretsSet(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		msg, err := h.SetSecret(username, name, value, secretsDelivery)
 		if err != nil {
 			return err
@@ -133,7 +133,7 @@ func runSecretsSet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	meta, msg, err := g.SetSecret(username, name, value, secretsDelivery)
 	if err != nil {
 		return err
@@ -157,7 +157,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		value, err := h.GetSecret(username, name)
 		if err != nil {
 			return err
@@ -171,7 +171,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	_, value, err := g.GetSecret(username, name)
 	if err != nil {
 		return err
@@ -191,7 +191,7 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		list, err := h.ListSecrets(username)
 		if err != nil {
 			return err
@@ -210,7 +210,7 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	list, err := g.ListSecrets(username)
 	if err != nil {
 		return err
@@ -237,7 +237,7 @@ func runSecretsDelete(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		if err := h.DeleteSecret(username, name); err != nil {
 			return err
 		}
@@ -248,7 +248,7 @@ func runSecretsDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	msg, err := g.DeleteSecret(username, name)
 	if err != nil {
 		return err
@@ -275,14 +275,14 @@ func runSecretsRefresh(cmd *cobra.Command, args []string) error {
 		if herr != nil {
 			return herr
 		}
-		defer h.Close()
+		defer func() { _ = h.Close() }()
 		msg, stamped, err = h.RefreshSecrets(username)
 	} else {
 		g, gerr := client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if gerr != nil {
 			return gerr
 		}
-		defer g.Close()
+		defer func() { _ = g.Close() }()
 		msg, stamped, err = g.RefreshSecrets(username)
 	}
 	if err != nil {

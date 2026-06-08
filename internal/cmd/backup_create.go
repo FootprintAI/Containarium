@@ -64,7 +64,7 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Backing up %s database %q to %s...\n", username, backupCreateDatabase, backupCreateDest)
 	resp, err := c.CreateBackup(&pb.CreateBackupRequest{

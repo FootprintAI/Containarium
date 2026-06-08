@@ -27,7 +27,7 @@ func TestKeyStore_Sync(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(mockKeys)
+		_ = json.NewEncoder(w).Encode(mockKeys)
 	}))
 	defer srv.Close()
 
@@ -211,7 +211,7 @@ func TestKeyStore_PushSentinelKey(t *testing.T) {
 			return
 		}
 		var req gateway.SentinelKeyRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		receivedKey = req.PublicKey
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"updated": 3}`))

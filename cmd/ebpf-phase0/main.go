@@ -105,7 +105,7 @@ func run(objPath, bridge string, every time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("attach ingress TCX: %w (kernel ≥ 6.6 required for link.AttachTCX; on older kernels, the design needs to use classic tc filter attach)", err)
 	}
-	defer ingressLink.Close()
+	defer func() { _ = ingressLink.Close() }()
 	log.Printf("attached count_ingress to %s ingress (TCX)", bridge)
 
 	egressLink, err := link.AttachTCX(link.TCXOptions{
@@ -116,7 +116,7 @@ func run(objPath, bridge string, every time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("attach egress TCX: %w", err)
 	}
-	defer egressLink.Close()
+	defer func() { _ = egressLink.Close() }()
 	log.Printf("attached count_egress to %s egress (TCX)", bridge)
 
 	read := func() (in, eg uint64, err error) {

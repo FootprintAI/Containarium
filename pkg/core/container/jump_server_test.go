@@ -347,7 +347,7 @@ func TestWaitForLockFiles(t *testing.T) {
 		// Start a goroutine to remove the lock file after a short delay
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			os.Remove(lockFile)
+			_ = os.Remove(lockFile)
 		}()
 
 		cleared, iterations := waitForLockFilesCleared(lockFiles, 10, 20*time.Millisecond)
@@ -367,7 +367,7 @@ func TestWaitForLockFiles(t *testing.T) {
 		if err := os.WriteFile(lockFile, []byte("locked"), 0644); err != nil {
 			t.Fatalf("failed to create lock file: %v", err)
 		}
-		defer os.Remove(lockFile)
+		defer func() { _ = os.Remove(lockFile) }()
 
 		cleared, iterations := waitForLockFilesCleared(lockFiles, 3, 10*time.Millisecond)
 		if cleared {
@@ -384,15 +384,15 @@ func TestWaitForLockFiles(t *testing.T) {
 		lockFiles := []string{lockFile1, lockFile2}
 
 		// Create both lock files
-		os.WriteFile(lockFile1, []byte("locked"), 0644)
-		os.WriteFile(lockFile2, []byte("locked"), 0644)
+		_ = os.WriteFile(lockFile1, []byte("locked"), 0644)
+		_ = os.WriteFile(lockFile2, []byte("locked"), 0644)
 
 		// Remove first file quickly, second file after delay
 		go func() {
 			time.Sleep(20 * time.Millisecond)
-			os.Remove(lockFile1)
+			_ = os.Remove(lockFile1)
 			time.Sleep(40 * time.Millisecond)
-			os.Remove(lockFile2)
+			_ = os.Remove(lockFile2)
 		}()
 
 		cleared, _ := waitForLockFilesCleared(lockFiles, 10, 20*time.Millisecond)
@@ -430,8 +430,8 @@ func TestLockFileDetection(t *testing.T) {
 
 	t.Run("detect existing lock file", func(t *testing.T) {
 		lockFile := tempDir + "/exists.lock"
-		os.WriteFile(lockFile, []byte("locked"), 0644)
-		defer os.Remove(lockFile)
+		_ = os.WriteFile(lockFile, []byte("locked"), 0644)
+		defer func() { _ = os.Remove(lockFile) }()
 
 		exists := lockFileExists(lockFile)
 		if !exists {
@@ -481,8 +481,8 @@ func TestCheckAllLockFilesClear(t *testing.T) {
 
 	t.Run("not clear when one file exists", func(t *testing.T) {
 		lockFile := tempDir + "/exists.lock"
-		os.WriteFile(lockFile, []byte("locked"), 0644)
-		defer os.Remove(lockFile)
+		_ = os.WriteFile(lockFile, []byte("locked"), 0644)
+		defer func() { _ = os.Remove(lockFile) }()
 
 		lockFiles := []string{
 			tempDir + "/a.lock",
@@ -497,10 +497,10 @@ func TestCheckAllLockFilesClear(t *testing.T) {
 	t.Run("not clear when all files exist", func(t *testing.T) {
 		lockFile1 := tempDir + "/x.lock"
 		lockFile2 := tempDir + "/y.lock"
-		os.WriteFile(lockFile1, []byte("locked"), 0644)
-		os.WriteFile(lockFile2, []byte("locked"), 0644)
-		defer os.Remove(lockFile1)
-		defer os.Remove(lockFile2)
+		_ = os.WriteFile(lockFile1, []byte("locked"), 0644)
+		_ = os.WriteFile(lockFile2, []byte("locked"), 0644)
+		defer func() { _ = os.Remove(lockFile1) }()
+		defer func() { _ = os.Remove(lockFile2) }()
 
 		lockFiles := []string{lockFile1, lockFile2}
 		if allLockFilesClear(lockFiles) {

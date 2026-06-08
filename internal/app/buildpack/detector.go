@@ -58,15 +58,10 @@ func (d *Detector) Detect(files []string) (string, string, error) {
 		}
 	}
 
-	return "", "", fmt.Errorf("could not detect application type. Supported languages:\n" +
-		"  - Node.js (package.json)\n" +
-		"  - Python (requirements.txt, Pipfile, pyproject.toml)\n" +
-		"  - Go (go.mod)\n" +
-		"  - Rust (Cargo.toml)\n" +
-		"  - Ruby (Gemfile)\n" +
-		"  - PHP (composer.json)\n" +
-		"  - Static (index.html)\n" +
-		"\nOr provide a Dockerfile manually.")
+	return "", "", fmt.Errorf("could not detect application type; supported languages are " +
+		"Node.js (package.json), Python (requirements.txt, Pipfile, pyproject.toml), " +
+		"Go (go.mod), Rust (Cargo.toml), Ruby (Gemfile), PHP (composer.json), " +
+		"Static (index.html) — or provide a Dockerfile manually")
 }
 
 // GenerateDockerfile generates a Dockerfile for the detected language
@@ -91,21 +86,4 @@ func containsFile(files []string, filename string) bool {
 		}
 	}
 	return false
-}
-
-// containsFileWithExt checks if any file with the given extension exists
-func containsFileWithExt(files []string, ext string) bool {
-	for _, f := range files {
-		if strings.HasSuffix(f, ext) {
-			return true
-		}
-	}
-	return false
-}
-
-// getFileContent would read file content - placeholder for now
-// In practice, this would need access to the actual files
-func getFileContent(files []string, filename string) string {
-	// This is a placeholder - actual implementation would need file access
-	return ""
 }

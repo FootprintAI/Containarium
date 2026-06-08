@@ -116,9 +116,9 @@ func (cs *CoreServices) EnsureOTelCollector(ctx context.Context, victoriaMetrics
 		return "", fmt.Errorf("failed to create otel collector container: %w", err)
 	}
 
-	cs.incusClient.UpdateContainerConfig(CoreOTelCollectorContainer, incus.RoleKey, string(incus.RoleOTelCollector))
-	cs.incusClient.UpdateContainerConfig(CoreOTelCollectorContainer, "boot.autostart", "true")
-	cs.incusClient.UpdateContainerConfig(CoreOTelCollectorContainer, "boot.autostart.priority", "75")
+	cs.setContainerConfigBestEffort(CoreOTelCollectorContainer, incus.RoleKey, string(incus.RoleOTelCollector))
+	cs.setContainerConfigBestEffort(CoreOTelCollectorContainer, "boot.autostart", "true")
+	cs.setContainerConfigBestEffort(CoreOTelCollectorContainer, "boot.autostart.priority", "75")
 
 	if err := cs.incusClient.StartContainer(CoreOTelCollectorContainer); err != nil {
 		return "", fmt.Errorf("failed to start otel collector container: %w", err)

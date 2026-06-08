@@ -15,10 +15,12 @@ func noBackoff(t *testing.T) {
 	t.Cleanup(func() { execBackoffBase = old })
 }
 
-// transientErr mimics the incus exec PID-tracking failure as it surfaces
+// errTransient mimics the incus exec PID-tracking failure as it surfaces
 // from the wrapper (wrapped in "command execution failed: …").
-var transientErr = fmt.Errorf("command execution failed: %w",
-	errors.New("Failed to retrieve PID of executing child process"))
+// The inner message mirrors incus's real error text verbatim so the
+// substring match in isTransientExecErr is exercised; keep its casing.
+var errTransient = fmt.Errorf("command execution failed: %w",
+	errors.New("Failed to retrieve PID of executing child process")) //nolint:staticcheck // ST1005: mirrors verbatim incus error text
 
 func TestIsTransientExecErr(t *testing.T) {
 	cases := []struct {
@@ -27,8 +29,8 @@ func TestIsTransientExecErr(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"transient PID race", transientErr, true},
-		{"wrapped transient", fmt.Errorf("exec foo: %w", transientErr), true},
+		{"transient PID race", errTransient, true},
+		{"wrapped transient", fmt.Errorf("exec foo: %w", errTransient), true},
 		{"real non-zero exit", errors.New("command exited with code 1"), false},
 		{"other failure", errors.New("instance not found"), false},
 	}
@@ -47,7 +49,7 @@ func TestExecWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 	err := execWithRetry("test", func() error {
 		calls++
 		if calls < 3 {
-			return transientErr
+			return errTransient
 		}
 		return nil
 	})
@@ -85,7 +87,7 @@ func TestExecWithRetry_ExhaustsAndReturnsLast(t *testing.T) {
 	calls := 0
 	err := execWithRetry("test", func() error {
 		calls++
-		return transientErr
+		return errTransient
 	})
 	if !isTransientExecErr(err) {
 		t.Fatalf("err = %v, want the transient error after exhaustion", err)

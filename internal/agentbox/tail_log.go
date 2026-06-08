@@ -103,7 +103,7 @@ func handleTailLog(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("tail_log: %v", err)), nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := f.Seek(startOffset, io.SeekStart); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("tail_log: seek to %d: %v", startOffset, err)), nil

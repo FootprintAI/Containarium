@@ -1221,7 +1221,7 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		return "", fmt.Errorf("failed to create container: %w", err)
 	}
 
-	result := fmt.Sprintf("✅ Container created successfully!\n\n")
+	result := "✅ Container created successfully!\n\n"
 	result += fmt.Sprintf("Name: %s\n", resp.Container.Name)
 	result += fmt.Sprintf("Username: %s\n", resp.Container.Username)
 	result += fmt.Sprintf("State: %s\n", resp.Container.State)
@@ -1588,7 +1588,7 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 	if resp.Info.DaemonVersion != "" {
 		result += fmt.Sprintf("Daemon Version: %s\n", resp.Info.DaemonVersion)
 	}
-	result += fmt.Sprintf("\nContainers:\n")
+	result += "\nContainers:\n"
 	result += fmt.Sprintf("  Running: %d\n", resp.Info.ContainersRunning)
 	result += fmt.Sprintf("  Stopped: %d\n", resp.Info.ContainersStopped)
 	result += fmt.Sprintf("  Total: %d\n", resp.Info.ContainersTotal)

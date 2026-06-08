@@ -90,7 +90,7 @@ func getLabelsRemoteHTTP(username string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	info, err := httpClient.GetContainer(username)
 	if err != nil {

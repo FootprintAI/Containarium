@@ -164,9 +164,7 @@ func TestReconciler_LiveLoopRespectsStopChannel(t *testing.T) {
 	}
 	go r.run(context.Background())
 
-	select {
-	case <-time.After(50 * time.Millisecond):
-	}
+	<-time.After(50 * time.Millisecond)
 	r.Stop()
 
 	select {

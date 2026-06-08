@@ -103,7 +103,7 @@ func (d *ttlsweeperDeleter) DeleteContainer(ctx context.Context, name, reason st
 	// (see ToggleAutoSleep, StopContainer, etc.). Strip the suffix
 	// to recover the username the handler expects in
 	// DeleteContainerRequest.
-	username := name
+	var username string
 	const suffix = "-container"
 	if len(name) > len(suffix) && name[len(name)-len(suffix):] == suffix {
 		username = name[:len(name)-len(suffix)]

@@ -165,7 +165,7 @@ func (m *LinuxConntrackMonitor) Snapshot() ([]*ConntrackEvent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open conntrack for query: %w", err)
 	}
-	defer queryConn.Close()
+	defer func() { _ = queryConn.Close() }()
 
 	flows, err := queryConn.Dump(nil)
 	if err != nil {

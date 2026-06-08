@@ -27,7 +27,7 @@ func TestAuthenticate(t *testing.T) {
 			return
 		}
 
-		json.NewEncoder(w).Encode(authResponse{
+		_ = json.NewEncoder(w).Encode(authResponse{
 			AuthToken:  "test-token-123",
 			Username:   "guacadmin",
 			DataSource: "postgresql",
@@ -84,7 +84,7 @@ func TestCreateConnection(t *testing.T) {
 			t.Errorf("expected port 3389, got %q", req.Parameters["port"])
 		}
 
-		json.NewEncoder(w).Encode(connectionResponse{
+		_ = json.NewEncoder(w).Encode(connectionResponse{
 			Identifier:       "42",
 			Name:             req.Name,
 			ParentIdentifier: "ROOT",

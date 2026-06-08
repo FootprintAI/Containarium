@@ -33,7 +33,7 @@ func TestRenderOTelEnvFile(t *testing.T) {
 	ci := strings.Index(got, "CONTAINARIUM_CONTAINER_ID=")
 	ei := strings.Index(got, "OTEL_EXPORTER_OTLP_ENDPOINT=")
 	hi := strings.Index(got, "OTEL_EXPORTER_OTLP_HEADERS=")
-	if !(ci < ei && ei < hi) {
+	if ci >= ei || ei >= hi {
 		t.Errorf("keys not sorted deterministically: ci=%d ei=%d hi=%d", ci, ei, hi)
 	}
 }

@@ -111,7 +111,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create GCP provider: %w", err)
 		}
-		defer gcpProvider.Close()
+		defer func() { _ = gcpProvider.Close() }()
 		provider = gcpProvider
 
 		// Hybrid mode: GCP + tunnel if --tunnel-token OR
@@ -159,7 +159,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to start ConnMux on %s: %w", muxAddr, err)
 			}
-			defer connMux.Close()
+			defer func() { _ = connMux.Close() }()
 
 			registry := sentinel.NewTunnelRegistry()
 			// Issue #337 §"Related observations" — drain the registry
@@ -249,7 +249,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to start ConnMux on %s: %w", muxAddr, err)
 		}
-		defer connMux.Close()
+		defer func() { _ = connMux.Close() }()
 
 		// Wire up: tunnel connections → tunnel server, HTTPS → manager
 		tunnelPolicy, polErr := sentinel.PolicyFromCLI(tunnelToken, sentinelTunnelTokenPolicies)

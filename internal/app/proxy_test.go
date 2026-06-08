@@ -93,7 +93,7 @@ func TestProxyManager_AddRoute(t *testing.T) {
 		// Handle route addition
 		if r.URL.Path == "/config/apps/http/servers/srv0/routes" && r.Method == "POST" {
 			routePath = r.URL.Path
-			json.NewDecoder(r.Body).Decode(&receivedBody)
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -251,7 +251,7 @@ func TestProxyManager_ListRoutes(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(routes)
+		_ = json.NewEncoder(w).Encode(routes)
 	}))
 	defer server.Close()
 
@@ -367,7 +367,7 @@ func TestProxyManager_RemoveRoute_FallbackToIndex(t *testing.T) {
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(routes)
+			_ = json.NewEncoder(w).Encode(routes)
 
 		case r.Method == "DELETE" && r.URL.Path == "/config/apps/http/servers/srv0/routes/1":
 			// Delete by index (index 1 = test.example.com)
@@ -412,7 +412,7 @@ func TestProxyManager_AddRoute_FullDomain(t *testing.T) {
 	var receivedBody map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedBody)
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -446,7 +446,7 @@ func TestProxyManager_AddRoute_SubdomainOnly(t *testing.T) {
 	var receivedBody map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedBody)
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -480,7 +480,7 @@ func TestProxyManager_AddRoute_NoBaseDomain(t *testing.T) {
 	var receivedBody map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedBody)
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -509,10 +509,11 @@ func TestProxyManager_UpdateRoute(t *testing.T) {
 	addCalled := false
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "DELETE" {
+		switch r.Method {
+		case "DELETE":
 			deleteCalled = true
 			w.WriteHeader(http.StatusOK)
-		} else if r.Method == "POST" {
+		case "POST":
 			addCalled = true
 			w.WriteHeader(http.StatusOK)
 		}

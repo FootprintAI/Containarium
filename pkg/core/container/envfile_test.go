@@ -35,7 +35,7 @@ func TestRenderEnvFile(t *testing.T) {
 	ui := strings.Index(got, "\nURL=")
 	wi := strings.Index(got, "\nWITH_EQUALS=")
 	zi := strings.Index(got, "\nZED=")
-	if !(ai < ui && ui < wi && wi < zi) {
+	if ai >= ui || ui >= wi || wi >= zi {
 		t.Errorf("keys not sorted: a=%d u=%d w=%d z=%d", ai, ui, wi, zi)
 	}
 }

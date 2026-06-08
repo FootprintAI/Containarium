@@ -331,7 +331,9 @@ func (c *Collector) periodicCleanup() {
 func (c *Collector) GetConnections(containerName string) []*pb.Connection {
 	// Ensure cache is refreshed before taking snapshot
 	if c.cache.Size() == 0 {
-		c.cache.Refresh()
+		if err := c.cache.Refresh(); err != nil {
+			log.Printf("Warning: failed to refresh container cache: %v", err)
+		}
 	}
 
 	// Take a fresh snapshot from conntrack for most up-to-date data
@@ -364,9 +366,10 @@ func (c *Collector) GetConnectionSummary(containerName string) *pb.ConnectionSum
 	destBytes := make(map[string]int64)
 
 	for _, conn := range connections {
-		if conn.Protocol == pb.Protocol_PROTOCOL_TCP {
+		switch conn.Protocol {
+		case pb.Protocol_PROTOCOL_TCP:
 			summary.TcpConnections++
-		} else if conn.Protocol == pb.Protocol_PROTOCOL_UDP {
+		case pb.Protocol_PROTOCOL_UDP:
 			summary.UdpConnections++
 		}
 
@@ -398,7 +401,9 @@ func (c *Collector) GetStore() *Store {
 func (c *Collector) Stop() {
 	c.cancel()
 	if c.monitor != nil {
-		c.monitor.Close()
+		if err := c.monitor.Close(); err != nil {
+			log.Printf("Warning: failed to close conntrack monitor: %v", err)
+		}
 	}
 }
 

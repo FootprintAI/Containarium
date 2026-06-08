@@ -70,7 +70,7 @@ func listCollaboratorsLocal(ownerUsername string) error {
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.CollaboratorUsername, c.AccountName, addedAt, addedBy)
 	}
-	w.Flush()
+	_ = w.Flush()
 
 	fmt.Printf("\nTotal: %d collaborator(s)\n", len(collaborators))
 	return nil

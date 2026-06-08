@@ -92,7 +92,7 @@ func removeLabelsRemoteHTTP(username string, keys []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP client: %w", err)
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	// Get container first to verify it exists
 	info, err := httpClient.GetContainer(username)

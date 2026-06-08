@@ -40,7 +40,7 @@ func TestTunnelIntegration(t *testing.T) {
 	spotDaemonPort := freePort(t)
 	spotDaemonLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", spotDaemonPort))
 	require.NoError(t, err)
-	defer spotDaemonLn.Close()
+	defer func() { _ = spotDaemonLn.Close() }()
 
 	spotDaemonSrv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,14 +56,14 @@ func TestTunnelIntegration(t *testing.T) {
 			}
 		}),
 	}
-	go spotDaemonSrv.Serve(spotDaemonLn)
-	defer spotDaemonSrv.Close()
+	go func() { _ = spotDaemonSrv.Serve(spotDaemonLn) }()
+	defer func() { _ = spotDaemonSrv.Close() }()
 
 	// Mock HTTPS service on the spot (e.g., Caddy)
 	spotHTTPSPort := freePort(t)
 	spotHTTPSLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", spotHTTPSPort))
 	require.NoError(t, err)
-	defer spotHTTPSLn.Close()
+	defer func() { _ = spotHTTPSLn.Close() }()
 
 	spotHTTPSSrv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,8 +73,8 @@ func TestTunnelIntegration(t *testing.T) {
 			Certificates: []tls.Certificate{mustSelfSignedCert(t)},
 		},
 	}
-	go spotHTTPSSrv.ServeTLS(spotHTTPSLn, "", "")
-	defer spotHTTPSSrv.Close()
+	go func() { _ = spotHTTPSSrv.ServeTLS(spotHTTPSLn, "", "") }()
+	defer func() { _ = spotHTTPSSrv.Close() }()
 
 	// ---------------------------------------------------------------
 	// 2. Start sentinel-side: ConnMux + TunnelServer + Manager
@@ -86,7 +86,7 @@ func TestTunnelIntegration(t *testing.T) {
 
 	connMux := NewConnMuxFromListener(muxLn)
 	go connMux.Run()
-	defer connMux.Close()
+	defer func() { _ = connMux.Close() }()
 
 	registry := NewTunnelRegistry()
 	tunnelServer := NewTunnelServer("", policyAny(token), registry)
@@ -102,7 +102,7 @@ func TestTunnelIntegration(t *testing.T) {
 		disconnectCh <- spot.ID
 	}
 
-	go tunnelServer.Serve(ctx, connMux.TunnelListener())
+	go func() { _ = tunnelServer.Serve(ctx, connMux.TunnelListener()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -116,7 +116,7 @@ func TestTunnelIntegration(t *testing.T) {
 		SpotID:       "integration-spot",
 		Ports:        []int{spotDaemonPort, spotHTTPSPort},
 	}
-	go client.Run(ctx)
+	go func() { _ = client.Run(ctx) }()
 
 	// Wait for connection
 	var spot *TunnelSpot
@@ -142,7 +142,7 @@ func TestTunnelIntegration(t *testing.T) {
 		// Open a yamux stream to the spot's daemon port
 		stream, err := spot.Session.Open()
 		require.NoError(t, err)
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		// Send port header
 		portBytes := []byte{byte(spotDaemonPort >> 8), byte(spotDaemonPort & 0xff)}
@@ -155,7 +155,7 @@ func TestTunnelIntegration(t *testing.T) {
 
 		// Read response
 		buf := make([]byte, 1024)
-		stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_ = stream.SetReadDeadline(time.Now().Add(3 * time.Second))
 		n, err := stream.Read(buf)
 		require.NoError(t, err)
 		response := string(buf[:n])
@@ -172,7 +172,7 @@ func TestTunnelIntegration(t *testing.T) {
 	t.Run("authorized_keys_via_yamux", func(t *testing.T) {
 		stream, err := spot.Session.Open()
 		require.NoError(t, err)
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		portBytes := []byte{byte(spotDaemonPort >> 8), byte(spotDaemonPort & 0xff)}
 		_, err = stream.Write(portBytes)
@@ -182,7 +182,7 @@ func TestTunnelIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		buf := make([]byte, 1024)
-		stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_ = stream.SetReadDeadline(time.Now().Add(3 * time.Second))
 		n, err := stream.Read(buf)
 		require.NoError(t, err)
 		response := string(buf[:n])
@@ -201,21 +201,21 @@ func TestTunnelIntegration(t *testing.T) {
 		// This should land on the ConnMux HTTPS listener
 		httpsConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", muxPort), 2*time.Second)
 		require.NoError(t, err)
-		defer httpsConn.Close()
+		defer func() { _ = httpsConn.Close() }()
 
 		// Send a TLS ClientHello byte to trigger HTTPS routing
-		httpsConn.Write([]byte{0x16})
+		_, _ = httpsConn.Write([]byte{0x16})
 
 		// Read from the HTTPS listener side
 		muxHTTPSConn, err := connMux.HTTPSListener().Accept()
 		if err != nil {
 			t.Skipf("HTTPS listener accept failed (may already be consumed): %v", err)
 		}
-		defer muxHTTPSConn.Close()
+		defer func() { _ = muxHTTPSConn.Close() }()
 
 		// Verify the first byte is 0x16 (replayed by peekedConn)
 		buf := make([]byte, 1)
-		muxHTTPSConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_ = muxHTTPSConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, err = io.ReadFull(muxHTTPSConn, buf)
 		require.NoError(t, err)
 		assert.Equal(t, byte(0x16), buf[0])

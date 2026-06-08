@@ -40,7 +40,7 @@ func ServeCerts(certBaseDir string) http.HandlerFunc {
 		if _, err := os.Stat(certsDir); os.IsNotExist(err) {
 			// No certificates directory yet — Caddy hasn't issued any certs
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(CertsResponse{Certs: []CertPair{}})
+			_ = json.NewEncoder(w).Encode(CertsResponse{Certs: []CertPair{}})
 			return
 		}
 
@@ -92,6 +92,6 @@ func ServeCerts(certBaseDir string) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(CertsResponse{Certs: pairs})
+		_ = json.NewEncoder(w).Encode(CertsResponse{Certs: pairs})
 	}
 }

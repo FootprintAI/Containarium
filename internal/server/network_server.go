@@ -731,7 +731,7 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 	} else {
 		// Fallback: directly update iptables (legacy behavior)
 		// Remove existing route first (ignore errors if it doesn't exist)
-		s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol)
+		_ = s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol)
 
 		if err := s.passthroughManager.AddRoute(int(req.ExternalPort), req.TargetIp, int(req.TargetPort), protocol); err != nil {
 			return nil, fmt.Errorf("failed to update passthrough route: %w", err)

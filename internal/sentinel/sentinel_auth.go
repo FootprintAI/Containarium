@@ -34,7 +34,6 @@ const sentinelMisconfigLogInterval = 60 * time.Second
 var (
 	sentinelSecretOnce sync.Once
 	sentinelSecret     []byte
-	sentinelSecretOK   bool
 
 	// lastMisconfigLogNs is the unix-nanos of the last per-call
 	// WARNING. atomic.Int64 so concurrent keysync + certsync calls
@@ -53,7 +52,6 @@ func loadSentinelSecret() []byte {
 			sentinelSecret = []byte(raw)
 		default:
 			sentinelSecret = []byte(raw)
-			sentinelSecretOK = true
 		}
 	})
 	return sentinelSecret

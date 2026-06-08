@@ -70,7 +70,7 @@ func installStackRemoteGRPC(username, stackID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to remote server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	if err := grpcClient.InstallStack(username, stackID); err != nil {
 		return fmt.Errorf("failed to install stack: %w", err)
@@ -85,7 +85,7 @@ func installStackRemoteHTTP(username, stackID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP client: %w", err)
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	if err := httpClient.InstallStack(username, stackID); err != nil {
 		return fmt.Errorf("failed to install stack: %w", err)

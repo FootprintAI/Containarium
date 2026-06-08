@@ -77,7 +77,7 @@ func run(objPath, veth string, tenant uint32, allowIntra bool, allow cidrList, p
 	if err != nil {
 		return err
 	}
-	defer loader.Close()
+	defer func() { _ = loader.Close() }()
 
 	// Per-veth policy config (log-only for Phase A).
 	cfg := netbpf.PolicyConfig{TenantID: tenant, Mode: netbpf.ModeLogOnly}
@@ -129,7 +129,7 @@ func run(objPath, veth string, tenant uint32, allowIntra bool, allow cidrList, p
 	if err != nil {
 		return fmt.Errorf("open perf reader: %w", err)
 	}
-	defer rd.Close()
+	defer func() { _ = rd.Close() }()
 	go func() {
 		for {
 			rec, err := rd.Read()

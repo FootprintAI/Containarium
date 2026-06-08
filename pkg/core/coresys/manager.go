@@ -22,64 +22,6 @@ const (
 	DefaultCoreDisk   = "50GB"
 )
 
-// composeTemplate is the compose configuration for core services (compatible with podman-compose)
-const dockerComposeTemplate = `version: '3.8'
-
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: _containarium-postgres
-    restart: unless-stopped
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_DB: containarium
-      POSTGRES_USER: containarium
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U containarium"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: _containarium-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: _containarium-caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "2019:2019"
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-    environment:
-      - CADDY_ADMIN=0.0.0.0:2019
-
-volumes:
-  postgres_data:
-  redis_data:
-  caddy_data:
-  caddy_config:
-`
-
 // Manager manages the _containarium-core internal system container
 type Manager struct {
 	incusClient incus.Backend
@@ -282,10 +224,8 @@ func (m *Manager) GetCaddyAdminURL() string {
 // Destroy removes the core container and all its data
 // WARNING: This will delete all application data!
 func (m *Manager) Destroy(ctx context.Context) error {
-	// Stop the container first
-	if err := m.incusClient.StopContainer(CoreContainerName, false); err != nil {
-		// Ignore error if container is already stopped
-	}
+	// Stop the container first; ignore error if it is already stopped.
+	_ = m.incusClient.StopContainer(CoreContainerName, false)
 
 	// Delete the container
 	if err := m.incusClient.DeleteContainer(CoreContainerName); err != nil {

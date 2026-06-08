@@ -60,7 +60,7 @@ func enableForwarding(spotIP string, ports []int) error {
 	}
 
 	// Create the custom chain
-	exec.Command("iptables", "-t", "nat", "-N", chainName).Run() // ignore error if exists
+	_ = exec.Command("iptables", "-t", "nat", "-N", chainName).Run() // ignore error if exists
 
 	// Add DNAT rules for each port
 	for _, port := range ports {
@@ -159,13 +159,13 @@ func disableForwarding() error {
 
 	// Remove jump from PREROUTING (try both with and without source exclusion)
 	if bridgeCIDR := detectBridgeCIDR(); bridgeCIDR != "" {
-		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "!", "-s", bridgeCIDR, "-j", chainName).Run()
+		_ = exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "!", "-s", bridgeCIDR, "-j", chainName).Run()
 	}
-	exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-j", chainName).Run()
+	_ = exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-j", chainName).Run()
 
 	// Flush and delete our chain
-	exec.Command("iptables", "-t", "nat", "-F", chainName).Run()
-	exec.Command("iptables", "-t", "nat", "-X", chainName).Run()
+	_ = exec.Command("iptables", "-t", "nat", "-F", chainName).Run()
+	_ = exec.Command("iptables", "-t", "nat", "-X", chainName).Run()
 
 	// Clean up POSTROUTING MASQUERADE and FORWARD rules added by sentinel
 	// We use comment matching in production, but for simplicity flush by known patterns

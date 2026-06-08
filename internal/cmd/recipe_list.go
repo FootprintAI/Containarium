@@ -33,7 +33,7 @@ func runRecipeList(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		list, err = c.ListRecipes()
 		if err != nil {
 			return err

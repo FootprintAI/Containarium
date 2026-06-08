@@ -104,8 +104,8 @@ func init() {
 	hostingSetupCmd.Flags().BoolVar(&noWildcard, "no-wildcard", false, "Only provision main domain (skip wildcard *.domain)")
 
 	// Mark required
-	hostingSetupCmd.MarkFlagRequired("domain")
-	hostingSetupCmd.MarkFlagRequired("email")
+	_ = hostingSetupCmd.MarkFlagRequired("domain")
+	_ = hostingSetupCmd.MarkFlagRequired("email")
 }
 
 func runHostingSetup(cmd *cobra.Command, args []string) error {
@@ -114,7 +114,7 @@ func runHostingSetup(cmd *cobra.Command, args []string) error {
 
 	// Check if running as root (required for Caddy setup)
 	if !skipCaddy && os.Geteuid() != 0 {
-		return fmt.Errorf("this command requires root privileges for Caddy installation\nPlease run with sudo: sudo containarium hosting setup ...")
+		return fmt.Errorf("this command requires root privileges for Caddy installation (run with sudo: sudo containarium hosting setup ...)")
 	}
 
 	// Get API credentials

@@ -431,7 +431,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				}
 				out = append(out, p)
 			}
-			json.NewEncoder(w).Encode(map[string]any{"primaries": out})
+			_ = json.NewEncoder(w).Encode(map[string]any{"primaries": out})
 
 		case r.Method == http.MethodPost && rest == "":
 			var p Primary
@@ -453,7 +453,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 			stored := m.primaries.Register(p)
 			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%v ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(stored)
+			_ = json.NewEncoder(w).Encode(stored)
 
 		case r.Method == http.MethodPut && rest != "":
 			updated := m.primaries.Heartbeat(Pool(rest))
@@ -461,7 +461,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 				http.Error(w, `{"error":"pool not registered"}`, http.StatusNotFound)
 				return
 			}
-			json.NewEncoder(w).Encode(updated)
+			_ = json.NewEncoder(w).Encode(updated)
 
 		case r.Method == http.MethodDelete && rest != "":
 			if !m.primaries.Unregister(Pool(rest)) {
@@ -848,7 +848,7 @@ func (m *Manager) startHTTPSProxy(backendIP string) {
 // ConnMux on :443); BackendID empty → TCP dial to Primary.IP:Port.
 func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 	return func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Bound the SNI peek so a stalled client can't hold the connection.
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -883,7 +883,7 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 		if err != nil || dst == nil {
 			return
 		}
-		defer dst.Close()
+		defer func() { _ = dst.Close() }()
 
 		// Optionally prepend a PROXY v2 header so the downstream Caddy can
 		// recover the real client IP (otherwise it sees the sentinel/loopback
@@ -898,8 +898,8 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 		}
 
 		done := make(chan struct{}, 2)
-		go func() { io.Copy(dst, peekedConn); done <- struct{}{} }()
-		go func() { io.Copy(peekedConn, dst); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(dst, peekedConn); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(peekedConn, dst); done <- struct{}{} }()
 		<-done
 	}
 }
@@ -937,12 +937,12 @@ func (m *Manager) setHTTPSMaintenanceHandler() {
 
 	m.httpsDispatch.SetHandler(func(conn net.Conn) {
 		tlsConn := tls.Server(conn, tlsCfg)
-		defer tlsConn.Close()
+		defer func() { _ = tlsConn.Close() }()
 		if err := tlsConn.Handshake(); err != nil {
 			return
 		}
 		// Serve one HTTP request over the TLS connection
-		http.Serve(&singleConnListener{conn: tlsConn}, handler)
+		_ = http.Serve(&singleConnListener{conn: tlsConn}, handler)
 	})
 	log.Printf("[sentinel] maintenance HTTPS handler set on ConnMux")
 }
@@ -974,7 +974,7 @@ func startMaintenanceHTTPOnly(httpPort int, manager *Manager) (stop func(), err 
 	}()
 
 	return func() {
-		httpSrv.Close()
+		_ = httpSrv.Close()
 	}, nil
 }
 
@@ -1164,7 +1164,9 @@ func (m *Manager) cleanup() {
 		m.stopMaintenance()
 		m.stopMaintenance = nil
 	}
-	disableForwarding()
+	if err := disableForwarding(); err != nil {
+		log.Printf("[sentinel] cleanup: disableForwarding: %v", err)
+	}
 	log.Printf("[sentinel] cleanup complete")
 }
 

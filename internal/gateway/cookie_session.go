@@ -86,7 +86,7 @@ func handleSessionCookieSet(w http.ResponseWriter, r *http.Request, authMW *auth
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":        true,
-		"expiresAt": claims.ExpiresAt.Time.Unix(),
+		"expiresAt": claims.ExpiresAt.Unix(),
 	})
 }
 

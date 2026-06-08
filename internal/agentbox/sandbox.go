@@ -60,14 +60,6 @@ func resolvedSandboxRoot() string {
 	return sandboxRoot
 }
 
-// validatePath is the legacy AGENTBOX_ROOT-only check. Kept for callers
-// (and tests) that don't have an MCP context — file ops invoked via
-// the package's tools should use validatePathCtx instead so client
-// roots are honored too.
-func validatePath(p string) (string, error) {
-	return validatePathAgainstRoots(p, "")
-}
-
 // validatePathCtx is the roots-aware path validator. AGENTBOX_ROOT is
 // the strict floor; if it's unset and the MCP client advertises roots
 // via roots/list, those become the sandbox. Falls back to no

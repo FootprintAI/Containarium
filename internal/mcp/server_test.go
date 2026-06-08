@@ -2,7 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -256,7 +256,7 @@ func TestHandleToolsCallSurfacesHandlerError(t *testing.T) {
 	for i := range server.tools {
 		if server.tools[i].Name == "push" {
 			server.tools[i].Handler = func(_ *Client, _ map[string]interface{}) (string, error) {
-				return "", fmt.Errorf(sentinel)
+				return "", errors.New(sentinel)
 			}
 			break
 		}

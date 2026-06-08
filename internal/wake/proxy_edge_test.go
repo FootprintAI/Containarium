@@ -441,26 +441,6 @@ func TestWakeProxy_AuditOnError(t *testing.T) {
 	}
 }
 
-// fakeRouter records SwapToDirect invocations on a channel so tests
-// can wait for the fire-and-forget goroutine.
-type fakeRouter struct {
-	swapDirect chan string // container name
-}
-
-func (f *fakeRouter) SwapToDirect(ctx context.Context, containerName string, routes []*app.RouteRecord) error {
-	// Non-blocking send so a slow test can't deadlock the wake proxy
-	// goroutine; channel is buffered by the test.
-	select {
-	case f.swapDirect <- containerName:
-	default:
-	}
-	return nil
-}
-
-func (f *fakeRouter) SwapToWake(ctx context.Context, containerName string, routes []*app.RouteRecord) error {
-	return nil
-}
-
 // listingRouteStore returns a non-empty slice so the wake proxy's
 // post-success scheduleSwapToDirect actually invokes the router.
 type listingRouteStore struct{}

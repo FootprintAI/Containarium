@@ -53,14 +53,3 @@ func isRebootTestContinuation(stateFile string) bool {
 	_, err := os.Stat(stateFile)
 	return err == nil
 }
-
-// markRebootCompleted updates the state file to mark reboot as completed
-func markRebootCompleted(stateFile string) error {
-	state, err := loadRebootTestState(stateFile)
-	if err != nil {
-		return err
-	}
-
-	state.RebootedAt = time.Now()
-	return saveRebootTestState(stateFile, state)
-}

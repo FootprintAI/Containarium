@@ -212,7 +212,7 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 	rmStaleCmd := exec.CommandContext(ctx, "incus", "config", "device", "remove",
 		SecurityContainerName, deviceName,
 	)
-	rmStaleCmd.CombinedOutput() // ignore errors — device may not exist
+	_, _ = rmStaleCmd.CombinedOutput() // ignore errors — device may not exist
 
 	// Add disk device using incus CLI (simpler than raw API for device management)
 	addCmd := exec.CommandContext(ctx, "incus", "config", "device", "add",

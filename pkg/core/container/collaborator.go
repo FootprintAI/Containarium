@@ -325,17 +325,17 @@ func isValidCollaboratorUsername(username string) bool {
 	}
 
 	for _, ch := range username {
-		if !((ch >= 'a' && ch <= 'z') ||
-			(ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') ||
-			ch == '-' || ch == '_') {
+		if (ch < 'a' || ch > 'z') &&
+			(ch < 'A' || ch > 'Z') &&
+			(ch < '0' || ch > '9') &&
+			ch != '-' && ch != '_' {
 			return false
 		}
 	}
 
 	// Cannot start with digit or dash
 	firstChar := rune(username[0])
-	return !((firstChar >= '0' && firstChar <= '9') || firstChar == '-')
+	return (firstChar < '0' || firstChar > '9') && firstChar != '-'
 }
 
 // SyncCollaboratorAccounts recreates jump server accounts for all collaborators.

@@ -188,10 +188,10 @@ func isValidUsername(username string) bool {
 	}
 
 	for _, ch := range username {
-		if !((ch >= 'a' && ch <= 'z') ||
-			(ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') ||
-			ch == '-' || ch == '_') {
+		if (ch < 'a' || ch > 'z') &&
+			(ch < 'A' || ch > 'Z') &&
+			(ch < '0' || ch > '9') &&
+			ch != '-' && ch != '_' {
 			return false
 		}
 	}
@@ -362,7 +362,7 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to open authorized_keys: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := f.WriteString(cleanKey + "\n"); err != nil {
 		return fmt.Errorf("failed to write SSH key: %w", err)
@@ -456,197 +456,6 @@ func waitForLocksAndRun(fn func() error, verbose bool) error {
 
 	// Execute the operation
 	return fn()
-}
-
-// retryUserCommand retries a user management command with exponential backoff and lock file checking
-// This handles transient /etc/passwd lock conflicts with google_guest_agent or other system processes
-func retryUserCommand(cmdFunc func() error, verbose bool) error {
-	const (
-		maxRetries            = 20                // Further increased for very aggressive google_guest_agent
-		baseDelay             = 2 * time.Second   // Doubled from 1s
-		maxDelay              = 15 * time.Second  // Increased from 10s
-		lastStandDelay        = 120 * time.Second // Doubled from 60s for final retries
-		jitterFraction        = 0.3               // 30% jitter
-		lockFileWaitMax       = 30 * time.Second  // Doubled from 15s
-		lockFileCheckInterval = 500 * time.Millisecond
-	)
-
-	var lastErr error
-
-	// Pre-check: Wait for lock files to clear before first attempt
-	if verbose {
-		fmt.Printf("       Checking for lock files...\n")
-	}
-
-	// Check if google_guest_agent is running
-	if isGoogleGuestAgentActive(verbose) && verbose {
-		fmt.Printf("       Note: google_guest_agent is active and may be managing users\n")
-	}
-
-	if err := waitForLockFilesClear(lockFileWaitMax, lockFileCheckInterval, verbose); err != nil {
-		if verbose {
-			fmt.Printf("       Warning: Lock files still present after %v, proceeding anyway\n", lockFileWaitMax)
-		}
-	}
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Execute the command
-		err := cmdFunc()
-
-		// Success - return immediately
-		if err == nil {
-			return nil
-		}
-
-		// Check if error is a lock-related error
-		errMsg := err.Error()
-		isLockError := strings.Contains(errMsg, "cannot lock /etc/passwd") ||
-			strings.Contains(errMsg, "cannot lock /etc/shadow") ||
-			strings.Contains(errMsg, "try again later") ||
-			strings.Contains(errMsg, "Resource temporarily unavailable")
-
-		// If not a lock error, fail immediately (don't retry)
-		if !isLockError {
-			return err
-		}
-
-		lastErr = err
-
-		// If this was the last attempt, don't sleep
-		if attempt == maxRetries-1 {
-			break
-		}
-
-		var delay time.Duration
-
-		// "Last Stand" retries: If we're in the final 5 attempts, wait much longer (120s each)
-		if attempt >= maxRetries-5 {
-			delay = lastStandDelay
-			if verbose {
-				fmt.Printf("       Lock conflict persistent, executing last stand retry in %v (attempt %d/%d)...\n",
-					delay, attempt+2, maxRetries)
-			}
-		} else {
-			// Calculate exponential backoff delay: baseDelay * 2^attempt
-			delay = baseDelay * time.Duration(1<<uint(attempt))
-			if delay > maxDelay {
-				delay = maxDelay
-			}
-
-			// Add jitter: ±30% randomization to prevent thundering herd
-			jitter := time.Duration(float64(delay) * jitterFraction * (rand.Float64()*2 - 1))
-			delay += jitter
-
-			if verbose {
-				fmt.Printf("       Lock conflict detected, retrying in %v (attempt %d/%d)...\n",
-					delay.Round(time.Millisecond), attempt+2, maxRetries)
-			}
-		}
-
-		time.Sleep(delay)
-	}
-
-	// All retries exhausted - provide helpful guidance
-	return fmt.Errorf("failed after %d retries: %w\n\n"+
-		"The google_guest_agent is persistently locking /etc/passwd.\n"+
-		"Suggestions:\n"+
-		"  1. Check guest agent activity: sudo journalctl -u google-guest-agent -n 50\n"+
-		"  2. Wait a few minutes for the guest agent to complete its tasks\n"+
-		"  3. Temporarily disable OS Login if not needed: sudo systemctl stop google-guest-agent\n"+
-		"  4. Try again - the lock may clear in a few minutes",
-		maxRetries, lastErr)
-}
-
-// waitForLockFilesClear waits for common lock files to be released
-// Returns nil if files clear, error if timeout exceeded (but this is non-fatal)
-func waitForLockFilesClear(maxWait time.Duration, checkInterval time.Duration, verbose bool) error {
-	lockFiles := []string{
-		"/etc/passwd.lock",
-		"/etc/shadow.lock",
-		"/etc/.pwd.lock",
-	}
-
-	start := time.Now()
-	for {
-		allClear := true
-		for _, lockFile := range lockFiles {
-			if _, err := os.Stat(lockFile); err == nil {
-				allClear = false
-				if verbose && time.Since(start) > 2*time.Second {
-					fmt.Printf("       Waiting for %s to clear...\n", filepath.Base(lockFile))
-				}
-				break
-			}
-		}
-
-		if allClear {
-			return nil
-		}
-
-		if time.Since(start) >= maxWait {
-			return fmt.Errorf("lock files still present after %v", maxWait)
-		}
-
-		time.Sleep(checkInterval)
-	}
-}
-
-// isGoogleGuestAgentActive checks if google_guest_agent is currently running
-func isGoogleGuestAgentActive(_ bool) bool {
-	cmd := exec.Command("pgrep", "-x", "google_guest_ag")
-	err := cmd.Run()
-	return err == nil
-}
-
-// checkLockFiles checks for the presence of lock files and reports them
-func checkLockFiles(stage string) {
-	lockFiles := []string{
-		"/etc/passwd.lock",
-		"/etc/shadow.lock",
-		"/etc/.pwd.lock",
-		"/etc/group.lock",
-	}
-
-	fmt.Printf("       [DEBUG] Lock file check (%s):\n", stage)
-	foundLocks := false
-	for _, lockFile := range lockFiles {
-		if _, err := os.Stat(lockFile); err == nil {
-			fmt.Printf("       [DEBUG]   ✗ LOCKED: %s exists\n", lockFile)
-			foundLocks = true
-
-			// Try to see what process holds it
-			cmd := exec.Command("lsof", lockFile)
-			if output, err := cmd.CombinedOutput(); err == nil && len(output) > 0 {
-				fmt.Printf("       [DEBUG]     Process holding lock:\n%s\n", string(output))
-			}
-		} else {
-			fmt.Printf("       [DEBUG]   ✓ Free: %s\n", lockFile)
-		}
-	}
-	if !foundLocks {
-		fmt.Printf("       [DEBUG]   ✓ All lock files clear\n")
-	}
-}
-
-// checkGuestAgentStatus checks if google-guest-agent is running
-func checkGuestAgentStatus(stage string) {
-	fmt.Printf("       [DEBUG] Guest agent status (%s):\n", stage)
-
-	// Check if service is running
-	cmd := exec.Command("systemctl", "is-active", "google-guest-agent")
-	if output, err := cmd.CombinedOutput(); err == nil {
-		fmt.Printf("       [DEBUG]   Service status: %s\n", string(output))
-	} else {
-		fmt.Printf("       [DEBUG]   Service status: inactive or error\n")
-	}
-
-	// Check for running processes
-	cmd = exec.Command("pgrep", "-a", "google")
-	if output, err := cmd.CombinedOutput(); err == nil && len(output) > 0 {
-		fmt.Printf("       [DEBUG]   Running Google processes:\n%s\n", string(output))
-	} else {
-		fmt.Printf("       [DEBUG]   No Google processes found\n")
-	}
 }
 
 // retryUseraddWithLockWait stops google-guest-agent, creates user, then restarts it
@@ -871,7 +680,9 @@ func killGoogleProcesses(verbose bool) {
 				if verbose {
 					fmt.Printf("       Killing process %s holding passwd.lock\n", pid)
 				}
-				exec.Command("kill", "-9", pid).Run()
+				if err := exec.Command("kill", "-9", pid).Run(); err != nil && verbose {
+					fmt.Printf("       Failed to kill process %s: %v\n", pid, err)
+				}
 			}
 		}
 	}
@@ -892,139 +703,6 @@ func forceRemoveLockFiles(lockFiles []string, verbose bool) {
 			}
 		}
 	}
-}
-
-// withGuestAgentAccountsDaemonDisabled temporarily disables the google-guest-agent's accounts daemon,
-// executes the provided function, then re-enables it.
-// This prevents /etc/passwd lock conflicts during user operations.
-func withGuestAgentAccountsDaemonDisabled(fn func() error, verbose bool) error {
-	const configPath = "/etc/default/instance_configs.cfg"
-
-	fmt.Printf("       [DEBUG] Starting guest agent accounts daemon disable procedure\n")
-
-	// Check if config file exists
-	configExists := false
-	if _, err := os.Stat(configPath); err == nil {
-		configExists = true
-		fmt.Printf("       [DEBUG] Config file exists at %s\n", configPath)
-	} else {
-		fmt.Printf("       [DEBUG] Config file does not exist at %s\n", configPath)
-	}
-
-	// Read existing config if it exists
-	var existingConfig []byte
-	if configExists {
-		var err error
-		existingConfig, err = os.ReadFile(configPath)
-		if err != nil {
-			fmt.Printf("       [DEBUG] Warning: Could not read existing config: %v\n", err)
-		} else {
-			fmt.Printf("       [DEBUG] Read existing config (%d bytes)\n", len(existingConfig))
-		}
-	}
-
-	// Check lock files before disabling
-	checkLockFiles("before disabling")
-
-	// Check if guest agent is running
-	checkGuestAgentStatus("before disabling")
-
-	// Disable accounts daemon
-	fmt.Printf("       [DEBUG] Calling disableGuestAgentAccountsDaemon...\n")
-	if err := disableGuestAgentAccountsDaemon(configPath, verbose); err != nil {
-		fmt.Printf("       [DEBUG] Failed to disable accounts daemon: %v\n", err)
-		fmt.Printf("       [DEBUG] Proceeding anyway...\n")
-	} else {
-		fmt.Printf("       [DEBUG] ✓ Accounts daemon disabled successfully\n")
-	}
-
-	// Check lock files after disabling
-	checkLockFiles("after disabling")
-
-	// Check if guest agent is still running
-	checkGuestAgentStatus("after disabling")
-
-	// Ensure we re-enable the daemon when done (defer)
-	defer func() {
-		fmt.Printf("       [DEBUG] Starting guest agent accounts daemon re-enable procedure\n")
-
-		// Restore original config if it existed, otherwise remove our config
-		if configExists && existingConfig != nil {
-			fmt.Printf("       [DEBUG] Restoring original config (%d bytes)\n", len(existingConfig))
-			if err := os.WriteFile(configPath, existingConfig, 0644); err != nil {
-				fmt.Printf("       [DEBUG] Warning: Failed to restore config: %v\n", err)
-			} else {
-				fmt.Printf("       [DEBUG] ✓ Original config restored\n")
-			}
-		} else {
-			fmt.Printf("       [DEBUG] Removing config file we created\n")
-			if err := os.Remove(configPath); err != nil {
-				fmt.Printf("       [DEBUG] Warning: Failed to remove config: %v\n", err)
-			} else {
-				fmt.Printf("       [DEBUG] ✓ Config file removed\n")
-			}
-		}
-
-		// Restart guest agent to apply changes
-		fmt.Printf("       [DEBUG] Restarting google-guest-agent to re-enable accounts daemon\n")
-		cmd := exec.Command("systemctl", "restart", "google-guest-agent")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			fmt.Printf("       [DEBUG] Warning: Failed to restart google-guest-agent: %v\n", err)
-			fmt.Printf("       [DEBUG] Output: %s\n", string(output))
-		} else {
-			fmt.Printf("       [DEBUG] ✓ google-guest-agent restarted\n")
-		}
-
-		fmt.Printf("       [DEBUG] ✓ Accounts daemon re-enabled\n")
-	}()
-
-	// Execute the user operation
-	fmt.Printf("       [DEBUG] Executing user operation...\n")
-	err := fn()
-	if err != nil {
-		fmt.Printf("       [DEBUG] User operation failed: %v\n", err)
-	} else {
-		fmt.Printf("       [DEBUG] ✓ User operation succeeded\n")
-	}
-	return err
-}
-
-// disableGuestAgentAccountsDaemon writes configuration to disable the accounts daemon
-func disableGuestAgentAccountsDaemon(configPath string, _ bool) error {
-	// Create configuration content
-	config := "[Daemons]\naccounts_daemon = false\n"
-
-	fmt.Printf("       [DEBUG] Writing config to %s\n", configPath)
-	fmt.Printf("       [DEBUG] Config content:\n%s\n", config)
-
-	// Write configuration
-	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
-		fmt.Printf("       [DEBUG] Failed to write config file: %v\n", err)
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-	fmt.Printf("       [DEBUG] ✓ Config file written successfully\n")
-
-	// Verify the file was written
-	if content, err := os.ReadFile(configPath); err == nil {
-		fmt.Printf("       [DEBUG] Verified config content (%d bytes):\n%s\n", len(content), string(content))
-	}
-
-	// Restart google-guest-agent to apply changes
-	fmt.Printf("       [DEBUG] Restarting google-guest-agent service...\n")
-	cmd := exec.Command("systemctl", "restart", "google-guest-agent")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		fmt.Printf("       [DEBUG] Failed to restart google-guest-agent: %v\n", err)
-		fmt.Printf("       [DEBUG] Output: %s\n", string(output))
-		return fmt.Errorf("failed to restart google-guest-agent: %w", err)
-	}
-	fmt.Printf("       [DEBUG] ✓ google-guest-agent restarted successfully\n")
-
-	// Wait a moment for the daemon to stop its account management
-	fmt.Printf("       [DEBUG] Waiting 2 seconds for accounts daemon to stop...\n")
-	time.Sleep(2 * time.Second)
-	fmt.Printf("       [DEBUG] ✓ Wait complete\n")
-
-	return nil
 }
 
 // authorizedKeysHomeRoot is the host's home-directory root. Overridable

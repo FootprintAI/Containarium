@@ -20,7 +20,6 @@ import (
 // Flags for `containarium runner provision`. Kept as package-level
 // vars to match the pattern in create.go / delete.go / list.go.
 var (
-	runnerRepo         string
 	runnerPAT          string
 	runnerCount        int
 	runnerNamePrefix   string

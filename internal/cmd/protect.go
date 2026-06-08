@@ -111,7 +111,7 @@ func setContainerDeletePolicyViaServer(username string, policy pb.DeletePolicy) 
 		if err != nil {
 			return err
 		}
-		defer hc.Close()
+		defer func() { _ = hc.Close() }()
 		_, err = hc.SetContainerDeletePolicy(username, policy)
 		return err
 	}
@@ -119,7 +119,7 @@ func setContainerDeletePolicyViaServer(username string, policy pb.DeletePolicy) 
 	if err != nil {
 		return err
 	}
-	defer gc.Close()
+	defer func() { _ = gc.Close() }()
 	_, err = gc.SetContainerDeletePolicy(username, policy)
 	return err
 }

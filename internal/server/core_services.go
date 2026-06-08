@@ -235,9 +235,9 @@ func (cs *CoreServices) EnsurePostgres(ctx context.Context) (string, error) {
 	}
 
 	// Set role label and boot priority
-	cs.incusClient.UpdateContainerConfig(CorePostgresContainer, incus.RoleKey, string(incus.RolePostgres))
-	cs.incusClient.UpdateContainerConfig(CorePostgresContainer, "boot.autostart", "true")
-	cs.incusClient.UpdateContainerConfig(CorePostgresContainer, "boot.autostart.priority", "100")
+	cs.setContainerConfigBestEffort(CorePostgresContainer, incus.RoleKey, string(incus.RolePostgres))
+	cs.setContainerConfigBestEffort(CorePostgresContainer, "boot.autostart", "true")
+	cs.setContainerConfigBestEffort(CorePostgresContainer, "boot.autostart.priority", "100")
 
 	// Start container
 	if err := cs.incusClient.StartContainer(CorePostgresContainer); err != nil {
@@ -448,9 +448,9 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 	}
 
 	// Set role label and boot priority
-	cs.incusClient.UpdateContainerConfig(CoreCaddyContainer, incus.RoleKey, string(incus.RoleCaddy))
-	cs.incusClient.UpdateContainerConfig(CoreCaddyContainer, "boot.autostart", "true")
-	cs.incusClient.UpdateContainerConfig(CoreCaddyContainer, "boot.autostart.priority", "90")
+	cs.setContainerConfigBestEffort(CoreCaddyContainer, incus.RoleKey, string(incus.RoleCaddy))
+	cs.setContainerConfigBestEffort(CoreCaddyContainer, "boot.autostart", "true")
+	cs.setContainerConfigBestEffort(CoreCaddyContainer, "boot.autostart.priority", "90")
 
 	// Start container
 	if err := cs.incusClient.StartContainer(CoreCaddyContainer); err != nil {
@@ -524,12 +524,18 @@ func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error
 		return fmt.Errorf("failed to build caddy with xcaddy: %w", err)
 	}
 
-	// Create caddy user and directories
-	cs.incusClient.Exec(CoreCaddyContainer, []string{
+	// Create caddy user and directories (idempotent; log on failure)
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{
 		"bash", "-c", "id caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy",
-	})
-	cs.incusClient.Exec(CoreCaddyContainer, []string{"mkdir", "-p", "/var/lib/caddy", "/etc/caddy"})
-	cs.incusClient.Exec(CoreCaddyContainer, []string{"chown", "-R", "caddy:caddy", "/var/lib/caddy"})
+	}); err != nil {
+		log.Printf("Warning: failed to ensure caddy user: %v", err)
+	}
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"mkdir", "-p", "/var/lib/caddy", "/etc/caddy"}); err != nil {
+		log.Printf("Warning: failed to create caddy directories: %v", err)
+	}
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"chown", "-R", "caddy:caddy", "/var/lib/caddy"}); err != nil {
+		log.Printf("Warning: failed to chown caddy directory: %v", err)
+	}
 
 	// Create Caddyfile with admin API enabled
 	caddyfile := `{
@@ -567,7 +573,9 @@ WantedBy=multi-user.target
 	}
 
 	// Enable and start Caddy
-	cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "daemon-reload"})
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "daemon-reload"}); err != nil {
+		log.Printf("Warning: systemctl daemon-reload failed: %v", err)
+	}
 	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "enable", "caddy"}); err != nil {
 		return fmt.Errorf("failed to enable caddy: %w", err)
 	}
@@ -659,9 +667,9 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 	}
 
 	// Set role label and boot priority
-	cs.incusClient.UpdateContainerConfig(CoreVictoriaMetricsContainer, incus.RoleKey, string(incus.RoleVictoriaMetrics))
-	cs.incusClient.UpdateContainerConfig(CoreVictoriaMetricsContainer, "boot.autostart", "true")
-	cs.incusClient.UpdateContainerConfig(CoreVictoriaMetricsContainer, "boot.autostart.priority", "80")
+	cs.setContainerConfigBestEffort(CoreVictoriaMetricsContainer, incus.RoleKey, string(incus.RoleVictoriaMetrics))
+	cs.setContainerConfigBestEffort(CoreVictoriaMetricsContainer, "boot.autostart", "true")
+	cs.setContainerConfigBestEffort(CoreVictoriaMetricsContainer, "boot.autostart.priority", "80")
 
 	// Start container
 	if err := cs.incusClient.StartContainer(CoreVictoriaMetricsContainer); err != nil {
@@ -1326,9 +1334,9 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		return fmt.Errorf("failed to create security container: %w", err)
 	}
 
-	cs.incusClient.UpdateContainerConfig(CoreSecurityContainer, incus.RoleKey, string(incus.RoleSecurity))
-	cs.incusClient.UpdateContainerConfig(CoreSecurityContainer, "boot.autostart", "true")
-	cs.incusClient.UpdateContainerConfig(CoreSecurityContainer, "boot.autostart.priority", "70")
+	cs.setContainerConfigBestEffort(CoreSecurityContainer, incus.RoleKey, string(incus.RoleSecurity))
+	cs.setContainerConfigBestEffort(CoreSecurityContainer, "boot.autostart", "true")
+	cs.setContainerConfigBestEffort(CoreSecurityContainer, "boot.autostart.priority", "70")
 
 	if err := cs.incusClient.StartContainer(CoreSecurityContainer); err != nil {
 		return fmt.Errorf("failed to start security container: %w", err)
@@ -1421,6 +1429,15 @@ func (cs *CoreServices) setupSecurity(ctx context.Context) error {
 }
 
 // backfillConfig ensures role label and boot priority are set on an existing
+// setContainerConfigBestEffort applies a non-critical container config key
+// (role label, boot autostart/priority). These are cosmetic/boot-tuning
+// settings the creation flow should not fail on; a failure is logged.
+func (cs *CoreServices) setContainerConfigBestEffort(containerName, key, value string) {
+	if err := cs.incusClient.UpdateContainerConfig(containerName, key, value); err != nil {
+		log.Printf("Warning: failed to set %s=%s on %s: %v", key, value, containerName, err)
+	}
+}
+
 // container. This handles upgrades from older versions that lack these keys.
 func (cs *CoreServices) backfillConfig(containerName string, role incus.Role, priority string) {
 	cfg, _, err := cs.incusClient.GetRawInstance(containerName)
@@ -1440,6 +1457,6 @@ func (cs *CoreServices) backfillConfig(containerName string, role incus.Role, pr
 		}
 	}
 	if cfg["boot.autostart"] == "" {
-		cs.incusClient.UpdateContainerConfig(containerName, "boot.autostart", "true")
+		cs.setContainerConfigBestEffort(containerName, "boot.autostart", "true")
 	}
 }

@@ -99,14 +99,14 @@ func (f *userspaceForwarder) serve(ln net.Listener, target string) {
 }
 
 func (f *userspaceForwarder) handle(client net.Conn, target string) {
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	upstream, err := f.dialer.Dial("tcp", target)
 	if err != nil {
 		log.Printf("[sentinel] userspace forwarder: dial %s failed: %v", target, err)
 		return
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	// Prepend PROXY v2 frame BEFORE any payload bytes so the
 	// downstream peer's PROXY-aware parser reads it as the first

@@ -103,7 +103,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 	// 1. Start a mock echo service on the "spot" side
 	echoLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", echoPort))
 	require.NoError(t, err)
-	defer echoLn.Close()
+	defer func() { _ = echoLn.Close() }()
 
 	go func() {
 		for {
@@ -112,8 +112,8 @@ func TestTunnelEndToEnd(t *testing.T) {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
-				io.Copy(c, c) // echo
+				defer func() { _ = c.Close() }()
+				_, _ = io.Copy(c, c) // echo
 			}(conn)
 		}
 	}()
@@ -127,7 +127,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 		connectCh <- spot
 	}
 
-	go server.Run(ctx)
+	go func() { _ = server.Run(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 
 	// 3. Start tunnel client
@@ -137,7 +137,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 		SpotID:       "test-spot",
 		Ports:        []int{echoPort},
 	}
-	go client.Run(ctx)
+	go func() { _ = client.Run(ctx) }()
 
 	// 4. Wait for connection
 	var spot *TunnelSpot
@@ -166,7 +166,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 		t.Log("tunnel handshake, yamux session, and registration verified successfully")
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Full data flow test (Linux with working loopback alias)
 	testData := "hello through the tunnel!"
@@ -174,7 +174,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	buf := make([]byte, len(testData))
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, err = io.ReadFull(conn, buf)
 	require.NoError(t, err)
 
@@ -191,13 +191,13 @@ func TestTunnelWrongToken(t *testing.T) {
 	registry := NewTunnelRegistry()
 	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny("correct-token"), registry)
 
-	go server.Run(ctx)
+	go func() { _ = server.Run(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 
 	// Connect with wrong token
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", tunnelPort), 3*time.Second)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	hs := &TunnelHandshake{Token: "wrong-token", SpotID: "bad-spot", Ports: []int{80}}
 	err = writeHandshake(conn, hs)
@@ -221,7 +221,7 @@ func TestConnMuxRouting(t *testing.T) {
 
 	mux := NewConnMuxFromListener(ln)
 	go mux.Run()
-	defer mux.Close()
+	defer func() { _ = mux.Close() }()
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -235,14 +235,14 @@ func TestConnMuxRouting(t *testing.T) {
 		}
 		buf := make([]byte, 16)
 		n, _ := conn.Read(buf)
-		conn.Close()
+		_ = conn.Close()
 		tunnelDone <- string(buf[:n])
 	}()
 
 	conn1, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", muxPort))
 	require.NoError(t, err)
-	conn1.Write([]byte(`{"token":"x"}`))
-	conn1.Close()
+	_, _ = conn1.Write([]byte(`{"token":"x"}`))
+	_ = conn1.Close()
 
 	select {
 	case data := <-tunnelDone:
@@ -261,15 +261,15 @@ func TestConnMuxRouting(t *testing.T) {
 			return
 		}
 		buf := make([]byte, 1)
-		conn.Read(buf)
-		conn.Close()
+		_, _ = conn.Read(buf)
+		_ = conn.Close()
 		httpsDone <- buf[0]
 	}()
 
 	conn2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", muxPort))
 	require.NoError(t, err)
-	conn2.Write([]byte{0x16, 0x03, 0x01}) // TLS record header
-	conn2.Close()
+	_, _ = conn2.Write([]byte{0x16, 0x03, 0x01}) // TLS record header
+	_ = conn2.Close()
 
 	select {
 	case firstByte := <-httpsDone:
@@ -297,7 +297,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	// Start echo service
 	echoLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", echoPort))
 	require.NoError(t, err)
-	defer echoLn.Close()
+	defer func() { _ = echoLn.Close() }()
 	go func() {
 		for {
 			conn, err := echoLn.Accept()
@@ -305,8 +305,8 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
-				io.Copy(c, c)
+				defer func() { _ = c.Close() }()
+				_, _ = io.Copy(c, c)
 			}(conn)
 		}
 	}()
@@ -316,7 +316,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	require.NoError(t, err)
 	mux := NewConnMuxFromListener(ln)
 	go mux.Run()
-	defer mux.Close()
+	defer func() { _ = mux.Close() }()
 
 	// Start tunnel server on the mux's tunnel listener
 	registry := NewTunnelRegistry()
@@ -325,7 +325,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	tunnelServer.OnConnect = func(spot *TunnelSpot) {
 		connectCh <- spot
 	}
-	go tunnelServer.Serve(ctx, mux.TunnelListener())
+	go func() { _ = tunnelServer.Serve(ctx, mux.TunnelListener()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -336,7 +336,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 		SpotID:       "mux-spot",
 		Ports:        []int{echoPort},
 	}
-	go client.Run(ctx)
+	go func() { _ = client.Run(ctx) }()
 
 	// Wait for connection
 	select {
@@ -355,7 +355,7 @@ func freePort(t *testing.T) int {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
+	_ = ln.Close()
 	return port
 }
 

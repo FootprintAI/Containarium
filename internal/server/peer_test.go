@@ -104,7 +104,7 @@ func TestPeerPool_ListContainers(t *testing.T) {
 	// Mock peer that returns containers
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"containers": []map[string]interface{}{
 				{
 					"name":     "alice-container",
@@ -161,7 +161,7 @@ func TestPeerPool_ListContainers_SkipsUnhealthy(t *testing.T) {
 func TestPeerPool_FindContainerPeer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"containers": []map[string]interface{}{
 				{"name": "bob-container", "username": "bob", "state": "Running"},
 			},
@@ -211,7 +211,7 @@ func TestPeerPool_PeerTerminalURL_Found(t *testing.T) {
 	// Mock peer with a container
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"containers": []map[string]interface{}{
 				{"name": "alice-container", "state": "Running"},
 			},

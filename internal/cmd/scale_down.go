@@ -148,7 +148,7 @@ func runSleep(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		resp, err := httpClient.StopContainer(username, false)
 		if err != nil {
 			return err
@@ -160,7 +160,7 @@ func runSleep(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 	resp, err := grpcClient.StopContainer(username, false)
 	if err != nil {
 		return err
@@ -179,7 +179,7 @@ func runWake(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		resp, err := httpClient.StartContainer(username, true, 30)
 		if err != nil {
 			return err
@@ -191,7 +191,7 @@ func runWake(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 	resp, err := grpcClient.StartContainer(username, true, 30)
 	if err != nil {
 		return err
@@ -217,14 +217,14 @@ func toggleAutoSleepViaServer(username string, enabled bool, idleMinutes int32) 
 		if err != nil {
 			return nil, err
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		return httpClient.ToggleAutoSleep(username, enabled, idleMinutes)
 	}
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 	return grpcClient.ToggleAutoSleep(username, enabled, idleMinutes)
 }
 
@@ -234,14 +234,14 @@ func fetchAllContainers() ([]incus.ContainerInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		return httpClient.ListContainers()
 	}
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 	return grpcClient.ListContainers()
 }
 
@@ -251,7 +251,7 @@ func fetchOneContainer(username string) ([]incus.ContainerInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		info, err := httpClient.GetContainer(username)
 		if err != nil {
 			return nil, err
@@ -262,7 +262,7 @@ func fetchOneContainer(username string) ([]incus.ContainerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 	info, err := grpcClient.GetContainer(username)
 	if err != nil {
 		return nil, err

@@ -63,7 +63,7 @@ func (h *CoreServicesHandler) HandleGetCoreServices(w http.ResponseWriter, r *ht
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"services": services,
 	})
 }

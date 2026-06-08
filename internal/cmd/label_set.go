@@ -121,7 +121,7 @@ func setLabelsRemoteHTTP(username string, labels map[string]string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP client: %w", err)
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	// Get container first to verify it exists
 	_, err = httpClient.GetContainer(username)

@@ -108,7 +108,7 @@ func TestGenerate_StableOrder(t *testing.T) {
 	idxA := strings.Index(g1.Content, "Host alpha")
 	idxM := strings.Index(g1.Content, "Host mid")
 	idxZ := strings.Index(g1.Content, "Host zebra")
-	if !(idxA < idxM && idxM < idxZ) {
+	if idxA >= idxM || idxM >= idxZ {
 		t.Errorf("Host blocks not sorted alphabetically:\n%s", g1.Content)
 	}
 }

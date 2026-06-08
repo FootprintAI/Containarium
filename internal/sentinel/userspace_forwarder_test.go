@@ -22,7 +22,7 @@ func TestUserspaceForwarder_HandlerWritesProxyFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backend listen: %v", err)
 	}
-	defer backendLn.Close()
+	defer func() { _ = backendLn.Close() }()
 	backendAddr := backendLn.Addr().String()
 
 	type fromBackend struct {
@@ -37,7 +37,7 @@ func TestUserspaceForwarder_HandlerWritesProxyFrame(t *testing.T) {
 			out <- fromBackend{err: err}
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 		// Peek the first 12 bytes — PROXY v2 signature is
@@ -75,7 +75,7 @@ func TestUserspaceForwarder_HandlerWritesProxyFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client listen: %v", err)
 	}
-	defer clientLn.Close()
+	defer func() { _ = clientLn.Close() }()
 
 	clientConnCh := make(chan net.Conn, 1)
 	go func() {
@@ -86,9 +86,9 @@ func TestUserspaceForwarder_HandlerWritesProxyFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client dial: %v", err)
 	}
-	defer clientDial.Close()
+	defer func() { _ = clientDial.Close() }()
 	clientAccepted := <-clientConnCh
-	defer clientAccepted.Close()
+	defer func() { _ = clientAccepted.Close() }()
 
 	// Write some payload from "client" side so the forwarder has
 	// something to copy through.
@@ -121,7 +121,7 @@ func TestUserspaceForwarder_HandlerWritesNoFrameWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backend listen: %v", err)
 	}
-	defer backendLn.Close()
+	defer func() { _ = backendLn.Close() }()
 
 	out := make(chan []byte, 1)
 	go func() {
@@ -129,20 +129,20 @@ func TestUserspaceForwarder_HandlerWritesNoFrameWhenDisabled(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 		body, _ := io.ReadAll(c)
 		out <- body
 	}()
 
 	clientLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	defer clientLn.Close()
+	defer func() { _ = clientLn.Close() }()
 	ch := make(chan net.Conn, 1)
 	go func() { c, _ := clientLn.Accept(); ch <- c }()
 	cd, _ := net.Dial("tcp", clientLn.Addr().String())
-	defer cd.Close()
+	defer func() { _ = cd.Close() }()
 	ca := <-ch
-	defer ca.Close()
+	defer func() { _ = ca.Close() }()
 	go func() {
 		_, _ = cd.Write([]byte("plain"))
 		_ = cd.(*net.TCPConn).CloseWrite()
@@ -190,7 +190,7 @@ func TestUserspaceForwarder_BindFailureReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hold listen: %v", err)
 	}
-	defer hold.Close()
+	defer func() { _ = hold.Close() }()
 	port := hold.Addr().(*net.TCPAddr).Port
 
 	fwd := newUserspaceForwarder(true)

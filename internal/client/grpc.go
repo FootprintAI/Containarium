@@ -66,7 +66,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	}
 
 	// Connect to server
-	conn, err := grpc.Dial(serverAddr, opts...)
+	conn, err := grpc.NewClient(serverAddr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial server: %w", err)
 	}

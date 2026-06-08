@@ -41,7 +41,7 @@ func init() {
 	routeAddCmd.Flags().StringVarP(&routeAddContainer, "container", "c", "", "Associated container name (optional)")
 	routeAddCmd.Flags().StringVarP(&routeAddDescription, "description", "d", "", "Route description (optional)")
 
-	routeAddCmd.MarkFlagRequired("target")
+	_ = routeAddCmd.MarkFlagRequired("target")
 }
 
 func runRouteAdd(cmd *cobra.Command, args []string) error {
@@ -67,7 +67,7 @@ func runRouteAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	route, err := grpcClient.AddRoute(domain, targetIP, int32(targetPort), routeAddContainer, routeAddDescription)
 	if err != nil {

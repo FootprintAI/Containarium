@@ -92,7 +92,7 @@ func (s *Scanner) EnsureDaemonRunning(ctx context.Context) error {
 	// Clean stale lock files from any previous crashed ZAP instance
 	cleanCmd := exec.CommandContext(ctx, "incus", "exec", SecurityContainerName, "--",
 		"bash", "-c", "rm -f /root/.ZAP/.homelock /root/.ZAP/session/*.lck /root/.ZAP/db/*.lck 2>/dev/null; pkill -f zap-2 2>/dev/null; true")
-	cleanCmd.CombinedOutput() // ignore errors
+	_, _ = cleanCmd.CombinedOutput() // ignore errors
 
 	// Start ZAP daemon inside the security container (background)
 	// -host 0.0.0.0 makes ZAP listen on all interfaces so the host can reach it
