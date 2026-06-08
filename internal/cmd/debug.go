@@ -66,7 +66,7 @@ func fetchDebugReport(username string) (*pb.DebugContainerResponse, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		return httpClient.DebugContainer(username)
 	}
 	if serverAddr != "" {
@@ -74,7 +74,7 @@ func fetchDebugReport(username string) (*pb.DebugContainerResponse, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to remote server: %w", err)
 		}
-		defer grpcClient.Close()
+		defer func() { _ = grpcClient.Close() }()
 		return grpcClient.DebugContainer(username)
 	}
 	return nil, fmt.Errorf("debug requires --server (remote daemon): the local-mode CLI does not run the diagnostic logic")

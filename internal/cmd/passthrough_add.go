@@ -44,9 +44,9 @@ func init() {
 	passthroughAddCmd.Flags().StringVar(&passthroughAddProtocol, "protocol", "tcp", "Protocol: tcp or udp")
 	passthroughAddCmd.Flags().StringVar(&passthroughAddNetworkCIDR, "network-cidr", "10.0.3.0/24", "Container network CIDR to exclude from forwarding")
 
-	passthroughAddCmd.MarkFlagRequired("port")
-	passthroughAddCmd.MarkFlagRequired("target-ip")
-	passthroughAddCmd.MarkFlagRequired("target-port")
+	_ = passthroughAddCmd.MarkFlagRequired("port")
+	_ = passthroughAddCmd.MarkFlagRequired("target-ip")
+	_ = passthroughAddCmd.MarkFlagRequired("target-port")
 
 	passthroughCmd.AddCommand(passthroughAddCmd)
 }

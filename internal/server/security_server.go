@@ -121,10 +121,6 @@ func (s *SecurityServer) fetchPeerReports(authToken string, req *pb.ListClamavRe
 	}
 	queryParams := strings.Join(qp, "&")
 
-	type result struct {
-		reports []*pb.ClamavReport
-	}
-
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var all []*pb.ClamavReport
@@ -184,9 +180,10 @@ func (s *SecurityServer) GetClamavSummary(ctx context.Context, req *pb.GetClamav
 	for _, sum := range summaries {
 		sum.BackendId = s.localBackendID
 		scannedMap[sum.ContainerName] = true
-		if sum.LastStatus == "clean" {
+		switch sum.LastStatus {
+		case "clean":
 			cleanCount++
-		} else if sum.LastStatus == "infected" {
+		case "infected":
 			infectedCount++
 		}
 	}
@@ -309,10 +306,7 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 	if req.ContainerName != "" {
 		// Check if this container is on a peer
 		if s.peerPool != nil {
-			username := req.ContainerName
-			if strings.HasSuffix(username, "-container") {
-				username = strings.TrimSuffix(username, "-container")
-			}
+			username := strings.TrimSuffix(req.ContainerName, "-container")
 			if peer := s.peerPool.FindContainerPeer(username, authToken); peer != nil {
 				// Forward scan to the peer that owns this container
 				_, err := peer.ForwardTriggerScan(authToken, req.ContainerName)

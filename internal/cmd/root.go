@@ -65,8 +65,8 @@ Examples:
 		// directly. Skip the auto-fill for them — login is
 		// unauthenticated by definition, and we don't want a
 		// stale token to leak into a logout call.
-		switch {
-		case cmd == loginCmd, cmd == logoutCmd, cmd == whoamiCmd, cmd == configGetTokenCmd:
+		switch cmd {
+		case loginCmd, logoutCmd, whoamiCmd, configGetTokenCmd:
 			return nil
 		}
 		if authToken == "" {

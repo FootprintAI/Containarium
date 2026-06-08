@@ -105,7 +105,7 @@ func runAppDeploy(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	fmt.Printf("Deploying %s...\n", appName)
 	app, detectedLang, err := grpcClient.DeployApp(deployUsername, appName, tarball, deployPort, envVars, deploySubdomain)
@@ -210,7 +210,7 @@ func createSourceTarball(sourceDir string) ([]byte, error) {
 			if err != nil {
 				return err
 			}
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 
 			if _, err := io.Copy(tw, file); err != nil {
 				return err

@@ -175,10 +175,10 @@ func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenReq
 
 	var accessExp, refreshExp int64
 	if newAccessClaims != nil && newAccessClaims.ExpiresAt != nil {
-		accessExp = newAccessClaims.ExpiresAt.Time.Unix()
+		accessExp = newAccessClaims.ExpiresAt.Unix()
 	}
 	if newRefreshClaims != nil && newRefreshClaims.ExpiresAt != nil {
-		refreshExp = newRefreshClaims.ExpiresAt.Time.Unix()
+		refreshExp = newRefreshClaims.ExpiresAt.Unix()
 	}
 
 	log.Printf("[tokens] refresh rotated: user=%s old_jti=%s new_access_jti=%s new_refresh_jti=%s",

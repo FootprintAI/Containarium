@@ -59,7 +59,7 @@ func runExposePort(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	res, err := expose.Run(context.Background(), &grpcExposeAdapter{c: grpcClient}, expose.Options{
 		Username:      args[0],

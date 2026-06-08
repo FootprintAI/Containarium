@@ -126,14 +126,14 @@ func runResizeRemote(username, containerName string) error {
 		if herr != nil {
 			return herr
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		msg, err = httpClient.ResizeContainer(username, newCPU, newMemory, newDisk)
 	} else {
 		grpcClient, gerr := client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if gerr != nil {
 			return gerr
 		}
-		defer grpcClient.Close()
+		defer func() { _ = grpcClient.Close() }()
 		msg, err = grpcClient.ResizeContainer(username, newCPU, newMemory, newDisk)
 	}
 	if err != nil {

@@ -46,7 +46,7 @@ func init() {
 	exportCmd.Flags().StringVarP(&exportOutputPath, "output", "o", "", "Output file path (default: stdout)")
 	exportCmd.Flags().StringVar(&exportKeyPath, "key", "~/.ssh/id_rsa", "SSH private key path")
 	exportCmd.Flags().StringVar(&jumpServerIP, "jump-ip", "", "Jump server IP address (required for export)")
-	exportCmd.MarkFlagRequired("jump-ip")
+	_ = exportCmd.MarkFlagRequired("jump-ip")
 }
 
 func runExport(cmd *cobra.Command, args []string) error {

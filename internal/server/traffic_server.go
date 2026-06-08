@@ -167,11 +167,10 @@ func (s *TrafficServer) SubscribeTraffic(req *pb.SubscribeTrafficRequest, stream
 				}
 			}
 
-			// Apply external only filter
-			if req.ExternalOnly && trafficEvent.Connection != nil {
-				// Skip if destination is also a container IP
-				// This would require checking the cache, simplified for now
-			}
+			// Apply external only filter.
+			// TODO: when req.ExternalOnly is set, skip events whose destination
+			// is also a container IP. This requires consulting the IP cache and
+			// is not yet implemented.
 
 			if err := stream.Send(trafficEvent); err != nil {
 				return err

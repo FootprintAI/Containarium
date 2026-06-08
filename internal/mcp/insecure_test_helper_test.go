@@ -8,5 +8,5 @@ import "os"
 // here keeps unit tests fast and offline; production deployments
 // never touch this code path.
 func init() {
-	os.Setenv("CONTAINARIUM_MCP_ALLOW_INSECURE", "true")
+	_ = os.Setenv("CONTAINARIUM_MCP_ALLOW_INSECURE", "true")
 }

@@ -450,7 +450,7 @@ func TestTailLog_FollowsAppendedContent(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		_, _ = f.WriteString("hello from a goroutine\n")
 	}()
 

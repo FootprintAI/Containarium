@@ -3,6 +3,7 @@ package alert
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -148,5 +149,7 @@ func (s *DeliveryStore) Cleanup(ctx context.Context) {
 		)
 		AND timestamp < NOW() - INTERVAL '30 days'
 	`
-	s.pool.Exec(ctx, query)
+	if _, err := s.pool.Exec(ctx, query); err != nil {
+		log.Printf("alert: webhook_deliveries cleanup failed: %v", err)
+	}
 }

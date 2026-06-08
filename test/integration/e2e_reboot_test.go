@@ -122,7 +122,7 @@ func createTestInstance(t *testing.T, ctx context.Context, projectID, zone, inst
 		"--boot-disk-size=100GB",
 		"--boot-disk-type=pd-balanced",
 		"--metadata-from-file=startup-script="+startupScript,
-		fmt.Sprintf("--metadata=incus_version=,admin_users=testuser,enable_monitoring=false,USE_PERSISTENT_DISK=true,containarium_version=dev,containarium_binary_url="),
+		"--metadata=incus_version=,admin_users=testuser,enable_monitoring=false,USE_PERSISTENT_DISK=true,containarium_version=dev,containarium_binary_url=",
 		"--tags=containarium-server",
 		"--provisioning-model=SPOT",
 		"--instance-termination-action=STOP",

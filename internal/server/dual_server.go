@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -1980,11 +1978,4 @@ func stripHostFromURL(rawURL string) string {
 		return s // no port, return as is
 	}
 	return host
-}
-
-// generateRandomSecret generates a random secret for development mode
-func generateRandomSecret() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return base64.StdEncoding.EncodeToString(b)
 }

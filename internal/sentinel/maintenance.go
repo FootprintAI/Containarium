@@ -133,7 +133,7 @@ func startMaintenanceServers(httpPort, httpsPort int, certStore *CertStore, mana
 	}()
 
 	return func() {
-		httpSrv.Close()
-		httpsSrv.Close()
+		_ = httpSrv.Close()
+		_ = httpsSrv.Close()
 	}, nil
 }

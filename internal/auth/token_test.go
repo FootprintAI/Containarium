@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"os"
 	"testing"
 	"time"
 )
@@ -20,8 +19,7 @@ func TestNewTokenManager(t *testing.T) {
 
 func TestNewTokenManager_WithEnvOverride(t *testing.T) {
 	// Set environment variable to 48 hours
-	os.Setenv("CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS", "48")
-	defer os.Unsetenv("CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS")
+	t.Setenv("CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS", "48")
 
 	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 

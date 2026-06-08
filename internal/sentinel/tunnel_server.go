@@ -53,7 +53,7 @@ func (ts *TunnelServer) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("tunnel server listen on %s: %w", ts.listenAddr, err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	log.Printf("[tunnel-server] listening on %s", ts.listenAddr)
 	return ts.Serve(ctx, ln)
@@ -68,7 +68,7 @@ func (ts *TunnelServer) Serve(ctx context.Context, ln net.Listener) error {
 
 	go func() {
 		<-ctx.Done()
-		ln.Close()
+		_ = ln.Close()
 	}()
 
 	for {
@@ -95,26 +95,26 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	log.Printf("[tunnel-server] new connection from %s", remoteAddr)
 
 	// Set deadline for handshake
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	// Read handshake
 	hs, err := readHandshake(conn)
 	if err != nil {
 		log.Printf("[tunnel-server] handshake read error from %s: %v", remoteAddr, err)
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
 	// Validate
 	if err := validateHandshake(hs, ts.policy); err != nil {
 		log.Printf("[tunnel-server] handshake validation failed from %s: %v", remoteAddr, err)
-		writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
-		conn.Close()
+		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
+		_ = conn.Close()
 		return
 	}
 
 	// Clear deadline after successful handshake validation
-	conn.SetDeadline(time.Time{})
+	_ = conn.SetDeadline(time.Time{})
 
 	// Create yamux session. The sentinel is the yamux *client* (it opens streams
 	// to dial into the spot), even though the TCP connection was initiated by the spot.
@@ -127,8 +127,8 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	session, err := yamux.Client(conn, yamuxCfg)
 	if err != nil {
 		log.Printf("[tunnel-server] yamux client creation failed for %s: %v", hs.SpotID, err)
-		writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: "yamux init failed"})
-		conn.Close()
+		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: "yamux init failed"})
+		_ = conn.Close()
 		return
 	}
 
@@ -136,8 +136,8 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	localIP, err := ts.registry.Register(hs, session)
 	if err != nil {
 		log.Printf("[tunnel-server] registration failed for %s: %v", hs.SpotID, err)
-		writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
-		session.Close()
+		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
+		_ = session.Close()
 		return
 	}
 
@@ -145,7 +145,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	if err := writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: true, AssignedIP: localIP}); err != nil {
 		log.Printf("[tunnel-server] failed to send handshake response to %s: %v", hs.SpotID, err)
 		ts.registry.Unregister(hs.SpotID)
-		session.Close()
+		_ = session.Close()
 		return
 	}
 
@@ -261,7 +261,7 @@ func (ts *TunnelServer) proxyLoop(ctx context.Context, ln net.Listener, port int
 // The protocol: the sentinel opens a yamux stream, sends a 2-byte port number,
 // then does bidirectional copy.
 func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *yamux.Session, spotID string) {
-	defer localConn.Close()
+	defer func() { _ = localConn.Close() }()
 
 	// Open a yamux stream to the spot
 	stream, err := session.Open()
@@ -269,7 +269,7 @@ func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *y
 		log.Printf("[tunnel-server] failed to open yamux stream to spot %s for port %d: %v", spotID, port, err)
 		return
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// Send the target port as a 2-byte big-endian header
 	portBytes := []byte{byte(port >> 8), byte(port & 0xff)}
@@ -281,16 +281,16 @@ func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *y
 	// Bidirectional copy — close write sides to propagate EOF properly
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(stream, localConn)
+		_, _ = io.Copy(stream, localConn)
 		if cs, ok := stream.(interface{ CloseWrite() error }); ok {
-			cs.CloseWrite()
+			_ = cs.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(localConn, stream)
+		_, _ = io.Copy(localConn, stream)
 		if tc, ok := localConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
+			_ = tc.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
@@ -335,7 +335,7 @@ func isClosedErr(err error) bool {
 func (ts *TunnelServer) closeProxiesLocked(spotID string) {
 	if listeners, ok := ts.proxies[spotID]; ok {
 		for _, ln := range listeners {
-			ln.Close()
+			_ = ln.Close()
 		}
 		delete(ts.proxies, spotID)
 	}

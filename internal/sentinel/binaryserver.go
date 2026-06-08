@@ -64,7 +64,7 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 			http.Error(w, "binary not found", http.StatusInternalServerError)
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		h := sha256.New()
 		if _, err := io.Copy(h, f); err != nil {
 			http.Error(w, "checksum error", http.StatusInternalServerError)
@@ -165,7 +165,7 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(status)
+		_ = json.NewEncoder(w).Encode(status)
 	})
 
 	// Prometheus metrics for the spot preemption/recovery signal (#514

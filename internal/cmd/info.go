@@ -68,7 +68,7 @@ func showSystemInfo() error {
 		if err != nil {
 			return fmt.Errorf("failed to create HTTP client: %w", err)
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 
 		serverInfo, err = httpClient.GetSystemInfo()
 		if err != nil {
@@ -86,7 +86,7 @@ func showSystemInfo() error {
 		if err != nil {
 			return fmt.Errorf("failed to connect to remote server: %w", err)
 		}
-		defer grpcClient.Close()
+		defer func() { _ = grpcClient.Close() }()
 
 		serverInfo, err = grpcClient.GetSystemInfo()
 		if err != nil {
@@ -173,7 +173,7 @@ func showContainerInfo(username string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create HTTP client: %w", err)
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 
 		info, err = httpClient.GetContainer(username)
 		if err != nil {
@@ -186,7 +186,7 @@ func showContainerInfo(username string) error {
 		if err != nil {
 			return fmt.Errorf("failed to connect to remote server: %w", err)
 		}
-		defer grpcClient.Close()
+		defer func() { _ = grpcClient.Close() }()
 
 		info, err = grpcClient.GetContainer(username)
 		if err != nil {

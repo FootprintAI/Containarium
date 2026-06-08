@@ -30,7 +30,6 @@ type PeerClient struct {
 	LastSeenAt time.Time // Timestamp of last successful health check
 	client     *http.Client
 	scheme     string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
-	token      string // JWT token for auth (if needed)
 
 	// Cached system info from last discovery poll
 	CachedHostname       string
@@ -563,9 +562,10 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 	for _, c := range data.Containers {
 		// Map state string
 		state := c.State
-		if state == "CONTAINER_STATE_RUNNING" {
+		switch state {
+		case "CONTAINER_STATE_RUNNING":
 			state = "Running"
-		} else if state == "CONTAINER_STATE_STOPPED" {
+		case "CONTAINER_STATE_STOPPED":
 			state = "Stopped"
 		}
 
@@ -922,17 +922,6 @@ func (pp *PeerPool) PeerTerminalURL(username, authToken string) (string, error) 
 	// Build ws:// URL pointing at the peer's terminal endpoint via sentinel proxy
 	wsURL := fmt.Sprintf("ws://%s/v1/containers/%s/terminal", peer.Addr, username)
 	return wsURL, nil
-}
-
-// jsonReader wraps a byte slice as an io.Reader.
-func jsonReader(b []byte) io.Reader {
-	return io.NopCloser(io.Reader(byteReader(b)))
-}
-
-type byteReader []byte
-
-func (b byteReader) Read(p []byte) (n int, err error) {
-	return copy(p, b), io.EOF
 }
 
 // PeerMetricsFetcherAdapter adapts PeerPool to the metrics.PeerMetricsFetcher interface.

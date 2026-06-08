@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"errors"
 	"math/big"
 	"testing"
 
@@ -96,9 +95,5 @@ func TestMTLSPeerCN_NoPeerErrors(t *testing.T) {
 	_, err := MTLSPeerCN(context.Background())
 	if err == nil {
 		t.Fatal("MTLSPeerCN must error when no peer info")
-	}
-	if !errors.Is(err, err) { //nolint:gosimple // just a sanity reference
-		// keeps the variable from being flagged as unused if err
-		// shape changes later
 	}
 }

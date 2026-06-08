@@ -163,7 +163,7 @@ func (th *TerminalHandler) HandleTerminal(w http.ResponseWriter, r *http.Request
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	log.Printf("Terminal WebSocket connected for container %s", containerName)
 
@@ -203,7 +203,7 @@ func (th *TerminalHandler) proxyWebSocket(w http.ResponseWriter, r *http.Request
 		http.Error(w, fmt.Sprintf("Failed to connect to peer terminal: %v", err), http.StatusBadGateway)
 		return
 	}
-	defer peerConn.Close()
+	defer func() { _ = peerConn.Close() }()
 
 	// Upgrade client connection
 	clientConn, err := th.upgrader.Upgrade(w, r, nil)
@@ -211,7 +211,7 @@ func (th *TerminalHandler) proxyWebSocket(w http.ResponseWriter, r *http.Request
 		log.Printf("WebSocket upgrade failed for proxy: %v", err)
 		return
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	// Bidirectional proxy
 	done := make(chan struct{})
@@ -369,8 +369,8 @@ func (th *TerminalHandler) startTerminalSession(conn *websocket.Conn, containerN
 	<-done
 
 	// Cleanup
-	stdinWriter.Close()
-	stdoutWriter.Close()
+	_ = stdinWriter.Close()
+	_ = stdoutWriter.Close()
 
 	log.Printf("Terminal session ended for container %s", containerName)
 }
@@ -381,5 +381,5 @@ func (th *TerminalHandler) sendError(conn *websocket.Conn, message string) {
 		Type: "error",
 		Data: message,
 	}
-	conn.WriteJSON(msg)
+	_ = conn.WriteJSON(msg)
 }

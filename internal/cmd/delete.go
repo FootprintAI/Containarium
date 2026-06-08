@@ -103,7 +103,7 @@ func deleteRemote(username string, force bool) error {
 	if err != nil {
 		return err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	return grpcClient.DeleteContainer(username, force)
 }
@@ -114,7 +114,7 @@ func deleteRemoteHTTP(username string, force bool) error {
 	if err != nil {
 		return err
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	return httpClient.DeleteContainer(username, force)
 }

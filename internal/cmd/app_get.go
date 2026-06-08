@@ -52,7 +52,7 @@ func runAppGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	app, err := grpcClient.GetApp(getUsername, appName)
 	if err != nil {

@@ -64,10 +64,9 @@ func ServeSwaggerUI(swaggerDir string) http.HandlerFunc {
 				"url: \"/swagger.json\"",
 				1)
 			// Also try alternate format
-			htmlContent = strings.Replace(htmlContent,
+			htmlContent = strings.ReplaceAll(htmlContent,
 				"https://petstore.swagger.io/v2/swagger.json",
-				"/swagger.json",
-				-1)
+				"/swagger.json")
 			w.Write([]byte(htmlContent))
 			return
 		}

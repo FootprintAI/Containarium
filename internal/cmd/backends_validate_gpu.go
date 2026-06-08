@@ -100,7 +100,9 @@ func runBackendsValidateGPU(cmd *cobra.Command, args []string) error {
 	}
 
 	if validateGPUFormat == "json" {
-		cmd.OutOrStdout().Write(body)
+		if _, err := cmd.OutOrStdout().Write(body); err != nil {
+			return fmt.Errorf("write response: %w", err)
+		}
 		fmt.Fprintln(cmd.OutOrStdout())
 		return gpuExitErr(out.Status)
 	}

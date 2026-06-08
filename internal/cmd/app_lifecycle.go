@@ -76,7 +76,7 @@ func runAppStop(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	app, err := grpcClient.StopApp(lifecycleUsername, appName)
 	if err != nil {
@@ -104,7 +104,7 @@ func runAppStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	app, err := grpcClient.StartApp(lifecycleUsername, appName)
 	if err != nil {
@@ -133,7 +133,7 @@ func runAppRestart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	fmt.Printf("Restarting application %s...\n", appName)
 	app, err := grpcClient.RestartApp(lifecycleUsername, appName)

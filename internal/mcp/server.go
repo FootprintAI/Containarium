@@ -218,7 +218,9 @@ func (s *Server) createErrorResponse(id interface{}, code int, message, data str
 // sendError sends an error response
 func (s *Server) sendError(encoder *json.Encoder, id interface{}, code int, message, data string) {
 	response := s.createErrorResponse(id, code, message, data)
-	encoder.Encode(response)
+	if err := encoder.Encode(response); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
+	}
 }
 
 // MCP protocol types

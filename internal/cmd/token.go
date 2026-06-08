@@ -189,7 +189,7 @@ func init() {
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenFile, "refresh-token-file", "", "Path to file containing the refresh token (mode 0600 recommended)")
 
 	tokenRevokeCmd.Flags().StringVar(&revokeJTI, "jti", "", "jti claim of the token to revoke (required)")
-	tokenRevokeCmd.MarkFlagRequired("jti")
+	_ = tokenRevokeCmd.MarkFlagRequired("jti")
 	tokenRevokeCmd.Flags().StringVar(&revokeReason, "reason", "", "Free-form reason recorded for forensics (default: 'operator_revoke')")
 	tokenRevokeCmd.Flags().StringVar(&revokeExpiresAt, "expires-at", "", "Token's own exp claim in RFC3339 (controls cleanup horizon; default: daemon max lifetime)")
 
@@ -199,7 +199,7 @@ func init() {
 
 	// Required flags
 	tokenGenerateCmd.Flags().StringVar(&tokenUsername, "username", "", "Username for the token (required)")
-	tokenGenerateCmd.MarkFlagRequired("username")
+	_ = tokenGenerateCmd.MarkFlagRequired("username")
 
 	// Secret flags (one required)
 	tokenGenerateCmd.Flags().StringVar(&tokenSecretFlag, "secret", "", "JWT secret key")
@@ -355,7 +355,7 @@ func runTokenRefresh(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create http client: %w", err)
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	access, newRefresh, accessExp, refreshExp, err := httpClient.RefreshToken(refresh)
 	if err != nil {
@@ -394,7 +394,7 @@ func runTokenRevoke(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create http client: %w", err)
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	msg, err := httpClient.RevokeToken(revokeJTI, revokeReason, revokeExpiresAt)
 	if err != nil {
@@ -422,7 +422,7 @@ func runTokenListRevoked(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create http client: %w", err)
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	revs, err := httpClient.ListRevokedTokens(listRevokedLimit, listRevokedIncludeExpired, listRevokedJTIPrefix)
 	if err != nil {

@@ -431,7 +431,7 @@ func listRemote() ([]incus.ContainerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	return grpcClient.ListContainers()
 }
@@ -442,7 +442,7 @@ func listRemoteHTTP() ([]incus.ContainerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer httpClient.Close()
+	defer func() { _ = httpClient.Close() }()
 
 	return httpClient.ListContainers()
 }

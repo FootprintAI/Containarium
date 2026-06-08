@@ -1,15 +1,13 @@
 package gateway
 
 import (
-	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 )
 
 func TestGetAllowedOrigins_Default(t *testing.T) {
 	// Ensure env var is not set
-	os.Unsetenv("CONTAINARIUM_ALLOWED_ORIGINS")
+	t.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "")
 
 	origins := getAllowedOrigins()
 
@@ -32,8 +30,7 @@ func TestGetAllowedOrigins_Default(t *testing.T) {
 }
 
 func TestGetAllowedOrigins_FromEnv(t *testing.T) {
-	os.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "https://example.com,https://app.example.com")
-	defer os.Unsetenv("CONTAINARIUM_ALLOWED_ORIGINS")
+	t.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "https://example.com,https://app.example.com")
 
 	origins := getAllowedOrigins()
 
@@ -51,8 +48,7 @@ func TestGetAllowedOrigins_FromEnv(t *testing.T) {
 }
 
 func TestGetAllowedOrigins_TrimsWhitespace(t *testing.T) {
-	os.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "  https://example.com  ,  https://app.example.com  ")
-	defer os.Unsetenv("CONTAINARIUM_ALLOWED_ORIGINS")
+	t.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "  https://example.com  ,  https://app.example.com  ")
 
 	origins := getAllowedOrigins()
 
@@ -66,7 +62,7 @@ func TestGetAllowedOrigins_TrimsWhitespace(t *testing.T) {
 }
 
 func TestGetTerminalAllowedOrigins_Default(t *testing.T) {
-	os.Unsetenv("CONTAINARIUM_ALLOWED_ORIGINS")
+	t.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "")
 
 	origins := getTerminalAllowedOrigins()
 
@@ -132,12 +128,7 @@ func TestTerminalHandler_WebSocketOriginValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envOrigins != "" {
-				os.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", tt.envOrigins)
-				defer os.Unsetenv("CONTAINARIUM_ALLOWED_ORIGINS")
-			} else {
-				os.Unsetenv("CONTAINARIUM_ALLOWED_ORIGINS")
-			}
+			t.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", tt.envOrigins)
 
 			req := httptest.NewRequest("GET", "/v1/containers/test/terminal", nil)
 			if tt.origin != "" {
@@ -156,7 +147,7 @@ func TestTerminalHandler_WebSocketOriginValidation(t *testing.T) {
 
 func TestCORSOriginNotWildcard(t *testing.T) {
 	// Ensure default origins don't include wildcard
-	os.Unsetenv("CONTAINARIUM_ALLOWED_ORIGINS")
+	t.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "")
 
 	origins := getAllowedOrigins()
 
@@ -182,13 +173,4 @@ func TestAuthRequiredForTerminal(t *testing.T) {
 
 	t.Log("Terminal authentication is enforced in gateway.go lines 152-156")
 	t.Log("Code path: token == \"\" -> returns 401 Unauthorized")
-}
-
-// mockRequest creates a mock HTTP request with optional headers
-func mockRequest(method, path string, headers map[string]string) *http.Request {
-	req := httptest.NewRequest(method, path, nil)
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	return req
 }

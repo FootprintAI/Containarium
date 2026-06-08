@@ -27,8 +27,8 @@ func TestExtractSNI_RealClientHello(t *testing.T) {
 		t.Run(sni, func(t *testing.T) {
 			// Pipe a stdlib TLS handshake into our parser.
 			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
+			defer func() { _ = clientConn.Close() }()
+			defer func() { _ = serverConn.Close() }()
 
 			go func() {
 				cfg := &tls.Config{ServerName: sni, InsecureSkipVerify: true}
@@ -80,15 +80,15 @@ func TestSNIRouting_DispatchViaYamux(t *testing.T) {
 	// client (sentinel side). The "primary" side listens for streams,
 	// reads the 2-byte port header, then proxies to its echo TLS server.
 	primaryConn, sentinelConn := net.Pipe()
-	defer primaryConn.Close()
-	defer sentinelConn.Close()
+	defer func() { _ = primaryConn.Close() }()
+	defer func() { _ = sentinelConn.Close() }()
 
 	primarySession, err := yamux.Server(primaryConn, nil)
 	require.NoError(t, err)
 	sentinelSession, err := yamux.Client(sentinelConn, nil)
 	require.NoError(t, err)
-	defer primarySession.Close()
-	defer sentinelSession.Close()
+	defer func() { _ = primarySession.Close() }()
+	defer func() { _ = sentinelSession.Close() }()
 
 	// Primary side: accept yamux streams, read 2-byte port header,
 	// dial localhost:<that port>, bidirectional copy.
@@ -99,7 +99,7 @@ func TestSNIRouting_DispatchViaYamux(t *testing.T) {
 				return
 			}
 			go func(stream net.Conn) {
-				defer stream.Close()
+				defer func() { _ = stream.Close() }()
 				hdr := make([]byte, 2)
 				if _, err := io.ReadFull(stream, hdr); err != nil {
 					return
@@ -113,10 +113,10 @@ func TestSNIRouting_DispatchViaYamux(t *testing.T) {
 				if err != nil {
 					return
 				}
-				defer up.Close()
+				defer func() { _ = up.Close() }()
 				done := make(chan struct{}, 2)
-				go func() { io.Copy(up, stream); done <- struct{}{} }()
-				go func() { io.Copy(stream, up); done <- struct{}{} }()
+				go func() { _, _ = io.Copy(up, stream); done <- struct{}{} }()
+				go func() { _, _ = io.Copy(stream, up); done <- struct{}{} }()
 				<-done
 			}(s)
 		}
@@ -214,7 +214,7 @@ func dialThroughHandler(t *testing.T, handler func(net.Conn), clientCfg *tls.Con
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	go func() {
 		serverConn, err := ln.Accept()
@@ -226,11 +226,11 @@ func dialThroughHandler(t *testing.T, handler func(net.Conn), clientCfg *tls.Con
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	tlsConn := tls.Client(conn, clientCfg)
 	require.NoError(t, tlsConn.Handshake())
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 
 	_, err = tlsConn.Write([]byte("ping\n"))
 	require.NoError(t, err)
@@ -277,7 +277,7 @@ func startEchoListener(t *testing.T, tag string) (addr string, hits func() int) 
 
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
 	require.NoError(t, err)
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	var (
 		mu      sync.Mutex
@@ -293,7 +293,7 @@ func startEchoListener(t *testing.T, tag string) (addr string, hits func() int) 
 			hitsVal++
 			mu.Unlock()
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				_, _ = io.ReadFull(c, make([]byte, 5))
 				_, _ = c.Write([]byte(tag + "\n"))
 			}(conn)

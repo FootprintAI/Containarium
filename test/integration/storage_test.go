@@ -33,7 +33,7 @@ func TestStorageQuotaEnforcement(t *testing.T) {
 
 	serverAddr := getServerAddr(t)
 	grpcClient := createGRPCClient(t, serverAddr)
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	t.Run("CreateContainerWithQuota", func(t *testing.T) {
 		testCreateContainerWithQuota(t, ctx, grpcClient)
@@ -73,7 +73,7 @@ func TestStoragePersistence(t *testing.T) {
 
 	serverAddr := getServerAddr(t)
 	grpcClient := createGRPCClient(t, serverAddr)
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	t.Run("PrepareDataForRebootTest", func(t *testing.T) {
 		testPrepareRebootData(t, ctx, grpcClient, stateFile)
@@ -162,7 +162,7 @@ func testQuotaEnforcement(t *testing.T, ctx context.Context, grpcClient *client.
 	require.NotNil(t, container)
 
 	defer func() {
-		grpcClient.DeleteContainer(username, true)
+		_ = grpcClient.DeleteContainer(username, true)
 	}()
 
 	time.Sleep(10 * time.Second)
@@ -195,11 +195,11 @@ func testMultiContainerIsolation(t *testing.T, ctx context.Context, grpcClient *
 	// Create two containers with different quotas
 	_, err := grpcClient.CreateContainer(user1, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", "", 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0)
 	require.NoError(t, err)
-	defer grpcClient.DeleteContainer(user1, true)
+	defer func() { _ = grpcClient.DeleteContainer(user1, true) }()
 
 	_, err = grpcClient.CreateContainer(user2, "images:ubuntu/24.04", "1", "1GB", "15GB", []string{}, false, "", "", 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0)
 	require.NoError(t, err)
-	defer grpcClient.DeleteContainer(user2, true)
+	defer func() { _ = grpcClient.DeleteContainer(user2, true) }()
 
 	time.Sleep(10 * time.Second)
 
@@ -225,7 +225,7 @@ func testCompression(t *testing.T, ctx context.Context, grpcClient *client.GRPCC
 
 	_, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", "", 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0)
 	require.NoError(t, err)
-	defer grpcClient.DeleteContainer(username, true)
+	defer func() { _ = grpcClient.DeleteContainer(username, true) }()
 
 	time.Sleep(10 * time.Second)
 
@@ -310,7 +310,7 @@ func testDataPersistenceAfterReboot(t *testing.T, stateFile string) {
 	// Connect to server
 	serverAddr := getServerAddr(t)
 	grpcClient := createGRPCClient(t, serverAddr)
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	// Verify container still exists
 	info, err := grpcClient.GetContainer(state.Username)
@@ -323,8 +323,8 @@ func testDataPersistenceAfterReboot(t *testing.T, stateFile string) {
 
 	// Cleanup state file and container
 	defer func() {
-		os.Remove(stateFile)
-		grpcClient.DeleteContainer(state.Username, true)
+		_ = os.Remove(stateFile)
+		_ = grpcClient.DeleteContainer(state.Username, true)
 		t.Log("✓ Test cleanup complete")
 	}()
 

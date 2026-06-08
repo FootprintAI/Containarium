@@ -1088,7 +1088,7 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	}
 
 	// Detect OS family from container label, or probe the container
-	family := ostype.Debian
+	var family ostype.OSFamily
 	if osLabel, ok := info.Labels[ostype.OSTypeLabelKey]; ok {
 		family = ostype.FamilyFromLabel(osLabel)
 	} else {

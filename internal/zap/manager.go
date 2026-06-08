@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/footprintai/containarium/internal/app"
@@ -19,7 +18,6 @@ type ManagerConfig struct {
 
 // Manager orchestrates periodic ZAP scans using a PostgreSQL job queue
 type Manager struct {
-	mu         sync.RWMutex
 	store      *Store
 	routeStore *app.RouteStore
 	scanner    *Scanner
@@ -136,20 +134,24 @@ func (m *Manager) enqueueScan(ctx context.Context, trigger, containerName string
 	if len(targets) == 0 {
 		log.Printf("ZAP scan %s: no targets found", scanRunID)
 		now := time.Now()
-		m.store.UpdateScanRun(ctx, &ScanRun{
+		if err := m.store.UpdateScanRun(ctx, &ScanRun{
 			ID:          scanRunID,
 			Status:      "completed",
 			CompletedAt: &now,
-		})
+		}); err != nil {
+			log.Printf("ZAP scan %s: failed to update scan run: %v", scanRunID, err)
+		}
 		return scanRunID, 0, nil
 	}
 
 	// Update scan run with target count
-	m.store.UpdateScanRun(ctx, &ScanRun{
+	if err := m.store.UpdateScanRun(ctx, &ScanRun{
 		ID:           scanRunID,
 		Status:       "running",
 		TargetsCount: len(targets),
-	})
+	}); err != nil {
+		log.Printf("ZAP scan %s: failed to update scan run: %v", scanRunID, err)
+	}
 
 	// Enqueue one job per target URL
 	for _, t := range targets {
@@ -345,7 +347,7 @@ func (m *Manager) finalizeScanRun(ctx context.Context, scanRunID string) {
 
 	// Update scan run to completed
 	now := time.Now()
-	m.store.UpdateScanRun(ctx, &ScanRun{
+	if err := m.store.UpdateScanRun(ctx, &ScanRun{
 		ID:           scanRunID,
 		Status:       "completed",
 		TargetsCount: run.TargetsCount,
@@ -354,7 +356,9 @@ func (m *Manager) finalizeScanRun(ctx context.Context, scanRunID string) {
 		LowCount:     byRisk["low"],
 		InfoCount:    byRisk["informational"],
 		CompletedAt:  &now,
-	})
+	}); err != nil {
+		log.Printf("ZAP finalize: failed to update scan run %s: %v", scanRunID, err)
+	}
 
 	duration := now.Sub(run.StartedAt)
 	totalAlerts := byRisk["high"] + byRisk["medium"] + byRisk["low"] + byRisk["informational"]

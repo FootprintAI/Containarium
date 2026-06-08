@@ -111,7 +111,7 @@ func readFileBytes(path string, info os.FileInfo, args map[string]interface{}) (
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read_file: %v", err)), nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
@@ -140,7 +140,7 @@ func readFileHead(path string, info os.FileInfo, n int) (*mcp.CallToolResult, er
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read_file: %v", err)), nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1 MiB max line
@@ -175,7 +175,7 @@ func readFileTail(path string, info os.FileInfo, n int) (*mcp.CallToolResult, er
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read_file: %v", err)), nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	ring := make([]string, 0, n)

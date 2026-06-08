@@ -113,7 +113,7 @@ func (m *CaddyManager) IsCaddyInstalled() bool {
 func (m *CaddyManager) InstallCaddy(ctx context.Context) error {
 	// Check if Go is installed
 	if _, err := exec.LookPath("go"); err != nil {
-		return fmt.Errorf("Go is required to build Caddy: %w", err)
+		return fmt.Errorf("the Go toolchain is required to build Caddy: %w", err)
 	}
 
 	// Install xcaddy if not present
@@ -235,10 +235,13 @@ func (m *CaddyManager) WriteCaddyfile() error {
 	if err != nil {
 		return fmt.Errorf("create caddyfile: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := tmpl.Execute(f, data); err != nil {
 		return fmt.Errorf("execute template: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close caddyfile: %w", err)
 	}
 
 	return nil
@@ -292,10 +295,13 @@ func (m *CaddyManager) WriteSystemdService() error {
 	if err != nil {
 		return fmt.Errorf("create service file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := tmpl.Execute(f, data); err != nil {
 		return fmt.Errorf("execute template: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close service file: %w", err)
 	}
 
 	return nil
@@ -357,10 +363,10 @@ func CheckStorageDirPerms(dir string) error {
 		return fmt.Errorf("stat Caddy storage %s: %w", dir, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("Caddy storage path %s is not a directory", dir)
+		return fmt.Errorf("caddy storage path %s is not a directory", dir)
 	}
 	if perm := info.Mode().Perm(); perm&0o007 != 0 {
-		return fmt.Errorf("Caddy storage %s has insecure permissions %#o (world bits set); chmod o-rwx it — TLS private keys live here", dir, perm)
+		return fmt.Errorf("caddy storage %s has insecure permissions %#o (world bits set); chmod o-rwx it — TLS private keys live here", dir, perm)
 	}
 	return nil
 }

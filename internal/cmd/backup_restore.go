@@ -53,7 +53,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Restoring backup %q (clean=%t)...\n", args[0], backupRestoreClean)
 	resp, err := c.RestoreBackup(&pb.RestoreBackupRequest{

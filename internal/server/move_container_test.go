@@ -83,16 +83,6 @@ func newTestContainerServer(t *testing.T, runner incus.MigrationRunner, targetID
 	return cs
 }
 
-// fakeAdoptResponder lets us stub out forwardAdoptMigratedContainer's
-// HTTP call. Tests assign a function that returns the response (or
-// error) we want. Implemented via a package-level variable so we
-// don't need to plumb it through ContainerServer.
-//
-// The orchestrator code uses forwardAdoptMigratedContainer directly;
-// for the test we wrap the call in a variable so we can swap the
-// implementation. See the init() below.
-var forwardAdoptForTest func(peer *PeerClient, authToken string, req *pb.AdoptMigratedContainerRequest) (*pb.AdoptMigratedContainerResponse, error)
-
 // TestMoveContainer_HappyPath exercises the three-phase orchestration
 // end to end without errors. Asserts on:
 //   - the exact call sequence (3-phase + cutover stop, final copy, adopt)

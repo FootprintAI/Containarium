@@ -17,7 +17,7 @@ func TestNewMarker_UniqueAndHex(t *testing.T) {
 			t.Fatalf("marker %q len = %d, want 16 hex chars", m, len(m))
 		}
 		for _, r := range m {
-			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 				t.Fatalf("marker %q has non-hex char %q", m, r)
 			}
 		}

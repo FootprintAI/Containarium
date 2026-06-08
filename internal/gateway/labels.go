@@ -51,7 +51,7 @@ func (h *LabelHandler) HandleSetLabels(w http.ResponseWriter, r *http.Request) {
 	if !h.manager.ContainerExists(containerName) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "container not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "container not found"})
 		return
 	}
 
@@ -60,7 +60,7 @@ func (h *LabelHandler) HandleSetLabels(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body: " + err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body: " + err.Error()})
 		return
 	}
 
@@ -70,7 +70,7 @@ func (h *LabelHandler) HandleSetLabels(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to set label %s=%s on %s: %v", key, value, containerName, err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "failed to set label: " + err.Error()})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to set label: " + err.Error()})
 			return
 		}
 	}
@@ -79,7 +79,7 @@ func (h *LabelHandler) HandleSetLabels(w http.ResponseWriter, r *http.Request) {
 	labels, _ := h.manager.GetLabels(username)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(LabelResponse{
+	_ = json.NewEncoder(w).Encode(LabelResponse{
 		Container: containerName,
 		Labels:    labels,
 		Message:   "labels updated",
@@ -103,7 +103,7 @@ func (h *LabelHandler) HandleRemoveLabel(w http.ResponseWriter, r *http.Request)
 	if !h.manager.ContainerExists(containerName) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "container not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "container not found"})
 		return
 	}
 
@@ -112,7 +112,7 @@ func (h *LabelHandler) HandleRemoveLabel(w http.ResponseWriter, r *http.Request)
 		log.Printf("Failed to remove label %s from %s: %v", labelKey, containerName, err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to remove label: " + err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to remove label: " + err.Error()})
 		return
 	}
 
@@ -120,7 +120,7 @@ func (h *LabelHandler) HandleRemoveLabel(w http.ResponseWriter, r *http.Request)
 	labels, _ := h.manager.GetLabels(username)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(LabelResponse{
+	_ = json.NewEncoder(w).Encode(LabelResponse{
 		Container: containerName,
 		Labels:    labels,
 		Message:   "label removed",
@@ -143,7 +143,7 @@ func (h *LabelHandler) HandleGetLabels(w http.ResponseWriter, r *http.Request) {
 	if !h.manager.ContainerExists(containerName) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "container not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "container not found"})
 		return
 	}
 
@@ -152,12 +152,12 @@ func (h *LabelHandler) HandleGetLabels(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to get labels: " + err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to get labels: " + err.Error()})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(LabelResponse{
+	_ = json.NewEncoder(w).Encode(LabelResponse{
 		Container: containerName,
 		Labels:    labels,
 	})

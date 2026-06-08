@@ -44,7 +44,7 @@ func runRouteList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	routes, totalCount, err := grpcClient.ListRoutes("", false)
 	if err != nil {

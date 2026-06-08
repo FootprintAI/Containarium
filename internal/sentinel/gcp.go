@@ -30,7 +30,7 @@ func NewGCPProvider(ctx context.Context, project, zone, instanceName string) (*G
 	}
 	opsClient, err := compute.NewZoneOperationsRESTClient(ctx)
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, fmt.Errorf("failed to create GCP operations client: %w", err)
 	}
 	return &GCPProvider{
@@ -205,7 +205,7 @@ func (g *GCPProvider) operationToEvent(op *computepb.Operation, opTime time.Time
 
 // Close releases the GCP client resources.
 func (g *GCPProvider) Close() error {
-	g.opsClient.Close()
+	_ = g.opsClient.Close()
 	return g.client.Close()
 }
 

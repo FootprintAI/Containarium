@@ -58,7 +58,7 @@ func runProxyProtoE2E(t *testing.T, useProxyProto bool) {
 
 	rawBackendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer rawBackendLn.Close()
+	defer func() { _ = rawBackendLn.Close() }()
 	backendAddr := rawBackendLn.Addr().(*net.TCPAddr)
 
 	// We always wrap the backend with proxyproto.Listener using the default
@@ -85,7 +85,7 @@ func runProxyProtoE2E(t *testing.T, useProxyProto bool) {
 		}),
 	}
 	go func() { _ = backendSrv.Serve(tlsLn) }()
-	defer backendSrv.Shutdown(ctx)
+	defer func() { _ = backendSrv.Shutdown(ctx) }()
 
 	// ---------------------------------------------------------------
 	// 2. Build a Manager with the SNI router pointing at the backend
@@ -106,7 +106,7 @@ func runProxyProtoE2E(t *testing.T, useProxyProto bool) {
 
 	sentinelLn, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer sentinelLn.Close()
+	defer func() { _ = sentinelLn.Close() }()
 	sentinelAddr := sentinelLn.Addr().(*net.TCPAddr)
 
 	// fallbackTarget is a dead address — should never be hit because the
@@ -133,7 +133,7 @@ func runProxyProtoE2E(t *testing.T, useProxyProto bool) {
 	}
 	rawClient, err := dialer.Dial("tcp", sentinelAddr.String())
 	require.NoError(t, err)
-	defer rawClient.Close()
+	defer func() { _ = rawClient.Close() }()
 
 	clientLocal := rawClient.LocalAddr().(*net.TCPAddr)
 	t.Logf("[e2e] client source = %s, sentinel = %s, backend = %s, proxy_protocol=%v",
@@ -145,7 +145,7 @@ func runProxyProtoE2E(t *testing.T, useProxyProto bool) {
 		InsecureSkipVerify: true,
 		ServerName:         sni,
 	})
-	rawClient.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = rawClient.SetDeadline(time.Now().Add(5 * time.Second))
 	require.NoError(t, tlsClient.Handshake(), "TLS handshake through sentinel must succeed")
 
 	// HTTP/1.1 GET — minimal hand-rolled request so we keep the connection

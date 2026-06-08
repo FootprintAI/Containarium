@@ -101,7 +101,7 @@ func (m *Manager) pushToken(name, token string) error {
 	if err != nil {
 		return fmt.Errorf("stage token: %w", err)
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
 		return fmt.Errorf("chmod token tmp: %w", err)
 	}

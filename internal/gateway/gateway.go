@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -266,7 +267,7 @@ func (gs *GatewayServer) handleAlertRelay(w http.ResponseWriter, r *http.Request
 
 	// Mirror the upstream status code back to Alertmanager
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, io.LimitReader(resp.Body, 1<<20))
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, 1<<20))
 }
 
 // extractAlertName extracts the first alert name from an Alertmanager webhook payload
@@ -494,13 +495,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				if sourceIP == "" {
 					sourceIP = r.RemoteAddr
 				}
-				gs.auditStore.Log(r.Context(), &audit.AuditEntry{
+				if err := gs.auditStore.Log(r.Context(), &audit.AuditEntry{
 					Username:     auditUsername,
 					Action:       "terminal_access",
 					ResourceType: "container",
 					ResourceID:   containerName,
 					SourceIP:     sourceIP,
-				})
+				}); err != nil {
+					log.Printf("Failed to write audit log for terminal_access: %v", err)
+				}
 			}
 
 			gs.terminalHandler.HandleTerminal(w, r)
@@ -703,7 +706,7 @@ func customErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler ru
 	w.Header().Set("Content-Type", "application/json")
 
 	// Map gRPC codes to HTTP status codes
-	httpStatus := runtime.HTTPStatusFromCode(grpc.Code(err))
+	httpStatus := runtime.HTTPStatusFromCode(status.Code(err))
 	w.WriteHeader(httpStatus)
 
 	// Format error response
@@ -712,7 +715,7 @@ func customErrorHandler(ctx context.Context, mux *runtime.ServeMux, marshaler ru
 		"code":  httpStatus,
 	}
 
-	json.NewEncoder(w).Encode(errorResp)
+	_ = json.NewEncoder(w).Encode(errorResp)
 }
 
 // annotateContext adds metadata that grpc-gateway forwards into the

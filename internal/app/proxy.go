@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -287,8 +288,13 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 
 	var policies []CaddyTLSAutomationPolicy
 	if resp.StatusCode == http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		json.Unmarshal(body, &policies)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read TLS policies response: %w", err)
+		}
+		if err := json.Unmarshal(body, &policies); err != nil {
+			return fmt.Errorf("failed to unmarshal TLS policies: %w", err)
+		}
 	}
 
 	// Check if domain is already in a policy
@@ -561,8 +567,10 @@ func (p *ProxyManager) UpdateGRPCRoute(subdomain, containerIP string, port int) 
 
 // UpdateRouteWithProtocol updates an existing route with the specified protocol
 func (p *ProxyManager) UpdateRouteWithProtocol(subdomain, containerIP string, port int, protocol RouteProtocol) error {
-	// Remove existing route first
-	p.RemoveRoute(subdomain) // Ignore errors
+	// Remove existing route first (idempotent; route may not exist yet)
+	if err := p.RemoveRoute(subdomain); err != nil {
+		log.Printf("[ProxyManager] RemoveRoute(%s) before update: %v", subdomain, err)
+	}
 
 	// Add new route with protocol
 	return p.addRouteWithProtocol(subdomain, containerIP, port, protocol)

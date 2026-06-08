@@ -148,7 +148,7 @@ func runVolumeCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	resp, err := c.CreateVolume(&pb.CreateVolumeRequest{Name: args[0], SizeBytes: bytes, Pool: volumePool})
 	if err != nil {
 		return err
@@ -162,7 +162,7 @@ func runVolumeList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	resp, err := c.ListVolumes(volumePool)
 	if err != nil {
 		return err
@@ -189,7 +189,7 @@ func runVolumeDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	resp, err := c.DeleteVolume(args[0], volumePool, volumeForce)
 	if err != nil {
 		return err
@@ -206,7 +206,7 @@ func runVolumeAttach(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	resp, err := c.AttachVolume(&pb.AttachVolumeRequest{
 		Volume:    args[0],
 		Pool:      volumePool,
@@ -226,7 +226,7 @@ func runVolumeDetach(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	resp, err := c.DetachVolume(args[0], args[1])
 	if err != nil {
 		return err

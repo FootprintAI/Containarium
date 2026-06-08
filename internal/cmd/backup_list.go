@@ -35,7 +35,7 @@ func runBackupList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	records, err := c.ListBackups(username)
 	if err != nil {

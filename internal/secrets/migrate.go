@@ -90,10 +90,7 @@ func (s *Store) MigrateLegacyToEnvelope(ctx context.Context, opts MigrateOptions
 	res := MigrateResult{StartedAt: time.Now()}
 	defer func() { res.CompletedAt = time.Now() }()
 
-	for {
-		if opts.MaxRows > 0 && res.Scanned >= opts.MaxRows {
-			break
-		}
+	for opts.MaxRows <= 0 || res.Scanned < opts.MaxRows {
 		batchLimit := opts.BatchSize
 		if opts.MaxRows > 0 {
 			remaining := opts.MaxRows - res.Scanned

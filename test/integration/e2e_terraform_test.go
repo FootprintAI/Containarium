@@ -143,7 +143,7 @@ func cleanupTerraformWorkspace(t *testing.T, workspace string) {
 		t.Logf("Keeping workspace: %s", workspace)
 		return
 	}
-	os.RemoveAll(workspace)
+	_ = os.RemoveAll(workspace)
 }
 
 // deployTerraform deploys infrastructure using Terraform

@@ -25,7 +25,7 @@ func runBackupDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	resp, err := c.DeleteBackup(args[0])
 	if err != nil {

@@ -241,7 +241,9 @@ func (pf *PortForwarder) removePreRoutingRule(port int) {
 	cmd := exec.Command("iptables", "-t", "nat", "-D", "PREROUTING",
 		"-p", "tcp", "!", "-s", pf.networkCIDR, "--dport", fmt.Sprintf("%d", port),
 		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	cmd.Run() // Ignore errors - rule might not exist
+	if err := cmd.Run(); err != nil {
+		log.Printf("  removePreRoutingRule: rule may not exist (ignored): %v", err)
+	}
 }
 
 // removeOutputRule removes the OUTPUT-chain DNAT rule for tunneled-primary
@@ -250,14 +252,18 @@ func (pf *PortForwarder) removeOutputRule(port int) {
 	cmd := exec.Command("iptables", "-t", "nat", "-D", "OUTPUT",
 		"-p", "tcp", "-d", "127.0.0.0/8", "--dport", fmt.Sprintf("%d", port),
 		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	cmd.Run() // Ignore errors - rule might not exist
+	if err := cmd.Run(); err != nil {
+		log.Printf("  removeOutputRule: rule may not exist (ignored): %v", err)
+	}
 }
 
 // removeMasqueradeRule removes the POSTROUTING MASQUERADE rule
 func (pf *PortForwarder) removeMasqueradeRule() {
 	cmd := exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING",
 		"-d", pf.caddyIP, "-j", "MASQUERADE")
-	cmd.Run() // Ignore errors - rule might not exist
+	if err := cmd.Run(); err != nil {
+		log.Printf("  removeMasqueradeRule: rule may not exist (ignored): %v", err)
+	}
 }
 
 // reconcileStaleRules deletes Caddy port-forward DNAT/MASQUERADE rules whose
@@ -457,7 +463,9 @@ func (pm *PassthroughManager) parsePassthroughRule(line string) *PassthroughRout
 	for _, field := range fields {
 		if strings.HasPrefix(field, "dpt:") {
 			port := strings.TrimPrefix(field, "dpt:")
-			fmt.Sscanf(port, "%d", &route.ExternalPort)
+			if _, err := fmt.Sscanf(port, "%d", &route.ExternalPort); err != nil {
+				log.Printf("  failed to parse external port %q: %v", port, err)
+			}
 		}
 	}
 
@@ -468,7 +476,9 @@ func (pm *PassthroughManager) parsePassthroughRule(line string) *PassthroughRout
 			parts := strings.Split(target, ":")
 			if len(parts) == 2 {
 				route.TargetIP = parts[0]
-				fmt.Sscanf(parts[1], "%d", &route.TargetPort)
+				if _, err := fmt.Sscanf(parts[1], "%d", &route.TargetPort); err != nil {
+					log.Printf("  failed to parse target port %q: %v", parts[1], err)
+				}
 			}
 		}
 	}
@@ -583,7 +593,9 @@ func (pm *PassthroughManager) RemoveRoute(externalPort int, protocol string) err
 	cmd = exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING",
 		"-p", protocol, "-d", targetIP, "--dport", fmt.Sprintf("%d", targetPort),
 		"-j", "MASQUERADE")
-	cmd.Run() // Ignore errors - rule might not exist or be shared
+	if err := cmd.Run(); err != nil {
+		log.Printf("  Passthrough MASQUERADE rule may not exist or be shared (ignored): %v", err)
+	}
 
 	log.Printf("  Passthrough route removed successfully")
 	return nil

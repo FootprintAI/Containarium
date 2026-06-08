@@ -66,8 +66,8 @@ func (cm *ConnMux) Run() {
 		conn, err := cm.listener.Accept()
 		if err != nil {
 			// Listener closed
-			cm.tunnelLn.Close()
-			cm.httpsLn.Close()
+			_ = cm.tunnelLn.Close()
+			_ = cm.httpsLn.Close()
 			return
 		}
 		go cm.route(conn)
@@ -76,20 +76,20 @@ func (cm *ConnMux) Run() {
 
 // Close closes the underlying listener and both channel listeners.
 func (cm *ConnMux) Close() error {
-	cm.tunnelLn.Close()
-	cm.httpsLn.Close()
+	_ = cm.tunnelLn.Close()
+	_ = cm.httpsLn.Close()
 	return cm.listener.Close()
 }
 
 func (cm *ConnMux) route(conn net.Conn) {
 	// Peek the first byte with a short deadline
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 1)
 	n, err := conn.Read(buf)
-	conn.SetReadDeadline(time.Time{}) // clear deadline
+	_ = conn.SetReadDeadline(time.Time{}) // clear deadline
 
 	if err != nil || n == 0 {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -169,7 +169,7 @@ func (cl *chanListener) Enqueue(conn net.Conn) {
 	select {
 	case cl.ch <- conn:
 	case <-cl.closed:
-		conn.Close()
+		_ = conn.Close()
 	}
 }
 
@@ -202,7 +202,7 @@ func (dl *dispatchListener) dispatch() {
 		if h != nil {
 			go h(conn)
 		} else {
-			conn.Close()
+			_ = conn.Close()
 		}
 	}
 }
@@ -233,17 +233,17 @@ func (hp *HTTPSProxy) Serve(ln net.Listener) error {
 }
 
 func (hp *HTTPSProxy) proxy(src net.Conn) {
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := net.DialTimeout("tcp", hp.target, 5*time.Second)
 	if err != nil {
 		log.Printf("[https-proxy] failed to connect to %s: %v", hp.target, err)
 		return
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(dst, src); done <- struct{}{} }()
-	go func() { io.Copy(src, dst); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(dst, src); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(src, dst); done <- struct{}{} }()
 	<-done
 }

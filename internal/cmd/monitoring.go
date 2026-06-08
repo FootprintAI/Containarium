@@ -65,14 +65,14 @@ func runMonitoringToggle(username string, enabled bool) error {
 		if herr != nil {
 			return herr
 		}
-		defer httpClient.Close()
+		defer func() { _ = httpClient.Close() }()
 		msg, nowEnabled, err = httpClient.ToggleMonitoring(username, enabled)
 	} else {
 		grpcClient, gerr := client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if gerr != nil {
 			return gerr
 		}
-		defer grpcClient.Close()
+		defer func() { _ = grpcClient.Close() }()
 		msg, nowEnabled, err = grpcClient.ToggleMonitoring(username, enabled)
 	}
 

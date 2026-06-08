@@ -46,7 +46,7 @@ func TestGeneratePassword(t *testing.T) {
 	// Test that output is valid hex
 	pw, _ := generatePassword(16)
 	for _, c := range pw {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("generatePassword() contains non-hex char: %c", c)
 		}
 	}

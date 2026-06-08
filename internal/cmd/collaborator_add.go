@@ -56,7 +56,7 @@ Examples:
 func init() {
 	collaboratorCmd.AddCommand(collaboratorAddCmd)
 	collaboratorAddCmd.Flags().StringArrayVar(&collaboratorSSHKeyFiles, "ssh-key", nil, "path to collaborator's SSH public key file (required; repeat to authorize multiple keys)")
-	collaboratorAddCmd.MarkFlagRequired("ssh-key")
+	_ = collaboratorAddCmd.MarkFlagRequired("ssh-key")
 	collaboratorAddCmd.Flags().BoolVar(&collaboratorGrantSudo, "sudo", false, "grant full sudo access (not just su - owner)")
 	collaboratorAddCmd.Flags().BoolVar(&collaboratorGrantRuntime, "container-runtime", false, "add collaborator to docker/podman groups")
 }

@@ -51,7 +51,7 @@ func runAppList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	// Parse state filter
 	stateFilter := pb.AppState_APP_STATE_UNSPECIFIED

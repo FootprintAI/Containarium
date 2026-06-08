@@ -249,7 +249,7 @@ func setContainerTTLViaServer(username string, durationSeconds int64) error {
 		if err != nil {
 			return err
 		}
-		defer hc.Close()
+		defer func() { _ = hc.Close() }()
 		_, err = hc.SetContainerTTL(username, durationSeconds)
 		return err
 	}
@@ -257,7 +257,7 @@ func setContainerTTLViaServer(username string, durationSeconds int64) error {
 	if err != nil {
 		return err
 	}
-	defer gc.Close()
+	defer func() { _ = gc.Close() }()
 	_, err = gc.SetContainerTTL(username, durationSeconds)
 	return err
 }
@@ -273,14 +273,14 @@ func ttlClientGet(username string) (time.Time, bool, error) {
 		if e != nil {
 			return time.Time{}, false, e
 		}
-		defer hc.Close()
+		defer func() { _ = hc.Close() }()
 		info, err = hc.GetContainer(username)
 	} else {
 		gc, e := client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if e != nil {
 			return time.Time{}, false, e
 		}
-		defer gc.Close()
+		defer func() { _ = gc.Close() }()
 		info, err = gc.GetContainer(username)
 	}
 	if err != nil {

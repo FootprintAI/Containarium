@@ -79,7 +79,7 @@ func runAppDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer grpcClient.Close()
+	defer func() { _ = grpcClient.Close() }()
 
 	fmt.Printf("Deleting application %s...\n", appName)
 	if err := grpcClient.DeleteApp(deleteUsername, appName, deleteRemoveData); err != nil {

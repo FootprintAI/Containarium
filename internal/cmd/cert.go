@@ -111,8 +111,8 @@ func init() {
 	certGenerateWithCACmd.Flags().DurationVar(&certDuration, "duration", 365*24*time.Hour, "Certificate validity duration")
 	certGenerateWithCACmd.Flags().StringVar(&certOutputDir, "output", mtls.DefaultCertsDir, "Output directory for certificates")
 
-	certGenerateWithCACmd.MarkFlagRequired("ca-cert")
-	certGenerateWithCACmd.MarkFlagRequired("ca-key")
+	_ = certGenerateWithCACmd.MarkFlagRequired("ca-cert")
+	_ = certGenerateWithCACmd.MarkFlagRequired("ca-key")
 }
 
 func runCertGenerate(cmd *cobra.Command, args []string) error {

@@ -75,14 +75,14 @@ func (fb *fakeBackend) handler() http.Handler {
 		// List containers
 		case r.Method == "GET" && r.URL.Path == "/v1/containers":
 			fb.mu.RLock()
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"containers": fb.containers,
 			})
 			fb.mu.RUnlock()
 
 		// Get system info
 		case r.Method == "GET" && r.URL.Path == "/v1/system/info":
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"info": fb.systemInfo,
 			})
 
@@ -92,7 +92,7 @@ func (fb *fakeBackend) handler() http.Handler {
 				Username string `json:"username"`
 				GPU      string `json:"gpu"`
 			}
-			json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewDecoder(r.Body).Decode(&req)
 			c := fakeContainer{
 				Name:      req.Username + "-container",
 				Username:  req.Username,
@@ -104,26 +104,26 @@ func (fb *fakeBackend) handler() http.Handler {
 			fb.mu.Lock()
 			fb.containers = append(fb.containers, c)
 			fb.mu.Unlock()
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"container": c,
 				"message":   "created",
 			})
 
 		// Resize
 		case r.Method == "PUT" && len(r.URL.Path) > len("/v1/containers/") && pathEndsWith(r.URL.Path, "/resize"):
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"message": "resized",
 			})
 
 		// Start
 		case r.Method == "POST" && pathEndsWith(r.URL.Path, "/start"):
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"message": "started",
 			})
 
 		// Stop
 		case r.Method == "POST" && pathEndsWith(r.URL.Path, "/stop"):
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"message": "stopped",
 			})
 
@@ -139,29 +139,29 @@ func (fb *fakeBackend) handler() http.Handler {
 			}
 			fb.containers = filtered
 			fb.mu.Unlock()
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"message": "deleted",
 			})
 
 		// Cleanup disk
 		case r.Method == "POST" && pathEndsWith(r.URL.Path, "/cleanup-disk"):
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"message":    "disk cleaned",
 				"freedBytes": 1024000,
 			})
 
 		// Collaborators
 		case r.Method == "GET" && pathEndsWith(r.URL.Path, "/collaborators"):
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"collaborators": []map[string]string{},
 				"totalCount":    0,
 			})
 		case r.Method == "POST" && pathEndsWith(r.URL.Path, "/collaborators"):
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"message": "collaborator added",
 			})
 		case r.Method == "DELETE" && pathContains(r.URL.Path, "/collaborators/"):
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"message": "collaborator removed",
 			})
 
@@ -502,7 +502,7 @@ func TestIntegration_AuthTokenForwarding(t *testing.T) {
 func TestIntegration_PeerTerminalURLResolution(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"containers": []map[string]interface{}{
 				{"name": "alice-container", "state": "Running"},
 				{"name": "bob-container", "state": "Running"},

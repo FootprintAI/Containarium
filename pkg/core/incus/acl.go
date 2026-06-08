@@ -313,7 +313,7 @@ func (c *Client) GetContainerACL(containerName, deviceName string) (string, erro
 		return "", nil // No device found
 	}
 
-	aclName, _ := device["security.acls"]
+	aclName := device["security.acls"]
 	return aclName, nil
 }
 

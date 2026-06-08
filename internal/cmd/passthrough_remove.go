@@ -34,7 +34,7 @@ func init() {
 	passthroughRemoveCmd.Flags().StringVar(&passthroughRemoveProtocol, "protocol", "tcp", "Protocol: tcp or udp")
 	passthroughRemoveCmd.Flags().StringVar(&passthroughRemoveNetworkCIDR, "network-cidr", "10.0.3.0/24", "Container network CIDR")
 
-	passthroughRemoveCmd.MarkFlagRequired("port")
+	_ = passthroughRemoveCmd.MarkFlagRequired("port")
 
 	passthroughCmd.AddCommand(passthroughRemoveCmd)
 }

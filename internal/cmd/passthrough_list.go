@@ -61,7 +61,7 @@ func runPassthroughList() error {
 			status,
 		)
 	}
-	w.Flush()
+	_ = w.Flush()
 
 	fmt.Printf("\nTotal: %d passthrough route(s)\n", len(routes))
 	return nil
