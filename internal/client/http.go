@@ -420,6 +420,49 @@ func (c *HTTPClient) SetContainerTTL(username string, durationSeconds int64) (*p
 	return out, nil
 }
 
+// SetContainerDeletePolicy protects (DELETE_POLICY_PROTECTED) or unprotects
+// (DELETE_POLICY_UNSPECIFIED) a container from the daemon's automated/bulk
+// deletion paths via the REST shim (#284).
+//
+// A 404 (a daemon too old to expose /v1/containers/{name}/delete-policy) is
+// mapped to gRPC codes.Unimplemented so the `containarium protect` CLI's
+// soft-path fires identically across both transports.
+func (c *HTTPClient) SetContainerDeletePolicy(username string, policy pb.DeletePolicy) (*pb.SetContainerDeletePolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/delete-policy", url.PathEscape(username))
+	// Emit the enum by its proto JSON name so grpc-gateway decodes it into the
+	// DeletePolicy enum (it accepts the string form; a bare int would also work
+	// but the name is self-documenting on the wire).
+	body := map[string]interface{}{"delete_policy": policy.String()}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("set delete policy: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerDeletePolicy (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("set delete policy: status %d", resp.StatusCode)
+	}
+
+	out := &pb.SetContainerDeletePolicyResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // StartContainer starts a stopped container via HTTP. When
 // waitForReady is true the daemon blocks until the container's
 // primary TCP port accepts (or readyTimeoutSeconds elapses).

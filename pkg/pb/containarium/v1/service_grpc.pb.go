@@ -19,50 +19,51 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ContainerService_CreateContainer_FullMethodName        = "/containarium.v1.ContainerService/CreateContainer"
-	ContainerService_ListContainers_FullMethodName         = "/containarium.v1.ContainerService/ListContainers"
-	ContainerService_GetContainer_FullMethodName           = "/containarium.v1.ContainerService/GetContainer"
-	ContainerService_DebugContainer_FullMethodName         = "/containarium.v1.ContainerService/DebugContainer"
-	ContainerService_DeleteContainer_FullMethodName        = "/containarium.v1.ContainerService/DeleteContainer"
-	ContainerService_StartContainer_FullMethodName         = "/containarium.v1.ContainerService/StartContainer"
-	ContainerService_StopContainer_FullMethodName          = "/containarium.v1.ContainerService/StopContainer"
-	ContainerService_ResizeContainer_FullMethodName        = "/containarium.v1.ContainerService/ResizeContainer"
-	ContainerService_MoveContainer_FullMethodName          = "/containarium.v1.ContainerService/MoveContainer"
-	ContainerService_AdoptMigratedContainer_FullMethodName = "/containarium.v1.ContainerService/AdoptMigratedContainer"
-	ContainerService_ToggleMonitoring_FullMethodName       = "/containarium.v1.ContainerService/ToggleMonitoring"
-	ContainerService_ToggleAutoSleep_FullMethodName        = "/containarium.v1.ContainerService/ToggleAutoSleep"
-	ContainerService_SetContainerTTL_FullMethodName        = "/containarium.v1.ContainerService/SetContainerTTL"
-	ContainerService_AddSSHKey_FullMethodName              = "/containarium.v1.ContainerService/AddSSHKey"
-	ContainerService_RemoveSSHKey_FullMethodName           = "/containarium.v1.ContainerService/RemoveSSHKey"
-	ContainerService_AddCollaborator_FullMethodName        = "/containarium.v1.ContainerService/AddCollaborator"
-	ContainerService_RemoveCollaborator_FullMethodName     = "/containarium.v1.ContainerService/RemoveCollaborator"
-	ContainerService_ListCollaborators_FullMethodName      = "/containarium.v1.ContainerService/ListCollaborators"
-	ContainerService_GetMetrics_FullMethodName             = "/containarium.v1.ContainerService/GetMetrics"
-	ContainerService_CleanupDisk_FullMethodName            = "/containarium.v1.ContainerService/CleanupDisk"
-	ContainerService_InstallStack_FullMethodName           = "/containarium.v1.ContainerService/InstallStack"
-	ContainerService_ListStacks_FullMethodName             = "/containarium.v1.ContainerService/ListStacks"
-	ContainerService_GetSystemInfo_FullMethodName          = "/containarium.v1.ContainerService/GetSystemInfo"
-	ContainerService_ListBackends_FullMethodName           = "/containarium.v1.ContainerService/ListBackends"
-	ContainerService_GetLatestRelease_FullMethodName       = "/containarium.v1.ContainerService/GetLatestRelease"
-	ContainerService_ValidateGPU_FullMethodName            = "/containarium.v1.ContainerService/ValidateGPU"
-	ContainerService_TriggerUpgrade_FullMethodName         = "/containarium.v1.ContainerService/TriggerUpgrade"
-	ContainerService_GetUpgradeStatus_FullMethodName       = "/containarium.v1.ContainerService/GetUpgradeStatus"
-	ContainerService_GetMonitoringInfo_FullMethodName      = "/containarium.v1.ContainerService/GetMonitoringInfo"
-	ContainerService_CreateAlertRule_FullMethodName        = "/containarium.v1.ContainerService/CreateAlertRule"
-	ContainerService_ListAlertRules_FullMethodName         = "/containarium.v1.ContainerService/ListAlertRules"
-	ContainerService_GetAlertRule_FullMethodName           = "/containarium.v1.ContainerService/GetAlertRule"
-	ContainerService_UpdateAlertRule_FullMethodName        = "/containarium.v1.ContainerService/UpdateAlertRule"
-	ContainerService_DeleteAlertRule_FullMethodName        = "/containarium.v1.ContainerService/DeleteAlertRule"
-	ContainerService_GetAlertingInfo_FullMethodName        = "/containarium.v1.ContainerService/GetAlertingInfo"
-	ContainerService_ListDefaultAlertRules_FullMethodName  = "/containarium.v1.ContainerService/ListDefaultAlertRules"
-	ContainerService_UpdateAlertingConfig_FullMethodName   = "/containarium.v1.ContainerService/UpdateAlertingConfig"
-	ContainerService_TestWebhook_FullMethodName            = "/containarium.v1.ContainerService/TestWebhook"
-	ContainerService_ListWebhookDeliveries_FullMethodName  = "/containarium.v1.ContainerService/ListWebhookDeliveries"
-	ContainerService_SetSecret_FullMethodName              = "/containarium.v1.ContainerService/SetSecret"
-	ContainerService_GetSecret_FullMethodName              = "/containarium.v1.ContainerService/GetSecret"
-	ContainerService_ListSecrets_FullMethodName            = "/containarium.v1.ContainerService/ListSecrets"
-	ContainerService_DeleteSecret_FullMethodName           = "/containarium.v1.ContainerService/DeleteSecret"
-	ContainerService_RefreshSecrets_FullMethodName         = "/containarium.v1.ContainerService/RefreshSecrets"
+	ContainerService_CreateContainer_FullMethodName          = "/containarium.v1.ContainerService/CreateContainer"
+	ContainerService_ListContainers_FullMethodName           = "/containarium.v1.ContainerService/ListContainers"
+	ContainerService_GetContainer_FullMethodName             = "/containarium.v1.ContainerService/GetContainer"
+	ContainerService_DebugContainer_FullMethodName           = "/containarium.v1.ContainerService/DebugContainer"
+	ContainerService_DeleteContainer_FullMethodName          = "/containarium.v1.ContainerService/DeleteContainer"
+	ContainerService_StartContainer_FullMethodName           = "/containarium.v1.ContainerService/StartContainer"
+	ContainerService_StopContainer_FullMethodName            = "/containarium.v1.ContainerService/StopContainer"
+	ContainerService_ResizeContainer_FullMethodName          = "/containarium.v1.ContainerService/ResizeContainer"
+	ContainerService_MoveContainer_FullMethodName            = "/containarium.v1.ContainerService/MoveContainer"
+	ContainerService_AdoptMigratedContainer_FullMethodName   = "/containarium.v1.ContainerService/AdoptMigratedContainer"
+	ContainerService_ToggleMonitoring_FullMethodName         = "/containarium.v1.ContainerService/ToggleMonitoring"
+	ContainerService_ToggleAutoSleep_FullMethodName          = "/containarium.v1.ContainerService/ToggleAutoSleep"
+	ContainerService_SetContainerTTL_FullMethodName          = "/containarium.v1.ContainerService/SetContainerTTL"
+	ContainerService_SetContainerDeletePolicy_FullMethodName = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
+	ContainerService_AddSSHKey_FullMethodName                = "/containarium.v1.ContainerService/AddSSHKey"
+	ContainerService_RemoveSSHKey_FullMethodName             = "/containarium.v1.ContainerService/RemoveSSHKey"
+	ContainerService_AddCollaborator_FullMethodName          = "/containarium.v1.ContainerService/AddCollaborator"
+	ContainerService_RemoveCollaborator_FullMethodName       = "/containarium.v1.ContainerService/RemoveCollaborator"
+	ContainerService_ListCollaborators_FullMethodName        = "/containarium.v1.ContainerService/ListCollaborators"
+	ContainerService_GetMetrics_FullMethodName               = "/containarium.v1.ContainerService/GetMetrics"
+	ContainerService_CleanupDisk_FullMethodName              = "/containarium.v1.ContainerService/CleanupDisk"
+	ContainerService_InstallStack_FullMethodName             = "/containarium.v1.ContainerService/InstallStack"
+	ContainerService_ListStacks_FullMethodName               = "/containarium.v1.ContainerService/ListStacks"
+	ContainerService_GetSystemInfo_FullMethodName            = "/containarium.v1.ContainerService/GetSystemInfo"
+	ContainerService_ListBackends_FullMethodName             = "/containarium.v1.ContainerService/ListBackends"
+	ContainerService_GetLatestRelease_FullMethodName         = "/containarium.v1.ContainerService/GetLatestRelease"
+	ContainerService_ValidateGPU_FullMethodName              = "/containarium.v1.ContainerService/ValidateGPU"
+	ContainerService_TriggerUpgrade_FullMethodName           = "/containarium.v1.ContainerService/TriggerUpgrade"
+	ContainerService_GetUpgradeStatus_FullMethodName         = "/containarium.v1.ContainerService/GetUpgradeStatus"
+	ContainerService_GetMonitoringInfo_FullMethodName        = "/containarium.v1.ContainerService/GetMonitoringInfo"
+	ContainerService_CreateAlertRule_FullMethodName          = "/containarium.v1.ContainerService/CreateAlertRule"
+	ContainerService_ListAlertRules_FullMethodName           = "/containarium.v1.ContainerService/ListAlertRules"
+	ContainerService_GetAlertRule_FullMethodName             = "/containarium.v1.ContainerService/GetAlertRule"
+	ContainerService_UpdateAlertRule_FullMethodName          = "/containarium.v1.ContainerService/UpdateAlertRule"
+	ContainerService_DeleteAlertRule_FullMethodName          = "/containarium.v1.ContainerService/DeleteAlertRule"
+	ContainerService_GetAlertingInfo_FullMethodName          = "/containarium.v1.ContainerService/GetAlertingInfo"
+	ContainerService_ListDefaultAlertRules_FullMethodName    = "/containarium.v1.ContainerService/ListDefaultAlertRules"
+	ContainerService_UpdateAlertingConfig_FullMethodName     = "/containarium.v1.ContainerService/UpdateAlertingConfig"
+	ContainerService_TestWebhook_FullMethodName              = "/containarium.v1.ContainerService/TestWebhook"
+	ContainerService_ListWebhookDeliveries_FullMethodName    = "/containarium.v1.ContainerService/ListWebhookDeliveries"
+	ContainerService_SetSecret_FullMethodName                = "/containarium.v1.ContainerService/SetSecret"
+	ContainerService_GetSecret_FullMethodName                = "/containarium.v1.ContainerService/GetSecret"
+	ContainerService_ListSecrets_FullMethodName              = "/containarium.v1.ContainerService/ListSecrets"
+	ContainerService_DeleteSecret_FullMethodName             = "/containarium.v1.ContainerService/DeleteSecret"
+	ContainerService_RefreshSecrets_FullMethodName           = "/containarium.v1.ContainerService/RefreshSecrets"
 )
 
 // ContainerServiceClient is the client API for ContainerService service.
@@ -136,6 +137,14 @@ type ContainerServiceClient interface {
 	// lands, calls return Unimplemented and the CLI degrades to a
 	// graceful no-op (per PR #297).
 	SetContainerTTL(ctx context.Context, in *SetContainerTTLRequest, opts ...grpc.CallOption) (*SetContainerTTLResponse, error)
+	// SetContainerDeletePolicy protects or unprotects a container from the
+	// daemon's automated/bulk deletion paths (#284). DELETE_POLICY_PROTECTED
+	// makes the ttlsweeper auto-reap and `containarium prune` skip the box;
+	// DELETE_POLICY_UNSPECIFIED returns it to the default. A deliberate
+	// single-box delete always succeeds regardless. The policy is persisted on
+	// the Incus config under user.containarium.delete_policy, so it survives
+	// daemon restart with no separate store — read back on list/get.
+	SetContainerDeletePolicy(ctx context.Context, in *SetContainerDeletePolicyRequest, opts ...grpc.CallOption) (*SetContainerDeletePolicyResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -362,6 +371,16 @@ func (c *containerServiceClient) SetContainerTTL(ctx context.Context, in *SetCon
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetContainerTTLResponse)
 	err := c.cc.Invoke(ctx, ContainerService_SetContainerTTL_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) SetContainerDeletePolicy(ctx context.Context, in *SetContainerDeletePolicyRequest, opts ...grpc.CallOption) (*SetContainerDeletePolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetContainerDeletePolicyResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetContainerDeletePolicy_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -749,6 +768,14 @@ type ContainerServiceServer interface {
 	// lands, calls return Unimplemented and the CLI degrades to a
 	// graceful no-op (per PR #297).
 	SetContainerTTL(context.Context, *SetContainerTTLRequest) (*SetContainerTTLResponse, error)
+	// SetContainerDeletePolicy protects or unprotects a container from the
+	// daemon's automated/bulk deletion paths (#284). DELETE_POLICY_PROTECTED
+	// makes the ttlsweeper auto-reap and `containarium prune` skip the box;
+	// DELETE_POLICY_UNSPECIFIED returns it to the default. A deliberate
+	// single-box delete always succeeds regardless. The policy is persisted on
+	// the Incus config under user.containarium.delete_policy, so it survives
+	// daemon restart with no separate store — read back on list/get.
+	SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -889,6 +916,9 @@ func (UnimplementedContainerServiceServer) ToggleAutoSleep(context.Context, *Tog
 }
 func (UnimplementedContainerServiceServer) SetContainerTTL(context.Context, *SetContainerTTLRequest) (*SetContainerTTLResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerTTL not implemented")
+}
+func (UnimplementedContainerServiceServer) SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetContainerDeletePolicy not implemented")
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
@@ -1234,6 +1264,24 @@ func _ContainerService_SetContainerTTL_Handler(srv interface{}, ctx context.Cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).SetContainerTTL(ctx, req.(*SetContainerTTLRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_SetContainerDeletePolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetContainerDeletePolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetContainerDeletePolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetContainerDeletePolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetContainerDeletePolicy(ctx, req.(*SetContainerDeletePolicyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1854,6 +1902,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetContainerTTL",
 			Handler:    _ContainerService_SetContainerTTL_Handler,
+		},
+		{
+			MethodName: "SetContainerDeletePolicy",
+			Handler:    _ContainerService_SetContainerDeletePolicy_Handler,
 		},
 		{
 			MethodName: "AddSSHKey",

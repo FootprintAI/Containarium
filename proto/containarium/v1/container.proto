@@ -63,6 +63,23 @@ enum ContainerState {
   CONTAINER_STATE_PROVISIONING = 6 [(state_name) = "Provisioning"];
 }
 
+// DeletePolicy controls whether a container may be removed by the daemon's
+// UNATTENDED deletion paths (#284). It gates only the automated/bulk sweeps —
+// the ttlsweeper's auto-reap and `containarium prune`; a deliberate single-box
+// delete always succeeds regardless, so this is a guard against a "clean up
+// leaked boxes" sweep taking out a persistent box (e.g. a GitHub Actions
+// runner), not a deletion lock. Backed by the user.containarium.delete_policy
+// Incus config key (DeletePolicyKey / DeletePolicyProtected in pkg/core/incus).
+enum DeletePolicy {
+  // Unprotected — eligible for prune + auto-reap (today's default; the
+  // absent/empty config value maps here).
+  DELETE_POLICY_UNSPECIFIED = 0;
+
+  // Protected — skipped by the ttlsweeper auto-reap and `containarium prune`.
+  // A deliberate single-box delete still removes it.
+  DELETE_POLICY_PROTECTED = 1;
+}
+
 // ResourceLimits defines resource constraints for a container
 message ResourceLimits {
   // CPU limit (e.g., "4" for 4 cores)
@@ -210,6 +227,13 @@ message Container {
   // it auto-deletes once it has been stopped that long (reclaiming disk); 0 =
   // never delete on stop. Opt-in, independent of auto_sleep_enabled.
   int64 delete_after_stopped_seconds = 25;
+
+  // Whether this box is protected from the daemon's automated/bulk deletion
+  // paths (#284). DELETE_POLICY_PROTECTED means the ttlsweeper auto-reap and
+  // `containarium prune` skip it; a deliberate single-box delete still removes
+  // it. Read from the user.containarium.delete_policy Incus config key; set via
+  // SetContainerDeletePolicy. Absent/unprotected = DELETE_POLICY_UNSPECIFIED.
+  DeletePolicy delete_policy = 26;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -602,6 +626,25 @@ message SetContainerTTLResponse {
   // The wall-clock deletion time the daemon committed. Unset when
   // the caller passed duration_seconds == 0 (i.e. TTL cleared).
   google.protobuf.Timestamp ttl_expires_at = 1;
+}
+
+// SetContainerDeletePolicyRequest sets or clears a container's protection from
+// the daemon's automated/bulk deletion paths (#284).
+message SetContainerDeletePolicyRequest {
+  // Container name — the bare username, matching the per-container RPC
+  // convention (the handler appends "-container"; see SetContainerTTL).
+  string name = 1;
+
+  // Target policy. DELETE_POLICY_PROTECTED protects the box from the ttlsweeper
+  // auto-reap and `containarium prune`; DELETE_POLICY_UNSPECIFIED clears the
+  // protection (back to the default — eligible for both).
+  DeletePolicy delete_policy = 2;
+}
+
+// SetContainerDeletePolicyResponse reports the committed delete policy.
+message SetContainerDeletePolicyResponse {
+  // The delete policy now in effect on the container.
+  DeletePolicy delete_policy = 1;
 }
 
 // AddSSHKeyRequest is the request to add an SSH key to a container

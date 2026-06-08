@@ -256,6 +256,25 @@ service ContainerService {
     };
   }
 
+  // SetContainerDeletePolicy protects or unprotects a container from the
+  // daemon's automated/bulk deletion paths (#284). DELETE_POLICY_PROTECTED
+  // makes the ttlsweeper auto-reap and `containarium prune` skip the box;
+  // DELETE_POLICY_UNSPECIFIED returns it to the default. A deliberate
+  // single-box delete always succeeds regardless. The policy is persisted on
+  // the Incus config under user.containarium.delete_policy, so it survives
+  // daemon restart with no separate store — read back on list/get.
+  rpc SetContainerDeletePolicy(SetContainerDeletePolicyRequest) returns (SetContainerDeletePolicyResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{name}/delete-policy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Protect or unprotect a container from automated deletion";
+      description: "Sets the container's delete policy (#284). DELETE_POLICY_PROTECTED makes the ttlsweeper auto-reap and `containarium prune` skip the box (e.g. a persistent runner); DELETE_POLICY_UNSPECIFIED returns it to the default (eligible for both). A deliberate single-box delete always succeeds regardless.";
+      tags: "Container Operations";
+    };
+  }
+
   // AddSSHKey adds an SSH public key to a container
   rpc AddSSHKey(AddSSHKeyRequest) returns (AddSSHKeyResponse) {
     option (google.api.http) = {

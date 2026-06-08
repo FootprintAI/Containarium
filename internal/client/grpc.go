@@ -268,6 +268,23 @@ func (c *GRPCClient) SetContainerTTL(username string, durationSeconds int64) (*p
 	})
 }
 
+// SetContainerDeletePolicy protects (DELETE_POLICY_PROTECTED) or unprotects
+// (DELETE_POLICY_UNSPECIFIED) a container from the daemon's automated/bulk
+// deletion paths — the ttlsweeper auto-reap and `containarium prune` (#284).
+//
+// The error is returned UNWRAPPED so a daemon too old to implement the RPC
+// surfaces as gRPC codes.Unimplemented, which the `containarium protect` CLI
+// treats as a soft no-op rather than a hard failure.
+func (c *GRPCClient) SetContainerDeletePolicy(username string, policy pb.DeletePolicy) (*pb.SetContainerDeletePolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return c.client.SetContainerDeletePolicy(ctx, &pb.SetContainerDeletePolicyRequest{
+		Name:         username,
+		DeletePolicy: policy,
+	})
+}
+
 // StartContainer starts a stopped container via gRPC. When
 // waitForReady is true the server blocks until the container's
 // primary TCP port accepts or readyTimeoutSeconds elapses (0 falls

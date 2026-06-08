@@ -2379,6 +2379,12 @@ func toProtoContainer(info *incus.ContainerInfo) *pb.Container {
 		pc.StoppedAt = timestamppb.New(info.StoppedAt)
 	}
 	pc.DeleteAfterStoppedSeconds = info.DeleteAfterStoppedSeconds
+	// Delete policy (#284): protected boxes are skipped by the ttlsweeper
+	// auto-reap and `containarium prune`. Read from the Incus config; absent /
+	// any non-"protected" value maps to UNSPECIFIED (the default, unprotected).
+	if info.DeletePolicy == incus.DeletePolicyProtected {
+		pc.DeletePolicy = pb.DeletePolicy_DELETE_POLICY_PROTECTED
+	}
 	return pc
 }
 

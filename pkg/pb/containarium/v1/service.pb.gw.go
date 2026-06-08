@@ -588,6 +588,51 @@ func local_request_ContainerService_SetContainerTTL_0(ctx context.Context, marsh
 	return msg, metadata, err
 }
 
+func request_ContainerService_SetContainerDeletePolicy_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SetContainerDeletePolicyRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	val, ok := pathParams["name"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "name")
+	}
+	protoReq.Name, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "name", err)
+	}
+	msg, err := client.SetContainerDeletePolicy(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_SetContainerDeletePolicy_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SetContainerDeletePolicyRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["name"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "name")
+	}
+	protoReq.Name, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "name", err)
+	}
+	msg, err := server.SetContainerDeletePolicy(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_ContainerService_AddSSHKey_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq AddSSHKeyRequest
@@ -1978,6 +2023,26 @@ func RegisterContainerServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_SetContainerTTL_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_SetContainerDeletePolicy_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/SetContainerDeletePolicy", runtime.WithHTTPPathPattern("/v1/containers/{name}/delete-policy"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_SetContainerDeletePolicy_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_SetContainerDeletePolicy_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_ContainerService_AddSSHKey_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -2879,6 +2944,23 @@ func RegisterContainerServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_SetContainerTTL_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_SetContainerDeletePolicy_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/SetContainerDeletePolicy", runtime.WithHTTPPathPattern("/v1/containers/{name}/delete-policy"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_SetContainerDeletePolicy_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_SetContainerDeletePolicy_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_ContainerService_AddSSHKey_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -3427,97 +3509,99 @@ func RegisterContainerServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 }
 
 var (
-	pattern_ContainerService_CreateContainer_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "containers"}, ""))
-	pattern_ContainerService_ListContainers_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "containers"}, ""))
-	pattern_ContainerService_GetContainer_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "containers", "username"}, ""))
-	pattern_ContainerService_DebugContainer_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "debug"}, ""))
-	pattern_ContainerService_DeleteContainer_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "containers", "username"}, ""))
-	pattern_ContainerService_StartContainer_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "start"}, ""))
-	pattern_ContainerService_StopContainer_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "stop"}, ""))
-	pattern_ContainerService_ResizeContainer_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "resize"}, ""))
-	pattern_ContainerService_MoveContainer_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "move"}, ""))
-	pattern_ContainerService_AdoptMigratedContainer_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "adopt"}, ""))
-	pattern_ContainerService_ToggleMonitoring_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "monitoring"}, ""))
-	pattern_ContainerService_ToggleAutoSleep_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "auto-sleep"}, ""))
-	pattern_ContainerService_SetContainerTTL_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "name", "ttl"}, ""))
-	pattern_ContainerService_AddSSHKey_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "ssh-keys"}, ""))
-	pattern_ContainerService_RemoveSSHKey_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "containers", "username", "ssh-keys", "ssh_public_key"}, ""))
-	pattern_ContainerService_AddCollaborator_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "owner_username", "collaborators"}, ""))
-	pattern_ContainerService_RemoveCollaborator_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "containers", "owner_username", "collaborators", "collaborator_username"}, ""))
-	pattern_ContainerService_ListCollaborators_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "owner_username", "collaborators"}, ""))
-	pattern_ContainerService_GetMetrics_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "metrics"}, ""))
-	pattern_ContainerService_GetMetrics_1             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "metrics", "username"}, ""))
-	pattern_ContainerService_CleanupDisk_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "cleanup-disk"}, ""))
-	pattern_ContainerService_InstallStack_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "install-stack"}, ""))
-	pattern_ContainerService_ListStacks_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "stacks"}, ""))
-	pattern_ContainerService_GetSystemInfo_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "info"}, ""))
-	pattern_ContainerService_ListBackends_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "backends"}, ""))
-	pattern_ContainerService_GetLatestRelease_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "releases", "latest"}, ""))
-	pattern_ContainerService_ValidateGPU_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "validate-gpu"}, ""))
-	pattern_ContainerService_TriggerUpgrade_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "backends", "upgrade"}, ""))
-	pattern_ContainerService_GetUpgradeStatus_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "upgrades", "upgrade_id"}, ""))
-	pattern_ContainerService_GetMonitoringInfo_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "monitoring"}, ""))
-	pattern_ContainerService_CreateAlertRule_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "alerts"}, ""))
-	pattern_ContainerService_ListAlertRules_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "alerts"}, ""))
-	pattern_ContainerService_GetAlertRule_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "alerts", "id"}, ""))
-	pattern_ContainerService_UpdateAlertRule_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "alerts", "id"}, ""))
-	pattern_ContainerService_DeleteAlertRule_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "alerts", "id"}, ""))
-	pattern_ContainerService_GetAlertingInfo_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "alerting"}, ""))
-	pattern_ContainerService_ListDefaultAlertRules_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "alerts", "defaults"}, ""))
-	pattern_ContainerService_UpdateAlertingConfig_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "alerting"}, ""))
-	pattern_ContainerService_TestWebhook_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"v1", "system", "alerting", "test"}, ""))
-	pattern_ContainerService_ListWebhookDeliveries_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"v1", "system", "alerting", "deliveries"}, ""))
-	pattern_ContainerService_SetSecret_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "secrets"}, ""))
-	pattern_ContainerService_GetSecret_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "secrets", "username", "name"}, ""))
-	pattern_ContainerService_ListSecrets_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "secrets", "username"}, ""))
-	pattern_ContainerService_DeleteSecret_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "secrets", "username", "name"}, ""))
-	pattern_ContainerService_RefreshSecrets_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "secrets", "username", "refresh"}, ""))
+	pattern_ContainerService_CreateContainer_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "containers"}, ""))
+	pattern_ContainerService_ListContainers_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "containers"}, ""))
+	pattern_ContainerService_GetContainer_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "containers", "username"}, ""))
+	pattern_ContainerService_DebugContainer_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "debug"}, ""))
+	pattern_ContainerService_DeleteContainer_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "containers", "username"}, ""))
+	pattern_ContainerService_StartContainer_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "start"}, ""))
+	pattern_ContainerService_StopContainer_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "stop"}, ""))
+	pattern_ContainerService_ResizeContainer_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "resize"}, ""))
+	pattern_ContainerService_MoveContainer_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "move"}, ""))
+	pattern_ContainerService_AdoptMigratedContainer_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "adopt"}, ""))
+	pattern_ContainerService_ToggleMonitoring_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "monitoring"}, ""))
+	pattern_ContainerService_ToggleAutoSleep_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "auto-sleep"}, ""))
+	pattern_ContainerService_SetContainerTTL_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "name", "ttl"}, ""))
+	pattern_ContainerService_SetContainerDeletePolicy_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "name", "delete-policy"}, ""))
+	pattern_ContainerService_AddSSHKey_0                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "ssh-keys"}, ""))
+	pattern_ContainerService_RemoveSSHKey_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "containers", "username", "ssh-keys", "ssh_public_key"}, ""))
+	pattern_ContainerService_AddCollaborator_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "owner_username", "collaborators"}, ""))
+	pattern_ContainerService_RemoveCollaborator_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "containers", "owner_username", "collaborators", "collaborator_username"}, ""))
+	pattern_ContainerService_ListCollaborators_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "owner_username", "collaborators"}, ""))
+	pattern_ContainerService_GetMetrics_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "metrics"}, ""))
+	pattern_ContainerService_GetMetrics_1               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "metrics", "username"}, ""))
+	pattern_ContainerService_CleanupDisk_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "cleanup-disk"}, ""))
+	pattern_ContainerService_InstallStack_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "install-stack"}, ""))
+	pattern_ContainerService_ListStacks_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "stacks"}, ""))
+	pattern_ContainerService_GetSystemInfo_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "info"}, ""))
+	pattern_ContainerService_ListBackends_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "backends"}, ""))
+	pattern_ContainerService_GetLatestRelease_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "releases", "latest"}, ""))
+	pattern_ContainerService_ValidateGPU_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "validate-gpu"}, ""))
+	pattern_ContainerService_TriggerUpgrade_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "backends", "upgrade"}, ""))
+	pattern_ContainerService_GetUpgradeStatus_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "upgrades", "upgrade_id"}, ""))
+	pattern_ContainerService_GetMonitoringInfo_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "monitoring"}, ""))
+	pattern_ContainerService_CreateAlertRule_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "alerts"}, ""))
+	pattern_ContainerService_ListAlertRules_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "alerts"}, ""))
+	pattern_ContainerService_GetAlertRule_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "alerts", "id"}, ""))
+	pattern_ContainerService_UpdateAlertRule_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "alerts", "id"}, ""))
+	pattern_ContainerService_DeleteAlertRule_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "alerts", "id"}, ""))
+	pattern_ContainerService_GetAlertingInfo_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "alerting"}, ""))
+	pattern_ContainerService_ListDefaultAlertRules_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "alerts", "defaults"}, ""))
+	pattern_ContainerService_UpdateAlertingConfig_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "system", "alerting"}, ""))
+	pattern_ContainerService_TestWebhook_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"v1", "system", "alerting", "test"}, ""))
+	pattern_ContainerService_ListWebhookDeliveries_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"v1", "system", "alerting", "deliveries"}, ""))
+	pattern_ContainerService_SetSecret_0                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "secrets"}, ""))
+	pattern_ContainerService_GetSecret_0                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "secrets", "username", "name"}, ""))
+	pattern_ContainerService_ListSecrets_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "secrets", "username"}, ""))
+	pattern_ContainerService_DeleteSecret_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "secrets", "username", "name"}, ""))
+	pattern_ContainerService_RefreshSecrets_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "secrets", "username", "refresh"}, ""))
 )
 
 var (
-	forward_ContainerService_CreateContainer_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_ListContainers_0         = runtime.ForwardResponseMessage
-	forward_ContainerService_GetContainer_0           = runtime.ForwardResponseMessage
-	forward_ContainerService_DebugContainer_0         = runtime.ForwardResponseMessage
-	forward_ContainerService_DeleteContainer_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_StartContainer_0         = runtime.ForwardResponseMessage
-	forward_ContainerService_StopContainer_0          = runtime.ForwardResponseMessage
-	forward_ContainerService_ResizeContainer_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_MoveContainer_0          = runtime.ForwardResponseMessage
-	forward_ContainerService_AdoptMigratedContainer_0 = runtime.ForwardResponseMessage
-	forward_ContainerService_ToggleMonitoring_0       = runtime.ForwardResponseMessage
-	forward_ContainerService_ToggleAutoSleep_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_SetContainerTTL_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_AddSSHKey_0              = runtime.ForwardResponseMessage
-	forward_ContainerService_RemoveSSHKey_0           = runtime.ForwardResponseMessage
-	forward_ContainerService_AddCollaborator_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_RemoveCollaborator_0     = runtime.ForwardResponseMessage
-	forward_ContainerService_ListCollaborators_0      = runtime.ForwardResponseMessage
-	forward_ContainerService_GetMetrics_0             = runtime.ForwardResponseMessage
-	forward_ContainerService_GetMetrics_1             = runtime.ForwardResponseMessage
-	forward_ContainerService_CleanupDisk_0            = runtime.ForwardResponseMessage
-	forward_ContainerService_InstallStack_0           = runtime.ForwardResponseMessage
-	forward_ContainerService_ListStacks_0             = runtime.ForwardResponseMessage
-	forward_ContainerService_GetSystemInfo_0          = runtime.ForwardResponseMessage
-	forward_ContainerService_ListBackends_0           = runtime.ForwardResponseMessage
-	forward_ContainerService_GetLatestRelease_0       = runtime.ForwardResponseMessage
-	forward_ContainerService_ValidateGPU_0            = runtime.ForwardResponseMessage
-	forward_ContainerService_TriggerUpgrade_0         = runtime.ForwardResponseMessage
-	forward_ContainerService_GetUpgradeStatus_0       = runtime.ForwardResponseMessage
-	forward_ContainerService_GetMonitoringInfo_0      = runtime.ForwardResponseMessage
-	forward_ContainerService_CreateAlertRule_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_ListAlertRules_0         = runtime.ForwardResponseMessage
-	forward_ContainerService_GetAlertRule_0           = runtime.ForwardResponseMessage
-	forward_ContainerService_UpdateAlertRule_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_DeleteAlertRule_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_GetAlertingInfo_0        = runtime.ForwardResponseMessage
-	forward_ContainerService_ListDefaultAlertRules_0  = runtime.ForwardResponseMessage
-	forward_ContainerService_UpdateAlertingConfig_0   = runtime.ForwardResponseMessage
-	forward_ContainerService_TestWebhook_0            = runtime.ForwardResponseMessage
-	forward_ContainerService_ListWebhookDeliveries_0  = runtime.ForwardResponseMessage
-	forward_ContainerService_SetSecret_0              = runtime.ForwardResponseMessage
-	forward_ContainerService_GetSecret_0              = runtime.ForwardResponseMessage
-	forward_ContainerService_ListSecrets_0            = runtime.ForwardResponseMessage
-	forward_ContainerService_DeleteSecret_0           = runtime.ForwardResponseMessage
-	forward_ContainerService_RefreshSecrets_0         = runtime.ForwardResponseMessage
+	forward_ContainerService_CreateContainer_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_ListContainers_0           = runtime.ForwardResponseMessage
+	forward_ContainerService_GetContainer_0             = runtime.ForwardResponseMessage
+	forward_ContainerService_DebugContainer_0           = runtime.ForwardResponseMessage
+	forward_ContainerService_DeleteContainer_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_StartContainer_0           = runtime.ForwardResponseMessage
+	forward_ContainerService_StopContainer_0            = runtime.ForwardResponseMessage
+	forward_ContainerService_ResizeContainer_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_MoveContainer_0            = runtime.ForwardResponseMessage
+	forward_ContainerService_AdoptMigratedContainer_0   = runtime.ForwardResponseMessage
+	forward_ContainerService_ToggleMonitoring_0         = runtime.ForwardResponseMessage
+	forward_ContainerService_ToggleAutoSleep_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_SetContainerTTL_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_SetContainerDeletePolicy_0 = runtime.ForwardResponseMessage
+	forward_ContainerService_AddSSHKey_0                = runtime.ForwardResponseMessage
+	forward_ContainerService_RemoveSSHKey_0             = runtime.ForwardResponseMessage
+	forward_ContainerService_AddCollaborator_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_RemoveCollaborator_0       = runtime.ForwardResponseMessage
+	forward_ContainerService_ListCollaborators_0        = runtime.ForwardResponseMessage
+	forward_ContainerService_GetMetrics_0               = runtime.ForwardResponseMessage
+	forward_ContainerService_GetMetrics_1               = runtime.ForwardResponseMessage
+	forward_ContainerService_CleanupDisk_0              = runtime.ForwardResponseMessage
+	forward_ContainerService_InstallStack_0             = runtime.ForwardResponseMessage
+	forward_ContainerService_ListStacks_0               = runtime.ForwardResponseMessage
+	forward_ContainerService_GetSystemInfo_0            = runtime.ForwardResponseMessage
+	forward_ContainerService_ListBackends_0             = runtime.ForwardResponseMessage
+	forward_ContainerService_GetLatestRelease_0         = runtime.ForwardResponseMessage
+	forward_ContainerService_ValidateGPU_0              = runtime.ForwardResponseMessage
+	forward_ContainerService_TriggerUpgrade_0           = runtime.ForwardResponseMessage
+	forward_ContainerService_GetUpgradeStatus_0         = runtime.ForwardResponseMessage
+	forward_ContainerService_GetMonitoringInfo_0        = runtime.ForwardResponseMessage
+	forward_ContainerService_CreateAlertRule_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_ListAlertRules_0           = runtime.ForwardResponseMessage
+	forward_ContainerService_GetAlertRule_0             = runtime.ForwardResponseMessage
+	forward_ContainerService_UpdateAlertRule_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_DeleteAlertRule_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_GetAlertingInfo_0          = runtime.ForwardResponseMessage
+	forward_ContainerService_ListDefaultAlertRules_0    = runtime.ForwardResponseMessage
+	forward_ContainerService_UpdateAlertingConfig_0     = runtime.ForwardResponseMessage
+	forward_ContainerService_TestWebhook_0              = runtime.ForwardResponseMessage
+	forward_ContainerService_ListWebhookDeliveries_0    = runtime.ForwardResponseMessage
+	forward_ContainerService_SetSecret_0                = runtime.ForwardResponseMessage
+	forward_ContainerService_GetSecret_0                = runtime.ForwardResponseMessage
+	forward_ContainerService_ListSecrets_0              = runtime.ForwardResponseMessage
+	forward_ContainerService_DeleteSecret_0             = runtime.ForwardResponseMessage
+	forward_ContainerService_RefreshSecrets_0           = runtime.ForwardResponseMessage
 )

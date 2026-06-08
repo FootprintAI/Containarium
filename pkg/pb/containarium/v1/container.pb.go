@@ -202,6 +202,63 @@ func (ContainerState) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_container_proto_rawDescGZIP(), []int{2}
 }
 
+// DeletePolicy controls whether a container may be removed by the daemon's
+// UNATTENDED deletion paths (#284). It gates only the automated/bulk sweeps —
+// the ttlsweeper's auto-reap and `containarium prune`; a deliberate single-box
+// delete always succeeds regardless, so this is a guard against a "clean up
+// leaked boxes" sweep taking out a persistent box (e.g. a GitHub Actions
+// runner), not a deletion lock. Backed by the user.containarium.delete_policy
+// Incus config key (DeletePolicyKey / DeletePolicyProtected in pkg/core/incus).
+type DeletePolicy int32
+
+const (
+	// Unprotected — eligible for prune + auto-reap (today's default; the
+	// absent/empty config value maps here).
+	DeletePolicy_DELETE_POLICY_UNSPECIFIED DeletePolicy = 0
+	// Protected — skipped by the ttlsweeper auto-reap and `containarium prune`.
+	// A deliberate single-box delete still removes it.
+	DeletePolicy_DELETE_POLICY_PROTECTED DeletePolicy = 1
+)
+
+// Enum value maps for DeletePolicy.
+var (
+	DeletePolicy_name = map[int32]string{
+		0: "DELETE_POLICY_UNSPECIFIED",
+		1: "DELETE_POLICY_PROTECTED",
+	}
+	DeletePolicy_value = map[string]int32{
+		"DELETE_POLICY_UNSPECIFIED": 0,
+		"DELETE_POLICY_PROTECTED":   1,
+	}
+)
+
+func (x DeletePolicy) Enum() *DeletePolicy {
+	p := new(DeletePolicy)
+	*p = x
+	return p
+}
+
+func (x DeletePolicy) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DeletePolicy) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_container_proto_enumTypes[3].Descriptor()
+}
+
+func (DeletePolicy) Type() protoreflect.EnumType {
+	return &file_containarium_v1_container_proto_enumTypes[3]
+}
+
+func (x DeletePolicy) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DeletePolicy.Descriptor instead.
+func (DeletePolicy) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{3}
+}
+
 // ResourceLimits defines resource constraints for a container
 type ResourceLimits struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -442,8 +499,14 @@ type Container struct {
 	// it auto-deletes once it has been stopped that long (reclaiming disk); 0 =
 	// never delete on stop. Opt-in, independent of auto_sleep_enabled.
 	DeleteAfterStoppedSeconds int64 `protobuf:"varint,25,opt,name=delete_after_stopped_seconds,json=deleteAfterStoppedSeconds,proto3" json:"delete_after_stopped_seconds,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// Whether this box is protected from the daemon's automated/bulk deletion
+	// paths (#284). DELETE_POLICY_PROTECTED means the ttlsweeper auto-reap and
+	// `containarium prune` skip it; a deliberate single-box delete still removes
+	// it. Read from the user.containarium.delete_policy Incus config key; set via
+	// SetContainerDeletePolicy. Absent/unprotected = DELETE_POLICY_UNSPECIFIED.
+	DeletePolicy  DeletePolicy `protobuf:"varint,26,opt,name=delete_policy,json=deletePolicy,proto3,enum=containarium.v1.DeletePolicy" json:"delete_policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Container) Reset() {
@@ -649,6 +712,13 @@ func (x *Container) GetDeleteAfterStoppedSeconds() int64 {
 		return x.DeleteAfterStoppedSeconds
 	}
 	return 0
+}
+
+func (x *Container) GetDeletePolicy() DeletePolicy {
+	if x != nil {
+		return x.DeletePolicy
+	}
+	return DeletePolicy_DELETE_POLICY_UNSPECIFIED
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -2237,6 +2307,111 @@ func (x *SetContainerTTLResponse) GetTtlExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// SetContainerDeletePolicyRequest sets or clears a container's protection from
+// the daemon's automated/bulk deletion paths (#284).
+type SetContainerDeletePolicyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Container name — the bare username, matching the per-container RPC
+	// convention (the handler appends "-container"; see SetContainerTTL).
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Target policy. DELETE_POLICY_PROTECTED protects the box from the ttlsweeper
+	// auto-reap and `containarium prune`; DELETE_POLICY_UNSPECIFIED clears the
+	// protection (back to the default — eligible for both).
+	DeletePolicy  DeletePolicy `protobuf:"varint,2,opt,name=delete_policy,json=deletePolicy,proto3,enum=containarium.v1.DeletePolicy" json:"delete_policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetContainerDeletePolicyRequest) Reset() {
+	*x = SetContainerDeletePolicyRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetContainerDeletePolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetContainerDeletePolicyRequest) ProtoMessage() {}
+
+func (x *SetContainerDeletePolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetContainerDeletePolicyRequest.ProtoReflect.Descriptor instead.
+func (*SetContainerDeletePolicyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SetContainerDeletePolicyRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SetContainerDeletePolicyRequest) GetDeletePolicy() DeletePolicy {
+	if x != nil {
+		return x.DeletePolicy
+	}
+	return DeletePolicy_DELETE_POLICY_UNSPECIFIED
+}
+
+// SetContainerDeletePolicyResponse reports the committed delete policy.
+type SetContainerDeletePolicyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The delete policy now in effect on the container.
+	DeletePolicy  DeletePolicy `protobuf:"varint,1,opt,name=delete_policy,json=deletePolicy,proto3,enum=containarium.v1.DeletePolicy" json:"delete_policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetContainerDeletePolicyResponse) Reset() {
+	*x = SetContainerDeletePolicyResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetContainerDeletePolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetContainerDeletePolicyResponse) ProtoMessage() {}
+
+func (x *SetContainerDeletePolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetContainerDeletePolicyResponse.ProtoReflect.Descriptor instead.
+func (*SetContainerDeletePolicyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *SetContainerDeletePolicyResponse) GetDeletePolicy() DeletePolicy {
+	if x != nil {
+		return x.DeletePolicy
+	}
+	return DeletePolicy_DELETE_POLICY_UNSPECIFIED
+}
+
 // AddSSHKeyRequest is the request to add an SSH key to a container
 type AddSSHKeyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2250,7 +2425,7 @@ type AddSSHKeyRequest struct {
 
 func (x *AddSSHKeyRequest) Reset() {
 	*x = AddSSHKeyRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[24]
+	mi := &file_containarium_v1_container_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2262,7 +2437,7 @@ func (x *AddSSHKeyRequest) String() string {
 func (*AddSSHKeyRequest) ProtoMessage() {}
 
 func (x *AddSSHKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[24]
+	mi := &file_containarium_v1_container_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2275,7 +2450,7 @@ func (x *AddSSHKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddSSHKeyRequest.ProtoReflect.Descriptor instead.
 func (*AddSSHKeyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{24}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *AddSSHKeyRequest) GetUsername() string {
@@ -2305,7 +2480,7 @@ type AddSSHKeyResponse struct {
 
 func (x *AddSSHKeyResponse) Reset() {
 	*x = AddSSHKeyResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[25]
+	mi := &file_containarium_v1_container_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2317,7 +2492,7 @@ func (x *AddSSHKeyResponse) String() string {
 func (*AddSSHKeyResponse) ProtoMessage() {}
 
 func (x *AddSSHKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[25]
+	mi := &file_containarium_v1_container_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2330,7 +2505,7 @@ func (x *AddSSHKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddSSHKeyResponse.ProtoReflect.Descriptor instead.
 func (*AddSSHKeyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{25}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *AddSSHKeyResponse) GetMessage() string {
@@ -2360,7 +2535,7 @@ type RemoveSSHKeyRequest struct {
 
 func (x *RemoveSSHKeyRequest) Reset() {
 	*x = RemoveSSHKeyRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[26]
+	mi := &file_containarium_v1_container_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2372,7 +2547,7 @@ func (x *RemoveSSHKeyRequest) String() string {
 func (*RemoveSSHKeyRequest) ProtoMessage() {}
 
 func (x *RemoveSSHKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[26]
+	mi := &file_containarium_v1_container_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2560,7 @@ func (x *RemoveSSHKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSSHKeyRequest.ProtoReflect.Descriptor instead.
 func (*RemoveSSHKeyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{26}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *RemoveSSHKeyRequest) GetUsername() string {
@@ -2415,7 +2590,7 @@ type RemoveSSHKeyResponse struct {
 
 func (x *RemoveSSHKeyResponse) Reset() {
 	*x = RemoveSSHKeyResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[27]
+	mi := &file_containarium_v1_container_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2427,7 +2602,7 @@ func (x *RemoveSSHKeyResponse) String() string {
 func (*RemoveSSHKeyResponse) ProtoMessage() {}
 
 func (x *RemoveSSHKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[27]
+	mi := &file_containarium_v1_container_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2440,7 +2615,7 @@ func (x *RemoveSSHKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSSHKeyResponse.ProtoReflect.Descriptor instead.
 func (*RemoveSSHKeyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{27}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *RemoveSSHKeyResponse) GetMessage() string {
@@ -2468,7 +2643,7 @@ type GetMetricsRequest struct {
 
 func (x *GetMetricsRequest) Reset() {
 	*x = GetMetricsRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[28]
+	mi := &file_containarium_v1_container_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2480,7 +2655,7 @@ func (x *GetMetricsRequest) String() string {
 func (*GetMetricsRequest) ProtoMessage() {}
 
 func (x *GetMetricsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[28]
+	mi := &file_containarium_v1_container_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2493,7 +2668,7 @@ func (x *GetMetricsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMetricsRequest.ProtoReflect.Descriptor instead.
 func (*GetMetricsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{28}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetMetricsRequest) GetUsername() string {
@@ -2514,7 +2689,7 @@ type GetMetricsResponse struct {
 
 func (x *GetMetricsResponse) Reset() {
 	*x = GetMetricsResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[29]
+	mi := &file_containarium_v1_container_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2526,7 +2701,7 @@ func (x *GetMetricsResponse) String() string {
 func (*GetMetricsResponse) ProtoMessage() {}
 
 func (x *GetMetricsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[29]
+	mi := &file_containarium_v1_container_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2539,7 +2714,7 @@ func (x *GetMetricsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMetricsResponse.ProtoReflect.Descriptor instead.
 func (*GetMetricsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{29}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetMetricsResponse) GetMetrics() []*ContainerMetrics {
@@ -2567,7 +2742,7 @@ type ResizeContainerRequest struct {
 
 func (x *ResizeContainerRequest) Reset() {
 	*x = ResizeContainerRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[30]
+	mi := &file_containarium_v1_container_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2579,7 +2754,7 @@ func (x *ResizeContainerRequest) String() string {
 func (*ResizeContainerRequest) ProtoMessage() {}
 
 func (x *ResizeContainerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[30]
+	mi := &file_containarium_v1_container_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2592,7 +2767,7 @@ func (x *ResizeContainerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResizeContainerRequest.ProtoReflect.Descriptor instead.
 func (*ResizeContainerRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{30}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ResizeContainerRequest) GetUsername() string {
@@ -2636,7 +2811,7 @@ type ResizeContainerResponse struct {
 
 func (x *ResizeContainerResponse) Reset() {
 	*x = ResizeContainerResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[31]
+	mi := &file_containarium_v1_container_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2648,7 +2823,7 @@ func (x *ResizeContainerResponse) String() string {
 func (*ResizeContainerResponse) ProtoMessage() {}
 
 func (x *ResizeContainerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[31]
+	mi := &file_containarium_v1_container_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2661,7 +2836,7 @@ func (x *ResizeContainerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResizeContainerResponse.ProtoReflect.Descriptor instead.
 func (*ResizeContainerResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{31}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ResizeContainerResponse) GetMessage() string {
@@ -2707,7 +2882,7 @@ type Collaborator struct {
 
 func (x *Collaborator) Reset() {
 	*x = Collaborator{}
-	mi := &file_containarium_v1_container_proto_msgTypes[32]
+	mi := &file_containarium_v1_container_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2719,7 +2894,7 @@ func (x *Collaborator) String() string {
 func (*Collaborator) ProtoMessage() {}
 
 func (x *Collaborator) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[32]
+	mi := &file_containarium_v1_container_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2732,7 +2907,7 @@ func (x *Collaborator) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Collaborator.ProtoReflect.Descriptor instead.
 func (*Collaborator) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{32}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *Collaborator) GetId() string {
@@ -2830,7 +3005,7 @@ type AddCollaboratorRequest struct {
 
 func (x *AddCollaboratorRequest) Reset() {
 	*x = AddCollaboratorRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[33]
+	mi := &file_containarium_v1_container_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2842,7 +3017,7 @@ func (x *AddCollaboratorRequest) String() string {
 func (*AddCollaboratorRequest) ProtoMessage() {}
 
 func (x *AddCollaboratorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[33]
+	mi := &file_containarium_v1_container_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2855,7 +3030,7 @@ func (x *AddCollaboratorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddCollaboratorRequest.ProtoReflect.Descriptor instead.
 func (*AddCollaboratorRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{33}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *AddCollaboratorRequest) GetOwnerUsername() string {
@@ -2915,7 +3090,7 @@ type AddCollaboratorResponse struct {
 
 func (x *AddCollaboratorResponse) Reset() {
 	*x = AddCollaboratorResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[34]
+	mi := &file_containarium_v1_container_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2927,7 +3102,7 @@ func (x *AddCollaboratorResponse) String() string {
 func (*AddCollaboratorResponse) ProtoMessage() {}
 
 func (x *AddCollaboratorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[34]
+	mi := &file_containarium_v1_container_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2940,7 +3115,7 @@ func (x *AddCollaboratorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddCollaboratorResponse.ProtoReflect.Descriptor instead.
 func (*AddCollaboratorResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{34}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *AddCollaboratorResponse) GetMessage() string {
@@ -2977,7 +3152,7 @@ type RemoveCollaboratorRequest struct {
 
 func (x *RemoveCollaboratorRequest) Reset() {
 	*x = RemoveCollaboratorRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[35]
+	mi := &file_containarium_v1_container_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2989,7 +3164,7 @@ func (x *RemoveCollaboratorRequest) String() string {
 func (*RemoveCollaboratorRequest) ProtoMessage() {}
 
 func (x *RemoveCollaboratorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[35]
+	mi := &file_containarium_v1_container_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3002,7 +3177,7 @@ func (x *RemoveCollaboratorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveCollaboratorRequest.ProtoReflect.Descriptor instead.
 func (*RemoveCollaboratorRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{35}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *RemoveCollaboratorRequest) GetOwnerUsername() string {
@@ -3030,7 +3205,7 @@ type RemoveCollaboratorResponse struct {
 
 func (x *RemoveCollaboratorResponse) Reset() {
 	*x = RemoveCollaboratorResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[36]
+	mi := &file_containarium_v1_container_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3042,7 +3217,7 @@ func (x *RemoveCollaboratorResponse) String() string {
 func (*RemoveCollaboratorResponse) ProtoMessage() {}
 
 func (x *RemoveCollaboratorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[36]
+	mi := &file_containarium_v1_container_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3055,7 +3230,7 @@ func (x *RemoveCollaboratorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveCollaboratorResponse.ProtoReflect.Descriptor instead.
 func (*RemoveCollaboratorResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{36}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RemoveCollaboratorResponse) GetMessage() string {
@@ -3076,7 +3251,7 @@ type ListCollaboratorsRequest struct {
 
 func (x *ListCollaboratorsRequest) Reset() {
 	*x = ListCollaboratorsRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[37]
+	mi := &file_containarium_v1_container_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3088,7 +3263,7 @@ func (x *ListCollaboratorsRequest) String() string {
 func (*ListCollaboratorsRequest) ProtoMessage() {}
 
 func (x *ListCollaboratorsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[37]
+	mi := &file_containarium_v1_container_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3101,7 +3276,7 @@ func (x *ListCollaboratorsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCollaboratorsRequest.ProtoReflect.Descriptor instead.
 func (*ListCollaboratorsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{37}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListCollaboratorsRequest) GetOwnerUsername() string {
@@ -3124,7 +3299,7 @@ type ListCollaboratorsResponse struct {
 
 func (x *ListCollaboratorsResponse) Reset() {
 	*x = ListCollaboratorsResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[38]
+	mi := &file_containarium_v1_container_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3136,7 +3311,7 @@ func (x *ListCollaboratorsResponse) String() string {
 func (*ListCollaboratorsResponse) ProtoMessage() {}
 
 func (x *ListCollaboratorsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[38]
+	mi := &file_containarium_v1_container_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3149,7 +3324,7 @@ func (x *ListCollaboratorsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCollaboratorsResponse.ProtoReflect.Descriptor instead.
 func (*ListCollaboratorsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{38}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ListCollaboratorsResponse) GetCollaborators() []*Collaborator {
@@ -3177,7 +3352,7 @@ type CleanupDiskRequest struct {
 
 func (x *CleanupDiskRequest) Reset() {
 	*x = CleanupDiskRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[39]
+	mi := &file_containarium_v1_container_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3189,7 +3364,7 @@ func (x *CleanupDiskRequest) String() string {
 func (*CleanupDiskRequest) ProtoMessage() {}
 
 func (x *CleanupDiskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[39]
+	mi := &file_containarium_v1_container_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3202,7 +3377,7 @@ func (x *CleanupDiskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CleanupDiskRequest.ProtoReflect.Descriptor instead.
 func (*CleanupDiskRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{39}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *CleanupDiskRequest) GetUsername() string {
@@ -3227,7 +3402,7 @@ type CleanupDiskResponse struct {
 
 func (x *CleanupDiskResponse) Reset() {
 	*x = CleanupDiskResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[40]
+	mi := &file_containarium_v1_container_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3239,7 +3414,7 @@ func (x *CleanupDiskResponse) String() string {
 func (*CleanupDiskResponse) ProtoMessage() {}
 
 func (x *CleanupDiskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[40]
+	mi := &file_containarium_v1_container_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3252,7 +3427,7 @@ func (x *CleanupDiskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CleanupDiskResponse.ProtoReflect.Descriptor instead.
 func (*CleanupDiskResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{40}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *CleanupDiskResponse) GetMessage() string {
@@ -3289,7 +3464,7 @@ type InstallStackRequest struct {
 
 func (x *InstallStackRequest) Reset() {
 	*x = InstallStackRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[41]
+	mi := &file_containarium_v1_container_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3301,7 +3476,7 @@ func (x *InstallStackRequest) String() string {
 func (*InstallStackRequest) ProtoMessage() {}
 
 func (x *InstallStackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[41]
+	mi := &file_containarium_v1_container_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3314,7 +3489,7 @@ func (x *InstallStackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstallStackRequest.ProtoReflect.Descriptor instead.
 func (*InstallStackRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{41}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *InstallStackRequest) GetUsername() string {
@@ -3344,7 +3519,7 @@ type InstallStackResponse struct {
 
 func (x *InstallStackResponse) Reset() {
 	*x = InstallStackResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[42]
+	mi := &file_containarium_v1_container_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3356,7 +3531,7 @@ func (x *InstallStackResponse) String() string {
 func (*InstallStackResponse) ProtoMessage() {}
 
 func (x *InstallStackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[42]
+	mi := &file_containarium_v1_container_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3369,7 +3544,7 @@ func (x *InstallStackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstallStackResponse.ProtoReflect.Descriptor instead.
 func (*InstallStackResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{42}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *InstallStackResponse) GetMessage() string {
@@ -3409,7 +3584,7 @@ type StackParameter struct {
 
 func (x *StackParameter) Reset() {
 	*x = StackParameter{}
-	mi := &file_containarium_v1_container_proto_msgTypes[43]
+	mi := &file_containarium_v1_container_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3421,7 +3596,7 @@ func (x *StackParameter) String() string {
 func (*StackParameter) ProtoMessage() {}
 
 func (x *StackParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[43]
+	mi := &file_containarium_v1_container_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3434,7 +3609,7 @@ func (x *StackParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StackParameter.ProtoReflect.Descriptor instead.
 func (*StackParameter) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{43}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *StackParameter) GetName() string {
@@ -3493,7 +3668,7 @@ type StackInfo struct {
 
 func (x *StackInfo) Reset() {
 	*x = StackInfo{}
-	mi := &file_containarium_v1_container_proto_msgTypes[44]
+	mi := &file_containarium_v1_container_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3505,7 +3680,7 @@ func (x *StackInfo) String() string {
 func (*StackInfo) ProtoMessage() {}
 
 func (x *StackInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[44]
+	mi := &file_containarium_v1_container_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3518,7 +3693,7 @@ func (x *StackInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StackInfo.ProtoReflect.Descriptor instead.
 func (*StackInfo) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{44}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *StackInfo) GetId() string {
@@ -3565,7 +3740,7 @@ type ListStacksRequest struct {
 
 func (x *ListStacksRequest) Reset() {
 	*x = ListStacksRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[45]
+	mi := &file_containarium_v1_container_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3577,7 +3752,7 @@ func (x *ListStacksRequest) String() string {
 func (*ListStacksRequest) ProtoMessage() {}
 
 func (x *ListStacksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[45]
+	mi := &file_containarium_v1_container_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3590,7 +3765,7 @@ func (x *ListStacksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStacksRequest.ProtoReflect.Descriptor instead.
 func (*ListStacksRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{45}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{47}
 }
 
 // ListStacksResponse returns all configured software stacks.
@@ -3603,7 +3778,7 @@ type ListStacksResponse struct {
 
 func (x *ListStacksResponse) Reset() {
 	*x = ListStacksResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[46]
+	mi := &file_containarium_v1_container_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3615,7 +3790,7 @@ func (x *ListStacksResponse) String() string {
 func (*ListStacksResponse) ProtoMessage() {}
 
 func (x *ListStacksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[46]
+	mi := &file_containarium_v1_container_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3628,7 +3803,7 @@ func (x *ListStacksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStacksResponse.ProtoReflect.Descriptor instead.
 func (*ListStacksResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{46}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListStacksResponse) GetStacks() []*StackInfo {
@@ -3647,7 +3822,7 @@ type GetMonitoringInfoRequest struct {
 
 func (x *GetMonitoringInfoRequest) Reset() {
 	*x = GetMonitoringInfoRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[47]
+	mi := &file_containarium_v1_container_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3659,7 +3834,7 @@ func (x *GetMonitoringInfoRequest) String() string {
 func (*GetMonitoringInfoRequest) ProtoMessage() {}
 
 func (x *GetMonitoringInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[47]
+	mi := &file_containarium_v1_container_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3672,7 +3847,7 @@ func (x *GetMonitoringInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMonitoringInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetMonitoringInfoRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{47}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{49}
 }
 
 // GetMonitoringInfoResponse is the response with monitoring configuration
@@ -3690,7 +3865,7 @@ type GetMonitoringInfoResponse struct {
 
 func (x *GetMonitoringInfoResponse) Reset() {
 	*x = GetMonitoringInfoResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[48]
+	mi := &file_containarium_v1_container_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3702,7 +3877,7 @@ func (x *GetMonitoringInfoResponse) String() string {
 func (*GetMonitoringInfoResponse) ProtoMessage() {}
 
 func (x *GetMonitoringInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[48]
+	mi := &file_containarium_v1_container_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3715,7 +3890,7 @@ func (x *GetMonitoringInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMonitoringInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetMonitoringInfoResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{48}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *GetMonitoringInfoResponse) GetEnabled() bool {
@@ -3774,7 +3949,7 @@ type MoveContainerRequest struct {
 
 func (x *MoveContainerRequest) Reset() {
 	*x = MoveContainerRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[49]
+	mi := &file_containarium_v1_container_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3786,7 +3961,7 @@ func (x *MoveContainerRequest) String() string {
 func (*MoveContainerRequest) ProtoMessage() {}
 
 func (x *MoveContainerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[49]
+	mi := &file_containarium_v1_container_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3799,7 +3974,7 @@ func (x *MoveContainerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveContainerRequest.ProtoReflect.Descriptor instead.
 func (*MoveContainerRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{49}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *MoveContainerRequest) GetUsername() string {
@@ -3862,7 +4037,7 @@ type MoveContainerResponse struct {
 
 func (x *MoveContainerResponse) Reset() {
 	*x = MoveContainerResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[50]
+	mi := &file_containarium_v1_container_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3874,7 +4049,7 @@ func (x *MoveContainerResponse) String() string {
 func (*MoveContainerResponse) ProtoMessage() {}
 
 func (x *MoveContainerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[50]
+	mi := &file_containarium_v1_container_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3887,7 +4062,7 @@ func (x *MoveContainerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveContainerResponse.ProtoReflect.Descriptor instead.
 func (*MoveContainerResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{50}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *MoveContainerResponse) GetMessage() string {
@@ -3948,7 +4123,7 @@ type AdoptMigratedContainerRequest struct {
 
 func (x *AdoptMigratedContainerRequest) Reset() {
 	*x = AdoptMigratedContainerRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[51]
+	mi := &file_containarium_v1_container_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3960,7 +4135,7 @@ func (x *AdoptMigratedContainerRequest) String() string {
 func (*AdoptMigratedContainerRequest) ProtoMessage() {}
 
 func (x *AdoptMigratedContainerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[51]
+	mi := &file_containarium_v1_container_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3973,7 +4148,7 @@ func (x *AdoptMigratedContainerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdoptMigratedContainerRequest.ProtoReflect.Descriptor instead.
 func (*AdoptMigratedContainerRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{51}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *AdoptMigratedContainerRequest) GetUsername() string {
@@ -4005,7 +4180,7 @@ type AdoptMigratedContainerResponse struct {
 
 func (x *AdoptMigratedContainerResponse) Reset() {
 	*x = AdoptMigratedContainerResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[52]
+	mi := &file_containarium_v1_container_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4017,7 +4192,7 @@ func (x *AdoptMigratedContainerResponse) String() string {
 func (*AdoptMigratedContainerResponse) ProtoMessage() {}
 
 func (x *AdoptMigratedContainerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[52]
+	mi := &file_containarium_v1_container_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4030,7 +4205,7 @@ func (x *AdoptMigratedContainerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdoptMigratedContainerResponse.ProtoReflect.Descriptor instead.
 func (*AdoptMigratedContainerResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{52}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *AdoptMigratedContainerResponse) GetMessage() string {
@@ -4080,7 +4255,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xdf\b\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xa3\t\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -4114,7 +4289,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\bssh_host\x18\x17 \x01(\tR\asshHost\x129\n" +
 	"\n" +
 	"stopped_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tstoppedAt\x12?\n" +
-	"\x1cdelete_after_stopped_seconds\x18\x19 \x01(\x03R\x19deleteAfterStoppedSeconds\x1a9\n" +
+	"\x1cdelete_after_stopped_seconds\x18\x19 \x01(\x03R\x19deleteAfterStoppedSeconds\x12B\n" +
+	"\rdelete_policy\x18\x1a \x01(\x0e2\x1d.containarium.v1.DeletePolicyR\fdeletePolicy\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
@@ -4239,7 +4415,12 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12)\n" +
 	"\x10duration_seconds\x18\x02 \x01(\x03R\x0fdurationSeconds\"[\n" +
 	"\x17SetContainerTTLResponse\x12@\n" +
-	"\x0ettl_expires_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\fttlExpiresAt\"T\n" +
+	"\x0ettl_expires_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\fttlExpiresAt\"y\n" +
+	"\x1fSetContainerDeletePolicyRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12B\n" +
+	"\rdelete_policy\x18\x02 \x01(\x0e2\x1d.containarium.v1.DeletePolicyR\fdeletePolicy\"f\n" +
+	" SetContainerDeletePolicyResponse\x12B\n" +
+	"\rdelete_policy\x18\x01 \x01(\x0e2\x1d.containarium.v1.DeletePolicyR\fdeletePolicy\"T\n" +
 	"\x10AddSSHKeyRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12$\n" +
 	"\x0essh_public_key\x18\x02 \x01(\tR\fsshPublicKey\"L\n" +
@@ -4376,7 +4557,10 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x8a\xb5\x18\x06Frozen\x12*\n" +
 	"\x18CONTAINER_STATE_CREATING\x10\x04\x1a\f\x8a\xb5\x18\bCreating\x12$\n" +
 	"\x15CONTAINER_STATE_ERROR\x10\x05\x1a\t\x8a\xb5\x18\x05Error\x122\n" +
-	"\x1cCONTAINER_STATE_PROVISIONING\x10\x06\x1a\x10\x8a\xb5\x18\fProvisioning:B\n" +
+	"\x1cCONTAINER_STATE_PROVISIONING\x10\x06\x1a\x10\x8a\xb5\x18\fProvisioning*J\n" +
+	"\fDeletePolicy\x12\x1d\n" +
+	"\x19DELETE_POLICY_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17DELETE_POLICY_PROTECTED\x10\x01:B\n" +
 	"\n" +
 	"state_name\x12!.google.protobuf.EnumValueOptions\x18ц\x03 \x01(\tR\tstateNameBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
@@ -4392,108 +4576,114 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_container_proto_rawDescData
 }
 
-var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
+var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
 var file_containarium_v1_container_proto_goTypes = []any{
-	(OSType)(0),                            // 0: containarium.v1.OSType
-	(AccessType)(0),                        // 1: containarium.v1.AccessType
-	(ContainerState)(0),                    // 2: containarium.v1.ContainerState
-	(*ResourceLimits)(nil),                 // 3: containarium.v1.ResourceLimits
-	(*NetworkInfo)(nil),                    // 4: containarium.v1.NetworkInfo
-	(*Container)(nil),                      // 5: containarium.v1.Container
-	(*ContainerMetrics)(nil),               // 6: containarium.v1.ContainerMetrics
-	(*CreateContainerRequest)(nil),         // 7: containarium.v1.CreateContainerRequest
-	(*CreateContainerResponse)(nil),        // 8: containarium.v1.CreateContainerResponse
-	(*ListContainersRequest)(nil),          // 9: containarium.v1.ListContainersRequest
-	(*ListContainersResponse)(nil),         // 10: containarium.v1.ListContainersResponse
-	(*GetContainerRequest)(nil),            // 11: containarium.v1.GetContainerRequest
-	(*GetContainerResponse)(nil),           // 12: containarium.v1.GetContainerResponse
-	(*DebugContainerRequest)(nil),          // 13: containarium.v1.DebugContainerRequest
-	(*DebugContainerResponse)(nil),         // 14: containarium.v1.DebugContainerResponse
-	(*DeleteContainerRequest)(nil),         // 15: containarium.v1.DeleteContainerRequest
-	(*DeleteContainerResponse)(nil),        // 16: containarium.v1.DeleteContainerResponse
-	(*StartContainerRequest)(nil),          // 17: containarium.v1.StartContainerRequest
-	(*StartContainerResponse)(nil),         // 18: containarium.v1.StartContainerResponse
-	(*StopContainerRequest)(nil),           // 19: containarium.v1.StopContainerRequest
-	(*StopContainerResponse)(nil),          // 20: containarium.v1.StopContainerResponse
-	(*ToggleMonitoringRequest)(nil),        // 21: containarium.v1.ToggleMonitoringRequest
-	(*ToggleMonitoringResponse)(nil),       // 22: containarium.v1.ToggleMonitoringResponse
-	(*ToggleAutoSleepRequest)(nil),         // 23: containarium.v1.ToggleAutoSleepRequest
-	(*ToggleAutoSleepResponse)(nil),        // 24: containarium.v1.ToggleAutoSleepResponse
-	(*SetContainerTTLRequest)(nil),         // 25: containarium.v1.SetContainerTTLRequest
-	(*SetContainerTTLResponse)(nil),        // 26: containarium.v1.SetContainerTTLResponse
-	(*AddSSHKeyRequest)(nil),               // 27: containarium.v1.AddSSHKeyRequest
-	(*AddSSHKeyResponse)(nil),              // 28: containarium.v1.AddSSHKeyResponse
-	(*RemoveSSHKeyRequest)(nil),            // 29: containarium.v1.RemoveSSHKeyRequest
-	(*RemoveSSHKeyResponse)(nil),           // 30: containarium.v1.RemoveSSHKeyResponse
-	(*GetMetricsRequest)(nil),              // 31: containarium.v1.GetMetricsRequest
-	(*GetMetricsResponse)(nil),             // 32: containarium.v1.GetMetricsResponse
-	(*ResizeContainerRequest)(nil),         // 33: containarium.v1.ResizeContainerRequest
-	(*ResizeContainerResponse)(nil),        // 34: containarium.v1.ResizeContainerResponse
-	(*Collaborator)(nil),                   // 35: containarium.v1.Collaborator
-	(*AddCollaboratorRequest)(nil),         // 36: containarium.v1.AddCollaboratorRequest
-	(*AddCollaboratorResponse)(nil),        // 37: containarium.v1.AddCollaboratorResponse
-	(*RemoveCollaboratorRequest)(nil),      // 38: containarium.v1.RemoveCollaboratorRequest
-	(*RemoveCollaboratorResponse)(nil),     // 39: containarium.v1.RemoveCollaboratorResponse
-	(*ListCollaboratorsRequest)(nil),       // 40: containarium.v1.ListCollaboratorsRequest
-	(*ListCollaboratorsResponse)(nil),      // 41: containarium.v1.ListCollaboratorsResponse
-	(*CleanupDiskRequest)(nil),             // 42: containarium.v1.CleanupDiskRequest
-	(*CleanupDiskResponse)(nil),            // 43: containarium.v1.CleanupDiskResponse
-	(*InstallStackRequest)(nil),            // 44: containarium.v1.InstallStackRequest
-	(*InstallStackResponse)(nil),           // 45: containarium.v1.InstallStackResponse
-	(*StackParameter)(nil),                 // 46: containarium.v1.StackParameter
-	(*StackInfo)(nil),                      // 47: containarium.v1.StackInfo
-	(*ListStacksRequest)(nil),              // 48: containarium.v1.ListStacksRequest
-	(*ListStacksResponse)(nil),             // 49: containarium.v1.ListStacksResponse
-	(*GetMonitoringInfoRequest)(nil),       // 50: containarium.v1.GetMonitoringInfoRequest
-	(*GetMonitoringInfoResponse)(nil),      // 51: containarium.v1.GetMonitoringInfoResponse
-	(*MoveContainerRequest)(nil),           // 52: containarium.v1.MoveContainerRequest
-	(*MoveContainerResponse)(nil),          // 53: containarium.v1.MoveContainerResponse
-	(*AdoptMigratedContainerRequest)(nil),  // 54: containarium.v1.AdoptMigratedContainerRequest
-	(*AdoptMigratedContainerResponse)(nil), // 55: containarium.v1.AdoptMigratedContainerResponse
-	nil,                                    // 56: containarium.v1.Container.LabelsEntry
-	nil,                                    // 57: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                    // 58: containarium.v1.CreateContainerRequest.StackParametersEntry
-	nil,                                    // 59: containarium.v1.ListContainersRequest.LabelFilterEntry
-	(*timestamppb.Timestamp)(nil),          // 60: google.protobuf.Timestamp
-	(*descriptorpb.EnumValueOptions)(nil),  // 61: google.protobuf.EnumValueOptions
+	(OSType)(0),                              // 0: containarium.v1.OSType
+	(AccessType)(0),                          // 1: containarium.v1.AccessType
+	(ContainerState)(0),                      // 2: containarium.v1.ContainerState
+	(DeletePolicy)(0),                        // 3: containarium.v1.DeletePolicy
+	(*ResourceLimits)(nil),                   // 4: containarium.v1.ResourceLimits
+	(*NetworkInfo)(nil),                      // 5: containarium.v1.NetworkInfo
+	(*Container)(nil),                        // 6: containarium.v1.Container
+	(*ContainerMetrics)(nil),                 // 7: containarium.v1.ContainerMetrics
+	(*CreateContainerRequest)(nil),           // 8: containarium.v1.CreateContainerRequest
+	(*CreateContainerResponse)(nil),          // 9: containarium.v1.CreateContainerResponse
+	(*ListContainersRequest)(nil),            // 10: containarium.v1.ListContainersRequest
+	(*ListContainersResponse)(nil),           // 11: containarium.v1.ListContainersResponse
+	(*GetContainerRequest)(nil),              // 12: containarium.v1.GetContainerRequest
+	(*GetContainerResponse)(nil),             // 13: containarium.v1.GetContainerResponse
+	(*DebugContainerRequest)(nil),            // 14: containarium.v1.DebugContainerRequest
+	(*DebugContainerResponse)(nil),           // 15: containarium.v1.DebugContainerResponse
+	(*DeleteContainerRequest)(nil),           // 16: containarium.v1.DeleteContainerRequest
+	(*DeleteContainerResponse)(nil),          // 17: containarium.v1.DeleteContainerResponse
+	(*StartContainerRequest)(nil),            // 18: containarium.v1.StartContainerRequest
+	(*StartContainerResponse)(nil),           // 19: containarium.v1.StartContainerResponse
+	(*StopContainerRequest)(nil),             // 20: containarium.v1.StopContainerRequest
+	(*StopContainerResponse)(nil),            // 21: containarium.v1.StopContainerResponse
+	(*ToggleMonitoringRequest)(nil),          // 22: containarium.v1.ToggleMonitoringRequest
+	(*ToggleMonitoringResponse)(nil),         // 23: containarium.v1.ToggleMonitoringResponse
+	(*ToggleAutoSleepRequest)(nil),           // 24: containarium.v1.ToggleAutoSleepRequest
+	(*ToggleAutoSleepResponse)(nil),          // 25: containarium.v1.ToggleAutoSleepResponse
+	(*SetContainerTTLRequest)(nil),           // 26: containarium.v1.SetContainerTTLRequest
+	(*SetContainerTTLResponse)(nil),          // 27: containarium.v1.SetContainerTTLResponse
+	(*SetContainerDeletePolicyRequest)(nil),  // 28: containarium.v1.SetContainerDeletePolicyRequest
+	(*SetContainerDeletePolicyResponse)(nil), // 29: containarium.v1.SetContainerDeletePolicyResponse
+	(*AddSSHKeyRequest)(nil),                 // 30: containarium.v1.AddSSHKeyRequest
+	(*AddSSHKeyResponse)(nil),                // 31: containarium.v1.AddSSHKeyResponse
+	(*RemoveSSHKeyRequest)(nil),              // 32: containarium.v1.RemoveSSHKeyRequest
+	(*RemoveSSHKeyResponse)(nil),             // 33: containarium.v1.RemoveSSHKeyResponse
+	(*GetMetricsRequest)(nil),                // 34: containarium.v1.GetMetricsRequest
+	(*GetMetricsResponse)(nil),               // 35: containarium.v1.GetMetricsResponse
+	(*ResizeContainerRequest)(nil),           // 36: containarium.v1.ResizeContainerRequest
+	(*ResizeContainerResponse)(nil),          // 37: containarium.v1.ResizeContainerResponse
+	(*Collaborator)(nil),                     // 38: containarium.v1.Collaborator
+	(*AddCollaboratorRequest)(nil),           // 39: containarium.v1.AddCollaboratorRequest
+	(*AddCollaboratorResponse)(nil),          // 40: containarium.v1.AddCollaboratorResponse
+	(*RemoveCollaboratorRequest)(nil),        // 41: containarium.v1.RemoveCollaboratorRequest
+	(*RemoveCollaboratorResponse)(nil),       // 42: containarium.v1.RemoveCollaboratorResponse
+	(*ListCollaboratorsRequest)(nil),         // 43: containarium.v1.ListCollaboratorsRequest
+	(*ListCollaboratorsResponse)(nil),        // 44: containarium.v1.ListCollaboratorsResponse
+	(*CleanupDiskRequest)(nil),               // 45: containarium.v1.CleanupDiskRequest
+	(*CleanupDiskResponse)(nil),              // 46: containarium.v1.CleanupDiskResponse
+	(*InstallStackRequest)(nil),              // 47: containarium.v1.InstallStackRequest
+	(*InstallStackResponse)(nil),             // 48: containarium.v1.InstallStackResponse
+	(*StackParameter)(nil),                   // 49: containarium.v1.StackParameter
+	(*StackInfo)(nil),                        // 50: containarium.v1.StackInfo
+	(*ListStacksRequest)(nil),                // 51: containarium.v1.ListStacksRequest
+	(*ListStacksResponse)(nil),               // 52: containarium.v1.ListStacksResponse
+	(*GetMonitoringInfoRequest)(nil),         // 53: containarium.v1.GetMonitoringInfoRequest
+	(*GetMonitoringInfoResponse)(nil),        // 54: containarium.v1.GetMonitoringInfoResponse
+	(*MoveContainerRequest)(nil),             // 55: containarium.v1.MoveContainerRequest
+	(*MoveContainerResponse)(nil),            // 56: containarium.v1.MoveContainerResponse
+	(*AdoptMigratedContainerRequest)(nil),    // 57: containarium.v1.AdoptMigratedContainerRequest
+	(*AdoptMigratedContainerResponse)(nil),   // 58: containarium.v1.AdoptMigratedContainerResponse
+	nil,                                      // 59: containarium.v1.Container.LabelsEntry
+	nil,                                      // 60: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                      // 61: containarium.v1.CreateContainerRequest.StackParametersEntry
+	nil,                                      // 62: containarium.v1.ListContainersRequest.LabelFilterEntry
+	(*timestamppb.Timestamp)(nil),            // 63: google.protobuf.Timestamp
+	(*descriptorpb.EnumValueOptions)(nil),    // 64: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
 	2,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
-	3,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
-	4,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	56, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	4,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
+	5,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
+	59, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
 	0,  // 4: containarium.v1.Container.os_type:type_name -> containarium.v1.OSType
 	1,  // 5: containarium.v1.Container.access_type:type_name -> containarium.v1.AccessType
-	60, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	60, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
-	3,  // 8: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	57, // 9: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
-	0,  // 10: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
-	58, // 11: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
-	5,  // 12: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
-	2,  // 13: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	59, // 14: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
-	5,  // 15: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
-	5,  // 16: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
-	6,  // 17: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	5,  // 18: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
-	5,  // 19: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
-	60, // 20: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	6,  // 21: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	5,  // 22: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
-	35, // 23: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
-	35, // 24: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
-	5,  // 25: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
-	5,  // 26: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
-	46, // 27: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
-	47, // 28: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
-	61, // 29: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	29, // [29:30] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	63, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	63, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
+	3,  // 8: containarium.v1.Container.delete_policy:type_name -> containarium.v1.DeletePolicy
+	4,  // 9: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
+	60, // 10: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	0,  // 11: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
+	61, // 12: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
+	6,  // 13: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
+	2,  // 14: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
+	62, // 15: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	6,  // 16: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
+	6,  // 17: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
+	7,  // 18: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	6,  // 19: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
+	6,  // 20: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
+	63, // 21: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	3,  // 22: containarium.v1.SetContainerDeletePolicyRequest.delete_policy:type_name -> containarium.v1.DeletePolicy
+	3,  // 23: containarium.v1.SetContainerDeletePolicyResponse.delete_policy:type_name -> containarium.v1.DeletePolicy
+	7,  // 24: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	6,  // 25: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
+	38, // 26: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
+	38, // 27: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
+	6,  // 28: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
+	6,  // 29: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
+	49, // 30: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
+	50, // 31: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
+	64, // 32: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	32, // [32:33] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }
@@ -4506,8 +4696,8 @@ func file_containarium_v1_container_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   57,
+			NumEnums:      4,
+			NumMessages:   59,
 			NumExtensions: 1,
 			NumServices:   0,
 		},
