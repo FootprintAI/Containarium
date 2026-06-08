@@ -251,14 +251,14 @@ func (cs *CoreServices) applyOTelCollectorConfig(vmIP string, dropLabels []strin
 // recognized, or when the bearer load itself fails.
 //
 // Cutover sequence for operators:
-//   1. Run the new daemon (bearer auto-created; header
-//      stamped on new monitoring containers).
-//   2. Re-toggle monitoring on existing containers so they
-//      pick up the header (or restart, which re-stamps).
-//   3. Set CONTAINARIUM_OTEL_REQUIRE_AUTH=true and restart
-//      the daemon. Now the collector enforces; any
-//      container without the header drops silently (and
-//      that's the signal to find the laggard).
+//  1. Run the new daemon (bearer auto-created; header
+//     stamped on new monitoring containers).
+//  2. Re-toggle monitoring on existing containers so they
+//     pick up the header (or restart, which re-stamps).
+//  3. Set CONTAINARIUM_OTEL_REQUIRE_AUTH=true and restart
+//     the daemon. Now the collector enforces; any
+//     container without the header drops silently (and
+//     that's the signal to find the laggard).
 func collectorBearerForConfig() string {
 	raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_OTEL_REQUIRE_AUTH"))
 	on := false
@@ -281,14 +281,30 @@ func collectorBearerForConfig() string {
 	return bearer
 }
 
-// WriteContainerIPMap pushes the current source-IP → container-name
-// map into the collector LXC at containerIPsFile. The collector reads
-// this file (or v2: reloads-on-mtime) for source-IP-based identity
-// attribution.
+// ContainerIPEntry is the identity attributed to a source IP in
+// container_ips.json. It carries BOTH the local incus name (for in-cluster
+// Grafana, which keys on container_name) and the cloud_container_id (the
+// cloud control plane's join key — what cloud-daemon's MetricsService queries
+// by; see the cloud's metrics.VictoriaMetrics, which selects
+// {container_id="<cloud uuid>"}). CloudContainerID is empty for standalone /
+// CLI-created boxes that carry no cloud label.
+//
+// The source.ip → container.id join that consumes this (the OTel collector's
+// "v2" attribution step) is still pending — but capturing the cloud id at the
+// source here means that join, however it lands, can stamp the
+// cloud-queryable label rather than only the local name.
+type ContainerIPEntry struct {
+	Name             string `json:"name"`
+	CloudContainerID string `json:"cloud_container_id,omitempty"`
+}
+
+// WriteContainerIPMap pushes the current source-IP → {name, cloud_container_id}
+// map into the collector LXC at containerIPsFile. The collector reads this
+// file (v2: reloads-on-mtime) for source-IP-based identity attribution.
 //
 // Errors are returned (not logged-and-swallowed) so the caller can
 // decide whether to retry; in practice callsites log + continue.
-func (cs *CoreServices) WriteContainerIPMap(ipMap map[string]string) error {
+func (cs *CoreServices) WriteContainerIPMap(ipMap map[string]ContainerIPEntry) error {
 	if cs.otelCollectorIP == "" {
 		// Collector not provisioned yet — silently skip. The
 		// post-ensure code will re-push the map after EnsureOTelCollector.
@@ -438,7 +454,9 @@ processors:`, bind, authBlock, bind, authBlock)
   # Anti-spoofing: stamp source.ip from the OTLP client.address so a
   # misbehaving container cannot fake provenance. v1 surfaces the raw
   # IP; v2 will join it with /var/lib/containarium/container_ips.json
-  # to materialize a container.id label.
+  # (source.ip → {name, cloud_container_id}) to materialize a
+  # container.id label = the cloud_container_id, which the cloud
+  # control plane's MetricsService queries by.
   attributes/identity:
     actions:
       - key: source.ip
