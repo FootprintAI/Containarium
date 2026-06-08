@@ -12,12 +12,12 @@ import (
 // convention as internal/app/store_test.go: t.Skip in CI, runnable
 // locally with:
 //
-//   docker run -d -p 5432:5432 \
-//     -e POSTGRES_PASSWORD=test \
-//     -e POSTGRES_DB=containarium \
-//     postgres:16-alpine
+//	docker run -d -p 5432:5432 \
+//	  -e POSTGRES_PASSWORD=test \
+//	  -e POSTGRES_DB=containarium \
+//	  postgres:16-alpine
 //
-//   go test -run TestSecretsStore ./internal/secrets/ -v
+//	go test -run TestSecretsStore ./internal/secrets/ -v
 //
 // The crypto layer is fully unit-tested in pkg/core/secrets;
 // this test exercises the SQL roundtrip + AAD binding through

@@ -78,9 +78,9 @@ func TestPolicyFromCLI(t *testing.T) {
 	t.Run("legacy + specs combined", func(t *testing.T) {
 		p, err := PolicyFromCLI("legacy", []string{"lab-only=lab"})
 		require.NoError(t, err)
-		assert.NoError(t, p.Validate("legacy", "prod"))   // wildcard
-		assert.NoError(t, p.Validate("lab-only", "lab"))  // restricted
-		assert.Error(t, p.Validate("lab-only", "prod"))   // restricted rejects
+		assert.NoError(t, p.Validate("legacy", "prod"))  // wildcard
+		assert.NoError(t, p.Validate("lab-only", "lab")) // restricted
+		assert.Error(t, p.Validate("lab-only", "prod"))  // restricted rejects
 	})
 
 	t.Run("malformed spec", func(t *testing.T) {

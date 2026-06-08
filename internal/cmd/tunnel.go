@@ -13,11 +13,11 @@ import (
 )
 
 var (
-	tunnelSentinelAddr   string
-	tunnelToken          string
-	tunnelSpotID         string
-	tunnelPorts          string
-	tunnelPool           string
+	tunnelSentinelAddr      string
+	tunnelToken             string
+	tunnelSpotID            string
+	tunnelPorts             string
+	tunnelPool              string
 	tunnelPublicHostname    string
 	tunnelPublicAliases     []string
 	tunnelPublicBaseDomains []string

@@ -20,8 +20,8 @@ import (
 func TestExtractSNI_RealClientHello(t *testing.T) {
 	cases := []string{
 		"prod.example.com",
-		"a.b",            // minimal
-		"x.example.com",  // typical
+		"a.b",           // minimal
+		"x.example.com", // typical
 	}
 	for _, sni := range cases {
 		t.Run(sni, func(t *testing.T) {

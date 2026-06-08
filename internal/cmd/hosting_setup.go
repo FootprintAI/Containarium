@@ -16,17 +16,17 @@ import (
 
 var (
 	// Setup flags
-	setupDomain     string
-	setupEmail      string
-	setupProvider   string
-	setupAPIKey     string
-	setupAPISecret  string
-	setupServerIP   string
-	skipDNS         bool
-	skipCaddy       bool
-	skipSaveConfig  bool
-	configFile      string
-	noWildcard      bool
+	setupDomain    string
+	setupEmail     string
+	setupProvider  string
+	setupAPIKey    string
+	setupAPISecret string
+	setupServerIP  string
+	skipDNS        bool
+	skipCaddy      bool
+	skipSaveConfig bool
+	configFile     string
+	noWildcard     bool
 )
 
 var hostingSetupCmd = &cobra.Command{

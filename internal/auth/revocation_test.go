@@ -17,10 +17,10 @@ import (
 // memRevocationStore is a simple in-memory store that
 // satisfies RevocationStore for tests.
 type memRevocationStore struct {
-	mu        sync.Mutex
-	rows      map[string]time.Time // jti → expiresAt
-	failNext  bool                 // simulate a DB error
-	revoked   []string             // for assertions
+	mu       sync.Mutex
+	rows     map[string]time.Time // jti → expiresAt
+	failNext bool                 // simulate a DB error
+	revoked  []string             // for assertions
 }
 
 func newMemRevStore() *memRevocationStore {

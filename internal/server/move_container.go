@@ -51,20 +51,20 @@ func migrationDefaults(req *pb.MoveContainerRequest) migrationParams {
 // for the high-level contract; the implementation here is the three-
 // phase orchestration:
 //
-//   Phase 1 — initial full copy (source running)
-//     snapshot sync0 → incus copy <c>/sync0 <remote>:<c> --instance-only
+//	Phase 1 — initial full copy (source running)
+//	  snapshot sync0 → incus copy <c>/sync0 <remote>:<c> --instance-only
 //
-//   Phase 2 — iterative deltas (still running)
-//     for i in 1..max_iterations:
-//         snapshot sync<i> → incus copy --refresh
-//         if elapsed < delta_threshold_seconds: break
+//	Phase 2 — iterative deltas (still running)
+//	  for i in 1..max_iterations:
+//	      snapshot sync<i> → incus copy --refresh
+//	      if elapsed < delta_threshold_seconds: break
 //
-//   Phase 3 — cutover (source down for the final delta)
-//     stop source
-//     snapshot final → incus copy --refresh
-//     adopt-on-target (registers host user, returns new container IP)
-//     update route store: target_ip swap
-//     cascade-cleanup on source (delete LXC, host user, etc.)
+//	Phase 3 — cutover (source down for the final delta)
+//	  stop source
+//	  snapshot final → incus copy --refresh
+//	  adopt-on-target (registers host user, returns new container IP)
+//	  update route store: target_ip swap
+//	  cascade-cleanup on source (delete LXC, host user, etc.)
 //
 // Failure handling:
 //   - any failure before cutover: source container is still running and

@@ -10,8 +10,8 @@ import (
 
 // PassthroughSyncJob synchronizes passthrough routes from PostgreSQL (source of truth) to iptables (runtime)
 type PassthroughSyncJob struct {
-	store   PassthroughStore
-	manager *PassthroughManager
+	store    PassthroughStore
+	manager  *PassthroughManager
 	interval time.Duration
 
 	mu      sync.Mutex

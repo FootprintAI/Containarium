@@ -85,18 +85,18 @@ func loadPrivilegedPolicy() PrivilegedPolicy {
 // `enable_podman=true` request should result in a privileged
 // container. Returns:
 //
-//   (true,  nil)       — set EnablePodmanPrivileged=true
-//   (false, nil)       — set EnablePodmanPrivileged=false (Podman
-//                        runs unprivileged; some workloads break,
-//                        but the daemon doesn't return an error)
-//   (false, err)       — reject the CreateContainer call entirely
-//                        with status.Error
+//	(true,  nil)       — set EnablePodmanPrivileged=true
+//	(false, nil)       — set EnablePodmanPrivileged=false (Podman
+//	                     runs unprivileged; some workloads break,
+//	                     but the daemon doesn't return an error)
+//	(false, err)       — reject the CreateContainer call entirely
+//	                     with status.Error
 //
 // The choice between "silently downgrade" and "reject" depends on
 // policy:
 //   - PrivilegedPolicyAll       → (true, nil)
 //   - PrivilegedPolicyAdminOnly → (true, nil) for admin; (false,
-//                                  PermissionDenied) for non-admin
+//     PermissionDenied) for non-admin
 //   - PrivilegedPolicyDisabled  → (false, nil) — downgrade
 func authorizePrivilegedPodman(ctx context.Context) (bool, error) {
 	switch loadPrivilegedPolicy() {

@@ -45,7 +45,7 @@ type PushResult struct {
 	PreviousHead  string // sha that was at remote tip before this push; "" on first push
 	RemoteURL     string // ssh-style URL we pushed to, for the caller's records
 	WIPCommitMade bool
-	SetupRan      bool // true if we provisioned/refreshed the bare repo + hook this call
+	SetupRan      bool   // true if we provisioned/refreshed the bare repo + hook this call
 	DeployCmd     string // echoed back so callers can audit
 }
 

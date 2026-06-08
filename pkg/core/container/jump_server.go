@@ -741,11 +741,11 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 	// Retry useradd with flock for serialization
 	var lastErr error
 	var lastOutput string // Captured stdout/stderr of the last useradd
-	                       // attempt — surfaced in the final error when
-	                       // all retries exhaust. Without this, callers
-	                       // see only "exit status 1", which is actively
-	                       // misleading when the real cause was e.g.
-	                       // /etc/passwd locked by another process.
+	// attempt — surfaced in the final error when
+	// all retries exhaust. Without this, callers
+	// see only "exit status 1", which is actively
+	// misleading when the real cause was e.g.
+	// /etc/passwd locked by another process.
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			// Cloud #163 — exponential backoff with jitter so concurrent
@@ -789,9 +789,9 @@ func retryUseraddWithLockWait(username string, verbose bool) error {
 		cmd := exec.Command("flock", "-w", "30", "/var/lock/containarium-useradd.lock",
 			"useradd", username,
 			"-s", shell, // nologin (ProxyJump) or containarium-shell (exec into container)
-			"-m",                      // Create home directory
-			"-K", "SUB_UID_COUNT=0",   // Don't allocate subordinate UIDs
-			"-K", "SUB_GID_COUNT=0",   // Don't allocate subordinate GIDs
+			"-m",                    // Create home directory
+			"-K", "SUB_UID_COUNT=0", // Don't allocate subordinate UIDs
+			"-K", "SUB_GID_COUNT=0", // Don't allocate subordinate GIDs
 			"-c", fmt.Sprintf("Containarium user - %s", username))
 
 		output, err := cmd.CombinedOutput()

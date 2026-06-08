@@ -16,15 +16,15 @@ import (
 // behavior — those integration concerns live in a separate harness
 // that needs two real VMs.
 type fakeRunner struct {
-	mu             sync.Mutex
-	calls          []string
-	failSnapshot   error
-	failCopyInit   error
+	mu              sync.Mutex
+	calls           []string
+	failSnapshot    error
+	failCopyInit    error
 	failCopyRefresh map[int]error // keyed by call count: first call is 0
-	copyRefreshN   int
-	failStop       error
-	failStart      error
-	hasRemote      bool
+	copyRefreshN    int
+	failStop        error
+	failStart       error
+	hasRemote       bool
 }
 
 func (f *fakeRunner) log(s string) {

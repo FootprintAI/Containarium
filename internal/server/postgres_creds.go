@@ -41,10 +41,10 @@ const (
 
 // ResolvePostgresURL returns the full DSN to use. Search
 // order:
-//   1. CONTAINARIUM_POSTGRES_URL_FILE (perm-checked file
-//      with a single-line DSN)
-//   2. CONTAINARIUM_POSTGRES_URL (env var)
-//   3. empty string (caller falls back to auto-detect)
+//  1. CONTAINARIUM_POSTGRES_URL_FILE (perm-checked file
+//     with a single-line DSN)
+//  2. CONTAINARIUM_POSTGRES_URL (env var)
+//  3. empty string (caller falls back to auto-detect)
 //
 // An unset / empty result is normal — the daemon's
 // auto-detect path then assembles a DSN from the
@@ -69,10 +69,10 @@ func ResolvePostgresURL() (dsn string, source string, err error) {
 
 // ResolvePostgresPassword returns the password to embed in
 // an auto-assembled DSN. Search order:
-//   1. CONTAINARIUM_POSTGRES_PASSWORD_FILE
-//   2. CONTAINARIUM_POSTGRES_PASSWORD
-//   3. DefaultPostgresPassword (with a WARNING log — the
-//      compiled-in default is dev-only).
+//  1. CONTAINARIUM_POSTGRES_PASSWORD_FILE
+//  2. CONTAINARIUM_POSTGRES_PASSWORD
+//  3. DefaultPostgresPassword (with a WARNING log — the
+//     compiled-in default is dev-only).
 //
 // Returns (password, source) so the caller can log the
 // active source without leaking the password itself.

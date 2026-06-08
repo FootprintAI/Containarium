@@ -24,15 +24,15 @@ func resetImageAllowlist(t *testing.T) {
 
 func TestImageRegistryPrefix(t *testing.T) {
 	cases := map[string]string{
-		"ubuntu:22.04":                       "ubuntu",
-		"images:ubuntu/22.04/cloud":          "images",
-		"incus:noble":                        "incus",
-		"https://images.example.com/x.img":   "https://images.example.com",
-		"http://internal/foo":                "http://internal",
-		"ubuntu":                             "ubuntu",   // bare name → default remote
-		"22.04":                              "ubuntu",
-		"images/ubuntu/22.04":                "",         // path without remote → no prefix → rejected
-		"":                                   "",
+		"ubuntu:22.04":                     "ubuntu",
+		"images:ubuntu/22.04/cloud":        "images",
+		"incus:noble":                      "incus",
+		"https://images.example.com/x.img": "https://images.example.com",
+		"http://internal/foo":              "http://internal",
+		"ubuntu":                           "ubuntu", // bare name → default remote
+		"22.04":                            "ubuntu",
+		"images/ubuntu/22.04":              "", // path without remote → no prefix → rejected
+		"":                                 "",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {

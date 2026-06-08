@@ -243,9 +243,9 @@ func TestNodeJSDetector_DetectStartCommand(t *testing.T) {
 	detector := &NodeJSDetector{}
 
 	tests := []struct {
-		name     string
-		files    []string
-		wantCmd  string
+		name    string
+		files   []string
+		wantCmd string
 	}{
 		{
 			name:    "server.js present",

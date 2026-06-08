@@ -11,12 +11,12 @@ import (
 
 func TestLabelRequestParsing(t *testing.T) {
 	tests := []struct {
-		name           string
-		path           string
-		wantUsername   string
-		wantLabelKey   string
-		wantValid      bool
-		handlerType    string // "set", "remove", "get"
+		name         string
+		path         string
+		wantUsername string
+		wantLabelKey string
+		wantValid    bool
+		handlerType  string // "set", "remove", "get"
 	}{
 		{
 			name:         "valid set labels path",

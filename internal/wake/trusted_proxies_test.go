@@ -138,11 +138,11 @@ func TestIsTrustedSource_AllowlistMatches(t *testing.T) {
 		netip.MustParsePrefix("192.168.1.5/32"),
 	}
 	cases := map[string]bool{
-		"10.0.0.5:1234":      true,
-		"10.255.255.255:80":  true,
-		"192.168.1.5:1234":   true,
-		"192.168.1.6:1234":   false,
-		"203.0.113.5:1234":   false,
+		"10.0.0.5:1234":     true,
+		"10.255.255.255:80": true,
+		"192.168.1.5:1234":  true,
+		"192.168.1.6:1234":  false,
+		"203.0.113.5:1234":  false,
 	}
 	for rem, want := range cases {
 		t.Run(rem, func(t *testing.T) {

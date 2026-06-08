@@ -98,7 +98,7 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 	if _, exists := processRegistry[name]; exists {
 		return mcp.NewToolResultError(fmt.Sprintf(
-			"process_start: a process named %q is already running; kill it first or pick a different name", name)),
+				"process_start: a process named %q is already running; kill it first or pick a different name", name)),
 			nil
 	}
 

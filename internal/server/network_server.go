@@ -22,11 +22,11 @@ type NetworkServer struct {
 	proxyManager       *app.ProxyManager
 	passthroughManager *network.PassthroughManager
 	appStore           app.AppStore
-	routeStore         *app.RouteStore            // Source of truth for routes (PostgreSQL)
-	passthroughStore   network.PassthroughStore   // Source of truth for passthrough routes (PostgreSQL)
-	containerNetwork   string                      // e.g., "10.100.0.0/24"
-	proxyIP            string                      // e.g., "10.100.0.1"
-	baseDomain         string                      // e.g., "example.com"
+	routeStore         *app.RouteStore          // Source of truth for routes (PostgreSQL)
+	passthroughStore   network.PassthroughStore // Source of truth for passthrough routes (PostgreSQL)
+	containerNetwork   string                   // e.g., "10.100.0.0/24"
+	proxyIP            string                   // e.g., "10.100.0.1"
+	baseDomain         string                   // e.g., "example.com"
 	emitter            *events.Emitter
 }
 
@@ -191,7 +191,7 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 			FullDomain:    route.FullDomain,
 			ContainerIp:   route.UpstreamIP,
 			Port:          int32(route.UpstreamPort), // #nosec G115 -- TCP port, always in [0,65535]
-			Active:        true, // If it's in the list, it's active
+			Active:        true,                      // If it's in the list, it's active
 			Protocol:      routeProtocolToProto(route.Protocol),
 			AppName:       containerName, // legacy: container name doubled as app name for display
 			ContainerName: containerName,

@@ -16,8 +16,8 @@ func TestIsTunnelLoopback(t *testing.T) {
 		{"127.0.0.10", true},
 		{"127.0.0.11", true},
 		{"127.0.0.99", true},
-		{"127.0.0.1", false},  // localhost, not a tunnel alias
-		{"127.0.0.2", true},   // loopback alias
+		{"127.0.0.1", false},   // localhost, not a tunnel alias
+		{"127.0.0.2", true},    // loopback alias
 		{"10.130.0.15", false}, // VPC internal IP
 		{"192.168.1.1", false},
 		{"", false},

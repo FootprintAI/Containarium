@@ -33,10 +33,10 @@ func TestHTTPMiddleware_AuthGate(t *testing.T) {
 	wrapped := mw.HTTPMiddleware(stub)
 
 	cases := []struct {
-		name      string
-		setup     func(r *http.Request)
-		wantCode  int
-		wantStub  bool // did the wrapped handler run?
+		name     string
+		setup    func(r *http.Request)
+		wantCode int
+		wantStub bool // did the wrapped handler run?
 	}{
 		{
 			name:     "no auth header → 401",

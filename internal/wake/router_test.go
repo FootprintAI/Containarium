@@ -13,11 +13,11 @@ import (
 // in order and optionally returns a pre-canned error from updateErr (or
 // grpcUpdateErr) on each invocation.
 type fakeProxyManager struct {
-	mu             sync.Mutex
-	updateCalls    []proxyCall
-	grpcCalls      []proxyCall
-	updateErr      error // returned by UpdateRoute
-	grpcUpdateErr  error // returned by UpdateGRPCRoute
+	mu            sync.Mutex
+	updateCalls   []proxyCall
+	grpcCalls     []proxyCall
+	updateErr     error // returned by UpdateRoute
+	grpcUpdateErr error // returned by UpdateGRPCRoute
 }
 
 type proxyCall struct {

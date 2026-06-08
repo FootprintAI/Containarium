@@ -52,7 +52,7 @@ type AuditLogger interface {
 type WakeProxy struct {
 	starter     WakeStarter
 	routeLookup RouteLookup
-	router      *Router // for fire-and-forget SwapToDirect after success
+	router      *Router    // for fire-and-forget SwapToDirect after success
 	routeStore  RouteStore // for fetching routes to pass to SwapToDirect
 	audit       AuditLogger
 	waitTimeout time.Duration

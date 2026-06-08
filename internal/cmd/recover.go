@@ -46,15 +46,15 @@ type DaemonConfig struct {
 const DefaultRecoveryConfigPath = "/mnt/incus-data/containarium-recovery.yaml"
 
 var (
-	recoverConfigFile   string
-	recoverNetworkCIDR  string
-	recoverNetworkName  string
-	recoverStoragePool  string
+	recoverConfigFile    string
+	recoverNetworkCIDR   string
+	recoverNetworkName   string
+	recoverStoragePool   string
 	recoverStorageDriver string
-	recoverZFSSource    string
-	recoverDryRun       bool
-	recoverSkipAccounts bool
-	recoverStartAll     bool
+	recoverZFSSource     string
+	recoverDryRun        bool
+	recoverSkipAccounts  bool
+	recoverStartAll      bool
 )
 
 var recoverCmd = &cobra.Command{

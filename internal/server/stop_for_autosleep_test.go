@@ -133,8 +133,8 @@ func TestStopForAutoSleep_DoesNotInvokeAuditDirectly(t *testing.T) {
 // when their tracked method is called, so the test can assert the
 // SwapToWake → StopContainer happens-before relationship.
 type recordingWakeRouter struct {
-	seq        *atomic.Int64
-	swapSeqAt  int64
+	seq       *atomic.Int64
+	swapSeqAt int64
 }
 
 func (r *recordingWakeRouter) SwapToWake(_ context.Context, _ string, _ []*app.RouteRecord) error {
@@ -150,8 +150,8 @@ type recordingRouteStore struct{}
 func (recordingRouteStore) ListByContainer(_ context.Context, _ string) ([]*app.RouteRecord, error) {
 	return []*app.RouteRecord{{FullDomain: "alice.example.test", TargetIP: "10.0.0.5", TargetPort: 8080}}, nil
 }
-func (recordingRouteStore) Delete(context.Context, string) error            { return nil }
-func (recordingRouteStore) Save(context.Context, *app.RouteRecord) error    { return nil }
+func (recordingRouteStore) Delete(context.Context, string) error         { return nil }
+func (recordingRouteStore) Save(context.Context, *app.RouteRecord) error { return nil }
 
 // TestStopForAutoSleep_SwapsBeforeStop pins the #224 fix: the Caddy
 // route swap MUST happen before the container is stopped, otherwise
@@ -174,10 +174,10 @@ func TestStopForAutoSleep_SwapsBeforeStop(t *testing.T) {
 
 	wakeRouter := &recordingWakeRouter{seq: &seq}
 	s := &ContainerServer{
-		manager:     container.NewWithBackend(mock),
-		emitter:     events.NewEmitter(events.NewBus()),
-		wakeRouter:  wakeRouter,
-		routeStore:  recordingRouteStore{},
+		manager:    container.NewWithBackend(mock),
+		emitter:    events.NewEmitter(events.NewBus()),
+		wakeRouter: wakeRouter,
+		routeStore: recordingRouteStore{},
 	}
 
 	if err := s.StopForAutoSleep(testCtx(), "alice", "idle 90m", 90); err != nil {

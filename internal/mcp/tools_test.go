@@ -468,11 +468,11 @@ func TestGetBackend_RejectsMissingID(t *testing.T) {
 // agents tend to produce (float64 from encoding/json) plus native ints.
 func TestGetIntArg(t *testing.T) {
 	cases := []struct {
-		name    string
-		args    map[string]interface{}
-		key     string
-		want    int
-		wantOK  bool
+		name   string
+		args   map[string]interface{}
+		key    string
+		want   int
+		wantOK bool
 	}{
 		{"float64 from JSON", map[string]interface{}{"p": float64(8080)}, "p", 8080, true},
 		{"native int", map[string]interface{}{"p": 8080}, "p", 8080, true},

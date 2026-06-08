@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	portforwardRemoveCaddyIP   string
+	portforwardRemoveCaddyIP    string
 	portforwardRemoveAutoDetect bool
 )
 

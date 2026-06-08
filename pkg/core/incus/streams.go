@@ -98,8 +98,8 @@ type StreamsResolver struct {
 }
 
 type cachedIndex struct {
-	idx        imagesIndex
-	fetchedAt  time.Time
+	idx       imagesIndex
+	fetchedAt time.Time
 }
 
 // defaultCacheTTL is the cache horizon when callers don't
@@ -142,8 +142,8 @@ func NewStreamsResolverWithCacheTTL(timeout, cacheTTL time.Duration) *StreamsRes
 // version → item.sha256) chain. Unknown fields are
 // ignored by encoding/json.
 type imagesIndex struct {
-	Format   string                    `json:"format"`
-	Products map[string]productEntry   `json:"products"`
+	Format   string                  `json:"format"`
+	Products map[string]productEntry `json:"products"`
 }
 
 type productEntry struct {

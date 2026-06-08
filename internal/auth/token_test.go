@@ -35,29 +35,29 @@ func TestGenerateToken_EnforcesMaxExpiry(t *testing.T) {
 	tm, _ := NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test-issuer")
 
 	tests := []struct {
-		name           string
+		name            string
 		requestedExpiry time.Duration
-		expectClamped  bool
+		expectClamped   bool
 	}{
 		{
-			name:           "zero expiry should be clamped to max",
+			name:            "zero expiry should be clamped to max",
 			requestedExpiry: 0,
-			expectClamped:  true,
+			expectClamped:   true,
 		},
 		{
-			name:           "negative expiry should be clamped to max",
+			name:            "negative expiry should be clamped to max",
 			requestedExpiry: -1 * time.Hour,
-			expectClamped:  true,
+			expectClamped:   true,
 		},
 		{
-			name:           "expiry exceeding max should be clamped",
+			name:            "expiry exceeding max should be clamped",
 			requestedExpiry: 365 * 24 * time.Hour, // 1 year
-			expectClamped:  true,
+			expectClamped:   true,
 		},
 		{
-			name:           "valid expiry within max should be allowed",
+			name:            "valid expiry within max should be allowed",
 			requestedExpiry: 24 * time.Hour,
-			expectClamped:  false,
+			expectClamped:   false,
 		},
 	}
 

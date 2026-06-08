@@ -73,14 +73,14 @@ func NewSetup(cfg SetupConfig, logger func(format string, args ...interface{})) 
 	// Determine provider environment variable name
 	envVars := map[string]string{
 		"godaddy":        "GODADDY_API_TOKEN",
-		"cloudflare":    "CF_API_TOKEN",
-		"route53":       "AWS_ACCESS_KEY_ID",
+		"cloudflare":     "CF_API_TOKEN",
+		"route53":        "AWS_ACCESS_KEY_ID",
 		"googleclouddns": "GCP_PROJECT",
-		"digitalocean":  "DO_AUTH_TOKEN",
-		"azure":         "AZURE_CLIENT_ID",
-		"vultr":         "VULTR_API_KEY",
-		"duckdns":       "DUCKDNS_API_TOKEN",
-		"namecheap":     "NAMECHEAP_API_KEY",
+		"digitalocean":   "DO_AUTH_TOKEN",
+		"azure":          "AZURE_CLIENT_ID",
+		"vultr":          "VULTR_API_KEY",
+		"duckdns":        "DUCKDNS_API_TOKEN",
+		"namecheap":      "NAMECHEAP_API_KEY",
 	}
 
 	// Format credential based on provider

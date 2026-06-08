@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	passthroughAddPort       int
-	passthroughAddTargetIP   string
-	passthroughAddTargetPort int
-	passthroughAddProtocol   string
+	passthroughAddPort        int
+	passthroughAddTargetIP    string
+	passthroughAddTargetPort  int
+	passthroughAddProtocol    string
 	passthroughAddNetworkCIDR string
 )
 

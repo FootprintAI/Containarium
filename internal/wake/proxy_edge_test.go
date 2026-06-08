@@ -22,12 +22,12 @@ import (
 // invocation atomically. The configured response is returned for every
 // call.
 type countingStarter struct {
-	calls    atomic.Int64
-	delay    time.Duration
-	ready    bool
-	ip       string
-	port     int
-	err      error
+	calls atomic.Int64
+	delay time.Duration
+	ready bool
+	ip    string
+	port  int
+	err   error
 }
 
 func (c *countingStarter) WakeForRequest(ctx context.Context, username string) (bool, string, int, error) {

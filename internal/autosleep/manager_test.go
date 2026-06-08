@@ -235,9 +235,9 @@ func TestManager_MultipleContainersSomeSleepSomeDont(t *testing.T) {
 		},
 	}
 	traffic := &fakeTraffic{per: map[string]time.Time{
-		"alice-container":   now.Add(-90 * time.Minute), // idle
-		"bob-container":     now.Add(-1 * time.Minute),  // active
-		"carol-container":   now.Add(-90 * time.Minute), // would-sleep, but not opted in
+		"alice-container": now.Add(-90 * time.Minute), // idle
+		"bob-container":   now.Add(-1 * time.Minute),  // active
+		"carol-container": now.Add(-90 * time.Minute), // would-sleep, but not opted in
 	}}
 	stopper := &fakeStopper{}
 	audit := &fakeAudit{}

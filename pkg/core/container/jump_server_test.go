@@ -127,10 +127,10 @@ func TestUserExists(t *testing.T) {
 
 func TestParseSSHKeyFromAuthorizedKeys(t *testing.T) {
 	tests := []struct {
-		name           string
-		content        string
-		wantKey        string
-		wantErr        bool
+		name    string
+		content string
+		wantKey string
+		wantErr bool
 	}{
 		{
 			name:    "single RSA key",

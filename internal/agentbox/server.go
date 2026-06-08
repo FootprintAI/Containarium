@@ -25,11 +25,11 @@
 //     ci-context: ci-context is the data, ci-prompt is the behavior.
 //
 // File-ops tools enforce a sandbox in this order:
-//   1. AGENTBOX_ROOT env var (strict floor when set).
-//   2. MCP Roots advertised by the client via roots/list (used as the
-//      sandbox when AGENTBOX_ROOT is unset). Falls back gracefully if
-//      the client doesn't support the capability.
-//   3. Unconstrained (only when both are absent).
+//  1. AGENTBOX_ROOT env var (strict floor when set).
+//  2. MCP Roots advertised by the client via roots/list (used as the
+//     sandbox when AGENTBOX_ROOT is unset). Falls back gracefully if
+//     the client doesn't support the capability.
+//  3. Unconstrained (only when both are absent).
 //
 // More tools (provision_postgres, deploy_app, snapshot, etc.) land in
 // subsequent commits.

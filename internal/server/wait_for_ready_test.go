@@ -187,4 +187,3 @@ func TestWaitForContainerReady_ListByContainerErrors(t *testing.T) {
 		t.Errorf("error path should return immediately, took %v", elapsed)
 	}
 }
-

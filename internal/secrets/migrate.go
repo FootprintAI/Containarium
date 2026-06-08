@@ -56,13 +56,13 @@ type MigrateOptions struct {
 
 // MigrateResult summarizes what the migration did.
 type MigrateResult struct {
-	Scanned      int       // rows we looked at
-	Migrated     int       // rows successfully rewritten to envelope
-	AlreadyDone  int       // rows already in envelope form (skipped)
-	Failed       int       // rows that errored mid-migration
-	StartedAt    time.Time
-	CompletedAt  time.Time
-	Errors       []MigrationError
+	Scanned     int // rows we looked at
+	Migrated    int // rows successfully rewritten to envelope
+	AlreadyDone int // rows already in envelope form (skipped)
+	Failed      int // rows that errored mid-migration
+	StartedAt   time.Time
+	CompletedAt time.Time
+	Errors      []MigrationError
 }
 
 // MigrationError names a row that failed and why.

@@ -19,17 +19,17 @@ import (
 func createTestApp(username, name string) *v1.App {
 	now := timestamppb.Now()
 	return &v1.App{
-		Id:            uuid.New().String(),
-		Name:          name,
-		Username:      username,
-		ContainerName: username + "-container",
-		Subdomain:     name,
-		FullDomain:    name + ".containarium.dev",
-		Port:          3000,
-		State:         v1.AppState_APP_STATE_RUNNING,
-		ContainerImage:   username + "/" + name + ":latest",
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		Id:             uuid.New().String(),
+		Name:           name,
+		Username:       username,
+		ContainerName:  username + "-container",
+		Subdomain:      name,
+		FullDomain:     name + ".containarium.dev",
+		Port:           3000,
+		State:          v1.AppState_APP_STATE_RUNNING,
+		ContainerImage: username + "/" + name + ":latest",
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 }
 

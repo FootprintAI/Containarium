@@ -56,13 +56,13 @@ const defaultReconcileInterval = 60 * time.Second
 // DualServer alongside the autosleep manager — same
 // shape, same lifetime.
 type secretsReconciler struct {
-	store     *secrets.Store
-	incus     *incus.Client
-	stamp     func(ctx context.Context, username string) (int, error)
-	interval  time.Duration
-	stopCh    chan struct{}
-	done      chan struct{}
-	stopOnce  sync.Once
+	store    *secrets.Store
+	incus    *incus.Client
+	stamp    func(ctx context.Context, username string) (int, error)
+	interval time.Duration
+	stopCh   chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 func newSecretsReconciler(store *secrets.Store, ic *incus.Client, stamp func(ctx context.Context, username string) (int, error), interval time.Duration) *secretsReconciler {

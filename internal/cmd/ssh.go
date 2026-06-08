@@ -47,15 +47,15 @@ import (
 
 // Per-command flags.
 var (
-	sshSetupName        string
-	sshSetupKeyPath     string
-	sshSetupGenerate    bool
-	sshSetupForce       bool
-	sshSetupServer      string
-	sshListServer       string
-	sshRemoveServer     string
-	sshPropagateServer  string
-	sshPropagateBoxes   []string
+	sshSetupName       string
+	sshSetupKeyPath    string
+	sshSetupGenerate   bool
+	sshSetupForce      bool
+	sshSetupServer     string
+	sshListServer      string
+	sshRemoveServer    string
+	sshPropagateServer string
+	sshPropagateBoxes  []string
 )
 
 var sshCmd = &cobra.Command{
@@ -201,9 +201,9 @@ func init() {
 // credentials-file fallback because we usually want the same server
 // the user is logged into:
 //
-//   1. explicit --server flag
-//   2. credentials-file default_server
-//   3. defaultLoginServer constant
+//  1. explicit --server flag
+//  2. credentials-file default_server
+//  3. defaultLoginServer constant
 func pickSSHServer(explicit string) string {
 	if explicit != "" {
 		return strings.TrimRight(explicit, "/")

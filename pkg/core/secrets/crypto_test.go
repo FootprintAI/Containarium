@@ -10,9 +10,9 @@ import (
 
 func TestValidateName(t *testing.T) {
 	cases := []struct {
-		name     string
-		wantErr  bool
-		descr    string
+		name    string
+		wantErr bool
+		descr   string
 	}{
 		{"OPENAI_API_KEY", false, "canonical env-var name"},
 		{"DB_URL", false, "short uppercase"},

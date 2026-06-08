@@ -63,13 +63,13 @@ var (
 // LoadOrCreateOTelBearer returns the deployment's OTel
 // bearer secret. Search order:
 //
-//   1. `CONTAINARIUM_OTEL_BEARER` env var (raw value)
-//   2. `CONTAINARIUM_OTEL_BEARER_FILE` env var → mode-
-//      checked file with the secret
-//   3. `/etc/containarium/otel.bearer` default path. If
-//      the file exists, perm-checked and read; if not,
-//      generated (mode 0600 owner-only) and persisted so
-//      every subsequent call returns the same value.
+//  1. `CONTAINARIUM_OTEL_BEARER` env var (raw value)
+//  2. `CONTAINARIUM_OTEL_BEARER_FILE` env var → mode-
+//     checked file with the secret
+//  3. `/etc/containarium/otel.bearer` default path. If
+//     the file exists, perm-checked and read; if not,
+//     generated (mode 0600 owner-only) and persisted so
+//     every subsequent call returns the same value.
 //
 // Returns ("", nil) when no source is available AND the
 // daemon can't create the default file (read-only fs,

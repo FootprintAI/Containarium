@@ -23,31 +23,31 @@ type MockBackend struct {
 
 	// Override hooks. If non-nil, the method delegates to the function and
 	// the default behavior is skipped.
-	CreateContainerFunc      func(config incus.ContainerConfig) error
-	StartContainerFunc       func(name string) error
-	StopContainerFunc        func(name string, force bool) error
-	DeleteContainerFunc      func(name string) error
-	GetContainerFunc         func(name string) (*incus.ContainerInfo, error)
-	ListContainersFunc       func() ([]incus.ContainerInfo, error)
-	WaitForNetworkFunc       func(containerName string, timeout time.Duration) (string, error)
-	ExecFunc                 func(containerName string, command []string) error
-	ExecWithOutputFunc       func(containerName string, command []string) (string, string, error)
-	WriteFileFunc            func(containerName, path string, content []byte, mode string) error
-	ReadFileFunc             func(containerName, path string) ([]byte, error)
-	SetConfigFunc            func(containerName, key, value string) error
-	SetCPULimitFunc          func(containerName, cpu string) error
-	UnsetConfigFunc          func(containerName, key string) error
-	SetDeviceSizeFunc        func(containerName, deviceName, size string) error
-	ResolveGPUInputToPCIFunc func(input string) (string, error)
-	CleanupDiskFunc          func(containerName string) (string, int64, error)
+	CreateContainerFunc       func(config incus.ContainerConfig) error
+	StartContainerFunc        func(name string) error
+	StopContainerFunc         func(name string, force bool) error
+	DeleteContainerFunc       func(name string) error
+	GetContainerFunc          func(name string) (*incus.ContainerInfo, error)
+	ListContainersFunc        func() ([]incus.ContainerInfo, error)
+	WaitForNetworkFunc        func(containerName string, timeout time.Duration) (string, error)
+	ExecFunc                  func(containerName string, command []string) error
+	ExecWithOutputFunc        func(containerName string, command []string) (string, string, error)
+	WriteFileFunc             func(containerName, path string, content []byte, mode string) error
+	ReadFileFunc              func(containerName, path string) ([]byte, error)
+	SetConfigFunc             func(containerName, key, value string) error
+	SetCPULimitFunc           func(containerName, cpu string) error
+	UnsetConfigFunc           func(containerName, key string) error
+	SetDeviceSizeFunc         func(containerName, deviceName, size string) error
+	ResolveGPUInputToPCIFunc  func(input string) (string, error)
+	CleanupDiskFunc           func(containerName string) (string, int64, error)
 	UpdateContainerConfigFunc func(name, key, value string) error
-	GetRawInstanceFunc       func(name string) (map[string]string, string, error)
-	AddLabelFunc             func(containerName, key, value string) error
-	RemoveLabelFunc          func(containerName, key string) error
-	GetLabelsFunc            func(containerName string) (map[string]string, error)
-	SetLabelsFunc            func(containerName string, labels map[string]string) error
-	GetServerInfoFunc        func() (*api.Server, error)
-	GetContainerMetricsFunc  func(name string) (*incus.ContainerMetrics, error)
+	GetRawInstanceFunc        func(name string) (map[string]string, string, error)
+	AddLabelFunc              func(containerName, key, value string) error
+	RemoveLabelFunc           func(containerName, key string) error
+	GetLabelsFunc             func(containerName string) (map[string]string, error)
+	SetLabelsFunc             func(containerName string, labels map[string]string) error
+	GetServerInfoFunc         func() (*api.Server, error)
+	GetContainerMetricsFunc   func(name string) (*incus.ContainerMetrics, error)
 
 	// Phase 3.1 Phase-C — post-pull fingerprint check.
 	GetContainerImageFingerprintFunc func(name string) (string, error)

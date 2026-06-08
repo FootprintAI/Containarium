@@ -206,7 +206,7 @@ func expandTilde(p string) string {
 }
 
 // shellQuote wraps a value in single quotes with embedded single
-// quotes escaped as '\''. Enough for PATs and label strings; we
+// quotes escaped as '\”. Enough for PATs and label strings; we
 // deliberately don't try to support arbitrary shell metachars in
 // runner names (validated upstream).
 func shellQuote(v string) string {

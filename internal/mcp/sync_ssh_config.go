@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/internal/sshconfig"
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // handleSyncSSHConfig is the agent-native version of `containarium

@@ -30,8 +30,8 @@ type SecurityFinding struct {
 	Title         string `json:"title"`
 	Description   string `json:"description,omitempty"`
 	ContainerName string `json:"containerName,omitempty"`
-	Target        string `json:"target,omitempty"`        // pentest/ZAP-side target (URL, IP:port)
-	FixAvailable  bool   `json:"fixAvailable"`            // true ↔ security_remediate can act
+	Target        string `json:"target,omitempty"` // pentest/ZAP-side target (URL, IP:port)
+	FixAvailable  bool   `json:"fixAvailable"`     // true ↔ security_remediate can act
 }
 
 // SecurityScanResponse is what security_scan returns to the agent.

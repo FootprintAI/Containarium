@@ -77,8 +77,8 @@ func TestParseRemoteManifest_Roundtrip(t *testing.T) {
 	in := strings.NewReader(strings.Join([]string{
 		"a1b2 644 hello.txt",
 		"c3d4 755 bin/run.sh",
-		"",                          // blank line — skip
-		"malformed-line-no-spaces",  // skip
+		"",                         // blank line — skip
+		"malformed-line-no-spaces", // skip
 		"e5f6 600 with spaces/in/path.txt",
 	}, "\n"))
 

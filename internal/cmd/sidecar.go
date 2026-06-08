@@ -97,13 +97,13 @@ func runSidecarOtelCompose(cmd *cobra.Command, args []string) error {
 	serviceName := username + "-otel"
 
 	fmt.Print(renderOTelComposeSnippet(otelComposeInputs{
-		ImageTag:            imageTag,
-		ServiceName:         serviceName,
-		Username:            username,
-		ContainerEnvName:    containerID,
-		BackendEnvValue:     backendID,
-		TenantEnvValue:      tenantID,
-		CollectorEnvValue:   endpoint,
+		ImageTag:          imageTag,
+		ServiceName:       serviceName,
+		Username:          username,
+		ContainerEnvName:  containerID,
+		BackendEnvValue:   backendID,
+		TenantEnvValue:    tenantID,
+		CollectorEnvValue: endpoint,
 	}))
 	return nil
 }

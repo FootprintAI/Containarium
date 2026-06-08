@@ -54,9 +54,9 @@ func TestValidateProxyProtocolTrusted_RejectsMixedWildcard(t *testing.T) {
 func TestValidateProxyProtocolTrusted_RejectsMalformedCIDR(t *testing.T) {
 	cases := []string{
 		"not-a-cidr",
-		"10.0.0.5",       // missing /mask
-		"10.0.0.5/99",    // bad mask
-		"10.0.0.5\\32",   // wrong slash
+		"10.0.0.5",     // missing /mask
+		"10.0.0.5/99",  // bad mask
+		"10.0.0.5\\32", // wrong slash
 	}
 	for _, c := range cases {
 		t.Run(c, func(t *testing.T) {

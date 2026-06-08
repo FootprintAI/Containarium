@@ -53,10 +53,10 @@ var nameRE = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 
 // Errors callers can match on.
 var (
-	ErrInvalidName     = errors.New("secrets: name must match ^[A-Z_][A-Z0-9_]*$ and be at most 128 chars")
-	ErrValueTooLarge   = errors.New("secrets: value exceeds 64 KiB limit")
-	ErrKeyWrongSize    = errors.New("secrets: master key must be exactly 32 bytes")
-	ErrAuthentication  = errors.New("secrets: ciphertext authentication failed (tampered or wrong key?)")
+	ErrInvalidName    = errors.New("secrets: name must match ^[A-Z_][A-Z0-9_]*$ and be at most 128 chars")
+	ErrValueTooLarge  = errors.New("secrets: value exceeds 64 KiB limit")
+	ErrKeyWrongSize   = errors.New("secrets: master key must be exactly 32 bytes")
+	ErrAuthentication = errors.New("secrets: ciphertext authentication failed (tampered or wrong key?)")
 )
 
 // ValidateName returns nil if the name matches the env-var-compatible

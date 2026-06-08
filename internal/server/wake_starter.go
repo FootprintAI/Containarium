@@ -19,8 +19,8 @@ import (
 // ContainerServer surface — it just sees the narrow interface
 // `wake.WakeStarter`.
 type WakeStarter struct {
-	cs             *ContainerServer
-	readyTimeoutS  int32 // seconds; mirrored into the request
+	cs            *ContainerServer
+	readyTimeoutS int32 // seconds; mirrored into the request
 }
 
 // NewWakeStarter constructs the adapter. readyTimeoutSeconds is the

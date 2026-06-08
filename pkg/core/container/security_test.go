@@ -173,11 +173,11 @@ func TestUsernameValidationSecurityBoundary(t *testing.T) {
 		'$',  // dollar sign
 		'(',  // parenthesis
 		')',
-		'{',  // braces
+		'{', // braces
 		'}',
-		'[',  // brackets
+		'[', // brackets
 		']',
-		'<',  // redirects
+		'<', // redirects
 		'>',
 		'|',  // pipe
 		'&',  // ampersand

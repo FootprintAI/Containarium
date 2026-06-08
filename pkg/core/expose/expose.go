@@ -90,8 +90,8 @@ func Run(ctx context.Context, c APIClient, opts Options) (*RouteResult, error) {
 		return nil, fmt.Errorf("container %q has no IP address yet (state: %s)", opts.Username, state)
 	}
 	res, err := c.CreateRoute(ctx, AddRouteParams{
-		Domain:        opts.Domain,
-		TargetIP:      ip,
+		Domain:   opts.Domain,
+		TargetIP: ip,
 		// #nosec G115 -- Options.Validate above bounds ContainerPort to
 		// 1..65535, well within int32 range.
 		TargetPort:    int32(opts.ContainerPort),

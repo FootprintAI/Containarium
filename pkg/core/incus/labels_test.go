@@ -26,7 +26,7 @@ func TestExtractLabelsFromConfig(t *testing.T) {
 		{
 			name: "config with single label",
 			config: map[string]string{
-				"limits.cpu":            "4",
+				"limits.cpu":                   "4",
 				"user.containarium.label.team": "backend",
 			},
 			wantLabels: map[string]string{
@@ -36,11 +36,11 @@ func TestExtractLabelsFromConfig(t *testing.T) {
 		{
 			name: "config with multiple labels",
 			config: map[string]string{
-				"limits.cpu":                "4",
-				"user.containarium.label.team":     "backend",
-				"user.containarium.label.project":  "api",
-				"user.containarium.label.env":      "production",
-				"user.containarium.label.owner":    "alice",
+				"limits.cpu":                      "4",
+				"user.containarium.label.team":    "backend",
+				"user.containarium.label.project": "api",
+				"user.containarium.label.env":     "production",
+				"user.containarium.label.owner":   "alice",
 			},
 			wantLabels: map[string]string{
 				"team":    "backend",
@@ -73,7 +73,7 @@ func TestExtractLabelsFromConfig(t *testing.T) {
 			name: "similar prefix but not a label",
 			config: map[string]string{
 				"containarium.labels":          "not a label",
-				"user.containarium.label.real":      "label",
+				"user.containarium.label.real": "label",
 				"containarium.labelconfig":     "also not a label",
 			},
 			wantLabels: map[string]string{
@@ -205,9 +205,9 @@ func TestLabelPrefix(t *testing.T) {
 // Benchmark tests
 func BenchmarkExtractLabelsFromConfig(b *testing.B) {
 	config := map[string]string{
-		"limits.cpu":               "4",
-		"limits.memory":            "8GB",
-		"security.nesting":         "true",
+		"limits.cpu":                      "4",
+		"limits.memory":                   "8GB",
+		"security.nesting":                "true",
 		"user.containarium.label.team":    "backend",
 		"user.containarium.label.project": "api",
 		"user.containarium.label.env":     "production",

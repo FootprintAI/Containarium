@@ -187,18 +187,18 @@ func (c *Collector) processConntrackEvent(event *ConntrackEvent) {
 // convertToProto converts a ConntrackEvent to a pb.Connection
 func (c *Collector) convertToProto(event *ConntrackEvent, containerName, containerIP string, direction pb.TrafficDirection) *pb.Connection {
 	conn := &pb.Connection{
-		Id:            event.ID,
-		ContainerName: containerName,
-		ContainerIp:   containerIP,
-		Protocol:      protoStringToEnum(event.Protocol),
-		SourceIp:      event.SrcIP,
-		SourcePort:    uint32(event.SrcPort),
-		DestIp:        event.DstIP,
-		DestPort:      uint32(event.DstPort),
-		State:         stateStringToEnum(event.State),
-		Direction:     direction,
-		FirstSeen:     timestamppb.New(event.Timestamp),
-		LastSeen:      timestamppb.New(event.Timestamp),
+		Id:             event.ID,
+		ContainerName:  containerName,
+		ContainerIp:    containerIP,
+		Protocol:       protoStringToEnum(event.Protocol),
+		SourceIp:       event.SrcIP,
+		SourcePort:     uint32(event.SrcPort),
+		DestIp:         event.DstIP,
+		DestPort:       uint32(event.DstPort),
+		State:          stateStringToEnum(event.State),
+		Direction:      direction,
+		FirstSeen:      timestamppb.New(event.Timestamp),
+		LastSeen:       timestamppb.New(event.Timestamp),
 		TimeoutSeconds: event.Timeout,
 	}
 

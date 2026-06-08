@@ -200,4 +200,3 @@ func openSecretsStoreWithKMS(ctx context.Context, masterKeyPath string) (*intern
 	}
 	return store, func() { pool.Close() }, nil
 }
-

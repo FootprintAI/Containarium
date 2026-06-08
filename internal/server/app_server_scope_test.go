@@ -50,10 +50,19 @@ func TestAppServer_LifecycleHandlers_RejectMissingScope(t *testing.T) {
 	srv := &AppServer{}
 	ctx := tenantWithScopes("alice", auth.ScopeContainersRead) // read-only
 	cases := map[string]func() error{
-		"StopApp":    func() error { _, e := srv.StopApp(ctx, &pb.StopAppRequest{Username: "alice", AppName: "x"}); return e },
-		"StartApp":   func() error { _, e := srv.StartApp(ctx, &pb.StartAppRequest{Username: "alice", AppName: "x"}); return e },
-		"RestartApp": func() error { _, e := srv.RestartApp(ctx, &pb.RestartAppRequest{Username: "alice", AppName: "x"}); return e },
-		"DeleteApp":  func() error { _, e := srv.DeleteApp(ctx, &pb.DeleteAppRequest{Username: "alice", AppName: "x"}); return e },
+		"StopApp": func() error { _, e := srv.StopApp(ctx, &pb.StopAppRequest{Username: "alice", AppName: "x"}); return e },
+		"StartApp": func() error {
+			_, e := srv.StartApp(ctx, &pb.StartAppRequest{Username: "alice", AppName: "x"})
+			return e
+		},
+		"RestartApp": func() error {
+			_, e := srv.RestartApp(ctx, &pb.RestartAppRequest{Username: "alice", AppName: "x"})
+			return e
+		},
+		"DeleteApp": func() error {
+			_, e := srv.DeleteApp(ctx, &pb.DeleteAppRequest{Username: "alice", AppName: "x"})
+			return e
+		},
 	}
 	for name, call := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -69,7 +78,7 @@ func TestAppServer_Pre17TokensStillWork(t *testing.T) {
 	// backwards compat asserted end-to-end through the
 	// AppServer surface.
 	srv := &AppServer{}
-	defer func() { _ = recover() }() // body may nil-deref past the gate
+	defer func() { _ = recover() }()                         // body may nil-deref past the gate
 	ctx := auth.ContextWithTestSubject(nil, "alice", "user") //nolint:staticcheck // intentional nil parent
 	_, _ = srv.GetApp(ctx, &pb.GetAppRequest{Username: "alice", AppName: "x"})
 }

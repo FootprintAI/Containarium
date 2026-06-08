@@ -198,7 +198,7 @@ func buildPostStartScript(recipe *pb.Recipe, params map[string]string) string {
 }
 
 // shellSingleQuote wraps s in single quotes, escaping embedded single quotes
-// the standard POSIX way ('\'' closes, escapes, reopens).
+// the standard POSIX way ('\” closes, escapes, reopens).
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

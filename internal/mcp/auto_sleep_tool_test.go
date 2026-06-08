@@ -40,9 +40,9 @@ func TestHandleToggleAutoSleep_RequiresUsername(t *testing.T) {
 func TestHandleToggleAutoSleep_RequiresEnabledBool(t *testing.T) {
 	client := NewClient("http://127.0.0.1:1", "tok")
 	cases := []map[string]interface{}{
-		{"username": "alice"},                     // missing
-		{"username": "alice", "enabled": "true"},  // string, not bool
-		{"username": "alice", "enabled": 1},       // int, not bool
+		{"username": "alice"},                    // missing
+		{"username": "alice", "enabled": "true"}, // string, not bool
+		{"username": "alice", "enabled": 1},      // int, not bool
 	}
 	for _, args := range cases {
 		_, err := handleToggleAutoSleep(client, args)

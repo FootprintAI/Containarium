@@ -62,7 +62,7 @@ func showSystemInfo() error {
 	var err error
 
 	if httpMode && serverAddr != "" {
-		// Remote mode via HTTP 
+		// Remote mode via HTTP
 		var httpClient *client.HTTPClient
 		httpClient, err = client.NewHTTPClient(serverAddr, authToken)
 		if err != nil {
@@ -80,7 +80,7 @@ func showSystemInfo() error {
 			return fmt.Errorf("failed to list containers: %w", err)
 		}
 	} else if serverAddr != "" {
-		// Remote mode via gRPC 
+		// Remote mode via gRPC
 		var grpcClient *client.GRPCClient
 		grpcClient, err = client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if err != nil {
@@ -167,7 +167,7 @@ func showContainerInfo(username string) error {
 	var err error
 
 	if httpMode && serverAddr != "" {
-		// Remote mode via HTTP 
+		// Remote mode via HTTP
 		var httpClient *client.HTTPClient
 		httpClient, err = client.NewHTTPClient(serverAddr, authToken)
 		if err != nil {
@@ -180,7 +180,7 @@ func showContainerInfo(username string) error {
 			return fmt.Errorf("container not found: %w", err)
 		}
 	} else if serverAddr != "" {
-		// Remote mode via gRPC 
+		// Remote mode via gRPC
 		var grpcClient *client.GRPCClient
 		grpcClient, err = client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if err != nil {

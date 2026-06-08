@@ -28,8 +28,8 @@ func New(baseURL string) *Client {
 
 // authResponse is the response from POST /api/tokens.
 type authResponse struct {
-	AuthToken string `json:"authToken"`
-	Username  string `json:"username"`
+	AuthToken  string `json:"authToken"`
+	Username   string `json:"username"`
 	DataSource string `json:"dataSource"`
 }
 
@@ -93,17 +93,17 @@ func (c *Client) CreateConnection(authToken string, config ConnectionConfig) (st
 		Name:             config.Name,
 		Protocol:         "rdp",
 		Parameters: map[string]string{
-			"hostname":       config.Hostname,
-			"port":           config.Port,
-			"username":       config.Username,
-			"password":       config.Password,
-			"security":       "nla",
-			"ignore-cert":    "true",
-			"resize-method":  "display-update",
+			"hostname":         config.Hostname,
+			"port":             config.Port,
+			"username":         config.Username,
+			"password":         config.Password,
+			"security":         "nla",
+			"ignore-cert":      "true",
+			"resize-method":    "display-update",
 			"enable-wallpaper": "true",
 		},
 		Attributes: map[string]string{
-			"max-connections":         "2",
+			"max-connections":          "2",
 			"max-connections-per-user": "2",
 		},
 	}

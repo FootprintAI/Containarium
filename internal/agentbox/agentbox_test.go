@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"testing"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -362,7 +362,8 @@ func TestDeleteFile_NotFound(t *testing.T) {
 func TestSandboxRoot_RejectsOutsidePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(sandboxRootEnv, dir)
-	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
 
 	outside := filepath.Join(t.TempDir(), "evil") // different temp tree
 	_ = os.WriteFile(outside, []byte("x"), 0o644)
@@ -376,7 +377,8 @@ func TestSandboxRoot_RejectsOutsidePath(t *testing.T) {
 func TestSandboxRoot_AcceptsInsidePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(sandboxRootEnv, dir)
-	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
 
 	inside := filepath.Join(dir, "ok.txt")
 	_ = os.WriteFile(inside, []byte("hi"), 0o644)
@@ -394,7 +396,8 @@ func TestSandboxRoot_RejectsLookalikePrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(sandboxRootEnv, root)
-	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
 
 	evil := root + "-evil"
 	if err := os.Mkdir(evil, 0o755); err != nil {
@@ -513,7 +516,8 @@ func TestTailLog_NotFound(t *testing.T) {
 func TestTailLog_RespectsSandboxRoot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(sandboxRootEnv, dir)
-	resetSandboxOnceForTest(); t.Cleanup(resetSandboxOnceForTest)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
 
 	outside := filepath.Join(t.TempDir(), "log")
 	_ = os.WriteFile(outside, []byte("x"), 0o644)
@@ -534,8 +538,8 @@ func TestRootURIsToPaths_ParsesFileURIs(t *testing.T) {
 		{URI: "file:///home/alice/project"},
 		{URI: "file://localhost/srv/box"},
 		{URI: "https://example.com/oops"}, // non-file scheme: dropped
-		{URI: "not-a-uri-at-all"},          // unparseable: dropped
-		{URI: "file://"},                   // empty path: dropped
+		{URI: "not-a-uri-at-all"},         // unparseable: dropped
+		{URI: "file://"},                  // empty path: dropped
 	}
 	got := rootURIsToPaths(roots)
 	if len(got) != 2 {

@@ -665,8 +665,8 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 
 	return &pb.CreateContainerResponse{
 		Container: &pb.Container{
-			Name:     data.Container.Name,
-			Username: data.Container.Username,
+			Name:      data.Container.Name,
+			Username:  data.Container.Username,
 			BackendId: pc.ID,
 			Network: &pb.NetworkInfo{
 				IpAddress: data.Container.Network.IPAddress,
@@ -968,13 +968,13 @@ func (a *PeerMetricsFetcherAdapter) FetchPeerMetrics(authToken string) []peerMet
 		// Parse the JSON response — values may be strings or numbers from gRPC-gateway
 		var resp struct {
 			Metrics []struct {
-				Name             string          `json:"name"`
-				CpuUsageSeconds  json.Number     `json:"cpuUsageSeconds"`
-				MemoryUsageBytes json.Number     `json:"memoryUsageBytes"`
-				DiskUsageBytes   json.Number     `json:"diskUsageBytes"`
-				NetworkRxBytes   json.Number     `json:"networkRxBytes"`
-				NetworkTxBytes   json.Number     `json:"networkTxBytes"`
-				ProcessCount     json.Number     `json:"processCount"`
+				Name             string      `json:"name"`
+				CpuUsageSeconds  json.Number `json:"cpuUsageSeconds"`
+				MemoryUsageBytes json.Number `json:"memoryUsageBytes"`
+				DiskUsageBytes   json.Number `json:"diskUsageBytes"`
+				NetworkRxBytes   json.Number `json:"networkRxBytes"`
+				NetworkTxBytes   json.Number `json:"networkTxBytes"`
+				ProcessCount     json.Number `json:"processCount"`
 			} `json:"metrics"`
 		}
 		if err := json.Unmarshal(body, &resp); err != nil {

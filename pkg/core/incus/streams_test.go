@@ -310,7 +310,7 @@ func TestDigestMatchesSet_RejectsMalformed(t *testing.T) {
 		"sha256:",
 		"short",
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaXX", // too long
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagh",  // non-hex
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagh",   // non-hex
 		"md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	} {
 		if DigestMatchesSet(bad, pub) {

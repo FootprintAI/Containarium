@@ -25,6 +25,7 @@ func withTestHomeRoot(t *testing.T, homeRoot string, userExistsFn func(string) b
 
 const validTestKey1 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBZkMdKTk8EXlTr5tlsIfAvlCi2iCl0YB/YDua3uMyDX test1"
 const validTestKey2 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDtmr5hyCwDmlxelT+dTGxmh8SpOObOWJIhoRa61oY2Q test2"
+
 // TestJumpServerAuthorizesAllRequestKeys_470 is the #470 regression.
 //
 // The manager seeds the HOST jump-server authorized_keys with SSHKeys[0]

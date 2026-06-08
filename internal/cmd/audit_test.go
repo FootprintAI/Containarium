@@ -13,12 +13,12 @@ import (
 
 func TestSanitizeDetailForCLI_NormalizesWhitespace(t *testing.T) {
 	cases := map[string]string{
-		"plain text":         "plain text",
-		"line\nbreak":        "line break",
-		"carriage\rreturn":   "carriage return",
-		"with\ttabs":         "with tabs",
-		"mix\n\tof\rwhite":   "mix  of white",
-		"":                   "",
+		"plain text":       "plain text",
+		"line\nbreak":      "line break",
+		"carriage\rreturn": "carriage return",
+		"with\ttabs":       "with tabs",
+		"mix\n\tof\rwhite": "mix  of white",
+		"":                 "",
 	}
 	for in, want := range cases {
 		if got := sanitizeDetailForCLI(in); got != want {

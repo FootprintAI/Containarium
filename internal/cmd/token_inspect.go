@@ -75,19 +75,19 @@ func init() {
 // struct shape but is the local CLI-facing JSON shape —
 // stable independent of the auth package's internals.
 type inspectedClaims struct {
-	Username   string    `json:"username,omitempty"`
-	Roles      []string  `json:"roles,omitempty"`
-	Scopes     []string  `json:"scopes,omitempty"`
-	TokenType  string    `json:"tt,omitempty"`
-	Issuer     string    `json:"iss,omitempty"`
-	Audience   []string  `json:"aud,omitempty"`
-	JTI        string    `json:"jti,omitempty"`
-	IssuedAt   time.Time `json:"iat,omitempty"`
-	NotBefore  time.Time `json:"nbf,omitempty"`
-	Expiry     time.Time `json:"exp,omitempty"`
-	Subject    string    `json:"sub,omitempty"`
-	SignatureOK bool     `json:"signature_ok"`
-	Validated   bool     `json:"validated"`
+	Username    string    `json:"username,omitempty"`
+	Roles       []string  `json:"roles,omitempty"`
+	Scopes      []string  `json:"scopes,omitempty"`
+	TokenType   string    `json:"tt,omitempty"`
+	Issuer      string    `json:"iss,omitempty"`
+	Audience    []string  `json:"aud,omitempty"`
+	JTI         string    `json:"jti,omitempty"`
+	IssuedAt    time.Time `json:"iat,omitempty"`
+	NotBefore   time.Time `json:"nbf,omitempty"`
+	Expiry      time.Time `json:"exp,omitempty"`
+	Subject     string    `json:"sub,omitempty"`
+	SignatureOK bool      `json:"signature_ok"`
+	Validated   bool      `json:"validated"`
 }
 
 func runTokenInspect(cmd *cobra.Command, args []string) error {

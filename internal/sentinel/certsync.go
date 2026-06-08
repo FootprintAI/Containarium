@@ -21,9 +21,9 @@ type CertStore struct {
 	certs    map[string]tls.Certificate // domain → parsed cert
 	fallback tls.Certificate            // self-signed fallback
 
-	lastSync     time.Time
-	lastSyncErr  error
-	syncedCount  int
+	lastSync    time.Time
+	lastSyncErr error
+	syncedCount int
 }
 
 // NewCertStore creates a CertStore with a self-signed fallback certificate.

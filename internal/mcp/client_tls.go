@@ -31,20 +31,20 @@ import (
 //     hostnames and wrong for self-signed certs.
 
 const (
-	mcpAllowInsecureEnv  = "CONTAINARIUM_MCP_ALLOW_INSECURE"
-	mcpTrustedCAFileEnv  = "CONTAINARIUM_MCP_TRUSTED_CA_FILE"
+	mcpAllowInsecureEnv = "CONTAINARIUM_MCP_ALLOW_INSECURE"
+	mcpTrustedCAFileEnv = "CONTAINARIUM_MCP_TRUSTED_CA_FILE"
 )
 
 // buildMCPTLSConfig constructs a *tls.Config for the MCP client's
 // http.Transport based on the env knobs above. Returns:
 //   - nil, nil      — caller can use the http.Transport zero
-//                      value (system roots, default TLS). Happens
-//                      for an https:// URL with no CA pin and
-//                      no insecure-allow toggle.
+//     value (system roots, default TLS). Happens
+//     for an https:// URL with no CA pin and
+//     no insecure-allow toggle.
 //   - cfg, nil      — pinned CA (cfg.RootCAs populated).
 //   - nil, error    — scheme is http:// and ALLOW_INSECURE isn't
-//                      set, OR the CA file is unreadable / not
-//                      PEM.
+//     set, OR the CA file is unreadable / not
+//     PEM.
 func buildMCPTLSConfig(baseURL string) (*tls.Config, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {

@@ -102,11 +102,11 @@ func TestBuildOTelCollectorConfig_NoDropLabelsSkipsTransform(t *testing.T) {
 
 func TestRegexEscape_EscapesMetacharacters(t *testing.T) {
 	cases := map[string]string{
-		"plain":      "plain",
-		"a.b":        `a\.b`,
-		"a+b":        `a\+b`,
-		"^anchor$":   `\^anchor\$`,
-		"x[y]":       `x\[y\]`,
+		"plain":       "plain",
+		"a.b":         `a\.b`,
+		"a+b":         `a\+b`,
+		"^anchor$":    `\^anchor\$`,
+		"x[y]":        `x\[y\]`,
 		"backslash\\": `backslash\\`,
 	}
 	for in, want := range cases {

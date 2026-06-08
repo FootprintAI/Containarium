@@ -32,9 +32,9 @@ type fakeContainer struct {
 }
 
 type fakeSystemInfo struct {
-	Hostname  string  `json:"hostname"`
-	TotalCPUs int     `json:"totalCpus"`
-	TotalMem  int64   `json:"totalMemoryBytes"`
+	Hostname  string    `json:"hostname"`
+	TotalCPUs int       `json:"totalCpus"`
+	TotalMem  int64     `json:"totalMemoryBytes"`
 	GPUs      []fakeGPU `json:"gpus"`
 }
 
@@ -94,12 +94,12 @@ func (fb *fakeBackend) handler() http.Handler {
 			}
 			json.NewDecoder(r.Body).Decode(&req)
 			c := fakeContainer{
-				Name:     req.Username + "-container",
-				Username: req.Username,
-				State:    "CONTAINER_STATE_RUNNING",
+				Name:      req.Username + "-container",
+				Username:  req.Username,
+				State:     "CONTAINER_STATE_RUNNING",
 				Resources: map[string]string{"cpu": "4", "memory": "8GB", "disk": "50GB"},
-				Network:  map[string]string{"ipAddress": "10.0.3.200"},
-				GPU:      req.GPU,
+				Network:   map[string]string{"ipAddress": "10.0.3.200"},
+				GPU:       req.GPU,
 			}
 			fb.mu.Lock()
 			fb.containers = append(fb.containers, c)

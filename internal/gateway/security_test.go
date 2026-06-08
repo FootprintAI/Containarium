@@ -93,10 +93,10 @@ func TestTerminalHandler_WebSocketOriginValidation(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		origin         string
-		envOrigins     string
-		expectAllowed  bool
+		name          string
+		origin        string
+		envOrigins    string
+		expectAllowed bool
 	}{
 		{
 			name:          "no origin header should be rejected",

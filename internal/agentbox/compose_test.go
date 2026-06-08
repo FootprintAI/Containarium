@@ -144,14 +144,14 @@ func TestStackSlug_UsesTwoTailComponentsToReduceCollisions(t *testing.T) {
 
 func TestSanitizeSlug_RejectsSystemdUnsafeChars(t *testing.T) {
 	cases := map[string]string{
-		"plain":             "plain",
-		"With Spaces":       "with-spaces",
-		"under_score":       "under-score",
-		"weird@chars!":      "weird-chars",
-		"---trim---":        "trim",
-		"":                  "default",
-		"日本":               "default", // non-ASCII collapses to empty → fallback
-		"v1.2.3":            "v1.2.3",  // dots preserved
+		"plain":        "plain",
+		"With Spaces":  "with-spaces",
+		"under_score":  "under-score",
+		"weird@chars!": "weird-chars",
+		"---trim---":   "trim",
+		"":             "default",
+		"日本":           "default", // non-ASCII collapses to empty → fallback
+		"v1.2.3":       "v1.2.3",  // dots preserved
 	}
 	for in, want := range cases {
 		got := sanitizeSlug(in)
@@ -219,8 +219,8 @@ func TestArgInt_AcceptsFloat64AndInt(t *testing.T) {
 
 func TestArgStringSlice_FiltersNonStringAndEmpty(t *testing.T) {
 	args := map[string]any{
-		"good": []any{"a", "b", "c"},
-		"mixed": []any{"a", 42, "", "b"},
+		"good":        []any{"a", "b", "c"},
+		"mixed":       []any{"a", 42, "", "b"},
 		"missing-key": nil,
 	}
 	if got := argStringSlice(args, "good"); len(got) != 3 || got[2] != "c" {
@@ -239,10 +239,10 @@ func TestArgStringSlice_FiltersNonStringAndEmpty(t *testing.T) {
 func TestExpandUser(t *testing.T) {
 	home := homeDir()
 	cases := map[string]string{
-		"~/foo":  filepath.Join(home, "foo"),
-		"~":      home,
-		"/abs":   "/abs",
-		"rel":    "rel",
+		"~/foo":        filepath.Join(home, "foo"),
+		"~":            home,
+		"/abs":         "/abs",
+		"rel":          "rel",
 		"~unsupported": "~unsupported", // ~user form not supported; passes through
 	}
 	for in, want := range cases {

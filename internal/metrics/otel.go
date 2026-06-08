@@ -18,14 +18,14 @@ import (
 // CollectorConfig holds configuration for the OTel metrics collector
 // PeerMetrics represents metrics from a peer backend container.
 type PeerMetrics struct {
-	ContainerName     string
-	BackendID         string
-	CPUUsageSeconds   int64
-	MemoryUsageBytes  int64
-	DiskUsageBytes    int64
-	NetworkRxBytes    int64
-	NetworkTxBytes    int64
-	ProcessCount      int64
+	ContainerName    string
+	BackendID        string
+	CPUUsageSeconds  int64
+	MemoryUsageBytes int64
+	DiskUsageBytes   int64
+	NetworkRxBytes   int64
+	NetworkTxBytes   int64
+	ProcessCount     int64
 }
 
 // PeerSystemMetrics represents system-level metrics from a peer backend.
@@ -90,14 +90,14 @@ type Collector struct {
 	shutdownFn  containariumotel.ShutdownFunc
 
 	// System metric instruments
-	systemCPUCount    otelmetric.Int64Gauge
-	systemMemTotal    otelmetric.Int64Gauge
-	systemMemUsed     otelmetric.Int64Gauge
-	systemDiskTotal   otelmetric.Int64Gauge
-	systemDiskUsed    otelmetric.Int64Gauge
-	systemCPULoad1m   otelmetric.Float64Gauge
-	systemCPULoad5m   otelmetric.Float64Gauge
-	systemCPULoad15m  otelmetric.Float64Gauge
+	systemCPUCount   otelmetric.Int64Gauge
+	systemMemTotal   otelmetric.Int64Gauge
+	systemMemUsed    otelmetric.Int64Gauge
+	systemDiskTotal  otelmetric.Int64Gauge
+	systemDiskUsed   otelmetric.Int64Gauge
+	systemCPULoad1m  otelmetric.Float64Gauge
+	systemCPULoad5m  otelmetric.Float64Gauge
+	systemCPULoad15m otelmetric.Float64Gauge
 
 	// Container metric instruments
 	containerCPUUsage     otelmetric.Int64Gauge
@@ -114,9 +114,9 @@ type Collector struct {
 	// Backend health instruments
 	backendHealthy otelmetric.Int64Gauge
 
-	ctx          context.Context
-	cancel       context.CancelFunc
-	peerFetcher  PeerMetricsFetcher
+	ctx         context.Context
+	cancel      context.CancelFunc
+	peerFetcher PeerMetricsFetcher
 }
 
 // NewCollector creates a new OTel metrics collector

@@ -66,13 +66,13 @@ func TestHasScope_TrimsWhitespace(t *testing.T) {
 
 func TestParseScopes(t *testing.T) {
 	cases := map[string][]string{
-		"":                              nil,
-		"   ":                           nil,
-		",,,":                           nil,
-		"containers:read":               {"containers:read"},
-		"containers:read,secrets:read":  {"containers:read", "secrets:read"},
+		"":                                   nil,
+		"   ":                                nil,
+		",,,":                                nil,
+		"containers:read":                    {"containers:read"},
+		"containers:read,secrets:read":       {"containers:read", "secrets:read"},
 		" containers:read , secrets:read,, ": {"containers:read", "secrets:read"},
-		"*":                             {"*"},
+		"*":                                  {"*"},
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {

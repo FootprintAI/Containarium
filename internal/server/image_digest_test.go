@@ -23,9 +23,9 @@ func TestExtractImageDigest(t *testing.T) {
 		want   string
 		wantOK bool
 	}{
-		"ubuntu:22.04@sha256:abc": {"sha256:abc", true},
-		"ubuntu:22.04":            {"", false},
-		"":                        {"", false},
+		"ubuntu:22.04@sha256:abc":             {"sha256:abc", true},
+		"ubuntu:22.04":                        {"", false},
+		"":                                    {"", false},
 		"images:ubuntu/22.04@sha256:deadbeef": {"sha256:deadbeef", true},
 		// Multi-@ is unusual but the last `@` wins (matches
 		// OCI reference semantics for digest pinning).

@@ -15,13 +15,13 @@ const containariumDistroAttrKey = "containarium.distro"
 // buildResource composes a *resource.Resource per the precedence
 // table in TELEMETRY-DISTRO-DESIGN.md, low to high (later wins):
 //
-//	1. SDK defaults  (resource.Default merge baseline)
-//	2. Standard detectors (host, process, container)
-//	3. Containarium env attrs (container.id, backend.id,
-//	   service.namespace, service.version)
-//	4. OTEL_RESOURCE_ATTRIBUTES env (resource.WithFromEnv())
-//	5. Caller's extra_attrs
-//	6. containarium.distro stamp (defended — wins all)
+//  1. SDK defaults  (resource.Default merge baseline)
+//  2. Standard detectors (host, process, container)
+//  3. Containarium env attrs (container.id, backend.id,
+//     service.namespace, service.version)
+//  4. OTEL_RESOURCE_ATTRIBUTES env (resource.WithFromEnv())
+//  5. Caller's extra_attrs
+//  6. containarium.distro stamp (defended — wins all)
 //
 // Unlike Python's Resource.create() which silently runs the env
 // detector, Go's resource.New() only runs the detectors you ask for.

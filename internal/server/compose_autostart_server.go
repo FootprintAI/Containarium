@@ -17,13 +17,13 @@ import (
 // already live as MCP tools + a CLI dispatch inside agent-box.
 //
 // Each handler:
-//   1. validates the request
-//   2. SSH-execs `agent-box compose <verb> [flags]` into the tenant's
-//      LXC via the IncusExecer seam
-//   3. parses the uniform JSON envelope agent-box prints to stdout
-//      ({"ok":bool,"result":...} or {"ok":false,"error":"..."})
-//   4. maps the envelope onto the typed proto response or a gRPC
-//      status error
+//  1. validates the request
+//  2. SSH-execs `agent-box compose <verb> [flags]` into the tenant's
+//     LXC via the IncusExecer seam
+//  3. parses the uniform JSON envelope agent-box prints to stdout
+//     ({"ok":bool,"result":...} or {"ok":false,"error":"..."})
+//  4. maps the envelope onto the typed proto response or a gRPC
+//     status error
 //
 // The IncusExecer interface is the testability seam — production code
 // wires `pkg/core/incus.Client` (which implements ExecWithOutput);

@@ -23,9 +23,9 @@ import (
 func TestHandshakeDecoderOverReads(t *testing.T) {
 	jsonResponse := `{"ok":true,"assigned_ip":"127.0.0.7"}` + "\n"
 	yamuxSYN := []byte{
-		0x00,             // version 0
-		0x00,             // type SYN
-		0x00, 0x01,       // flags = SYN
+		0x00,       // version 0
+		0x00,       // type SYN
+		0x00, 0x01, // flags = SYN
 		0x00, 0x00, 0x00, 0x01, // stream ID 1
 		0x00, 0x00, 0x00, 0x00, // length 0
 	}

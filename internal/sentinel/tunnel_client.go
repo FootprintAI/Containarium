@@ -18,7 +18,7 @@ type TunnelClient struct {
 	Token        string
 	SpotID       string
 	Ports        []int
-	Pool         Pool   // optional pool tag sent in handshake
+	Pool         Pool // optional pool tag sent in handshake
 
 	// When PublicHostname is set, the sentinel auto-registers this tunnel
 	// as the primary for its pool. Saves the daemon from needing direct

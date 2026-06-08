@@ -378,9 +378,9 @@ func TestJSONRPCCompliance(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name     string
-		request  *MCPRequest
-		checkFn  func(*testing.T, *MCPResponse)
+		name    string
+		request *MCPRequest
+		checkFn func(*testing.T, *MCPResponse)
 	}{
 		{
 			name: "response has jsonrpc field",

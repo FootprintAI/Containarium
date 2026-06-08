@@ -103,11 +103,11 @@ func TestContainerServer_ResolvePool(t *testing.T) {
 		backendID string
 		want      string
 	}{
-		{"", "prod"},                          // empty resolves to local pool
-		{"local-prod", "prod"},                // explicit local ID resolves to local pool
-		{"tunnel-demo-1", "demo"},             // known peer
-		{"tunnel-lab-1", "lab"},               // known peer
-		{"never-registered", ""},              // unknown peer → empty
+		{"", "prod"},              // empty resolves to local pool
+		{"local-prod", "prod"},    // explicit local ID resolves to local pool
+		{"tunnel-demo-1", "demo"}, // known peer
+		{"tunnel-lab-1", "lab"},   // known peer
+		{"never-registered", ""},  // unknown peer → empty
 	}
 	for _, tc := range cases {
 		if got := s.resolvePool(tc.backendID); got != tc.want {
