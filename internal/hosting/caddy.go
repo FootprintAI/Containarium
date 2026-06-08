@@ -132,7 +132,7 @@ func (m *CaddyManager) InstallCaddy(ctx context.Context) error {
 	}
 
 	buildDir := "/tmp/caddy-build"
-	if err := os.MkdirAll(buildDir, 0755); err != nil {
+	if err := os.MkdirAll(buildDir, 0755); err != nil { //nolint:gosec // G301: ephemeral build dir, no secrets
 		return fmt.Errorf("create build dir: %w", err)
 	}
 
@@ -148,7 +148,7 @@ func (m *CaddyManager) InstallCaddy(ctx context.Context) error {
 	}
 
 	// Make executable
-	if err := os.Chmod(m.config.CaddyBin, 0755); err != nil {
+	if err := os.Chmod(m.config.CaddyBin, 0755); err != nil { //nolint:gosec // G302: the Caddy binary needs the executable bit (0755)
 		return fmt.Errorf("chmod caddy: %w", err)
 	}
 
@@ -208,7 +208,7 @@ const caddyfileTemplate = `# Caddy configuration for Containarium App Hosting
 func (m *CaddyManager) WriteCaddyfile() error {
 	// Ensure directory exists
 	dir := filepath.Dir(m.config.Caddyfile)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // G301: standard config dir, not secret-bearing
 		return fmt.Errorf("create caddy config dir: %w", err)
 	}
 

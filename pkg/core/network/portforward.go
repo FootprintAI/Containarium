@@ -142,7 +142,7 @@ func (pf *PortForwarder) enableRouteLocalnet() error {
 	// Best-effort persistence so the setting survives reboots.
 	const path = "/etc/sysctl.d/99-containarium-route-localnet.conf"
 	const body = "# containarium: required for DNAT of 127.0.0.0/8 (tunneled-primary path)\nnet.ipv4.conf.all.route_localnet = 1\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil { //nolint:gosec // G306: sysctl drop-in must be world-readable for the system to load it
 		log.Printf("  Note: could not persist sysctl to %s: %v (the runtime value is set, but it'll reset on reboot)", path, err)
 	}
 	return nil

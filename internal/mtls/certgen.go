@@ -240,7 +240,7 @@ func GenerateWithExistingCA(caPath, caKeyPath string, opts GenerateOptions) erro
 	}
 
 	// Copy CA cert to output directory (not the key for security)
-	if err := os.WriteFile(paths.CACert, caCert, 0644); err != nil {
+	if err := os.WriteFile(paths.CACert, caCert, 0644); err != nil { //nolint:gosec // G306: CA cert is public by design; only the private key is mode-restricted
 		return fmt.Errorf("failed to copy CA cert: %w", err)
 	}
 

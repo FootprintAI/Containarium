@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/events"
+	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -125,7 +126,7 @@ func parseEventFilter(r *http.Request) *pb.SubscribeEventsRequest {
 	if intervalStr := r.URL.Query().Get("metricsInterval"); intervalStr != "" {
 		if interval, err := strconv.Atoi(intervalStr); err == nil {
 			if interval >= 1 && interval <= 60 {
-				filter.MetricsIntervalSeconds = int32(interval)
+				filter.MetricsIntervalSeconds = safecast.I32(interval)
 			}
 		}
 	}

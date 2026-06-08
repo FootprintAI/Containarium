@@ -97,7 +97,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 		// Create parent directory if needed
 		parentDir := filepath.Dir(expandedPath)
-		if err := os.MkdirAll(parentDir, 0755); err != nil {
+		if err := os.MkdirAll(parentDir, 0755); err != nil { //nolint:gosec // G301: user-chosen export dir; 0755 matches mkdir default
 			return fmt.Errorf("failed to create directory %s: %w", parentDir, err)
 		}
 
