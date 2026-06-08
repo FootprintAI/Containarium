@@ -2468,16 +2468,33 @@ func (s *ContainerServer) refreshContainerIPMap() {
 		log.Printf("Warning: failed to list containers for IP map refresh: %v", err)
 		return
 	}
-	ipMap := make(map[string]string, len(infos))
+	if err := s.coreServices.WriteContainerIPMap(buildContainerIPMap(infos)); err != nil {
+		log.Printf("Warning: failed to push container IP map to collector: %v", err)
+	}
+}
+
+// cloudContainerIDLabel is the container label the cloud control plane stamps
+// with its container UUID (ossprimary.LabelCloudContainerID on the cloud side).
+// The OSS daemon is generic about labels; we read this one by its literal key
+// to carry the cloud's join identity into container_ips.json.
+const cloudContainerIDLabel = "cloud_container_id"
+
+// buildContainerIPMap projects the live container list into the source-IP →
+// identity map the OTel collector attributes telemetry by. Pure (no IO) so the
+// projection is unit-tested directly. Core containers and IP-less boxes (not
+// placed yet) are skipped — neither emits app telemetry to attribute.
+func buildContainerIPMap(infos []incus.ContainerInfo) map[string]ContainerIPEntry {
+	ipMap := make(map[string]ContainerIPEntry, len(infos))
 	for _, c := range infos {
 		if c.Role.IsCoreRole() || c.IPAddress == "" {
 			continue
 		}
-		ipMap[c.IPAddress] = c.Name
+		ipMap[c.IPAddress] = ContainerIPEntry{
+			Name:             c.Name,
+			CloudContainerID: c.Labels[cloudContainerIDLabel],
+		}
 	}
-	if err := s.coreServices.WriteContainerIPMap(ipMap); err != nil {
-		log.Printf("Warning: failed to push container IP map to collector: %v", err)
-	}
+	return ipMap
 }
 
 // localBackendID returns this daemon's backend ID for stamping into
