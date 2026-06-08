@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-06-08
+
+Fleet hygiene + delete protection. `containarium prune` bulk-cleans leaked
+boxes; first-class `protect`/`unprotect` verbs (and a `SetContainerDeletePolicy`
+RPC) keep a persistent runner from being swept by an automated reap; and the
+container read API now surfaces the full idle→stop→delete lifecycle. The `ttl`
+verbs finally reach the daemon, closing the failed-CI debug-box leak.
+
 ### Added
 
 - **`containarium prune`** — bulk-delete containers matching a filter, for fleet cleanup (reaping piles of leaked/finished ephemeral boxes one command instead of one-by-one). Filters combine with AND: `--state running|stopped`, `--name-contains`, `--older-than <dur>`, `--label key=value` (repeatable). Safeguards: at least one filter required (no accidental delete-all), core platform containers are never eligible, the matching set is listed before anything happens, and deletion needs confirmation (`--yes` to skip, `--dry-run` to preview). Composes the existing list + delete surface, so it works against the OSS daemon and Containarium Cloud alike. (cloud #264)
