@@ -401,10 +401,24 @@ func (c *Collector) collect() {
 				continue
 			}
 
-			attrs := otelmetric.WithAttributes(
+			attrSet := []attribute.KeyValue{
 				attribute.String("container.name", ct.Name),
 				attribute.String("backend.id", c.config.LocalBackendID),
-			)
+			}
+			// Stamp the cloud container UUID as container.id when this box is a
+			// cloud-managed tenant. The cloud's MetricsService scopes tenant
+			// queries with {container_id="<uuid>"} (dots→underscores: the OTLP
+			// container.id attr becomes the container_id VM label), so without
+			// it the cloud can't join these per-container infra series
+			// (cpu/mem/disk/network) to a tenant and its history panels stay
+			// empty (#231). The value is the cloud_container_id container label
+			// — the same source container_ips.json reads (#536); see
+			// cloudContainerIDLabel in internal/server. Absent on standalone /
+			// non-cloud boxes, so it's omitted rather than emitted empty.
+			if cid := ct.Labels["cloud_container_id"]; cid != "" {
+				attrSet = append(attrSet, attribute.String("container.id", cid))
+			}
+			attrs := otelmetric.WithAttributes(attrSet...)
 
 			c.containerCPUUsage.Record(ctx, metrics.CPUUsageSeconds, attrs)
 			c.containerMemUsage.Record(ctx, metrics.MemoryUsageBytes, attrs)
