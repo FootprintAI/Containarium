@@ -35,13 +35,16 @@ jobs:
       - name: Check gofmt
         run: |
           set -euo pipefail
-          # gofmt -l lists files whose formatting differs from gofmt's.
-          # Empty output = clean. Use the toolchain's gofmt (matches the
-          # pinned Go above) so contributors get identical results locally.
-          unformatted=$(gofmt -l .)
+          # gofmt -s -l lists files whose formatting differs from gofmt's,
+          # including the -s simplifications (e.g. `T{}` composite-literal
+          # elision, redundant slice/range cleanups). Empty output = clean.
+          # Matches the cloud repo's golangci gofmt formatter, which runs
+          # with simplify on by default. Use the toolchain's gofmt (matches
+          # the pinned Go above) so contributors get identical results.
+          unformatted=$(gofmt -s -l .)
           if [ -n "$unformatted" ]; then
-            echo "::error::These files are not gofmt-clean. Run 'gofmt -w .' and commit:"
+            echo "::error::These files are not gofmt-clean. Run 'gofmt -s -w .' and commit:"
             echo "$unformatted"
             exit 1
           fi
-          echo "All Go files are gofmt-clean."
+          echo "All Go files are gofmt -s clean."
