@@ -1,0 +1,41 @@
+name: golangci-lint
+
+# Full golangci-lint gate (config in .golangci.yml): the `standard` linter set
+# — errcheck, govet, ineffassign, staticcheck, unused — plus the gofmt
+# formatter (simplify on). Runs on Linux so results match the CI target
+# (build-tagged files differ by GOOS). Supersedes the old standalone gofmt
+# workflow, whose `gofmt -s` check is now covered by the gofmt formatter here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  golangci:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.11'
+
+      - name: Install golangci-lint
+        # Pinned to the version the config (version: "2") targets. `go install`
+        # avoids the install.sh tarball-checksum flake seen in box CI.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+
+      - name: Run golangci-lint
+        run: golangci-lint run --timeout=10m
