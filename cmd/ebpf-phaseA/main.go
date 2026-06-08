@@ -35,6 +35,7 @@ import (
 	"github.com/cilium/ebpf/perf"
 
 	"github.com/footprintai/containarium/internal/netbpf"
+	"github.com/footprintai/containarium/internal/safecast"
 )
 
 type cidrList []string
@@ -62,7 +63,7 @@ func main() {
 	if *veth == "" {
 		log.Fatal("phase A validator: --veth is required")
 	}
-	if err := run(*obj, *veth, uint32(*tenant), *allowIntra, allow, *peerIP, uint32(*peerTenant), *every); err != nil {
+	if err := run(*obj, *veth, safecast.U32FromUint(*tenant), *allowIntra, allow, *peerIP, safecast.U32FromUint(*peerTenant), *every); err != nil {
 		log.Fatalf("phase A validator: %v", err)
 	}
 }
@@ -98,7 +99,7 @@ func run(objPath, veth string, tenant uint32, allowIntra bool, allow cidrList, p
 		}
 		p = p.Masked()
 		if err := loader.AddEgress(netbpf.EgressEntry{
-			PrefixLen: 32 + uint32(p.Bits()),
+			PrefixLen: 32 + safecast.U32(p.Bits()),
 			TenantID:  tenant,
 			Addr:      p.Addr().As4(),
 		}); err != nil {

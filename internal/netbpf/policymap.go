@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/netpolicy"
+	"github.com/footprintai/containarium/internal/safecast"
 )
 
 // BPF mode constants — mirror the #defines in
@@ -44,7 +45,7 @@ const tenantPrefixBits = 32
 // caller-assigned tenant ID. Tenant ID assignment (registry vs. hash) is a
 // daemon concern resolved at the call site, so this layer takes it explicitly.
 func CompileConfig(tenantID uint32, c netpolicy.CompiledPolicy) PolicyConfig {
-	mode := uint8(c.Mode) // pb enum values match the C #defines (LOG_ONLY=1, ENFORCE=2)
+	mode := safecast.U8(c.Mode) // pb enum values match the C #defines (LOG_ONLY=1, ENFORCE=2)
 	if mode != ModeLogOnly && mode != ModeEnforce {
 		mode = ModeLogOnly // CompiledPolicy already resolves UNSPECIFIED→LOG_ONLY; belt-and-suspenders
 	}
@@ -73,7 +74,7 @@ func CompileEgress(tenantID uint32, c netpolicy.CompiledPolicy) ([]EgressEntry, 
 			return nil, fmt.Errorf("netbpf: egress CIDR %s is not IPv4 (Phase A is IPv4-only)", p)
 		}
 		entry := EgressEntry{
-			PrefixLen: tenantPrefixBits + uint32(p.Bits()),
+			PrefixLen: tenantPrefixBits + safecast.U32(p.Bits()),
 			TenantID:  tenantID,
 			Addr:      p.Addr().As4(), // masked network address, network byte order
 		}

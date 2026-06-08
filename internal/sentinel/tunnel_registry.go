@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/hashicorp/yamux"
 )
 
@@ -176,7 +177,7 @@ func (r *TunnelRegistry) DialTunnel(spotID string, port int) (net.Conn, error) {
 	}
 	// Wire protocol: 2-byte big-endian port number, then bidirectional copy.
 	// Same handshake the existing proxyConnection() uses on the loopback path.
-	portBytes := []byte{byte(port >> 8), byte(port & 0xff)}
+	portBytes := []byte{byte((port >> 8) & 0xff), byte(port & 0xff)}
 	if _, err := stream.Write(portBytes); err != nil {
 		_ = stream.Close()
 		return nil, fmt.Errorf("write port header to spot %q: %w", spotID, err)
@@ -247,7 +248,7 @@ func (r *TunnelRegistry) allocateOctet(spotID string) (byte, error) {
 		// wrapping if we run off the top.
 		candidate := preferred + i
 		if candidate < 2 || candidate > 254 {
-			candidate = byte(2 + (int(preferred)+int(i)-2)%253)
+			candidate = safecast.U8(2 + (int(preferred)+int(i)-2)%253)
 		}
 		if _, used := r.usedIPs[candidate]; !used {
 			r.usedIPs[candidate] = spotID

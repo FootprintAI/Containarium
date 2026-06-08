@@ -8,6 +8,7 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -131,7 +132,7 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 
 		return &pb.GetRoutesResponse{
 			Routes:     pbRoutes,
-			TotalCount: int32(len(pbRoutes)),
+			TotalCount: safecast.I32(len(pbRoutes)),
 		}, nil
 	}
 
@@ -201,7 +202,7 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 
 	return &pb.GetRoutesResponse{
 		Routes:     pbRoutes,
-		TotalCount: int32(len(pbRoutes)),
+		TotalCount: safecast.I32(len(pbRoutes)),
 	}, nil
 }
 
@@ -500,9 +501,9 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 			}
 
 			pbRoutes = append(pbRoutes, &pb.PassthroughRoute{
-				ExternalPort:  int32(rec.ExternalPort),
+				ExternalPort:  safecast.I32(rec.ExternalPort),
 				TargetIp:      rec.TargetIP,
-				TargetPort:    int32(rec.TargetPort),
+				TargetPort:    safecast.I32(rec.TargetPort),
 				Protocol:      protocol,
 				Active:        rec.Active,
 				ContainerName: containerName,
@@ -512,7 +513,7 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 
 		return &pb.ListPassthroughRoutesResponse{
 			Routes:     pbRoutes,
-			TotalCount: int32(len(pbRoutes)),
+			TotalCount: safecast.I32(len(pbRoutes)),
 		}, nil
 	}
 
@@ -535,9 +536,9 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 		}
 
 		pbRoutes = append(pbRoutes, &pb.PassthroughRoute{
-			ExternalPort:  int32(route.ExternalPort),
+			ExternalPort:  safecast.I32(route.ExternalPort),
 			TargetIp:      route.TargetIP,
-			TargetPort:    int32(route.TargetPort),
+			TargetPort:    safecast.I32(route.TargetPort),
 			Protocol:      protocol,
 			Active:        route.Active,
 			ContainerName: containerName,
@@ -547,7 +548,7 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 
 	return &pb.ListPassthroughRoutesResponse{
 		Routes:     pbRoutes,
-		TotalCount: int32(len(pbRoutes)),
+		TotalCount: safecast.I32(len(pbRoutes)),
 	}, nil
 }
 
@@ -779,7 +780,7 @@ func (s *NetworkServer) ListDNSRecords(ctx context.Context, req *pb.ListDNSRecor
 	return &pb.ListDNSRecordsResponse{
 		Records:    records,
 		BaseDomain: s.baseDomain,
-		TotalCount: int32(len(records)),
+		TotalCount: safecast.I32(len(records)),
 	}, nil
 }
 

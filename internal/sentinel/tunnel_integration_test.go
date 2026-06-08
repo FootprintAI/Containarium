@@ -145,7 +145,7 @@ func TestTunnelIntegration(t *testing.T) {
 		defer func() { _ = stream.Close() }()
 
 		// Send port header
-		portBytes := []byte{byte(spotDaemonPort >> 8), byte(spotDaemonPort & 0xff)}
+		portBytes := []byte{byte((spotDaemonPort >> 8) & 0xff), byte(spotDaemonPort & 0xff)}
 		_, err = stream.Write(portBytes)
 		require.NoError(t, err)
 
@@ -174,7 +174,7 @@ func TestTunnelIntegration(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = stream.Close() }()
 
-		portBytes := []byte{byte(spotDaemonPort >> 8), byte(spotDaemonPort & 0xff)}
+		portBytes := []byte{byte((spotDaemonPort >> 8) & 0xff), byte(spotDaemonPort & 0xff)}
 		_, err = stream.Write(portBytes)
 		require.NoError(t, err)
 

@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/pkg/core/container"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -169,7 +170,7 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 	log.Printf("[secrets] refresh %s: stamped=%d", req.Username, stamped)
 	return &pb.RefreshSecretsResponse{
 		Message: fmt.Sprintf("re-stamped %d secret(s) on %s-container; new execs will see updated values", stamped, req.Username),
-		Stamped: int32(stamped),
+		Stamped: safecast.I32(stamped),
 	}, nil
 }
 

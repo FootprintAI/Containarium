@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/incus/incustest"
@@ -45,7 +46,7 @@ func newAutoSleepTestServer(t *testing.T, seed map[string]*incus.ContainerInfo) 
 			}
 			if key == incus.IdleThresholdMinutesKey {
 				if n, err := strconv.Atoi(value); err == nil {
-					c.IdleThresholdMinutes = int32(n)
+					c.IdleThresholdMinutes = safecast.I32(n)
 				}
 			}
 		}

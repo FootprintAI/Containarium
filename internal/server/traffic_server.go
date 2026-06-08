@@ -7,6 +7,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/traffic"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -82,7 +83,7 @@ func (s *TrafficServer) GetConnections(ctx context.Context, req *pb.GetConnectio
 
 	return &pb.GetConnectionsResponse{
 		Connections: filtered,
-		TotalCount:  int32(totalCount),
+		TotalCount:  safecast.I32(totalCount),
 	}, nil
 }
 

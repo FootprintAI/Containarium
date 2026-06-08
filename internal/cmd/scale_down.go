@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/client"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
@@ -82,7 +83,7 @@ func parseIdleMinutes(s string) (int32, error) {
 	if d < time.Minute {
 		return 0, fmt.Errorf("idle duration must be at least 1 minute, got %s", s)
 	}
-	mins := int32(d / time.Minute)
+	mins := safecast.I32(d / time.Minute)
 	if mins < 1 {
 		mins = 1
 	}

@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/events"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -359,7 +360,7 @@ func (c *Collector) GetConnectionSummary(containerName string) *pb.ConnectionSum
 
 	summary := &pb.ConnectionSummary{
 		ContainerName:     containerName,
-		ActiveConnections: int32(len(connections)),
+		ActiveConnections: safecast.I32(len(connections)),
 	}
 
 	destCounts := make(map[string]int)
@@ -384,7 +385,7 @@ func (c *Collector) GetConnectionSummary(containerName string) *pb.ConnectionSum
 	for ip, count := range destCounts {
 		summary.TopDestinations = append(summary.TopDestinations, &pb.DestinationStats{
 			DestIp:          ip,
-			ConnectionCount: int32(count),
+			ConnectionCount: safecast.I32(count),
 			BytesTotal:      destBytes[ip],
 		})
 	}

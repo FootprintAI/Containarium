@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/safecast"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -75,10 +76,10 @@ func (s *ZapServer) ListZapScanRuns(ctx context.Context, req *pb.ListZapScanRuns
 		pbRun := zapScanRunToProto(&run)
 		if run.Status == "running" {
 			if count, err := s.store.CountFinishedJobs(ctx, run.ID); err == nil {
-				pbRun.CompletedCount = int32(count)
+				pbRun.CompletedCount = safecast.I32(count)
 			}
 		} else {
-			pbRun.CompletedCount = int32(run.TargetsCount)
+			pbRun.CompletedCount = safecast.I32(run.TargetsCount)
 		}
 		pbRuns = append(pbRuns, pbRun)
 	}
@@ -271,11 +272,11 @@ func zapScanRunToProto(run *zapscanner.ScanRun) *pb.ZapScanRun {
 		Id:            run.ID,
 		Trigger:       run.Trigger,
 		Status:        run.Status,
-		TargetsCount:  int32(run.TargetsCount),
-		HighCount:     int32(run.HighCount),
-		MediumCount:   int32(run.MediumCount),
-		LowCount:      int32(run.LowCount),
-		InfoCount:     int32(run.InfoCount),
+		TargetsCount:  safecast.I32(run.TargetsCount),
+		HighCount:     safecast.I32(run.HighCount),
+		MediumCount:   safecast.I32(run.MediumCount),
+		LowCount:      safecast.I32(run.LowCount),
+		InfoCount:     safecast.I32(run.InfoCount),
 		ErrorMessage:  run.ErrorMessage,
 		StartedAt:     run.StartedAt.Format(time.RFC3339),
 		ContainerName: run.ContainerName,

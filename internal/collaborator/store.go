@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/footprintai/containarium/internal/safecast"
 )
 
 var (
@@ -283,7 +285,7 @@ func (s *Store) Count(ctx context.Context, containerName string) (int32, error) 
 		return 0, fmt.Errorf("failed to count collaborators: %w", err)
 	}
 
-	return int32(count), nil
+	return safecast.I32(count), nil
 }
 
 // scanCollaborators is a helper to scan rows into Collaborator structs

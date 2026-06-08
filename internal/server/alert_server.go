@@ -21,6 +21,7 @@ import (
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -279,7 +280,7 @@ func (s *ContainerServer) GetAlertingInfo(ctx context.Context, req *pb.GetAlerti
 	// Count rules
 	rules, err := s.alertStore.List(ctx)
 	if err == nil {
-		resp.CustomRules = int32(len(rules))
+		resp.CustomRules = safecast.I32(len(rules))
 	}
 	// Default rules count is static (9 rules in default.yml)
 	resp.TotalRules = 9 + resp.CustomRules
@@ -581,7 +582,7 @@ func (s *ContainerServer) TestWebhook(ctx context.Context, req *pb.TestWebhookRe
 
 	return &pb.TestWebhookResponse{
 		Success:    success,
-		StatusCode: int32(resp.StatusCode),
+		StatusCode: safecast.I32(resp.StatusCode),
 		Message:    msg,
 	}, nil
 }
@@ -637,16 +638,16 @@ func (s *ContainerServer) ListWebhookDeliveries(ctx context.Context, req *pb.Lis
 			Source:       d.Source,
 			WebhookUrl:   d.WebhookURL,
 			Success:      d.Success,
-			HttpStatus:   int32(d.HTTPStatus),
+			HttpStatus:   safecast.I32(d.HTTPStatus),
 			ErrorMessage: d.ErrorMessage,
-			PayloadSize:  int32(d.PayloadSize),
-			DurationMs:   int32(d.DurationMs),
+			PayloadSize:  safecast.I32(d.PayloadSize),
+			DurationMs:   safecast.I32(d.DurationMs),
 		}
 	}
 
 	return &pb.ListWebhookDeliveriesResponse{
 		Deliveries: pbDeliveries,
-		TotalCount: int32(total),
+		TotalCount: safecast.I32(total),
 	}, nil
 }
 

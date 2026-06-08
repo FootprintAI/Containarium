@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/safecast"
 	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
 )
@@ -428,7 +429,7 @@ func parseIdleThresholdMinutes(cfg map[string]string) int32 {
 	if err != nil || n < 1 {
 		return DefaultIdleThresholdMinutes
 	}
-	return int32(n)
+	return safecast.I32(n)
 }
 
 // parseLastStartedAt reads the last-started timestamp from an Incus config
@@ -1200,14 +1201,14 @@ func (c *Client) GetSystemResources() (*SystemResources, error) {
 	}
 
 	res := &SystemResources{
-		TotalMemoryBytes: int64(resources.Memory.Total),
-		UsedMemoryBytes:  int64(resources.Memory.Used),
+		TotalMemoryBytes: safecast.I64FromU64(resources.Memory.Total),
+		UsedMemoryBytes:  safecast.I64FromU64(resources.Memory.Used),
 	}
 
 	// Count total CPU cores
 	for _, socket := range resources.CPU.Sockets {
 		for _, core := range socket.Cores {
-			res.TotalCPUs += int32(len(core.Threads))
+			res.TotalCPUs += safecast.I32(len(core.Threads))
 		}
 	}
 
@@ -1217,8 +1218,8 @@ func (c *Client) GetSystemResources() (*SystemResources, error) {
 		for _, pool := range pools {
 			poolResources, err := c.server.GetStoragePoolResources(pool.Name)
 			if err == nil {
-				res.TotalDiskBytes += int64(poolResources.Space.Total)
-				res.UsedDiskBytes += int64(poolResources.Space.Used)
+				res.TotalDiskBytes += safecast.I64FromU64(poolResources.Space.Total)
+				res.UsedDiskBytes += safecast.I64FromU64(poolResources.Space.Used)
 			}
 		}
 	}
@@ -1512,7 +1513,7 @@ func (c *Client) GetContainerMetrics(name string) (*ContainerMetrics, error) {
 
 	metrics := &ContainerMetrics{
 		Name:         name,
-		ProcessCount: int32(state.Processes),
+		ProcessCount: safecast.I32(state.Processes),
 	}
 
 	// CPU usage (in nanoseconds, convert to seconds)

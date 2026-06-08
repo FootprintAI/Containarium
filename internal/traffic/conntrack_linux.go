@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/footprintai/containarium/internal/safecast"
+
 	"github.com/ti-mo/conntrack"
 	"github.com/ti-mo/netfilter"
 )
@@ -119,12 +121,12 @@ func (m *LinuxConntrackMonitor) processEvent(ev conntrack.Event) {
 
 	// Get byte/packet counters if available
 	if flow.CountersOrig.Bytes > 0 {
-		event.BytesOrig = int64(flow.CountersOrig.Bytes)
-		event.PacketsOrig = int64(flow.CountersOrig.Packets)
+		event.BytesOrig = safecast.I64FromU64(flow.CountersOrig.Bytes)
+		event.PacketsOrig = safecast.I64FromU64(flow.CountersOrig.Packets)
 	}
 	if flow.CountersReply.Bytes > 0 {
-		event.BytesReply = int64(flow.CountersReply.Bytes)
-		event.PacketsReply = int64(flow.CountersReply.Packets)
+		event.BytesReply = safecast.I64FromU64(flow.CountersReply.Bytes)
+		event.PacketsReply = safecast.I64FromU64(flow.CountersReply.Packets)
 	}
 
 	// Get TCP state
@@ -134,7 +136,7 @@ func (m *LinuxConntrackMonitor) processEvent(ev conntrack.Event) {
 
 	// Get timeout
 	if flow.Timeout > 0 {
-		event.Timeout = int32(flow.Timeout)
+		event.Timeout = safecast.I32FromU32(flow.Timeout)
 	}
 
 	// Send event (non-blocking)
@@ -186,11 +188,11 @@ func (m *LinuxConntrackMonitor) Snapshot() ([]*ConntrackEvent, error) {
 			SrcPort:      flow.TupleOrig.Proto.SourcePort,
 			DstIP:        flow.TupleOrig.IP.DestinationAddress.String(),
 			DstPort:      flow.TupleOrig.Proto.DestinationPort,
-			BytesOrig:    int64(flow.CountersOrig.Bytes),
-			BytesReply:   int64(flow.CountersReply.Bytes),
-			PacketsOrig:  int64(flow.CountersOrig.Packets),
-			PacketsReply: int64(flow.CountersReply.Packets),
-			Timeout:      int32(flow.Timeout),
+			BytesOrig:    safecast.I64FromU64(flow.CountersOrig.Bytes),
+			BytesReply:   safecast.I64FromU64(flow.CountersReply.Bytes),
+			PacketsOrig:  safecast.I64FromU64(flow.CountersOrig.Packets),
+			PacketsReply: safecast.I64FromU64(flow.CountersReply.Packets),
+			Timeout:      safecast.I32FromU32(flow.Timeout),
 			Timestamp:    time.Now(),
 		}
 

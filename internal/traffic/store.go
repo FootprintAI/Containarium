@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -140,12 +141,12 @@ func (s *Store) SaveConnection(ctx context.Context, conn *pb.Connection) error {
 
 	_, err := s.pool.Exec(ctx, query,
 		conn.ContainerName,
-		int16(conn.Protocol),
+		safecast.I16(conn.Protocol),
 		conn.SourceIp,
 		conn.SourcePort,
 		conn.DestIp,
 		conn.DestPort,
-		int16(conn.Direction),
+		safecast.I16(conn.Direction),
 		conn.BytesSent,
 		conn.BytesReceived,
 		conn.PacketsSent,
@@ -270,10 +271,10 @@ func (s *Store) QueryConnections(ctx context.Context, params QueryParams) ([]*pb
 		}
 
 		if sourcePort != nil {
-			conn.SourcePort = uint32(*sourcePort)
+			conn.SourcePort = safecast.U32(*sourcePort)
 		}
 		if destPort != nil {
-			conn.DestPort = uint32(*destPort)
+			conn.DestPort = safecast.U32(*destPort)
 		}
 		if endedAt != nil {
 			conn.EndedAt = timestamppb.New(*endedAt)
@@ -374,7 +375,7 @@ func (s *Store) GetAggregates(ctx context.Context, params AggregateParams) ([]*p
 			agg.DestIp = *destIP
 		}
 		if destPort != nil {
-			agg.DestPort = uint32(*destPort)
+			agg.DestPort = safecast.U32(*destPort)
 		}
 
 		aggregates = append(aggregates, agg)
@@ -497,7 +498,7 @@ func (s *Store) SaveAggregate(ctx context.Context, agg *pb.TrafficAggregate, con
 		destIP = &agg.DestIp
 	}
 	if agg.DestPort > 0 {
-		port := int32(agg.DestPort)
+		port := safecast.I32FromU32(agg.DestPort)
 		destPort = &port
 	}
 

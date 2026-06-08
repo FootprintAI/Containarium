@@ -17,6 +17,7 @@ import (
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/releasecheck"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -676,7 +677,7 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 
 	return &pb.ListContainersResponse{
 		Containers: protoContainers,
-		TotalCount: int32(len(protoContainers)),
+		TotalCount: safecast.I32(len(protoContainers)),
 	}, nil
 }
 
@@ -2776,7 +2777,7 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 
 	return &pb.ListCollaboratorsResponse{
 		Collaborators: protoCollaborators,
-		TotalCount:    int32(len(protoCollaborators)),
+		TotalCount:    safecast.I32(len(protoCollaborators)),
 	}, nil
 }
 

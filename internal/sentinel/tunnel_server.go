@@ -272,7 +272,7 @@ func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *y
 	defer func() { _ = stream.Close() }()
 
 	// Send the target port as a 2-byte big-endian header
-	portBytes := []byte{byte(port >> 8), byte(port & 0xff)}
+	portBytes := []byte{byte((port >> 8) & 0xff), byte(port & 0xff)}
 	if _, err := stream.Write(portBytes); err != nil {
 		log.Printf("[tunnel-server] failed to write port header to spot %s: %v", spotID, err)
 		return

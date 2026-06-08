@@ -11,6 +11,7 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
+	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -101,7 +102,7 @@ func (s *AppServer) ListApps(ctx context.Context, req *pb.ListAppsRequest) (*pb.
 
 	count, err := s.store.Count(ctx, req.Username, req.StateFilter)
 	if err != nil {
-		count = int32(len(apps))
+		count = safecast.I32(len(apps))
 	}
 
 	return &pb.ListAppsResponse{

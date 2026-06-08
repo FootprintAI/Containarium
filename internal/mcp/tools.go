@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/expose"
 )
 
@@ -1519,7 +1520,7 @@ func handleToggleAutoSleep(client *Client, args map[string]interface{}) (string,
 	}
 	idle := int32(0)
 	if n, ok := getIntArg(args, "idleThresholdMinutes"); ok {
-		idle = int32(n)
+		idle = safecast.I32(n)
 	}
 
 	resp, err := client.ToggleAutoSleep(username, enabled, idle)
