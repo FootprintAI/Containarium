@@ -8,7 +8,17 @@ run:
 # clean baseline holds.
 linters:
   default: standard
+  enable:
+    # gosec, scoped to G115 only (integer-overflow conversions). The rest of
+    # gosec's rules aren't enforced yet — enabling them wholesale would surface
+    # a separate debt. G115 is clean as of the safecast rollout, so gate it to
+    # prevent regressions: new unchecked int conversions must go through
+    # internal/safecast (or carry a justified //nolint:gosec).
+    - gosec
   settings:
+    gosec:
+      includes:
+        - G115
     errcheck:
       # Conventionally-unchecked stdlib calls. Their errors are not actionable
       # in the contexts we use them (deferred cleanup, best-effort writes to an
