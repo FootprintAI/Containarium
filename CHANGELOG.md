@@ -11,10 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`containarium prune`** — bulk-delete containers matching a filter, for fleet cleanup (reaping piles of leaked/finished ephemeral boxes one command instead of one-by-one). Filters combine with AND: `--state running|stopped`, `--name-contains`, `--older-than <dur>`, `--label key=value` (repeatable). Safeguards: at least one filter required (no accidental delete-all), core platform containers are never eligible, the matching set is listed before anything happens, and deletion needs confirmation (`--yes` to skip, `--dry-run` to preview). Composes the existing list + delete surface, so it works against the OSS daemon and Containarium Cloud alike. (cloud #264)
 - **`Container.stopped_at` + `Container.delete_after_stopped_seconds`** — the container read API (`GetContainer`/`ListContainers`) now reports the two-phase reaping status (#525) alongside `ttl_expires_at` and `auto_sleep_enabled`, so a reader sees the *full* lifecycle (where a box is in idle→stop→delete) without host access. Read from the Incus config the daemon stamps; `stopped_at` is omitted while the box runs. Completes the read-side of the box-lifecycle model for the fleet-hygiene view (cloud #264). (#525)
+- **Delete-policy protection for `--podman`/runner boxes** — a box marked `user.containarium.delete_policy=protected` is now skipped by every automated/bulk deletion path: the `ttlsweeper` auto-reap and `containarium prune`. So a "clean up leaked boxes" sweep can no longer take out a persistent, registered runner; removing a protected box takes a deliberate single-box `containarium delete`. Set it today via `incus config set <box> user.containarium.delete_policy protected`; surfaced on the container read path. (cloud #284)
+- **Metrics attribution carries `cloud_container_id`** — the OTLP collector's `container_ips.json` source-IP map now records each box's cloud container UUID alongside the local name, so when the `source.ip → container.id` join lands it can stamp the label the cloud control plane's metrics queries select on (rather than only the local container name). (cloud #231/#264-A)
 
 ### Fixed
 
 - **gRPC `ListContainers` now returns labels** — the gRPC client dropped the `labels` map when converting the response, so label-based filtering (e.g. `containarium prune --label`) saw no labels over gRPC. HTTP already carried them.
+- **`containarium ttl set / get / unset` now reach the daemon** — the verbs were client-side stubs that returned a synthetic "not implemented" (and surfaced as HTTP 404 over REST), so the containarium-run *keep-on-failure* path never stamped a TTL and failed-CI debug boxes leaked until deleted by hand. `set`/`unset` now call the real `SetContainerTTL` RPC (unset = duration 0); `get` reads `ttl_expires_at` off `GetContainer`. A daemon too old to implement it still degrades to a friendly no-op (gRPC `Unimplemented` / HTTP 404 mapped to it). (cloud #264)
+- **core-caddy survives recreate (stable IP)** — the `--app-hosting` edge container's IP was hard-coded into the split-horizon dnsmasq record (and a host DNAT rule) with no reconciler, so every core-caddy recreate stranded them and internal clients resolved platform hostnames to a dead IP. The daemon now assigns core-caddy a deterministic static IP high in the bridge subnet at creation, so a daemon-driven recreate reuses it and those references stay valid. (cloud #240)
+
+### Dependencies
+
+- Bump `github.com/jackc/pgx/v5` 5.9.2 → 5.10.0 and `google.golang.org/api` 0.282.0 → 0.283.0. (#537, #538)
 
 ## [0.24.0] - 2026-06-07
 
