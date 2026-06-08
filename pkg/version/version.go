@@ -7,8 +7,11 @@ import (
 )
 
 var (
-	// Version is the semantic version - UPDATE THIS MANUALLY for releases
-	Version = "0.23.2"
+	// Version is the semantic version. Release builds override this via
+	// ldflags (`make build-release VERSION=<tag>` in .github/workflows/release.yml),
+	// so the tag is the source of truth; keep this constant in sync as the
+	// fallback for plain `make build` / `go build`.
+	Version = "0.25.0"
 
 	// GitCommit is the git commit hash (set by build flag via ldflags)
 	GitCommit = ""

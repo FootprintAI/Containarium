@@ -35,7 +35,7 @@ jobs:
         # `make build-release` builds containarium + mcp-server +
         # agent-box for linux/amd64, darwin/amd64, darwin/arm64 and
         # writes SHA256SUMS.txt. 9 binaries + 1 checksum file.
-        run: make build-release
+        run: make build-release VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Create release notes
         id: release_notes
@@ -178,7 +178,7 @@ jobs:
         # the binary outputs land in bin/ before the bundle script reads
         # them. (The job above only writes binaries to the release page,
         # not to a workflow artifact; we rebuild here.)
-        run: make build-release
+        run: make build-release VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Download bundle dependencies
         run: |
