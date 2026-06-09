@@ -68,8 +68,8 @@ case needs the actual targets, that's the surface to use.
                         container.egress.connections{container_id,...}
                                     │  OTLP push
                                     ▼
-                              VictoriaMetrics ──▶ threshold/alert
-                                    (sentinel alerting plane: webhook + /metrics)
+                              VictoriaMetrics ──▶ vmalert (abuse_alerts) ──▶ Alertmanager
+                                    (ContainerEgressFanoutHigh / *Critical)
 ```
 
 ### Components (this slice)
@@ -105,9 +105,20 @@ deployment decision, not code.
 
 ## Detection & response
 
-- **Detect:** threshold `container_egress_distinct_destinations` via the sentinel
-  alerting plane that just shipped (webhook + `/metrics`), or a cloud-side rule.
-  A static ceiling is the v1; a baseline-relative anomaly check is a follow-on.
+- **Detect:** vmalert rules on `container_egress_distinct_destinations` in the
+  monitoring stack's default ruleset (`internal/server/alert_rules.go`,
+  `abuse_alerts` group) — `ContainerEgressFanoutHigh` (> 100 distinct
+  destinations for 10m, warning) and `ContainerEgressFanoutCritical` (> 500 for
+  5m, critical), both excluding `containarium-core-*`. These are **conservative
+  static ceilings** for v1; a baseline-relative anomaly check (per-container
+  rolling norm) is the natural follow-on. They route through the same
+  vmalert → Alertmanager path as the existing system/container/pentest alerts.
+
+  > Not the sentinel alerting plane (`sentinel_preempted_total` etc.): that
+  > exists specifically because the on-spot monitoring dies *with* the spot, so
+  > it owns only the preemption signal. The egress metric lives in
+  > VictoriaMetrics on the running backend, so vmalert is the correct vehicle.
+
 - **Respond:** the eBPF egress allowlist (#315, deny-by-default) is the
   enforcement clamp once a crawler is confirmed — detection (this metric) and
   enforcement (network policy) compose.

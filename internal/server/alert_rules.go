@@ -151,4 +151,27 @@ const DefaultAlertRules = `groups:
         annotations:
           summary: "Sustained high CPU during pentest"
           description: "System CPU load has been above 90% for 10 minutes, possibly due to an active pentest scan or attack."
+
+  - name: abuse_alerts
+    interval: 30s
+    rules:
+      - alert: ContainerEgressFanoutHigh
+        expr: container_egress_distinct_destinations{container_name!~"containarium-core-.*"} > 100
+        for: 10m
+        labels:
+          severity: warning
+          source: default
+        annotations:
+          summary: "Container egress fan-out is high (possible crawler)"
+          description: "Container {{ $labels.container_name }} is connecting out to {{ $value }} distinct destinations — well above a normal app's handful (DB, an API, a CDN). Sustained high fan-out is the network signature of a crawler/scraper, which is prohibited. This is a conservative default threshold; tune per deployment. See docs/EGRESS-FANOUT-DETECTION.md."
+
+      - alert: ContainerEgressFanoutCritical
+        expr: container_egress_distinct_destinations{container_name!~"containarium-core-.*"} > 500
+        for: 5m
+        labels:
+          severity: critical
+          source: default
+        annotations:
+          summary: "Container egress fan-out is very high (likely crawler)"
+          description: "Container {{ $labels.container_name }} is connecting out to {{ $value }} distinct destinations. This is a strong crawler/scraper signature (prohibited). Investigate, and consider clamping egress via the network policy (deny-by-default allowlist, #315). See docs/EGRESS-FANOUT-DETECTION.md."
 `
