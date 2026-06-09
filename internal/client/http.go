@@ -1166,6 +1166,93 @@ func (c *HTTPClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb
 	return out.Artifact, nil
 }
 
+// ListCrews lists all built-in crews via HTTP.
+func (c *HTTPClient) ListCrews() ([]*pb.Crew, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/crews", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list crews: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "list crews")
+	}
+	out := &pb.ListCrewsResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Crews, nil
+}
+
+// GetCrew fetches a single crew definition via HTTP.
+func (c *HTTPClient) GetCrew(id string) (*pb.Crew, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/crews/%s", url.PathEscape(id)), nil)
+	if err != nil {
+		return nil, fmt.Errorf("get crew: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get crew")
+	}
+	out := &pb.GetCrewResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Crew, nil
+}
+
+// RunCrew launches a crew via HTTP.
+func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON string) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
+	defer cancel()
+	path := fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(crewID))
+	body := map[string]interface{}{
+		"crew_id":    crewID,
+		"backend_id": backendID,
+		"pool":       pool,
+		"input_json": inputJSON,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("run crew: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "run crew")
+	}
+	out := &pb.RunCrewResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Run, nil
+}
+
+// GetCrewRun fetches a crew run's status via HTTP.
+func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/crew-runs/%s", url.PathEscape(id)), nil)
+	if err != nil {
+		return nil, fmt.Errorf("get crew run: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get crew run")
+	}
+	out := &pb.GetCrewRunResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Run, nil
+}
+
 // CreateBackup dumps a tenant's database and stores it off-host via HTTP.
 func (c *HTTPClient) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)

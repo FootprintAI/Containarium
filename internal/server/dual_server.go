@@ -321,6 +321,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterAgentSkillServiceServer(grpcServer, agentSkillServer)
 	log.Printf("Agent-skill service enabled")
 
+	// Register CrewService — Phase 3. Collaborating sets of skills bound to a
+	// task purpose; reuses the agent-skill server to provision each member box.
+	pb.RegisterCrewServiceServer(grpcServer, NewCrewServer(agentSkillServer))
+	log.Printf("Crew service enabled")
+
 	// Register BackupService — logical (pg_dump) database backups for the
 	// databases running inside containers, stored off-host (local dir or
 	// GCS). Orchestration over the container manager; the GCS uploader is

@@ -379,6 +379,68 @@ func (c *Client) CallAgent(req CallAgentRequest) (*CallAgentResponse, error) {
 	return &resp, nil
 }
 
+// --- crews (CrewService) ---
+
+// CrewSummary is one entry of the /v1/crews response (grpc-gateway camelCase).
+type CrewSummary struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Topology    string   `json:"topology"`
+	SkillIDs    []string `json:"skillIds"`
+}
+
+// ListCrewsResponse is the /v1/crews response.
+type ListCrewsResponse struct {
+	Crews []CrewSummary `json:"crews"`
+}
+
+// ListCrews returns the daemon's built-in crew catalog.
+func (c *Client) ListCrews() (*ListCrewsResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/crews", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListCrewsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// RunCrewRequest is the body for a crew run (snake_case for grpc-gateway input).
+type RunCrewRequest struct {
+	CrewID    string `json:"crew_id"`
+	BackendID string `json:"backend_id,omitempty"`
+	Pool      string `json:"pool,omitempty"`
+	InputJSON string `json:"input_json,omitempty"`
+}
+
+// RunCrewResponse is the result of a crew run.
+type RunCrewResponse struct {
+	Run *struct {
+		ID      string `json:"id"`
+		CrewID  string `json:"crewId"`
+		TraceID string `json:"traceId"`
+		State   string `json:"state"`
+		Error   string `json:"error"`
+	} `json:"run"`
+}
+
+// RunCrew launches a crew: validates topology, provisions member boxes, returns
+// the run handle.
+func (c *Client) RunCrew(req RunCrewRequest) (*RunCrewResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/crews/"+req.CrewID+"/run", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp RunCrewResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // --- database backups (BackupService) ---
 
 // PgConnectionBody carries pg_dump/pg_restore connection params. Snake_case

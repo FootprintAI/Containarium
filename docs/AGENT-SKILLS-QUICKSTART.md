@@ -2,7 +2,7 @@
 
 Run a packaged agent in its own Containarium box in a couple of minutes.
 
-> **Phases 0–2.** This is the generic mechanism only. The daemon-side surface
+> **Phases 0–3.** This is the generic mechanism only. The daemon-side surface
 > (run, discovery, agent-to-agent send, `allowed_peers` enforcement, audit) is
 > wired and tested. The **in-box agent loop and the in-box A2A server are the
 > box image's job and are not wired yet**, so a `run` seeds + network-gates the
@@ -153,6 +153,43 @@ Without `CONTAINARIUM_AGENT_EGRESS_CIDRS`, an armed agent could only reach its
 peers — review the audit `network_policy.deny_logged` events in LOG_ONLY first,
 then add the platform CIDRs and flip ENFORCE.
 
+## Crews (Phase 3)
+
+A **crew** is a collaborating set of skills bound to a task purpose, wired by a
+**topology**:
+
+- `pipeline` — output of skill[i] feeds skill[i+1]
+- `orchestrator` — a coordinator skill fans tasks to workers and synthesizes
+- `freeform` — members coordinate freely within their `allowed_peers`
+
+```bash
+containarium crew list
+containarium crew get hello-crew
+containarium crew run hello-crew --input '{"q":"hi"}' --server <host>
+containarium crew status <run-id> --server <host>
+```
+
+`crew run` does, in order:
+
+1. **Validate topology against the trust fabric.** Every A2A edge the topology
+   implies must be permitted by the members' `allowed_peers` — a crew can never
+   ask for a hop Phase 2 would drop. A bad edge is rejected *before* any box is
+   provisioned. (The reference `hello-crew` is a pipeline `relay-agent →
+   hello-agent`, and `relay-agent.allowed_peers` includes `hello-agent`.)
+2. **Provision each member's box** by reusing `agent run` — scoped token +
+   per-box `allowed_peers` network policy, all under **one shared `trace_id`**
+   so the whole run correlates in the audit log.
+3. **Record the run** (`crew status <run-id>` polls it).
+
+Driving a crew needs `crews:run` (plus `agents:run` + `containers:write`, since
+it provisions boxes).
+
+> **Phase 3 seam.** The actual inter-agent choreography and artifact
+> aggregation are the in-box agent loop's job (the `agent-runtime` image, not
+> yet wired), so a run lands in `RUNNING` once the boxes are up + network-gated,
+> not `COMPLETED`. Topology validation, provisioning, network gating, and the
+> shared trace are all wired and tested.
+
 ## From an AI agent (MCP)
 
 The platform MCP server exposes the same surface as thin wrappers:
@@ -160,6 +197,8 @@ The platform MCP server exposes the same surface as thin wrappers:
 - `list_agent_skills` — scope `agents:read`
 - `run_agent_skill` — scope `agents:run`
 - `call_agent` — scope `agents:call`
+- `list_crews` — scope `crews:read`
+- `run_crew` — scope `crews:run`
 
 ```jsonc
 // run_agent_skill arguments
@@ -167,6 +206,9 @@ The platform MCP server exposes the same surface as thin wrappers:
 
 // call_agent arguments
 { "to_peer_id": "hello-agent", "from_skill_id": "my-agent", "input_json": "{\"q\":\"hi\"}" }
+
+// run_crew arguments
+{ "crew_id": "hello-crew", "input_json": "{\"q\":\"hi\"}" }
 ```
 
 ## Add your own skill (local)

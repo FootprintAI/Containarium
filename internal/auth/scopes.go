@@ -95,6 +95,11 @@ const (
 	// (SendAgentTask). Separate from agents:run: running a skill provisions a
 	// box, calling a peer only sends it work.
 	ScopeAgentsCall = "agents:call"
+
+	// crews (CrewService). crews:read lists/inspects the crew catalog;
+	// crews:run provisions a crew's member boxes and runs the collaboration.
+	ScopeCrewsRead = "crews:read"
+	ScopeCrewsRun  = "crews:run"
 )
 
 // AllScopes is the catalog of every known scope. It backs IsKnownScope so
@@ -114,6 +119,7 @@ var AllScopes = []string{
 	ScopeCodeWrite, ScopeSSHWrite,
 	ScopeTokensWrite,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
+	ScopeCrewsRead, ScopeCrewsRun,
 }
 
 // IsKnownScope reports whether s is a defined scope (the wildcard counts).
