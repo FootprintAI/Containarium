@@ -43,8 +43,35 @@ fi
 
 STATE=$(sudo incus info "$CONTAINER" 2>/dev/null | grep "^Status:" | awk '{print $2}')
 if [ "$STATE" != "RUNNING" ]; then
-    echo "Error: Container $CONTAINER is not running (status: $STATE)" >&2
-    exit 1
+    # wake-on-SSH (#539/#593): transparently start an auto-slept box on an
+    # inbound SSH connection, parity with wake-on-HTTP. This wrapper IS the
+    # daemon-local SSH router, so it starts the box directly and stamps the
+    # same bookkeeping the daemon's StartContainer does:
+    #   - last_started_at  → autosleep anti-thrash (don't re-sleep for 2x the
+    #                        idle window right after a start)
+    #   - clear stopped_at → two-phase reaping (reset the stopped->delete timer)
+    # Then it waits (bounded, ~30s like wake-on-HTTP) for the box to be RUNNING
+    # and exec-ready before proceeding.
+    echo "Waking $CONTAINER (was: $STATE)..." >&2
+    if ! sudo incus start "$CONTAINER" >/dev/null 2>&1; then
+        echo "Error: failed to start $CONTAINER" >&2
+        exit 1
+    fi
+    sudo incus config set "$CONTAINER" user.containarium.last_started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1 || true
+    sudo incus config unset "$CONTAINER" user.containarium.stopped_at >/dev/null 2>&1 || true
+    READY=
+    for _ in $(seq 1 30); do
+        STATE=$(sudo incus info "$CONTAINER" 2>/dev/null | grep "^Status:" | awk '{print $2}')
+        if [ "$STATE" = "RUNNING" ] && sudo incus exec "$CONTAINER" --mode non-interactive -- true >/dev/null 2>&1; then
+            READY=1
+            break
+        fi
+        sleep 1
+    done
+    if [ -z "$READY" ]; then
+        echo "Error: $CONTAINER did not become ready in time" >&2
+        exit 1
+    fi
 fi
 
 # Resolve the command to run, if any.

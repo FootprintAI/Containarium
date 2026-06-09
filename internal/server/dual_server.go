@@ -1235,13 +1235,6 @@ skipAppHosting:
 			})
 		}
 
-		// Wake-on-SSH hook (#539): the sentinel's ssh-wake-proxy POSTs
-		// /ssh-wake to start a slept box and block until its sshd (:22)
-		// is dial-ready, parity with wake-on-HTTP. 0 = default 30s budget.
-		gatewayServer.SetSSHWakeFn(func(ctx context.Context, username string) (bool, string, error) {
-			return containerServer.WakeForSSH(ctx, username, 0)
-		})
-
 		// Wire security store for CSV export
 		if securityStore != nil {
 			gatewayServer.SetSecurityStore(securityStore)
