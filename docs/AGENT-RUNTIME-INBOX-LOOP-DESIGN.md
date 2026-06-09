@@ -183,9 +183,14 @@ Each phase is independently demoable, mirroring how Phases 0–3 were built.
    `effort` field.)
 4. **API-key scoping.** One org key per deployment vs per-tenant keys (cost
    attribution, blast-radius). Ties into the secrets model.
-5. **Runtime image distribution.** The `agent-runtime` recipe currently points
-   at a base Ubuntu LXC; 4a needs the image to actually contain the loop binary
-   + agent-box MCP + the model client. Build + ship that image how?
+5. **Runtime image distribution.** ✅ Resolved via the release-artifact path:
+   `make bundle-agent-runtime` packages the loop component, and the
+   `agent-runtime` recipe's `post_start` runs `scripts/install-agent-runtime.sh`
+   to pull agent-box + the bundle from the daemon's release (the daemon passes
+   its version as the recipe's `release` param) and install both onto PATH.
+   Best-effort — a dev/unpublished release skips assembly and the box runs
+   without the loop. (A prebuilt OCI/LXC image remains a future optimization to
+   avoid per-box npm install.)
 
 ## See also
 

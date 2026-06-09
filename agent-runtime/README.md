@@ -89,11 +89,13 @@ Verified: `tsc --noEmit` passes against the installed types of both SDKs
   real SDK types.
 - ✅ **Daemon invoke + read-back** (4a) — `RunAgentSkill` execs the runtime and
   reads `artifact.json` into `RunAgentSkillResponse.artifact_json` (#614).
-- ⏳ **Box image assembly** — the `agent-runtime` recipe must ship Node + this
-  component + `agent-box` into the box (design-note open question #5).
-- ⏳ **Serve-mode lifecycle** — a peer/crew-member box must run
-  `CONTAINARIUM_AGENT_MODE=serve` as a long-running process so `:8674` is up;
-  wired in 4c (crew choreography) alongside the daemon starting members.
+- ✅ **Box image assembly** — `make bundle-agent-runtime` packages this
+  component; `scripts/install-agent-runtime.sh` (run by the `agent-runtime`
+  recipe's `post_start`) pulls agent-box + the bundle from the daemon's release
+  and installs `agent-box` + `agent-runtime` onto PATH. Best-effort: a
+  dev/unpublished release just skips it.
+- ✅ **Serve-mode lifecycle** — `RunCrew` starts each member in serve mode
+  (`startServeMode`); `agent run` uses run mode. Wired in 4c.
 - ⏳ **Live validation** — needs the assembled image + a provider API key + a
   backend (the standing "needs a live box" seam). Not runnable in CI alone.
 

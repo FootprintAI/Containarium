@@ -72,22 +72,44 @@ recipes:
   # writes artifact.json back. No GPU and no exposed ports by default — a skill
   # that needs either declares its own box.
   #
-  # post_start installs the Node runtime the loop needs and ensures the seed
-  # dir. The agent-runtime loop component + the agent-box binary themselves are
-  # installed as part of image assembly (design-note open question #5): publish
-  # them as a release artifact and add the install step here, or bake a
-  # prebuilt agent-runtime image. The daemon execs `agent-runtime` (PATH) over
-  # the seed and reads artifact.json (best-effort until that lands).
+  # post_start assembles the box (design-note open question #5, addressed via
+  # the release-artifact path): install Node 20, then run
+  # scripts/install-agent-runtime.sh, which pulls the agent-box binary +
+  # agent-runtime bundle from the named release and installs `agent-box` +
+  # `agent-runtime` onto PATH. The daemon then execs `agent-runtime` (run mode)
+  # or starts serve mode; both resolve via the PATH launcher.
+  #
+  # `release` selects the release tag the artifacts are pulled from (built by
+  # `make build-agent-box-all` + `make bundle-agent-runtime`, published to the
+  # GitHub release). `repo` overrides the source repo (forks/mirrors).
   - id: agent-runtime
     name: Agent Runtime
-    description: Base box for running an AgentSkill — Ubuntu LXC with Node + the in-box agent loop; reads its prompt/token/input from /etc/containarium/agent and writes artifact.json.
+    description: Box for running an AgentSkill — Ubuntu LXC with Node + agent-box + the in-box agent loop; reads prompt/token/input from /etc/containarium/agent and writes artifact.json.
     image: images:ubuntu/24.04
     requires_gpu: false
     resources:
       cpu: "2"
       memory: 4GB
       disk: 20GB
+    parameters:
+      # release is optional: the daemon passes its own version when it
+      # provisions a skill's box (so artifacts match the daemon); a human
+      # `recipe deploy` may pass it too. When empty (or the release lacks the
+      # artifacts), assembly is skipped and the box runs without the in-box loop
+      # (the daemon's exec then degrades to an empty artifact — best-effort).
+      - name: release
+        label: Release tag
+        description: Containarium release tag to pull agent-box + the agent-runtime bundle from (e.g. v0.27.0). Empty skips assembly.
+        type: string
+      - name: repo
+        label: Source repo
+        description: GitHub owner/repo the release artifacts live in.
+        type: string
+        default: FootprintAI/Containarium
     post_start:
       - mkdir -p /etc/containarium/agent
       - 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash -'
       - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+      # Best-effort assembly: never fail provisioning if the release lacks the
+      # artifacts (|| echo keeps the line green under `set -e`).
+      - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'

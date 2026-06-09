@@ -1,4 +1,4 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
+.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
 
 # Variables
 BINARY_NAME=containarium
@@ -123,6 +123,12 @@ build-agent-runtime: ## Build the in-box agent-runtime loop (Node/TS sibling pac
 	@echo "==> Building agent-runtime (npm ci + tsc)..."
 	@cd agent-runtime && npm ci && npm run build
 	@echo "==> agent-runtime built: agent-runtime/dist/"
+
+bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release tarball (dist + manifests; `npm ci --omit=dev` runs in-box)
+	@echo "==> Packaging agent-runtime bundle..."
+	@mkdir -p $(BUILD_DIR)
+	@tar -czf $(BUILD_DIR)/agent-runtime-bundle.tar.gz -C agent-runtime dist package.json package-lock.json
+	@echo "==> agent-runtime bundle: $(BUILD_DIR)/agent-runtime-bundle.tar.gz (publish alongside agent-box-linux-amd64; scripts/install-agent-runtime.sh consumes both)"
 
 build-agent-box-linux: ## Build agent-box for Linux (the typical install target — agent-box runs INSIDE LXC containers)
 	@echo "==> Building agent-box for Linux..."

@@ -20,6 +20,7 @@ import (
 	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 // agentBoxPrefix is the box/tenant name prefix RunAgentSkill assigns to a
@@ -153,12 +154,17 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		return "", nil, err
 	}
 
-	// Provision the box by reusing the recipe deploy path.
+	// Provision the box by reusing the recipe deploy path. Pass the daemon's
+	// version as the agent-runtime recipe's `release` param so the box's
+	// post_start pulls matching agent-box + agent-runtime artifacts (box-image
+	// assembly). Recipes that don't declare these params ignore the extras;
+	// assembly is best-effort (a dev/unpublished version just skips it).
 	dep, err := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
-		RecipeId:  recipeID,
-		Name:      name,
-		BackendId: backendID,
-		Pool:      pool,
+		RecipeId:   recipeID,
+		Name:       name,
+		BackendId:  backendID,
+		Pool:       pool,
+		Parameters: map[string]string{"release": version.GetVersion()},
 	})
 	if err != nil {
 		return "", nil, err // already a gRPC status from deploy/CreateContainer
