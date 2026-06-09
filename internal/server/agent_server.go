@@ -236,7 +236,11 @@ func agentNetworkPolicyConfig() (extraCIDRs []string, enforce bool) {
 // authenticated token subject wins (an agent box's JWT subject is
 // agent-<skill-id>); otherwise it falls back to the caller-asserted value.
 func (s *AgentSkillServer) callerSkillID(ctx context.Context, asserted string) string {
-	if subj, ok := auth.UsernameFromContext(ctx); ok && strings.HasPrefix(subj, agentBoxPrefix) {
+	// Use the same gRPC-metadata subject the rest of the server authenticates
+	// on (RequireScope / AuthorizeTenant). The authenticated subject is the
+	// real boundary; the caller-asserted from_skill_id is only a fallback for
+	// non-agent callers (admin/operator), who aren't gated here anyway.
+	if subj, _, ok := auth.SubjectFromGRPCContext(ctx); ok && strings.HasPrefix(subj, agentBoxPrefix) {
 		return strings.TrimPrefix(subj, agentBoxPrefix)
 	}
 	return asserted

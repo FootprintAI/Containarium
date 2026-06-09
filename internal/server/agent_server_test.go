@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -32,6 +36,42 @@ func TestBuildAgentSeedScriptDefaultsInput(t *testing.T) {
 	script := buildAgentSeedScript("p", "t", "", "")
 	if !strings.Contains(script, "'{}'") {
 		t.Errorf("empty input should default to {}, got:\n%s", script)
+	}
+}
+
+// TestSendAgentTaskRejectsDisallowedPeer is the moat as a test: an agent whose
+// allowed_peers does not include the target is rejected at the API boundary,
+// BEFORE any A2A send is attempted. The caller identity is taken from the
+// authenticated token subject (agent-<skill-id>), not the caller-asserted
+// field, so an agent box can't spoof a different caller to bypass the gate.
+func TestSendAgentTaskRejectsDisallowedPeer(t *testing.T) {
+	// hello-agent ships with allowed_peers: [] (a leaf), so every peer is denied.
+	s := &AgentSkillServer{catalog: skills.GetDefault()}
+
+	// Authenticate as the agent box itself; agents:call scope present.
+	ctx := auth.ContextWithTestSubjectScopes(
+		context.Background(), "agent-hello-agent", nil, []string{auth.ScopeAgentsCall})
+
+	// from_skill_id deliberately lies ("admin-ish") — the authenticated subject
+	// must win, so the call is still denied.
+	_, err := s.SendAgentTask(ctx, &pb.SendAgentTaskRequest{
+		FromSkillId: "some-privileged-skill",
+		ToPeerId:    "other-peer",
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for a peer not in allowed_peers, got %v", err)
+	}
+}
+
+// TestSendAgentTaskRequiresCallScope confirms the agents:call gate.
+func TestSendAgentTaskRequiresCallScope(t *testing.T) {
+	s := &AgentSkillServer{catalog: skills.GetDefault()}
+	// Authenticated, but without agents:call.
+	ctx := auth.ContextWithTestSubjectScopes(
+		context.Background(), "agent-hello-agent", nil, []string{auth.ScopeAgentsRead})
+	_, err := s.SendAgentTask(ctx, &pb.SendAgentTaskRequest{ToPeerId: "x"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied without agents:call, got %v", err)
 	}
 }
 
