@@ -172,8 +172,61 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	//    the env-gated eBPF enforcer AND flipping to ENFORCE — see #574.
 	s.applyAllowedPeersPolicy(ctx, name, skill)
 
-	// artifact_json intentionally empty in Phase 0 (in-box loop seam).
-	return &pb.RunAgentSkillResponse{Container: dep.Container, ArtifactJson: ""}, nil
+	// 5. Run the in-box agent loop (Phase 4a) and read its artifact back.
+	//    Best-effort: until the box image ships agent-runtime + agent-box this
+	//    degrades to an empty artifact (prior behavior), so a base-image box
+	//    never fails the run.
+	artifact := s.runInBoxAgent(containerName)
+	return &pb.RunAgentSkillResponse{Container: dep.Container, ArtifactJson: artifact}, nil
+}
+
+// runInBoxAgent executes the in-box agent-runtime over the seeded task and
+// reads its artifact back. The agent-runtime + agent-box live in the
+// agent-runtime box image (Phase 4a image assembly); the model/engine/provider
+// key come from the box env (secrets-injected). Best-effort: any failure
+// (runtime absent, exec error, bad artifact) logs and returns "" rather than
+// failing RunAgentSkill — the box is still provisioned + gated + traced.
+func (s *AgentSkillServer) runInBoxAgent(containerName string) string {
+	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
+		return ""
+	}
+	mgr := s.recipes.containers.manager
+
+	if _, stderr, err := mgr.ExecWithOutput(containerName,
+		[]string{"bash", "-lc", "AGENT_SEED_DIR=" + agentSeedDir + " agent-runtime"}); err != nil {
+		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
+			containerName, err, strings.TrimSpace(stderr))
+		return ""
+	}
+
+	raw, err := mgr.ReadFile(containerName, agentSeedDir+"/artifact.json")
+	if err != nil {
+		log.Printf("[agent-skill] could not read artifact from %s: %v", containerName, err)
+		return ""
+	}
+	out, err := parseArtifactOutput(raw)
+	if err != nil {
+		log.Printf("[agent-skill] in-box agent on %s reported an error: %v", containerName, err)
+		return ""
+	}
+	return out
+}
+
+// parseArtifactOutput extracts the agent's output JSON from artifact.json
+// (written by agent-runtime). A non-empty `error` field is surfaced as an
+// error so RunAgentSkill can log it and fall back to an empty artifact.
+func parseArtifactOutput(raw []byte) (string, error) {
+	var a struct {
+		OutputJSON string `json:"outputJson"`
+		Error      string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("decode artifact.json: %w", err)
+	}
+	if a.Error != "" {
+		return "", fmt.Errorf("%s", a.Error)
+	}
+	return a.OutputJSON, nil
 }
 
 // applyAllowedPeersPolicy compiles a skill's allowed_peers into a per-box
