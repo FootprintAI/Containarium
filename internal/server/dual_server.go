@@ -35,9 +35,11 @@ import (
 	"github.com/footprintai/containarium/internal/wake"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
 	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
+	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc"
@@ -325,6 +327,25 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// task purpose; reuses the agent-skill server to provision each member box.
 	pb.RegisterCrewServiceServer(grpcServer, NewCrewServer(agentSkillServer))
 	log.Printf("Crew service enabled")
+
+	// Merge external skill/crew catalogs (#620) into the process-wide catalogs
+	// the agent/crew servers use, so out-of-tree packs register without a
+	// rebuild. Skills first (crews reference them). Best-effort: a bad external
+	// catalog logs and is skipped rather than failing daemon startup.
+	if dir := os.Getenv("CONTAINARIUM_SKILLS_DIR"); dir != "" {
+		if err := skills.GetDefault().LoadDir(dir); err != nil {
+			log.Printf("[agent-skill] external skills from %s: %v", dir, err)
+		} else {
+			log.Printf("Loaded external skills from %s", dir)
+		}
+	}
+	if dir := os.Getenv("CONTAINARIUM_CREWS_DIR"); dir != "" {
+		if err := crews.GetDefault().LoadDir(dir); err != nil {
+			log.Printf("[crew] external crews from %s: %v", dir, err)
+		} else {
+			log.Printf("Loaded external crews from %s", dir)
+		}
+	}
 
 	// Register BackupService — logical (pg_dump) database backups for the
 	// databases running inside containers, stored off-host (local dir or

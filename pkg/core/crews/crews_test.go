@@ -1,10 +1,39 @@
 package crews
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+func TestLoadDirMergesCrews(t *testing.T) {
+	m := New()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ext.yaml"), []byte(`
+crews:
+  - id: ext-crew
+    topology: freeform
+    skill_ids: [a, b]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.LoadDir(dir); err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	c, err := m.Get("ext-crew")
+	if err != nil {
+		t.Fatalf("external crew not merged: %v", err)
+	}
+	if c.Topology != pb.CrewTopology_CREW_TOPOLOGY_FREEFORM {
+		t.Errorf("topology = %v", c.Topology)
+	}
+	// missing dir is a no-op
+	if err := m.LoadDir(filepath.Join(dir, "nope")); err != nil {
+		t.Errorf("missing dir should be a no-op, got %v", err)
+	}
+}
 
 func TestEmbeddedCatalogLoads(t *testing.T) {
 	m := GetDefault()

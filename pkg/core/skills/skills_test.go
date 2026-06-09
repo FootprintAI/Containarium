@@ -1,6 +1,10 @@
 package skills
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestEmbeddedCatalogLoads(t *testing.T) {
 	m := GetDefault()
@@ -71,6 +75,55 @@ skills:
 				t.Errorf("expected load error for %q, got nil", name)
 			}
 		})
+	}
+}
+
+func TestLoadDirMerges(t *testing.T) {
+	const base = `
+skills:
+  - id: a
+    recipe_id: agent-runtime
+    system_prompt: hi
+    allowed_scopes: [containers:read]
+`
+	m := New()
+	if err := m.LoadFromBytes([]byte(base)); err != nil {
+		t.Fatalf("base load: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ext.yaml"), []byte(`
+skills:
+  - id: ext-skill
+    recipe_id: agent-runtime
+    system_prompt: external
+    allowed_scopes: [security:read]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.LoadDir(dir); err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if _, err := m.Get("a"); err != nil {
+		t.Error("base skill lost after merge")
+	}
+	if _, err := m.Get("ext-skill"); err != nil {
+		t.Error("external skill not merged")
+	}
+}
+
+func TestLoadDirRejectsCollisionAndAllowsMissing(t *testing.T) {
+	m := New()
+	_ = m.LoadFromBytes([]byte("skills:\n  - id: dup\n    recipe_id: agent-runtime\n    system_prompt: x\n    allowed_scopes: [containers:read]\n"))
+
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "dup.yaml"), []byte("skills:\n  - id: dup\n    recipe_id: agent-runtime\n    system_prompt: y\n    allowed_scopes: [containers:read]\n"), 0o600)
+	if err := m.LoadDir(dir); err == nil {
+		t.Error("expected collision error for duplicate id")
+	}
+
+	if err := m.LoadDir(filepath.Join(dir, "does-not-exist")); err != nil {
+		t.Errorf("missing dir should be a no-op, got %v", err)
 	}
 }
 

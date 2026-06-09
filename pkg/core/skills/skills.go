@@ -12,6 +12,9 @@ package skills
 import (
 	"embed"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -162,6 +165,61 @@ func validate(s *skillDef) error {
 		if !auth.IsKnownScope(sc) {
 			return fmt.Errorf("skill %q declares unknown scope %q", s.ID, sc)
 		}
+	}
+	return nil
+}
+
+// LoadDir merges every *.yaml skill catalog in dir on top of what's already
+// loaded (the embedded built-ins), so out-of-tree catalogs can register skills
+// without recompiling (#620). A missing dir is not an error (no external
+// catalog configured). Fails on a parse/validate error or an id that collides
+// with an already-loaded skill.
+func (m *Manager) LoadDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read skills dir %q: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return fmt.Errorf("read %s: %w", e.Name(), err)
+		}
+		if err := m.mergeBytes(data); err != nil {
+			return fmt.Errorf("%s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
+// mergeBytes parses + validates a catalog and appends it, rejecting an id that
+// collides with an already-loaded skill.
+func (m *Manager) mergeBytes(data []byte) error {
+	var cfg config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse skills YAML: %w", err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing := make(map[string]bool, len(m.skills))
+	for _, s := range m.skills {
+		existing[s.Id] = true
+	}
+	for i := range cfg.Skills {
+		def := &cfg.Skills[i]
+		if err := validate(def); err != nil {
+			return err
+		}
+		if existing[def.ID] {
+			return fmt.Errorf("duplicate skill id: %s", def.ID)
+		}
+		existing[def.ID] = true
+		m.skills = append(m.skills, def.ToProto())
 	}
 	return nil
 }

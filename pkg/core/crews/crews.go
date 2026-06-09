@@ -11,6 +11,9 @@ package crews
 import (
 	"embed"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -122,6 +125,61 @@ func validate(c *crewDef) error {
 	}
 	if len(c.SkillIDs) < 2 {
 		return fmt.Errorf("crew %q must reference at least two skills", c.ID)
+	}
+	return nil
+}
+
+// LoadDir merges every *.yaml crew catalog in dir on top of the embedded
+// built-ins (#620). A missing dir is not an error. Fails on a parse/validate
+// error or an id that collides with an already-loaded crew. (Topology vs the
+// members' allowed_peers is validated at RunCrew time, against the skill
+// catalog — so load external skills before external crews.)
+func (m *Manager) LoadDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read crews dir %q: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return fmt.Errorf("read %s: %w", e.Name(), err)
+		}
+		if err := m.mergeBytes(data); err != nil {
+			return fmt.Errorf("%s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
+// mergeBytes parses + validates a catalog and appends it, rejecting an id that
+// collides with an already-loaded crew.
+func (m *Manager) mergeBytes(data []byte) error {
+	var cfg config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse crews YAML: %w", err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing := make(map[string]bool, len(m.crews))
+	for _, c := range m.crews {
+		existing[c.Id] = true
+	}
+	for i := range cfg.Crews {
+		def := &cfg.Crews[i]
+		if err := validate(def); err != nil {
+			return err
+		}
+		if existing[def.ID] {
+			return fmt.Errorf("duplicate crew id: %s", def.ID)
+		}
+		existing[def.ID] = true
+		m.crews = append(m.crews, def.ToProto())
 	}
 	return nil
 }

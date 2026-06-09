@@ -217,13 +217,19 @@ The platform MCP server exposes the same surface as thin wrappers:
 { "crew_id": "hello-crew", "input_json": "{\"q\":\"hi\"}" }
 ```
 
-## Add your own skill (local)
+## Add your own skill
 
-Add an entry to `pkg/core/skills/skills.yaml`. The loader validates at startup:
+Built-in: add an entry to `pkg/core/skills/skills.yaml` (compiled in).
+
+External (no rebuild): drop `*.yaml` skill catalogs in `CONTAINARIUM_SKILLS_DIR`
+and crew catalogs in `CONTAINARIUM_CREWS_DIR`; the daemon merges them onto the
+built-ins at startup (skills first — crews reference them). Either way the
+loader validates:
 
 - `recipe_id`, `system_prompt`, and **at least one** `allowed_scope` are required.
 - every `allowed_scope` must be a known scope (`internal/auth/scopes.go`) — a
   typo is a load-time error, not a silently-overbroad token.
+- an id that collides with an already-loaded skill/crew is rejected.
 
 ```yaml
 skills:
