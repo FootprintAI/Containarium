@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.2] - 2026-06-09
+
+Native Windows CLI client.
+
+### Added
+
+- **Windows (`windows/amd64`) CLI build + release artifact** (`containarium-windows-amd64.exe`). Windows users can now run the `containarium` CLI natively instead of only via WSL. The binary is **client-only**: the `daemon`/`sentinel`/`tunnel` subcommands and the direct-DB / host-admin commands (which depend on Linux facilities — incus/LXC, eBPF, netlink, iptables) are gated `//go:build !windows`, so the Windows binary exposes the remote-client commands (`create`/`list`/`ssh`/`info`/`connect`/…) that talk to a daemon over gRPC/HTTP. linux/macOS builds are unchanged (full binary, daemon included). (#624)
+
 ## [0.26.1] - 2026-06-09
 
 Wake-on-SSH fix. The v0.26.0 implementation never fired in the real
