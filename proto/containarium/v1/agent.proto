@@ -1,0 +1,334 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+import "containarium/v1/container.proto";
+import "containarium/v1/recipe.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// =============================================================================
+// DESIGN STUB — NOT YET APPROVED. See docs/AGENT-SKILLS-CREWS-DESIGN.md.
+//
+// This file sketches the proto contract for "agent skills" (a packaged,
+// runnable agent in a box) and "crews" (a collaborating set of skills bound
+// to a task purpose). It is the generic mechanism only — concrete skills and
+// crews ship outside this repo. It is the Phase 0/1 surface; field numbers and
+// shapes will change before `make proto` is run for real. Do not wire
+// servers/clients against it until the design lands.
+// =============================================================================
+
+// AgentCard is the A2A (Agent2Agent) discovery document a skill serves so peer
+// agents can find it and learn how to delegate to it. Mirrors the A2A agent
+// card; we carry it in-proto so the wire format stays insulated from upstream
+// A2A churn (see "A2A is young" in the design note).
+message AgentCard {
+  // Stable handle used by peers to address this agent (e.g. "researcher").
+  string id = 1;
+
+  // Human-readable name.
+  string name = 2;
+
+  // What this agent does — surfaced to peers and to a planner.
+  string description = 3;
+
+  // Free-form capability tags a planner can match against (e.g.
+  // "web-search", "code-review", "summarize").
+  repeated string capabilities = 4;
+
+  // JSON Schema describing the task input this agent accepts (A2A "skills").
+  string input_schema_json = 5;
+
+  // JSON Schema describing the artifact this agent returns.
+  string output_schema_json = 6;
+}
+
+// AgentSkill is a packaged, runnable agent: a Recipe (the box — image,
+// resources, GPU) plus the agent layer (who it is, what tools it may call,
+// who it may talk to). This is the unit a marketplace ships and `containarium
+// agent run` launches.
+//
+// Key invariant: allowed_scopes and allowed_peers are typed, first-class
+// fields — NOT a prompt string. They compile into JWT scope grants and eBPF
+// network policy respectively. The typing IS the security boundary.
+message AgentSkill {
+  // Stable skill identifier (e.g. "web-researcher").
+  string id = 1;
+
+  // Display name.
+  string name = 2;
+
+  // Short description.
+  string description = 3;
+
+  // The box this agent runs in. Either reference a built-in recipe by id, or
+  // inline an ad-hoc recipe definition (exactly one).
+  oneof box {
+    // Reference an existing recipe by id (e.g. "agent-runtime").
+    string recipe_id = 4;
+    // Inline recipe definition for one-off skills.
+    Recipe recipe = 5;
+  }
+
+  // System prompt / persona handed to the model inside the box.
+  string system_prompt = 6;
+
+  // Platform MCP scopes this agent is permitted to use (e.g.
+  // "containers:read", "containers:create"). Validated against the scope
+  // taxonomy in internal/auth/scopes.go; minted into the agent's JWT at
+  // launch. Least-privilege: a skill gets ONLY what it declares.
+  repeated string allowed_scopes = 7;
+
+  // A2A discovery document this skill serves.
+  AgentCard agent_card = 8;
+
+  // IDs of the OTHER skills this skill is permitted to send A2A tasks to.
+  // THE KEYSTONE: this list compiles to an eBPF NetworkPolicy egress
+  // allowlist, so an agent literally cannot open a socket to a non-allowed
+  // peer (enforced in-kernel, not in prompt). A skill that is only allowed
+  // one peer cannot reach any other. An empty list = talks to no peer
+  // (leaf agent).
+  repeated string allowed_peers = 9;
+
+  // Model identifier the runtime should drive this agent with (e.g.
+  // "claude-opus-4-8"). Empty = runtime default.
+  string model = 10;
+}
+
+// CrewTopology describes how a crew's skills are wired together.
+enum CrewTopology {
+  CREW_TOPOLOGY_UNSPECIFIED = 0;
+
+  // Skills run as a linear pipeline: output of skill[i] feeds skill[i+1].
+  CREW_TOPOLOGY_PIPELINE = 1;
+
+  // A coordinator skill fans tasks out to worker skills and synthesizes.
+  CREW_TOPOLOGY_ORCHESTRATOR = 2;
+
+  // Skills coordinate freely over A2A within the allowed_peers graph; the
+  // crew just bounds the set and the trace.
+  CREW_TOPOLOGY_FREEFORM = 3;
+}
+
+// Crew is a collaborating set of skills bound to a task purpose. The crew's
+// edges must be a subset of the union of its skills' allowed_peers graphs —
+// the daemon rejects a crew whose topology asks for an A2A edge that network
+// policy would drop.
+message Crew {
+  // Stable crew identifier (e.g. "research-crew").
+  string id = 1;
+
+  // Display name.
+  string name = 2;
+
+  // Short description of the task purpose (e.g. "Research a topic across
+  // several sources and produce a synthesized report").
+  string description = 3;
+
+  // How the skills are wired.
+  CrewTopology topology = 4;
+
+  // Skill ids that make up this crew (in pipeline order when topology is
+  // PIPELINE; coordinator first when ORCHESTRATOR).
+  repeated string skill_ids = 5;
+}
+
+// CrewRunState tracks the lifecycle of a single crew execution.
+enum CrewRunState {
+  CREW_RUN_STATE_UNSPECIFIED = 0;
+  CREW_RUN_STATE_PENDING = 1;
+  CREW_RUN_STATE_RUNNING = 2;
+  CREW_RUN_STATE_COMPLETED = 3;
+  CREW_RUN_STATE_FAILED = 4;
+  CREW_RUN_STATE_CANCELLED = 5;
+}
+
+// CrewRun is one execution of a crew. Every A2A hop and every MCP tool call
+// made by any agent in the run is audit-logged under this run's trace_id
+// (ties into internal/audit), so a run is itself an evidence artifact.
+message CrewRun {
+  // Run identifier.
+  string id = 1;
+
+  // The crew that was run.
+  string crew_id = 2;
+
+  // Shared trace id threaded through every agent's audit entries for this run.
+  string trace_id = 3;
+
+  // Current state.
+  CrewRunState state = 4;
+
+  // JSON input handed to the crew's entry skill(s).
+  string input_json = 5;
+
+  // JSON artifact produced by the crew (e.g. the final report). Populated when
+  // state is COMPLETED.
+  string artifact_json = 6;
+
+  // RFC3339 timestamps.
+  string created_at = 7;
+  string finished_at = 8;
+}
+
+// ---- AgentSkillService request/response messages ----------------------------
+
+message ListAgentSkillsRequest {}
+message ListAgentSkillsResponse {
+  repeated AgentSkill skills = 1;
+}
+
+message GetAgentSkillRequest {
+  string id = 1;
+}
+message GetAgentSkillResponse {
+  AgentSkill skill = 1;
+}
+
+// RunAgentSkillRequest launches a single skill in its box and sends it one
+// task (no peers). Useful for testing a skill in isolation.
+message RunAgentSkillRequest {
+  string skill_id = 1;
+  // Target backend/pool placement, same scheme as recipes.
+  string backend_id = 2;
+  string pool = 3;
+  // JSON task input matching the skill's agent_card input schema.
+  string input_json = 4;
+}
+message RunAgentSkillResponse {
+  // The box the agent ran in.
+  Container container = 1;
+  // JSON artifact matching the skill's output schema.
+  string artifact_json = 2;
+}
+
+// ---- CrewService request/response messages ----------------------------------
+
+message ListCrewsRequest {}
+message ListCrewsResponse {
+  repeated Crew crews = 1;
+}
+
+message GetCrewRequest {
+  string id = 1;
+}
+message GetCrewResponse {
+  Crew crew = 1;
+}
+
+message RunCrewRequest {
+  string crew_id = 1;
+  string backend_id = 2;
+  string pool = 3;
+  // JSON input for the crew's entry skill(s).
+  string input_json = 4;
+}
+message RunCrewResponse {
+  CrewRun run = 1;
+}
+
+message GetCrewRunRequest {
+  string id = 1;
+}
+message GetCrewRunResponse {
+  CrewRun run = 1;
+}
+
+// AgentSkillService manages and runs individual packaged agents.
+service AgentSkillService {
+  // ListAgentSkills returns all available skills (built-in + registered).
+  rpc ListAgentSkills(ListAgentSkillsRequest) returns (ListAgentSkillsResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-skills"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List agent skills";
+      description: "Returns all packaged agent skills that can be run individually or composed into a crew.";
+      tags: "Agents";
+    };
+  }
+
+  // GetAgentSkill returns a single skill definition by id.
+  rpc GetAgentSkill(GetAgentSkillRequest) returns (GetAgentSkillResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-skills/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get agent skill";
+      description: "Returns one skill's definition, including its agent card, allowed scopes, and allowed peers.";
+      tags: "Agents";
+    };
+  }
+
+  // RunAgentSkill launches a single skill in a box and runs one task against
+  // it. The agent's JWT is minted with exactly the skill's allowed_scopes.
+  rpc RunAgentSkill(RunAgentSkillRequest) returns (RunAgentSkillResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-skills/{skill_id}/run"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Run an agent skill";
+      description: "Provisions the skill's box, mints a scoped token, runs one task, and returns the artifact.";
+      tags: "Agents";
+    };
+  }
+}
+
+// CrewService runs collaborating sets of skills bound to a task purpose.
+service CrewService {
+  // ListCrews returns all available crews.
+  rpc ListCrews(ListCrewsRequest) returns (ListCrewsResponse) {
+    option (google.api.http) = {
+      get: "/v1/crews"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List crews";
+      description: "Returns all crews (collaborating skill sets) available to run.";
+      tags: "Agents";
+    };
+  }
+
+  // GetCrew returns a single crew definition by id.
+  rpc GetCrew(GetCrewRequest) returns (GetCrewResponse) {
+    option (google.api.http) = {
+      get: "/v1/crews/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get crew";
+      description: "Returns one crew's definition, including its topology and member skills.";
+      tags: "Agents";
+    };
+  }
+
+  // RunCrew launches a crew against an input. The daemon validates the crew's
+  // topology against the union of member skills' allowed_peers (rejecting any
+  // edge network policy would drop), provisions the boxes, compiles per-agent
+  // network policy from allowed_peers, and threads one trace_id through every
+  // hop's audit record.
+  rpc RunCrew(RunCrewRequest) returns (RunCrewResponse) {
+    option (google.api.http) = {
+      post: "/v1/crews/{crew_id}/run"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Run a crew";
+      description: "Provisions each skill's box, gates A2A traffic with eBPF network policy compiled from allowed_peers, runs the collaboration, and returns the run handle.";
+      tags: "Agents";
+    };
+  }
+
+  // GetCrewRun returns the status and artifact of a crew run.
+  rpc GetCrewRun(GetCrewRunRequest) returns (GetCrewRunResponse) {
+    option (google.api.http) = {
+      get: "/v1/crew-runs/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get crew run";
+      description: "Returns the state, trace id, and (when complete) the artifact of a crew execution.";
+      tags: "Agents";
+    };
+  }
+}
