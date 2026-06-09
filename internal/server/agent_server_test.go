@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -75,6 +76,32 @@ func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	}
 }
 
+func TestAgentNetworkPolicyConfigDomains(t *testing.T) {
+	t.Run("defaults to the model providers when unset", func(t *testing.T) {
+		os.Unsetenv("CONTAINARIUM_AGENT_EGRESS_DOMAINS")
+		_, domains, _ := agentNetworkPolicyConfig()
+		if len(domains) != 2 || domains[0] != "api.anthropic.com" {
+			t.Errorf("default domains = %v, want the provider defaults", domains)
+		}
+	})
+	t.Run("operator override wins", func(t *testing.T) {
+		t.Setenv("CONTAINARIUM_AGENT_EGRESS_DOMAINS", "api.example.com, llm.internal")
+		_, domains, _ := agentNetworkPolicyConfig()
+		if len(domains) != 2 || domains[0] != "api.example.com" || domains[1] != "llm.internal" {
+			t.Errorf("override domains = %v", domains)
+		}
+	})
+}
+
+func TestCompileAllowedPeersPolicySetsDomains(t *testing.T) {
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"},
+		func(string) (string, bool) { return "10.0.0.5", true },
+		nil, []string{"api.anthropic.com"}, true)
+	if len(p.EgressDomains) != 1 || p.EgressDomains[0] != "api.anthropic.com" {
+		t.Errorf("egress_domains = %v, want [api.anthropic.com]", p.EgressDomains)
+	}
+}
+
 func TestParseArtifactOutput(t *testing.T) {
 	t.Run("output", func(t *testing.T) {
 		out, err := parseArtifactOutput([]byte(`{"outputJson":"{\"ok\":true}","engine":"claude","model":"claude-opus-4-8"}`))
@@ -128,7 +155,7 @@ func TestCompileAllowedPeersPolicy(t *testing.T) {
 	resolve := func(id string) (string, bool) { ip, ok := running[id]; return ip, ok }
 
 	// peer-c is not running, so it must be omitted from the allowlist.
-	p := compileAllowedPeersPolicy("agent-caller", []string{"peer-a", "peer-b", "peer-c"}, resolve, nil, false)
+	p := compileAllowedPeersPolicy("agent-caller", []string{"peer-a", "peer-b", "peer-c"}, resolve, nil, nil, false)
 
 	if p.Tenant != "agent-caller" {
 		t.Errorf("tenant = %q, want agent-caller", p.Tenant)
@@ -156,7 +183,7 @@ func TestCompileAllowedPeersPolicy(t *testing.T) {
 func TestCompileAllowedPeersPolicyNoneRunning(t *testing.T) {
 	// No peer is running -> empty allowlist (the caller skips installing it
 	// rather than denying all egress under a future ENFORCE).
-	p := compileAllowedPeersPolicy("t", []string{"x", "y"}, func(string) (string, bool) { return "", false }, nil, false)
+	p := compileAllowedPeersPolicy("t", []string{"x", "y"}, func(string) (string, bool) { return "", false }, nil, nil, false)
 	if len(p.EgressCidrs) != 0 {
 		t.Errorf("expected no egress cidrs when no peers run, got %v", p.EgressCidrs)
 	}
@@ -172,7 +199,7 @@ func TestCompileAllowedPeersPolicyEnforceAndExtraCIDRs(t *testing.T) {
 	// Armed ENFORCE + platform egress (e.g. daemon + DNS) so the agent isn't
 	// stranded by a peer-only allowlist.
 	extra := []string{"10.0.1.1/32", "10.0.1.2/32"}
-	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve, extra, true)
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve, extra, nil, true)
 
 	if p.Mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE {
 		t.Errorf("mode = %v, want ENFORCE when armed", p.Mode)

@@ -278,12 +278,18 @@ func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant s
 	if s.netpolicy == nil || len(skill.AllowedPeers) == 0 {
 		return
 	}
-	extraCIDRs, enforce := agentNetworkPolicyConfig()
-	policy := compileAllowedPeersPolicy(tenant, skill.AllowedPeers, s.resolvePeerIP, extraCIDRs, enforce)
-	if len(policy.EgressCidrs) == 0 {
-		// Nothing to allow (no peers running, no platform CIDRs). Skip rather
-		// than install an empty allowlist (which, under ENFORCE, denies all).
+	extraCIDRs, extraDomains, enforce := agentNetworkPolicyConfig()
+	policy := compileAllowedPeersPolicy(tenant, skill.AllowedPeers, s.resolvePeerIP, extraCIDRs, extraDomains, enforce)
+	if len(policy.EgressCidrs) == 0 && len(policy.EgressDomains) == 0 {
+		// Nothing to allow at all. Skip rather than install an empty allowlist
+		// (which, under ENFORCE, denies everything).
 		return
+	}
+	if enforce && len(policy.EgressDomains) == 0 {
+		// #611: an armed agent with no model-provider egress is stranded — it
+		// can reach its peers but not the Claude/OpenAI API. Default domains
+		// prevent this; warn loudly if an operator cleared them.
+		log.Printf("[agent-skill] WARNING: ENFORCE armed for %q with no model egress (CONTAINARIUM_AGENT_EGRESS_DOMAINS empty) — the agent loop may be unable to reach its provider API", tenant)
 	}
 	// Compile (validate + normalize) before storing — same path the
 	// SetNetworkPolicy RPC uses — so a bad operator-supplied egress CIDR is
@@ -308,14 +314,29 @@ func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant s
 // Both default off/empty, so the out-of-the-box behaviour stays observe-only.
 // ENFORCE additionally requires the daemon-wide eBPF enforcer to be armed
 // (CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT + CONTAINARIUM_NETWORK_POLICY_ENFORCE).
-func agentNetworkPolicyConfig() (extraCIDRs []string, enforce bool) {
+// defaultAgentEgressDomains is the model-provider egress every agent box needs
+// so an armed (ENFORCE) policy doesn't strand the loop (#611). Both providers
+// are allowed since a box may run either engine (Claude or Codex).
+var defaultAgentEgressDomains = []string{"api.anthropic.com", "api.openai.com"}
+
+func agentNetworkPolicyConfig() (extraCIDRs, extraDomains []string, enforce bool) {
 	enforce = os.Getenv("CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE") == "1"
 	for _, c := range strings.Split(os.Getenv("CONTAINARIUM_AGENT_EGRESS_CIDRS"), ",") {
 		if c = strings.TrimSpace(c); c != "" {
 			extraCIDRs = append(extraCIDRs, c)
 		}
 	}
-	return extraCIDRs, enforce
+	// Model-provider egress: operator override, else the provider defaults.
+	if raw, ok := os.LookupEnv("CONTAINARIUM_AGENT_EGRESS_DOMAINS"); ok {
+		for _, d := range strings.Split(raw, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				extraDomains = append(extraDomains, d)
+			}
+		}
+	} else {
+		extraDomains = append(extraDomains, defaultAgentEgressDomains...)
+	}
+	return extraCIDRs, extraDomains, enforce
 }
 
 // callerSkillID recovers the skill id of the agent making an A2A call. The
@@ -366,7 +387,7 @@ func (s *AgentSkillServer) resolvePeerIP(peerID string) (string, bool) {
 // allowed_peers: each currently-running peer's box IP becomes an egress /32.
 // Pure (resolution is injected) so it is unit-testable without a daemon. The
 // policy is LOG_ONLY — observe, never drop — until Phase 2 enforcement is armed.
-func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool), extraCIDRs []string, enforce bool) *pb.NetworkPolicy {
+func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool), extraCIDRs, extraDomains []string, enforce bool) *pb.NetworkPolicy {
 	var cidrs []string
 	for _, peer := range allowedPeers {
 		if ip, ok := resolve(peer); ok {
@@ -385,9 +406,12 @@ func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve fun
 		Tenant:           tenant,
 		AllowIntraTenant: false,
 		EgressCidrs:      cidrs,
-		Mode:             mode,
-		AllowMetadata:    false,
-		Source:           "agent-skill",
+		// Model-provider egress (resolved to IPs by the enforcer's domain
+		// resolver) so the in-box loop can reach the Claude/OpenAI API (#611).
+		EgressDomains: extraDomains,
+		Mode:          mode,
+		AllowMetadata: false,
+		Source:        "agent-skill",
 	}
 }
 
