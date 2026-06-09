@@ -129,6 +129,61 @@ message RunAgentSkillResponse {
   string artifact_json = 2;
 }
 
+// ---- A2A (agent-to-agent) task contract (Phase 1) ---------------------------
+//
+// One agent delegates a task to a peer and gets an artifact back. The shape
+// mirrors the A2A (Agent2Agent) protocol's task/artifact lifecycle but is
+// carried in our own proto so the wire format stays insulated from upstream
+// A2A churn (see "A2A is young" in the design note). Transport + the in-box
+// A2A server are wired in #569; this file defines only the contract.
+
+// AgentTaskState tracks the lifecycle of a delegated A2A task.
+enum AgentTaskState {
+  AGENT_TASK_STATE_UNSPECIFIED = 0;
+  AGENT_TASK_STATE_SUBMITTED = 1;
+  AGENT_TASK_STATE_WORKING = 2;
+  AGENT_TASK_STATE_COMPLETED = 3;
+  AGENT_TASK_STATE_FAILED = 4;
+}
+
+// AgentTask is one unit of work delegated to a peer agent.
+message AgentTask {
+  // Task identifier (assigned by the caller; unique within a run).
+  string id = 1;
+  // JSON task input matching the peer's agent_card input schema.
+  string input_json = 2;
+}
+
+// AgentArtifact is the result a peer agent returns for a task.
+message AgentArtifact {
+  // The task this artifact answers.
+  string task_id = 1;
+  // JSON output matching the peer's agent_card output schema.
+  string output_json = 2;
+  // Terminal state of the task.
+  AgentTaskState state = 3;
+  // Human-readable error when state is FAILED.
+  string error = 4;
+}
+
+// SendAgentTaskRequest delegates a task to a running peer agent. The peer is
+// addressed by its agent_card.id (or skill id). In Phase 2 the daemon will
+// reject a send to a peer not in the caller's allowed_peers; in Phase 1 the
+// field set is established and the send is best-effort over A2A.
+message SendAgentTaskRequest {
+  // The calling skill (for attribution + the future allowed_peers check).
+  string from_skill_id = 1;
+  // The target peer to deliver the task to.
+  string to_peer_id = 2;
+  // JSON task input matching the peer's agent_card input schema.
+  string input_json = 3;
+}
+
+// SendAgentTaskResponse returns the peer's artifact.
+message SendAgentTaskResponse {
+  AgentArtifact artifact = 1;
+}
+
 // AgentSkillService manages and runs individual packaged agents.
 service AgentSkillService {
   // ListAgentSkills returns all available skills (built-in + registered).
@@ -165,6 +220,21 @@ service AgentSkillService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Run an agent skill";
       description: "Provisions the skill's box, mints a scoped token, runs one task, and returns the artifact.";
+      tags: "Agents";
+    };
+  }
+
+  // SendAgentTask delegates a task to a running peer agent over A2A and returns
+  // the peer's artifact. Phase 1 establishes the transport; Phase 2 adds the
+  // allowed_peers / network-policy enforcement around it. (Server impl: #569.)
+  rpc SendAgentTask(SendAgentTaskRequest) returns (SendAgentTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-skills/{to_peer_id}/call"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Send a task to a peer agent (A2A)";
+      description: "Delegates a task to a running peer agent over the agent-to-agent transport and returns the peer's artifact.";
       tags: "Agents";
     };
   }

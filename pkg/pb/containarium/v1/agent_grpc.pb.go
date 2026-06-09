@@ -22,6 +22,7 @@ const (
 	AgentSkillService_ListAgentSkills_FullMethodName = "/containarium.v1.AgentSkillService/ListAgentSkills"
 	AgentSkillService_GetAgentSkill_FullMethodName   = "/containarium.v1.AgentSkillService/GetAgentSkill"
 	AgentSkillService_RunAgentSkill_FullMethodName   = "/containarium.v1.AgentSkillService/RunAgentSkill"
+	AgentSkillService_SendAgentTask_FullMethodName   = "/containarium.v1.AgentSkillService/SendAgentTask"
 )
 
 // AgentSkillServiceClient is the client API for AgentSkillService service.
@@ -37,6 +38,10 @@ type AgentSkillServiceClient interface {
 	// RunAgentSkill launches a single skill in a box and runs one task against
 	// it. The agent's JWT is minted with exactly the skill's allowed_scopes.
 	RunAgentSkill(ctx context.Context, in *RunAgentSkillRequest, opts ...grpc.CallOption) (*RunAgentSkillResponse, error)
+	// SendAgentTask delegates a task to a running peer agent over A2A and returns
+	// the peer's artifact. Phase 1 establishes the transport; Phase 2 adds the
+	// allowed_peers / network-policy enforcement around it. (Server impl: #569.)
+	SendAgentTask(ctx context.Context, in *SendAgentTaskRequest, opts ...grpc.CallOption) (*SendAgentTaskResponse, error)
 }
 
 type agentSkillServiceClient struct {
@@ -77,6 +82,16 @@ func (c *agentSkillServiceClient) RunAgentSkill(ctx context.Context, in *RunAgen
 	return out, nil
 }
 
+func (c *agentSkillServiceClient) SendAgentTask(ctx context.Context, in *SendAgentTaskRequest, opts ...grpc.CallOption) (*SendAgentTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendAgentTaskResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_SendAgentTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentSkillServiceServer is the server API for AgentSkillService service.
 // All implementations must embed UnimplementedAgentSkillServiceServer
 // for forward compatibility.
@@ -90,6 +105,10 @@ type AgentSkillServiceServer interface {
 	// RunAgentSkill launches a single skill in a box and runs one task against
 	// it. The agent's JWT is minted with exactly the skill's allowed_scopes.
 	RunAgentSkill(context.Context, *RunAgentSkillRequest) (*RunAgentSkillResponse, error)
+	// SendAgentTask delegates a task to a running peer agent over A2A and returns
+	// the peer's artifact. Phase 1 establishes the transport; Phase 2 adds the
+	// allowed_peers / network-policy enforcement around it. (Server impl: #569.)
+	SendAgentTask(context.Context, *SendAgentTaskRequest) (*SendAgentTaskResponse, error)
 	mustEmbedUnimplementedAgentSkillServiceServer()
 }
 
@@ -108,6 +127,9 @@ func (UnimplementedAgentSkillServiceServer) GetAgentSkill(context.Context, *GetA
 }
 func (UnimplementedAgentSkillServiceServer) RunAgentSkill(context.Context, *RunAgentSkillRequest) (*RunAgentSkillResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RunAgentSkill not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) SendAgentTask(context.Context, *SendAgentTaskRequest) (*SendAgentTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SendAgentTask not implemented")
 }
 func (UnimplementedAgentSkillServiceServer) mustEmbedUnimplementedAgentSkillServiceServer() {}
 func (UnimplementedAgentSkillServiceServer) testEmbeddedByValue()                           {}
@@ -184,6 +206,24 @@ func _AgentSkillService_RunAgentSkill_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentSkillService_SendAgentTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendAgentTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).SendAgentTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_SendAgentTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).SendAgentTask(ctx, req.(*SendAgentTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentSkillService_ServiceDesc is the grpc.ServiceDesc for AgentSkillService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -202,6 +242,10 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RunAgentSkill",
 			Handler:    _AgentSkillService_RunAgentSkill_Handler,
+		},
+		{
+			MethodName: "SendAgentTask",
+			Handler:    _AgentSkillService_SendAgentTask_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

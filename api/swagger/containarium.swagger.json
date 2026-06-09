@@ -249,6 +249,47 @@
         ]
       }
     },
+    "/v1/agent-skills/{toPeerId}/call": {
+      "post": {
+        "summary": "Send a task to a peer agent (A2A)",
+        "description": "Delegates a task to a running peer agent over the agent-to-agent transport and returns the peer's artifact.",
+        "operationId": "AgentSkillService_SendAgentTask",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SendAgentTaskResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "toPeerId",
+            "description": "The target peer to deliver the task to.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SendAgentTaskBody"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/alerts": {
       "get": {
         "summary": "List alert rules",
@@ -5145,6 +5186,28 @@
       },
       "description": "AdoptMigratedContainerResponse confirms the destination registered\nthe container and returns its IP for the source's route swap."
     },
+    "AgentArtifact": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "description": "The task this artifact answers."
+        },
+        "outputJson": {
+          "type": "string",
+          "description": "JSON output matching the peer's agent_card output schema."
+        },
+        "state": {
+          "$ref": "#/definitions/AgentTaskState",
+          "description": "Terminal state of the task."
+        },
+        "error": {
+          "type": "string",
+          "description": "Human-readable error when state is FAILED."
+        }
+      },
+      "description": "AgentArtifact is the result a peer agent returns for a task."
+    },
     "AgentCard": {
       "type": "object",
       "properties": {
@@ -5229,6 +5292,18 @@
         }
       },
       "description": "AgentSkill is a packaged, runnable agent: a Recipe (the box — image,\nresources, GPU) plus the agent layer (who it is, what tools it may call,\nwho it may talk to). This is the unit `containarium agent run` launches.\n\nKey invariant: allowed_scopes and allowed_peers are typed, first-class\nfields — NOT a prompt string. allowed_scopes is minted into the agent's JWT\nat launch; allowed_peers compiles into eBPF network policy (Phase 2). The\ntyping IS the security boundary."
+    },
+    "AgentTaskState": {
+      "type": "string",
+      "enum": [
+        "AGENT_TASK_STATE_UNSPECIFIED",
+        "AGENT_TASK_STATE_SUBMITTED",
+        "AGENT_TASK_STATE_WORKING",
+        "AGENT_TASK_STATE_COMPLETED",
+        "AGENT_TASK_STATE_FAILED"
+      ],
+      "default": "AGENT_TASK_STATE_UNSPECIFIED",
+      "description": "AgentTaskState tracks the lifecycle of a delegated A2A task."
     },
     "AlertRule": {
       "type": "object",
@@ -9163,6 +9238,29 @@
         }
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
+    },
+    "SendAgentTaskBody": {
+      "type": "object",
+      "properties": {
+        "fromSkillId": {
+          "type": "string",
+          "description": "The calling skill (for attribution + the future allowed_peers check)."
+        },
+        "inputJson": {
+          "type": "string",
+          "description": "JSON task input matching the peer's agent_card input schema."
+        }
+      },
+      "description": "SendAgentTaskRequest delegates a task to a running peer agent. The peer is\naddressed by its agent_card.id (or skill id). In Phase 2 the daemon will\nreject a send to a peer not in the caller's allowed_peers; in Phase 1 the\nfield set is established and the send is best-effort over A2A."
+    },
+    "SendAgentTaskResponse": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/definitions/AgentArtifact"
+        }
+      },
+      "description": "SendAgentTaskResponse returns the peer's artifact."
     },
     "SetContainerDeletePolicyBody": {
       "type": "object",

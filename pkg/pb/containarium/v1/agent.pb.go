@@ -23,6 +23,62 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// AgentTaskState tracks the lifecycle of a delegated A2A task.
+type AgentTaskState int32
+
+const (
+	AgentTaskState_AGENT_TASK_STATE_UNSPECIFIED AgentTaskState = 0
+	AgentTaskState_AGENT_TASK_STATE_SUBMITTED   AgentTaskState = 1
+	AgentTaskState_AGENT_TASK_STATE_WORKING     AgentTaskState = 2
+	AgentTaskState_AGENT_TASK_STATE_COMPLETED   AgentTaskState = 3
+	AgentTaskState_AGENT_TASK_STATE_FAILED      AgentTaskState = 4
+)
+
+// Enum value maps for AgentTaskState.
+var (
+	AgentTaskState_name = map[int32]string{
+		0: "AGENT_TASK_STATE_UNSPECIFIED",
+		1: "AGENT_TASK_STATE_SUBMITTED",
+		2: "AGENT_TASK_STATE_WORKING",
+		3: "AGENT_TASK_STATE_COMPLETED",
+		4: "AGENT_TASK_STATE_FAILED",
+	}
+	AgentTaskState_value = map[string]int32{
+		"AGENT_TASK_STATE_UNSPECIFIED": 0,
+		"AGENT_TASK_STATE_SUBMITTED":   1,
+		"AGENT_TASK_STATE_WORKING":     2,
+		"AGENT_TASK_STATE_COMPLETED":   3,
+		"AGENT_TASK_STATE_FAILED":      4,
+	}
+)
+
+func (x AgentTaskState) Enum() *AgentTaskState {
+	p := new(AgentTaskState)
+	*p = x
+	return p
+}
+
+func (x AgentTaskState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AgentTaskState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_agent_proto_enumTypes[0].Descriptor()
+}
+
+func (AgentTaskState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_agent_proto_enumTypes[0]
+}
+
+func (x AgentTaskState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AgentTaskState.Descriptor instead.
+func (AgentTaskState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{0}
+}
+
 // AgentCard is the discovery document a skill serves so peer agents can find
 // it and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so
 // the wire format stays insulated from upstream A2A churn.
@@ -587,6 +643,246 @@ func (x *RunAgentSkillResponse) GetArtifactJson() string {
 	return ""
 }
 
+// AgentTask is one unit of work delegated to a peer agent.
+type AgentTask struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Task identifier (assigned by the caller; unique within a run).
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// JSON task input matching the peer's agent_card input schema.
+	InputJson     string `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentTask) Reset() {
+	*x = AgentTask{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentTask) ProtoMessage() {}
+
+func (x *AgentTask) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentTask.ProtoReflect.Descriptor instead.
+func (*AgentTask) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *AgentTask) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AgentTask) GetInputJson() string {
+	if x != nil {
+		return x.InputJson
+	}
+	return ""
+}
+
+// AgentArtifact is the result a peer agent returns for a task.
+type AgentArtifact struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The task this artifact answers.
+	TaskId string `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	// JSON output matching the peer's agent_card output schema.
+	OutputJson string `protobuf:"bytes,2,opt,name=output_json,json=outputJson,proto3" json:"output_json,omitempty"`
+	// Terminal state of the task.
+	State AgentTaskState `protobuf:"varint,3,opt,name=state,proto3,enum=containarium.v1.AgentTaskState" json:"state,omitempty"`
+	// Human-readable error when state is FAILED.
+	Error         string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentArtifact) Reset() {
+	*x = AgentArtifact{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentArtifact) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentArtifact) ProtoMessage() {}
+
+func (x *AgentArtifact) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentArtifact.ProtoReflect.Descriptor instead.
+func (*AgentArtifact) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *AgentArtifact) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *AgentArtifact) GetOutputJson() string {
+	if x != nil {
+		return x.OutputJson
+	}
+	return ""
+}
+
+func (x *AgentArtifact) GetState() AgentTaskState {
+	if x != nil {
+		return x.State
+	}
+	return AgentTaskState_AGENT_TASK_STATE_UNSPECIFIED
+}
+
+func (x *AgentArtifact) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// SendAgentTaskRequest delegates a task to a running peer agent. The peer is
+// addressed by its agent_card.id (or skill id). In Phase 2 the daemon will
+// reject a send to a peer not in the caller's allowed_peers; in Phase 1 the
+// field set is established and the send is best-effort over A2A.
+type SendAgentTaskRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The calling skill (for attribution + the future allowed_peers check).
+	FromSkillId string `protobuf:"bytes,1,opt,name=from_skill_id,json=fromSkillId,proto3" json:"from_skill_id,omitempty"`
+	// The target peer to deliver the task to.
+	ToPeerId string `protobuf:"bytes,2,opt,name=to_peer_id,json=toPeerId,proto3" json:"to_peer_id,omitempty"`
+	// JSON task input matching the peer's agent_card input schema.
+	InputJson     string `protobuf:"bytes,3,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SendAgentTaskRequest) Reset() {
+	*x = SendAgentTaskRequest{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendAgentTaskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendAgentTaskRequest) ProtoMessage() {}
+
+func (x *SendAgentTaskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendAgentTaskRequest.ProtoReflect.Descriptor instead.
+func (*SendAgentTaskRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SendAgentTaskRequest) GetFromSkillId() string {
+	if x != nil {
+		return x.FromSkillId
+	}
+	return ""
+}
+
+func (x *SendAgentTaskRequest) GetToPeerId() string {
+	if x != nil {
+		return x.ToPeerId
+	}
+	return ""
+}
+
+func (x *SendAgentTaskRequest) GetInputJson() string {
+	if x != nil {
+		return x.InputJson
+	}
+	return ""
+}
+
+// SendAgentTaskResponse returns the peer's artifact.
+type SendAgentTaskResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Artifact      *AgentArtifact         `protobuf:"bytes,1,opt,name=artifact,proto3" json:"artifact,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SendAgentTaskResponse) Reset() {
+	*x = SendAgentTaskResponse{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendAgentTaskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendAgentTaskResponse) ProtoMessage() {}
+
+func (x *SendAgentTaskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendAgentTaskResponse.ProtoReflect.Descriptor instead.
+func (*SendAgentTaskResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SendAgentTaskResponse) GetArtifact() *AgentArtifact {
+	if x != nil {
+		return x.Artifact
+	}
+	return nil
+}
+
 var File_containarium_v1_agent_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_agent_proto_rawDesc = "" +
@@ -630,14 +926,40 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"input_json\x18\x04 \x01(\tR\tinputJson\"v\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
-	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson2\x90\x06\n" +
+	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\":\n" +
+	"\tAgentTask\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"input_json\x18\x02 \x01(\tR\tinputJson\"\x96\x01\n" +
+	"\rAgentArtifact\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1f\n" +
+	"\voutput_json\x18\x02 \x01(\tR\n" +
+	"outputJson\x125\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1f.containarium.v1.AgentTaskStateR\x05state\x12\x14\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"w\n" +
+	"\x14SendAgentTaskRequest\x12\"\n" +
+	"\rfrom_skill_id\x18\x01 \x01(\tR\vfromSkillId\x12\x1c\n" +
+	"\n" +
+	"to_peer_id\x18\x02 \x01(\tR\btoPeerId\x12\x1d\n" +
+	"\n" +
+	"input_json\x18\x03 \x01(\tR\tinputJson\"S\n" +
+	"\x15SendAgentTaskResponse\x12:\n" +
+	"\bartifact\x18\x01 \x01(\v2\x1e.containarium.v1.AgentArtifactR\bartifact*\xad\x01\n" +
+	"\x0eAgentTaskState\x12 \n" +
+	"\x1cAGENT_TASK_STATE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aAGENT_TASK_STATE_SUBMITTED\x10\x01\x12\x1c\n" +
+	"\x18AGENT_TASK_STATE_WORKING\x10\x02\x12\x1e\n" +
+	"\x1aAGENT_TASK_STATE_COMPLETED\x10\x03\x12\x1b\n" +
+	"\x17AGENT_TASK_STATE_FAILED\x10\x042\xbd\b\n" +
 	"\x11AgentSkillService\x12\xf6\x01\n" +
 	"\x0fListAgentSkills\x12'.containarium.v1.ListAgentSkillsRequest\x1a(.containarium.v1.ListAgentSkillsResponse\"\x8f\x01\x92At\n" +
 	"\x06Agents\x12\x11List agent skills\x1aWReturns all packaged agent skills that can be run individually or composed into a crew.\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/agent-skills\x12\xf8\x01\n" +
 	"\rGetAgentSkill\x12%.containarium.v1.GetAgentSkillRequest\x1a&.containarium.v1.GetAgentSkillResponse\"\x97\x01\x92Aw\n" +
 	"\x06Agents\x12\x0fGet agent skill\x1a\\Returns one skill's definition, including its agent card, allowed scopes, and allowed peers.\x82\xd3\xe4\x93\x02\x17\x12\x15/v1/agent-skills/{id}\x12\x86\x02\n" +
 	"\rRunAgentSkill\x12%.containarium.v1.RunAgentSkillRequest\x1a&.containarium.v1.RunAgentSkillResponse\"\xa5\x01\x92Ax\n" +
-	"\x06Agents\x12\x12Run an agent skill\x1aZProvisions the skill's box, mints a scoped token, runs one task, and returns the artifact.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/agent-skills/{skill_id}/runBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x06Agents\x12\x12Run an agent skill\x1aZProvisions the skill's box, mints a scoped token, runs one task, and returns the artifact.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/agent-skills/{skill_id}/run\x12\xaa\x02\n" +
+	"\rSendAgentTask\x12%.containarium.v1.SendAgentTaskRequest\x1a&.containarium.v1.SendAgentTaskResponse\"\xc9\x01\x92A\x98\x01\n" +
+	"\x06Agents\x12!Send a task to a peer agent (A2A)\x1akDelegates a task to a running peer agent over the agent-to-agent transport and returns the peer's artifact.\x82\xd3\xe4\x93\x02':\x01*\"\"/v1/agent-skills/{to_peer_id}/callBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_agent_proto_rawDescOnce sync.Once
@@ -651,36 +973,46 @@ func file_containarium_v1_agent_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_agent_proto_rawDescData
 }
 
-var file_containarium_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_containarium_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_containarium_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_containarium_v1_agent_proto_goTypes = []any{
-	(*AgentCard)(nil),               // 0: containarium.v1.AgentCard
-	(*AgentSkill)(nil),              // 1: containarium.v1.AgentSkill
-	(*ListAgentSkillsRequest)(nil),  // 2: containarium.v1.ListAgentSkillsRequest
-	(*ListAgentSkillsResponse)(nil), // 3: containarium.v1.ListAgentSkillsResponse
-	(*GetAgentSkillRequest)(nil),    // 4: containarium.v1.GetAgentSkillRequest
-	(*GetAgentSkillResponse)(nil),   // 5: containarium.v1.GetAgentSkillResponse
-	(*RunAgentSkillRequest)(nil),    // 6: containarium.v1.RunAgentSkillRequest
-	(*RunAgentSkillResponse)(nil),   // 7: containarium.v1.RunAgentSkillResponse
-	(*Recipe)(nil),                  // 8: containarium.v1.Recipe
-	(*Container)(nil),               // 9: containarium.v1.Container
+	(AgentTaskState)(0),             // 0: containarium.v1.AgentTaskState
+	(*AgentCard)(nil),               // 1: containarium.v1.AgentCard
+	(*AgentSkill)(nil),              // 2: containarium.v1.AgentSkill
+	(*ListAgentSkillsRequest)(nil),  // 3: containarium.v1.ListAgentSkillsRequest
+	(*ListAgentSkillsResponse)(nil), // 4: containarium.v1.ListAgentSkillsResponse
+	(*GetAgentSkillRequest)(nil),    // 5: containarium.v1.GetAgentSkillRequest
+	(*GetAgentSkillResponse)(nil),   // 6: containarium.v1.GetAgentSkillResponse
+	(*RunAgentSkillRequest)(nil),    // 7: containarium.v1.RunAgentSkillRequest
+	(*RunAgentSkillResponse)(nil),   // 8: containarium.v1.RunAgentSkillResponse
+	(*AgentTask)(nil),               // 9: containarium.v1.AgentTask
+	(*AgentArtifact)(nil),           // 10: containarium.v1.AgentArtifact
+	(*SendAgentTaskRequest)(nil),    // 11: containarium.v1.SendAgentTaskRequest
+	(*SendAgentTaskResponse)(nil),   // 12: containarium.v1.SendAgentTaskResponse
+	(*Recipe)(nil),                  // 13: containarium.v1.Recipe
+	(*Container)(nil),               // 14: containarium.v1.Container
 }
 var file_containarium_v1_agent_proto_depIdxs = []int32{
-	8, // 0: containarium.v1.AgentSkill.recipe:type_name -> containarium.v1.Recipe
-	0, // 1: containarium.v1.AgentSkill.agent_card:type_name -> containarium.v1.AgentCard
-	1, // 2: containarium.v1.ListAgentSkillsResponse.skills:type_name -> containarium.v1.AgentSkill
-	1, // 3: containarium.v1.GetAgentSkillResponse.skill:type_name -> containarium.v1.AgentSkill
-	9, // 4: containarium.v1.RunAgentSkillResponse.container:type_name -> containarium.v1.Container
-	2, // 5: containarium.v1.AgentSkillService.ListAgentSkills:input_type -> containarium.v1.ListAgentSkillsRequest
-	4, // 6: containarium.v1.AgentSkillService.GetAgentSkill:input_type -> containarium.v1.GetAgentSkillRequest
-	6, // 7: containarium.v1.AgentSkillService.RunAgentSkill:input_type -> containarium.v1.RunAgentSkillRequest
-	3, // 8: containarium.v1.AgentSkillService.ListAgentSkills:output_type -> containarium.v1.ListAgentSkillsResponse
-	5, // 9: containarium.v1.AgentSkillService.GetAgentSkill:output_type -> containarium.v1.GetAgentSkillResponse
-	7, // 10: containarium.v1.AgentSkillService.RunAgentSkill:output_type -> containarium.v1.RunAgentSkillResponse
-	8, // [8:11] is the sub-list for method output_type
-	5, // [5:8] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	13, // 0: containarium.v1.AgentSkill.recipe:type_name -> containarium.v1.Recipe
+	1,  // 1: containarium.v1.AgentSkill.agent_card:type_name -> containarium.v1.AgentCard
+	2,  // 2: containarium.v1.ListAgentSkillsResponse.skills:type_name -> containarium.v1.AgentSkill
+	2,  // 3: containarium.v1.GetAgentSkillResponse.skill:type_name -> containarium.v1.AgentSkill
+	14, // 4: containarium.v1.RunAgentSkillResponse.container:type_name -> containarium.v1.Container
+	0,  // 5: containarium.v1.AgentArtifact.state:type_name -> containarium.v1.AgentTaskState
+	10, // 6: containarium.v1.SendAgentTaskResponse.artifact:type_name -> containarium.v1.AgentArtifact
+	3,  // 7: containarium.v1.AgentSkillService.ListAgentSkills:input_type -> containarium.v1.ListAgentSkillsRequest
+	5,  // 8: containarium.v1.AgentSkillService.GetAgentSkill:input_type -> containarium.v1.GetAgentSkillRequest
+	7,  // 9: containarium.v1.AgentSkillService.RunAgentSkill:input_type -> containarium.v1.RunAgentSkillRequest
+	11, // 10: containarium.v1.AgentSkillService.SendAgentTask:input_type -> containarium.v1.SendAgentTaskRequest
+	4,  // 11: containarium.v1.AgentSkillService.ListAgentSkills:output_type -> containarium.v1.ListAgentSkillsResponse
+	6,  // 12: containarium.v1.AgentSkillService.GetAgentSkill:output_type -> containarium.v1.GetAgentSkillResponse
+	8,  // 13: containarium.v1.AgentSkillService.RunAgentSkill:output_type -> containarium.v1.RunAgentSkillResponse
+	12, // 14: containarium.v1.AgentSkillService.SendAgentTask:output_type -> containarium.v1.SendAgentTaskResponse
+	11, // [11:15] is the sub-list for method output_type
+	7,  // [7:11] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_agent_proto_init() }
@@ -699,13 +1031,14 @@ func file_containarium_v1_agent_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_agent_proto_rawDesc), len(file_containarium_v1_agent_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   8,
+			NumEnums:      1,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_containarium_v1_agent_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_agent_proto_depIdxs,
+		EnumInfos:         file_containarium_v1_agent_proto_enumTypes,
 		MessageInfos:      file_containarium_v1_agent_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_agent_proto = out.File
