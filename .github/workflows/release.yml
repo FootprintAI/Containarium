@@ -81,6 +81,12 @@ jobs:
             https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/containarium-linux-amd64
           chmod +x /usr/local/bin/containarium
 
+          # Windows: client-only CLI (create/list/ssh/… against a remote daemon;
+          # the daemon/sentinel/tunnel subcommands are Linux/macOS only)
+          # PowerShell:
+          #   curl.exe -L -o containarium.exe `
+          #     https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/containarium-windows-amd64.exe
+
           # platform MCP (your laptop, e.g. macOS arm64)
           curl -L -o /usr/local/bin/mcp-server \
             https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/mcp-server-darwin-arm64
@@ -138,6 +144,7 @@ jobs:
             bin/containarium-linux-amd64
             bin/containarium-darwin-amd64
             bin/containarium-darwin-arm64
+            bin/containarium-windows-amd64.exe
             bin/mcp-server-linux-amd64
             bin/mcp-server-darwin-amd64
             bin/mcp-server-darwin-arm64

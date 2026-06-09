@@ -86,6 +86,10 @@ build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger 
 	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containarium/main.go
 	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 cmd/containarium/main.go
 	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/containarium/main.go
+	# Windows is CLIENT-ONLY: the daemon/sentinel/tunnel + direct-DB admin
+	# subcommands are //go:build !windows, so this binary exposes only the
+	# remote-client commands (create/list/ssh/…). The daemon stays linux/mac.
+	@GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/containarium/main.go
 	@echo "==> Binaries built in $(BUILD_DIR)/"
 
 build-mcp: ## Build the MCP server binary
@@ -167,13 +171,14 @@ sidecar-build-otel: ## Build the otel-sidecar Docker image locally (tag = pkg/ve
 # platform: containarium + mcp-server + agent-box, each for
 # linux/amd64, darwin/amd64, darwin/arm64. Used by the release.yml
 # workflow on v* tag pushes; safe to run locally to dry-run a release.
-build-release: build-all build-mcp-all build-agent-box-all ## Build all 9 release artifacts (3 binaries × 3 platforms) + checksums
+build-release: build-all build-mcp-all build-agent-box-all ## Build all 10 release artifacts (CLI ×4 platforms incl. windows; mcp/agent-box ×3) + checksums
 	@echo "==> Generating SHA256SUMS..."
 	@cd $(BUILD_DIR) && \
 	  shasum -a 256 \
 	    $(BINARY_NAME)-linux-amd64 \
 	    $(BINARY_NAME)-darwin-amd64 \
 	    $(BINARY_NAME)-darwin-arm64 \
+	    $(BINARY_NAME)-windows-amd64.exe \
 	    $(MCP_BINARY_NAME)-linux-amd64 \
 	    $(MCP_BINARY_NAME)-darwin-amd64 \
 	    $(MCP_BINARY_NAME)-darwin-arm64 \
