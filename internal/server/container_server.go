@@ -1015,12 +1015,21 @@ func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, c
 	if err != nil || len(routes) == 0 {
 		return false
 	}
-	port := routes[0].TargetPort
-	if port <= 0 {
+	return waitForPortReady(ctx, containerIP, routes[0].TargetPort, total)
+}
+
+// waitForPortReady polls a TCP dial against ip:port until it accepts or
+// the deadline elapses. Returns true when the probe timed out (the port
+// never became dial-ready); false as soon as a dial succeeds. An empty
+// ip or non-positive port short-circuits to "ready" (false) — the probe
+// is opportunistic. Shared by the HTTP readiness probe
+// (waitForContainerReady, primary route port) and the SSH wake path
+// (WakeForSSH, sshd :22).
+func waitForPortReady(ctx context.Context, ip string, port int, total time.Duration) bool {
+	if ip == "" || port <= 0 {
 		return false
 	}
-
-	addr := net.JoinHostPort(containerIP, strconv.Itoa(port))
+	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 	deadline := time.Now().Add(total)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
@@ -1035,6 +1044,46 @@ func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, c
 		}
 	}
 	return true
+}
+
+// SSHDPort is the port the in-container sshd listens on. Fixed at 22 —
+// the wake readiness probe targets the box's own sshd, not the
+// sentinel-side loopback alias (which keysync maps separately).
+const SSHDPort = 22
+
+// WakeForSSH starts a (possibly slept) container and waits for its sshd
+// (port 22) to become dial-ready, so the sentinel's ssh-wake-proxy can
+// hold an inbound SSH connection during a cold start and then splice it
+// through — parity with wake-on-HTTP (internal/wake). Returns:
+//   - ready=true  when the box is up and :22 accepts within the budget;
+//   - ready=false when the readiness probe times out (NOT a hard error —
+//     the caller can still attempt the dial / surface a clean failure);
+//   - err only on a hard failure of the start itself.
+//
+// Runs under the system identity (like the HTTP wake path,
+// internal/wake/proxy.go) because the sentinel calls this out-of-band
+// over the HMAC channel, with no tenant scope on the context. Idle-clock
+// reset and the anti-thrash window are handled by StartContainer itself
+// (it stamps LastStartedAt; autosleep skips sleep for 2× the idle window
+// after a start) plus the conntrack traffic collector, so there is no
+// SSH-specific autosleep bookkeeping here.
+func (s *ContainerServer) WakeForSSH(ctx context.Context, username string, total time.Duration) (bool, string, error) {
+	if username == "" {
+		return false, "", fmt.Errorf("username is required")
+	}
+	if total <= 0 {
+		total = 30 * time.Second
+	}
+	ctx = auth.ContextWithSystemIdentity(ctx)
+	if _, err := s.StartContainer(ctx, &pb.StartContainerRequest{Username: username}); err != nil {
+		return false, "", fmt.Errorf("start %s: %w", username, err)
+	}
+	info, err := s.manager.Get(username)
+	if err != nil || info == nil {
+		return false, "", fmt.Errorf("post-start get %s: %w", username, err)
+	}
+	timedOut := waitForPortReady(ctx, info.IPAddress, SSHDPort, total)
+	return !timedOut, info.IPAddress, nil
 }
 
 // StopContainer stops a running container

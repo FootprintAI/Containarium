@@ -69,6 +69,13 @@ type GatewayServer struct {
 	// Wired from dual_server using the container manager.
 	containerExistsFn func(username string) bool
 
+	// sshWakeFn is the wake-on-SSH hook (#539). When set, POST
+	// /ssh-wake starts a slept box and blocks until its sshd (:22) is
+	// dial-ready, so the sentinel's ssh-wake-proxy can hold an inbound
+	// SSH connection during cold start. Wired from dual_server to
+	// ContainerServer.WakeForSSH; nil disables the endpoint (503).
+	sshWakeFn func(ctx context.Context, username string) (bool, string, error)
+
 	// Wake handler (for serverless / wake-on-HTTP, set externally).
 	// Mounted at /wake/ and at the root catch-all when the daemon's
 	// wake feature is enabled. NOT wrapped by the JWT auth middleware
@@ -170,6 +177,14 @@ func (gs *GatewayServer) SetSentinelAuthSecret(secret []byte) {
 // disconnected" symptom.
 func (gs *GatewayServer) SetContainerExistsFn(fn func(username string) bool) {
 	gs.containerExistsFn = fn
+}
+
+// SetSSHWakeFn wires the wake-on-SSH hook (#539) used by POST /ssh-wake.
+// fn starts a slept box and blocks until its sshd (:22) is dial-ready,
+// returning (ready, containerIP, err). Wired from dual_server to
+// ContainerServer.WakeForSSH; leaving it unset disables /ssh-wake (503).
+func (gs *GatewayServer) SetSSHWakeFn(fn func(ctx context.Context, username string) (bool, string, error)) {
+	gs.sshWakeFn = fn
 }
 
 // SetBackendsHandler sets the handler for the /v1/backends endpoint.
@@ -679,6 +694,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	httpMux.Handle("/certs", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeCerts(gs.caddyCertDir)))
 	httpMux.Handle("/authorized-keys", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeAuthorizedKeys("", gs.containerExistsFn)))
 	httpMux.Handle("/authorized-keys/sentinel", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeSentinelKey()))
+	// Wake-on-SSH (#539): the sentinel's ssh-wake-proxy POSTs here to
+	// start a slept box and wait for its sshd before splicing the held
+	// SSH connection. Same HMAC channel as the other sentinel endpoints.
+	httpMux.Handle("/ssh-wake", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeSSHWake(gs.sshWakeFn)))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is

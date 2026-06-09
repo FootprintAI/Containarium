@@ -290,6 +290,34 @@ EOF
     systemctl restart containarium-sentinel.service
     echo "✓ wrote secrets.conf systemd drop-in"
 
+    # Wake-on-SSH proxy (#539). keysync now points each sshpiper upstream
+    # at 127.0.0.1:<wakePort>; this service listens there and, per inbound
+    # SSH connection, wakes a slept box (via the daemon's HMAC-signed
+    # /ssh-wake) before splicing to the real sshd — parity with
+    # wake-on-HTTP. Same binary as the sentinel; reads the shared HMAC
+    # secret from env.secrets. StartLimitIntervalSec=0 + Restart=always
+    # because wake-routes.json isn't written until the first keysync; the
+    # proxy tolerates the missing file and serves an empty set until then.
+    cat > /etc/systemd/system/ssh-wake-proxy.service <<'EOF'
+[Unit]
+Description=Containarium wake-on-SSH proxy
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+EnvironmentFile=-/etc/containarium/env.secrets
+ExecStart=/usr/local/bin/containarium ssh-wake-proxy
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable ssh-wake-proxy
+    systemctl restart ssh-wake-proxy
+    echo "✓ ssh-wake-proxy service installed and started"
+
     # Optional override.conf for --proxy-protocol on the sentinel.
     #
     # `sentinel service install` generates a fixed ExecStart without

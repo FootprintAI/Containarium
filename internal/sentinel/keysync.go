@@ -15,19 +15,36 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/gateway"
+	"github.com/footprintai/containarium/internal/sentinel/wakeproxy"
 )
 
 const (
 	sshpiperConfigDir   = "/etc/sshpiper"
-	sshpiperConfigFile  = "/etc/sshpiper/config.yaml"
-	sshpiperUsersDir    = "/etc/sshpiper/users"
 	sshpiperUpstreamKey = "/etc/sshpiper/upstream_key"
+
+	// wake-on-SSH (#539): sshpiper routes each user's upstream through
+	// the local ssh-wake-proxy at 127.0.0.1:<wakePort> instead of the
+	// box directly; the proxy reads wakeRoutesFile to know where to wake
+	// + splice. Ports are assigned deterministically from the sorted
+	// user list as wakeProxyBasePort+index, so the config stays
+	// byte-stable across reruns with the same user set.
+	wakeProxyHost     = "127.0.0.1"
+	wakeProxyBasePort = 40000
+)
+
+// File paths Apply writes. Vars (not const) so tests can redirect them
+// to a temp dir; production values are the /etc/sshpiper defaults.
+var (
+	sshpiperConfigFile = "/etc/sshpiper/config.yaml"
+	sshpiperUsersDir   = "/etc/sshpiper/users"
+	wakeRoutesFile     = "/etc/sshpiper/wake-routes.json"
 )
 
 // backendKeys holds the users fetched from a single backend.
 type backendKeys struct {
 	backendID string
 	backendIP string
+	httpPort  int // daemon HTTP port — used by wake-on-SSH (#539) to reach /ssh-wake
 	users     []gateway.UserKeys
 	lastSync  time.Time
 	lastErr   error
@@ -85,6 +102,7 @@ func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
 
 	ks.mu.Lock()
 	bk := ks.ensureBackendLocked(backendID, backendIP)
+	bk.httpPort = httpPort
 	bk.users = keysResp.Keys
 	bk.lastSync = time.Now()
 	bk.lastErr = nil
@@ -117,6 +135,7 @@ func (ks *KeyStore) Apply() error {
 		username       string
 		authorizedKeys string
 		backendIP      string
+		httpPort       int
 	}
 	seen := make(map[string]bool)
 	var routes []userRoute
@@ -140,6 +159,7 @@ func (ks *KeyStore) Apply() error {
 				username:       u.Username,
 				authorizedKeys: u.AuthorizedKeys,
 				backendIP:      bk.backendIP,
+				httpPort:       bk.httpPort,
 			})
 		}
 	}
@@ -176,11 +196,16 @@ func (ks *KeyStore) Apply() error {
 		}
 	}
 
-	// Generate sshpiper YAML config with per-user backend routing
+	// Generate sshpiper YAML config. Each user's upstream is routed
+	// through the local ssh-wake-proxy at 127.0.0.1:<wakePort> instead
+	// of the box directly, so an SSH connection to a slept box wakes it
+	// first (#539, wake-on-SSH). The proxy reads wakeRoutesFile to learn
+	// the real box address + how to reach the daemon's /ssh-wake.
 	var buf bytes.Buffer
 	buf.WriteString("version: \"1.0\"\npipes:\n")
 
-	for _, r := range routes {
+	wakeRoutes := make([]wakeproxy.Route, 0, len(routes))
+	for i, r := range routes {
 		// Tunnel backends use loopback aliases (127.0.0.x where x >= 10) with
 		// SSH on port 20022 to avoid conflicting with sshpiper's *:22 listener.
 		// Direct backends (e.g., 10.x.x.x) use the standard port 22.
@@ -188,23 +213,42 @@ func (ks *KeyStore) Apply() error {
 		if isTunnelLoopback(r.backendIP) {
 			sshPort = 20022
 		}
+		// Deterministic per-user wake port (sorted user order → stable
+		// config across reruns with the same user set).
+		wakePort := wakeProxyBasePort + i
+
 		akPath := filepath.Join(sshpiperUsersDir, r.username, "authorized_keys")
 		fmt.Fprintf(&buf, "  - from:\n")
 		fmt.Fprintf(&buf, "      - username: %q\n", r.username)
 		fmt.Fprintf(&buf, "        authorized_keys:\n")
 		fmt.Fprintf(&buf, "          - %s\n", akPath)
 		fmt.Fprintf(&buf, "    to:\n")
-		fmt.Fprintf(&buf, "      host: %s:%d\n", r.backendIP, sshPort)
+		fmt.Fprintf(&buf, "      host: %s:%d\n", wakeProxyHost, wakePort)
 		fmt.Fprintf(&buf, "      username: %q\n", r.username)
 		fmt.Fprintf(&buf, "      ignore_hostkey: true\n")
 		fmt.Fprintf(&buf, "      private_key: %s\n", sshpiperUpstreamKey)
+
+		wakeRoutes = append(wakeRoutes, wakeproxy.Route{
+			Username:        r.username,
+			WakePort:        wakePort,
+			BackendIP:       r.backendIP,
+			SSHPort:         sshPort,
+			BackendHTTPPort: r.httpPort,
+		})
 	}
 
 	newContent := buf.Bytes()
+	wakeRoutesContent, err := json.MarshalIndent(wakeproxy.RouteFile{Routes: wakeRoutes}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal wake routes: %w", err)
+	}
 
-	// Compare with existing config
+	// The sshpiper config is the change trigger; the wake-routes file
+	// derives from the same data, so we also reconcile it when it drifts
+	// (e.g. missing on the first run after upgrade).
 	oldContent, _ := os.ReadFile(sshpiperConfigFile)
-	if bytes.Equal(oldContent, newContent) {
+	oldWake, _ := os.ReadFile(wakeRoutesFile)
+	if bytes.Equal(oldContent, newContent) && bytes.Equal(oldWake, wakeRoutesContent) {
 		ks.mu.Lock()
 		ks.configChanged = false
 		ks.mu.Unlock()
@@ -213,6 +257,9 @@ func (ks *KeyStore) Apply() error {
 
 	if err := os.WriteFile(sshpiperConfigFile, newContent, 0600); err != nil {
 		return fmt.Errorf("failed to write sshpiper config: %w", err)
+	}
+	if err := os.WriteFile(wakeRoutesFile, wakeRoutesContent, 0600); err != nil {
+		return fmt.Errorf("failed to write wake routes: %w", err)
 	}
 
 	ks.mu.Lock()
