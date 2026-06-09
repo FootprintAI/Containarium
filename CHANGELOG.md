@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-06-09
+
+Transparent wake-on-SSH, plus the first request-rate observability plane.
+`ssh` to an auto-slept box now starts it on the inbound connection — parity
+with wake-on-HTTP — and a new metrics plane surfaces per-container request
+rate and egress fan-out, with alerting on crawler-style abuse. Release
+binaries now stamp their version from the git tag.
+
+### Added
+
+- **Wake-on-SSH** — an inbound SSH connection to an auto-slept box now transparently starts it, waits for sshd to be dial-ready, then proxies through, exactly like wake-on-HTTP. SSH reaches a box via the external sshpiper, which has no per-connection pre-dial hook, so the interception is a thin sentinel-side wake-proxy (`containarium ssh-wake-proxy`, its own systemd unit) that sshpiper routes upstream through — sshpiper's `authorized_keys` auth and per-user routing stay untouched. The daemon gains `WakeForSSH` and an HMAC-gated `POST /ssh-wake` (same sentinel channel as `/authorized-keys`). Idle-clock reset and the anti-thrash window are inherited from the existing start path. (#539)
+- **Request-rate metrics plane (slice 1)** — design + first slice of a per-container request-rate observability plane. (#231)
+- **Egress fan-out detection** — a metric flagging crawler-style egress fan-out (an abuse signal), plus vmalert rules that alert on it. (#553, #554)
+- **Per-container metrics labeled with `cloud_container_id`** — per-container metrics now carry the cloud container UUID label so the control plane's queries can join on it. (#550, #231)
+
+### Fixed
+
+- **Release binaries stamp the tag version** — `make build-release` injects the version from the git tag via ldflags, so a released binary reports its real version instead of a possibly-stale committed constant; `version.go`'s value is now just the dev-build fallback. (#549)
+
 ## [0.25.0] - 2026-06-08
 
 Fleet hygiene + delete protection. `containarium prune` bulk-cleans leaked
