@@ -317,7 +317,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// manager for minting the skill's scoped in-box token, and the network
 	// policy server to compile allowed_peers into a per-box egress policy at
 	// launch (Phase 2).
-	pb.RegisterAgentSkillServiceServer(grpcServer, NewAgentSkillServer(recipeServer, tokenManager, npServer))
+	agentSkillServer := NewAgentSkillServer(recipeServer, tokenManager, npServer)
+	pb.RegisterAgentSkillServiceServer(grpcServer, agentSkillServer)
 	log.Printf("Agent-skill service enabled")
 
 	// Register BackupService — logical (pg_dump) database backups for the
@@ -1246,6 +1247,8 @@ skipAppHosting:
 		// Wire audit store for HTTP audit middleware
 		if auditStore != nil {
 			gatewayServer.SetAuditStore(auditStore)
+			// Agent-skill service logs A2A hops under a trace id (Phase 2 / #575).
+			agentSkillServer.SetAuditStore(auditStore)
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured

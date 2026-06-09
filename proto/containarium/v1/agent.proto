@@ -177,11 +177,19 @@ message SendAgentTaskRequest {
   string to_peer_id = 2;
   // JSON task input matching the peer's agent_card input schema.
   string input_json = 3;
+
+  // Correlation id threaded through the audit trail for this delegation. A
+  // caller (e.g. a crew, Phase 3) sets it so every hop of a run shares one id;
+  // when empty the daemon generates one. Echoed back in the response.
+  string trace_id = 4;
 }
 
 // SendAgentTaskResponse returns the peer's artifact.
 message SendAgentTaskResponse {
   AgentArtifact artifact = 1;
+  // The trace id this hop was audited under (generated if the request omitted
+  // one). Lets a caller chain subsequent hops under the same id.
+  string trace_id = 2;
 }
 
 // AgentSkillService manages and runs individual packaged agents.

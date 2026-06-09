@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/pkg/core/skills"
@@ -46,7 +50,12 @@ type AgentSkillServer struct {
 	recipes   *RecipeServer        // box provisioning (reuses CreateContainer/exec/expose)
 	tokens    *auth.TokenManager   // mints the skill's scoped in-box token
 	netpolicy *NetworkPolicyServer // compiles allowed_peers into a per-box egress policy (Phase 2)
+	audit     *audit.Store         // records A2A hops under a trace id (Phase 2); set once the pool is ready
 }
+
+// SetAuditStore wires the audit store once the Postgres pool exists (it isn't
+// available at construction). A2A hop logging no-ops until then.
+func (s *AgentSkillServer) SetAuditStore(store *audit.Store) { s.audit = store }
 
 // NewAgentSkillServer wires the agent-skill service to the recipe server (for
 // box provisioning), the token manager (for minting scoped in-box tokens), and
@@ -315,25 +324,77 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 	// defense-in-depth + fail-fast UX — the hard boundary for raw box-originated
 	// traffic is the eBPF egress policy compiled from allowed_peers.
 	caller := s.callerSkillID(ctx, req.FromSkillId)
+
+	// Correlation id for the whole delegation: honor a caller-threaded id
+	// (a crew, Phase 3), else generate one. Every audit record for this hop
+	// shares it.
+	trace := req.TraceId
+	if trace == "" {
+		trace = genTraceID()
+	}
+
 	if !s.peerAllowed(caller, req.ToPeerId) {
+		s.auditHop(ctx, trace, caller, req.ToPeerId, "denied", "not in allowed_peers")
 		return nil, status.Errorf(codes.PermissionDenied,
 			"skill %q is not permitted to call peer %q (not in its allowed_peers)", caller, req.ToPeerId)
 	}
 
 	baseURL, _, err := s.resolvePeerA2A(req.ToPeerId)
 	if err != nil {
+		s.auditHop(ctx, trace, caller, req.ToPeerId, "unreachable", err.Error())
 		return nil, err
 	}
 
 	task := &pb.AgentTask{
-		Id:        "task-" + req.FromSkillId + "-" + req.ToPeerId,
+		Id:        "task-" + caller + "-" + req.ToPeerId,
 		InputJson: req.InputJson,
 	}
 	art, err := sendA2ATask(ctx, baseURL, task)
 	if err != nil {
+		s.auditHop(ctx, trace, caller, req.ToPeerId, "failed", err.Error())
 		return nil, status.Errorf(codes.Unavailable, "deliver task to peer %q: %v", req.ToPeerId, err)
 	}
-	return &pb.SendAgentTaskResponse{Artifact: art}, nil
+	s.auditHop(ctx, trace, caller, req.ToPeerId, "delivered", "")
+	return &pb.SendAgentTaskResponse{Artifact: art, TraceId: trace}, nil
+}
+
+// genTraceID returns a random 128-bit hex correlation id for an A2A run.
+func genTraceID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// rand failure is effectively impossible; fall back to a time nonce so
+		// the trace is still non-empty rather than colliding on "".
+		return fmt.Sprintf("t%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// auditHop records one A2A delegation under the shared trace id. Best-effort:
+// audit must never fail the call. No-op until the audit store is wired.
+func (s *AgentSkillServer) auditHop(ctx context.Context, trace, from, to, outcome, detail string) {
+	if s.audit == nil {
+		return
+	}
+	username := from
+	if username == "" {
+		username = "_unknown"
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"trace_id": trace,
+		"from":     from,
+		"to":       to,
+		"outcome":  outcome,
+		"detail":   detail,
+	})
+	if err := s.audit.Log(ctx, &audit.AuditEntry{
+		Username:     username,
+		Action:       "agent.a2a_call",
+		ResourceType: "agent_skill",
+		ResourceID:   to,
+		Detail:       string(payload),
+	}); err != nil {
+		log.Printf("[agent-skill] audit A2A hop %s->%s: %v", from, to, err)
+	}
 }
 
 // resolvePeerA2A finds a running peer's in-box A2A base URL and its agent card.

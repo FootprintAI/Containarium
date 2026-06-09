@@ -782,7 +782,11 @@ type SendAgentTaskRequest struct {
 	// The target peer to deliver the task to.
 	ToPeerId string `protobuf:"bytes,2,opt,name=to_peer_id,json=toPeerId,proto3" json:"to_peer_id,omitempty"`
 	// JSON task input matching the peer's agent_card input schema.
-	InputJson     string `protobuf:"bytes,3,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	InputJson string `protobuf:"bytes,3,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	// Correlation id threaded through the audit trail for this delegation. A
+	// caller (e.g. a crew, Phase 3) sets it so every hop of a run shares one id;
+	// when empty the daemon generates one. Echoed back in the response.
+	TraceId       string `protobuf:"bytes,4,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -838,10 +842,20 @@ func (x *SendAgentTaskRequest) GetInputJson() string {
 	return ""
 }
 
+func (x *SendAgentTaskRequest) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
+}
+
 // SendAgentTaskResponse returns the peer's artifact.
 type SendAgentTaskResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Artifact      *AgentArtifact         `protobuf:"bytes,1,opt,name=artifact,proto3" json:"artifact,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Artifact *AgentArtifact         `protobuf:"bytes,1,opt,name=artifact,proto3" json:"artifact,omitempty"`
+	// The trace id this hop was audited under (generated if the request omitted
+	// one). Lets a caller chain subsequent hops under the same id.
+	TraceId       string `protobuf:"bytes,2,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -881,6 +895,13 @@ func (x *SendAgentTaskResponse) GetArtifact() *AgentArtifact {
 		return x.Artifact
 	}
 	return nil
+}
+
+func (x *SendAgentTaskResponse) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
 }
 
 var File_containarium_v1_agent_proto protoreflect.FileDescriptor
@@ -936,15 +957,17 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\voutput_json\x18\x02 \x01(\tR\n" +
 	"outputJson\x125\n" +
 	"\x05state\x18\x03 \x01(\x0e2\x1f.containarium.v1.AgentTaskStateR\x05state\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\"w\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"\x92\x01\n" +
 	"\x14SendAgentTaskRequest\x12\"\n" +
 	"\rfrom_skill_id\x18\x01 \x01(\tR\vfromSkillId\x12\x1c\n" +
 	"\n" +
 	"to_peer_id\x18\x02 \x01(\tR\btoPeerId\x12\x1d\n" +
 	"\n" +
-	"input_json\x18\x03 \x01(\tR\tinputJson\"S\n" +
+	"input_json\x18\x03 \x01(\tR\tinputJson\x12\x19\n" +
+	"\btrace_id\x18\x04 \x01(\tR\atraceId\"n\n" +
 	"\x15SendAgentTaskResponse\x12:\n" +
-	"\bartifact\x18\x01 \x01(\v2\x1e.containarium.v1.AgentArtifactR\bartifact*\xad\x01\n" +
+	"\bartifact\x18\x01 \x01(\v2\x1e.containarium.v1.AgentArtifactR\bartifact\x12\x19\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId*\xad\x01\n" +
 	"\x0eAgentTaskState\x12 \n" +
 	"\x1cAGENT_TASK_STATE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aAGENT_TASK_STATE_SUBMITTED\x10\x01\x12\x1c\n" +

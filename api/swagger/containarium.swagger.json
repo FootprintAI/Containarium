@@ -9249,6 +9249,10 @@
         "inputJson": {
           "type": "string",
           "description": "JSON task input matching the peer's agent_card input schema."
+        },
+        "traceId": {
+          "type": "string",
+          "description": "Correlation id threaded through the audit trail for this delegation. A\ncaller (e.g. a crew, Phase 3) sets it so every hop of a run shares one id;\nwhen empty the daemon generates one. Echoed back in the response."
         }
       },
       "description": "SendAgentTaskRequest delegates a task to a running peer agent. The peer is\naddressed by its agent_card.id (or skill id). In Phase 2 the daemon will\nreject a send to a peer not in the caller's allowed_peers; in Phase 1 the\nfield set is established and the send is best-effort over A2A."
@@ -9258,6 +9262,10 @@
       "properties": {
         "artifact": {
           "$ref": "#/definitions/AgentArtifact"
+        },
+        "traceId": {
+          "type": "string",
+          "description": "The trace id this hop was audited under (generated if the request omitted\none). Lets a caller chain subsequent hops under the same id."
         }
       },
       "description": "SendAgentTaskResponse returns the peer's artifact."

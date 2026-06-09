@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -32,6 +33,22 @@ func TestBuildAgentSeedScriptDefaultsInput(t *testing.T) {
 	if !strings.Contains(script, "'{}'") {
 		t.Errorf("empty input should default to {}, got:\n%s", script)
 	}
+}
+
+func TestGenTraceID(t *testing.T) {
+	a, b := genTraceID(), genTraceID()
+	if len(a) != 32 { // 16 bytes hex
+		t.Errorf("trace id len = %d, want 32", len(a))
+	}
+	if a == "" || a == b {
+		t.Errorf("trace ids should be non-empty and unique: %q %q", a, b)
+	}
+}
+
+func TestAuditHopNilStoreNoPanic(t *testing.T) {
+	// With no audit store wired, auditHop must be a safe no-op.
+	s := &AgentSkillServer{}
+	s.auditHop(context.Background(), "trace", "from", "to", "delivered", "")
 }
 
 func TestBuildAgentSeedScriptEscapesSingleQuotes(t *testing.T) {
