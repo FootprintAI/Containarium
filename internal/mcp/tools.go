@@ -1030,6 +1030,42 @@ func (s *Server) registerTools() {
 			Handler: handleDeployRecipe,
 		},
 		{
+			Name: "list_agent_skills",
+			Description: "List the platform's built-in agent skills. A skill is a " +
+				"packaged, runnable agent: a box (a recipe) plus a typed manifest " +
+				"(system prompt, allowed scopes, allowed peers). Use this to " +
+				"discover skill IDs before calling run_agent_skill.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListAgentSkills,
+		},
+		{
+			Name: "run_agent_skill",
+			Description: "Run an agent skill in a box. Provisions the skill's box, " +
+				"mints a token scoped to exactly the skill's allowed_scopes, and " +
+				"seeds the system prompt + token + task input into the box. In " +
+				"Phase 0 the in-box agent loop is the box image's job, so the " +
+				"returned artifact is empty. Discover skill IDs with " +
+				"list_agent_skills.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"skill_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Skill to run, e.g. 'hello-agent' (see list_agent_skills).",
+					},
+					"input_json": map[string]interface{}{
+						"type":        "string",
+						"description": "Task input as a JSON string (defaults to {}).",
+					},
+				},
+				"required": []string{"skill_id"},
+			},
+			Handler: handleRunAgentSkill,
+		},
+		{
 			Name: "revoke_token",
 			Description: "Admin: revoke a JWT by its jti. The token is rejected " +
 				"on the next request that names it. Pairs with the daemon's " +
@@ -1134,6 +1170,9 @@ func toolScopeAssignments() map[string]string {
 		// recipes — declarative GPU/app deploys
 		"list_recipes":  auth.ScopeContainersRead,
 		"deploy_recipe": auth.ScopeContainersWrite,
+
+		"list_agent_skills": auth.ScopeAgentsRead,
+		"run_agent_skill":   auth.ScopeAgentsRun,
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
@@ -1877,6 +1916,43 @@ func handleDeployRecipe(client *Client, args map[string]interface{}) (string, er
 	}
 	if resp.Container != nil {
 		out += fmt.Sprintf("Container: %s (%s)\n", resp.Container.Name, resp.Container.State)
+	}
+	return out, nil
+}
+
+func handleListAgentSkills(client *Client, _ map[string]interface{}) (string, error) {
+	resp, err := client.ListAgentSkills()
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Skills) == 0 {
+		return "No agent skills available.", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-16s %-16s %-24s %s\n", "ID", "BOX", "SCOPES", "DESCRIPTION")
+	for _, s := range resp.Skills {
+		fmt.Fprintf(&b, "%-16s %-16s %-24s %s\n",
+			s.ID, s.RecipeID, strings.Join(s.AllowedScopes, ","), s.Description)
+	}
+	return b.String(), nil
+}
+
+func handleRunAgentSkill(client *Client, args map[string]interface{}) (string, error) {
+	resp, err := client.RunAgentSkill(RunAgentSkillRequest{
+		SkillID:   getStringArg(args, "skill_id", ""),
+		InputJSON: getStringArg(args, "input_json", ""),
+	})
+	if err != nil {
+		return "", err
+	}
+	var out string
+	if resp.Container != nil {
+		out = fmt.Sprintf("✅ box ready: %s (%s)\n", resp.Container.Name, resp.Container.State)
+	}
+	if resp.ArtifactJSON != "" {
+		out += fmt.Sprintf("Artifact:  %s\n", resp.ArtifactJSON)
+	} else {
+		out += "(no artifact — the in-box agent loop is a Phase 0 seam)\n"
 	}
 	return out, nil
 }

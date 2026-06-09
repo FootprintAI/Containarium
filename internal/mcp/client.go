@@ -286,6 +286,68 @@ func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, e
 	return &resp, nil
 }
 
+// --- agent skills (AgentSkillService) ---
+
+// SkillSummary is one entry of the /v1/agent-skills response. JSON tags are
+// the grpc-gateway camelCase output names.
+type SkillSummary struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	RecipeID      string   `json:"recipeId"`
+	AllowedScopes []string `json:"allowedScopes"`
+}
+
+// ListAgentSkillsResponse is the /v1/agent-skills response.
+type ListAgentSkillsResponse struct {
+	Skills []SkillSummary `json:"skills"`
+}
+
+// ListAgentSkills returns the daemon's built-in agent-skill catalog.
+func (c *Client) ListAgentSkills() (*ListAgentSkillsResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/agent-skills", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListAgentSkillsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// RunAgentSkillRequest is the body for an agent-skill run. Snake_case tags
+// match the proto field names, which grpc-gateway accepts on input.
+type RunAgentSkillRequest struct {
+	SkillID   string `json:"skill_id"`
+	BackendID string `json:"backend_id,omitempty"`
+	Pool      string `json:"pool,omitempty"`
+	InputJSON string `json:"input_json,omitempty"`
+}
+
+// RunAgentSkillResponse is the result of an agent-skill run.
+type RunAgentSkillResponse struct {
+	ArtifactJSON string `json:"artifactJson"`
+	Container    *struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+	} `json:"container"`
+}
+
+// RunAgentSkill provisions a skill's box, mints a scoped token, seeds the task,
+// and returns the box.
+func (c *Client) RunAgentSkill(req RunAgentSkillRequest) (*RunAgentSkillResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/agent-skills/"+req.SkillID+"/run", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp RunAgentSkillResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // --- database backups (BackupService) ---
 
 // PgConnectionBody carries pg_dump/pg_restore connection params. Snake_case
