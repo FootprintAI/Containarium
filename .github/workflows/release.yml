@@ -37,6 +37,18 @@ jobs:
         # writes SHA256SUMS.txt. 9 binaries + 1 checksum file.
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
 
+      - name: Set up Node
+        # agent-runtime is a Node/TS sibling package (the in-box agent loop);
+        # `make bundle-agent-runtime` runs npm ci + tsc and tars it.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build agent-runtime bundle
+        # Produces bin/agent-runtime-bundle.tar.gz, pulled in-box by
+        # scripts/install-agent-runtime.sh alongside agent-box-linux-amd64.
+        run: make bundle-agent-runtime
+
       - name: Create release notes
         id: release_notes
         run: |
@@ -132,6 +144,7 @@ jobs:
             bin/agent-box-linux-amd64
             bin/agent-box-darwin-amd64
             bin/agent-box-darwin-arm64
+            bin/agent-runtime-bundle.tar.gz
             bin/SHA256SUMS.txt
           draft: false
           prerelease: false
