@@ -22,8 +22,8 @@ func TestServerCreation(t *testing.T) {
 	assert.NotNil(t, server)
 	assert.Equal(t, config, server.config)
 	assert.NotNil(t, server.client)
-	// 30 base (+check_for_updates +upgrade_backend +get_upgrade_status, #354) + 3 runner-provision + 4 compose-autostart (#325) + 2 recipes + 3 backups + connect (#453) + 2 agent-skills (#562).
-	assert.Len(t, server.tools, 51, "Should have 51 tools registered")
+	// 30 base (+check_for_updates +upgrade_backend +get_upgrade_status, #354) + 3 runner-provision + 4 compose-autostart (#325) + 2 recipes + 3 backups + connect (#453) + 2 agent-skills (#562) + call_agent (#570).
+	assert.Len(t, server.tools, 52, "Should have 52 tools registered")
 }
 
 // TestServerTools tests tool registration
@@ -127,8 +127,8 @@ func TestHandleToolsList(t *testing.T) {
 
 	tools, ok := result["tools"].([]map[string]interface{})
 	require.True(t, ok)
-	// 30 base (+check_for_updates +upgrade_backend +get_upgrade_status, #354) + 3 runner-provision + 4 compose-autostart (#325) + 2 recipes + 3 backups + connect (#453) + 2 agent-skills (#562).
-	assert.Len(t, tools, 51)
+	// 30 base (+check_for_updates +upgrade_backend +get_upgrade_status, #354) + 3 runner-provision + 4 compose-autostart (#325) + 2 recipes + 3 backups + connect (#453) + 2 agent-skills (#562) + call_agent (#570).
+	assert.Len(t, tools, 52)
 
 	// Check first tool structure
 	firstTool := tools[0]
