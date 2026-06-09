@@ -28,8 +28,17 @@ func registerAuditEndpoint(mux *http.ServeMux, store *audit.Store, authMW *auth.
 			return
 		}
 		token := strings.TrimPrefix(authHeader, "Bearer ")
-		if _, err := authMW.ValidateToken(token); err != nil {
+		claims, err := authMW.ValidateToken(token)
+		if err != nil {
 			http.Error(w, `{"error": "unauthorized: invalid token", "code": 401}`, http.StatusUnauthorized)
+			return
+		}
+		// #621: the audit log is sensitive (who-did-what across tenants). Gate
+		// reads on admin role OR an explicit audit:read scope. NOTE: this is a
+		// tightening — the endpoint previously accepted any valid token. A
+		// non-admin consumer must now carry audit:read.
+		if !auth.HasRole(claims.Roles, auth.RoleAdmin) && !auth.HasExplicitScope(claims.Scopes, auth.ScopeAuditRead) {
+			http.Error(w, `{"error": "forbidden: requires admin role or audit:read scope", "code": 403}`, http.StatusForbidden)
 			return
 		}
 

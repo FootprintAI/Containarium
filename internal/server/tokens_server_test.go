@@ -326,27 +326,37 @@ func TestListRevokedTokens_RejectsNonAdmin(t *testing.T) {
 	}
 }
 
-func TestListRevokedTokens_RejectsAdminMissingScope(t *testing.T) {
-	srv := newTestTokensServer(t, newFakeRevocationStore())
-	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
-		"ops", []string{auth.RoleAdmin}, []string{auth.ScopeContainersRead},
-	)
-	_, err := srv.ListRevokedTokens(ctx, &pb.ListRevokedTokensRequest{})
-	if status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("admin without tokens:write: got %v want PermissionDenied", err)
-	}
-}
-
-func TestListRevokedTokens_AdminWithScopeSucceeds(t *testing.T) {
+// #621: ListRevokedTokens is a read path. An admin reaches it by role —
+// no scope needed. (Previously it required admin AND tokens:write; the
+// write-scope gate on a read RPC was relaxed to admin-OR-tokens:read.)
+func TestListRevokedTokens_AdminByRoleSucceeds(t *testing.T) {
 	store := newFakeRevocationStore()
 	_ = store.Revoke(context.Background(), "abc123", time.Now().Add(time.Hour), "test")
 	srv := newTestTokensServer(t, store)
 	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
-		"ops", []string{auth.RoleAdmin}, []string{auth.ScopeTokensWrite},
+		"ops", []string{auth.RoleAdmin}, []string{auth.ScopeContainersRead},
 	)
 	resp, err := srv.ListRevokedTokens(ctx, &pb.ListRevokedTokensRequest{})
 	if err != nil {
-		t.Fatalf("ListRevokedTokens: %v", err)
+		t.Fatalf("admin by role (no tokens scope): %v", err)
+	}
+	if len(resp.Revocations) != 1 {
+		t.Fatalf("len(revocations) = %d, want 1", len(resp.Revocations))
+	}
+}
+
+// #621: a non-admin least-privilege token reaches the read path with an
+// explicit tokens:read scope (e.g. a compliance/evidence collector).
+func TestListRevokedTokens_NonAdminWithReadScopeSucceeds(t *testing.T) {
+	store := newFakeRevocationStore()
+	_ = store.Revoke(context.Background(), "abc123", time.Now().Add(time.Hour), "test")
+	srv := newTestTokensServer(t, store)
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"collector", []string{"user"}, []string{auth.ScopeTokensRead},
+	)
+	resp, err := srv.ListRevokedTokens(ctx, &pb.ListRevokedTokensRequest{})
+	if err != nil {
+		t.Fatalf("non-admin with tokens:read: %v", err)
 	}
 	if len(resp.Revocations) != 1 {
 		t.Fatalf("len(revocations) = %d, want 1", len(resp.Revocations))

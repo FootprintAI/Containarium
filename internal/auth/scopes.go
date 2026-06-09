@@ -100,6 +100,12 @@ const (
 	// crews:run provisions a crew's member boxes and runs the collaboration.
 	ScopeCrewsRead = "crews:read"
 	ScopeCrewsRun  = "crews:run"
+
+	// read-only scopes for surfaces that were admin-only, so a least-privilege
+	// (e.g. compliance/evidence) token can read one without full admin (#621).
+	ScopeAuditRead         = "audit:read"          // audit-log query
+	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
+	ScopeTokensRead        = "tokens:read"         // token listing
 )
 
 // AllScopes is the catalog of every known scope. It backs IsKnownScope so
@@ -120,6 +126,20 @@ var AllScopes = []string{
 	ScopeTokensWrite,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
+	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+}
+
+// HasExplicitScope reports whether want is explicitly in granted (or the
+// wildcard is). Unlike HasScope, a nil/absent scopes claim does NOT match —
+// use this when *granting* access by scope (a missing claim must not silently
+// unlock an otherwise admin-only read).
+func HasExplicitScope(granted []string, want string) bool {
+	for _, s := range granted {
+		if s = strings.TrimSpace(s); s == want || s == ScopeWildcard {
+			return true
+		}
+	}
+	return false
 }
 
 // IsKnownScope reports whether s is a defined scope (the wildcard counts).

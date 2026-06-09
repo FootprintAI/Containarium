@@ -102,6 +102,38 @@ func TestAuditEndpoint_RejectsInvalidToken(t *testing.T) {
 	}
 }
 
+// #621 — the audit log is sensitive (who-did-what across tenants), so a
+// valid-but-non-admin token without an explicit audit:read scope is now
+// forbidden (was: any valid token could read). The auth/scope check runs
+// before the store, so this exercises the gate with a nil store. The
+// allowed paths (admin role, or audit:read scope) reach handleAuditQuery
+// and need a live store — covered in the audit store integration test.
+func TestAuditEndpoint_RejectsValidNonAdminWithoutScope(t *testing.T) {
+	tm, err := auth.NewTokenManager(auditTestSecret, "containarium")
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
+	// Valid token, non-admin role, an unrelated scope — no audit:read.
+	tok, err := tm.GenerateToken("alice", []string{"user"}, time.Hour, auth.ScopeContainersRead)
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	mux := http.NewServeMux()
+	registerAuditEndpoint(mux, nil, auth.NewAuthMiddleware(tm))
+
+	req := httptest.NewRequest("GET", "/v1/audit/logs", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin without audit:read must be forbidden; got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "audit:read") {
+		t.Fatalf("error should name the required scope: %s", rec.Body.String())
+	}
+}
+
 // Note: a positive test that a valid token actually serves an
 // audit-log response requires a live Postgres connection (the
 // audit store). That coverage lives in

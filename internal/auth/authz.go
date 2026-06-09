@@ -147,6 +147,25 @@ func RequireRole(ctx context.Context, role string) error {
 	return nil
 }
 
+// RequireRoleOrScope passes if the caller holds the role OR explicitly holds
+// the scope. It's for read paths an admin reaches by role and a
+// least-privilege token reaches by an explicit read scope (#621). Uses
+// HasExplicitScope, not HasScope — an absent scopes claim must NOT unlock an
+// otherwise admin-only read.
+func RequireRoleOrScope(ctx context.Context, role, scope string) error {
+	_, roles, ok := SubjectFromGRPCContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	if HasRole(roles, role) {
+		return nil
+	}
+	if scopes, _ := ScopesFromGRPCContext(ctx); HasExplicitScope(scopes, scope) {
+		return nil
+	}
+	return status.Errorf(codes.PermissionDenied, "requires role %q or scope %q", role, scope)
+}
+
 // RequireScope returns nil if the authenticated subject's JWT
 // carries the required scope (or no scopes claim at all, which
 // is the Phase 1.7 backwards-compat "unrestricted" path).

@@ -57,7 +57,7 @@ func (s *NetworkPolicyServer) SetNetworkPolicy(ctx context.Context, req *pb.SetN
 }
 
 func (s *NetworkPolicyServer) GetNetworkPolicy(ctx context.Context, req *pb.GetNetworkPolicyRequest) (*pb.GetNetworkPolicyResponse, error) {
-	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeNetworkPolicyRead); err != nil {
 		return nil, err
 	}
 	if req.GetTenant() == "" {
@@ -74,7 +74,7 @@ func (s *NetworkPolicyServer) GetNetworkPolicy(ctx context.Context, req *pb.GetN
 }
 
 func (s *NetworkPolicyServer) ListNetworkPolicies(ctx context.Context, _ *pb.ListNetworkPoliciesRequest) (*pb.ListNetworkPoliciesResponse, error) {
-	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeNetworkPolicyRead); err != nil {
 		return nil, err
 	}
 	policies, err := s.store.List(ctx)

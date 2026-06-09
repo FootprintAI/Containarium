@@ -203,19 +203,21 @@ func safeID(c *auth.Claims) string {
 	return c.ID
 }
 
-// ListRevokedTokens enumerates active revocations. Admin-
-// only + tokens:write scope (same surface as RevokeToken —
-// anyone who can revoke can confirm what was revoked).
+// ListRevokedTokens enumerates active revocations. It's a read
+// path, gated by admin role OR an explicit tokens:read scope
+// (#621) — a least-privilege compliance/evidence token can list
+// revocations without holding the write surface. Previously this
+// required admin AND tokens:write; the write-scope gate on a read
+// RPC was the bug.
 //
 // Default behavior is to return only non-expired
 // revocations. include_expired=true returns the full
 // forensic set (an operator chasing a leak after the fact
 // might want everything).
 func (s *TokensServer) ListRevokedTokens(ctx context.Context, req *pb.ListRevokedTokensRequest) (*pb.ListRevokedTokensResponse, error) {
-	if err := auth.RequireScope(ctx, auth.ScopeTokensWrite); err != nil {
-		return nil, err
-	}
-	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+	// Read path: admins (by role) or a least-privilege token with tokens:read
+	// (#621). Previously required admin AND tokens:write.
+	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeTokensRead); err != nil {
 		return nil, err
 	}
 	if s.store == nil {
