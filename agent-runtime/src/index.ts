@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { startA2AServer } from "./a2a.js";
 import { writeArtifact } from "./artifact.js";
 import type { Engine, EngineConfig } from "./engine.js";
 import { ClaudeEngine } from "./engines/claude.js";
@@ -50,6 +51,11 @@ function writeCodexConfig(cfg: EngineConfig): void {
   writeFileSync(join(dir, "config.toml"), toml);
 }
 
+// mode: "run" (one-shot — read input.json, run once, write artifact.json; the
+// 4a path `agent run` uses) or "serve" (start the A2A server so peers/crews can
+// delegate tasks; the 4b path SendAgentTask reaches). Default "run".
+const mode = (process.env.CONTAINARIUM_AGENT_MODE ?? "run").toLowerCase();
+
 async function main(): Promise<void> {
   const seed = loadSeed(seedDir);
   const engine = pickEngine(engineName);
@@ -62,6 +68,12 @@ async function main(): Promise<void> {
   };
 
   if (engine.name === "codex") writeCodexConfig(cfg);
+
+  if (mode === "serve") {
+    // Long-running: serve /agent-card + /tasks until the box stops.
+    startA2AServer(seed, engine, cfg);
+    return;
+  }
 
   try {
     const res = await engine.run(seed.inputJson, cfg);

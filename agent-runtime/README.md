@@ -27,6 +27,20 @@ takes the MCP config inline (`mcpServers`); the Codex engine writes a
 Select with `CONTAINARIUM_AGENT_ENGINE=claude|codex` (a later phase moves this
 onto the skill manifest as an `engine` field).
 
+## Two modes
+
+`CONTAINARIUM_AGENT_MODE` selects how the loop runs:
+
+- `run` (default) — one-shot: read `input.json`, run once, write `artifact.json`.
+  This is the `agent run` path (Phase 4a).
+- `serve` — start the in-box **A2A server** on `:8674` and stay up:
+  - `GET /agent-card` → the seeded agent card (peer discovery)
+  - `POST /tasks` → run one delegated task (`AgentTask` in → `AgentArtifact`
+    out), the listener the daemon's `SendAgentTask` reaches (Phase 4b).
+
+  A failed task returns `200` with `state: AGENT_TASK_STATE_FAILED` so the caller
+  still gets the artifact rather than an HTTP error.
+
 ## What it reads (the seed)
 
 `RunAgentSkill` seeds `/etc/containarium/agent/` at launch
@@ -71,13 +85,17 @@ Verified: `tsc --noEmit` passes against the installed types of both SDKs
 ## Status / remaining 4a work
 
 - ✅ The component: engine interface + Claude + Codex engines + seed/artifact +
-  runner. Typechecks against real SDK types.
+  one-shot runner (4a) + the A2A server / serve mode (4b). Typechecks against
+  real SDK types.
+- ✅ **Daemon invoke + read-back** (4a) — `RunAgentSkill` execs the runtime and
+  reads `artifact.json` into `RunAgentSkillResponse.artifact_json` (#614).
 - ⏳ **Box image assembly** — the `agent-runtime` recipe must ship Node + this
   component + `agent-box` into the box (design-note open question #5).
-- ⏳ **Daemon invoke + read-back** — `RunAgentSkill` execs the runtime over the
-  seed and reads `artifact.json` into `RunAgentSkillResponse.artifact_json`.
+- ⏳ **Serve-mode lifecycle** — a peer/crew-member box must run
+  `CONTAINARIUM_AGENT_MODE=serve` as a long-running process so `:8674` is up;
+  wired in 4c (crew choreography) alongside the daemon starting members.
 - ⏳ **Live validation** — needs the assembled image + a provider API key + a
   backend (the standing "needs a live box" seam). Not runnable in CI alone.
 
-Phase 4b adds the in-box A2A server (`:8674` `/agent-card` + `/tasks`) on top of
-this loop; 4c wires crew choreography.
+4c wires crew choreography (`RunCrew` starts members in serve mode, drives the
+hops, reports `COMPLETED`).
