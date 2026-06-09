@@ -1,11 +1,13 @@
 # Agent Skills & Crews — Design Note
 
-> Status: **Exploration / not yet approved.** Proto stub lives at
-> `proto/containarium/v1/agent.proto` (also marked unapproved). This note
-> proposes the **generic mechanism** for running collaborating agents on top of
+> Status: **Approved — Phase 0 in progress.** The proto contract lives at
+> `proto/containarium/v1/agent.proto` (`AgentSkill` + `AgentSkillService`
+> finalized in #558; `Crew`/`CrewService` deferred to Phase 3). This note
+> describes the **generic mechanism** for running collaborating agents on top of
 > Containarium. Concrete skills and crews — compliance packs, research crews,
 > domain catalogs — are built on this mechanism and ship **outside this
-> repo**; nothing task-specific belongs here. Nothing below is wired yet.
+> repo**; nothing task-specific belongs here. Phase tracking: epics #566
+> (P0), #572 (P1), #578 (P2), #586 (P3).
 
 ## The thesis: Containarium is the trust fabric, not "another agent framework"
 

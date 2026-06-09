@@ -21,6 +21,12 @@
       "name": "ActuationService"
     },
     {
+      "name": "RecipeService"
+    },
+    {
+      "name": "AgentSkillService"
+    },
+    {
       "name": "NetworkService"
     },
     {
@@ -46,9 +52,6 @@
     },
     {
       "name": "PentestService"
-    },
-    {
-      "name": "RecipeService"
     },
     {
       "name": "SecurityService"
@@ -147,6 +150,102 @@
         ],
         "tags": [
           "ActuationService"
+        ]
+      }
+    },
+    "/v1/agent-skills": {
+      "get": {
+        "summary": "List agent skills",
+        "description": "Returns all packaged agent skills that can be run individually or composed into a crew.",
+        "operationId": "AgentSkillService_ListAgentSkills",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAgentSkillsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-skills/{id}": {
+      "get": {
+        "summary": "Get agent skill",
+        "description": "Returns one skill's definition, including its agent card, allowed scopes, and allowed peers.",
+        "operationId": "AgentSkillService_GetAgentSkill",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetAgentSkillResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-skills/{skillId}/run": {
+      "post": {
+        "summary": "Run an agent skill",
+        "description": "Provisions the skill's box, mints a scoped token, runs one task, and returns the artifact.",
+        "operationId": "AgentSkillService_RunAgentSkill",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RunAgentSkillResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RunAgentSkillBody"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
         ]
       }
     },
@@ -5046,6 +5145,91 @@
       },
       "description": "AdoptMigratedContainerResponse confirms the destination registered\nthe container and returns its IP for the source's route swap."
     },
+    "AgentCard": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable handle used by peers to address this agent (e.g. \"researcher\")."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name."
+        },
+        "description": {
+          "type": "string",
+          "description": "What this agent does — surfaced to peers and to a planner."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Free-form capability tags a planner can match against (e.g.\n\"web-search\", \"code-review\", \"summarize\")."
+        },
+        "inputSchemaJson": {
+          "type": "string",
+          "description": "JSON Schema describing the task input this agent accepts."
+        },
+        "outputSchemaJson": {
+          "type": "string",
+          "description": "JSON Schema describing the artifact this agent returns."
+        }
+      },
+      "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
+    },
+    "AgentSkill": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable skill identifier (e.g. \"web-researcher\")."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Short description."
+        },
+        "recipeId": {
+          "type": "string",
+          "description": "Reference an existing recipe by id (e.g. \"agent-runtime\")."
+        },
+        "recipe": {
+          "$ref": "#/definitions/Recipe",
+          "description": "Inline recipe definition for one-off skills."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System prompt / persona handed to the model inside the box."
+        },
+        "allowedScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Platform MCP scopes this agent is permitted to use (e.g.\n\"containers:read\", \"containers:create\"). Validated against the scope\ntaxonomy in internal/auth/scopes.go; minted into the agent's JWT at\nlaunch. Least-privilege: a skill gets ONLY what it declares."
+        },
+        "agentCard": {
+          "$ref": "#/definitions/AgentCard",
+          "description": "A2A discovery document this skill serves (Phase 1)."
+        },
+        "allowedPeers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IDs of the OTHER skills this skill is permitted to send A2A tasks to.\nIn Phase 2 this list compiles to an eBPF NetworkPolicy egress allowlist,\nso an agent literally cannot open a socket to a non-allowed peer (enforced\nin-kernel, not in prompt). A skill that is only allowed one peer cannot\nreach any other. An empty list = talks to no peer (leaf agent). Inert\nuntil Phase 2."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier the runtime should drive this agent with (e.g.\n\"claude-opus-4-8\"). Empty = runtime default."
+        }
+      },
+      "description": "AgentSkill is a packaged, runnable agent: a Recipe (the box — image,\nresources, GPU) plus the agent layer (who it is, what tools it may call,\nwho it may talk to). This is the unit `containarium agent run` launches.\n\nKey invariant: allowed_scopes and allowed_peers are typed, first-class\nfields — NOT a prompt string. allowed_scopes is minted into the agent's JWT\nat launch; allowed_peers compiles into eBPF network policy (Phase 2). The\ntyping IS the security boundary."
+    },
     "AlertRule": {
       "type": "object",
       "properties": {
@@ -6787,6 +6971,14 @@
       "default": "GPU_VENDOR_UNSPECIFIED",
       "title": "GPU vendor enum"
     },
+    "GetAgentSkillResponse": {
+      "type": "object",
+      "properties": {
+        "skill": {
+          "$ref": "#/definitions/AgentSkill"
+        }
+      }
+    },
     "GetAlertRuleResponse": {
       "type": "object",
       "properties": {
@@ -7393,6 +7585,18 @@
             "$ref": "#/definitions/ACLPresetInfo"
           },
           "title": "Available presets"
+        }
+      }
+    },
+    "ListAgentSkillsResponse": {
+      "type": "object",
+      "properties": {
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AgentSkill"
+          }
         }
       }
     },
@@ -8851,6 +9055,36 @@
       "default": "ROUTE_PROTOCOL_UNSPECIFIED",
       "description": "- ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_TLS_PASSTHROUGH: TLS passthrough - SNI-based routing without TLS termination (for mTLS gRPC)",
       "title": "RouteProtocol represents the protocol type for a route"
+    },
+    "RunAgentSkillBody": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Target backend/pool placement, same scheme as recipes."
+        },
+        "pool": {
+          "type": "string"
+        },
+        "inputJson": {
+          "type": "string",
+          "description": "JSON task input matching the skill's agent_card input schema."
+        }
+      },
+      "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
+    },
+    "RunAgentSkillResponse": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container",
+          "description": "The box the agent ran in."
+        },
+        "artifactJson": {
+          "type": "string",
+          "description": "JSON artifact matching the skill's output schema."
+        }
+      }
     },
     "ScanJob": {
       "type": "object",
