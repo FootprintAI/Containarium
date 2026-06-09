@@ -2,13 +2,13 @@
 
 Run a packaged agent in its own Containarium box in a couple of minutes.
 
-> **Phases 0–1.** This is the generic mechanism only. The **in-box agent
-> loop and the in-box A2A server are the box image's job and are not wired
-> yet**, so a `run` seeds the box but returns an empty artifact, and a `call`
-> to a real box reaches no listener. The daemon-side surface (run, discovery,
-> agent-to-agent send) is wired and tested. See
-> `docs/AGENT-SKILLS-CREWS-DESIGN.md` for the full design and the later phases
-> (the `allowed_peers` → eBPF trust fabric in Phase 2, crews in Phase 3).
+> **Phases 0–2.** This is the generic mechanism only. The daemon-side surface
+> (run, discovery, agent-to-agent send, `allowed_peers` enforcement, audit) is
+> wired and tested. The **in-box agent loop and the in-box A2A server are the
+> box image's job and are not wired yet**, so a `run` seeds + network-gates the
+> box but returns an empty artifact, and a `call` to a real box reaches no
+> listener. See `docs/AGENT-SKILLS-CREWS-DESIGN.md` for the full design and
+> crews (Phase 3).
 
 ## What is a skill?
 
@@ -112,9 +112,46 @@ Driving the call needs the `agents:call` scope.
 > returns `Unavailable`. The daemon-side transport + discovery + resolution are
 > wired and unit-tested against a stub peer.
 
-> **Phase 2 preview.** `allowed_peers` becomes enforced: the daemon rejects a
-> `call` to a peer not in the caller's `allowed_peers`, and eBPF network policy
-> drops the hop in-kernel. In Phase 1 the send is best-effort.
+## Trust fabric (Phase 2): `allowed_peers` enforcement
+
+This is the differentiator. A skill's `allowed_peers` is enforced at two layers,
+so an agent can only talk to the peers it declared:
+
+1. **API boundary (always on).** `agent call` / `SendAgentTask` rejects a call
+   to a peer not in the caller's `allowed_peers` with `PermissionDenied`,
+   *before* any traffic leaves. The caller's identity is the authenticated token
+   subject (an agent box's JWT subject is `agent-<skill-id>`), so a box cannot
+   spoof a different caller to bypass the gate.
+2. **In-kernel (opt-in).** At launch the daemon compiles `allowed_peers` into a
+   per-box eBPF egress allowlist (each running peer's box IP as a `/32`). With
+   enforcement armed, traffic to anything else is **dropped in the kernel** —
+   not refused by a prompt — and the attempt is audit-logged. The crew topology
+   and the network ACL are the same artifact.
+
+Every A2A hop is recorded in the audit log under a shared `trace_id` (action
+`agent.a2a_call`), so an auditor can follow a whole run. A caller (a crew, in
+Phase 3) threads the `trace_id`; otherwise the daemon generates one and returns
+it.
+
+### Arming in-kernel enforcement
+
+Off by default (observe-only). Arming needs **both** the daemon-wide eBPF
+enforcer and the agent opt-in, on a Linux backend:
+
+```bash
+# daemon-wide eBPF enforcer (eBPF Phase A)
+CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/path/to/netpolicy.bpf.o
+CONTAINARIUM_NETWORK_POLICY_ENFORCE=1
+
+# agent-skill policies in ENFORCE mode, plus the platform egress an agent
+# legitimately needs so a peer-only allowlist doesn't strand it (daemon API, DNS)
+CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE=1
+CONTAINARIUM_AGENT_EGRESS_CIDRS=10.0.0.10/32,10.0.0.53/32
+```
+
+Without `CONTAINARIUM_AGENT_EGRESS_CIDRS`, an armed agent could only reach its
+peers — review the audit `network_policy.deny_logged` events in LOG_ONLY first,
+then add the platform CIDRs and flip ENFORCE.
 
 ## From an AI agent (MCP)
 
@@ -150,24 +187,25 @@ skills:
       You are ...
     allowed_scopes:
       - containers:read
-    allowed_peers: []      # inert until Phase 2
+    allowed_peers: []      # peers this skill may A2A-call (enforced, Phase 2)
     model: claude-opus-4-8
     agent_card:
       id: my-skill
       capabilities: [example]
 ```
 
-## Limitations (by design, Phases 0–1)
+## Limitations (by design)
 
-- **No in-box loop / A2A server yet** — the box is provisioned and seeded; the
-  in-box agent loop and the A2A `/tasks` server are the `agent-runtime` image's
-  job (a later phase). `run` returns an empty artifact; `call` to a real box
-  returns `Unavailable`.
+- **No in-box loop / A2A server yet** — the box is provisioned, seeded, and
+  network-gated; the in-box agent loop and the A2A `/tasks` server are the
+  `agent-runtime` image's job (a later phase). `run` returns an empty artifact;
+  `call` to a real box returns `Unavailable`.
 - **Box name is derived from the skill id** (`agent-<skill-id>`), so two
   concurrent runs of the same skill collide. Per-run boxes / a warm pool are a
   later concern (see `docs/EPHEMERAL-SANDBOX-DESIGN.md`).
-- **`allowed_peers` is inert** until Phase 2 wires it to eBPF network policy
-  (the send is best-effort and ungated in Phase 1).
+- **In-kernel drop is opt-in** — `allowed_peers` is enforced at the API
+  boundary always, but the eBPF drop is observe-only (`LOG_ONLY`) until armed
+  (see *Trust fabric* above) and requires a Linux backend.
 
 ## See also
 
