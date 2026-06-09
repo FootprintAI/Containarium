@@ -27,6 +27,9 @@
       "name": "AgentSkillService"
     },
     {
+      "name": "CrewService"
+    },
+    {
       "name": "NetworkService"
     },
     {
@@ -2232,6 +2235,134 @@
         ],
         "tags": [
           "Container Operations"
+        ]
+      }
+    },
+    "/v1/crew-runs/{id}": {
+      "get": {
+        "summary": "Get crew run",
+        "description": "Returns the state, trace id, and (when complete) the artifact of a crew execution.",
+        "operationId": "CrewService_GetCrewRun",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCrewRunResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/crews": {
+      "get": {
+        "summary": "List crews",
+        "description": "Returns all crews (collaborating skill sets) available to run.",
+        "operationId": "CrewService_ListCrews",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListCrewsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/crews/{crewId}/run": {
+      "post": {
+        "summary": "Run a crew",
+        "description": "Provisions each skill's box, gates A2A traffic with network policy compiled from allowed_peers, runs the collaboration, and returns the run handle.",
+        "operationId": "CrewService_RunCrew",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RunCrewResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "crewId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RunCrewBody"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/crews/{id}": {
+      "get": {
+        "summary": "Get crew",
+        "description": "Returns one crew's definition, including its topology and member skills.",
+        "operationId": "CrewService_GetCrew",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCrewResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Agents"
         ]
       }
     },
@@ -6469,6 +6600,90 @@
         }
       }
     },
+    "Crew": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable crew identifier (e.g. \"research-crew\")."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Short description of the task purpose."
+        },
+        "topology": {
+          "$ref": "#/definitions/CrewTopology",
+          "description": "How the skills are wired."
+        },
+        "skillIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Skill ids that make up this crew (in pipeline order when PIPELINE;\ncoordinator first when ORCHESTRATOR)."
+        }
+      },
+      "description": "Crew is a collaborating set of skills bound to a task purpose."
+    },
+    "CrewRun": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "crewId": {
+          "type": "string"
+        },
+        "traceId": {
+          "type": "string",
+          "description": "Shared trace id threaded through every agent's audit entries for this run."
+        },
+        "state": {
+          "$ref": "#/definitions/CrewRunState"
+        },
+        "inputJson": {
+          "type": "string",
+          "description": "JSON input handed to the crew's entry skill(s)."
+        },
+        "artifactJson": {
+          "type": "string",
+          "description": "JSON artifact produced by the crew. Populated when state is COMPLETED."
+        },
+        "error": {
+          "type": "string",
+          "description": "Human-readable error when state is FAILED."
+        }
+      },
+      "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
+    },
+    "CrewRunState": {
+      "type": "string",
+      "enum": [
+        "CREW_RUN_STATE_UNSPECIFIED",
+        "CREW_RUN_STATE_PENDING",
+        "CREW_RUN_STATE_RUNNING",
+        "CREW_RUN_STATE_COMPLETED",
+        "CREW_RUN_STATE_FAILED",
+        "CREW_RUN_STATE_CANCELLED"
+      ],
+      "default": "CREW_RUN_STATE_UNSPECIFIED",
+      "description": "CrewRunState tracks the lifecycle of a single crew execution."
+    },
+    "CrewTopology": {
+      "type": "string",
+      "enum": [
+        "CREW_TOPOLOGY_UNSPECIFIED",
+        "CREW_TOPOLOGY_PIPELINE",
+        "CREW_TOPOLOGY_ORCHESTRATOR",
+        "CREW_TOPOLOGY_FREEFORM"
+      ],
+      "default": "CREW_TOPOLOGY_UNSPECIFIED",
+      "description": "CrewTopology describes how a crew's skills are wired together.\n\n - CREW_TOPOLOGY_PIPELINE: Linear pipeline: output of skill[i] feeds skill[i+1].\n - CREW_TOPOLOGY_ORCHESTRATOR: A coordinator skill fans tasks out to worker skills and synthesizes.\n - CREW_TOPOLOGY_FREEFORM: Skills coordinate freely over A2A within the allowed_peers graph; the crew\njust bounds the set and the trace."
+    },
     "DNSRecord": {
       "type": "object",
       "properties": {
@@ -7220,6 +7435,22 @@
       },
       "title": "GetContainerResponse is the response from getting a container"
     },
+    "GetCrewResponse": {
+      "type": "object",
+      "properties": {
+        "crew": {
+          "$ref": "#/definitions/Crew"
+        }
+      }
+    },
+    "GetCrewRunResponse": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/CrewRun"
+        }
+      }
+    },
     "GetEnvelopeCoverageResponse": {
       "type": "object",
       "properties": {
@@ -7787,6 +8018,18 @@
         }
       },
       "title": "ListContainersResponse is the response from listing containers"
+    },
+    "ListCrewsResponse": {
+      "type": "object",
+      "properties": {
+        "crews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Crew"
+          }
+        }
+      }
     },
     "ListDNSRecordsResponse": {
       "type": "object",
@@ -9158,6 +9401,29 @@
         "artifactJson": {
           "type": "string",
           "description": "JSON artifact matching the skill's output schema."
+        }
+      }
+    },
+    "RunCrewBody": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string"
+        },
+        "pool": {
+          "type": "string"
+        },
+        "inputJson": {
+          "type": "string",
+          "description": "JSON input for the crew's entry skill(s)."
+        }
+      }
+    },
+    "RunCrewResponse": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/CrewRun"
         }
       }
     },

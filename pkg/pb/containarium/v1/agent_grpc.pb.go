@@ -251,3 +251,237 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "containarium/v1/agent.proto",
 }
+
+const (
+	CrewService_ListCrews_FullMethodName  = "/containarium.v1.CrewService/ListCrews"
+	CrewService_GetCrew_FullMethodName    = "/containarium.v1.CrewService/GetCrew"
+	CrewService_RunCrew_FullMethodName    = "/containarium.v1.CrewService/RunCrew"
+	CrewService_GetCrewRun_FullMethodName = "/containarium.v1.CrewService/GetCrewRun"
+)
+
+// CrewServiceClient is the client API for CrewService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// CrewService runs collaborating sets of skills bound to a task purpose.
+type CrewServiceClient interface {
+	// ListCrews returns all available crews.
+	ListCrews(ctx context.Context, in *ListCrewsRequest, opts ...grpc.CallOption) (*ListCrewsResponse, error)
+	// GetCrew returns a single crew definition by id.
+	GetCrew(ctx context.Context, in *GetCrewRequest, opts ...grpc.CallOption) (*GetCrewResponse, error)
+	// RunCrew launches a crew against an input: validates the topology against the
+	// union of member skills' allowed_peers, provisions each skill's box, compiles
+	// per-agent network policy, threads one trace_id through every hop, and
+	// returns the run handle.
+	RunCrew(ctx context.Context, in *RunCrewRequest, opts ...grpc.CallOption) (*RunCrewResponse, error)
+	// GetCrewRun returns the status and artifact of a crew run.
+	GetCrewRun(ctx context.Context, in *GetCrewRunRequest, opts ...grpc.CallOption) (*GetCrewRunResponse, error)
+}
+
+type crewServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewCrewServiceClient(cc grpc.ClientConnInterface) CrewServiceClient {
+	return &crewServiceClient{cc}
+}
+
+func (c *crewServiceClient) ListCrews(ctx context.Context, in *ListCrewsRequest, opts ...grpc.CallOption) (*ListCrewsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCrewsResponse)
+	err := c.cc.Invoke(ctx, CrewService_ListCrews_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *crewServiceClient) GetCrew(ctx context.Context, in *GetCrewRequest, opts ...grpc.CallOption) (*GetCrewResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCrewResponse)
+	err := c.cc.Invoke(ctx, CrewService_GetCrew_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *crewServiceClient) RunCrew(ctx context.Context, in *RunCrewRequest, opts ...grpc.CallOption) (*RunCrewResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RunCrewResponse)
+	err := c.cc.Invoke(ctx, CrewService_RunCrew_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *crewServiceClient) GetCrewRun(ctx context.Context, in *GetCrewRunRequest, opts ...grpc.CallOption) (*GetCrewRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCrewRunResponse)
+	err := c.cc.Invoke(ctx, CrewService_GetCrewRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CrewServiceServer is the server API for CrewService service.
+// All implementations must embed UnimplementedCrewServiceServer
+// for forward compatibility.
+//
+// CrewService runs collaborating sets of skills bound to a task purpose.
+type CrewServiceServer interface {
+	// ListCrews returns all available crews.
+	ListCrews(context.Context, *ListCrewsRequest) (*ListCrewsResponse, error)
+	// GetCrew returns a single crew definition by id.
+	GetCrew(context.Context, *GetCrewRequest) (*GetCrewResponse, error)
+	// RunCrew launches a crew against an input: validates the topology against the
+	// union of member skills' allowed_peers, provisions each skill's box, compiles
+	// per-agent network policy, threads one trace_id through every hop, and
+	// returns the run handle.
+	RunCrew(context.Context, *RunCrewRequest) (*RunCrewResponse, error)
+	// GetCrewRun returns the status and artifact of a crew run.
+	GetCrewRun(context.Context, *GetCrewRunRequest) (*GetCrewRunResponse, error)
+	mustEmbedUnimplementedCrewServiceServer()
+}
+
+// UnimplementedCrewServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedCrewServiceServer struct{}
+
+func (UnimplementedCrewServiceServer) ListCrews(context.Context, *ListCrewsRequest) (*ListCrewsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCrews not implemented")
+}
+func (UnimplementedCrewServiceServer) GetCrew(context.Context, *GetCrewRequest) (*GetCrewResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCrew not implemented")
+}
+func (UnimplementedCrewServiceServer) RunCrew(context.Context, *RunCrewRequest) (*RunCrewResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RunCrew not implemented")
+}
+func (UnimplementedCrewServiceServer) GetCrewRun(context.Context, *GetCrewRunRequest) (*GetCrewRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCrewRun not implemented")
+}
+func (UnimplementedCrewServiceServer) mustEmbedUnimplementedCrewServiceServer() {}
+func (UnimplementedCrewServiceServer) testEmbeddedByValue()                     {}
+
+// UnsafeCrewServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to CrewServiceServer will
+// result in compilation errors.
+type UnsafeCrewServiceServer interface {
+	mustEmbedUnimplementedCrewServiceServer()
+}
+
+func RegisterCrewServiceServer(s grpc.ServiceRegistrar, srv CrewServiceServer) {
+	// If the following call panics, it indicates UnimplementedCrewServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&CrewService_ServiceDesc, srv)
+}
+
+func _CrewService_ListCrews_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCrewsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrewServiceServer).ListCrews(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrewService_ListCrews_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrewServiceServer).ListCrews(ctx, req.(*ListCrewsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CrewService_GetCrew_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCrewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrewServiceServer).GetCrew(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrewService_GetCrew_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrewServiceServer).GetCrew(ctx, req.(*GetCrewRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CrewService_RunCrew_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RunCrewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrewServiceServer).RunCrew(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrewService_RunCrew_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrewServiceServer).RunCrew(ctx, req.(*RunCrewRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CrewService_GetCrewRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCrewRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrewServiceServer).GetCrewRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrewService_GetCrewRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrewServiceServer).GetCrewRun(ctx, req.(*GetCrewRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// CrewService_ServiceDesc is the grpc.ServiceDesc for CrewService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var CrewService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "containarium.v1.CrewService",
+	HandlerType: (*CrewServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ListCrews",
+			Handler:    _CrewService_ListCrews_Handler,
+		},
+		{
+			MethodName: "GetCrew",
+			Handler:    _CrewService_GetCrew_Handler,
+		},
+		{
+			MethodName: "RunCrew",
+			Handler:    _CrewService_RunCrew_Handler,
+		},
+		{
+			MethodName: "GetCrewRun",
+			Handler:    _CrewService_GetCrewRun_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "containarium/v1/agent.proto",
+}

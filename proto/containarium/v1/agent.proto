@@ -247,3 +247,150 @@ service AgentSkillService {
     };
   }
 }
+
+// =============================================================================
+// Crews — Phase 3. A crew is a collaborating set of skills bound to a task
+// purpose. The crew mechanism lives here; concrete crew definitions ship
+// outside this repo. The daemon rejects a crew whose topology asks for an A2A
+// edge that the members' allowed_peers (and thus Phase 2 network policy) would
+// drop — the topology and the trust fabric stay consistent.
+// =============================================================================
+
+// CrewTopology describes how a crew's skills are wired together.
+enum CrewTopology {
+  CREW_TOPOLOGY_UNSPECIFIED = 0;
+  // Linear pipeline: output of skill[i] feeds skill[i+1].
+  CREW_TOPOLOGY_PIPELINE = 1;
+  // A coordinator skill fans tasks out to worker skills and synthesizes.
+  CREW_TOPOLOGY_ORCHESTRATOR = 2;
+  // Skills coordinate freely over A2A within the allowed_peers graph; the crew
+  // just bounds the set and the trace.
+  CREW_TOPOLOGY_FREEFORM = 3;
+}
+
+// Crew is a collaborating set of skills bound to a task purpose.
+message Crew {
+  // Stable crew identifier (e.g. "research-crew").
+  string id = 1;
+  // Display name.
+  string name = 2;
+  // Short description of the task purpose.
+  string description = 3;
+  // How the skills are wired.
+  CrewTopology topology = 4;
+  // Skill ids that make up this crew (in pipeline order when PIPELINE;
+  // coordinator first when ORCHESTRATOR).
+  repeated string skill_ids = 5;
+}
+
+// CrewRunState tracks the lifecycle of a single crew execution.
+enum CrewRunState {
+  CREW_RUN_STATE_UNSPECIFIED = 0;
+  CREW_RUN_STATE_PENDING = 1;
+  CREW_RUN_STATE_RUNNING = 2;
+  CREW_RUN_STATE_COMPLETED = 3;
+  CREW_RUN_STATE_FAILED = 4;
+  CREW_RUN_STATE_CANCELLED = 5;
+}
+
+// CrewRun is one execution of a crew. Every A2A hop and MCP call made by any
+// agent in the run is audit-logged under this run's trace_id, so a run is
+// itself an evidence artifact.
+message CrewRun {
+  string id = 1;
+  string crew_id = 2;
+  // Shared trace id threaded through every agent's audit entries for this run.
+  string trace_id = 3;
+  CrewRunState state = 4;
+  // JSON input handed to the crew's entry skill(s).
+  string input_json = 5;
+  // JSON artifact produced by the crew. Populated when state is COMPLETED.
+  string artifact_json = 6;
+  // Human-readable error when state is FAILED.
+  string error = 7;
+}
+
+message ListCrewsRequest {}
+message ListCrewsResponse {
+  repeated Crew crews = 1;
+}
+
+message GetCrewRequest {
+  string id = 1;
+}
+message GetCrewResponse {
+  Crew crew = 1;
+}
+
+message RunCrewRequest {
+  string crew_id = 1;
+  string backend_id = 2;
+  string pool = 3;
+  // JSON input for the crew's entry skill(s).
+  string input_json = 4;
+}
+message RunCrewResponse {
+  CrewRun run = 1;
+}
+
+message GetCrewRunRequest {
+  string id = 1;
+}
+message GetCrewRunResponse {
+  CrewRun run = 1;
+}
+
+// CrewService runs collaborating sets of skills bound to a task purpose.
+service CrewService {
+  // ListCrews returns all available crews.
+  rpc ListCrews(ListCrewsRequest) returns (ListCrewsResponse) {
+    option (google.api.http) = {
+      get: "/v1/crews"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List crews";
+      description: "Returns all crews (collaborating skill sets) available to run.";
+      tags: "Agents";
+    };
+  }
+
+  // GetCrew returns a single crew definition by id.
+  rpc GetCrew(GetCrewRequest) returns (GetCrewResponse) {
+    option (google.api.http) = {
+      get: "/v1/crews/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get crew";
+      description: "Returns one crew's definition, including its topology and member skills.";
+      tags: "Agents";
+    };
+  }
+
+  // RunCrew launches a crew against an input: validates the topology against the
+  // union of member skills' allowed_peers, provisions each skill's box, compiles
+  // per-agent network policy, threads one trace_id through every hop, and
+  // returns the run handle.
+  rpc RunCrew(RunCrewRequest) returns (RunCrewResponse) {
+    option (google.api.http) = {
+      post: "/v1/crews/{crew_id}/run"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Run a crew";
+      description: "Provisions each skill's box, gates A2A traffic with network policy compiled from allowed_peers, runs the collaboration, and returns the run handle.";
+      tags: "Agents";
+    };
+  }
+
+  // GetCrewRun returns the status and artifact of a crew run.
+  rpc GetCrewRun(GetCrewRunRequest) returns (GetCrewRunResponse) {
+    option (google.api.http) = {
+      get: "/v1/crew-runs/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get crew run";
+      description: "Returns the state, trace id, and (when complete) the artifact of a crew execution.";
+      tags: "Agents";
+    };
+  }
+}
