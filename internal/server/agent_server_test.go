@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -47,7 +48,7 @@ func TestCompileAllowedPeersPolicy(t *testing.T) {
 	resolve := func(id string) (string, bool) { ip, ok := running[id]; return ip, ok }
 
 	// peer-c is not running, so it must be omitted from the allowlist.
-	p := compileAllowedPeersPolicy("agent-caller", []string{"peer-a", "peer-b", "peer-c"}, resolve)
+	p := compileAllowedPeersPolicy("agent-caller", []string{"peer-a", "peer-b", "peer-c"}, resolve, nil, false)
 
 	if p.Tenant != "agent-caller" {
 		t.Errorf("tenant = %q, want agent-caller", p.Tenant)
@@ -75,8 +76,52 @@ func TestCompileAllowedPeersPolicy(t *testing.T) {
 func TestCompileAllowedPeersPolicyNoneRunning(t *testing.T) {
 	// No peer is running -> empty allowlist (the caller skips installing it
 	// rather than denying all egress under a future ENFORCE).
-	p := compileAllowedPeersPolicy("t", []string{"x", "y"}, func(string) (string, bool) { return "", false })
+	p := compileAllowedPeersPolicy("t", []string{"x", "y"}, func(string) (string, bool) { return "", false }, nil, false)
 	if len(p.EgressCidrs) != 0 {
 		t.Errorf("expected no egress cidrs when no peers run, got %v", p.EgressCidrs)
+	}
+}
+
+func TestCompileAllowedPeersPolicyEnforceAndExtraCIDRs(t *testing.T) {
+	resolve := func(id string) (string, bool) {
+		if id == "peer-a" {
+			return "10.0.0.5", true
+		}
+		return "", false
+	}
+	// Armed ENFORCE + platform egress (e.g. daemon + DNS) so the agent isn't
+	// stranded by a peer-only allowlist.
+	extra := []string{"10.0.1.1/32", "10.0.1.2/32"}
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve, extra, true)
+
+	if p.Mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE {
+		t.Errorf("mode = %v, want ENFORCE when armed", p.Mode)
+	}
+	want := []string{"10.0.0.5/32", "10.0.1.1/32", "10.0.1.2/32"}
+	if len(p.EgressCidrs) != len(want) {
+		t.Fatalf("egress_cidrs = %v, want %v", p.EgressCidrs, want)
+	}
+	for i := range want {
+		if p.EgressCidrs[i] != want[i] {
+			t.Errorf("egress_cidrs[%d] = %q, want %q", i, p.EgressCidrs[i], want[i])
+		}
+	}
+}
+
+func TestPeerAllowed(t *testing.T) {
+	s := &AgentSkillServer{catalog: skills.GetDefault()}
+
+	// hello-agent ships with allowed_peers: [] (leaf) — so any peer is denied.
+	if s.peerAllowed("hello-agent", "some-peer") {
+		t.Error("hello-agent has no allowed_peers; call should be denied")
+	}
+	// Empty caller (admin/operator direct call) is allowed — eBPF is the
+	// boundary for box-originated traffic.
+	if !s.peerAllowed("", "some-peer") {
+		t.Error("empty caller should be allowed (not gated at this layer)")
+	}
+	// Unknown caller skill is allowed (not ours to gate here).
+	if !s.peerAllowed("does-not-exist", "some-peer") {
+		t.Error("unknown caller skill should not be gated here")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -12,9 +13,16 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// agentBoxPrefix is the box/tenant name prefix RunAgentSkill assigns to a
+// skill's box (agent-<skill-id>). The minted in-box JWT carries this as its
+// subject, so a call originating from an agent box authenticates as
+// agent-<skill-id> — which is how SendAgentTask recovers the real caller.
+const agentBoxPrefix = "agent-"
 
 // agentTokenTTL bounds the lifetime of the JWT minted for a skill's in-box
 // agent loop. Short by design: a skill run is a bounded task, not a session.
@@ -175,15 +183,74 @@ func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant s
 	if s.netpolicy == nil || len(skill.AllowedPeers) == 0 {
 		return
 	}
-	policy := compileAllowedPeersPolicy(tenant, skill.AllowedPeers, s.resolvePeerIP)
+	extraCIDRs, enforce := agentNetworkPolicyConfig()
+	policy := compileAllowedPeersPolicy(tenant, skill.AllowedPeers, s.resolvePeerIP, extraCIDRs, enforce)
 	if len(policy.EgressCidrs) == 0 {
-		// No peers are running yet, so nothing to allow. Skip rather than
-		// install an empty allowlist (which, under ENFORCE, would deny all).
+		// Nothing to allow (no peers running, no platform CIDRs). Skip rather
+		// than install an empty allowlist (which, under ENFORCE, denies all).
 		return
 	}
-	if err := s.netpolicy.Store().Set(ctx, policy); err != nil {
+	// Compile (validate + normalize) before storing — same path the
+	// SetNetworkPolicy RPC uses — so a bad operator-supplied egress CIDR is
+	// caught here instead of silently dropped by the enforcer's reconcile.
+	compiled, err := netpolicy.Compile(policy)
+	if err != nil {
+		log.Printf("[agent-skill] invalid network policy for %q: %v", tenant, err)
+		return
+	}
+	if err := s.netpolicy.Store().Set(ctx, compiled.ToProto()); err != nil {
 		log.Printf("[agent-skill] could not set network policy for %q: %v", tenant, err)
 	}
+}
+
+// agentNetworkPolicyConfig reads the operator opt-ins for arming enforcement:
+//   - CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE=1 → compile the policy in
+//     ENFORCE mode (drop), instead of the default LOG_ONLY (observe).
+//   - CONTAINARIUM_AGENT_EGRESS_CIDRS=cidr,cidr → platform egress the agent
+//     legitimately needs (daemon API, DNS resolver) added to every agent box's
+//     allowlist, so ENFORCE doesn't strand the agent.
+//
+// Both default off/empty, so the out-of-the-box behaviour stays observe-only.
+// ENFORCE additionally requires the daemon-wide eBPF enforcer to be armed
+// (CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT + CONTAINARIUM_NETWORK_POLICY_ENFORCE).
+func agentNetworkPolicyConfig() (extraCIDRs []string, enforce bool) {
+	enforce = os.Getenv("CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE") == "1"
+	for _, c := range strings.Split(os.Getenv("CONTAINARIUM_AGENT_EGRESS_CIDRS"), ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			extraCIDRs = append(extraCIDRs, c)
+		}
+	}
+	return extraCIDRs, enforce
+}
+
+// callerSkillID recovers the skill id of the agent making an A2A call. The
+// authenticated token subject wins (an agent box's JWT subject is
+// agent-<skill-id>); otherwise it falls back to the caller-asserted value.
+func (s *AgentSkillServer) callerSkillID(ctx context.Context, asserted string) string {
+	if subj, ok := auth.UsernameFromContext(ctx); ok && strings.HasPrefix(subj, agentBoxPrefix) {
+		return strings.TrimPrefix(subj, agentBoxPrefix)
+	}
+	return asserted
+}
+
+// peerAllowed reports whether the calling skill may send to toPeer per its
+// declared allowed_peers. An unknown/empty caller (admin or operator direct
+// call, not an agent box) is allowed — for box-originated traffic the eBPF
+// egress policy is the hard boundary; this is the API-boundary courtesy check.
+func (s *AgentSkillServer) peerAllowed(fromSkillID, toPeerID string) bool {
+	if fromSkillID == "" {
+		return true
+	}
+	skill, err := s.catalog.Get(fromSkillID)
+	if err != nil {
+		return true // unknown caller skill — not ours to gate here
+	}
+	for _, p := range skill.AllowedPeers {
+		if p == toPeerID {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvePeerIP returns a running peer box's IPv4 address, if any. Used to turn
@@ -200,18 +267,26 @@ func (s *AgentSkillServer) resolvePeerIP(peerID string) (string, bool) {
 // allowed_peers: each currently-running peer's box IP becomes an egress /32.
 // Pure (resolution is injected) so it is unit-testable without a daemon. The
 // policy is LOG_ONLY — observe, never drop — until Phase 2 enforcement is armed.
-func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool)) *pb.NetworkPolicy {
+func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool), extraCIDRs []string, enforce bool) *pb.NetworkPolicy {
 	var cidrs []string
 	for _, peer := range allowedPeers {
 		if ip, ok := resolve(peer); ok {
 			cidrs = append(cidrs, ip+"/32")
 		}
 	}
+	// Platform egress the agent legitimately needs (daemon API, DNS) so an
+	// armed ENFORCE policy doesn't strand the agent.
+	cidrs = append(cidrs, extraCIDRs...)
+
+	mode := pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
+	if enforce {
+		mode = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE
+	}
 	return &pb.NetworkPolicy{
 		Tenant:           tenant,
 		AllowIntraTenant: false,
 		EgressCidrs:      cidrs,
-		Mode:             pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+		Mode:             mode,
 		AllowMetadata:    false,
 		Source:           "agent-skill",
 	}
@@ -234,8 +309,16 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 		return nil, status.Error(codes.InvalidArgument, "to_peer_id is required")
 	}
 
-	// TODO(Phase 2 / #578): reject when req.ToPeerId is not in the from-skill's
-	// allowed_peers, and rely on eBPF network policy to drop the hop in-kernel.
+	// Enforce allowed_peers at the API boundary (Phase 2). The real caller is
+	// the authenticated token subject when it's an agent box (agent-<skill-id>);
+	// fall back to the caller-asserted from_skill_id otherwise. This is
+	// defense-in-depth + fail-fast UX — the hard boundary for raw box-originated
+	// traffic is the eBPF egress policy compiled from allowed_peers.
+	caller := s.callerSkillID(ctx, req.FromSkillId)
+	if !s.peerAllowed(caller, req.ToPeerId) {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"skill %q is not permitted to call peer %q (not in its allowed_peers)", caller, req.ToPeerId)
+	}
 
 	baseURL, _, err := s.resolvePeerA2A(req.ToPeerId)
 	if err != nil {
