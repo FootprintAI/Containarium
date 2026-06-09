@@ -34,3 +34,26 @@ skills:
       capabilities:
         - echo
         - summarize
+
+  # relay-agent is a second neutral reference skill that is allowed to delegate
+  # to hello-agent. It exists so the reference crew (pkg/core/crews) has a valid
+  # A2A edge (relay -> hello) to validate the crew topology end-to-end.
+  - id: relay-agent
+    name: Relay Agent
+    description: Neutral reference skill that forwards a task to hello-agent. Used to validate crew topology + A2A; not for real work.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are a minimal relay agent. Forward the task to your peer and return
+      its artifact. You are a demonstration of crew wiring, not a production
+      assistant.
+    allowed_scopes:
+      - containers:read
+    allowed_peers:
+      - hello-agent
+    model: claude-opus-4-8
+    agent_card:
+      id: relay-agent
+      name: Relay Agent
+      description: A neutral reference agent that relays a task to a peer.
+      capabilities:
+        - relay

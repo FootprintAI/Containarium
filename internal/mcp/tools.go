@@ -1093,6 +1093,39 @@ func (s *Server) registerTools() {
 			Handler: handleCallAgent,
 		},
 		{
+			Name: "list_crews",
+			Description: "List the platform's built-in crews. A crew is a " +
+				"collaborating set of agent skills wired by a topology " +
+				"(pipeline/orchestrator/freeform). Use this to discover crew IDs " +
+				"before calling run_crew.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListCrews,
+		},
+		{
+			Name: "run_crew",
+			Description: "Run a crew: validate its topology against the members' " +
+				"allowed_peers, provision each member's box under one trace id, and " +
+				"return the run handle. Discover crew IDs with list_crews.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"crew_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Crew to run, e.g. 'hello-crew' (see list_crews).",
+					},
+					"input_json": map[string]interface{}{
+						"type":        "string",
+						"description": "Crew input as a JSON string (defaults to {}).",
+					},
+				},
+				"required": []string{"crew_id"},
+			},
+			Handler: handleRunCrew,
+		},
+		{
 			Name: "revoke_token",
 			Description: "Admin: revoke a JWT by its jti. The token is rejected " +
 				"on the next request that names it. Pairs with the daemon's " +
@@ -1201,6 +1234,8 @@ func toolScopeAssignments() map[string]string {
 		"list_agent_skills": auth.ScopeAgentsRead,
 		"run_agent_skill":   auth.ScopeAgentsRun,
 		"call_agent":        auth.ScopeAgentsCall,
+		"list_crews":        auth.ScopeCrewsRead,
+		"run_crew":          auth.ScopeCrewsRun,
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
@@ -2003,6 +2038,40 @@ func handleCallAgent(client *Client, args map[string]interface{}) (string, error
 	}
 	if resp.Artifact.OutputJSON != "" {
 		out += fmt.Sprintf("artifact: %s\n", resp.Artifact.OutputJSON)
+	}
+	return out, nil
+}
+
+func handleListCrews(client *Client, _ map[string]interface{}) (string, error) {
+	resp, err := client.ListCrews()
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Crews) == 0 {
+		return "No crews available.", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-16s %-14s %-28s %s\n", "ID", "TOPOLOGY", "SKILLS", "DESCRIPTION")
+	for _, c := range resp.Crews {
+		fmt.Fprintf(&b, "%-16s %-14s %-28s %s\n", c.ID, c.Topology, strings.Join(c.SkillIDs, ","), c.Description)
+	}
+	return b.String(), nil
+}
+
+func handleRunCrew(client *Client, args map[string]interface{}) (string, error) {
+	resp, err := client.RunCrew(RunCrewRequest{
+		CrewID:    getStringArg(args, "crew_id", ""),
+		InputJSON: getStringArg(args, "input_json", ""),
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp.Run == nil {
+		return "Crew run returned no handle.", nil
+	}
+	out := fmt.Sprintf("✅ crew run %s — %s (trace %s)\n", resp.Run.ID, resp.Run.State, resp.Run.TraceID)
+	if resp.Run.Error != "" {
+		out += fmt.Sprintf("error: %s\n", resp.Run.Error)
 	}
 	return out, nil
 }

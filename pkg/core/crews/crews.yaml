@@ -1,0 +1,22 @@
+# Containarium Crew Catalog
+#
+# A crew is a collaborating set of skills bound to a task purpose. The crew
+# mechanism is generic; the single entry below is a deliberately task-agnostic
+# reference crew that proves the runtime end-to-end. Opinionated/domain crews
+# (compliance, research, etc.) are built on this mechanism and ship OUTSIDE
+# this repo.
+#
+# topology: pipeline | orchestrator | freeform
+# RunCrew validates that every A2A edge the topology implies is permitted by
+# the members' allowed_peers (and thus by the Phase 2 network policy) before
+# provisioning anything — so a crew's wiring can never ask for a hop the trust
+# fabric would drop.
+
+crews:
+  - id: hello-crew
+    name: Hello Crew
+    description: Neutral reference crew. relay-agent forwards a task to hello-agent; proves crew topology + A2A wiring end-to-end.
+    topology: pipeline
+    skill_ids:
+      - relay-agent   # relay-agent.allowed_peers includes hello-agent, so the
+      - hello-agent   # pipeline edge relay -> hello is permitted.

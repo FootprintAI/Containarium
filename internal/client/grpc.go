@@ -25,6 +25,7 @@ type GRPCClient struct {
 	volumeClient  pb.VolumeServiceClient
 	kmsClient     pb.KmsServiceClient
 	agentClient   pb.AgentSkillServiceClient
+	crewClient    pb.CrewServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -81,6 +82,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	volumeClient := pb.NewVolumeServiceClient(conn)
 	kmsClient := pb.NewKmsServiceClient(conn)
 	agentClient := pb.NewAgentSkillServiceClient(conn)
+	crewClient := pb.NewCrewServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -92,6 +94,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		volumeClient:  volumeClient,
 		kmsClient:     kmsClient,
 		agentClient:   agentClient,
+		crewClient:    crewClient,
 	}, nil
 }
 
@@ -647,6 +650,55 @@ func (c *GRPCClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb
 		return nil, fmt.Errorf("failed to send agent task: %w", err)
 	}
 	return resp.Artifact, nil
+}
+
+// ListCrews lists all built-in crews via gRPC.
+func (c *GRPCClient) ListCrews() ([]*pb.Crew, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.crewClient.ListCrews(ctx, &pb.ListCrewsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list crews: %w", err)
+	}
+	return resp.Crews, nil
+}
+
+// GetCrew fetches a single crew definition via gRPC.
+func (c *GRPCClient) GetCrew(id string) (*pb.Crew, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.crewClient.GetCrew(ctx, &pb.GetCrewRequest{Id: id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get crew: %w", err)
+	}
+	return resp.Crew, nil
+}
+
+// RunCrew launches a crew via gRPC.
+func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON string) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
+	defer cancel()
+	resp, err := c.crewClient.RunCrew(ctx, &pb.RunCrewRequest{
+		CrewId:    crewID,
+		BackendId: backendID,
+		Pool:      pool,
+		InputJson: inputJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to run crew: %w", err)
+	}
+	return resp.Run, nil
+}
+
+// GetCrewRun fetches a crew run's status via gRPC.
+func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.crewClient.GetCrewRun(ctx, &pb.GetCrewRunRequest{Id: id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get crew run: %w", err)
+	}
+	return resp.Run, nil
 }
 
 // CreateBackup dumps a tenant's database and stores it off-host via gRPC.
