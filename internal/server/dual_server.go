@@ -301,10 +301,23 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterRecipeServiceServer(grpcServer, recipeServer)
 	log.Printf("Recipe service enabled")
 
-	// Register AgentSkillService — Phase 0 agent-as-a-box. Reuses the recipe
-	// server for box provisioning and the token manager for minting the
-	// skill's scoped in-box token.
-	pb.RegisterAgentSkillServiceServer(grpcServer, NewAgentSkillServer(recipeServer, tokenManager))
+	// NetworkPolicyService — Phase A control-plane CRUD for per-tenant network
+	// isolation policies (#315). Registered here with an in-memory store;
+	// persistence (swap to PostgresNetworkPolicyStore once the pool exists) and
+	// the per-veth TC_INGRESS BPF loader that consumes these policies are
+	// follow-up increments. Admin-gated in the handler. Created before the
+	// agent-skill service so it can compile a skill's allowed_peers into a
+	// per-box network policy at launch (Phase 2 / #573).
+	npServer := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
+	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
+	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
+
+	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
+	// (Phase 1). Reuses the recipe server for box provisioning, the token
+	// manager for minting the skill's scoped in-box token, and the network
+	// policy server to compile allowed_peers into a per-box egress policy at
+	// launch (Phase 2).
+	pb.RegisterAgentSkillServiceServer(grpcServer, NewAgentSkillServer(recipeServer, tokenManager, npServer))
 	log.Printf("Agent-skill service enabled")
 
 	// Register BackupService — logical (pg_dump) database backups for the
@@ -325,16 +338,6 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// coverage, and trigger legacy→envelope migration. Backed by
 	// the same secrets Store; backend *config* stays in env/systemd.
 	pb.RegisterKmsServiceServer(grpcServer, NewKmsServer(containerServer))
-
-	// NetworkPolicyService — Phase A control-plane CRUD for per-tenant network
-	// isolation policies (#315). Registered here (before the Postgres pool is
-	// set up below) with an in-memory store; persistence (swap to
-	// PostgresNetworkPolicyStore once the pool exists) and the per-veth
-	// TC_INGRESS BPF loader that consumes these policies are follow-up
-	// increments. Admin-gated in the handler.
-	npServer := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
-	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
-	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
 
 	// Cloud-actuation client (#354) is constructed later, once routeStore is
 	// finalized — the container actuator needs it to expose cloud routes at the

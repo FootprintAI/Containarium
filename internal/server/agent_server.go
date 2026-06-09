@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -33,18 +34,22 @@ const agentSeedDir = "/etc/containarium/agent"
 // Phase 0 (artifact_json is returned empty until that lands).
 type AgentSkillServer struct {
 	pb.UnimplementedAgentSkillServiceServer
-	catalog *skills.Manager
-	recipes *RecipeServer      // box provisioning (reuses CreateContainer/exec/expose)
-	tokens  *auth.TokenManager // mints the skill's scoped in-box token
+	catalog   *skills.Manager
+	recipes   *RecipeServer        // box provisioning (reuses CreateContainer/exec/expose)
+	tokens    *auth.TokenManager   // mints the skill's scoped in-box token
+	netpolicy *NetworkPolicyServer // compiles allowed_peers into a per-box egress policy (Phase 2)
 }
 
 // NewAgentSkillServer wires the agent-skill service to the recipe server (for
-// box provisioning) and the token manager (for minting scoped in-box tokens).
-func NewAgentSkillServer(recipes *RecipeServer, tokens *auth.TokenManager) *AgentSkillServer {
+// box provisioning), the token manager (for minting scoped in-box tokens), and
+// the network policy server (to compile allowed_peers into a per-box egress
+// policy at launch). netpolicy may be nil — policy compilation then no-ops.
+func NewAgentSkillServer(recipes *RecipeServer, tokens *auth.TokenManager, netpolicy *NetworkPolicyServer) *AgentSkillServer {
 	return &AgentSkillServer{
-		catalog: skills.GetDefault(),
-		recipes: recipes,
-		tokens:  tokens,
+		catalog:   skills.GetDefault(),
+		recipes:   recipes,
+		tokens:    tokens,
+		netpolicy: netpolicy,
 	}
 }
 
@@ -144,8 +149,72 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		return nil, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
 	}
 
+	// 4. Compile the skill's allowed_peers into a per-box egress network policy
+	//    (Phase 2). Best-effort + LOG_ONLY: a failure here must not fail the
+	//    run, and observe-only never drops traffic. Enforcement (drop) requires
+	//    the env-gated eBPF enforcer AND flipping to ENFORCE — see #574.
+	s.applyAllowedPeersPolicy(ctx, name, skill)
+
 	// artifact_json intentionally empty in Phase 0 (in-box loop seam).
 	return &pb.RunAgentSkillResponse{Container: dep.Container, ArtifactJson: ""}, nil
+}
+
+// applyAllowedPeersPolicy compiles a skill's allowed_peers into a per-box
+// egress NetworkPolicy and stores it (LOG_ONLY). The box's tenant is its name
+// (the agent-<skill-id> / <tenant>-container convention the enforcer resolves).
+// Best-effort: logs and returns on any error so a policy hiccup never blocks a
+// run. No-op when no policy server is wired or the skill declares no peers.
+//
+// Phase 2 seam: the policy is observe-only here. Dropping non-allowed egress
+// in-kernel needs the env-gated eBPF enforcer (CONTAINARIUM_NETWORK_POLICY_*)
+// on a Linux backend and a flip to ENFORCE. Also, before ENFORCE is safe the
+// allowlist must be broadened to the platform egress the agent legitimately
+// needs (daemon API, DNS) — a peer-only allowlist would otherwise strand the
+// agent. Tracked in #574.
+func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant string, skill *pb.AgentSkill) {
+	if s.netpolicy == nil || len(skill.AllowedPeers) == 0 {
+		return
+	}
+	policy := compileAllowedPeersPolicy(tenant, skill.AllowedPeers, s.resolvePeerIP)
+	if len(policy.EgressCidrs) == 0 {
+		// No peers are running yet, so nothing to allow. Skip rather than
+		// install an empty allowlist (which, under ENFORCE, would deny all).
+		return
+	}
+	if err := s.netpolicy.Store().Set(ctx, policy); err != nil {
+		log.Printf("[agent-skill] could not set network policy for %q: %v", tenant, err)
+	}
+}
+
+// resolvePeerIP returns a running peer box's IPv4 address, if any. Used to turn
+// an allowed_peer skill id into an egress /32 at launch.
+func (s *AgentSkillServer) resolvePeerIP(peerID string) (string, bool) {
+	info, err := s.recipes.containers.manager.Get("agent-" + peerID)
+	if err != nil || info == nil || info.IPAddress == "" {
+		return "", false
+	}
+	return info.IPAddress, true
+}
+
+// compileAllowedPeersPolicy builds a per-box egress NetworkPolicy from a skill's
+// allowed_peers: each currently-running peer's box IP becomes an egress /32.
+// Pure (resolution is injected) so it is unit-testable without a daemon. The
+// policy is LOG_ONLY — observe, never drop — until Phase 2 enforcement is armed.
+func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool)) *pb.NetworkPolicy {
+	var cidrs []string
+	for _, peer := range allowedPeers {
+		if ip, ok := resolve(peer); ok {
+			cidrs = append(cidrs, ip+"/32")
+		}
+	}
+	return &pb.NetworkPolicy{
+		Tenant:           tenant,
+		AllowIntraTenant: false,
+		EgressCidrs:      cidrs,
+		Mode:             pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY,
+		AllowMetadata:    false,
+		Source:           "agent-skill",
+	}
 }
 
 // SendAgentTask delegates a task to a running peer agent over A2A and returns
