@@ -1673,6 +1673,13 @@ func (ds *DualServer) Start(ctx context.Context) error {
 				})
 			}
 		}
+		// Wire the egress fan-out fetcher (crawler-detection signal) when the
+		// conntrack traffic collector is available.
+		if ds.trafficCollector != nil && ds.trafficCollector.IsAvailable() {
+			ds.metricsCollector.SetEgressFetcher(&EgressFanoutFetcherAdapter{
+				Collector: ds.trafficCollector,
+			})
+		}
 		ds.metricsCollector.Start()
 	}
 

@@ -51,6 +51,26 @@ type PeerBackendHealth struct {
 	LastSeen  time.Time
 }
 
+// EgressFanoutStat is one container's egress fan-out for a collection tick —
+// the crawler-detection signal. DistinctDestinations is the number of unique
+// destination IPs the container connected out to; EgressConnections is the
+// total egress connection count. ContainerID is the cloud_container_id tenant
+// join key (empty on non-cloud boxes). Mirrors traffic.EgressStat at the
+// metrics boundary so this package needn't import internal/traffic.
+type EgressFanoutStat struct {
+	ContainerName        string
+	ContainerID          string
+	DistinctDestinations int
+	EgressConnections    int
+}
+
+// EgressFanoutFetcher reports per-container egress fan-out. Implemented by an
+// adapter over the conntrack traffic collector; nil when conntrack monitoring
+// is unavailable (e.g. macOS), in which case the plane stays dark.
+type EgressFanoutFetcher interface {
+	EgressFanout() []EgressFanoutStat
+}
+
 // PeerMetricsFetcher fetches container and system metrics from peer backends.
 type PeerMetricsFetcher interface {
 	// FetchPeerMetrics returns container metrics from all healthy peers.
@@ -109,6 +129,10 @@ type Collector struct {
 	containerProcessCount otelmetric.Int64Gauge
 	containerRequestRate  otelmetric.Float64Gauge
 
+	// Egress fan-out instruments (crawler detection, #231 follow-on).
+	containerEgressDistinctDest otelmetric.Int64Gauge
+	containerEgressConnections  otelmetric.Int64Gauge
+
 	// Aggregate instruments
 	containersRunning otelmetric.Int64Gauge
 	containersStopped otelmetric.Int64Gauge
@@ -116,9 +140,10 @@ type Collector struct {
 	// Backend health instruments
 	backendHealthy otelmetric.Int64Gauge
 
-	ctx         context.Context
-	cancel      context.CancelFunc
-	peerFetcher PeerMetricsFetcher
+	ctx           context.Context
+	cancel        context.CancelFunc
+	peerFetcher   PeerMetricsFetcher
+	egressFetcher EgressFanoutFetcher
 }
 
 // NewCollector creates a new OTel metrics collector
@@ -291,6 +316,23 @@ func (c *Collector) initInstruments() error {
 		return err
 	}
 
+	// Egress fan-out (#231 follow-on): the crawler-detection signal. A large,
+	// churning count of distinct outbound destinations is a crawler's hallmark;
+	// a normal app talks to a handful. Per-container aggregates only — the raw
+	// destination IPs stay in the conntrack store, never in metric labels (see
+	// docs/EGRESS-FANOUT-DETECTION.md).
+	c.containerEgressDistinctDest, err = meter.Int64Gauge("container.egress.distinct_destinations",
+		otelmetric.WithDescription("Distinct outbound destination IPs per container in the window (crawler-detection fan-out signal)"))
+	if err != nil {
+		return err
+	}
+
+	c.containerEgressConnections, err = meter.Int64Gauge("container.egress.connections",
+		otelmetric.WithDescription("Active egress connections per container in the window"))
+	if err != nil {
+		return err
+	}
+
 	// Aggregate metrics
 	c.containersRunning, err = meter.Int64Gauge("containarium.containers.running",
 		otelmetric.WithDescription("Number of running containers"))
@@ -452,6 +494,12 @@ func (c *Collector) collect() {
 	c.containersRunning.Record(ctx, running, localAttrs)
 	c.containersStopped.Record(ctx, stopped, localAttrs)
 
+	// Egress fan-out (crawler detection): record per-container distinct
+	// destination + egress connection counts from the conntrack collector.
+	if c.egressFetcher != nil {
+		c.RecordEgressFanout(c.egressFetcher.EgressFanout())
+	}
+
 	// Collect metrics from peer backends
 	if c.peerFetcher != nil {
 		peerMetrics := c.peerFetcher.FetchPeerMetrics("")
@@ -499,6 +547,33 @@ func (c *Collector) RecordRequestRates(samples []reqrate.Sample) {
 // SetPeerFetcher sets the peer metrics fetcher for collecting metrics from peer backends.
 func (c *Collector) SetPeerFetcher(fetcher PeerMetricsFetcher) {
 	c.peerFetcher = fetcher
+}
+
+// SetEgressFetcher sets the egress fan-out fetcher (crawler-detection signal).
+// When set, each collection tick records container.egress.* gauges from it.
+func (c *Collector) SetEgressFetcher(fetcher EgressFanoutFetcher) {
+	c.egressFetcher = fetcher
+}
+
+// RecordEgressFanout records per-container egress fan-out (distinct destinations
+// + egress connections) for one tick. Samples carry their own container.id (the
+// cloud_container_id, empty on standalone boxes) so the VM series joins to a
+// tenant like the bytes plane; backend.id is this daemon's. A spike in
+// distinct_destinations is the crawler tell — alert on it via the sentinel
+// alerting plane (see docs/EGRESS-FANOUT-DETECTION.md).
+func (c *Collector) RecordEgressFanout(stats []EgressFanoutStat) {
+	for _, s := range stats {
+		attrSet := []attribute.KeyValue{
+			attribute.String("container.name", s.ContainerName),
+			attribute.String("backend.id", c.config.LocalBackendID),
+		}
+		if s.ContainerID != "" {
+			attrSet = append(attrSet, attribute.String("container.id", s.ContainerID))
+		}
+		attrs := otelmetric.WithAttributes(attrSet...)
+		c.containerEgressDistinctDest.Record(c.ctx, int64(s.DistinctDestinations), attrs)
+		c.containerEgressConnections.Record(c.ctx, int64(s.EgressConnections), attrs)
+	}
 }
 
 // Stop shuts down the collector

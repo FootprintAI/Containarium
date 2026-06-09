@@ -18,6 +18,7 @@ type ContainerCache struct {
 	mu       sync.RWMutex
 	ipToName map[string]string
 	nameToIP map[string]string
+	nameToID map[string]string // container name -> cloud_container_id label ("" on non-cloud boxes)
 }
 
 // NewContainerCache creates a new container cache
@@ -33,6 +34,7 @@ func NewContainerCache(incusClient *incus.Client, networkCIDR string) *Container
 		network:     network,
 		ipToName:    make(map[string]string),
 		nameToIP:    make(map[string]string),
+		nameToID:    make(map[string]string),
 	}
 }
 
@@ -48,6 +50,15 @@ func (c *ContainerCache) LookupName(name string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.nameToIP[name]
+}
+
+// LookupID returns the cloud_container_id label for a container name, or "" if
+// the box is not a cloud-managed tenant (no label). Used to stamp container.id
+// on egress fan-out metrics so they join to a tenant like the bytes plane.
+func (c *ContainerCache) LookupID(name string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.nameToID[name]
 }
 
 // IsContainerIP checks if an IP belongs to the container network
@@ -87,11 +98,15 @@ func (c *ContainerCache) Refresh() error {
 	// Clear and rebuild
 	c.ipToName = make(map[string]string)
 	c.nameToIP = make(map[string]string)
+	c.nameToID = make(map[string]string)
 
 	for _, container := range containers {
 		if container.IPAddress != "" {
 			c.ipToName[container.IPAddress] = container.Name
 			c.nameToIP[container.Name] = container.IPAddress
+		}
+		if id := container.Labels["cloud_container_id"]; id != "" {
+			c.nameToID[container.Name] = id
 		}
 	}
 
