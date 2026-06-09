@@ -84,7 +84,13 @@ func (s *RecipeServer) DeployRecipe(ctx context.Context, req *pb.DeployRecipeReq
 	if err := auth.AuthorizeTenant(ctx, req.Name); err != nil {
 		return nil, err
 	}
+	return s.deploy(ctx, req)
+}
 
+// deploy is the provisioning body shared by DeployRecipe and the
+// AgentSkillService. Callers must perform their own authorization first;
+// the inner CreateContainer still enforces containers:write + tenant authz.
+func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) (*pb.DeployRecipeResponse, error) {
 	recipe, err := s.catalog.Get(req.RecipeId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())

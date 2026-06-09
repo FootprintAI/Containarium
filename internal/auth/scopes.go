@@ -83,7 +83,47 @@ const (
 	// agent token CAN do; admin-on-paper agent tokens
 	// without `tokens:write` can't revoke either.
 	ScopeTokensWrite = "tokens:write"
+
+	// agent skills (AgentSkillService). `agents:read` lists/inspects the
+	// skill catalog; `agents:run` provisions a skill's box and runs a task.
+	// A skill's OWN token is minted with only the scopes the skill declares
+	// (allowed_scopes) — these two gate the operator/agent that drives the
+	// AgentSkillService, not the skill's in-box token.
+	ScopeAgentsRead = "agents:read"
+	ScopeAgentsRun  = "agents:run"
 )
+
+// AllScopes is the catalog of every known scope. It backs IsKnownScope so
+// callers (e.g. the skill catalog) can reject a manifest that declares a
+// scope that does not exist — turning a typo into a load-time error instead
+// of a silently-overbroad token.
+var AllScopes = []string{
+	ScopeContainersRead, ScopeContainersWrite,
+	ScopeSecretsRead, ScopeSecretsWrite,
+	ScopeKMSAdmin,
+	ScopeBackupsRead, ScopeBackupsWrite,
+	ScopeVolumesRead, ScopeVolumesWrite,
+	ScopeRoutesRead, ScopeRoutesWrite,
+	ScopeSecurityRead, ScopeSecurityWrite,
+	ScopeAlertsRead, ScopeAlertsWrite,
+	ScopeTrafficRead,
+	ScopeCodeWrite, ScopeSSHWrite,
+	ScopeTokensWrite,
+	ScopeAgentsRead, ScopeAgentsRun,
+}
+
+// IsKnownScope reports whether s is a defined scope (the wildcard counts).
+func IsKnownScope(s string) bool {
+	if s == ScopeWildcard {
+		return true
+	}
+	for _, k := range AllScopes {
+		if k == s {
+			return true
+		}
+	}
+	return false
+}
 
 // HasScope returns true when the granted-scopes set covers
 // the required scope. Semantics:

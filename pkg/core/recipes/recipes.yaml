@@ -64,3 +64,21 @@ recipes:
     post_start:
       - podman volume create llamacpp-models
       - 'podman run -d --name llamacpp --restart=always --device nvidia.com/gpu=all -p 8080:8080 -v llamacpp-models:/models ghcr.io/ggml-org/llama.cpp:server-cuda -hf "$CONTAINARIUM_PARAM_HF_REPO" --host 0.0.0.0 --port 8080'
+
+  # agent-runtime is the box an AgentSkill runs in (AgentSkillService). It is a
+  # plain Ubuntu LXC with the agent-box MCP available; the skill's system
+  # prompt, scoped token, and task input are seeded under /etc/containarium/agent
+  # by RunAgentSkill, and the in-box agent loop (the agent-runtime image's job)
+  # consumes them. No GPU and no exposed ports by default — a skill that needs
+  # either declares its own box. post_start just ensures the seed directory.
+  - id: agent-runtime
+    name: Agent Runtime
+    description: Base box for running an AgentSkill — Ubuntu LXC with the agent-box MCP; the in-box agent loop reads its prompt/token/input from /etc/containarium/agent.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "2"
+      memory: 4GB
+      disk: 20GB
+    post_start:
+      - mkdir -p /etc/containarium/agent

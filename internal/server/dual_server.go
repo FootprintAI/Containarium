@@ -297,8 +297,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Register RecipeService — one-command deployment of declarative
 	// GPU/app recipes. Pure orchestration over the container + network
 	// servers; networkServer may be nil (expose then degrades to a warning).
-	pb.RegisterRecipeServiceServer(grpcServer, NewRecipeServer(containerServer, networkServer))
+	recipeServer := NewRecipeServer(containerServer, networkServer)
+	pb.RegisterRecipeServiceServer(grpcServer, recipeServer)
 	log.Printf("Recipe service enabled")
+
+	// Register AgentSkillService — Phase 0 agent-as-a-box. Reuses the recipe
+	// server for box provisioning and the token manager for minting the
+	// skill's scoped in-box token.
+	pb.RegisterAgentSkillServiceServer(grpcServer, NewAgentSkillServer(recipeServer, tokenManager))
+	log.Printf("Agent-skill service enabled")
 
 	// Register BackupService — logical (pg_dump) database backups for the
 	// databases running inside containers, stored off-host (local dir or

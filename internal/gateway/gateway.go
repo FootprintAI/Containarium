@@ -388,6 +388,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register recipe service gateway: %w", err)
 	}
 
+	// Register AgentSkillService gateway handler
+	if err := pb.RegisterAgentSkillServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register agent-skill service gateway: %w", err)
+	}
+
 	// Register BackupService gateway handler
 	if err := pb.RegisterBackupServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
 		return fmt.Errorf("failed to register backup service gateway: %w", err)
