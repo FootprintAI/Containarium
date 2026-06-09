@@ -32,6 +32,7 @@ type agentAPI interface {
 	ListAgentSkills() ([]*pb.AgentSkill, error)
 	GetAgentSkill(id string) (*pb.AgentSkill, error)
 	RunAgentSkill(skillID, backendID, pool, inputJSON string) (*pb.RunAgentSkillResponse, error)
+	SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb.AgentArtifact, error)
 	Close() error
 }
 

@@ -6,7 +6,7 @@ import (
 )
 
 func TestBuildAgentSeedScript(t *testing.T) {
-	script := buildAgentSeedScript("be helpful", "tok-123", `{"q":"hi"}`)
+	script := buildAgentSeedScript("be helpful", "tok-123", `{"q":"hi"}`, `{"id":"x"}`)
 
 	for _, want := range []string{
 		"set -euo pipefail",
@@ -15,6 +15,7 @@ func TestBuildAgentSeedScript(t *testing.T) {
 		agentSeedDir + "/system_prompt.txt",
 		agentSeedDir + "/token",
 		agentSeedDir + "/input.json",
+		agentSeedDir + "/agent-card.json",
 		"chmod 600 " + agentSeedDir + "/token",
 	} {
 		if !strings.Contains(script, want) {
@@ -24,7 +25,7 @@ func TestBuildAgentSeedScript(t *testing.T) {
 }
 
 func TestBuildAgentSeedScriptDefaultsInput(t *testing.T) {
-	script := buildAgentSeedScript("p", "t", "")
+	script := buildAgentSeedScript("p", "t", "", "")
 	if !strings.Contains(script, "'{}'") {
 		t.Errorf("empty input should default to {}, got:\n%s", script)
 	}
@@ -33,7 +34,7 @@ func TestBuildAgentSeedScriptDefaultsInput(t *testing.T) {
 func TestBuildAgentSeedScriptEscapesSingleQuotes(t *testing.T) {
 	// A system prompt containing a single quote must be escaped so it can't
 	// break out of the shell-quoted printf argument.
-	script := buildAgentSeedScript("don't panic", "t", "{}")
+	script := buildAgentSeedScript("don't panic", "t", "{}", "{}")
 	if strings.Contains(script, "don't") && !strings.Contains(script, `don'\''t`) {
 		t.Errorf("single quote not escaped in seed script:\n%s", script)
 	}

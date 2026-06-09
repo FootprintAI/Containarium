@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/skills"
@@ -128,10 +129,18 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		return nil, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", err)
 	}
 
-	// 3. Seed the prompt/token/input into the box for the in-box agent loop.
+	// 3. Seed the prompt/token/input/card into the box. The agent card is
+	//    seeded so the box's A2A server (Phase 1, agent-runtime image's job)
+	//    can serve it for peer discovery.
+	cardJSON := ""
+	if skill.AgentCard != nil {
+		if b, err := protojson.Marshal(skill.AgentCard); err == nil {
+			cardJSON = string(b)
+		}
+	}
 	containerName := name + "-container"
 	if err := s.recipes.containers.manager.Exec(containerName,
-		[]string{"bash", "-c", buildAgentSeedScript(skill.SystemPrompt, token, req.InputJson)}); err != nil {
+		[]string{"bash", "-c", buildAgentSeedScript(skill.SystemPrompt, token, req.InputJson, cardJSON)}); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
 	}
 
@@ -139,12 +148,73 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	return &pb.RunAgentSkillResponse{Container: dep.Container, ArtifactJson: ""}, nil
 }
 
-// buildAgentSeedScript writes the skill's system prompt, scoped token, and task
-// input under agentSeedDir with restrictive permissions. Values are single-quote
-// escaped (shellSingleQuote, from recipe_server.go) to prevent shell injection.
-func buildAgentSeedScript(systemPrompt, token, inputJSON string) string {
+// SendAgentTask delegates a task to a running peer agent over A2A and returns
+// the peer's artifact (Phase 1 transport). Gated on agents:call.
+//
+// Phase 2 will enforce that to_peer_id is in the from-skill's allowed_peers and
+// that network policy permits the hop (the eBPF "trust fabric"); in Phase 1 the
+// send is best-effort. The peer's in-box A2A server (which receives the task)
+// is the agent-runtime image's job — until it lands, a call to a real box
+// reaches no listener and returns Unavailable. The transport itself is wired
+// and unit-tested (see a2a_client_test.go).
+func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAgentsCall); err != nil {
+		return nil, err
+	}
+	if req.ToPeerId == "" {
+		return nil, status.Error(codes.InvalidArgument, "to_peer_id is required")
+	}
+
+	// TODO(Phase 2 / #578): reject when req.ToPeerId is not in the from-skill's
+	// allowed_peers, and rely on eBPF network policy to drop the hop in-kernel.
+
+	baseURL, _, err := s.resolvePeerA2A(req.ToPeerId)
+	if err != nil {
+		return nil, err
+	}
+
+	task := &pb.AgentTask{
+		Id:        "task-" + req.FromSkillId + "-" + req.ToPeerId,
+		InputJson: req.InputJson,
+	}
+	art, err := sendA2ATask(ctx, baseURL, task)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "deliver task to peer %q: %v", req.ToPeerId, err)
+	}
+	return &pb.SendAgentTaskResponse{Artifact: art}, nil
+}
+
+// resolvePeerA2A finds a running peer's in-box A2A base URL and its agent card.
+// The peer is addressed by skill id; its box is named agent-<skill-id> (the
+// deterministic name RunAgentSkill assigns). Returns FailedPrecondition when
+// the peer is not running.
+func (s *AgentSkillServer) resolvePeerA2A(peerID string) (string, *pb.AgentCard, error) {
+	skill, err := s.catalog.Get(peerID)
+	if err != nil {
+		return "", nil, status.Error(codes.NotFound, err.Error())
+	}
+	name := "agent-" + peerID
+	info, err := s.recipes.containers.manager.Get(name)
+	if err != nil || info == nil || info.IPAddress == "" {
+		return "", nil, status.Errorf(codes.FailedPrecondition,
+			"peer %q is not running (no box %q with an IP); run it first with 'containarium agent run %s'",
+			peerID, name+"-container", peerID)
+	}
+	baseURL := fmt.Sprintf("http://%s:%d", info.IPAddress, a2aPort)
+	return baseURL, skill.AgentCard, nil
+}
+
+// buildAgentSeedScript writes the skill's system prompt, scoped token, task
+// input, and agent card under agentSeedDir with restrictive permissions. The
+// agent card lets the box's A2A server (Phase 1) serve it for peer discovery.
+// Values are single-quote escaped (shellSingleQuote, from recipe_server.go) to
+// prevent shell injection.
+func buildAgentSeedScript(systemPrompt, token, inputJSON, cardJSON string) string {
 	if inputJSON == "" {
 		inputJSON = "{}"
+	}
+	if cardJSON == "" {
+		cardJSON = "{}"
 	}
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\n")
@@ -153,6 +223,7 @@ func buildAgentSeedScript(systemPrompt, token, inputJSON string) string {
 	fmt.Fprintf(&b, "printf '%%s' %s > %s/system_prompt.txt\n", shellSingleQuote(systemPrompt), agentSeedDir)
 	fmt.Fprintf(&b, "printf '%%s' %s > %s/token\n", shellSingleQuote(token), agentSeedDir)
 	fmt.Fprintf(&b, "printf '%%s' %s > %s/input.json\n", shellSingleQuote(inputJSON), agentSeedDir)
+	fmt.Fprintf(&b, "printf '%%s' %s > %s/agent-card.json\n", shellSingleQuote(cardJSON), agentSeedDir)
 	fmt.Fprintf(&b, "chmod 600 %s/token\n", agentSeedDir)
 	return b.String()
 }

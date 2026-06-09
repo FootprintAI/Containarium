@@ -91,6 +91,10 @@ const (
 	// AgentSkillService, not the skill's in-box token.
 	ScopeAgentsRead = "agents:read"
 	ScopeAgentsRun  = "agents:run"
+	// agents:call delegates a task to a running peer agent over A2A
+	// (SendAgentTask). Separate from agents:run: running a skill provisions a
+	// box, calling a peer only sends it work.
+	ScopeAgentsCall = "agents:call"
 )
 
 // AllScopes is the catalog of every known scope. It backs IsKnownScope so
@@ -109,7 +113,7 @@ var AllScopes = []string{
 	ScopeTrafficRead,
 	ScopeCodeWrite, ScopeSSHWrite,
 	ScopeTokensWrite,
-	ScopeAgentsRead, ScopeAgentsRun,
+	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 }
 
 // IsKnownScope reports whether s is a defined scope (the wildcard counts).

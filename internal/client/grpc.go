@@ -633,6 +633,22 @@ func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON string) (
 	return resp, nil
 }
 
+// SendAgentTask delegates a task to a running peer agent over A2A via gRPC.
+func (c *GRPCClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb.AgentArtifact, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	resp, err := c.agentClient.SendAgentTask(ctx, &pb.SendAgentTaskRequest{
+		FromSkillId: fromSkillID,
+		ToPeerId:    toPeerID,
+		InputJson:   inputJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to send agent task: %w", err)
+	}
+	return resp.Artifact, nil
+}
+
 // CreateBackup dumps a tenant's database and stores it off-host via gRPC.
 func (c *GRPCClient) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // large dumps + upload can take time

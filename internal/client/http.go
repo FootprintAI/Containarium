@@ -1138,6 +1138,34 @@ func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON string) (
 	return out, nil
 }
 
+// SendAgentTask delegates a task to a running peer agent over A2A via HTTP.
+func (c *HTTPClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb.AgentArtifact, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s/call", url.PathEscape(toPeerID))
+	body := map[string]interface{}{
+		"from_skill_id": fromSkillID,
+		"to_peer_id":    toPeerID,
+		"input_json":    inputJSON,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("send agent task: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "send agent task")
+	}
+	out := &pb.SendAgentTaskResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Artifact, nil
+}
+
 // CreateBackup dumps a tenant's database and stores it off-host via HTTP.
 func (c *HTTPClient) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
