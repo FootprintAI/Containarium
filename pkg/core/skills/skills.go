@@ -1,0 +1,188 @@
+// Package skills provides the built-in catalog of agent skills. A skill is a
+// packaged, runnable agent: a box (a recipe id) plus a typed manifest
+// (system prompt, allowed scopes, agent card, allowed peers). It mirrors
+// pkg/core/recipes: the catalog ships as embedded YAML and is exposed to the
+// rest of the system as strongly-typed pb.AgentSkill values.
+//
+// This catalog is the generic mechanism only — the reference skill is
+// deliberately task-agnostic. Opinionated/domain skills (compliance, etc.)
+// ship outside this repo.
+package skills
+
+import (
+	"embed"
+	"fmt"
+	"sync"
+
+	"github.com/footprintai/containarium/internal/auth"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"gopkg.in/yaml.v3"
+)
+
+//go:embed *.yaml
+var embeddedFS embed.FS
+
+// cardDef mirrors pb.AgentCard for YAML decoding.
+type cardDef struct {
+	ID               string   `yaml:"id"`
+	Name             string   `yaml:"name"`
+	Description      string   `yaml:"description,omitempty"`
+	Capabilities     []string `yaml:"capabilities,omitempty"`
+	InputSchemaJSON  string   `yaml:"input_schema_json,omitempty"`
+	OutputSchemaJSON string   `yaml:"output_schema_json,omitempty"`
+}
+
+// skillDef is the YAML shape of a skill. It converts to pb.AgentSkill via
+// ToProto so the wire/API contract stays the single source of truth. Only the
+// recipe_id box form is expressible in YAML; inline recipes are an API-only
+// (one-off) construct.
+type skillDef struct {
+	ID            string   `yaml:"id"`
+	Name          string   `yaml:"name"`
+	Description   string   `yaml:"description,omitempty"`
+	RecipeID      string   `yaml:"recipe_id"`
+	SystemPrompt  string   `yaml:"system_prompt"`
+	AllowedScopes []string `yaml:"allowed_scopes"`
+	AgentCard     *cardDef `yaml:"agent_card,omitempty"`
+	AllowedPeers  []string `yaml:"allowed_peers,omitempty"`
+	Model         string   `yaml:"model,omitempty"`
+}
+
+// ToProto converts a skillDef to its pb.AgentSkill representation.
+func (s *skillDef) ToProto() *pb.AgentSkill {
+	out := &pb.AgentSkill{
+		Id:            s.ID,
+		Name:          s.Name,
+		Description:   s.Description,
+		Box:           &pb.AgentSkill_RecipeId{RecipeId: s.RecipeID},
+		SystemPrompt:  s.SystemPrompt,
+		AllowedScopes: s.AllowedScopes,
+		AllowedPeers:  s.AllowedPeers,
+		Model:         s.Model,
+	}
+	if s.AgentCard != nil {
+		out.AgentCard = &pb.AgentCard{
+			Id:               s.AgentCard.ID,
+			Name:             s.AgentCard.Name,
+			Description:      s.AgentCard.Description,
+			Capabilities:     s.AgentCard.Capabilities,
+			InputSchemaJson:  s.AgentCard.InputSchemaJSON,
+			OutputSchemaJson: s.AgentCard.OutputSchemaJSON,
+		}
+	}
+	return out
+}
+
+type config struct {
+	Skills []skillDef `yaml:"skills"`
+}
+
+// Manager holds the loaded skill catalog.
+type Manager struct {
+	skills []*pb.AgentSkill
+	mu     sync.RWMutex
+}
+
+var (
+	defaultManager *Manager
+	once           sync.Once
+)
+
+// New creates an empty skill manager.
+func New() *Manager { return &Manager{} }
+
+// GetDefault returns the process-wide manager backed by the embedded catalog.
+func GetDefault() *Manager {
+	once.Do(func() {
+		defaultManager = New()
+		if err := defaultManager.LoadEmbedded(); err != nil {
+			// Embedded data is compiled in; a failure here is a programmer
+			// error, so leaving the catalog empty is the safe degradation.
+			defaultManager.skills = nil
+		}
+	})
+	return defaultManager
+}
+
+// LoadEmbedded loads the built-in skills.yaml bundled into the binary.
+func (m *Manager) LoadEmbedded() error {
+	data, err := embeddedFS.ReadFile("skills.yaml")
+	if err != nil {
+		return fmt.Errorf("read embedded skills: %w", err)
+	}
+	return m.LoadFromBytes(data)
+}
+
+// LoadFromBytes parses and validates a YAML skill catalog.
+func (m *Manager) LoadFromBytes(data []byte) error {
+	var cfg config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse skills YAML: %w", err)
+	}
+
+	loaded := make([]*pb.AgentSkill, 0, len(cfg.Skills))
+	seen := map[string]bool{}
+	for i := range cfg.Skills {
+		def := &cfg.Skills[i]
+		if err := validate(def); err != nil {
+			return err
+		}
+		if seen[def.ID] {
+			return fmt.Errorf("duplicate skill id: %s", def.ID)
+		}
+		seen[def.ID] = true
+		loaded = append(loaded, def.ToProto())
+	}
+
+	m.mu.Lock()
+	m.skills = loaded
+	m.mu.Unlock()
+	return nil
+}
+
+func validate(s *skillDef) error {
+	if s.ID == "" {
+		return fmt.Errorf("skill is missing required field: id")
+	}
+	if s.RecipeID == "" {
+		return fmt.Errorf("skill %q is missing required field: recipe_id", s.ID)
+	}
+	if s.SystemPrompt == "" {
+		return fmt.Errorf("skill %q is missing required field: system_prompt", s.ID)
+	}
+	// Least-privilege is enforced at the manifest level: a skill MUST declare
+	// at least one scope. An empty set would mint a token with no `scopes`
+	// claim, which HasScope treats as "no restriction" (backwards compat) —
+	// the opposite of what a leaf skill wants. Declaring scopes makes the
+	// in-box token explicitly bounded.
+	if len(s.AllowedScopes) == 0 {
+		return fmt.Errorf("skill %q must declare at least one allowed_scope", s.ID)
+	}
+	for _, sc := range s.AllowedScopes {
+		if !auth.IsKnownScope(sc) {
+			return fmt.Errorf("skill %q declares unknown scope %q", s.ID, sc)
+		}
+	}
+	return nil
+}
+
+// List returns all loaded skills.
+func (m *Manager) List() []*pb.AgentSkill {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.AgentSkill, len(m.skills))
+	copy(out, m.skills)
+	return out
+}
+
+// Get returns a skill by ID, or an error if it does not exist.
+func (m *Manager) Get(id string) (*pb.AgentSkill, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.skills {
+		if s.Id == id {
+			return s, nil
+		}
+	}
+	return nil, fmt.Errorf("skill not found: %s", id)
+}

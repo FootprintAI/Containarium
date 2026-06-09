@@ -1,0 +1,36 @@
+# Containarium Agent-Skill Catalog
+#
+# A skill is a packaged, runnable agent: a box (recipe_id) plus a typed
+# manifest. RunAgentSkill provisions the box, mints a JWT scoped to exactly
+# allowed_scopes, seeds the system prompt + token + task input under
+# /etc/containarium/agent, and the in-box agent loop takes it from there.
+#
+# This catalog is the GENERIC MECHANISM only. The single entry below is a
+# deliberately task-agnostic reference skill that proves the runtime
+# end-to-end. Opinionated/domain skills (compliance packs, research crews,
+# etc.) are built on this mechanism and ship OUTSIDE this repo.
+#
+# Invariants enforced at load (see skills.go validate):
+#   - recipe_id, system_prompt, and >=1 allowed_scope are required.
+#   - every allowed_scope must be a known scope (internal/auth/scopes.go).
+
+skills:
+  - id: hello-agent
+    name: Hello Agent
+    description: Neutral reference skill. Echoes/answers a task to prove the agent runtime end-to-end; not intended for real work.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are a minimal reference agent. Read the task input, do the smallest
+      useful thing it asks, and return a concise JSON artifact. You are a
+      demonstration of the runtime, not a production assistant.
+    allowed_scopes:
+      - containers:read
+    allowed_peers: []
+    model: claude-opus-4-8
+    agent_card:
+      id: hello-agent
+      name: Hello Agent
+      description: A neutral reference agent used to validate the skill runtime.
+      capabilities:
+        - echo
+        - summarize
