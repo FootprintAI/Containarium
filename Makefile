@@ -1,4 +1,4 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
+.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
 
 # Variables
 BINARY_NAME=containarium
@@ -118,6 +118,11 @@ build-agent-box: ## Build the in-the-box agent-box MCP binary
 	@mkdir -p $(BUILD_DIR)
 	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME) cmd/agent-box/main.go
 	@echo "==> agent-box built: $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)"
+
+build-agent-runtime: ## Build the in-box agent-runtime loop (Node/TS sibling package; its own lane, not a Go binary)
+	@echo "==> Building agent-runtime (npm ci + tsc)..."
+	@cd agent-runtime && npm ci && npm run build
+	@echo "==> agent-runtime built: agent-runtime/dist/"
 
 build-agent-box-linux: ## Build agent-box for Linux (the typical install target — agent-box runs INSIDE LXC containers)
 	@echo "==> Building agent-box for Linux..."

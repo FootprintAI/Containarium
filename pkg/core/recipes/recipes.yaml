@@ -66,14 +66,21 @@ recipes:
       - 'podman run -d --name llamacpp --restart=always --device nvidia.com/gpu=all -p 8080:8080 -v llamacpp-models:/models ghcr.io/ggml-org/llama.cpp:server-cuda -hf "$CONTAINARIUM_PARAM_HF_REPO" --host 0.0.0.0 --port 8080'
 
   # agent-runtime is the box an AgentSkill runs in (AgentSkillService). It is a
-  # plain Ubuntu LXC with the agent-box MCP available; the skill's system
-  # prompt, scoped token, and task input are seeded under /etc/containarium/agent
-  # by RunAgentSkill, and the in-box agent loop (the agent-runtime image's job)
-  # consumes them. No GPU and no exposed ports by default — a skill that needs
-  # either declares its own box. post_start just ensures the seed directory.
+  # plain Ubuntu LXC; the skill's system prompt, scoped token, and task input
+  # are seeded under /etc/containarium/agent by RunAgentSkill, and the in-box
+  # agent loop (agent-runtime/, the Node sibling package) consumes them and
+  # writes artifact.json back. No GPU and no exposed ports by default — a skill
+  # that needs either declares its own box.
+  #
+  # post_start installs the Node runtime the loop needs and ensures the seed
+  # dir. The agent-runtime loop component + the agent-box binary themselves are
+  # installed as part of image assembly (design-note open question #5): publish
+  # them as a release artifact and add the install step here, or bake a
+  # prebuilt agent-runtime image. The daemon execs `agent-runtime` (PATH) over
+  # the seed and reads artifact.json (best-effort until that lands).
   - id: agent-runtime
     name: Agent Runtime
-    description: Base box for running an AgentSkill — Ubuntu LXC with the agent-box MCP; the in-box agent loop reads its prompt/token/input from /etc/containarium/agent.
+    description: Base box for running an AgentSkill — Ubuntu LXC with Node + the in-box agent loop; reads its prompt/token/input from /etc/containarium/agent and writes artifact.json.
     image: images:ubuntu/24.04
     requires_gpu: false
     resources:
@@ -82,3 +89,5 @@ recipes:
       disk: 20GB
     post_start:
       - mkdir -p /etc/containarium/agent
+      - 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash -'
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs

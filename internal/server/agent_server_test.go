@@ -75,6 +75,29 @@ func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	}
 }
 
+func TestParseArtifactOutput(t *testing.T) {
+	t.Run("output", func(t *testing.T) {
+		out, err := parseArtifactOutput([]byte(`{"outputJson":"{\"ok\":true}","engine":"claude","model":"claude-opus-4-8"}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out != `{"ok":true}` {
+			t.Errorf("output = %q", out)
+		}
+	})
+	t.Run("error field surfaces", func(t *testing.T) {
+		_, err := parseArtifactOutput([]byte(`{"outputJson":"","error":"model egress blocked"}`))
+		if err == nil || !strings.Contains(err.Error(), "egress") {
+			t.Errorf("expected the artifact error to surface, got %v", err)
+		}
+	})
+	t.Run("malformed", func(t *testing.T) {
+		if _, err := parseArtifactOutput([]byte("not json")); err == nil {
+			t.Error("expected decode error for malformed artifact")
+		}
+	})
+}
+
 func TestGenTraceID(t *testing.T) {
 	a, b := genTraceID(), genTraceID()
 	if len(a) != 32 { // 16 bytes hex
