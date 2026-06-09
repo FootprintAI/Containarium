@@ -12,6 +12,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/footprintai/containarium/distros/go/containariumotel"
+	"github.com/footprintai/containarium/internal/reqrate"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
@@ -106,6 +107,7 @@ type Collector struct {
 	containerNetRx        otelmetric.Int64Gauge
 	containerNetTx        otelmetric.Int64Gauge
 	containerProcessCount otelmetric.Int64Gauge
+	containerRequestRate  otelmetric.Float64Gauge
 
 	// Aggregate instruments
 	containersRunning otelmetric.Int64Gauge
@@ -272,6 +274,19 @@ func (c *Collector) initInstruments() error {
 
 	c.containerProcessCount, err = meter.Int64Gauge("container.process.count",
 		otelmetric.WithDescription("Number of running processes in container"))
+	if err != nil {
+		return err
+	}
+
+	// Request-rate plane (#231): edge-measured HTTP requests/sec per container.
+	// → VM series container_request_rate{container_id=...}, the same join key
+	// the bytes plane uses, consumed by the cloud's RequestRatePanel. Recorded
+	// only when access-log aggregation is enabled (see RecordRequestRates and
+	// docs/REQUEST-RATE-PLANE-DESIGN.md); the instrument is created
+	// unconditionally so the wiring slice has nothing to bootstrap.
+	c.containerRequestRate, err = meter.Float64Gauge("container.request_rate",
+		otelmetric.WithDescription("Container HTTP requests per second (edge-measured)"),
+		otelmetric.WithUnit("1/s"))
 	if err != nil {
 		return err
 	}
@@ -455,6 +470,29 @@ func (c *Collector) collect() {
 			c.containerNetTx.Record(ctx, pm.NetworkTxBytes, attrs)
 			c.containerProcessCount.Record(ctx, pm.ProcessCount, attrs)
 		}
+	}
+}
+
+// RecordRequestRates records edge-measured per-container request rates
+// (container.request_rate) for one collection tick. The collector calls this
+// only when access-log aggregation is enabled (CONTAINARIUM_ACCESS_LOG=1, a
+// later wiring slice — see docs/REQUEST-RATE-PLANE-DESIGN.md); until then it
+// has no callers and the plane stays dark.
+//
+// Samples carry their own container.id (the cloud_container_id, empty on
+// standalone boxes) so the VM series joins to a tenant exactly like the bytes
+// plane; backend.id is this daemon's, since the aggregator runs against the
+// local edge.
+func (c *Collector) RecordRequestRates(samples []reqrate.Sample) {
+	for _, s := range samples {
+		attrSet := []attribute.KeyValue{
+			attribute.String("container.name", s.ContainerName),
+			attribute.String("backend.id", c.config.LocalBackendID),
+		}
+		if s.ContainerID != "" {
+			attrSet = append(attrSet, attribute.String("container.id", s.ContainerID))
+		}
+		c.containerRequestRate.Record(c.ctx, s.RequestsPerSec, otelmetric.WithAttributes(attrSet...))
 	}
 }
 
