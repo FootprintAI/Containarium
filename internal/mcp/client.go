@@ -348,6 +348,37 @@ func (c *Client) RunAgentSkill(req RunAgentSkillRequest) (*RunAgentSkillResponse
 	return &resp, nil
 }
 
+// CallAgentRequest is the body for an A2A task delegation. Snake_case tags
+// match the proto field names, which grpc-gateway accepts on input.
+type CallAgentRequest struct {
+	FromSkillID string `json:"from_skill_id,omitempty"`
+	ToPeerID    string `json:"to_peer_id"`
+	InputJSON   string `json:"input_json,omitempty"`
+}
+
+// CallAgentResponse is the result of an A2A task delegation.
+type CallAgentResponse struct {
+	Artifact *struct {
+		TaskID     string `json:"taskId"`
+		OutputJSON string `json:"outputJson"`
+		State      string `json:"state"`
+		Error      string `json:"error"`
+	} `json:"artifact"`
+}
+
+// CallAgent delegates a task to a running peer agent over A2A.
+func (c *Client) CallAgent(req CallAgentRequest) (*CallAgentResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/agent-skills/"+req.ToPeerID+"/call", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp CallAgentResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // --- database backups (BackupService) ---
 
 // PgConnectionBody carries pg_dump/pg_restore connection params. Snake_case

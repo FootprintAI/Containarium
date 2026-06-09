@@ -1066,6 +1066,33 @@ func (s *Server) registerTools() {
 			Handler: handleRunAgentSkill,
 		},
 		{
+			Name: "call_agent",
+			Description: "Delegate a task to a running peer agent over the " +
+				"agent-to-agent (A2A) transport and return its artifact. The peer " +
+				"must already be running (run_agent_skill). In Phase 1 the peer's " +
+				"in-box A2A server receives the task; until that ships a call " +
+				"returns an error. Discover peer IDs with list_agent_skills.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"to_peer_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Peer skill/agent id to deliver the task to (see list_agent_skills).",
+					},
+					"from_skill_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Calling skill id, for attribution and the future allowed_peers check.",
+					},
+					"input_json": map[string]interface{}{
+						"type":        "string",
+						"description": "Task input as a JSON string (defaults to {}).",
+					},
+				},
+				"required": []string{"to_peer_id"},
+			},
+			Handler: handleCallAgent,
+		},
+		{
 			Name: "revoke_token",
 			Description: "Admin: revoke a JWT by its jti. The token is rejected " +
 				"on the next request that names it. Pairs with the daemon's " +
@@ -1173,6 +1200,7 @@ func toolScopeAssignments() map[string]string {
 
 		"list_agent_skills": auth.ScopeAgentsRead,
 		"run_agent_skill":   auth.ScopeAgentsRun,
+		"call_agent":        auth.ScopeAgentsCall,
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
@@ -1953,6 +1981,28 @@ func handleRunAgentSkill(client *Client, args map[string]interface{}) (string, e
 		out += fmt.Sprintf("Artifact:  %s\n", resp.ArtifactJSON)
 	} else {
 		out += "(no artifact — the in-box agent loop is a Phase 0 seam)\n"
+	}
+	return out, nil
+}
+
+func handleCallAgent(client *Client, args map[string]interface{}) (string, error) {
+	resp, err := client.CallAgent(CallAgentRequest{
+		ToPeerID:    getStringArg(args, "to_peer_id", ""),
+		FromSkillID: getStringArg(args, "from_skill_id", ""),
+		InputJSON:   getStringArg(args, "input_json", ""),
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp.Artifact == nil {
+		return "Peer returned no artifact.", nil
+	}
+	out := fmt.Sprintf("✅ task %s — %s\n", resp.Artifact.TaskID, resp.Artifact.State)
+	if resp.Artifact.Error != "" {
+		out += fmt.Sprintf("error:    %s\n", resp.Artifact.Error)
+	}
+	if resp.Artifact.OutputJSON != "" {
+		out += fmt.Sprintf("artifact: %s\n", resp.Artifact.OutputJSON)
 	}
 	return out, nil
 }
