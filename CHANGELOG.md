@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-06-09
+
+Wake-on-SSH fix. The v0.26.0 implementation never fired in the real
+topology; this reworks it to the correct design.
+
+### Fixed
+
+- **Wake-on-SSH now actually wakes a slept box.** In v0.26.0 the wake was a sentinel-side proxy that probed sshpiper's upstream to decide whether to wake — but that upstream is an always-on backend SSH router (not the box's sshd), so the probe always succeeded and the wake never fired (#593). The wake now lives in the daemon-local SSH router (`containarium-shell`) where the box identity, state, and start capability already are: a non-running box is started, its `last_started_at`/`stopped_at` bookkeeping is stamped (autosleep anti-thrash + two-phase-reaping reset), and the session waits (bounded) for the box to be ready before proceeding. The v0.26.0 sentinel/daemon machinery (the `ssh-wake-proxy` subcommand, keysync wake-port routing, the daemon `/ssh-wake` endpoint, and the sentinel systemd unit) is removed — sentinels need no changes for wake-on-SSH, which also removes an SSH-path upgrade hazard. (#539, #593)
+
 ## [0.26.0] - 2026-06-09
 
 Transparent wake-on-SSH, plus the first request-rate observability plane.
