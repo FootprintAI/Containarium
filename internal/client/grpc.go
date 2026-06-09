@@ -24,6 +24,7 @@ type GRPCClient struct {
 	backupClient  pb.BackupServiceClient
 	volumeClient  pb.VolumeServiceClient
 	kmsClient     pb.KmsServiceClient
+	agentClient   pb.AgentSkillServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -79,6 +80,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	backupClient := pb.NewBackupServiceClient(conn)
 	volumeClient := pb.NewVolumeServiceClient(conn)
 	kmsClient := pb.NewKmsServiceClient(conn)
+	agentClient := pb.NewAgentSkillServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -89,6 +91,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		backupClient:  backupClient,
 		volumeClient:  volumeClient,
 		kmsClient:     kmsClient,
+		agentClient:   agentClient,
 	}, nil
 }
 
@@ -583,6 +586,49 @@ func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	resp, err := c.recipeClient.DeployRecipe(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deploy recipe: %w", err)
+	}
+	return resp, nil
+}
+
+// ListAgentSkills lists all built-in agent skills via gRPC.
+func (c *GRPCClient) ListAgentSkills() ([]*pb.AgentSkill, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.ListAgentSkills(ctx, &pb.ListAgentSkillsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent skills: %w", err)
+	}
+	return resp.Skills, nil
+}
+
+// GetAgentSkill fetches a single agent skill definition via gRPC.
+func (c *GRPCClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.GetAgentSkill(ctx, &pb.GetAgentSkillRequest{Id: id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get agent skill: %w", err)
+	}
+	return resp.Skill, nil
+}
+
+// RunAgentSkill provisions a skill's box, mints a scoped token, runs one task,
+// and returns the box via gRPC.
+func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON string) (*pb.RunAgentSkillResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
+	defer cancel()
+
+	req := &pb.RunAgentSkillRequest{
+		SkillId:   skillID,
+		BackendId: backendID,
+		Pool:      pool,
+		InputJson: inputJSON,
+	}
+	resp, err := c.agentClient.RunAgentSkill(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to run agent skill: %w", err)
 	}
 	return resp, nil
 }

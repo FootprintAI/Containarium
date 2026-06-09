@@ -1063,6 +1063,81 @@ func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	return out, nil
 }
 
+// ListAgentSkills lists all built-in agent skills via HTTP.
+func (c *HTTPClient) ListAgentSkills() ([]*pb.AgentSkill, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/agent-skills", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list agent skills: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "list agent skills")
+	}
+	out := &pb.ListAgentSkillsResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Skills, nil
+}
+
+// GetAgentSkill fetches a single agent skill definition via HTTP.
+func (c *HTTPClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s", url.PathEscape(id))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get agent skill: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get agent skill")
+	}
+	out := &pb.GetAgentSkillResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Skill, nil
+}
+
+// RunAgentSkill provisions a skill's box, mints a scoped token, runs one task,
+// and returns the box via HTTP.
+func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON string) (*pb.RunAgentSkillResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s/run", url.PathEscape(skillID))
+	body := map[string]interface{}{
+		"skill_id":   skillID,
+		"backend_id": backendID,
+		"pool":       pool,
+		"input_json": inputJSON,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("run agent skill: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "run agent skill")
+	}
+	out := &pb.RunAgentSkillResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // CreateBackup dumps a tenant's database and stores it off-host via HTTP.
 func (c *HTTPClient) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
