@@ -118,42 +118,60 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
+	containerName, container, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, req.InputJson)
+	if err != nil {
+		return nil, err
+	}
+
+	// Run the in-box agent loop (Phase 4a) and read its artifact back.
+	// Best-effort: until the box image ships agent-runtime + agent-box this
+	// degrades to an empty artifact (prior behavior), so a base-image box never
+	// fails the run.
+	artifact := s.runInBoxAgent(containerName)
+	return &pb.RunAgentSkillResponse{Container: container, ArtifactJson: artifact}, nil
+}
+
+// provisionSkillBox provisions a skill's box and gets it ready to run: resolve
+// the box recipe, deploy it, mint a JWT scoped to exactly the skill's
+// allowed_scopes, seed the prompt/token/input/card, and compile allowed_peers
+// into the per-box egress policy. It does NOT run the loop — RunAgentSkill runs
+// it one-shot, RunCrew starts it in serve mode. Returns the container name +
+// the provisioned Container.
+func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON string) (string, *pb.Container, error) {
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
 	// recipes are an API-only construct deferred to a later phase.
 	recipeID := skill.GetRecipeId()
 	if recipeID == "" {
-		return nil, status.Error(codes.Unimplemented,
+		return "", nil, status.Error(codes.Unimplemented,
 			"inline-recipe skills are not supported yet; use a skill that references a recipe_id")
 	}
 
-	// Deterministic box identity for the run (see limitations above).
+	// Deterministic box identity (concurrent same-skill runs collide — a later
+	// per-run-box / warm-pool concern, see docs/EPHEMERAL-SANDBOX-DESIGN.md).
 	name := "agent-" + skill.Id
 	if err := auth.AuthorizeTenant(ctx, name); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
-	// 1. Provision the box by reusing the recipe deploy path.
+	// Provision the box by reusing the recipe deploy path.
 	dep, err := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
 		RecipeId:  recipeID,
 		Name:      name,
-		BackendId: req.BackendId,
-		Pool:      req.Pool,
+		BackendId: backendID,
+		Pool:      pool,
 	})
 	if err != nil {
-		return nil, err // already a gRPC status from deploy/CreateContainer
+		return "", nil, err // already a gRPC status from deploy/CreateContainer
 	}
 
-	// 2. Mint a JWT scoped to EXACTLY the skill's allowed_scopes. The catalog
-	//    guarantees len(allowed_scopes) >= 1, so this is a bounded token, not
-	//    the "no restriction" nil-claim case.
+	// Mint a JWT scoped to EXACTLY the skill's allowed_scopes (catalog
+	// guarantees >= 1, so this is bounded, not the nil-claim "no restriction").
 	token, err := s.tokens.GenerateToken(name, []string{}, agentTokenTTL, skill.AllowedScopes...)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", err)
+		return "", nil, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", err)
 	}
 
-	// 3. Seed the prompt/token/input/card into the box. The agent card is
-	//    seeded so the box's A2A server (Phase 1, agent-runtime image's job)
-	//    can serve it for peer discovery.
+	// Seed the prompt/token/input/card into the box.
 	cardJSON := ""
 	if skill.AgentCard != nil {
 		if b, err := protojson.Marshal(skill.AgentCard); err == nil {
@@ -162,22 +180,31 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	}
 	containerName := name + "-container"
 	if err := s.recipes.containers.manager.Exec(containerName,
-		[]string{"bash", "-c", buildAgentSeedScript(skill.SystemPrompt, token, req.InputJson, cardJSON)}); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
+		[]string{"bash", "-c", buildAgentSeedScript(skill.SystemPrompt, token, inputJSON, cardJSON)}); err != nil {
+		return "", nil, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
 	}
 
-	// 4. Compile the skill's allowed_peers into a per-box egress network policy
-	//    (Phase 2). Best-effort + LOG_ONLY: a failure here must not fail the
-	//    run, and observe-only never drops traffic. Enforcement (drop) requires
-	//    the env-gated eBPF enforcer AND flipping to ENFORCE — see #574.
+	// Compile allowed_peers into the per-box egress policy (Phase 2).
 	s.applyAllowedPeersPolicy(ctx, name, skill)
 
-	// 5. Run the in-box agent loop (Phase 4a) and read its artifact back.
-	//    Best-effort: until the box image ships agent-runtime + agent-box this
-	//    degrades to an empty artifact (prior behavior), so a base-image box
-	//    never fails the run.
-	artifact := s.runInBoxAgent(containerName)
-	return &pb.RunAgentSkillResponse{Container: dep.Container, ArtifactJson: artifact}, nil
+	return containerName, dep.Container, nil
+}
+
+// startServeMode launches the in-box agent-runtime in serve mode (the A2A
+// server on :8674) as a background process, so peers/crews can delegate tasks
+// to this box. Best-effort: until the box image ships agent-runtime this is a
+// no-op failure (logged), like runInBoxAgent. Used by RunCrew for members.
+func (s *AgentSkillServer) startServeMode(containerName string) {
+	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
+		return
+	}
+	cmd := "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + agentSeedDir +
+		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
+	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
+		[]string{"bash", "-lc", cmd}); err != nil {
+		log.Printf("[agent-skill] could not start serve mode on %s (image may not ship runtime): %v; stderr=%s",
+			containerName, err, strings.TrimSpace(stderr))
+	}
 }
 
 // runInBoxAgent executes the in-box agent-runtime over the seeded task and

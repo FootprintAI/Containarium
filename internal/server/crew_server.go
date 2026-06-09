@@ -94,25 +94,89 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		InputJson: req.InputJson,
 	}
 
-	// Provision each member box (reuses RunAgentSkill: scoped token + per-box
-	// allowed_peers network policy). The in-box loop drives the actual
-	// collaboration; the run stays RUNNING until that lands (Phase 3 seam).
+	// Provision each member box (scoped token + per-box allowed_peers policy)
+	// and start it in serve mode so it serves /tasks for the hops below. Members
+	// are seeded with no task input — the crew delivers per-hop input over A2A.
 	for _, sid := range crew.SkillIds {
-		_, err := s.agents.RunAgentSkill(ctx, &pb.RunAgentSkillRequest{
-			SkillId:   sid,
-			BackendId: req.BackendId,
-			Pool:      req.Pool,
-		})
+		skill, _ := s.skillByID(sid) // existence already checked by validateCrewTopology
+		containerName, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "")
 		if err != nil {
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)
 			s.runs.put(run)
 			return nil, status.Errorf(codes.Internal, "crew %q: %s", crew.Id, run.Error)
 		}
+		s.agents.startServeMode(containerName)
+	}
+
+	// Drive the topology hops over A2A under the shared trace_id, and record the
+	// terminal state. driveCrew failures (e.g. a member's A2A server not up yet)
+	// land the run in FAILED rather than erroring the RPC — the caller gets the
+	// run handle to inspect via GetCrewRun.
+	out, err := driveCrew(ctx, crew, trace, req.InputJson, s.agents.SendAgentTask)
+	if err != nil {
+		run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
+		run.Error = err.Error()
+	} else {
+		run.State = pb.CrewRunState_CREW_RUN_STATE_COMPLETED
+		run.ArtifactJson = out
 	}
 
 	s.runs.put(run)
 	return &pb.RunCrewResponse{Run: run}, nil
+}
+
+// taskSender delivers one A2A task — AgentSkillServer.SendAgentTask in
+// production, a fake in tests. Lets driveCrew be unit-tested without boxes.
+type taskSender func(ctx context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error)
+
+// driveCrew runs the crew's topology to a final artifact, threading the run's
+// trace_id through every hop:
+//   - PIPELINE: deliver the crew input to skill[0], chain each output into the
+//     next skill (from = the previous skill, so allowed_peers gates the hop).
+//   - ORCHESTRATOR / FREEFORM: deliver the input to the entry skill and return
+//     its artifact — the agent self-delegates to the rest within its
+//     allowed_peers.
+func driveCrew(ctx context.Context, crew *pb.Crew, trace, input string, send taskSender) (string, error) {
+	ids := crew.SkillIds
+	if len(ids) == 0 {
+		return "", fmt.Errorf("crew %q has no skills", crew.Id)
+	}
+
+	deliver := func(from, to, in string) (string, error) {
+		resp, err := send(ctx, &pb.SendAgentTaskRequest{
+			FromSkillId: from,
+			ToPeerId:    to,
+			InputJson:   in,
+			TraceId:     trace,
+		})
+		if err != nil {
+			return "", fmt.Errorf("hop %q->%q: %w", from, to, err)
+		}
+		if resp.Artifact == nil {
+			return "", fmt.Errorf("hop %q->%q returned no artifact", from, to)
+		}
+		if resp.Artifact.State == pb.AgentTaskState_AGENT_TASK_STATE_FAILED {
+			return "", fmt.Errorf("hop %q->%q failed: %s", from, to, resp.Artifact.Error)
+		}
+		return resp.Artifact.OutputJson, nil
+	}
+
+	if crew.Topology == pb.CrewTopology_CREW_TOPOLOGY_PIPELINE {
+		cur := input
+		from := "" // first hop originates from the crew/operator, not a skill
+		for _, sid := range ids {
+			out, err := deliver(from, sid, cur)
+			if err != nil {
+				return "", err
+			}
+			cur, from = out, sid
+		}
+		return cur, nil
+	}
+
+	// ORCHESTRATOR / FREEFORM: the entry skill owns the rest.
+	return deliver("", ids[0], input)
 }
 
 // GetCrewRun returns the status and artifact of a crew run.

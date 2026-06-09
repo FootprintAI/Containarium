@@ -184,11 +184,17 @@ containarium crew status <run-id> --server <host>
 Driving a crew needs `crews:run` (plus `agents:run` + `containers:write`, since
 it provisions boxes).
 
-> **Phase 3 seam.** The actual inter-agent choreography and artifact
-> aggregation are the in-box agent loop's job (the `agent-runtime` image, not
-> yet wired), so a run lands in `RUNNING` once the boxes are up + network-gated,
-> not `COMPLETED`. Topology validation, provisioning, network gating, and the
-> shared trace are all wired and tested.
+As of Phase 4c, `RunCrew` provisions each member in **serve mode**, drives the
+topology hops over A2A under the shared `trace_id` (pipeline chains outputs;
+orchestrator/freeform deliver to the entry skill), and moves the `CrewRun`
+`RUNNING → COMPLETED` (or `FAILED` with the hop error). `crew status <run-id>`
+shows the terminal state + artifact.
+
+> **Seam.** This runs end-to-end only once the box image ships the in-box loop
+> (`agent-runtime`) + `agent-box` so members actually serve `/tasks` — until
+> then a run lands `FAILED` (no listener). Topology validation, provisioning,
+> network gating, serve-mode start, hop sequencing, and the shared trace are all
+> wired and tested.
 
 ## From an AI agent (MCP)
 
