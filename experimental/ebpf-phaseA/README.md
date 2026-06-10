@@ -204,9 +204,10 @@ The program also keeps a `flows` map (`BPF_MAP_TYPE_LRU_HASH`, 5-tuple →
 default 15s), attributes each flow to a container by veth ifindex, and feeds the
 traffic collector — so the traffic view shows real src/dst IP + byte counts
 sourced straight from eBPF, independent of conntrack accounting and the IP→name
-cache (both of which come up empty in the common docker-in-LXC topology). EGRESS
-only (the veth ingress hook sees the container's outbound side); reply bytes
-stay 0.
+cache (both of which come up empty in the common docker-in-LXC topology). Both
+directions are captured (#631): the ingress hook tallies the container's egress
+(bytes_sent), and a second program on the veth TC_EGRESS hook tallies the reply
+direction (bytes_received) onto the same flow entry.
 
 Rebuilding `netpolicy.bpf.o` with the new map is required to enable it — an
 older object still loads and enforces, the daemon just logs that flow accounting

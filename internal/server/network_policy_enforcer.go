@@ -347,7 +347,9 @@ func flowsToEBPF(records []netbpf.FlowRecord, attached map[int]string, now time.
 			DstPort:       r.Dport,
 			Bytes:         safecast.I64FromU64(r.Bytes),
 			Packets:       safecast.I64FromU64(r.Packets),
-			First:         now.Add(-dur), // absolute first/last unknown; preserve duration
+			RxBytes:       safecast.I64FromU64(r.RxBytes),   // reply direction (#631)
+			RxPackets:     safecast.I64FromU64(r.RxPackets), // 0 if object predates #631
+			First:         now.Add(-dur),                    // absolute first/last unknown; preserve duration
 			Last:          now,
 		})
 	}
@@ -426,6 +428,12 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		if err := e.loader.AttachVeth(ifindex); err != nil {
 			log.Printf("[netpolicy] attach ifindex %d: %v", ifindex, err)
 			continue
+		}
+		// Reply-direction accounting (#631): attach the egress program too. No-ops
+		// on an object that predates it. Non-fatal — ingress accounting + policy
+		// still work without it.
+		if err := e.loader.AttachVethEgress(ifindex); err != nil {
+			log.Printf("[netpolicy] attach egress ifindex %d: %v", ifindex, err)
 		}
 		e.attached[ifindex] = plan.ifName[ifindex]
 		present[ifindex] = true

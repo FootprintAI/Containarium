@@ -100,8 +100,12 @@ struct {
 // exact: the ifindex in the key maps 1:1 to a container. Recorded for ALLOWED and
 // would-deny flows alike (it's usage accounting, not a policy decision).
 //
-// The veth ingress hook sees the container's outbound (sender) side, so these
-// counts are the container's EGRESS; reply-direction bytes aren't visible here.
+// The veth ingress hook sees the container's outbound (sender) side, so the
+// packets/bytes counts are the container's EGRESS. The reply direction
+// (peer→container) is captured by a second program on the veth's TC_EGRESS hook
+// (#631), tallied into rx_packets/rx_bytes on the SAME flow entry (the egress
+// program rebuilds the request-oriented key by swapping the reply's tuple), so a
+// flow carries both directions.
 //
 // LRU_HASH so a burst of short-lived flows self-evicts under pressure rather than
 // filling the map; the daemon reads it on a poll and ages out idle entries.
@@ -115,11 +119,17 @@ struct flow_key {
     __u8  pad[3];
 };
 
+// flow_stat: tx_* (packets/bytes) are the container's egress, observed on the
+// veth ingress hook; rx_* are the reply direction, observed on the veth egress
+// hook (#631). rx fields are APPENDED so an older 32-byte value (pre-#631) still
+// decodes — the Go reader treats missing rx as 0.
 struct flow_stat {
-    __u64 packets;
+    __u64 packets;     // tx: container → peer
     __u64 bytes;
-    __u64 first_ns;  // bpf_ktime_get_ns at first packet (monotonic)
-    __u64 last_ns;   // bpf_ktime_get_ns at most recent packet (monotonic)
+    __u64 first_ns;    // bpf_ktime_get_ns at first packet (monotonic)
+    __u64 last_ns;     // bpf_ktime_get_ns at most recent packet (monotonic)
+    __u64 rx_packets;  // reply: peer → container (#631)
+    __u64 rx_bytes;
 };
 
 struct {
@@ -182,6 +192,41 @@ static __always_inline void account_flow(struct __sk_buff *skb, __u32 ifindex,
     struct flow_stat nfs = {};
     nfs.packets = 1;
     nfs.bytes = len;
+    nfs.first_ns = now;
+    nfs.last_ns = now;
+    bpf_map_update_elem(&flows, &fk, &nfs, BPF_ANY);
+}
+
+// account_reply tallies one reply packet (peer → container, seen on the veth
+// TC_EGRESS hook) into the rx_* counters of its flow (#631). The caller passes
+// the key already rebuilt in REQUEST orientation (src=container, dst=peer), so
+// the reply lands on the same entry the ingress hook created for the request.
+// If the request entry doesn't exist yet (reply observed first), create it with
+// only the rx counters set.
+static __always_inline void account_reply(struct __sk_buff *skb, __u32 ifindex,
+                                          __u32 saddr, __u32 daddr,
+                                          __u16 sport, __u16 dport, __u8 proto) {
+    struct flow_key fk = {};
+    fk.ifindex = ifindex;
+    fk.saddr = saddr;
+    fk.daddr = daddr;
+    fk.sport = sport;
+    fk.dport = dport;
+    fk.proto = proto;
+
+    __u64 now = bpf_ktime_get_ns();
+    __u64 len = skb->len;
+
+    struct flow_stat *fs = bpf_map_lookup_elem(&flows, &fk);
+    if (fs) {
+        __sync_fetch_and_add(&fs->rx_packets, 1);
+        __sync_fetch_and_add(&fs->rx_bytes, len);
+        fs->last_ns = now;
+        return;
+    }
+    struct flow_stat nfs = {};
+    nfs.rx_packets = 1;
+    nfs.rx_bytes = len;
     nfs.first_ns = now;
     nfs.last_ns = now;
     bpf_map_update_elem(&flows, &fk, &nfs, BPF_ANY);
@@ -283,6 +328,61 @@ int netpolicy_ingress(struct __sk_buff *skb) {
 
     if (cfg->mode == MODE_ENFORCE)
         return TC_ACT_SHOT; // Phase B path; Phase A never sets ENFORCE here.
+    return TC_ACT_OK;
+}
+
+// netpolicy_egress runs on the container veth's TC_EGRESS hook — packets the
+// host transmits TOWARD the container, i.e. the container's RECEIVE direction
+// (#631). It does accounting ONLY (no policy: enforcement happens on the
+// sender's egress, which the ingress hook above already sees); it always passes.
+//
+// The reply packet's tuple is the mirror of the request: src=peer, dst=container.
+// To land the rx bytes on the same flow entry the request created, rebuild the
+// request-oriented key by swapping — saddr=ip->daddr (container), daddr=ip->saddr
+// (peer), sport=reply dport, dport=reply sport.
+SEC("classifier/netpolicy_egress")
+int netpolicy_egress(struct __sk_buff *skb) {
+    void *data = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return TC_ACT_OK;
+
+    // On the egress hook the veth is the transmit interface: skb->ifindex
+    // (ingress_ifindex is 0 here). Only account managed veths.
+    __u32 ifindex = skb->ifindex;
+    if (!bpf_map_lookup_elem(&veth_policy, &ifindex))
+        return TC_ACT_OK;
+
+    __u16 sport = 0, dport = 0;
+    if (ip->protocol == IPPROTO_TCP) {
+        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
+        if ((void *)(tcp + 1) <= data_end) {
+            sport = bpf_ntohs(tcp->source);
+            dport = bpf_ntohs(tcp->dest);
+        }
+    } else if (ip->protocol == IPPROTO_UDP) {
+        struct udphdr *udp = (void *)ip + sizeof(*ip);
+        if ((void *)(udp + 1) <= data_end) {
+            sport = bpf_ntohs(udp->source);
+            dport = bpf_ntohs(udp->dest);
+        }
+    }
+
+    // Swap to request orientation: container is the reply's destination.
+    account_reply(skb, ifindex,
+                  ip->daddr,  // saddr (request) = reply dst = container
+                  ip->saddr,  // daddr (request) = reply src = peer
+                  dport,      // sport (request) = reply dport = container port
+                  sport,      // dport (request) = reply sport = peer port
+                  ip->protocol);
     return TC_ACT_OK;
 }
 

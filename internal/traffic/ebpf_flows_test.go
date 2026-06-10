@@ -35,6 +35,8 @@ func TestIngestEBPFFlows_SurfacesInGetConnections(t *testing.T) {
 			DstPort:       443,
 			Bytes:         8456,
 			Packets:       12,
+			RxBytes:       12_004,
+			RxPackets:     9,
 			First:         now.Add(-2 * time.Second),
 			Last:          now,
 		},
@@ -64,6 +66,9 @@ func TestIngestEBPFFlows_SurfacesInGetConnections(t *testing.T) {
 	}
 	if got.BytesSent != 8456 || got.PacketsSent != 12 {
 		t.Errorf("byte/packet counts = %d/%d, want 8456/12", got.BytesSent, got.PacketsSent)
+	}
+	if got.BytesReceived != 12_004 || got.PacketsReceived != 9 {
+		t.Errorf("rx byte/packet = %d/%d, want 12004/9 (#631)", got.BytesReceived, got.PacketsReceived)
 	}
 	if got.Direction != pb.TrafficDirection_TRAFFIC_DIRECTION_EGRESS {
 		t.Errorf("direction = %v, want EGRESS", got.Direction)

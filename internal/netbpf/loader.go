@@ -16,16 +16,17 @@ import (
 // Map / program / section names — must match SEC(".maps") names and the
 // program section in experimental/ebpf-phaseA/netpolicy.bpf.c.
 const (
-	progNetpolicy   = "netpolicy_ingress"
-	mapVethPolicy   = "veth_policy"
-	mapEgressCIDR   = "egress_cidr"
-	mapIPTenant     = "ip_tenant"
-	mapStats        = "stats"
-	mapEvents       = "events"
-	mapFlows        = "flows"
-	statSeen        = uint32(0)
-	statWouldDeny   = uint32(1)
-	statsEntryCount = 2
+	progNetpolicy       = "netpolicy_ingress"
+	progNetpolicyEgress = "netpolicy_egress"
+	mapVethPolicy       = "veth_policy"
+	mapEgressCIDR       = "egress_cidr"
+	mapIPTenant         = "ip_tenant"
+	mapStats            = "stats"
+	mapEvents           = "events"
+	mapFlows            = "flows"
+	statSeen            = uint32(0)
+	statWouldDeny       = uint32(1)
+	statsEntryCount     = 2
 )
 
 // Loader owns a loaded netpolicy BPF collection and the per-veth TCX links it
@@ -36,8 +37,9 @@ const (
 // Linux-only at runtime: cilium/ebpf compiles on every platform (so the daemon
 // builds on a dev mac), but Load/Attach return errors on non-Linux kernels.
 type Loader struct {
-	coll  *ebpf.Collection
-	links map[int]link.Link // ifindex -> TCX link
+	coll        *ebpf.Collection
+	links       map[int]link.Link // ifindex -> TCX ingress link
+	egressLinks map[int]link.Link // ifindex -> TCX egress link (#631 reply accounting)
 }
 
 // Resolve loads the netpolicy BPF object from the operator-supplied source. The
@@ -111,8 +113,19 @@ func newLoaderFromSpec(spec *ebpf.CollectionSpec) (*Loader, error) {
 		coll.Close()
 		return nil, fmt.Errorf("netbpf: BPF object missing program %q", progNetpolicy)
 	}
-	return &Loader{coll: coll, links: make(map[int]link.Link)}, nil
+	// progNetpolicyEgress is OPTIONAL: an object built before #631 lacks it, and
+	// the loader still works (reply-byte accounting just stays off). AttachVethEgress
+	// no-ops when it's absent.
+	return &Loader{
+		coll:        coll,
+		links:       make(map[int]link.Link),
+		egressLinks: make(map[int]link.Link),
+	}, nil
 }
+
+// hasEgressProgram reports whether the loaded object carries the reply-accounting
+// egress program (#631).
+func (l *Loader) hasEgressProgram() bool { return l.coll.Programs[progNetpolicyEgress] != nil }
 
 // AttachVeth attaches the policy program to a container's host veth in
 // TC_INGRESS via TCX (kernel ≥ 6.6). Idempotent per ifindex.
@@ -132,14 +145,45 @@ func (l *Loader) AttachVeth(ifindex int) error {
 	return nil
 }
 
-// DetachVeth removes the program from a veth (e.g. on container stop/delete).
-func (l *Loader) DetachVeth(ifindex int) error {
-	lnk, ok := l.links[ifindex]
-	if !ok {
+// AttachVethEgress attaches the reply-accounting program to a container's host
+// veth in TC_EGRESS via TCX (#631), so the container's receive-direction bytes
+// are tallied. Idempotent per ifindex. No-ops when the loaded object predates
+// #631 (no egress program) — reply bytes then stay 0 rather than failing.
+func (l *Loader) AttachVethEgress(ifindex int) error {
+	if !l.hasEgressProgram() {
 		return nil
 	}
-	delete(l.links, ifindex)
-	return lnk.Close()
+	if _, ok := l.egressLinks[ifindex]; ok {
+		return nil
+	}
+	lnk, err := link.AttachTCX(link.TCXOptions{
+		Interface: ifindex,
+		Program:   l.coll.Programs[progNetpolicyEgress],
+		Attach:    ebpf.AttachTCXEgress,
+	})
+	if err != nil {
+		return fmt.Errorf("netbpf: attach TCX egress on ifindex %d: %w", ifindex, err)
+	}
+	l.egressLinks[ifindex] = lnk
+	return nil
+}
+
+// DetachVeth removes both programs from a veth (e.g. on container stop/delete).
+func (l *Loader) DetachVeth(ifindex int) error {
+	var errs []error
+	if lnk, ok := l.links[ifindex]; ok {
+		delete(l.links, ifindex)
+		if err := lnk.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if lnk, ok := l.egressLinks[ifindex]; ok {
+		delete(l.egressLinks, ifindex)
+		if err := lnk.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SetVethPolicy writes the per-veth policy config into the veth_policy map,
@@ -224,8 +268,11 @@ func (l *Loader) Flows() ([]FlowRecord, error) {
 	if m == nil {
 		return nil, fmt.Errorf("netbpf: flows map not present (rebuild netpolicy.bpf.o?)")
 	}
+	// Size the value buffer to the map's actual ValueSize so Lookup matches the
+	// kernel map whether the object is the v1 (32-byte) or current (48-byte, with
+	// rx) flow_stat (#631). decodeFlowStat tolerates either length.
 	keyBuf := make([]byte, flowKeySize)
-	valBuf := make([]byte, flowStatSize)
+	valBuf := make([]byte, m.ValueSize())
 	var out []FlowRecord
 	it := m.Iterate()
 	for it.Next(&keyBuf, &valBuf) {
@@ -244,7 +291,7 @@ func (l *Loader) Flows() ([]FlowRecord, error) {
 	return out, nil
 }
 
-// Close detaches every veth link and frees the collection.
+// Close detaches every veth link (ingress + egress) and frees the collection.
 func (l *Loader) Close() error {
 	var errs []error
 	for idx, lnk := range l.links {
@@ -252,7 +299,13 @@ func (l *Loader) Close() error {
 			errs = append(errs, fmt.Errorf("close link ifindex %d: %w", idx, err))
 		}
 	}
+	for idx, lnk := range l.egressLinks {
+		if err := lnk.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close egress link ifindex %d: %w", idx, err))
+		}
+	}
 	l.links = nil
+	l.egressLinks = nil
 	if l.coll != nil {
 		l.coll.Close()
 		l.coll = nil

@@ -16,16 +16,18 @@ func TestFlowsToEBPF_AttributesAndMaps(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	records := []netbpf.FlowRecord{
 		{ // managed veth 59 -> web-container
-			Ifindex: 59,
-			Saddr:   beIPv4(10, 100, 0, 42),
-			Daddr:   beIPv4(1, 1, 1, 1),
-			Sport:   51000,
-			Dport:   443,
-			Proto:   6,
-			Packets: 12,
-			Bytes:   8456,
-			FirstNs: 1_000_000_000,
-			LastNs:  3_000_000_000, // 2s old
+			Ifindex:   59,
+			Saddr:     beIPv4(10, 100, 0, 42),
+			Daddr:     beIPv4(1, 1, 1, 1),
+			Sport:     51000,
+			Dport:     443,
+			Proto:     6,
+			Packets:   12,
+			Bytes:     8456,
+			RxPackets: 9,
+			RxBytes:   12_004,
+			FirstNs:   1_000_000_000,
+			LastNs:    3_000_000_000, // 2s old
 		},
 		{ // unmanaged veth 99 -> dropped
 			Ifindex: 99,
@@ -57,6 +59,9 @@ func TestFlowsToEBPF_AttributesAndMaps(t *testing.T) {
 	}
 	if f.Bytes != 8456 || f.Packets != 12 {
 		t.Errorf("Bytes/Packets = %d/%d, want 8456/12", f.Bytes, f.Packets)
+	}
+	if f.RxBytes != 12_004 || f.RxPackets != 9 {
+		t.Errorf("RxBytes/RxPackets = %d/%d, want 12004/9 (#631 reply direction)", f.RxBytes, f.RxPackets)
 	}
 	if !f.Last.Equal(now) {
 		t.Errorf("Last = %v, want %v", f.Last, now)

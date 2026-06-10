@@ -378,10 +378,14 @@ rows.
 
 Properties / limits:
 
-- **EGRESS only.** The veth ingress hook sees the container's
-  outbound (sender) side, so `bytes_sent`/`packets_sent` are
-  populated and the reply direction stays 0. A second hook
-  (veth egress) for reply-byte accounting is a follow-up.
+- **Both directions (#631).** The veth ingress hook tallies the
+  container's egress (`bytes_sent`/`packets_sent`); a second
+  program on the veth's TC_EGRESS hook tallies the reply
+  direction into `rx_bytes`/`rx_packets` of the same flow entry
+  (it rebuilds the request-oriented key by swapping the reply's
+  tuple), surfaced as `bytes_received`/`packets_received`. An
+  object built before #631 omits the egress program — received
+  counters then stay 0.
 - **Cumulative, LRU-bounded.** Counters are monotonic per flow;
   the map self-evicts under a short-lived-flow burst rather than
   filling. The poll snapshots (does not drain), so the active-

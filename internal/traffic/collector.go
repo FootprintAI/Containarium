@@ -222,11 +222,10 @@ func (c *Collector) convertToProto(event *ConntrackEvent, containerName, contain
 }
 
 // EBPFFlow is one per-flow accounting record sourced from the eBPF per-veth
-// network-policy program (issue #627). It is the container's EGRESS as observed
-// on the host-veth ingress hook: Bytes/Packets are cumulative container→peer
-// counts. The reply direction (peer→container) is not visible on that hook, so
-// BytesReceived/PacketsReceived stay 0 — a known v1 limitation noted in the
-// network-isolation design doc.
+// network-policy program (issue #627). Bytes/Packets are the container's EGRESS
+// (container→peer) seen on the host-veth ingress hook; RxBytes/RxPackets are the
+// reply direction (peer→container) seen on the veth egress hook (#631). RxBytes/
+// RxPackets are 0 when the loaded BPF object predates #631 (no egress program).
 type EBPFFlow struct {
 	ContainerName string
 	ContainerIP   string
@@ -235,8 +234,10 @@ type EBPFFlow struct {
 	SrcPort       uint16
 	DstIP         string
 	DstPort       uint16
-	Bytes         int64
+	Bytes         int64 // sent: container → peer (veth ingress hook)
 	Packets       int64
+	RxBytes       int64 // received: peer → container (veth egress hook, #631); 0 if unavailable
+	RxPackets     int64
 	First         time.Time
 	Last          time.Time
 }
@@ -263,8 +264,8 @@ func (c *Collector) IngestEBPFFlows(flows []EBPFFlow) {
 			Direction:       pb.TrafficDirection_TRAFFIC_DIRECTION_EGRESS,
 			BytesSent:       f.Bytes,
 			PacketsSent:     f.Packets,
-			BytesReceived:   0, // reply direction not visible on the veth ingress hook
-			PacketsReceived: 0,
+			BytesReceived:   f.RxBytes,   // reply direction via the veth egress hook (#631)
+			PacketsReceived: f.RxPackets, // 0 when the BPF object predates #631
 			FirstSeen:       timestamppb.New(f.First),
 			LastSeen:        timestamppb.New(f.Last),
 		}
