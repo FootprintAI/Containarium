@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.4] - 2026-06-10
+
+Traffic CLI + login UX fixes.
+
+### Added
+
+- **`containarium traffic` CLI** — `connections`, `summary`, and `history` subcommands over the platform daemon's TrafficService (the same data the webui traffic view shows, now scriptable). Supports `--format table|json` and the usual `--protocol`/`--dest-ip`/`--limit` filters; resolves the server + token from your login like `ssh`/`connect`. (#640)
+
+### Changed
+
+- **Cloud uses the API token for box access; no SSH-key prompt.** On the hosted cloud, box access is via the login token (`containarium connect`), so login no longer offers to register a personal SSH key. Self-hosted (OSS) keeps the SSH-key flow. The access model is learned per server (preferring a server-declared signal, falling back to a host heuristic) and cached in the credentials file. `--with-ssh-setup` still forces key registration. (#637, #638)
+
+### Fixed
+
+- **`containarium login` no longer fails with "device_name must be 1-64 chars".** The auto-generated device name (`<user>@<host>`) contained `@`, outside the cloud's allowed charset, so every default login 400'd; the default is now sanitized to the allowed set and clamped to 64 chars. An explicit `--device-name` is unchanged. (#634)
+- **Login shows your real identity instead of "unknown user."** The user email is recovered from the access token's JWT claims (the CLI-session response doesn't carry it) and persisted for `whoami`. (#636)
+- **A re-registered SSH key on repeat login is reported as success, not a 409 warning.** (#636)
+
 ## [0.26.3] - 2026-06-10
 
 eBPF-sourced network usage.
