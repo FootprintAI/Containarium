@@ -166,3 +166,32 @@ containarium network-policy set <tenant> --allow-metadata ...
 Validated on a Linux backend: under enforce with `--allow-cidr 0.0.0.0/0`, traffic
 to `8.8.8.8` passes but `169.254.169.254` is dropped (`deny … dst=169.254.169.254
 … DROPPED`); adding `--allow-metadata` lets it through.
+
+## Per-flow accounting → traffic view (#627)
+
+The program also keeps a `flows` map (`BPF_MAP_TYPE_LRU_HASH`, 5-tuple →
+`{packets, bytes, first_ns, last_ns}`) updated for **every** observed flow
+(allowed and would-deny). The daemon enforcer polls it (`Loader.Flows()`,
+default 15s), attributes each flow to a container by veth ifindex, and feeds the
+traffic collector — so the traffic view shows real src/dst IP + byte counts
+sourced straight from eBPF, independent of conntrack accounting and the IP→name
+cache (both of which come up empty in the common docker-in-LXC topology). EGRESS
+only (the veth ingress hook sees the container's outbound side); reply bytes
+stay 0.
+
+Rebuilding `netpolicy.bpf.o` with the new map is required to enable it — an
+older object still loads and enforces, the daemon just logs that flow accounting
+is off. To validate on a backend (after rebuild + `export
+CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=...`, with a tenant container running):
+
+```sh
+incus exec <container> -- curl -s https://1.1.1.1 >/dev/null   # generate egress
+# then query the daemon's traffic API (or open the webui traffic view):
+curl -s -H "Authorization: Bearer $JWT" \
+  "$DAEMON/v1/containers/<tenant>-container/connections" | jq .
+```
+
+Expect non-empty rows carrying the container's source IP, the destination
+IP/port, and non-zero `bytes_sent` — with **no** dependency on
+`nf_conntrack_acct` or the conntrack collector matching. Counters are cumulative
+per flow; the LRU map self-evicts idle flows.

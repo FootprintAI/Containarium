@@ -93,6 +93,42 @@ struct {
 #define STAT_SEEN       0
 #define STAT_WOULD_DENY 1
 
+// Per-flow accounting (issue #627). Every observed flow on a managed veth gets a
+// cumulative bytes/packets tally here, keyed by its 5-tuple, so the daemon can
+// populate the traffic view (src/dst IP + byte counts) straight from eBPF —
+// independent of conntrack accounting and the IP→container cache. Attribution is
+// exact: the ifindex in the key maps 1:1 to a container. Recorded for ALLOWED and
+// would-deny flows alike (it's usage accounting, not a policy decision).
+//
+// The veth ingress hook sees the container's outbound (sender) side, so these
+// counts are the container's EGRESS; reply-direction bytes aren't visible here.
+//
+// LRU_HASH so a burst of short-lived flows self-evicts under pressure rather than
+// filling the map; the daemon reads it on a poll and ages out idle entries.
+struct flow_key {
+    __u32 ifindex;   // host veth — attribution handle (1:1 with a container)
+    __u32 saddr;     // source IPv4, network byte order
+    __u32 daddr;     // destination IPv4, network byte order
+    __u16 sport;     // host byte order
+    __u16 dport;     // host byte order
+    __u8  proto;     // IP protocol number
+    __u8  pad[3];
+};
+
+struct flow_stat {
+    __u64 packets;
+    __u64 bytes;
+    __u64 first_ns;  // bpf_ktime_get_ns at first packet (monotonic)
+    __u64 last_ns;   // bpf_ktime_get_ns at most recent packet (monotonic)
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct flow_key);
+    __type(value, struct flow_stat);
+    __uint(max_entries, 65536);
+} flows SEC(".maps");
+
 // Perf event ring for denied flows; the daemon's consumer turns each into an
 // audit row (action=net_deny).
 struct {
@@ -117,6 +153,38 @@ static __always_inline void bump(__u32 idx) {
     __u64 *v = bpf_map_lookup_elem(&stats, &idx);
     if (v)
         __sync_fetch_and_add(v, 1);
+}
+
+// account_flow tallies one packet against its 5-tuple in the flows map (#627).
+// First packet of a flow creates the entry; subsequent packets bump the
+// cumulative byte/packet counters and the last-seen timestamp.
+static __always_inline void account_flow(struct __sk_buff *skb, __u32 ifindex,
+                                         __u32 saddr, __u32 daddr,
+                                         __u16 sport, __u16 dport, __u8 proto) {
+    struct flow_key fk = {};
+    fk.ifindex = ifindex;
+    fk.saddr = saddr;
+    fk.daddr = daddr;
+    fk.sport = sport;
+    fk.dport = dport;
+    fk.proto = proto;
+
+    __u64 now = bpf_ktime_get_ns();
+    __u64 len = skb->len; // full L2+ length of this packet
+
+    struct flow_stat *fs = bpf_map_lookup_elem(&flows, &fk);
+    if (fs) {
+        __sync_fetch_and_add(&fs->packets, 1);
+        __sync_fetch_and_add(&fs->bytes, len);
+        fs->last_ns = now;
+        return;
+    }
+    struct flow_stat nfs = {};
+    nfs.packets = 1;
+    nfs.bytes = len;
+    nfs.first_ns = now;
+    nfs.last_ns = now;
+    bpf_map_update_elem(&flows, &fk, &nfs, BPF_ANY);
 }
 
 SEC("classifier/netpolicy")
@@ -145,6 +213,29 @@ int netpolicy_ingress(struct __sk_buff *skb) {
 
     __u32 saddr = ip->saddr;
     __u32 daddr = ip->daddr;
+
+    // Parse L4 ports once (host byte order), bounds-checked for the verifier.
+    // Used both for per-flow accounting (#627) and the deny audit event below.
+    // ICMP and other L4 protocols carry 0 ports. NOTE: assumes no IP options
+    // (ihl=5), same as the deny path historically did.
+    __u16 sport = 0, dport = 0;
+    if (ip->protocol == IPPROTO_TCP) {
+        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
+        if ((void *)(tcp + 1) <= data_end) {
+            sport = bpf_ntohs(tcp->source);
+            dport = bpf_ntohs(tcp->dest);
+        }
+    } else if (ip->protocol == IPPROTO_UDP) {
+        struct udphdr *udp = (void *)ip + sizeof(*ip);
+        if ((void *)(udp + 1) <= data_end) {
+            sport = bpf_ntohs(udp->source);
+            dport = bpf_ntohs(udp->dest);
+        }
+    }
+
+    // Usage accounting for the traffic view (#627): tally EVERY flow, allowed or
+    // not. Done before the policy decision so a would-deny flow is still counted.
+    account_flow(skb, ifindex, saddr, daddr, sport, dport, ip->protocol);
 
     // Decide whether this flow is allowed under the sender's policy.
     int allowed = 0;
@@ -186,17 +277,7 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     ev.saddr = saddr;
     ev.daddr = daddr;
     ev.proto = ip->protocol;
-
-    // Best-effort L4 dport for the audit row. Bounds-checked for the verifier.
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
-        if ((void *)(tcp + 1) <= data_end)
-            ev.dport = bpf_ntohs(tcp->dest);
-    } else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = (void *)ip + sizeof(*ip);
-        if ((void *)(udp + 1) <= data_end)
-            ev.dport = bpf_ntohs(udp->dest);
-    }
+    ev.dport = dport; // parsed once above
 
     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 

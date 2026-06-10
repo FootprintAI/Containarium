@@ -14,6 +14,8 @@ import (
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
+	"github.com/footprintai/containarium/internal/safecast"
+	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
@@ -26,6 +28,19 @@ const containerSuffix = "-container"
 // truth (robust against dropped bus events); the bus only triggers an early
 // reconcile for latency.
 const defaultNetPolicyReconcileInterval = 10 * time.Second
+
+// defaultFlowPollInterval is how often the enforcer reads the BPF per-flow
+// accounting map (#627) and feeds it to the traffic collector. Shorter than the
+// reconcile interval isn't useful (the counters are cumulative); a few seconds
+// keeps the traffic view fresh without churning the map iterator.
+const defaultFlowPollInterval = 15 * time.Second
+
+// FlowSink receives per-flow accounting records sourced from the eBPF program
+// (#627). *traffic.Collector implements it; kept an interface so the enforcer is
+// testable without the collector.
+type FlowSink interface {
+	IngestEBPFFlows(flows []traffic.EBPFFlow)
+}
 
 // defaultDomainRefreshInterval is how often egress_domains are re-resolved to
 // IPs (Phase C). A fixed interval rather than per-record DNS TTL — TTL-aware
@@ -60,6 +75,9 @@ type NetworkPolicyEnforcer struct {
 	resolver      *DomainResolver // Phase C: egress_domains -> IPs
 	domainRefresh time.Duration
 
+	flowSink FlowSink      // #627: traffic-view flow accounting (nil = disabled)
+	flowPoll time.Duration // how often to read the BPF flows map
+
 	loader *netbpf.Loader
 
 	mu              sync.Mutex
@@ -85,12 +103,18 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		enforceEnabled:  enforceEnabled,
 		resolver:        NewDomainResolver(nil),
 		domainRefresh:   defaultDomainRefreshInterval,
+		flowPoll:        defaultFlowPollInterval,
 		attached:        make(map[int]string),
 		idName:          make(map[uint32]string),
 		enforced:        make(map[uint32]bool),
 		egressInstalled: make(map[netbpf.EgressEntry]bool),
 	}
 }
+
+// SetFlowSink wires the traffic collector so the enforcer can feed it per-flow
+// accounting read from the BPF flows map (#627). Must be called before Start.
+// Nil leaves flow accounting off.
+func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
 
 // Start loads the BPF object, runs an initial reconcile, and launches the
 // perf-ring consumer + the periodic reconcile loop (also woken by container bus
@@ -144,6 +168,35 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 				log.Printf("[netpolicy] perf: %v", err)
 			})
 		}()
+	}
+
+	// Flow-accounting poll (#627): read the BPF per-flow map on a cadence and
+	// feed it to the traffic collector so the traffic view shows real src/dst IP
+	// + byte counts sourced from eBPF. Only runs when a sink is wired AND the
+	// loaded object carries the flows map (an older object still enforces; the
+	// poll just stays off until the operator rebuilds it).
+	switch {
+	case e.flowSink == nil:
+		// no sink configured — flow accounting disabled
+	case !loader.HasFlowAccounting():
+		log.Printf("[netpolicy] traffic-flow accounting unavailable: loaded BPF object lacks the 'flows' map (rebuild netpolicy.bpf.o to enable #627)")
+	default:
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			t := time.NewTicker(e.flowPoll)
+			defer t.Stop()
+			e.pollFlows() // prime the view immediately rather than after one tick
+			for {
+				select {
+				case <-e.ctx.Done():
+					return
+				case <-t.C:
+					e.pollFlows()
+				}
+			}
+		}()
+		log.Printf("[netpolicy] traffic-flow accounting enabled (poll=%s)", e.flowPoll)
 	}
 
 	// Reconcile loop + bus trigger.
@@ -234,6 +287,81 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 	}
 	if err := e.audit.Log(ctx, entry); err != nil {
 		log.Printf("[netpolicy] audit deny event: %v", err)
+	}
+}
+
+// pollFlows reads the BPF per-flow accounting map (#627), attributes each flow
+// to a container via the veth ifindex (exact — the map key carries it), and
+// hands the batch to the traffic collector. Flows on a veth that is no longer
+// attached are skipped (the container is gone; its flows age out of the LRU map).
+func (e *NetworkPolicyEnforcer) pollFlows() {
+	if e.loader == nil || e.flowSink == nil {
+		return
+	}
+	records, err := e.loader.Flows()
+	if err != nil {
+		log.Printf("[netpolicy] read flows: %v", err)
+		return
+	}
+	// Snapshot the ifindex -> container attribution under the lock.
+	e.mu.Lock()
+	attached := make(map[int]string, len(e.attached))
+	for idx, name := range e.attached {
+		attached[idx] = name
+	}
+	e.mu.Unlock()
+
+	e.flowSink.IngestEBPFFlows(flowsToEBPF(records, attached, time.Now()))
+}
+
+// flowsToEBPF attributes each BPF flow record to its container via the veth
+// ifindex and renders it as a traffic.EBPFFlow. Records on an unmanaged veth are
+// dropped. Pure (no loader/clock access) so it is unit-testable. Absolute
+// first/last timestamps aren't recoverable from the monotonic ktime stamps, so
+// First is derived as now-duration to preserve the flow's age.
+func flowsToEBPF(records []netbpf.FlowRecord, attached map[int]string, now time.Time) []traffic.EBPFFlow {
+	out := make([]traffic.EBPFFlow, 0, len(records))
+	for _, r := range records {
+		name := attached[int(r.Ifindex)]
+		if name == "" {
+			continue // veth not (or no longer) managed
+		}
+		// The accounting hook sees the container's egress, so the flow's source
+		// IP is the container's own IP.
+		src := r.Src().String()
+		var dur time.Duration
+		if r.LastNs >= r.FirstNs {
+			dur = time.Duration(r.LastNs - r.FirstNs) // both are bpf_ktime_get_ns (ns)
+		}
+		out = append(out, traffic.EBPFFlow{
+			ContainerName: name,
+			ContainerIP:   src,
+			Protocol:      protoName(r.Proto),
+			SrcIP:         src,
+			SrcPort:       r.Sport,
+			DstIP:         r.Dst().String(),
+			DstPort:       r.Dport,
+			Bytes:         safecast.I64FromU64(r.Bytes),
+			Packets:       safecast.I64FromU64(r.Packets),
+			First:         now.Add(-dur), // absolute first/last unknown; preserve duration
+			Last:          now,
+		})
+	}
+	return out
+}
+
+// protoName renders an IP protocol number as the lowercase string the traffic
+// collector's protoStringToEnum expects.
+func protoName(proto uint8) string {
+	switch proto {
+	case 1:
+		return "icmp"
+	case 6:
+		return "tcp"
+	case 17:
+		return "udp"
+	default:
+		return ""
 	}
 }
 

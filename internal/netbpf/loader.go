@@ -20,6 +20,7 @@ const (
 	mapIPTenant     = "ip_tenant"
 	mapStats        = "stats"
 	mapEvents       = "events"
+	mapFlows        = "flows"
 	statSeen        = uint32(0)
 	statWouldDeny   = uint32(1)
 	statsEntryCount = 2
@@ -161,6 +162,44 @@ func (l *Loader) Stats() (seen, wouldDeny uint64, err error) {
 // EventsMap exposes the perf-event array so the denied-flow consumer (a later
 // increment) can open a perf reader over it.
 func (l *Loader) EventsMap() *ebpf.Map { return l.coll.Maps[mapEvents] }
+
+// HasFlowAccounting reports whether the loaded object carries the per-flow
+// accounting map (#627). It is intentionally NOT required by Load — an older
+// object built before this feature still loads and enforces; the daemon just
+// skips the traffic-flow poll. The operator rebuilds netpolicy.bpf.o to enable
+// it.
+func (l *Loader) HasFlowAccounting() bool { return l.coll.Maps[mapFlows] != nil }
+
+// Flows snapshots the per-flow accounting map (#627): every observed flow on a
+// managed veth with its cumulative byte/packet tally and first/last timestamps.
+// Read-only — entries are aged out by the map's LRU eviction and the caller's
+// idle pruning, NOT drained here, so the cumulative counters stay monotonic for
+// the active-connection view. Returns an error if the object lacks the map
+// (HasFlowAccounting is false).
+func (l *Loader) Flows() ([]FlowRecord, error) {
+	m := l.coll.Maps[mapFlows]
+	if m == nil {
+		return nil, fmt.Errorf("netbpf: flows map not present (rebuild netpolicy.bpf.o?)")
+	}
+	keyBuf := make([]byte, flowKeySize)
+	valBuf := make([]byte, flowStatSize)
+	var out []FlowRecord
+	it := m.Iterate()
+	for it.Next(&keyBuf, &valBuf) {
+		var rec FlowRecord
+		if err := decodeFlowKey(keyBuf, &rec); err != nil {
+			return nil, err
+		}
+		if err := decodeFlowStat(valBuf, &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	if err := it.Err(); err != nil {
+		return nil, fmt.Errorf("netbpf: iterate flows: %w", err)
+	}
+	return out, nil
+}
 
 // Close detaches every veth link and frees the collection.
 func (l *Loader) Close() error {

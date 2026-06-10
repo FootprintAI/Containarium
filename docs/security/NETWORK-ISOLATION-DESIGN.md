@@ -352,6 +352,50 @@ network-policy / egress-allowlist message (so egress policy rides desired-state)
 Both land in `Containarium-cloud` first; this section plus
 `CLOUD-ACTUATION-CLIENT-DESIGN.md` are the OSS-side contract they plug into.
 
+## Per-flow accounting → the traffic view (#627)
+
+The same per-veth `TC_INGRESS` program doubles as the traffic
+view's data source. The view (`TrafficService` → webui) was
+wired to the host conntrack collector, which on real backends
+comes up mostly empty: tenants run docker-compose *inside* an
+LXC, so host conntrack sees the LXC/bridge address (post-
+masquerade) rather than the per-tenant container IP the
+collector's IP→name cache is keyed on — the flow is then
+dropped — and byte counts need `nf_conntrack_acct=1`.
+
+The eBPF hook has neither problem. It already parses the flow's
+src/dst IP, and it is keyed by veth ifindex, so **attribution is
+exact** (the ifindex maps 1:1 to a container — no IP cache). The
+program keeps a `flows` map (`BPF_MAP_TYPE_LRU_HASH`, 5-tuple →
+`{packets, bytes, first_ns, last_ns}`) updated for **every**
+observed flow — allowed and would-deny alike, since this is
+usage accounting, not a policy decision. The daemon's enforcer
+polls the map (default 15s), attributes each entry via its
+`attached` ifindex→container map, and feeds the batch to the
+traffic collector, which merges them into
+`GetConnections`/`GetConnectionSummary` alongside any conntrack
+rows.
+
+Properties / limits:
+
+- **EGRESS only.** The veth ingress hook sees the container's
+  outbound (sender) side, so `bytes_sent`/`packets_sent` are
+  populated and the reply direction stays 0. A second hook
+  (veth egress) for reply-byte accounting is a follow-up.
+- **Cumulative, LRU-bounded.** Counters are monotonic per flow;
+  the map self-evicts under a short-lived-flow burst rather than
+  filling. The poll snapshots (does not drain), so the active-
+  connection view stays stable; evicted flows simply drop out on
+  the next full-replace ingest.
+- **Opt-in, backward-compatible.** Gated behind the existing
+  `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT`. An older object built
+  before the `flows` map still loads and enforces; the daemon
+  logs that flow accounting is unavailable and leaves the poll
+  off until the operator rebuilds `netpolicy.bpf.o`.
+- **Historical persistence** (the `traffic_history` table) is
+  still conntrack-fed; persisting eBPF flows on eviction/close is
+  a follow-up.
+
 ## What this is NOT
 
 - A k8s NetworkPolicy implementation. Different threat model

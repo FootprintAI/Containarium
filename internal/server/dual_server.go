@@ -1801,6 +1801,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// logged and the daemon continues without enforcement — it must never block
 	// the daemon from serving.
 	if ds.networkPolicyEnforcer != nil {
+		// #627: let the enforcer feed eBPF per-flow accounting into the traffic
+		// collector so the traffic view shows real src/dst IP + byte counts. Wired
+		// before Start (which launches the poll loop). No-op if either side is off.
+		if ds.trafficCollector != nil {
+			ds.networkPolicyEnforcer.SetFlowSink(ds.trafficCollector)
+		}
 		if err := ds.networkPolicyEnforcer.Start(ctx); err != nil {
 			log.Printf("Warning: network-policy enforcer failed to start: %v (continuing without it)", err)
 			ds.networkPolicyEnforcer = nil

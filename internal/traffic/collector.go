@@ -55,6 +55,7 @@ type Collector struct {
 
 	mu          sync.RWMutex
 	connections map[string]*pb.Connection // conntrack ID -> connection
+	ebpfFlows   map[string]*pb.Connection // eBPF flow ID -> connection (#627)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -84,6 +85,7 @@ func NewCollector(config CollectorConfig, incusClient *incus.Client, store *Stor
 		monitor:     monitor,
 		emitter:     emitter,
 		connections: make(map[string]*pb.Connection),
+		ebpfFlows:   make(map[string]*pb.Connection),
 		ctx:         ctx,
 		cancel:      cancel,
 	}, nil
@@ -219,6 +221,67 @@ func (c *Collector) convertToProto(event *ConntrackEvent, containerName, contain
 	return conn
 }
 
+// EBPFFlow is one per-flow accounting record sourced from the eBPF per-veth
+// network-policy program (issue #627). It is the container's EGRESS as observed
+// on the host-veth ingress hook: Bytes/Packets are cumulative container→peer
+// counts. The reply direction (peer→container) is not visible on that hook, so
+// BytesReceived/PacketsReceived stay 0 — a known v1 limitation noted in the
+// network-isolation design doc.
+type EBPFFlow struct {
+	ContainerName string
+	ContainerIP   string
+	Protocol      string // "tcp" | "udp" | "icmp"
+	SrcIP         string
+	SrcPort       uint16
+	DstIP         string
+	DstPort       uint16
+	Bytes         int64
+	Packets       int64
+	First         time.Time
+	Last          time.Time
+}
+
+// IngestEBPFFlows replaces the collector's eBPF-sourced flow set with a fresh
+// snapshot (the loader hands the daemon the full active set on each poll, so a
+// full replace is correct and prunes flows the LRU map has evicted). These flows
+// are merged into GetConnections / GetConnectionSummary alongside conntrack
+// connections, giving the traffic view real src/dst IP + byte counts on backends
+// where conntrack attribution comes up empty (#627).
+func (c *Collector) IngestEBPFFlows(flows []EBPFFlow) {
+	next := make(map[string]*pb.Connection, len(flows))
+	for _, f := range flows {
+		conn := &pb.Connection{
+			Id:              ebpfFlowID(f),
+			ContainerName:   f.ContainerName,
+			ContainerIp:     f.ContainerIP,
+			Protocol:        protoStringToEnum(f.Protocol),
+			SourceIp:        f.SrcIP,
+			SourcePort:      uint32(f.SrcPort),
+			DestIp:          f.DstIP,
+			DestPort:        uint32(f.DstPort),
+			State:           pb.ConnectionState_CONNECTION_STATE_UNSPECIFIED,
+			Direction:       pb.TrafficDirection_TRAFFIC_DIRECTION_EGRESS,
+			BytesSent:       f.Bytes,
+			PacketsSent:     f.Packets,
+			BytesReceived:   0, // reply direction not visible on the veth ingress hook
+			PacketsReceived: 0,
+			FirstSeen:       timestamppb.New(f.First),
+			LastSeen:        timestamppb.New(f.Last),
+		}
+		next[conn.Id] = conn
+	}
+	c.mu.Lock()
+	c.ebpfFlows = next
+	c.mu.Unlock()
+}
+
+// ebpfFlowID is a stable identifier for an eBPF flow, derived from its 5-tuple
+// and owning container so a flow keeps the same ID across polls. The "ebpf-"
+// prefix keeps it from colliding with conntrack connection IDs.
+func ebpfFlowID(f EBPFFlow) string {
+	return fmt.Sprintf("ebpf-%s-%s-%s:%d-%s:%d", f.ContainerName, f.Protocol, f.SrcIP, f.SrcPort, f.DstIP, f.DstPort)
+}
+
 // emitTrafficEvent emits a traffic event to subscribers
 func (c *Collector) emitTrafficEvent(eventType ConntrackEventType, conn *pb.Connection) {
 	if c.emitter == nil {
@@ -347,6 +410,13 @@ func (c *Collector) GetConnections(containerName string) []*pb.Connection {
 
 	var result []*pb.Connection
 	for _, conn := range c.connections {
+		if containerName == "" || conn.ContainerName == containerName {
+			result = append(result, conn)
+		}
+	}
+	// Merge eBPF-sourced flows (#627). On backends where conntrack attribution
+	// fails (docker-in-LXC, masquerade), these may be the only connections seen.
+	for _, conn := range c.ebpfFlows {
 		if containerName == "" || conn.ContainerName == containerName {
 			result = append(result, conn)
 		}
