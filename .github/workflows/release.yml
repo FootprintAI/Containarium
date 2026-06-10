@@ -31,10 +31,24 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Compile eBPF network-policy object (#627)
+        # Builds internal/netbpf/netpolicy.bpf.o so the next `make` invocation
+        # auto-enables -tags embed_bpf and bakes the object into the
+        # containarium binary (operators enable it with
+        # CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=embedded — no on-backend clang).
+        # The runner is little-endian amd64; -target bpfel makes one object that
+        # serves every little-endian backend (amd64/arm64). UAPI-only program, so
+        # portable across kernel versions; the verifier still runs at load time.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+          make build-bpf
+
       - name: Build all release artifacts
         # `make build-release` builds containarium + mcp-server +
         # agent-box for linux/amd64, darwin/amd64, darwin/arm64 and
-        # writes SHA256SUMS.txt. 9 binaries + 1 checksum file.
+        # writes SHA256SUMS.txt. 9 binaries + 1 checksum file. The eBPF
+        # object built above makes this invocation embed it (-tags embed_bpf).
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Set up Node
@@ -192,6 +206,14 @@ jobs:
         # Needed by scripts/bundle/download-deps.sh to resolve transitive
         # .deb dependencies. Runner is ubuntu-latest so apt is present.
         run: sudo apt-get update && sudo apt-get install -y apt-rdepends
+
+      - name: Compile eBPF network-policy object (#627)
+        # Same as the build-and-release job: build the object first so the
+        # bundle's containarium binary embeds it (-tags embed_bpf, auto-enabled
+        # by the Makefile when internal/netbpf/netpolicy.bpf.o is present).
+        run: |
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+          make build-bpf
 
       - name: Build per-platform binaries
         # build-bundle depends on build-release; calling explicitly so

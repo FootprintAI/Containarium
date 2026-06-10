@@ -1,10 +1,12 @@
 package netbpf
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -38,21 +40,62 @@ type Loader struct {
 	links map[int]link.Link // ifindex -> TCX link
 }
 
-// Load reads the compiled BPF object at objPath, loads the collection, and
-// verifies the expected program + maps are present. Build the object with:
+// Resolve loads the netpolicy BPF object from the operator-supplied source. The
+// value comes from CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT and is interpreted as:
 //
-//	clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
+//   - "embedded" / "1" / "true" / "yes" / "on" → the object compiled into this
+//     binary at build time (release binaries bundle it; see `make build-bpf`).
+//   - anything else → a filesystem path to a netpolicy.bpf.o.
+//
+// This lets release builds enable the feature with a single env flag while a
+// custom/locally-built object can still be pointed at by path.
+func Resolve(value string) (*Loader, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "embedded", "1", "true", "yes", "on":
+		obj := EmbeddedObject()
+		if len(obj) == 0 {
+			return nil, fmt.Errorf("netbpf: no embedded BPF object in this build " +
+				"(release binaries bundle it; for a custom build run `make build-bpf` then " +
+				"build with -tags embed_bpf, or set CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT to a netpolicy.bpf.o path)")
+		}
+		return LoadFromBytes(obj)
+	default:
+		return Load(value)
+	}
+}
+
+// Load reads the compiled BPF object at objPath and loads the collection. Build
+// the object with:
+//
+//	clang -O2 -g -target bpfel -I/usr/include/$(uname -m)-linux-gnu \
 //	    -c experimental/ebpf-phaseA/netpolicy.bpf.c -o netpolicy.bpf.o
 func Load(objPath string) (*Loader, error) {
-	if err := rlimit.RemoveMemlock(); err != nil {
-		return nil, fmt.Errorf("netbpf: RemoveMemlock: %w", err)
-	}
 	if _, err := os.Stat(objPath); err != nil {
 		return nil, fmt.Errorf("netbpf: BPF object %q: %w", objPath, err)
 	}
 	spec, err := ebpf.LoadCollectionSpec(objPath)
 	if err != nil {
 		return nil, fmt.Errorf("netbpf: load spec: %w", err)
+	}
+	return newLoaderFromSpec(spec)
+}
+
+// LoadFromBytes loads the collection from an in-memory BPF object — used for the
+// object embedded into the binary (Resolve "embedded"). Same verification as
+// Load.
+func LoadFromBytes(obj []byte) (*Loader, error) {
+	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(obj))
+	if err != nil {
+		return nil, fmt.Errorf("netbpf: load spec from embedded object: %w", err)
+	}
+	return newLoaderFromSpec(spec)
+}
+
+// newLoaderFromSpec instantiates the collection from a parsed spec and verifies
+// the expected program + maps are present. Shared by Load and LoadFromBytes.
+func newLoaderFromSpec(spec *ebpf.CollectionSpec) (*Loader, error) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		return nil, fmt.Errorf("netbpf: RemoveMemlock: %w", err)
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {

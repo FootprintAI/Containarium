@@ -32,15 +32,21 @@ Success criteria, run on a real backend:
    `--peer-ip`, same-tenant peer traffic is allowed (no deny event); without it,
    it is would-denied.
 
-## Build the BPF object (on the backend)
+## Build the BPF object
 
 ```sh
-clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
+clang -O2 -g -target bpfel -I/usr/include/$(uname -m)-linux-gnu \
     -c netpolicy.bpf.c -o netpolicy.bpf.o
 ```
 
 (The multiarch `-I` lets clang's bpf target find `<asm/types.h>`, same as
-Phase 0.)
+Phase 0. `-target bpfel` emits a little-endian object — one object serves every
+little-endian backend, amd64 and arm64.)
+
+For the daemon, `make build-bpf` runs exactly this and stages the object at
+`internal/netbpf/netpolicy.bpf.o` for embedding; the release pipeline does it
+automatically (see "Enabling the enforcer" below). The standalone command here
+is for the validator kit / iterating by path.
 
 ## Run
 
@@ -93,19 +99,42 @@ This validates the load-bearing eBPF path. The daemon-side integration (enforcer
 
 ## Enabling the enforcer in the daemon
 
-The daemon wires all of this up but keeps it **OFF by default**. To turn it on,
-build the object on the backend (above) and point the daemon at it:
+The daemon wires all of this up but keeps it **OFF by default**. The
+`CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` env var both enables it and selects
+where the object comes from:
 
 ```sh
+# Option 1 — use the object compiled into the release binary (no backend clang).
+export CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=embedded
+
+# Option 2 — point at a custom / locally-built object by path.
 export CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/path/to/netpolicy.bpf.o
+
 # restart the daemon
 ```
 
-When set, the daemon loads the program, reconciles every tenant's stored policy
-(`containarium network-policy set ...`) and live containers into the BPF maps on
-a periodic loop (and on container events), attaches to each container's veth, and
-writes a `network_policy.deny_logged` audit row per would-deny flow. Unset → the
-daemon behaves exactly as before.
+**`embedded`** loads the object baked into the binary at build time. The release
+pipeline runs `make build-bpf` (clang) and builds with `-tags embed_bpf`, so
+official binaries carry it — operators no longer need a compiler on the backend.
+A binary built without the object (a plain `make build`) reports the embedded
+object is absent and the enforcer stays off; use a **path** instead, or build
+your own with:
+
+```sh
+make build-bpf        # compiles internal/netbpf/netpolicy.bpf.o (needs clang)
+make build            # re-run: the Makefile auto-adds -tags embed_bpf
+```
+
+A **path** value is loaded from that file as before — useful for iterating on the
+program without a full rebuild. Either way, the verifier still runs at load time
+on the target kernel.
+
+When enabled, the daemon loads the program, reconciles every tenant's stored
+policy (`containarium network-policy set ...`) and live containers into the BPF
+maps on a periodic loop (and on container events), attaches to each container's
+veth, writes a `network_policy.deny_logged` audit row per would-deny flow, and
+(with the `flows` map) feeds the traffic view (#627). Unset → the daemon behaves
+exactly as before.
 
 ## Phase B — enforcement (dropping)
 

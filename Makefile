@@ -1,4 +1,4 @@
-.PHONY: help proto build clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
+.PHONY: help proto build build-bpf clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
 
 # Variables
 BINARY_NAME=containarium
@@ -24,6 +24,20 @@ ifdef VERSION
 endif
 
 GOFLAGS=-v
+
+# eBPF network-policy object (#627 follow-up). `make build-bpf` compiles it into
+# BPF_OBJ; it is gitignored — built in CI / on a backend, never committed. When
+# the object is present, GO_TAGS auto-enables the `embed_bpf` build tag so the
+# containarium binary bakes it in (internal/netbpf/embed_bpf.go). A normal dev
+# build (no object, no clang) leaves GO_TAGS empty and uses the stub. Because
+# $(wildcard) is evaluated at parse time, CI runs `make build-bpf` as a separate
+# invocation before `make build-release`.
+BPF_SRC := experimental/ebpf-phaseA/netpolicy.bpf.c
+BPF_OBJ := internal/netbpf/netpolicy.bpf.o
+GO_TAGS :=
+ifneq ($(wildcard $(BPF_OBJ)),)
+	GO_TAGS := -tags embed_bpf
+endif
 
 # Default target
 help: ## Show this help message
@@ -62,34 +76,41 @@ proto-breaking: ## Check for breaking changes in protobuf definitions
 	@echo "==> Checking for breaking changes..."
 	@buf breaking --against '.git#branch=main'
 
+build-bpf: ## Compile the eBPF network-policy object for embedding (Linux; needs clang + kernel UAPI headers)
+	@echo "==> Compiling eBPF object $(BPF_OBJ)..."
+	@clang -O2 -g -target bpfel \
+		-I/usr/include/$(shell uname -m)-linux-gnu \
+		-c $(BPF_SRC) -o $(BPF_OBJ)
+	@echo "==> eBPF object built: $(BPF_OBJ) ($$(wc -c < $(BPF_OBJ)) bytes). Re-run make to pick up -tags embed_bpf."
+
 build: proto web-ui swagger-ui ## Build the containarium binary (includes Swagger UI)
 	@echo "==> Building containarium..."
 	@mkdir -p $(BUILD_DIR)
-	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
+	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
 build-fast: proto ## Build the containarium binary (skip Swagger UI download, uses CDN)
 	@echo "==> Building containarium (fast mode - CDN fallback)..."
 	@mkdir -p $(BUILD_DIR)
-	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
+	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
 build-linux: proto web-ui swagger-ui ## Build for Linux (for deployment to GCE, includes Swagger UI)
 	@echo "==> Building containarium for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containarium/main.go
+	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containarium/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64"
 
 build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger UI)
 	@echo "==> Building for all platforms..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containarium/main.go
-	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 cmd/containarium/main.go
-	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/containarium/main.go
+	@GOOS=linux GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containarium/main.go
+	@GOOS=darwin GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 cmd/containarium/main.go
+	@GOOS=darwin GOARCH=arm64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/containarium/main.go
 	# Windows is CLIENT-ONLY: the daemon/sentinel/tunnel + direct-DB admin
 	# subcommands are //go:build !windows, so this binary exposes only the
 	# remote-client commands (create/list/ssh/…). The daemon stays linux/mac.
-	@GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/containarium/main.go
+	@GOOS=windows GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/containarium/main.go
 	@echo "==> Binaries built in $(BUILD_DIR)/"
 
 build-mcp: ## Build the MCP server binary

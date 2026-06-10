@@ -63,7 +63,7 @@ type containerInspector interface {
 // Phase A is observation-only: the program never drops, it emits would-deny
 // events that this enforcer's perf consumer turns into audit rows.
 type NetworkPolicyEnforcer struct {
-	objPath        string
+	objPath        string // BPF object source: a path, or a keyword ("embedded"/"1") → netbpf.Resolve
 	store          NetworkPolicyStore
 	registry       TenantRegistry
 	insp           containerInspector
@@ -121,7 +121,10 @@ func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
 // events). Returns an error if the object fails to load (e.g. not on Linux);
 // the caller logs and continues without enforcement.
 func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
-	loader, err := netbpf.Load(e.objPath)
+	// objPath is the env value: a filesystem path, or a keyword ("embedded"/"1")
+	// selecting the object compiled into the binary (#627 follow-up). Resolve
+	// picks the right loader.
+	loader, err := netbpf.Resolve(e.objPath)
 	if err != nil {
 		return err
 	}

@@ -90,3 +90,6 @@ coverage.html
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Compiled eBPF object — built by `make build-bpf` for embedding, never committed (#627)
+internal/netbpf/*.bpf.o
