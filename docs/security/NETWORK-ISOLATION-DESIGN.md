@@ -400,10 +400,16 @@ Properties / limits:
   between polls (LRU-evicted or aged out = effectively closed),
   its final counters are written to `traffic_history` via the
   same `SaveConnection` path conntrack uses, so the historical
-  view + aggregates light up on eBPF-only backends. Caveat: on a
-  backend where conntrack attribution also works, the same
-  logical flow may be persisted once per source (distinct IDs) —
-  cross-source 5-tuple dedup is a follow-up.
+  view + aggregates light up on eBPF-only backends.
+- **Source arbitration (#643).** conntrack and eBPF both feed the
+  view, so to avoid double-counting the collector tracks which
+  containers conntrack has attributed (`conntrackSeen`). Where
+  conntrack works for a container it owns that container's
+  traffic — the eBPF copies are suppressed from both the live
+  view and history persistence. Where it doesn't (docker-in-LXC),
+  conntrack never attributes the container, so eBPF is the sole
+  source and is used. Container-granularity, so there's no
+  per-flow timing race.
 
 ## What this is NOT
 
