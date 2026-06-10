@@ -225,3 +225,7 @@ Expect non-empty rows carrying the container's source IP, the destination
 IP/port, and non-zero `bytes_sent` — with **no** dependency on
 `nf_conntrack_acct` or the conntrack collector matching. Counters are cumulative
 per flow; the LRU map self-evicts idle flows.
+
+The full on-backend acceptance procedure (verifier acceptance of the egress
+program, `bytes_received` check, history persistence, no-regression, rollback)
+is in [`VALIDATION-traffic-flows.md`](VALIDATION-traffic-flows.md).
