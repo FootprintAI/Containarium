@@ -243,3 +243,46 @@ func TestReadYesNo_Defaults(t *testing.T) {
 		})
 	}
 }
+
+// TestPostLoginSSHSetup_CloudSkipsKeyRegistration: against the cloud, box
+// access is token-based (`containarium connect`), so login must NOT prompt to
+// register a personal SSH key — it points at connect instead. Guards the
+// two-path model (cloud=API key, OSS=SSH key).
+func TestPostLoginSSHSetup_CloudSkipsKeyRegistration(t *testing.T) {
+	withSSHLoginHome(t)
+	loginWithSSHSetup = false
+	// A reader that WOULD answer "yes" — proves we never reach the prompt.
+	loginPromptReader = strings.NewReader("y\n")
+
+	var buf bytes.Buffer
+	maybeRunPostLoginSSHSetup(&buf, defaultLoginServer)
+
+	out := buf.String()
+	if !strings.Contains(out, "containarium connect") {
+		t.Errorf("cloud login should point at `containarium connect`; got:\n%s", out)
+	}
+	if strings.Contains(out, "Register this machine's SSH key") {
+		t.Errorf("cloud login must not prompt for SSH-key registration; got:\n%s", out)
+	}
+}
+
+// TestPostLoginSSHSetup_CloudWithFlagStillRegisters: --with-ssh-setup is the
+// escape hatch — a cloud user who wants plain `ssh` can still force key
+// registration. We assert we get PAST the connect-skip into the key flow
+// (it then fails to reach a real server, which is fine for this check).
+func TestPostLoginSSHSetup_CloudWithFlagStillRegisters(t *testing.T) {
+	withSSHLoginHome(t)
+	withSSHHome(t) // isolate ~/.ssh so a key can be located/generated
+	loginWithSSHSetup = true
+
+	var buf bytes.Buffer
+	maybeRunPostLoginSSHSetup(&buf, defaultLoginServer)
+
+	out := buf.String()
+	if strings.Contains(out, "containarium connect") {
+		t.Errorf("--with-ssh-setup should bypass the cloud connect-skip; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Registering as") && !strings.Contains(out, "Generated") && !strings.Contains(out, "Using existing key") {
+		t.Errorf("expected the key-registration flow to run; got:\n%s", out)
+	}
+}

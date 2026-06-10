@@ -275,6 +275,16 @@ func loginHTTPClient() *http.Client {
 	return &http.Client{Timeout: loginHTTPTimeout}
 }
 
+// isCloudServer reports whether srv is the managed cloud rather than a
+// self-hosted OSS daemon. The two have different box-access models — cloud
+// authenticates with the API token (`containarium connect`), self-hosted with
+// the user's SSH key — so the post-login flow branches on it. Detection keys off
+// the cloud apex host (defaultLoginServer), normalized so an explicit --server
+// pointing at the cloud is recognized too.
+func isCloudServer(srv string) bool {
+	return credentials.NormalizeServer(srv) == credentials.NormalizeServer(defaultLoginServer)
+}
+
 // pickLoginServer resolves the effective server URL for login:
 // the explicit flag wins, otherwise the constant default. We do
 // NOT consult $CONTAINARIUM_SERVER here — that env var is for the
@@ -543,6 +553,20 @@ func runLogin(cmd *cobra.Command, args []string) error {
 // force-on in CI.
 func maybeRunPostLoginSSHSetup(out io.Writer, srv string) {
 	if loginNoSSHSetup {
+		return
+	}
+
+	// Two access models:
+	//   - Cloud: the API token you just minted IS the credential.
+	//     `containarium connect <box>` turns it into a shell with a managed key
+	//     — there's no personal SSH key to register. So we skip key registration
+	//     and point at connect.
+	//   - Self-hosted (OSS): boxes are reached over plain `ssh` with the user's
+	//     own key, so the registration flow below applies.
+	// --with-ssh-setup forces the key flow even against the cloud, for users who
+	// still want plain `ssh user@host`.
+	if isCloudServer(srv) && !loginWithSSHSetup {
+		fmt.Fprintf(out, "\nOpen a shell on a box:  containarium connect <box>\n")
 		return
 	}
 

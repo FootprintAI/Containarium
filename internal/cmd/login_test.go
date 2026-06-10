@@ -570,6 +570,26 @@ func TestEmailFromToken(t *testing.T) {
 	}
 }
 
+func TestIsCloudServer(t *testing.T) {
+	cases := []struct {
+		srv  string
+		want bool
+	}{
+		{defaultLoginServer, true},
+		{"https://cloud.containarium.dev", true},
+		{"https://cloud.containarium.dev/", true}, // trailing slash normalized
+		{"https://CLOUD.containarium.DEV", true},  // host case-insensitive
+		{"https://self-hosted.example.com", false},
+		{"http://127.0.0.1:8080", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isCloudServer(c.srv); got != c.want {
+			t.Errorf("isCloudServer(%q) = %v, want %v", c.srv, got, c.want)
+		}
+	}
+}
+
 func TestShortDeviceSuffix_HexAndVaries(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 100; i++ {
