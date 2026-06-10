@@ -18,6 +18,13 @@
 # PEERS) for your deployment OR override at invocation time via env
 # vars (`PROJECT=my-prod ZONE=us-east1-a ... bash deploy-binary.sh`).
 #
+# The systemd unit names are also overridable: most hosts run the daemon
+# as `containarium` / the sentinel as `containarium-sentinel`, but some run
+# the daemon under a different unit (e.g. `containarium-daemon`). Pass
+# PRIMARY_SERVICE / SENTINEL_SERVICE to match — if the unit name is wrong
+# the `stop` is a no-op, the running daemon keeps the binary open, and the
+# `cp` fails with "Text file busy".
+#
 
 set -euo pipefail
 
@@ -26,6 +33,10 @@ PROJECT="${PROJECT:-<your-gcp-project>}"
 ZONE="${ZONE:-<your-zone>}"
 PRIMARY_VM="${PRIMARY_VM:-<your-primary-vm>}"
 SENTINEL_VM="${SENTINEL_VM:-<your-sentinel-vm>}"
+# systemd unit names (override per host if the daemon runs under a
+# different unit, e.g. PRIMARY_SERVICE=containarium-daemon).
+PRIMARY_SERVICE="${PRIMARY_SERVICE:-containarium}"
+SENTINEL_SERVICE="${SENTINEL_SERVICE:-containarium-sentinel}"
 # Space-separated peer hostnames; defaults are placeholders.
 PEERS=(${PEERS:-<peer-a> <peer-b>})
 
@@ -113,8 +124,8 @@ gcloud compute scp "$BINARY" "$SENTINEL_VM:/tmp/containarium" \
 # the primary-VM pattern below.
 gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap --ssh-flag="-p 2222" \
-    --command="sudo systemctl stop containarium-sentinel && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start containarium-sentinel"
-echo "  Sentinel updated and restarted"
+    --command="sudo systemctl stop $SENTINEL_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $SENTINEL_SERVICE"
+echo "  Sentinel updated and restarted ($SENTINEL_SERVICE)"
 
 # 3. Deploy on primary
 echo "==> Deploying on primary ($PRIMARY_VM)..."
@@ -122,11 +133,15 @@ gcloud compute scp "$BINARY" "$PRIMARY_VM:/tmp/containarium" \
     --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap
 gcloud compute ssh "$PRIMARY_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap \
-    --command="sudo systemctl stop containarium && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start containarium"
-echo "  Primary updated and restarted"
+    --command="sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE"
+echo "  Primary updated and restarted ($PRIMARY_SERVICE)"
 
-# 4. Deploy on peers
-for peer in "${PEERS[@]}"; do
+# 4. Deploy on peers.
+# Guard the expansion: with PEERS=" " (the "primary+sentinel only" idiom) the
+# array is empty, and `"${PEERS[@]}"` under `set -u` on bash 3.2 (macOS) errors
+# "PEERS[@]: unbound variable". Skip the loop entirely when there are none.
+if (( ${#PEERS[@]} > 0 )); then
+  for peer in "${PEERS[@]}"; do
     echo "==> Deploying on peer ($peer)..."
     scp "$BINARY" "$peer:/tmp/containarium" 2>/dev/null || {
         echo "  Warning: failed to upload to $peer (skipping)"
@@ -135,8 +150,9 @@ for peer in "${PEERS[@]}"; do
     # Peers need interactive sudo — print the command for the user
     echo "  Binary uploaded to $peer:/tmp/containarium"
     echo "  Run on $peer:"
-    echo "    sudo systemctl stop containarium-tunnel && sudo systemctl stop containarium && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start containarium && sudo systemctl start containarium-tunnel"
-done
+    echo "    sudo systemctl stop containarium-tunnel && sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE && sudo systemctl start containarium-tunnel"
+  done
+fi
 
 echo ""
 echo "=== Deploy complete ==="
