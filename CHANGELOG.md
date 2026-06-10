@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.3] - 2026-06-10
+
+eBPF-sourced network usage.
+
+### Added
+
+- **Per-container network usage (src/dst IP + bytes) from eBPF.** Network traffic is now sourced from a per-veth eBPF program, giving accurate per-container ingress/egress byte accounting with source/destination IPs. (#628)
+- **Release binaries embed the compiled BPF object.** The eBPF object is embedded at build time, so release binaries ship it directly — no clang/BPF toolchain required on the backend host to run the traffic collector. (#629)
+
 ## [0.26.2] - 2026-06-09
 
 Native Windows CLI client.
