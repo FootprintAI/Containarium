@@ -41,6 +41,13 @@ type ServerCreds struct {
 	OrgID     string     `json:"org_id"`
 	IssuedAt  time.Time  `json:"issued_at"`
 	ExpiresAt *time.Time `json:"expires_at"`
+	// AccessModel records how this server grants box access — "token"
+	// (cloud: `containarium connect` with the API token) or "sshKey"
+	// (self-hosted: register the user's SSH key). Learned at login from the
+	// server's declared model, falling back to a host heuristic, and cached
+	// here so later commands don't re-detect (#637 follow-up). Empty for
+	// credentials written before this field existed.
+	AccessModel string `json:"access_model,omitempty"`
 }
 
 // CredentialsFile is the on-disk JSON document. DefaultServer is the

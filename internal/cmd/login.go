@@ -231,6 +231,11 @@ type sessionStatusResp struct {
 	OrgID     string `json:"orgId,omitempty"`
 	// ExpiresAt is RFC3339; absent or empty means non-expiring.
 	ExpiresAt string `json:"expiresAt,omitempty"`
+	// AccessModel, when the server declares it ("token" | "sshKey"), tells the
+	// CLI how box access works so it doesn't have to guess from the hostname
+	// (#637 follow-up). Absent on servers that don't yet emit it — the CLI then
+	// falls back to the host heuristic (see resolveAccessModel).
+	AccessModel string `json:"accessModel,omitempty"`
 }
 
 // emailFromToken best-effort extracts a human identity from a JWT access
@@ -275,12 +280,53 @@ func loginHTTPClient() *http.Client {
 	return &http.Client{Timeout: loginHTTPTimeout}
 }
 
+// Box-access models. A server is reached either by presenting the API token
+// (cloud — `containarium connect`) or by registering the user's SSH key
+// (self-hosted). Stored per-server in the credentials file.
+const (
+	accessModelToken  = "token"
+	accessModelSSHKey = "sshKey"
+)
+
+// resolveAccessModel decides how box access works for srv. The server's own
+// declaration wins (the cloud will return "accessModel" in the session
+// response); when it's absent or unrecognized, fall back to the host heuristic
+// — the cloud apex is token-based, everything else is SSH-key-based. This is the
+// authoritative-signal-with-bootstrap-fallback from the #637 discussion.
+func resolveAccessModel(declared, srv string) string {
+	switch declared {
+	case accessModelToken, accessModelSSHKey:
+		return declared
+	}
+	if isCloudServer(srv) {
+		return accessModelToken
+	}
+	return accessModelSSHKey
+}
+
+// accessModelFor returns the access model cached for srv in the credentials
+// file, or "" if unknown. Best-effort: any load error yields "" so callers
+// degrade gracefully rather than failing.
+func accessModelFor(srv string) string {
+	path, err := credentials.DefaultPath()
+	if err != nil {
+		return ""
+	}
+	cf, err := credentials.Load(path)
+	if err != nil {
+		return ""
+	}
+	if c, ok := cf.Get(srv); ok {
+		return c.AccessModel
+	}
+	return ""
+}
+
 // isCloudServer reports whether srv is the managed cloud rather than a
-// self-hosted OSS daemon. The two have different box-access models — cloud
-// authenticates with the API token (`containarium connect`), self-hosted with
-// the user's SSH key — so the post-login flow branches on it. Detection keys off
-// the cloud apex host (defaultLoginServer), normalized so an explicit --server
-// pointing at the cloud is recognized too.
+// self-hosted OSS daemon — the bootstrap heuristic resolveAccessModel uses
+// before a server declares its model. Detection keys off the cloud apex host
+// (defaultLoginServer), normalized so an explicit --server pointing at the cloud
+// is recognized too.
 func isCloudServer(srv string) bool {
 	return credentials.NormalizeServer(srv) == credentials.NormalizeServer(defaultLoginServer)
 }
@@ -488,11 +534,15 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	if email == "" {
 		email = emailFromToken(status.Token)
 	}
+	// How box access works for this server — the server's declaration if it
+	// makes one, else the host heuristic. Cached so later commands don't guess.
+	accessModel := resolveAccessModel(status.AccessModel, srv)
 	creds := credentials.ServerCreds{
-		Token:     status.Token,
-		UserEmail: email,
-		OrgID:     status.OrgID,
-		IssuedAt:  time.Now().UTC(),
+		Token:       status.Token,
+		UserEmail:   email,
+		OrgID:       status.OrgID,
+		IssuedAt:    time.Now().UTC(),
+		AccessModel: accessModel,
 	}
 	if status.ExpiresAt != "" {
 		if t, err := time.Parse(time.RFC3339, status.ExpiresAt); err == nil {
@@ -535,7 +585,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	// command. Errors are surfaced but non-fatal — the login itself
 	// succeeded, and the user can re-run `containarium ssh setup`
 	// later.
-	maybeRunPostLoginSSHSetup(out, srv)
+	maybeRunPostLoginSSHSetup(out, srv, accessModel)
 	return nil
 }
 
@@ -551,21 +601,21 @@ func runLogin(cmd *cobra.Command, args []string) error {
 // as "no" because hitting people with a key-registration in CI
 // without an explicit opt-in is hostile. Use --with-ssh-setup to
 // force-on in CI.
-func maybeRunPostLoginSSHSetup(out io.Writer, srv string) {
+func maybeRunPostLoginSSHSetup(out io.Writer, srv, accessModel string) {
 	if loginNoSSHSetup {
 		return
 	}
 
 	// Two access models:
-	//   - Cloud: the API token you just minted IS the credential.
+	//   - token (cloud): the API token you just minted IS the credential.
 	//     `containarium connect <box>` turns it into a shell with a managed key
 	//     — there's no personal SSH key to register. So we skip key registration
 	//     and point at connect.
-	//   - Self-hosted (OSS): boxes are reached over plain `ssh` with the user's
-	//     own key, so the registration flow below applies.
-	// --with-ssh-setup forces the key flow even against the cloud, for users who
+	//   - sshKey (self-hosted): boxes are reached over plain `ssh` with the
+	//     user's own key, so the registration flow below applies.
+	// --with-ssh-setup forces the key flow even on a token server, for users who
 	// still want plain `ssh user@host`.
-	if isCloudServer(srv) && !loginWithSSHSetup {
+	if accessModel == accessModelToken && !loginWithSSHSetup {
 		fmt.Fprintf(out, "\nOpen a shell on a box:  containarium connect <box>\n")
 		return
 	}
