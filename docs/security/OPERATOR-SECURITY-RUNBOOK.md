@@ -1009,6 +1009,10 @@ out can never silently cut a tenant off.
 
 # 1. Enable the enforcer — OBSERVE only. Resolves policies, attaches the BPF
 #    program, audits would-deny flows. Drops NOTHING.
+#    Value is either the keyword `embedded` (use the object compiled into the
+#    release binary — no clang on the backend) or a path to a custom object:
+CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=embedded
+#    …or…
 CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/etc/containarium/netpolicy.bpf.o
 
 # 2. Arm enforcement — only now does `--mode enforce` actually drop. Without
@@ -1016,13 +1020,25 @@ CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=/etc/containarium/netpolicy.bpf.o
 CONTAINARIUM_NETWORK_POLICY_ENFORCE=1
 ```
 
-Build the object once per backend (kernel ≥ 6.6 for TCX) from
-`experimental/ebpf-phaseA/netpolicy.bpf.c`:
+#### Where the BPF object comes from
+
+`=embedded` is the normal path: official release binaries (≥ the release that
+ships #629) bake the object in, so there is **nothing to build on the backend**.
+If the daemon logs that no embedded object is present, the binary was built
+without it — set a **path** instead, or use an official release.
+
+A **path** value loads the object from that file. Build one only if you're
+iterating on the program or running a binary without the embedded object
+(kernel ≥ 6.6 for TCX), from `experimental/ebpf-phaseA/netpolicy.bpf.c`:
 
 ```bash
-clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
+clang -O2 -g -target bpfel -I/usr/include/$(uname -m)-linux-gnu \
     -c netpolicy.bpf.c -o /etc/containarium/netpolicy.bpf.o
 ```
+
+Either way the kernel verifier runs at load time, so a fresh kernel still
+validates the program on first start. The keyword forms `1`/`true`/`yes`/`on`
+are accepted as synonyms for `embedded`.
 
 ### Authoring a policy
 
