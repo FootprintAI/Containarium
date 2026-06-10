@@ -78,7 +78,7 @@ func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 
 func TestAgentNetworkPolicyConfigDomains(t *testing.T) {
 	t.Run("defaults to the model providers when unset", func(t *testing.T) {
-		os.Unsetenv("CONTAINARIUM_AGENT_EGRESS_DOMAINS")
+		_ = os.Unsetenv("CONTAINARIUM_AGENT_EGRESS_DOMAINS")
 		_, domains, _ := agentNetworkPolicyConfig()
 		if len(domains) != 2 || domains[0] != "api.anthropic.com" {
 			t.Errorf("default domains = %v, want the provider defaults", domains)

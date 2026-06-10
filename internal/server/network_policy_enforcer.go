@@ -331,7 +331,8 @@ func flowsToEBPF(records []netbpf.FlowRecord, attached map[int]string, now time.
 		src := r.Src().String()
 		var dur time.Duration
 		if r.LastNs >= r.FirstNs {
-			dur = time.Duration(r.LastNs - r.FirstNs) // both are bpf_ktime_get_ns (ns)
+			// both are bpf_ktime_get_ns (ns); safecast guards the u64->i64 (Duration) cast
+			dur = time.Duration(safecast.I64FromU64(r.LastNs - r.FirstNs))
 		}
 		out = append(out, traffic.EBPFFlow{
 			ContainerName: name,
