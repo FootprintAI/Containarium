@@ -268,11 +268,56 @@ func pickLoginServer(explicit string) string {
 // "just work". The cost is one extra (revocable) token per login,
 // prunable in the cloud's API-tokens UI — a far better failure mode than
 // a silent 10-minute strand.
+//
+// The default is also conformed to the cloud's device_name charset
+// (#634): "<user>@<host>" carries '@', which is outside the allowed set
+// [-_.() a-zA-Z0-9], so an unsanitized default 400s on every login. An
+// explicit override is NOT sanitized — the user owns that string.
 func deviceName(override string) string {
 	if override != "" {
 		return override
 	}
-	return defaultDeviceBase() + "-" + shortDeviceSuffix()
+	return defaultDeviceName(defaultDeviceBase(), shortDeviceSuffix())
+}
+
+// allowedDeviceNameLen is the cloud's device_name cap (1-64 chars).
+const allowedDeviceNameLen = 64
+
+// defaultDeviceName joins the base + random suffix and conforms the result
+// to the cloud's device_name validation: 1-64 chars of [-_.() a-zA-Z0-9]
+// (#634). Disallowed runes in the base are mapped to '-'; the base is then
+// clamped so "<base>-<suffix>" fits the cap, keeping the suffix intact (it's
+// what guarantees the per-login uniqueness from #456).
+func defaultDeviceName(base, suffix string) string {
+	clean := sanitizeDeviceLabel(base)
+	if max := allowedDeviceNameLen - len(suffix) - 1; max < 1 {
+		clean = "" // suffix alone already fills the budget
+	} else if len(clean) > max {
+		clean = clean[:max] // safe: sanitizeDeviceLabel emits ASCII only
+	}
+	clean = strings.Trim(clean, "- ")
+	if clean == "" {
+		return suffix
+	}
+	return clean + "-" + suffix
+}
+
+// sanitizeDeviceLabel maps a label to the cloud's allowed device_name
+// charset [-_.() a-zA-Z0-9], replacing any other rune (e.g. '@' in
+// <user>@<host>, or '\' in a Windows DOMAIN\user) with '-'. Output is
+// ASCII-only, so byte-slicing it for the length clamp is safe.
+func sanitizeDeviceLabel(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.', r == '(', r == ')', r == ' ':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }
 
 // defaultDeviceBase builds the stable "<user>@<host>" portion of the

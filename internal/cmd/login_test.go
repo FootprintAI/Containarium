@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -480,9 +481,9 @@ func TestDeviceName_DefaultIsAutoDisambiguated(t *testing.T) {
 		t.Fatalf("explicit override mutated: %q", got)
 	}
 
-	// The default name starts with the stable "<user>@<host>" base and
-	// appends "-<suffix>".
-	base := defaultDeviceBase()
+	// The default name starts with the sanitized "<user>@<host>" base
+	// (charset-conformed for the cloud, #634) and appends "-<suffix>".
+	base := sanitizeDeviceLabel(defaultDeviceBase())
 	a := deviceName("")
 	if !strings.HasPrefix(a, base+"-") {
 		t.Fatalf("default %q should start with base %q + '-'", a, base)
@@ -499,6 +500,49 @@ func TestDeviceName_DefaultIsAutoDisambiguated(t *testing.T) {
 		if len(suffix) != 6 {
 			t.Errorf("suffix %q (from %q) is not 6 chars", suffix, n)
 		}
+	}
+}
+
+// cloudDeviceNameRe mirrors the cloud's device_name validation
+// (#634): 1-64 chars of [-_.() a-zA-Z0-9].
+var cloudDeviceNameRe = regexp.MustCompile(`^[-_.() a-zA-Z0-9]{1,64}$`)
+
+// TestDeviceName_DefaultMatchesCloudCharset guards #634: the auto-generated
+// default must satisfy the cloud's device_name validation with no user
+// action — the old "<user>@<host>" default carried '@' and 400'd every login.
+func TestDeviceName_DefaultMatchesCloudCharset(t *testing.T) {
+	got := deviceName("")
+	if !cloudDeviceNameRe.MatchString(got) {
+		t.Errorf("default device name %q does not match cloud charset %s", got, cloudDeviceNameRe)
+	}
+	if strings.Contains(got, "@") {
+		t.Errorf("default device name %q still contains '@'", got)
+	}
+}
+
+func TestDefaultDeviceName_SanitizesAndClamps(t *testing.T) {
+	// '@' (user@host) and '\' (Windows DOMAIN\user) map to '-'.
+	if got := defaultDeviceName("alice@laptop.local", "abc123"); got != "alice-laptop.local-abc123" {
+		t.Errorf("sanitize @ : got %q", got)
+	}
+	if got := defaultDeviceName(`CORP\bob`, "abc123"); got != "CORP-bob-abc123" {
+		t.Errorf("sanitize backslash: got %q", got)
+	}
+	// Over-long base is clamped so "<base>-<suffix>" fits 64 chars, suffix kept.
+	long := defaultDeviceName(strings.Repeat("x", 200), "abc123")
+	if len(long) > allowedDeviceNameLen {
+		t.Errorf("clamped name %q exceeds %d chars (len %d)", long, allowedDeviceNameLen, len(long))
+	}
+	if !strings.HasSuffix(long, "-abc123") {
+		t.Errorf("clamp dropped the suffix: %q", long)
+	}
+	if !cloudDeviceNameRe.MatchString(long) {
+		t.Errorf("clamped name %q violates cloud charset", long)
+	}
+	// An all-disallowed base trims to empty → fall back to the bare suffix
+	// (still a valid, non-empty device name).
+	if got := defaultDeviceName("@@@", "abc123"); got != "abc123" {
+		t.Errorf("all-disallowed base: got %q, want bare suffix", got)
 	}
 }
 
