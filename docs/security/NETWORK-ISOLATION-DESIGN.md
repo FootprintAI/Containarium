@@ -396,9 +396,14 @@ Properties / limits:
   before the `flows` map still loads and enforces; the daemon
   logs that flow accounting is unavailable and leaves the poll
   off until the operator rebuilds `netpolicy.bpf.o`.
-- **Historical persistence** (the `traffic_history` table) is
-  still conntrack-fed; persisting eBPF flows on eviction/close is
-  a follow-up.
+- **Historical persistence (#632).** When a flow disappears
+  between polls (LRU-evicted or aged out = effectively closed),
+  its final counters are written to `traffic_history` via the
+  same `SaveConnection` path conntrack uses, so the historical
+  view + aggregates light up on eBPF-only backends. Caveat: on a
+  backend where conntrack attribution also works, the same
+  logical flow may be persisted once per source (distinct IDs) —
+  cross-source 5-tuple dedup is a follow-up.
 
 ## What this is NOT
 

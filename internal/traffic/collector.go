@@ -272,8 +272,47 @@ func (c *Collector) IngestEBPFFlows(flows []EBPFFlow) {
 		next[conn.Id] = conn
 	}
 	c.mu.Lock()
+	prev := c.ebpfFlows
 	c.ebpfFlows = next
 	c.mu.Unlock()
+
+	// Persist flows that disappeared since the last poll to traffic_history
+	// (#632). The enforcer hands us the full active set each poll, so a flow in
+	// the previous set but not this one has been evicted from the BPF LRU map or
+	// aged out — effectively closed. Persisting its final cumulative counters is
+	// what lights up QueryTrafficHistory / GetTrafficAggregates on backends where
+	// the conntrack collector never attributed the flow (docker-in-LXC).
+	//
+	// SaveConnection is ON CONFLICT DO NOTHING keyed by the (stable) flow ID, so
+	// a re-evicted flow that briefly reappeared won't duplicate. Caveat: on a
+	// backend where conntrack attribution DOES work, the same logical flow may be
+	// persisted once by each source (distinct IDs) — true cross-source 5-tuple
+	// dedup is a follow-up; the eBPF path is the value-add where conntrack comes
+	// up empty.
+	if c.store != nil {
+		for _, conn := range closedFlows(prev, next) {
+			conn := conn
+			go func() {
+				if err := c.store.SaveConnection(c.ctx, conn); err != nil {
+					log.Printf("Warning: failed to persist closed eBPF flow: %v", err)
+				}
+			}()
+		}
+	}
+}
+
+// closedFlows returns the connections present in prev but not in next — flows
+// that the BPF map no longer reports (LRU-evicted or aged out), i.e. effectively
+// closed and ready to persist to history (#632). Pure, so it's unit-testable
+// without a database.
+func closedFlows(prev, next map[string]*pb.Connection) []*pb.Connection {
+	var out []*pb.Connection
+	for id, conn := range prev {
+		if _, stillActive := next[id]; !stillActive {
+			out = append(out, conn)
+		}
+	}
+	return out
 }
 
 // ebpfFlowID is a stable identifier for an eBPF flow, derived from its 5-tuple
