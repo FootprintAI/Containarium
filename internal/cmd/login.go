@@ -280,34 +280,25 @@ func loginHTTPClient() *http.Client {
 	return &http.Client{Timeout: loginHTTPTimeout}
 }
 
-// Box-access models. A server is reached either by presenting the API token
-// (cloud — `containarium connect`) or by registering the user's SSH key
-// (self-hosted). Stored per-server in the credentials file.
-const (
-	accessModelToken  = "token"
-	accessModelSSHKey = "sshKey"
-)
-
 // resolveAccessModel decides how box access works for srv. The server's own
 // declaration wins (the cloud will return "accessModel" in the session
 // response); when it's absent or unrecognized, fall back to the host heuristic
 // — the cloud apex is token-based, everything else is SSH-key-based. This is the
 // authoritative-signal-with-bootstrap-fallback from the #637 discussion.
-func resolveAccessModel(declared, srv string) string {
-	switch declared {
-	case accessModelToken, accessModelSSHKey:
-		return declared
+func resolveAccessModel(declared, srv string) credentials.AccessModel {
+	if m := credentials.AccessModel(declared); m.Known() {
+		return m
 	}
 	if isCloudServer(srv) {
-		return accessModelToken
+		return credentials.AccessModelToken
 	}
-	return accessModelSSHKey
+	return credentials.AccessModelSSHKey
 }
 
 // accessModelFor returns the access model cached for srv in the credentials
 // file, or "" if unknown. Best-effort: any load error yields "" so callers
 // degrade gracefully rather than failing.
-func accessModelFor(srv string) string {
+func accessModelFor(srv string) credentials.AccessModel {
 	path, err := credentials.DefaultPath()
 	if err != nil {
 		return ""
@@ -601,7 +592,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 // as "no" because hitting people with a key-registration in CI
 // without an explicit opt-in is hostile. Use --with-ssh-setup to
 // force-on in CI.
-func maybeRunPostLoginSSHSetup(out io.Writer, srv, accessModel string) {
+func maybeRunPostLoginSSHSetup(out io.Writer, srv string, accessModel credentials.AccessModel) {
 	if loginNoSSHSetup {
 		return
 	}
@@ -615,7 +606,7 @@ func maybeRunPostLoginSSHSetup(out io.Writer, srv, accessModel string) {
 	//     user's own key, so the registration flow below applies.
 	// --with-ssh-setup forces the key flow even on a token server, for users who
 	// still want plain `ssh user@host`.
-	if accessModel == accessModelToken && !loginWithSSHSetup {
+	if accessModel == credentials.AccessModelToken && !loginWithSSHSetup {
 		fmt.Fprintf(out, "\nOpen a shell on a box:  containarium connect <box>\n")
 		return
 	}

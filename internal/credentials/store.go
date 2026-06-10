@@ -35,19 +35,36 @@ const DefaultRelPath = ".containarium/credentials.json"
 // ExpiresAt is a *time.Time because the locked schema explicitly
 // allows `null` (non-expiring tokens — service accounts, dev tokens).
 // Marshalling nil emits JSON `null`, matching the PRD example.
+// AccessModel is how a server grants box access. It's a closed set, so it's a
+// defined type with typed constants rather than a bare string (per the repo's
+// strong-typing convention).
+type AccessModel string
+
+const (
+	// AccessModelToken — cloud: the API token IS the credential
+	// (`containarium connect`), no per-user SSH key.
+	AccessModelToken AccessModel = "token"
+	// AccessModelSSHKey — self-hosted: register the user's SSH public key.
+	AccessModelSSHKey AccessModel = "sshKey"
+)
+
+// Known reports whether m is one of the defined access models (vs an empty or
+// unrecognized value decoded off the wire).
+func (m AccessModel) Known() bool {
+	return m == AccessModelToken || m == AccessModelSSHKey
+}
+
 type ServerCreds struct {
 	Token     string     `json:"token"`
 	UserEmail string     `json:"user_email"`
 	OrgID     string     `json:"org_id"`
 	IssuedAt  time.Time  `json:"issued_at"`
 	ExpiresAt *time.Time `json:"expires_at"`
-	// AccessModel records how this server grants box access — "token"
-	// (cloud: `containarium connect` with the API token) or "sshKey"
-	// (self-hosted: register the user's SSH key). Learned at login from the
-	// server's declared model, falling back to a host heuristic, and cached
-	// here so later commands don't re-detect (#637 follow-up). Empty for
+	// AccessModel records how this server grants box access. Learned at login
+	// from the server's declared model, falling back to a host heuristic, and
+	// cached here so later commands don't re-detect (#637 follow-up). Empty for
 	// credentials written before this field existed.
-	AccessModel string `json:"access_model,omitempty"`
+	AccessModel AccessModel `json:"access_model,omitempty"`
 }
 
 // CredentialsFile is the on-disk JSON document. DefaultServer is the

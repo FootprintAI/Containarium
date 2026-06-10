@@ -365,7 +365,7 @@ func runSSHSetup(cmd *cobra.Command, args []string) error {
 	// FYI for token-access servers (cloud): registering an SSH key works, but
 	// it isn't needed — `containarium connect` uses the API token. We still
 	// proceed; the user ran `ssh setup` deliberately.
-	if accessModelFor(srv) == accessModelToken {
+	if accessModelFor(srv) == credentials.AccessModelToken {
 		fmt.Fprintf(out, "Note: %s uses token-based access — `containarium connect <box>` opens a shell with no SSH key.\n", srv)
 	}
 	name := sshSetupName

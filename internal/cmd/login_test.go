@@ -591,15 +591,18 @@ func TestIsCloudServer(t *testing.T) {
 }
 
 func TestResolveAccessModel(t *testing.T) {
-	cases := []struct{ declared, srv, want string }{
+	cases := []struct {
+		declared, srv string
+		want          credentials.AccessModel
+	}{
 		// The server's declaration wins — even against the host heuristic.
-		{"token", "https://self-hosted.example.com", accessModelToken},
-		{"sshKey", defaultLoginServer, accessModelSSHKey},
+		{"token", "https://self-hosted.example.com", credentials.AccessModelToken},
+		{"sshKey", defaultLoginServer, credentials.AccessModelSSHKey},
 		// No / unrecognized declaration → host heuristic (cloud=token, else sshKey).
-		{"", defaultLoginServer, accessModelToken},
-		{"", "https://self-hosted.example.com", accessModelSSHKey},
-		{"bogus", defaultLoginServer, accessModelToken},
-		{"bogus", "https://self-hosted.example.com", accessModelSSHKey},
+		{"", defaultLoginServer, credentials.AccessModelToken},
+		{"", "https://self-hosted.example.com", credentials.AccessModelSSHKey},
+		{"bogus", defaultLoginServer, credentials.AccessModelToken},
+		{"bogus", "https://self-hosted.example.com", credentials.AccessModelSSHKey},
 	}
 	for _, c := range cases {
 		if got := resolveAccessModel(c.declared, c.srv); got != c.want {

@@ -255,7 +255,7 @@ func TestPostLoginSSHSetup_CloudSkipsKeyRegistration(t *testing.T) {
 	loginPromptReader = strings.NewReader("y\n")
 
 	var buf bytes.Buffer
-	maybeRunPostLoginSSHSetup(&buf, defaultLoginServer, accessModelToken)
+	maybeRunPostLoginSSHSetup(&buf, defaultLoginServer, credentials.AccessModelToken)
 
 	out := buf.String()
 	if !strings.Contains(out, "containarium connect") {
@@ -276,7 +276,7 @@ func TestPostLoginSSHSetup_CloudWithFlagStillRegisters(t *testing.T) {
 	loginWithSSHSetup = true
 
 	var buf bytes.Buffer
-	maybeRunPostLoginSSHSetup(&buf, defaultLoginServer, accessModelToken)
+	maybeRunPostLoginSSHSetup(&buf, defaultLoginServer, credentials.AccessModelToken)
 
 	out := buf.String()
 	if strings.Contains(out, "containarium connect") {
