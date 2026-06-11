@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/footprintai/containarium/pkg/core/catalogsig"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"gopkg.in/yaml.v3"
 )
@@ -133,8 +134,18 @@ func validate(c *crewDef) error {
 // built-ins (#620). A missing dir is not an error. Fails on a parse/validate
 // error or an id that collides with an already-loaded crew. (Topology vs the
 // members' allowed_peers is validated at RunCrew time, against the skill
-// catalog — so load external skills before external crews.)
+// catalog — so load external skills before external crews.) Catalogs are
+// loaded unsigned; use LoadDirVerified to require a provenance check.
 func (m *Manager) LoadDir(dir string) error {
+	return m.LoadDirVerified(dir, nil)
+}
+
+// LoadDirVerified is LoadDir with an optional provenance check (#648). When v
+// is non-nil (require-signed mode on), each *.yaml file must carry a valid
+// detached ed25519 signature (foo.yaml.sig) under a trusted key, verified
+// before parse/merge; a missing or bad signature fails that file's load rather
+// than silently skipping it. When v is nil, behavior is identical to LoadDir.
+func (m *Manager) LoadDirVerified(dir string, v *catalogsig.Verifier) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -146,9 +157,19 @@ func (m *Manager) LoadDir(dir string) error {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		path := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", e.Name(), err)
+		}
+		if v != nil {
+			sig, err := catalogsig.ReadDetachedSig(path)
+			if err != nil {
+				return fmt.Errorf("%s: %w", e.Name(), err)
+			}
+			if err := v.Verify(data, sig); err != nil {
+				return fmt.Errorf("%s: signature verification failed: %w", e.Name(), err)
+			}
 		}
 		if err := m.mergeBytes(data); err != nil {
 			return fmt.Errorf("%s: %w", e.Name(), err)

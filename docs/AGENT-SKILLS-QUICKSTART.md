@@ -248,6 +248,36 @@ skills:
       capabilities: [example]
 ```
 
+### Require signed external catalogs (optional, #648)
+
+Loading a directory you authored yourself needs no signature — that's the
+default and is unchanged. Once a catalog is **distributed** from outside your
+own tree (a packaged catalog you didn't write), you can require a provenance
+check so the daemon loads only catalogs whose signature it can verify against a
+trusted key. Verification is **offline** (no network), so it works air-gapped.
+
+Turn it on with two env vars:
+
+```sh
+export CONTAINARIUM_CATALOG_REQUIRE_SIGNED=1
+export CONTAINARIUM_CATALOG_TRUSTED_PUBKEYS=/etc/containarium/catalog-trusted.keys
+```
+
+`catalog-trusted.keys` holds one **base64 ed25519 public key per line** (blank
+lines and `#` comments ignored — list several keys to support rotation). Each
+catalog file then needs a detached signature sitting next to it: `foo.yaml` →
+`foo.yaml.sig`, where the `.sig` is the **base64 ed25519 signature over the
+exact bytes** of `foo.yaml`.
+
+When the mode is on, a file with a **missing or bad** signature fails the
+load with a clear error — it is not silently skipped. When it's off, catalogs
+load unsigned exactly as before.
+
+Generating keys and signatures is left to the operator/distributor (key custody
+and *who* signs are out of scope). For example, with Go's `crypto/ed25519` or
+any ed25519 tool: sign the raw file bytes and base64-encode the 64-byte
+signature into `<file>.yaml.sig`.
+
 ## Limitations (by design)
 
 - **No in-box loop / A2A server yet** — the box is provisioned, seeded, and

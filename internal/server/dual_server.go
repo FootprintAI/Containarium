@@ -34,6 +34,7 @@ import (
 	"github.com/footprintai/containarium/internal/ttlsweeper"
 	"github.com/footprintai/containarium/internal/wake"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
+	"github.com/footprintai/containarium/pkg/core/catalogsig"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -332,18 +333,30 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// the agent/crew servers use, so out-of-tree packs register without a
 	// rebuild. Skills first (crews reference them). Best-effort: a bad external
 	// catalog logs and is skipped rather than failing daemon startup.
-	if dir := os.Getenv("CONTAINARIUM_SKILLS_DIR"); dir != "" {
-		if err := skills.GetDefault().LoadDir(dir); err != nil {
-			log.Printf("[agent-skill] external skills from %s: %v", dir, err)
-		} else {
-			log.Printf("Loaded external skills from %s", dir)
+	//
+	// Optional provenance check (#648): when require-signed mode is on, each
+	// external catalog file must carry a valid detached signature under a
+	// trusted key. catalogVerifier is nil when the mode is off (load unsigned,
+	// as before). A misconfigured require-signed mode (e.g. no trusted key)
+	// fails closed — we skip loading external catalogs rather than fall back to
+	// unsigned.
+	catalogVerifier, verr := catalogsig.FromEnv()
+	if verr != nil {
+		log.Printf("[catalog] require-signed mode misconfigured, skipping external catalogs: %v", verr)
+	} else {
+		if dir := os.Getenv("CONTAINARIUM_SKILLS_DIR"); dir != "" {
+			if err := skills.GetDefault().LoadDirVerified(dir, catalogVerifier); err != nil {
+				log.Printf("[agent-skill] external skills from %s: %v", dir, err)
+			} else {
+				log.Printf("Loaded external skills from %s", dir)
+			}
 		}
-	}
-	if dir := os.Getenv("CONTAINARIUM_CREWS_DIR"); dir != "" {
-		if err := crews.GetDefault().LoadDir(dir); err != nil {
-			log.Printf("[crew] external crews from %s: %v", dir, err)
-		} else {
-			log.Printf("Loaded external crews from %s", dir)
+		if dir := os.Getenv("CONTAINARIUM_CREWS_DIR"); dir != "" {
+			if err := crews.GetDefault().LoadDirVerified(dir, catalogVerifier); err != nil {
+				log.Printf("[crew] external crews from %s: %v", dir, err)
+			} else {
+				log.Printf("Loaded external crews from %s", dir)
+			}
 		}
 	}
 
