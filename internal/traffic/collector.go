@@ -251,24 +251,7 @@ type EBPFFlow struct {
 func (c *Collector) IngestEBPFFlows(flows []EBPFFlow) {
 	next := make(map[string]*pb.Connection, len(flows))
 	for _, f := range flows {
-		conn := &pb.Connection{
-			Id:              ebpfFlowID(f),
-			ContainerName:   f.ContainerName,
-			ContainerIp:     f.ContainerIP,
-			Protocol:        protoStringToEnum(f.Protocol),
-			SourceIp:        f.SrcIP,
-			SourcePort:      uint32(f.SrcPort),
-			DestIp:          f.DstIP,
-			DestPort:        uint32(f.DstPort),
-			State:           pb.ConnectionState_CONNECTION_STATE_UNSPECIFIED,
-			Direction:       pb.TrafficDirection_TRAFFIC_DIRECTION_EGRESS,
-			BytesSent:       f.Bytes,
-			PacketsSent:     f.Packets,
-			BytesReceived:   f.RxBytes,   // reply direction via the veth egress hook (#631)
-			PacketsReceived: f.RxPackets, // 0 when the BPF object predates #631
-			FirstSeen:       timestamppb.New(f.First),
-			LastSeen:        timestamppb.New(f.Last),
-		}
+		conn := ebpfFlowToConn(f)
 		next[conn.Id] = conn
 	}
 	c.mu.Lock()
@@ -277,11 +260,12 @@ func (c *Collector) IngestEBPFFlows(flows []EBPFFlow) {
 	c.mu.Unlock()
 
 	// Persist flows that disappeared since the last poll to traffic_history
-	// (#632). The enforcer hands us the full active set each poll, so a flow in
-	// the previous set but not this one has been evicted from the BPF LRU map or
-	// aged out — effectively closed. Persisting its final cumulative counters is
-	// what lights up QueryTrafficHistory / GetTrafficAggregates on backends where
-	// the conntrack collector never attributed the flow (docker-in-LXC).
+	// (#632). The enforcer hands us the active set each poll, so a flow in the
+	// previous set but not this one has been evicted from the BPF LRU map, had
+	// its container removed, or was reaped by the idle sweep — effectively
+	// closed. Persisting its final cumulative counters is what lights up
+	// QueryTrafficHistory / GetTrafficAggregates on backends where the conntrack
+	// collector never attributed the flow (docker-in-LXC).
 	//
 	// SaveConnection is ON CONFLICT DO NOTHING keyed by the (stable) flow ID, so
 	// a re-evicted flow that briefly reappeared won't duplicate. Caveat: on a
@@ -289,15 +273,62 @@ func (c *Collector) IngestEBPFFlows(flows []EBPFFlow) {
 	// persisted once by each source (distinct IDs) — true cross-source 5-tuple
 	// dedup is a follow-up; the eBPF path is the value-add where conntrack comes
 	// up empty.
-	if c.store != nil {
-		for _, conn := range closedFlows(prev, next) {
-			conn := conn
-			go func() {
-				if err := c.store.SaveConnection(c.ctx, conn); err != nil {
-					log.Printf("Warning: failed to persist closed eBPF flow: %v", err)
-				}
-			}()
-		}
+	c.persistClosedFlows(closedFlows(prev, next))
+}
+
+// PersistEBPFFlows writes a batch of eBPF flows to traffic_history immediately,
+// independent of the prev/next disappearance diff IngestEBPFFlows uses. The idle
+// reaper (#632) calls this for flows it has determined are quiesced (last packet
+// older than the idle timeout) and is about to delete from the BPF map. Without
+// it, a flow that simply goes quiet never reaches history until the 65536-entry
+// LRU map fills enough to evict it — the gap on-backend validation found, where
+// a far-from-full map meant closedFlows never fired. SaveConnection is ON
+// CONFLICT DO NOTHING by flow ID, so a flow also caught by closedFlows on a later
+// poll isn't double-counted.
+func (c *Collector) PersistEBPFFlows(flows []EBPFFlow) {
+	conns := make([]*pb.Connection, 0, len(flows))
+	for _, f := range flows {
+		conns = append(conns, ebpfFlowToConn(f))
+	}
+	c.persistClosedFlows(conns)
+}
+
+// persistClosedFlows writes each closed eBPF flow to history off the hot path.
+// No-op when the store isn't configured (history disabled).
+func (c *Collector) persistClosedFlows(conns []*pb.Connection) {
+	if c.store == nil {
+		return
+	}
+	for _, conn := range conns {
+		conn := conn
+		go func() {
+			if err := c.store.SaveConnection(c.ctx, conn); err != nil {
+				log.Printf("Warning: failed to persist closed eBPF flow: %v", err)
+			}
+		}()
+	}
+}
+
+// ebpfFlowToConn renders an EBPFFlow as the pb.Connection both the live view and
+// history persistence use, so they can never drift.
+func ebpfFlowToConn(f EBPFFlow) *pb.Connection {
+	return &pb.Connection{
+		Id:              ebpfFlowID(f),
+		ContainerName:   f.ContainerName,
+		ContainerIp:     f.ContainerIP,
+		Protocol:        protoStringToEnum(f.Protocol),
+		SourceIp:        f.SrcIP,
+		SourcePort:      uint32(f.SrcPort),
+		DestIp:          f.DstIP,
+		DestPort:        uint32(f.DstPort),
+		State:           pb.ConnectionState_CONNECTION_STATE_UNSPECIFIED,
+		Direction:       pb.TrafficDirection_TRAFFIC_DIRECTION_EGRESS,
+		BytesSent:       f.Bytes,
+		PacketsSent:     f.Packets,
+		BytesReceived:   f.RxBytes,   // reply direction via the veth egress hook (#631)
+		PacketsReceived: f.RxPackets, // 0 when the BPF object predates #631
+		FirstSeen:       timestamppb.New(f.First),
+		LastSeen:        timestamppb.New(f.Last),
 	}
 }
 

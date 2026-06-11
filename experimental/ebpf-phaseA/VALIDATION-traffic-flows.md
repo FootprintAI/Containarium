@@ -103,13 +103,18 @@ container, with the correct dest IP/port.
 
 ## Phase 3 — history persistence (#632)
 
-A flow is persisted when it disappears from the BPF LRU map (closed / idle /
-evicted) between polls. Generate a flow, let it finish, then wait past a couple
-of poll intervals:
+A flow is persisted by the **idle reaper**: each poll the enforcer marks any
+flow whose last packet is older than the idle timeout (`flowIdleTimeout`,
+default **2 min**) as closed, writes its final counters to history, and deletes
+it from the BPF map. (The BPF program never deletes on FIN/RST and the
+65536-entry LRU map only evicts under pressure, so without the reaper a quiesced
+flow on a lightly-loaded backend never reaches history — the gap the first
+validation pass found.) Generate a flow, let it finish, then wait past the idle
+timeout **plus** one poll:
 
 ```sh
 incus exec <container> -- sh -c 'curl -s https://1.1.1.1 -o /dev/null'
-sleep 60   # let the flow go idle and the poll observe it disappear
+sleep 150  # > flowIdleTimeout (2m) + one poll, so the reaper persists + forgets it
 ```
 
 Query history:

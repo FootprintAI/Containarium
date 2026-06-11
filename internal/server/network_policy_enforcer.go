@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf/perf"
+	"golang.org/x/sys/unix"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/events"
@@ -35,11 +36,24 @@ const defaultNetPolicyReconcileInterval = 10 * time.Second
 // keeps the traffic view fresh without churning the map iterator.
 const defaultFlowPollInterval = 15 * time.Second
 
+// defaultFlowIdleTimeout is how long a flow may go without a packet before the
+// poll loop treats it as closed: persists its final counters to history (#632)
+// and deletes it from the BPF map. The BPF program never deletes a flow on
+// FIN/RST, and the 65536-entry LRU map only evicts under pressure — so without
+// this sweep a quiesced flow on a lightly-loaded backend never reaches history
+// (the gap on-backend validation surfaced). Two minutes is long enough that a
+// briefly-idle but still-live connection isn't split, short enough that an ended
+// flow lands in history promptly.
+const defaultFlowIdleTimeout = 2 * time.Minute
+
 // FlowSink receives per-flow accounting records sourced from the eBPF program
 // (#627). *traffic.Collector implements it; kept an interface so the enforcer is
 // testable without the collector.
 type FlowSink interface {
 	IngestEBPFFlows(flows []traffic.EBPFFlow)
+	// PersistEBPFFlows writes a batch of closed/idle flows straight to history,
+	// independent of IngestEBPFFlows' disappearance diff — the idle reaper (#632).
+	PersistEBPFFlows(flows []traffic.EBPFFlow)
 }
 
 // defaultDomainRefreshInterval is how often egress_domains are re-resolved to
@@ -75,8 +89,9 @@ type NetworkPolicyEnforcer struct {
 	resolver      *DomainResolver // Phase C: egress_domains -> IPs
 	domainRefresh time.Duration
 
-	flowSink FlowSink      // #627: traffic-view flow accounting (nil = disabled)
-	flowPoll time.Duration // how often to read the BPF flows map
+	flowSink        FlowSink      // #627: traffic-view flow accounting (nil = disabled)
+	flowPoll        time.Duration // how often to read the BPF flows map
+	flowIdleTimeout time.Duration // #632: idle age past which a flow is reaped to history
 
 	loader *netbpf.Loader
 
@@ -104,6 +119,7 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		resolver:        NewDomainResolver(nil),
 		domainRefresh:   defaultDomainRefreshInterval,
 		flowPoll:        defaultFlowPollInterval,
+		flowIdleTimeout: defaultFlowIdleTimeout,
 		attached:        make(map[int]string),
 		idName:          make(map[uint32]string),
 		enforced:        make(map[uint32]bool),
@@ -314,7 +330,58 @@ func (e *NetworkPolicyEnforcer) pollFlows() {
 	}
 	e.mu.Unlock()
 
-	e.flowSink.IngestEBPFFlows(flowsToEBPF(records, attached, time.Now()))
+	now := time.Now()
+	active, idle := splitIdleFlows(records, monotonicNowNs(), e.flowIdleTimeout)
+
+	// Live view = currently-active flows only (an idle flow being reaped this
+	// poll shouldn't show as a live connection).
+	e.flowSink.IngestEBPFFlows(flowsToEBPF(active, attached, now))
+
+	// Idle reaper (#632): a flow whose last packet is older than the idle
+	// timeout has effectively closed. Persist its final counters to history,
+	// then delete it from the BPF map so it doesn't linger until the LRU map
+	// fills — the gap on-backend validation found, where a quiesced flow on a
+	// far-from-full 65536-entry map never disappeared, so closedFlows never
+	// fired and history stayed empty.
+	if len(idle) > 0 {
+		e.flowSink.PersistEBPFFlows(flowsToEBPF(idle, attached, now))
+		for _, r := range idle {
+			if err := e.loader.DeleteFlow(r); err != nil {
+				log.Printf("[netpolicy] reap idle flow: %v", err)
+			}
+		}
+	}
+}
+
+// splitIdleFlows partitions BPF flow records into still-active and idle by the
+// monotonic last-packet stamp. A flow whose last packet is older than idleFor
+// (relative to nowNs — the current CLOCK_MONOTONIC reading, the same clock
+// bpf_ktime_get_ns stamps records with) is treated as closed and returned in
+// idle for persist+forget (#632). Pure: no clock or loader access, so it is
+// unit-testable. A zero/garbage nowNs (clock read failed) yields no idle flows —
+// the sweep simply no-ops that poll rather than reaping live flows.
+func splitIdleFlows(records []netbpf.FlowRecord, nowNs uint64, idleFor time.Duration) (active, idle []netbpf.FlowRecord) {
+	cutoff := uint64(idleFor.Nanoseconds())
+	for _, r := range records {
+		if nowNs > r.LastNs && nowNs-r.LastNs > cutoff {
+			idle = append(idle, r)
+		} else {
+			active = append(active, r)
+		}
+	}
+	return active, idle
+}
+
+// monotonicNowNs returns CLOCK_MONOTONIC in nanoseconds — the same clock
+// bpf_ktime_get_ns() stamps flow records with, so the two are directly
+// comparable for idle detection. Returns 0 if the clock read fails (the caller
+// then reaps nothing that poll).
+func monotonicNowNs() uint64 {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0
+	}
+	return uint64(ts.Sec)*1_000_000_000 + uint64(ts.Nsec)
 }
 
 // flowsToEBPF attributes each BPF flow record to its container via the veth
