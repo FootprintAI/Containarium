@@ -56,6 +56,16 @@ type Collector struct {
 	mu          sync.RWMutex
 	connections map[string]*pb.Connection // conntrack ID -> connection
 	ebpfFlows   map[string]*pb.Connection // eBPF flow ID -> connection (#627)
+	// conntrackSeen is the set of container names the conntrack collector has
+	// successfully attributed at least one flow for. It's the source-arbitration
+	// signal for #643: where conntrack works for a container, it owns that
+	// container's traffic (live view + history), so the eBPF flow data is
+	// suppressed to avoid double-counting; where it doesn't (docker-in-LXC,
+	// masquerade — conntrack never attributes the container), eBPF is the only
+	// source and is used. Container-granularity, so there's no per-flow timing
+	// race. Sticky: once true it stays true (attribution is by container IP,
+	// all-or-nothing per container).
+	conntrackSeen map[string]bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -78,16 +88,17 @@ func NewCollector(config CollectorConfig, incusClient *incus.Client, store *Stor
 	}
 
 	return &Collector{
-		config:      config,
-		incusClient: incusClient,
-		store:       store,
-		cache:       cache,
-		monitor:     monitor,
-		emitter:     emitter,
-		connections: make(map[string]*pb.Connection),
-		ebpfFlows:   make(map[string]*pb.Connection),
-		ctx:         ctx,
-		cancel:      cancel,
+		config:        config,
+		incusClient:   incusClient,
+		store:         store,
+		cache:         cache,
+		monitor:       monitor,
+		emitter:       emitter,
+		connections:   make(map[string]*pb.Connection),
+		ebpfFlows:     make(map[string]*pb.Connection),
+		conntrackSeen: make(map[string]bool),
+		ctx:           ctx,
+		cancel:        cancel,
 	}, nil
 }
 
@@ -167,6 +178,7 @@ func (c *Collector) processConntrackEvent(event *ConntrackEvent) {
 
 	// Update local cache
 	c.mu.Lock()
+	c.conntrackSeen[containerName] = true // conntrack owns this container's history (#643)
 	if event.Type == ConntrackEventDestroy {
 		delete(c.connections, event.ID)
 	} else {
@@ -268,11 +280,11 @@ func (c *Collector) IngestEBPFFlows(flows []EBPFFlow) {
 	// collector never attributed the flow (docker-in-LXC).
 	//
 	// SaveConnection is ON CONFLICT DO NOTHING keyed by the (stable) flow ID, so
-	// a re-evicted flow that briefly reappeared won't duplicate. Caveat: on a
-	// backend where conntrack attribution DOES work, the same logical flow may be
-	// persisted once by each source (distinct IDs) — true cross-source 5-tuple
-	// dedup is a follow-up; the eBPF path is the value-add where conntrack comes
-	// up empty.
+	// a re-evicted flow that briefly reappeared won't duplicate. Cross-source
+	// dedup (#643) is applied inside persistClosedFlows: a flow whose container
+	// conntrack already attributes is skipped, so the same logical flow doesn't
+	// land in history once per source. The eBPF path is the sole writer only
+	// where conntrack came up empty (docker-in-LXC).
 	c.persistClosedFlows(closedFlows(prev, next))
 }
 
@@ -294,12 +306,19 @@ func (c *Collector) PersistEBPFFlows(flows []EBPFFlow) {
 }
 
 // persistClosedFlows writes each closed eBPF flow to history off the hot path.
-// No-op when the store isn't configured (history disabled).
+// No-op when the store isn't configured (history disabled). Cross-source dedup
+// (#643): a flow whose container conntrack already attributes is skipped here —
+// otherwise the same logical flow lands in history once per source. Applying it
+// at this shared chokepoint covers both the closedFlows (eviction) path and the
+// idle reaper (#632), so neither double-counts against conntrack.
 func (c *Collector) persistClosedFlows(conns []*pb.Connection) {
 	if c.store == nil {
 		return
 	}
 	for _, conn := range conns {
+		if c.conntrackOwns(conn.ContainerName) {
+			continue
+		}
 		conn := conn
 		go func() {
 			if err := c.store.SaveConnection(c.ctx, conn); err != nil {
@@ -330,6 +349,16 @@ func ebpfFlowToConn(f EBPFFlow) *pb.Connection {
 		FirstSeen:       timestamppb.New(f.First),
 		LastSeen:        timestamppb.New(f.Last),
 	}
+}
+
+// conntrackOwns reports whether the conntrack collector has attributed traffic
+// for container — in which case it owns that container's history and the eBPF
+// path defers to it (#643). Takes its own read lock; do NOT call while already
+// holding c.mu.
+func (c *Collector) conntrackOwns(container string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conntrackSeen[container]
 }
 
 // closedFlows returns the connections present in prev but not in next — flows
@@ -439,6 +468,7 @@ func (c *Collector) takeSnapshot() {
 		}
 
 		matched++
+		c.conntrackSeen[containerName] = true // conntrack owns this container's history (#643)
 		conn := c.convertToProto(event, containerName, containerIP, direction)
 		c.connections[event.ID] = conn
 	}
@@ -487,7 +517,13 @@ func (c *Collector) GetConnections(containerName string) []*pb.Connection {
 	}
 	// Merge eBPF-sourced flows (#627). On backends where conntrack attribution
 	// fails (docker-in-LXC, masquerade), these may be the only connections seen.
+	// Where conntrack DID attribute the container, it already lists these flows,
+	// so skip the eBPF copies to avoid double-display (#643). Read under the held
+	// RLock.
 	for _, conn := range c.ebpfFlows {
+		if c.conntrackSeen[conn.ContainerName] {
+			continue
+		}
 		if containerName == "" || conn.ContainerName == containerName {
 			result = append(result, conn)
 		}
