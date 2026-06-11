@@ -5,20 +5,10 @@ import (
 	"testing"
 )
 
-// encodeFlowKey / encodeFlowStat mirror the C `struct flow_key` / `struct
-// flow_stat` wire layout, so the round-trip test pins the byte offsets the
-// loader's Flows() decode relies on.
-func encodeFlowKey(r FlowRecord) []byte {
-	b := make([]byte, flowKeySize)
-	binary.NativeEndian.PutUint32(b[0:4], r.Ifindex)
-	binary.NativeEndian.PutUint32(b[4:8], r.Saddr)
-	binary.NativeEndian.PutUint32(b[8:12], r.Daddr)
-	binary.NativeEndian.PutUint16(b[12:14], r.Sport)
-	binary.NativeEndian.PutUint16(b[14:16], r.Dport)
-	b[16] = r.Proto
-	return b
-}
-
+// encodeFlowStat mirrors the C `struct flow_stat` wire layout, so the round-trip
+// test pins the byte offsets the loader's Flows() decode relies on. (The key
+// side uses the production encodeFlowKey from loader.go, added for DeleteFlow —
+// this test doubles as its round-trip coverage.)
 func encodeFlowStat(r FlowRecord) []byte {
 	b := make([]byte, flowStatSize)
 	binary.NativeEndian.PutUint64(b[0:8], r.Packets)

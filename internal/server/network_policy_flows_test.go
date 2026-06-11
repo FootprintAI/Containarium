@@ -78,3 +78,32 @@ func TestProtoName(t *testing.T) {
 		}
 	}
 }
+
+// TestSplitIdleFlows covers the #632 idle reaper's partition: a flow whose last
+// packet is older than the timeout is reaped, a recent one stays active, and a
+// failed clock read (nowNs == 0) reaps nothing rather than sweeping live flows.
+func TestSplitIdleFlows(t *testing.T) {
+	const nowNs = uint64(100_000_000_000) // 100s on the monotonic clock
+	idleTimeout := 2 * time.Second
+	records := []netbpf.FlowRecord{
+		{Sport: 1, LastNs: nowNs - uint64(5*time.Second)}, // idle: 5s > 2s
+		{Sport: 2, LastNs: nowNs - uint64(1*time.Second)}, // active: 1s < 2s
+		{Sport: 3, LastNs: nowNs},                         // active: just now
+		{Sport: 4, LastNs: nowNs + uint64(time.Second)},   // future stamp (skew) -> active
+	}
+
+	active, idle := splitIdleFlows(records, nowNs, idleTimeout)
+
+	if len(idle) != 1 || idle[0].Sport != 1 {
+		t.Fatalf("idle = %+v, want exactly the sport=1 flow", idle)
+	}
+	if len(active) != 3 {
+		t.Fatalf("active = %d flows, want 3", len(active))
+	}
+
+	// Clock read failed (nowNs == 0): nothing is idle.
+	active0, idle0 := splitIdleFlows(records, 0, idleTimeout)
+	if len(idle0) != 0 || len(active0) != len(records) {
+		t.Fatalf("with nowNs=0 want no reaping; got active=%d idle=%d", len(active0), len(idle0))
+	}
+}

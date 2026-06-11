@@ -291,6 +291,41 @@ func (l *Loader) Flows() ([]FlowRecord, error) {
 	return out, nil
 }
 
+// DeleteFlow removes one entry from the flows map, identified by rec's 5-tuple
+// key. The idle reaper (#632) calls this to "persist + forget" a quiesced flow
+// after writing its final counters to history, so a flow that simply went quiet
+// doesn't linger in the LRU map until eviction (which, on a far-from-full map,
+// effectively never happens). A key that's already gone is not an error.
+func (l *Loader) DeleteFlow(rec FlowRecord) error {
+	m := l.coll.Maps[mapFlows]
+	if m == nil {
+		return fmt.Errorf("netbpf: flows map not present (rebuild netpolicy.bpf.o?)")
+	}
+	if err := m.Delete(encodeFlowKey(rec)); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netbpf: delete flow: %w", err)
+	}
+	return nil
+}
+
+// encodeFlowKey renders rec's 5-tuple as the 20-byte `struct flow_key` wire
+// layout — the exact inverse of decodeFlowKey (native-endian fields + 3 zero pad
+// bytes, matching the kernel's zero-initialised key). Used to address a specific
+// flow for deletion.
+func encodeFlowKey(rec FlowRecord) []byte {
+	b := make([]byte, flowKeySize)
+	binary.NativeEndian.PutUint32(b[0:4], rec.Ifindex)
+	binary.NativeEndian.PutUint32(b[4:8], rec.Saddr)
+	binary.NativeEndian.PutUint32(b[8:12], rec.Daddr)
+	binary.NativeEndian.PutUint16(b[12:14], rec.Sport)
+	binary.NativeEndian.PutUint16(b[14:16], rec.Dport)
+	b[16] = rec.Proto
+	// b[17:20] padding stays zero
+	return b
+}
+
 // Close detaches every veth link (ingress + egress) and frees the collection.
 func (l *Loader) Close() error {
 	var errs []error

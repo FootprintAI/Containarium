@@ -109,3 +109,42 @@ func TestIngestEBPFFlows_EmptyClears(t *testing.T) {
 		t.Errorf("after empty ingest = %d conns, want 0", n)
 	}
 }
+
+// TestClosedFlows_DetectsDisappeared guards the #632 persistence trigger: a flow
+// in the previous poll but absent from the next is "closed" and must be returned
+// for persistence; flows still active are not.
+func TestClosedFlows_DetectsDisappeared(t *testing.T) {
+	mk := func(id string) *pb.Connection { return &pb.Connection{Id: id} }
+	prev := map[string]*pb.Connection{
+		"ebpf-a": mk("ebpf-a"), // stays
+		"ebpf-b": mk("ebpf-b"), // disappears → closed
+		"ebpf-c": mk("ebpf-c"), // disappears → closed
+	}
+	next := map[string]*pb.Connection{
+		"ebpf-a": mk("ebpf-a"),
+		"ebpf-d": mk("ebpf-d"), // new
+	}
+
+	closed := closedFlows(prev, next)
+	if len(closed) != 2 {
+		t.Fatalf("closedFlows returned %d, want 2", len(closed))
+	}
+	got := map[string]bool{}
+	for _, c := range closed {
+		got[c.Id] = true
+	}
+	if !got["ebpf-b"] || !got["ebpf-c"] {
+		t.Errorf("closed = %v, want ebpf-b + ebpf-c", got)
+	}
+	if got["ebpf-a"] {
+		t.Error("still-active flow ebpf-a must not be reported closed")
+	}
+}
+
+// TestClosedFlows_FirstPollEmpty: nothing closes on the first ingest (no prior).
+func TestClosedFlows_FirstPollEmpty(t *testing.T) {
+	next := map[string]*pb.Connection{"ebpf-a": {Id: "ebpf-a"}}
+	if c := closedFlows(map[string]*pb.Connection{}, next); len(c) != 0 {
+		t.Errorf("first poll should close nothing, got %d", len(c))
+	}
+}
