@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.5] - 2026-06-12
+
+eBPF traffic history + signed external catalogs.
+
+### Added
+
+- **eBPF traffic-flow accounting completed (traffic-view follow-ups).** The eBPF per-flow path now captures the **reply direction** via a second veth-egress hook, so the traffic view shows `bytes_received`/`packets_received`, not just sent (#631). Closed flows are **persisted to history** by an idle-age reaper — a flow with no packets for `flowIdleTimeout` (2 min) is written to `traffic_connections` and forgotten — so `containarium traffic history` and aggregates light up on docker-in-LXC backends where conntrack attribution fails, without waiting for LRU eviction (#632). Where both conntrack and eBPF observe a flow, **cross-source dedup** keeps a single logical history row per container so byte sums don't double-count (#643). Gated behind `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` (off by default). Hardware-validated on a Linux backend (kernel 6.8, TCX).
+- **Optional signed external skill/crew catalogs.** An opt-in provenance check on `Manager.LoadDir`: with `CONTAINARIUM_CATALOG_REQUIRE_SIGNED=1` and `CONTAINARIUM_CATALOG_TRUSTED_PUBKEYS` pointing at a trusted-key file, each external `*.yaml` catalog must carry a valid detached ed25519 signature (`foo.yaml.sig`) before it's merged; a missing or bad signature fails that load. Off by default (self-authored catalogs load unsigned, as before) and offline-verifiable for air-gapped installs (#648).
+
+### Fixed
+
+- **deploy-binary:** systemd unit names are now parameterized and the empty-`PEERS` unbound-variable error is fixed (#647).
+
 ## [0.26.4] - 2026-06-10
 
 Traffic CLI + login UX fixes.
