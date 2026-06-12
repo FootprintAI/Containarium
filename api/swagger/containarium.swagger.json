@@ -8501,6 +8501,33 @@
       },
       "title": "NetworkNode represents a node in the network topology"
     },
+    "NetworkPolicyDenyRule": {
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "type": "string",
+          "description": "Destination CIDR to block (e.g. \"1.2.3.4/32\", \"10.0.0.0/8\"). Required.\nIPv4 only (Phase A parses IPv4); a host IP is just a /32."
+        },
+        "port": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Optional destination port to scope the block (0 = any port). Lets a rule\ntarget only the vulnerable service (e.g. a Redis CVE on 6379) without\nblocking unrelated traffic to the same host."
+        },
+        "proto": {
+          "type": "string",
+          "description": "Optional IP protocol to scope the block: \"tcp\" | \"udp\" | \"\" (any)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Operator note — typically the CVE id this rule virtual-patches. Echoed on\nget/list and carried into the audit detail."
+        },
+        "expiresAt": {
+          "type": "string",
+          "description": "Optional RFC3339 expiry (e.g. \"2026-07-01T00:00:00Z\"). A rule past its\nexpiry is not installed into the kernel, so a virtual patch auto-removes\nonce the real fix is confirmed. Empty = no expiry."
+        }
+      },
+      "description": "NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a\ntenant's container to the destination is denied — dropped in ENFORCE mode,\naudited (action network_policy.virtual_patch) in every mode. Deny beats the\negress allow-list."
+    },
     "NetworkTopology": {
       "type": "object",
       "properties": {
@@ -10785,6 +10812,14 @@
         "source": {
           "type": "string",
           "description": "Source identifies who authored this policy: \"\" / \"cli\" for an operator via\n`containarium network-policy set`, \"cloud\" for one synced from a cloud\ncontrol plane (#354). The cloud-actuation reconciler converges only its own\n(\"cloud\") policies — so removing a policy cloud-side clears it on the host\nwithout clobbering an operator's CLI-authored policy. Informational on\nget/list."
+        },
+        "denyRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NetworkPolicyDenyRule"
+          },
+          "description": "Virtual-patch deny rules (#660). Each blocks traffic to a destination\nCIDR (optionally scoped to a port/proto) and is evaluated BEFORE the\negress allow-list: deny beats allow, the same way the metadata IP does.\nUse to \"virtually patch\" a known-vulnerable destination/service until the\nreal upstream fix ships — instant, in-kernel, zero downtime. A rule whose\nexpires_at is in the past is dropped at compile time, so the patch\nself-removes once the fix lands."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."

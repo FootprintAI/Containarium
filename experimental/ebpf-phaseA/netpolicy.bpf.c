@@ -33,6 +33,12 @@
 #define MODE_LOG_ONLY 1
 #define MODE_ENFORCE  2
 
+// Deny reasons carried in deny_event.reason — mirror netbpf.DenyReason* in Go.
+// An older loader that reads only the first 19 bytes ignores it; the byte reuses
+// the struct's former pad, so the wire size is unchanged.
+#define DENY_REASON_POLICY        0  // failed allow-list / intra-tenant / metadata
+#define DENY_REASON_VIRTUAL_PATCH 1  // matched an explicit virtual-patch deny rule (#660)
+
 // Per-veth policy config, keyed by the veth's host ifindex. The loader writes
 // one entry per managed container veth.
 struct policy_cfg {
@@ -71,6 +77,27 @@ struct {
     __uint(max_entries, 65536);
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } egress_cidr SEC(".maps");
+
+// Virtual-patch deny rules (#660). Same tenant-scoped LPM key as egress_cidr,
+// but a richer value so a rule can be scoped to a destination port/proto: a CVE
+// in a service on a known port can be blocked without blackholing the whole
+// host. Evaluated BEFORE the allow logic — deny beats allow. The LPM key is
+// CIDR-only (port/proto live in the value), so there is at most ONE deny entry
+// per (tenant, CIDR); to block two ports on the same host, deny the host
+// outright (port 0 = any) — a documented Tier-1 limitation.
+struct deny_val {
+    __u16 port;   // host byte order; 0 = any port
+    __u8  proto;  // IP protocol number; 0 = any proto
+    __u8  flags;  // reserved (0)
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __type(key, struct egress_key);
+    __type(value, struct deny_val);
+    __uint(max_entries, 65536);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} deny_cidr SEC(".maps");
 
 // Destination-IP → tenant_id for intra-backend traffic. The loader populates
 // this from every managed container's IP, so the program can tell "dst is
@@ -156,7 +183,7 @@ struct deny_event {
     __u32 daddr;
     __u16 dport;         // host byte order
     __u8  proto;
-    __u8  pad;
+    __u8  reason;        // DENY_REASON_* (was pad; size unchanged) #660
 };
 
 static __always_inline void bump(__u32 idx) {
@@ -282,9 +309,32 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     // not. Done before the policy decision so a would-deny flow is still counted.
     account_flow(skb, ifindex, saddr, daddr, sport, dport, ip->protocol);
 
+    // Virtual-patch deny rules (#660) override EVERYTHING: a destination that
+    // matches a tenant's deny rule (optionally scoped to dport/proto) is blocked
+    // regardless of the allow-list or metadata opt-in. Checked first so neither
+    // an allow CIDR nor allow_metadata can win against an explicit virtual patch.
+    __u8 deny_reason = DENY_REASON_POLICY;
+    int vpatch_deny = 0;
+    {
+        struct egress_key dk = {};
+        dk.prefixlen = 32 + 32; // full tenant match + /32 dst (LPM shortens to the rule's prefix)
+        dk.tenant_id = cfg->tenant_id;
+        dk.addr = daddr;
+        struct deny_val *dv = bpf_map_lookup_elem(&deny_cidr, &dk);
+        if (dv &&
+            (dv->port == 0 || dv->port == dport) &&
+            (dv->proto == 0 || dv->proto == ip->protocol)) {
+            vpatch_deny = 1;
+            deny_reason = DENY_REASON_VIRTUAL_PATCH;
+        }
+    }
+
     // Decide whether this flow is allowed under the sender's policy.
     int allowed = 0;
 
+    if (vpatch_deny) {
+        allowed = 0; // explicit virtual-patch deny — skip the allow checks entirely.
+    } else
     // Cloud metadata service is deny-by-default and overrides the egress
     // allow-list: even a broad allow CIDR must not expose 169.254.169.254
     // unless the tenant explicitly opted in (#315 Phase D). Checked first so an
@@ -323,6 +373,7 @@ int netpolicy_ingress(struct __sk_buff *skb) {
     ev.daddr = daddr;
     ev.proto = ip->protocol;
     ev.dport = dport; // parsed once above
+    ev.reason = deny_reason; // policy miss vs. explicit virtual-patch deny (#660)
 
     bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 

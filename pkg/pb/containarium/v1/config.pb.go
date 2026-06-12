@@ -1935,7 +1935,15 @@ type NetworkPolicy struct {
 	// ("cloud") policies — so removing a policy cloud-side clears it on the host
 	// without clobbering an operator's CLI-authored policy. Informational on
 	// get/list.
-	Source        string `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	Source string `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	// Virtual-patch deny rules (#660). Each blocks traffic to a destination
+	// CIDR (optionally scoped to a port/proto) and is evaluated BEFORE the
+	// egress allow-list: deny beats allow, the same way the metadata IP does.
+	// Use to "virtually patch" a known-vulnerable destination/service until the
+	// real upstream fix ships — instant, in-kernel, zero downtime. A rule whose
+	// expires_at is in the past is dropped at compile time, so the patch
+	// self-removes once the fix lands.
+	DenyRules     []*NetworkPolicyDenyRule `protobuf:"bytes,8,rep,name=deny_rules,json=denyRules,proto3" json:"deny_rules,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2019,6 +2027,104 @@ func (x *NetworkPolicy) GetSource() string {
 	return ""
 }
 
+func (x *NetworkPolicy) GetDenyRules() []*NetworkPolicyDenyRule {
+	if x != nil {
+		return x.DenyRules
+	}
+	return nil
+}
+
+// NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a
+// tenant's container to the destination is denied — dropped in ENFORCE mode,
+// audited (action network_policy.virtual_patch) in every mode. Deny beats the
+// egress allow-list.
+type NetworkPolicyDenyRule struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Destination CIDR to block (e.g. "1.2.3.4/32", "10.0.0.0/8"). Required.
+	// IPv4 only (Phase A parses IPv4); a host IP is just a /32.
+	Cidr string `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	// Optional destination port to scope the block (0 = any port). Lets a rule
+	// target only the vulnerable service (e.g. a Redis CVE on 6379) without
+	// blocking unrelated traffic to the same host.
+	Port uint32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	// Optional IP protocol to scope the block: "tcp" | "udp" | "" (any).
+	Proto string `protobuf:"bytes,3,opt,name=proto,proto3" json:"proto,omitempty"`
+	// Operator note — typically the CVE id this rule virtual-patches. Echoed on
+	// get/list and carried into the audit detail.
+	Note string `protobuf:"bytes,4,opt,name=note,proto3" json:"note,omitempty"`
+	// Optional RFC3339 expiry (e.g. "2026-07-01T00:00:00Z"). A rule past its
+	// expiry is not installed into the kernel, so a virtual patch auto-removes
+	// once the real fix is confirmed. Empty = no expiry.
+	ExpiresAt     string `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NetworkPolicyDenyRule) Reset() {
+	*x = NetworkPolicyDenyRule{}
+	mi := &file_containarium_v1_config_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NetworkPolicyDenyRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkPolicyDenyRule) ProtoMessage() {}
+
+func (x *NetworkPolicyDenyRule) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkPolicyDenyRule.ProtoReflect.Descriptor instead.
+func (*NetworkPolicyDenyRule) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *NetworkPolicyDenyRule) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+func (x *NetworkPolicyDenyRule) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *NetworkPolicyDenyRule) GetProto() string {
+	if x != nil {
+		return x.Proto
+	}
+	return ""
+}
+
+func (x *NetworkPolicyDenyRule) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
+func (x *NetworkPolicyDenyRule) GetExpiresAt() string {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return ""
+}
+
 type SetNetworkPolicyRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Policy        *NetworkPolicy         `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
@@ -2028,7 +2134,7 @@ type SetNetworkPolicyRequest struct {
 
 func (x *SetNetworkPolicyRequest) Reset() {
 	*x = SetNetworkPolicyRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[22]
+	mi := &file_containarium_v1_config_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2040,7 +2146,7 @@ func (x *SetNetworkPolicyRequest) String() string {
 func (*SetNetworkPolicyRequest) ProtoMessage() {}
 
 func (x *SetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[22]
+	mi := &file_containarium_v1_config_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2053,7 +2159,7 @@ func (x *SetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNetworkPolicyRequest.ProtoReflect.Descriptor instead.
 func (*SetNetworkPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{22}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SetNetworkPolicyRequest) GetPolicy() *NetworkPolicy {
@@ -2073,7 +2179,7 @@ type SetNetworkPolicyResponse struct {
 
 func (x *SetNetworkPolicyResponse) Reset() {
 	*x = SetNetworkPolicyResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[23]
+	mi := &file_containarium_v1_config_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2085,7 +2191,7 @@ func (x *SetNetworkPolicyResponse) String() string {
 func (*SetNetworkPolicyResponse) ProtoMessage() {}
 
 func (x *SetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[23]
+	mi := &file_containarium_v1_config_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2098,7 +2204,7 @@ func (x *SetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNetworkPolicyResponse.ProtoReflect.Descriptor instead.
 func (*SetNetworkPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{23}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SetNetworkPolicyResponse) GetPolicy() *NetworkPolicy {
@@ -2117,7 +2223,7 @@ type GetNetworkPolicyRequest struct {
 
 func (x *GetNetworkPolicyRequest) Reset() {
 	*x = GetNetworkPolicyRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[24]
+	mi := &file_containarium_v1_config_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2129,7 +2235,7 @@ func (x *GetNetworkPolicyRequest) String() string {
 func (*GetNetworkPolicyRequest) ProtoMessage() {}
 
 func (x *GetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[24]
+	mi := &file_containarium_v1_config_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2142,7 +2248,7 @@ func (x *GetNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkPolicyRequest.ProtoReflect.Descriptor instead.
 func (*GetNetworkPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{24}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetNetworkPolicyRequest) GetTenant() string {
@@ -2161,7 +2267,7 @@ type GetNetworkPolicyResponse struct {
 
 func (x *GetNetworkPolicyResponse) Reset() {
 	*x = GetNetworkPolicyResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[25]
+	mi := &file_containarium_v1_config_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2173,7 +2279,7 @@ func (x *GetNetworkPolicyResponse) String() string {
 func (*GetNetworkPolicyResponse) ProtoMessage() {}
 
 func (x *GetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[25]
+	mi := &file_containarium_v1_config_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2186,7 +2292,7 @@ func (x *GetNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkPolicyResponse.ProtoReflect.Descriptor instead.
 func (*GetNetworkPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{25}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetNetworkPolicyResponse) GetPolicy() *NetworkPolicy {
@@ -2204,7 +2310,7 @@ type ListNetworkPoliciesRequest struct {
 
 func (x *ListNetworkPoliciesRequest) Reset() {
 	*x = ListNetworkPoliciesRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[26]
+	mi := &file_containarium_v1_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2216,7 +2322,7 @@ func (x *ListNetworkPoliciesRequest) String() string {
 func (*ListNetworkPoliciesRequest) ProtoMessage() {}
 
 func (x *ListNetworkPoliciesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[26]
+	mi := &file_containarium_v1_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2229,7 +2335,7 @@ func (x *ListNetworkPoliciesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkPoliciesRequest.ProtoReflect.Descriptor instead.
 func (*ListNetworkPoliciesRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{26}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{27}
 }
 
 type ListNetworkPoliciesResponse struct {
@@ -2241,7 +2347,7 @@ type ListNetworkPoliciesResponse struct {
 
 func (x *ListNetworkPoliciesResponse) Reset() {
 	*x = ListNetworkPoliciesResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[27]
+	mi := &file_containarium_v1_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2253,7 +2359,7 @@ func (x *ListNetworkPoliciesResponse) String() string {
 func (*ListNetworkPoliciesResponse) ProtoMessage() {}
 
 func (x *ListNetworkPoliciesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[27]
+	mi := &file_containarium_v1_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2266,7 +2372,7 @@ func (x *ListNetworkPoliciesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkPoliciesResponse.ProtoReflect.Descriptor instead.
 func (*ListNetworkPoliciesResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{27}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListNetworkPoliciesResponse) GetPolicies() []*NetworkPolicy {
@@ -2285,7 +2391,7 @@ type DeleteNetworkPolicyRequest struct {
 
 func (x *DeleteNetworkPolicyRequest) Reset() {
 	*x = DeleteNetworkPolicyRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[28]
+	mi := &file_containarium_v1_config_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2297,7 +2403,7 @@ func (x *DeleteNetworkPolicyRequest) String() string {
 func (*DeleteNetworkPolicyRequest) ProtoMessage() {}
 
 func (x *DeleteNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[28]
+	mi := &file_containarium_v1_config_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2310,7 +2416,7 @@ func (x *DeleteNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkPolicyRequest.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{28}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DeleteNetworkPolicyRequest) GetTenant() string {
@@ -2328,7 +2434,7 @@ type DeleteNetworkPolicyResponse struct {
 
 func (x *DeleteNetworkPolicyResponse) Reset() {
 	*x = DeleteNetworkPolicyResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[29]
+	mi := &file_containarium_v1_config_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2340,7 +2446,7 @@ func (x *DeleteNetworkPolicyResponse) String() string {
 func (*DeleteNetworkPolicyResponse) ProtoMessage() {}
 
 func (x *DeleteNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[29]
+	mi := &file_containarium_v1_config_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2353,7 +2459,7 @@ func (x *DeleteNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkPolicyResponse.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{29}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{30}
 }
 
 // BackendInfo describes one backend in the fleet — the local daemon
@@ -2389,7 +2495,7 @@ type BackendInfo struct {
 
 func (x *BackendInfo) Reset() {
 	*x = BackendInfo{}
-	mi := &file_containarium_v1_config_proto_msgTypes[30]
+	mi := &file_containarium_v1_config_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2401,7 +2507,7 @@ func (x *BackendInfo) String() string {
 func (*BackendInfo) ProtoMessage() {}
 
 func (x *BackendInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[30]
+	mi := &file_containarium_v1_config_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2414,7 +2520,7 @@ func (x *BackendInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendInfo.ProtoReflect.Descriptor instead.
 func (*BackendInfo) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{30}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *BackendInfo) GetId() string {
@@ -2502,7 +2608,7 @@ type BackendGPU struct {
 
 func (x *BackendGPU) Reset() {
 	*x = BackendGPU{}
-	mi := &file_containarium_v1_config_proto_msgTypes[31]
+	mi := &file_containarium_v1_config_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2514,7 +2620,7 @@ func (x *BackendGPU) String() string {
 func (*BackendGPU) ProtoMessage() {}
 
 func (x *BackendGPU) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[31]
+	mi := &file_containarium_v1_config_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2527,7 +2633,7 @@ func (x *BackendGPU) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendGPU.ProtoReflect.Descriptor instead.
 func (*BackendGPU) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{31}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *BackendGPU) GetVendor() string {
@@ -2560,7 +2666,7 @@ type ListBackendsRequest struct {
 
 func (x *ListBackendsRequest) Reset() {
 	*x = ListBackendsRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[32]
+	mi := &file_containarium_v1_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2572,7 +2678,7 @@ func (x *ListBackendsRequest) String() string {
 func (*ListBackendsRequest) ProtoMessage() {}
 
 func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[32]
+	mi := &file_containarium_v1_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2585,7 +2691,7 @@ func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{32}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{33}
 }
 
 // ListBackendsResponse is the response from listing backends
@@ -2599,7 +2705,7 @@ type ListBackendsResponse struct {
 
 func (x *ListBackendsResponse) Reset() {
 	*x = ListBackendsResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[33]
+	mi := &file_containarium_v1_config_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2611,7 +2717,7 @@ func (x *ListBackendsResponse) String() string {
 func (*ListBackendsResponse) ProtoMessage() {}
 
 func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[33]
+	mi := &file_containarium_v1_config_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2624,7 +2730,7 @@ func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{33}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
@@ -2767,7 +2873,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12'\n" +
 	"\x0fcurrent_version\x18\x02 \x01(\tR\x0ecurrentVersion\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12!\n" +
-	"\fcompleted_at\x18\x04 \x01(\tR\vcompletedAt\"\x96\x02\n" +
+	"\fcompleted_at\x18\x04 \x01(\tR\vcompletedAt\"\xdd\x02\n" +
 	"\rNetworkPolicy\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
@@ -2775,7 +2881,16 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x0eegress_domains\x18\x04 \x03(\tR\regressDomains\x126\n" +
 	"\x04mode\x18\x05 \x01(\x0e2\".containarium.v1.NetworkPolicyModeR\x04mode\x12%\n" +
 	"\x0eallow_metadata\x18\x06 \x01(\bR\rallowMetadata\x12\x16\n" +
-	"\x06source\x18\a \x01(\tR\x06source\"Q\n" +
+	"\x06source\x18\a \x01(\tR\x06source\x12E\n" +
+	"\n" +
+	"deny_rules\x18\b \x03(\v2&.containarium.v1.NetworkPolicyDenyRuleR\tdenyRules\"\x88\x01\n" +
+	"\x15NetworkPolicyDenyRule\x12\x12\n" +
+	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\rR\x04port\x12\x14\n" +
+	"\x05proto\x18\x03 \x01(\tR\x05proto\x12\x12\n" +
+	"\x04note\x18\x04 \x01(\tR\x04note\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x05 \x01(\tR\texpiresAt\"Q\n" +
 	"\x17SetNetworkPolicyRequest\x126\n" +
 	"\x06policy\x18\x01 \x01(\v2\x1e.containarium.v1.NetworkPolicyR\x06policy\"R\n" +
 	"\x18SetNetworkPolicyResponse\x126\n" +
@@ -2866,7 +2981,7 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                      // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                       // 1: containarium.v1.GPUModel
@@ -2895,28 +3010,29 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*GetUpgradeStatusRequest)(nil),     // 24: containarium.v1.GetUpgradeStatusRequest
 	(*GetUpgradeStatusResponse)(nil),    // 25: containarium.v1.GetUpgradeStatusResponse
 	(*NetworkPolicy)(nil),               // 26: containarium.v1.NetworkPolicy
-	(*SetNetworkPolicyRequest)(nil),     // 27: containarium.v1.SetNetworkPolicyRequest
-	(*SetNetworkPolicyResponse)(nil),    // 28: containarium.v1.SetNetworkPolicyResponse
-	(*GetNetworkPolicyRequest)(nil),     // 29: containarium.v1.GetNetworkPolicyRequest
-	(*GetNetworkPolicyResponse)(nil),    // 30: containarium.v1.GetNetworkPolicyResponse
-	(*ListNetworkPoliciesRequest)(nil),  // 31: containarium.v1.ListNetworkPoliciesRequest
-	(*ListNetworkPoliciesResponse)(nil), // 32: containarium.v1.ListNetworkPoliciesResponse
-	(*DeleteNetworkPolicyRequest)(nil),  // 33: containarium.v1.DeleteNetworkPolicyRequest
-	(*DeleteNetworkPolicyResponse)(nil), // 34: containarium.v1.DeleteNetworkPolicyResponse
-	(*BackendInfo)(nil),                 // 35: containarium.v1.BackendInfo
-	(*BackendGPU)(nil),                  // 36: containarium.v1.BackendGPU
-	(*ListBackendsRequest)(nil),         // 37: containarium.v1.ListBackendsRequest
-	(*ListBackendsResponse)(nil),        // 38: containarium.v1.ListBackendsResponse
-	(*ResourceLimits)(nil),              // 39: containarium.v1.ResourceLimits
-	(OSType)(0),                         // 40: containarium.v1.OSType
+	(*NetworkPolicyDenyRule)(nil),       // 27: containarium.v1.NetworkPolicyDenyRule
+	(*SetNetworkPolicyRequest)(nil),     // 28: containarium.v1.SetNetworkPolicyRequest
+	(*SetNetworkPolicyResponse)(nil),    // 29: containarium.v1.SetNetworkPolicyResponse
+	(*GetNetworkPolicyRequest)(nil),     // 30: containarium.v1.GetNetworkPolicyRequest
+	(*GetNetworkPolicyResponse)(nil),    // 31: containarium.v1.GetNetworkPolicyResponse
+	(*ListNetworkPoliciesRequest)(nil),  // 32: containarium.v1.ListNetworkPoliciesRequest
+	(*ListNetworkPoliciesResponse)(nil), // 33: containarium.v1.ListNetworkPoliciesResponse
+	(*DeleteNetworkPolicyRequest)(nil),  // 34: containarium.v1.DeleteNetworkPolicyRequest
+	(*DeleteNetworkPolicyResponse)(nil), // 35: containarium.v1.DeleteNetworkPolicyResponse
+	(*BackendInfo)(nil),                 // 36: containarium.v1.BackendInfo
+	(*BackendGPU)(nil),                  // 37: containarium.v1.BackendGPU
+	(*ListBackendsRequest)(nil),         // 38: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),        // 39: containarium.v1.ListBackendsResponse
+	(*ResourceLimits)(nil),              // 40: containarium.v1.ResourceLimits
+	(OSType)(0),                         // 41: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	39, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	40, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	40, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	41, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -2927,17 +3043,18 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	14, // 13: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
 	4,  // 14: containarium.v1.ValidateGPUResponse.status:type_name -> containarium.v1.ValidateGPUResponse.GPUStatus
 	2,  // 15: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
-	26, // 16: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
-	26, // 17: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	26, // 18: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	26, // 19: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
-	36, // 20: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	35, // 21: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	22, // [22:22] is the sub-list for method output_type
-	22, // [22:22] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	27, // 16: containarium.v1.NetworkPolicy.deny_rules:type_name -> containarium.v1.NetworkPolicyDenyRule
+	26, // 17: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
+	26, // 18: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	26, // 19: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	26, // 20: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
+	37, // 21: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	36, // 22: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -2952,7 +3069,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   34,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

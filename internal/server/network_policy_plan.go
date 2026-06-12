@@ -2,6 +2,7 @@ package server
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/netbpf"
@@ -31,6 +32,7 @@ type reconcilePlan struct {
 	vethPolicy map[int]netbpf.PolicyConfig // running container veth ifindex -> policy config
 	ifName     map[int]string              // ifindex -> container name (for bookkeeping)
 	egress     []netbpf.EgressEntry        // per-tenant egress allow-list entries
+	deny       []netbpf.DenyEntry          // per-tenant virtual-patch deny entries (#660)
 }
 
 // planReconcile computes the desired BPF map state from the current container
@@ -80,6 +82,12 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 			if entries, err := netbpf.CompileEgress(v.TenantID, policy); err == nil {
 				plan.egress = append(plan.egress, entries...)
 			}
+			// Virtual-patch deny entries (#660), once per tenant. Expired rules are
+			// already filtered out of policy.DenyRules by the daemon (compiledPolicies)
+			// before planning, so anything here is active.
+			if entries, err := netbpf.CompileDeny(v.TenantID, policy); err == nil {
+				plan.deny = append(plan.deny, entries...)
+			}
 			egressDone[v.TenantID] = true
 		}
 	}
@@ -96,6 +104,22 @@ func subEvents(sub *events.Subscriber) <-chan *pb.Event {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// activeDenyRules returns the deny rules that have not expired as of now (#660).
+// An expired virtual patch is excluded so it stops being installed into the
+// kernel — the "Band-Aid auto-removes once the real fix lands" behavior.
+func activeDenyRules(rules []netpolicy.DenyRule, now time.Time) []netpolicy.DenyRule {
+	if len(rules) == 0 {
+		return rules
+	}
+	out := make([]netpolicy.DenyRule, 0, len(rules))
+	for _, r := range rules {
+		if !r.Expired(now) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 // diffEgress computes the egress LPM entries to add and to delete so the kernel
 // map converges to the desired set: add anything desired but not installed,
@@ -117,4 +141,30 @@ func diffEgress(installed map[netbpf.EgressEntry]bool, desired []netbpf.EgressEn
 		}
 	}
 	return toAdd, toDel
+}
+
+// diffDeny computes the virtual-patch deny entries to upsert and the keys to
+// delete so the kernel deny_cidr map converges to the desired set (#660). Unlike
+// egress, a deny entry's kernel key (DenyKey: tenant+CIDR) is narrower than the
+// full entry (which also carries port/proto in the map VALUE) — so a rule whose
+// port changed keeps the same key and is an UPSERT, not a delete+add of two map
+// slots. installed tracks the last-applied entry per key; an entry is upserted
+// when its key is new OR its port/proto differs from what's installed, and a key
+// is deleted only when no desired entry uses it. Deleting stale keys is what
+// makes a removed/expired deny rule actually stop blocking.
+func diffDeny(installed map[netbpf.DenyKey]netbpf.DenyEntry, desired []netbpf.DenyEntry) (toUpsert []netbpf.DenyEntry, toDel []netbpf.DenyKey) {
+	desiredKeys := make(map[netbpf.DenyKey]bool, len(desired))
+	for _, e := range desired {
+		k := e.Key()
+		desiredKeys[k] = true
+		if cur, ok := installed[k]; !ok || cur != e {
+			toUpsert = append(toUpsert, e)
+		}
+	}
+	for k := range installed {
+		if !desiredKeys[k] {
+			toDel = append(toDel, k)
+		}
+	}
+	return toUpsert, toDel
 }

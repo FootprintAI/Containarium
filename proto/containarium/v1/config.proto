@@ -432,6 +432,42 @@ message NetworkPolicy {
   // without clobbering an operator's CLI-authored policy. Informational on
   // get/list.
   string source = 7;
+
+  // Virtual-patch deny rules (#660). Each blocks traffic to a destination
+  // CIDR (optionally scoped to a port/proto) and is evaluated BEFORE the
+  // egress allow-list: deny beats allow, the same way the metadata IP does.
+  // Use to "virtually patch" a known-vulnerable destination/service until the
+  // real upstream fix ships — instant, in-kernel, zero downtime. A rule whose
+  // expires_at is in the past is dropped at compile time, so the patch
+  // self-removes once the fix lands.
+  repeated NetworkPolicyDenyRule deny_rules = 8;
+}
+
+// NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a
+// tenant's container to the destination is denied — dropped in ENFORCE mode,
+// audited (action network_policy.virtual_patch) in every mode. Deny beats the
+// egress allow-list.
+message NetworkPolicyDenyRule {
+  // Destination CIDR to block (e.g. "1.2.3.4/32", "10.0.0.0/8"). Required.
+  // IPv4 only (Phase A parses IPv4); a host IP is just a /32.
+  string cidr = 1;
+
+  // Optional destination port to scope the block (0 = any port). Lets a rule
+  // target only the vulnerable service (e.g. a Redis CVE on 6379) without
+  // blocking unrelated traffic to the same host.
+  uint32 port = 2;
+
+  // Optional IP protocol to scope the block: "tcp" | "udp" | "" (any).
+  string proto = 3;
+
+  // Operator note — typically the CVE id this rule virtual-patches. Echoed on
+  // get/list and carried into the audit detail.
+  string note = 4;
+
+  // Optional RFC3339 expiry (e.g. "2026-07-01T00:00:00Z"). A rule past its
+  // expiry is not installed into the kernel, so a virtual patch auto-removes
+  // once the real fix is confirmed. Empty = no expiry.
+  string expires_at = 5;
 }
 
 // --- NetworkPolicyService request/response messages (#315) ---

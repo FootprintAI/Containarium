@@ -20,8 +20,16 @@ type DenyEvent struct {
 	Daddr    uint32 // destination IPv4, network byte order
 	Dport    uint16 // host byte order (the program already ntoh'd it)
 	Proto    uint8  // IP protocol number (1=ICMP, 6=TCP, 17=UDP)
-	_        uint8  // pad, matches the C struct
+	Reason   uint8  // why the flow was denied (DenyReason*); 0 on objects predating #660
 }
+
+// Deny reasons carried in DenyEvent.Reason — mirror the DENY_REASON_* #defines
+// in netpolicy.bpf.c. An object built before #660 always emits 0
+// (DenyReasonPolicy), which keeps the audit label as the generic policy deny.
+const (
+	DenyReasonPolicy       uint8 = 0 // failed the egress allow-list / intra-tenant / metadata check
+	DenyReasonVirtualPatch uint8 = 1 // matched an explicit virtual-patch deny rule (#660)
+)
 
 // denyEventSize is the wire size of struct deny_event (4+4+4+4+2+1+1).
 const denyEventSize = 20

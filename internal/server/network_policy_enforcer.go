@@ -105,10 +105,11 @@ type NetworkPolicyEnforcer struct {
 	vethCache map[string]string
 
 	mu              sync.Mutex
-	attached        map[int]string              // ifindex -> container name currently attached
-	idName          map[uint32]string           // tenant id -> name (for audit/log)
-	enforced        map[uint32]bool             // tenant ids whose effective mode is ENFORCE (deny == dropped)
-	egressInstalled map[netbpf.EgressEntry]bool // egress LPM entries currently in the map
+	attached        map[int]string                      // ifindex -> container name currently attached
+	idName          map[uint32]string                   // tenant id -> name (for audit/log)
+	enforced        map[uint32]bool                     // tenant ids whose effective mode is ENFORCE (deny == dropped)
+	egressInstalled map[netbpf.EgressEntry]bool         // egress LPM entries currently in the map
+	denyInstalled   map[netbpf.DenyKey]netbpf.DenyEntry // virtual-patch deny entries currently in the map (#660)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -134,6 +135,7 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		idName:          make(map[uint32]string),
 		enforced:        make(map[uint32]bool),
 		egressInstalled: make(map[netbpf.EgressEntry]bool),
+		denyInstalled:   make(map[netbpf.DenyKey]netbpf.DenyEntry),
 	}
 }
 
@@ -295,17 +297,30 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 	if dropped {
 		action = "DROPPED (enforce)"
 	}
-	log.Printf("[netpolicy] deny: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
-		tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
+	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
+	kind := "deny"
+	if vpatch {
+		kind = "virtual-patch"
+	}
+	log.Printf("[netpolicy] %s: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
+		kind, tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
 	if e.audit == nil {
 		return
 	}
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
 		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) +
-		`,"dropped":` + boolStr(dropped) + `}`
-	action2 := "network_policy.deny_logged"
-	if dropped {
+		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) + `}`
+	// A virtual-patch deny (#660) gets its own audit action so an operator can
+	// distinguish "blocked a known-vulnerable destination" from a routine
+	// allow-list miss.
+	var action2 string
+	switch {
+	case vpatch:
+		action2 = "network_policy.virtual_patch"
+	case dropped:
 		action2 = "network_policy.deny_dropped"
+	default:
+		action2 = "network_policy.deny_logged"
 	}
 	entry := &audit.AuditEntry{
 		Username:     "_system",
@@ -489,6 +504,29 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		}
 		delete(e.egressInstalled, ee)
 	}
+	// Virtual-patch deny rules (#660): converge the deny_cidr map the same way —
+	// upsert desired entries, delete keys no longer desired (a removed/expired
+	// rule must actually stop blocking). Only when the loaded object carries the
+	// map; an older object simply can't be virtual-patched until rebuilt.
+	if e.loader.HasDenyRules() {
+		denyUpsert, denyDel := diffDeny(e.denyInstalled, plan.deny)
+		for _, de := range denyUpsert {
+			if err := e.loader.AddDeny(de); err != nil {
+				log.Printf("[netpolicy] add deny: %v", err)
+				continue
+			}
+			e.denyInstalled[de.Key()] = de
+		}
+		for _, dk := range denyDel {
+			if err := e.loader.DeleteDeny(dk); err != nil {
+				log.Printf("[netpolicy] delete deny: %v", err)
+				continue
+			}
+			delete(e.denyInstalled, dk)
+		}
+	} else if len(plan.deny) > 0 {
+		log.Printf("[netpolicy] %d virtual-patch deny rule(s) configured but loaded BPF object lacks the 'deny_cidr' map (rebuild netpolicy.bpf.o to enable #660)", len(plan.deny))
+	}
 	// Per-veth config + attach. Track which tenants end up in effective-enforce
 	// mode, so OnDenyEvent can label a denied flow as dropped vs observed.
 	enforced := make(map[uint32]bool)
@@ -637,6 +675,10 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 				c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
 			}
 		}
+		// Virtual-patch deny rules (#660): drop any whose expiry has passed so an
+		// expired patch self-removes from the kernel on the next reconcile. Done
+		// here (not in the pure netpolicy/plan layer) so those stay time-free.
+		c.DenyRules = activeDenyRules(c.DenyRules, time.Now())
 		out[c.Tenant] = c
 	}
 	return out, nil
