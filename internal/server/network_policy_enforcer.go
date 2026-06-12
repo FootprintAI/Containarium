@@ -509,21 +509,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	// rule must actually stop blocking). Only when the loaded object carries the
 	// map; an older object simply can't be virtual-patched until rebuilt.
 	if e.loader.HasDenyRules() {
-		denyUpsert, denyDel := diffDeny(e.denyInstalled, plan.deny)
-		for _, de := range denyUpsert {
-			if err := e.loader.AddDeny(de); err != nil {
-				log.Printf("[netpolicy] add deny: %v", err)
-				continue
-			}
-			e.denyInstalled[de.Key()] = de
-		}
-		for _, dk := range denyDel {
-			if err := e.loader.DeleteDeny(dk); err != nil {
-				log.Printf("[netpolicy] delete deny: %v", err)
-				continue
-			}
-			delete(e.denyInstalled, dk)
-		}
+		applyDeny(e.denyInstalled, plan.deny, e.loader)
 	} else if len(plan.deny) > 0 {
 		log.Printf("[netpolicy] %d virtual-patch deny rule(s) configured but loaded BPF object lacks the 'deny_cidr' map (rebuild netpolicy.bpf.o to enable #660)", len(plan.deny))
 	}

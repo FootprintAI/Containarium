@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -8,6 +9,28 @@ import (
 	"github.com/footprintai/containarium/internal/netpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// fakeDenyApplier records AddDeny/DeleteDeny calls and can be told to fail an
+// AddDeny for a given key, so applyDeny's apply/retry semantics are testable
+// without a kernel.
+type fakeDenyApplier struct {
+	added   []netbpf.DenyEntry
+	deleted []netbpf.DenyKey
+	failAdd map[netbpf.DenyKey]bool
+}
+
+func (f *fakeDenyApplier) AddDeny(e netbpf.DenyEntry) error {
+	if f.failAdd[e.Key()] {
+		return fmt.Errorf("inject add failure")
+	}
+	f.added = append(f.added, e)
+	return nil
+}
+
+func (f *fakeDenyApplier) DeleteDeny(k netbpf.DenyKey) error {
+	f.deleted = append(f.deleted, k)
+	return nil
+}
 
 func TestPlanReconcile_DenyRules(t *testing.T) {
 	policies := map[string]netpolicy.CompiledPolicy{
@@ -67,6 +90,78 @@ func TestDiffDeny(t *testing.T) {
 	if len(up2) != 0 || len(del2) != 0 {
 		t.Errorf("converged diff should be empty, got upsert=%v del=%v", up2, del2)
 	}
+}
+
+func TestApplyDeny(t *testing.T) {
+	a := netbpf.DenyEntry{PrefixLen: 64, TenantID: 1, Addr: [4]byte{1, 2, 3, 4}, Port: 80}
+	a2 := netbpf.DenyEntry{PrefixLen: 64, TenantID: 1, Addr: [4]byte{1, 2, 3, 4}, Port: 443} // same key as a
+	b := netbpf.DenyEntry{PrefixLen: 40, TenantID: 2, Addr: [4]byte{10, 0, 0, 0}}
+
+	t.Run("fresh install adds all and records them", func(t *testing.T) {
+		installed := map[netbpf.DenyKey]netbpf.DenyEntry{}
+		f := &fakeDenyApplier{}
+		applyDeny(installed, []netbpf.DenyEntry{a, b}, f)
+		if len(f.added) != 2 || len(f.deleted) != 0 {
+			t.Fatalf("added=%v deleted=%v, want 2 added / 0 deleted", f.added, f.deleted)
+		}
+		if installed[a.Key()] != a || installed[b.Key()] != b {
+			t.Errorf("installed not recorded: %+v", installed)
+		}
+	})
+
+	t.Run("port-only change is one upsert of the same slot, never a delete", func(t *testing.T) {
+		installed := map[netbpf.DenyKey]netbpf.DenyEntry{a.Key(): a}
+		f := &fakeDenyApplier{}
+		applyDeny(installed, []netbpf.DenyEntry{a2}, f)
+		if len(f.added) != 1 || f.added[0] != a2 {
+			t.Errorf("added=%v, want [a2] (upsert)", f.added)
+		}
+		if len(f.deleted) != 0 {
+			t.Fatalf("deleted=%v, want none — the changed-port rule shares a's key", f.deleted)
+		}
+		if installed[a.Key()] != a2 {
+			t.Errorf("installed[key] = %+v, want a2", installed[a.Key()])
+		}
+	})
+
+	t.Run("removal deletes the stale key and drops it from installed", func(t *testing.T) {
+		installed := map[netbpf.DenyKey]netbpf.DenyEntry{a.Key(): a, b.Key(): b}
+		f := &fakeDenyApplier{}
+		applyDeny(installed, []netbpf.DenyEntry{a}, f)
+		if len(f.deleted) != 1 || f.deleted[0] != b.Key() {
+			t.Errorf("deleted=%v, want [b.Key()]", f.deleted)
+		}
+		if _, ok := installed[b.Key()]; ok {
+			t.Error("b should be gone from installed")
+		}
+	})
+
+	t.Run("a failed add is not recorded so the next reconcile retries", func(t *testing.T) {
+		installed := map[netbpf.DenyKey]netbpf.DenyEntry{}
+		f := &fakeDenyApplier{failAdd: map[netbpf.DenyKey]bool{a.Key(): true}}
+		applyDeny(installed, []netbpf.DenyEntry{a, b}, f)
+		if _, ok := installed[a.Key()]; ok {
+			t.Error("failed add must NOT be recorded in installed (else the kernel and bookkeeping diverge)")
+		}
+		if installed[b.Key()] != b {
+			t.Error("b should still install despite a's failure")
+		}
+		// Next pass with the failure cleared converges a.
+		f.failAdd = nil
+		applyDeny(installed, []netbpf.DenyEntry{a, b}, f)
+		if installed[a.Key()] != a {
+			t.Error("retry should install a once the failure clears")
+		}
+	})
+
+	t.Run("converged state is a no-op", func(t *testing.T) {
+		installed := map[netbpf.DenyKey]netbpf.DenyEntry{a.Key(): a, b.Key(): b}
+		f := &fakeDenyApplier{}
+		applyDeny(installed, []netbpf.DenyEntry{a, b}, f)
+		if len(f.added) != 0 || len(f.deleted) != 0 {
+			t.Errorf("converged apply should do nothing, got added=%v deleted=%v", f.added, f.deleted)
+		}
+	})
 }
 
 func TestActiveDenyRules(t *testing.T) {

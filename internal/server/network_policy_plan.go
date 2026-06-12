@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log"
 	"strconv"
 	"time"
 
@@ -167,4 +168,37 @@ func diffDeny(installed map[netbpf.DenyKey]netbpf.DenyEntry, desired []netbpf.De
 		}
 	}
 	return toUpsert, toDel
+}
+
+// denyApplier is the slice of the BPF loader the deny-rule reconcile needs.
+// *netbpf.Loader satisfies it; an interface keeps applyDeny testable without a
+// kernel.
+type denyApplier interface {
+	AddDeny(netbpf.DenyEntry) error
+	DeleteDeny(netbpf.DenyKey) error
+}
+
+// applyDeny converges the kernel deny_cidr map from installed to desired via the
+// applier, updating installed in place (#660). Upserts apply BEFORE deletes;
+// diffDeny guarantees the two sets never share a key, so an entry that was just
+// upserted is never immediately deleted (a port-only change is one upsert of the
+// same slot, not add+del). A failed op is logged and skipped WITHOUT touching
+// installed, so the next reconcile retries it rather than recording a state the
+// kernel doesn't actually hold.
+func applyDeny(installed map[netbpf.DenyKey]netbpf.DenyEntry, desired []netbpf.DenyEntry, a denyApplier) {
+	upsert, del := diffDeny(installed, desired)
+	for _, de := range upsert {
+		if err := a.AddDeny(de); err != nil {
+			log.Printf("[netpolicy] add deny: %v", err)
+			continue
+		}
+		installed[de.Key()] = de
+	}
+	for _, dk := range del {
+		if err := a.DeleteDeny(dk); err != nil {
+			log.Printf("[netpolicy] delete deny: %v", err)
+			continue
+		}
+		delete(installed, dk)
+	}
 }
