@@ -1,9 +1,10 @@
 # eBPF Virtual Patching — Tier 2 (cleartext signature scanning)
 
-> Status: **PR-A implemented** (kernel scan + loader + built-in signature set,
-> enforce-gated, verifier-validated on a 6.8 backend). PR-B (operator signature
-> CRUD API/CLI) is a follow-up. Part of the virtual-patching epic (#659); #661.
-> Builds on Tier 1 ([`VIRTUAL-PATCHING-DESIGN.md`](./VIRTUAL-PATCHING-DESIGN.md)).
+> Status: **PR-A + PR-B implemented.** PR-A = kernel scan + loader + built-in
+> signature set, enforce-gated, verifier-validated on a 6.8 backend. PR-B =
+> operator signature CRUD (API + CLI + persistence). Part of the virtual-patching
+> epic (#659); #661. Builds on Tier 1
+> ([`VIRTUAL-PATCHING-DESIGN.md`](./VIRTUAL-PATCHING-DESIGN.md)).
 
 ## What this adds
 
@@ -73,14 +74,25 @@ otherwise it observes + audits.
 - **Built-in signatures** (`internal/netpolicy/signatures.go`): a small,
   high-confidence curated set (Log4Shell `${jndi:`, Shellshock `() {`,
   Spring4Shell, path-traversal, `/etc/passwd`). Stable nonzero IDs (echoed in
-  audit). Operator-managed signatures are PR-B.
+  audit).
+- **Operator signatures (PR-B)**: a daemon-global (fleet-wide, NOT tenant-scoped)
+  set an operator manages via `containarium network-policy signature add/rm/list`
+  (RPCs on NetworkPolicyService, `/v1/network-policy-signatures`, admin-only).
+  Each is `{name (unique, the CVE id), pattern (1..32 bytes), enabled, note}`;
+  the store assigns a stable id in a reserved high range (`OperatorIDBase=1000`+)
+  so operator and built-in ids never collide and a match's audit id unambiguously
+  names its source. Persisted in a `network_policy_signatures` table (Postgres) /
+  in-memory on standalone. The enforcer merges built-ins + enabled operator
+  signatures (built-ins first), capped to the 32-slot budget, and **picks up
+  changes on the reconcile loop** (a fingerprint skips the map rewrite when
+  nothing changed).
 - **Loader** (`internal/netbpf/sigmap.go`): `SetSignature(slot, entry)` writes a
   slot of the `signatures` array map; `SetScanEnabled(bool)` flips the
   `sig_config` gate. Optional-map-safe: an object built before #661 just reports
   `HasSignatures()==false` and the daemon logs that a rebuild is needed.
-- **Enforcer** (`network_policy_enforcer.go`): on Start, if opted in, it loads
-  the built-in set into every slot (clearing unused slots) and arms the gate —
-  once, since the set is static (no per-reconcile churn). `OnDenyEvent` labels a
+- **Enforcer** (`network_policy_enforcer.go`): on Start, if opted in, it arms the
+  gate and loads the merged set; each reconcile re-syncs the slots so an operator
+  add/remove/toggle takes effect within one interval. `OnDenyEvent` labels a
   signature match `network_policy.signature_match` with the signature name.
 
 ## Enablement (three independent opt-ins)

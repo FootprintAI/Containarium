@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/netip"
 	"strings"
@@ -104,8 +105,10 @@ type NetworkPolicyEnforcer struct {
 	// loop is single-goroutine), so it needs no lock.
 	vethCache map[string]string
 
-	sigEnabled bool              // #661: populate + scan Tier 2 signatures (operator opt-in)
-	sigNames   map[uint16]string // signature id -> name, for audit labelling (built at populate)
+	sigEnabled bool                        // #661: populate + scan Tier 2 signatures (operator opt-in)
+	sigStore   NetworkPolicySignatureStore // #661 PR-B: operator signatures (nil = built-ins only)
+	sigNames   map[uint16]string           // signature id -> name, for audit labelling (built at populate)
+	sigLoaded  string                      // last applied signature set fingerprint (skip redundant map writes)
 
 	mu              sync.Mutex
 	attached        map[int]string                      // ifindex -> container name currently attached
@@ -154,10 +157,15 @@ func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
 // so it only runs when the operator opts in; drops still require enforce mode.
 func (e *NetworkPolicyEnforcer) SetSignaturesEnabled(on bool) { e.sigEnabled = on }
 
-// populateSignatures loads the built-in signatures into the BPF map and arms the
-// scan gate (sig_config). Called once at Start. No-op unless opted in; logs (not
-// fatal) when the loaded object predates Tier 2.
-func (e *NetworkPolicyEnforcer) populateSignatures() {
+// SetSignatureStore wires the operator-signature store (#661 PR-B) so the
+// enforcer merges operator signatures with the built-ins. Must be called before
+// Start. Nil leaves built-ins only.
+func (e *NetworkPolicyEnforcer) SetSignatureStore(s NetworkPolicySignatureStore) { e.sigStore = s }
+
+// armSignatures arms the scan gate (sig_config) and loads the initial signature
+// set. Called once at Start. No-op unless opted in; logs (not fatal) when the
+// loaded object predates Tier 2.
+func (e *NetworkPolicyEnforcer) armSignatures() {
 	if !e.sigEnabled || e.loader == nil {
 		return
 	}
@@ -165,9 +173,65 @@ func (e *NetworkPolicyEnforcer) populateSignatures() {
 		log.Printf("[netpolicy] Tier 2 signatures enabled but the loaded BPF object lacks the 'signatures' map (rebuild netpolicy.bpf.o to enable #661)")
 		return
 	}
+	n := e.refreshSignatureSlots()
+	if err := e.loader.SetScanEnabled(true); err != nil {
+		log.Printf("[netpolicy] enable signature scan: %v", err)
+		return
+	}
+	log.Printf("[netpolicy] Tier 2 cleartext signature scanning ENABLED (%d signatures: built-in + operator, inbound)", n)
+}
+
+// effectiveSignatures merges the curated built-ins with the operator set (#661
+// PR-B), built-ins first, capped to the BPF slot budget. A disabled operator
+// signature is skipped. Returns the slice + a fingerprint so refresh can skip a
+// redundant map rewrite when nothing changed.
+func (e *NetworkPolicyEnforcer) effectiveSignatures() ([]netpolicy.Signature, string) {
 	sigs := netpolicy.BuiltinSignatures()
+	if e.sigStore != nil {
+		ops, err := e.sigStore.List(e.ctx)
+		if err != nil {
+			log.Printf("[netpolicy] list operator signatures: %v", err)
+		} else {
+			for _, op := range ops {
+				if !op.GetEnabled() {
+					continue
+				}
+				if len(sigs) >= netbpf.SigMaxCount {
+					log.Printf("[netpolicy] signature slot budget (%d) full; operator signature %q not loaded", netbpf.SigMaxCount, op.GetName())
+					break
+				}
+				sigs = append(sigs, netpolicy.Signature{
+					ID:      safecast.U16FromUint(op.GetId()),
+					Name:    op.GetName(),
+					Pattern: []byte(op.GetPattern()),
+				})
+			}
+		}
+	}
+	// Fingerprint = ids+names+patterns in order (cheap; the set is tiny).
+	var fp strings.Builder
+	for _, s := range sigs {
+		fmt.Fprintf(&fp, "%d:%s:%x;", s.ID, s.Name, s.Pattern)
+	}
+	return sigs, fp.String()
+}
+
+// refreshSignatureSlots writes the effective signature set into the BPF map
+// (filling unused slots so a removed signature is cleared) and updates the
+// id->name audit map. A no-op when the set is unchanged since the last write.
+// Returns the active signature count. Safe to call every reconcile.
+func (e *NetworkPolicyEnforcer) refreshSignatureSlots() int {
+	if !e.sigEnabled || e.loader == nil || !e.loader.HasSignatures() {
+		return 0
+	}
+	sigs, fp := e.effectiveSignatures()
+	e.mu.Lock()
+	unchanged := fp == e.sigLoaded
+	e.mu.Unlock()
+	if unchanged {
+		return len(sigs)
+	}
 	names := make(map[uint16]string, len(sigs))
-	// Fill every slot so a rebuild that shrinks the set clears stale slots.
 	for slot := 0; slot < netbpf.SigMaxCount; slot++ {
 		var entry netbpf.SignatureEntry
 		if slot < len(sigs) {
@@ -178,14 +242,11 @@ func (e *NetworkPolicyEnforcer) populateSignatures() {
 			log.Printf("[netpolicy] set signature slot %d: %v", slot, err)
 		}
 	}
-	if err := e.loader.SetScanEnabled(true); err != nil {
-		log.Printf("[netpolicy] enable signature scan: %v", err)
-		return
-	}
 	e.mu.Lock()
 	e.sigNames = names
+	e.sigLoaded = fp
 	e.mu.Unlock()
-	log.Printf("[netpolicy] Tier 2 cleartext signature scanning ENABLED (%d signatures, inbound)", len(sigs))
+	return len(sigs)
 }
 
 // toSigEntry converts a curated Signature into the BPF map entry, truncating an
@@ -220,7 +281,7 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 
 	// Tier 2 (#661): load the built-in exploit signatures + arm the scan gate once
 	// (the set is static; no per-reconcile churn). No-op unless opted in.
-	e.populateSignatures()
+	e.armSignatures()
 
 	// Resolve egress_domains once before the first reconcile so the initial
 	// allow-list already includes domain IPs.
@@ -566,6 +627,10 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		return err
 	}
 	plan := planReconcile(views, policies, e.enforceEnabled)
+
+	// Tier 2 (#661 PR-B): pick up operator signature add/remove/toggle. A no-op
+	// when the set is unchanged, so this is cheap every pass.
+	e.refreshSignatureSlots()
 
 	// ip_tenant: every managed container's IP -> its tenant id.
 	for ip, tid := range plan.ipTenant {

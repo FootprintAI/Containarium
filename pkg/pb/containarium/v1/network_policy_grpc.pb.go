@@ -19,11 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NetworkPolicyService_SetNetworkPolicy_FullMethodName            = "/containarium.v1.NetworkPolicyService/SetNetworkPolicy"
-	NetworkPolicyService_GetNetworkPolicy_FullMethodName            = "/containarium.v1.NetworkPolicyService/GetNetworkPolicy"
-	NetworkPolicyService_ListNetworkPolicies_FullMethodName         = "/containarium.v1.NetworkPolicyService/ListNetworkPolicies"
-	NetworkPolicyService_DeleteNetworkPolicy_FullMethodName         = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicy"
-	NetworkPolicyService_PatchNetworkPolicyDenyRules_FullMethodName = "/containarium.v1.NetworkPolicyService/PatchNetworkPolicyDenyRules"
+	NetworkPolicyService_SetNetworkPolicy_FullMethodName             = "/containarium.v1.NetworkPolicyService/SetNetworkPolicy"
+	NetworkPolicyService_GetNetworkPolicy_FullMethodName             = "/containarium.v1.NetworkPolicyService/GetNetworkPolicy"
+	NetworkPolicyService_ListNetworkPolicies_FullMethodName          = "/containarium.v1.NetworkPolicyService/ListNetworkPolicies"
+	NetworkPolicyService_DeleteNetworkPolicy_FullMethodName          = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicy"
+	NetworkPolicyService_PatchNetworkPolicyDenyRules_FullMethodName  = "/containarium.v1.NetworkPolicyService/PatchNetworkPolicyDenyRules"
+	NetworkPolicyService_SetNetworkPolicySignature_FullMethodName    = "/containarium.v1.NetworkPolicyService/SetNetworkPolicySignature"
+	NetworkPolicyService_ListNetworkPolicySignatures_FullMethodName  = "/containarium.v1.NetworkPolicyService/ListNetworkPolicySignatures"
+	NetworkPolicyService_DeleteNetworkPolicySignature_FullMethodName = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicySignature"
 )
 
 // NetworkPolicyServiceClient is the client API for NetworkPolicyService service.
@@ -53,6 +56,16 @@ type NetworkPolicyServiceClient interface {
 	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
 	// through the client to preserve them. Echoes the normalized stored policy.
 	PatchNetworkPolicyDenyRules(ctx context.Context, in *PatchNetworkPolicyDenyRulesRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error)
+	// SetNetworkPolicySignature creates or replaces a global operator exploit
+	// signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
+	// form (with its assigned id) is echoed back.
+	SetNetworkPolicySignature(ctx context.Context, in *SetNetworkPolicySignatureRequest, opts ...grpc.CallOption) (*SetNetworkPolicySignatureResponse, error)
+	// ListNetworkPolicySignatures returns every operator-managed signature (the
+	// built-in curated set is implicit and not listed here).
+	ListNetworkPolicySignatures(ctx context.Context, in *ListNetworkPolicySignaturesRequest, opts ...grpc.CallOption) (*ListNetworkPolicySignaturesResponse, error)
+	// DeleteNetworkPolicySignature removes an operator signature by name.
+	// Idempotent.
+	DeleteNetworkPolicySignature(ctx context.Context, in *DeleteNetworkPolicySignatureRequest, opts ...grpc.CallOption) (*DeleteNetworkPolicySignatureResponse, error)
 }
 
 type networkPolicyServiceClient struct {
@@ -113,6 +126,36 @@ func (c *networkPolicyServiceClient) PatchNetworkPolicyDenyRules(ctx context.Con
 	return out, nil
 }
 
+func (c *networkPolicyServiceClient) SetNetworkPolicySignature(ctx context.Context, in *SetNetworkPolicySignatureRequest, opts ...grpc.CallOption) (*SetNetworkPolicySignatureResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetNetworkPolicySignatureResponse)
+	err := c.cc.Invoke(ctx, NetworkPolicyService_SetNetworkPolicySignature_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *networkPolicyServiceClient) ListNetworkPolicySignatures(ctx context.Context, in *ListNetworkPolicySignaturesRequest, opts ...grpc.CallOption) (*ListNetworkPolicySignaturesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListNetworkPolicySignaturesResponse)
+	err := c.cc.Invoke(ctx, NetworkPolicyService_ListNetworkPolicySignatures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *networkPolicyServiceClient) DeleteNetworkPolicySignature(ctx context.Context, in *DeleteNetworkPolicySignatureRequest, opts ...grpc.CallOption) (*DeleteNetworkPolicySignatureResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteNetworkPolicySignatureResponse)
+	err := c.cc.Invoke(ctx, NetworkPolicyService_DeleteNetworkPolicySignature_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NetworkPolicyServiceServer is the server API for NetworkPolicyService service.
 // All implementations must embed UnimplementedNetworkPolicyServiceServer
 // for forward compatibility.
@@ -140,6 +183,16 @@ type NetworkPolicyServiceServer interface {
 	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
 	// through the client to preserve them. Echoes the normalized stored policy.
 	PatchNetworkPolicyDenyRules(context.Context, *PatchNetworkPolicyDenyRulesRequest) (*SetNetworkPolicyResponse, error)
+	// SetNetworkPolicySignature creates or replaces a global operator exploit
+	// signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
+	// form (with its assigned id) is echoed back.
+	SetNetworkPolicySignature(context.Context, *SetNetworkPolicySignatureRequest) (*SetNetworkPolicySignatureResponse, error)
+	// ListNetworkPolicySignatures returns every operator-managed signature (the
+	// built-in curated set is implicit and not listed here).
+	ListNetworkPolicySignatures(context.Context, *ListNetworkPolicySignaturesRequest) (*ListNetworkPolicySignaturesResponse, error)
+	// DeleteNetworkPolicySignature removes an operator signature by name.
+	// Idempotent.
+	DeleteNetworkPolicySignature(context.Context, *DeleteNetworkPolicySignatureRequest) (*DeleteNetworkPolicySignatureResponse, error)
 	mustEmbedUnimplementedNetworkPolicyServiceServer()
 }
 
@@ -164,6 +217,15 @@ func (UnimplementedNetworkPolicyServiceServer) DeleteNetworkPolicy(context.Conte
 }
 func (UnimplementedNetworkPolicyServiceServer) PatchNetworkPolicyDenyRules(context.Context, *PatchNetworkPolicyDenyRulesRequest) (*SetNetworkPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PatchNetworkPolicyDenyRules not implemented")
+}
+func (UnimplementedNetworkPolicyServiceServer) SetNetworkPolicySignature(context.Context, *SetNetworkPolicySignatureRequest) (*SetNetworkPolicySignatureResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetNetworkPolicySignature not implemented")
+}
+func (UnimplementedNetworkPolicyServiceServer) ListNetworkPolicySignatures(context.Context, *ListNetworkPolicySignaturesRequest) (*ListNetworkPolicySignaturesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListNetworkPolicySignatures not implemented")
+}
+func (UnimplementedNetworkPolicyServiceServer) DeleteNetworkPolicySignature(context.Context, *DeleteNetworkPolicySignatureRequest) (*DeleteNetworkPolicySignatureResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteNetworkPolicySignature not implemented")
 }
 func (UnimplementedNetworkPolicyServiceServer) mustEmbedUnimplementedNetworkPolicyServiceServer() {}
 func (UnimplementedNetworkPolicyServiceServer) testEmbeddedByValue()                              {}
@@ -276,6 +338,60 @@ func _NetworkPolicyService_PatchNetworkPolicyDenyRules_Handler(srv interface{}, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NetworkPolicyService_SetNetworkPolicySignature_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNetworkPolicySignatureRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkPolicyServiceServer).SetNetworkPolicySignature(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkPolicyService_SetNetworkPolicySignature_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkPolicyServiceServer).SetNetworkPolicySignature(ctx, req.(*SetNetworkPolicySignatureRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NetworkPolicyService_ListNetworkPolicySignatures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListNetworkPolicySignaturesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkPolicyServiceServer).ListNetworkPolicySignatures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkPolicyService_ListNetworkPolicySignatures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkPolicyServiceServer).ListNetworkPolicySignatures(ctx, req.(*ListNetworkPolicySignaturesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NetworkPolicyService_DeleteNetworkPolicySignature_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteNetworkPolicySignatureRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkPolicyServiceServer).DeleteNetworkPolicySignature(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkPolicyService_DeleteNetworkPolicySignature_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkPolicyServiceServer).DeleteNetworkPolicySignature(ctx, req.(*DeleteNetworkPolicySignatureRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NetworkPolicyService_ServiceDesc is the grpc.ServiceDesc for NetworkPolicyService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -302,6 +418,18 @@ var NetworkPolicyService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PatchNetworkPolicyDenyRules",
 			Handler:    _NetworkPolicyService_PatchNetworkPolicyDenyRules_Handler,
+		},
+		{
+			MethodName: "SetNetworkPolicySignature",
+			Handler:    _NetworkPolicyService_SetNetworkPolicySignature_Handler,
+		},
+		{
+			MethodName: "ListNetworkPolicySignatures",
+			Handler:    _NetworkPolicyService_ListNetworkPolicySignatures_Handler,
+		},
+		{
+			MethodName: "DeleteNetworkPolicySignature",
+			Handler:    _NetworkPolicyService_DeleteNetworkPolicySignature_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

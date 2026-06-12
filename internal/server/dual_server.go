@@ -312,6 +312,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// agent-skill service so it can compile a skill's allowed_peers into a
 	// per-box network policy at launch (Phase 2 / #573).
 	npServer := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
+	npServer.SetSignatureStore(NewMemNetworkPolicySignatureStore()) // #661 PR-B; swapped to Postgres below when available
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
 
@@ -954,6 +955,13 @@ skipAppHosting:
 		} else {
 			npServer.SetStore(pgStore)
 			log.Printf("NetworkPolicy persistence enabled (Postgres store)")
+			// Operator signatures (#661 PR-B) share the same pool.
+			if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
+				log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)
+			} else {
+				npServer.SetSignatureStore(sigStore)
+				log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
+			}
 		}
 	}
 
@@ -1185,6 +1193,7 @@ skipAppHosting:
 			sigArmed = true
 		}
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
+		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {
 			log.Printf("NetworkPolicy enforcer configured (obj=%s); ENFORCE ARMED — enforce-mode policies will drop packets", bpfObj)
 		} else {

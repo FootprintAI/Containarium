@@ -150,6 +150,136 @@ func init() {
 	networkPolicyPatchRmCmd.Flags().StringVar(&npDenyCidr, "cidr", "", "Destination CIDR or host IP of the rule to remove (required)")
 	networkPolicyPatchAddCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output the stored policy as JSON")
 	networkPolicyPatchListCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output as JSON")
+
+	// Tier 2 (#661 PR-B) operator exploit signatures.
+	networkPolicyCmd.AddCommand(networkPolicySignatureCmd)
+	networkPolicySignatureCmd.AddCommand(networkPolicySignatureAddCmd, networkPolicySignatureRmCmd, networkPolicySignatureListCmd)
+	networkPolicySignatureAddCmd.Flags().StringVar(&npSigPattern, "pattern", "", "Cleartext bytes to match in inbound payload (required, 1-32 bytes)")
+	networkPolicySignatureAddCmd.Flags().StringVar(&npSigNote, "note", "", "Operator note")
+	networkPolicySignatureAddCmd.Flags().BoolVar(&npSigDisabled, "disabled", false, "Store the signature but don't load it into the kernel scan")
+	networkPolicySignatureAddCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output the stored signature as JSON")
+	networkPolicySignatureListCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output as JSON")
+}
+
+// signature subcommand flags
+var (
+	npSigPattern  string
+	npSigNote     string
+	npSigDisabled bool
+)
+
+var networkPolicySignatureCmd = &cobra.Command{
+	Use:     "signature",
+	Aliases: []string{"sig"},
+	Short:   "Manage global Tier 2 cleartext exploit signatures (#661)",
+	Long: `Manage operator exploit signatures — cleartext byte patterns matched
+(best-effort) against the inbound payload of containers' TCP connections to
+virtually-patch a vulnerable service before the vendor fix ships. Signatures are
+GLOBAL (fleet-wide), augmenting the daemon's built-in curated set.
+
+Scanning must be enabled on the daemon (CONTAINARIUM_NETWORK_POLICY_SIGNATURES=1)
+for these to take effect, and drops require enforce mode. Best-effort, not a WAF:
+single-packet (no reassembly), cleartext only (TLS opaque), first 256 bytes.`,
+}
+
+var networkPolicySignatureAddCmd = &cobra.Command{
+	Use:   "add <name> --pattern <bytes>",
+	Short: "Add or update an operator exploit signature (upsert by name)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runNetworkPolicySignatureAdd,
+}
+
+var networkPolicySignatureRmCmd = &cobra.Command{
+	Use:     "rm <name>",
+	Aliases: []string{"delete"},
+	Short:   "Remove an operator exploit signature",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runNetworkPolicySignatureRm,
+}
+
+var networkPolicySignatureListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List operator exploit signatures",
+	Args:  cobra.NoArgs,
+	RunE:  runNetworkPolicySignatureList,
+}
+
+// sigJSON mirrors the NetworkPolicySignature wire shape (grpc-gateway camelCase).
+type sigJSON struct {
+	Name    string `json:"name"`
+	Pattern string `json:"pattern"`
+	Enabled bool   `json:"enabled"`
+	ID      uint32 `json:"id"`
+	Note    string `json:"note"`
+}
+
+type setSigRequest struct {
+	Signature sigJSON `json:"signature"`
+}
+type sigEnvelope struct {
+	Signature sigJSON `json:"signature"`
+}
+type sigsEnvelope struct {
+	Signatures []sigJSON `json:"signatures"`
+}
+
+func runNetworkPolicySignatureAdd(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return errServerRequired()
+	}
+	if strings.TrimSpace(npSigPattern) == "" {
+		return fmt.Errorf("--pattern is required")
+	}
+	body := setSigRequest{Signature: sigJSON{
+		Name:    args[0],
+		Pattern: npSigPattern,
+		Enabled: !npSigDisabled,
+		Note:    npSigNote,
+	}}
+	var out sigEnvelope
+	if err := doJSON("POST", strings.TrimSuffix(serverAddr, "/")+"/v1/network-policy-signatures", body, &out); err != nil {
+		return err
+	}
+	if npJSONOut {
+		return printJSON(out.Signature)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ signature %q set (id %d)\n", out.Signature.Name, out.Signature.ID)
+	return nil
+}
+
+func runNetworkPolicySignatureRm(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return errServerRequired()
+	}
+	url := strings.TrimSuffix(serverAddr, "/") + "/v1/network-policy-signatures/" + args[0]
+	if err := doJSON("DELETE", url, nil, nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ signature %q removed\n", args[0])
+	return nil
+}
+
+func runNetworkPolicySignatureList(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return errServerRequired()
+	}
+	var out sigsEnvelope
+	if err := getJSON(strings.TrimSuffix(serverAddr, "/")+"/v1/network-policy-signatures", &out); err != nil {
+		return err
+	}
+	if npJSONOut {
+		return printJSON(out.Signatures)
+	}
+	w := cmd.OutOrStdout()
+	if len(out.Signatures) == 0 {
+		fmt.Fprintln(w, "No operator signatures (built-in signatures are always active when scanning is enabled).")
+		return nil
+	}
+	fmt.Fprintf(w, "%-24s %-6s %-8s %-24s %s\n", "NAME", "ID", "ENABLED", "PATTERN", "NOTE")
+	for _, s := range out.Signatures {
+		fmt.Fprintf(w, "%-24s %-6d %-8v %-24q %s\n", s.Name, s.ID, s.Enabled, s.Pattern, s.Note)
+	}
+	return nil
 }
 
 // netPolicyJSON mirrors the NetworkPolicy wire shape (camelCase from
