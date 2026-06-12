@@ -41,6 +41,57 @@ type EgressEntry struct {
 // follow.
 const tenantPrefixBits = 32
 
+// DenyEntry is one virtual-patch deny rule (#660) the loader writes into the BPF
+// deny_cidr LPM-trie map. The key (PrefixLen, TenantID, Addr) mirrors EgressEntry
+// — a tenant-scoped destination prefix — and the value (Port, Proto) further
+// scopes the block to a single service (0 = any). Deny beats the egress
+// allow-list. The struct is comparable so reconcile can diff desired vs.
+// installed; DenyKey is the kernel map key (CIDR only — the value carries
+// port/proto), so changing only a rule's port updates the same map entry rather
+// than churning two.
+type DenyEntry struct {
+	PrefixLen uint32
+	TenantID  uint32
+	Addr      [4]byte
+	Port      uint16
+	Proto     uint8
+}
+
+// DenyKey is the kernel-map key portion of a DenyEntry (the LPM CIDR key). Two
+// DenyEntries with the same DenyKey address the same map slot.
+type DenyKey struct {
+	PrefixLen uint32
+	TenantID  uint32
+	Addr      [4]byte
+}
+
+// Key returns the entry's kernel-map key.
+func (e DenyEntry) Key() DenyKey {
+	return DenyKey{PrefixLen: e.PrefixLen, TenantID: e.TenantID, Addr: e.Addr}
+}
+
+// CompileDeny renders a tenant's virtual-patch deny rules into LPM-trie entries.
+// Like CompileEgress it is IPv4-only (the BPF program parses IPv4); a v6 deny
+// rule is rejected rather than silently dropped, so an operator can't believe a
+// v6 destination is blocked when it isn't. Expired rules are NOT filtered here —
+// the daemon drops them (DenyRule.Expired) before calling this.
+func CompileDeny(tenantID uint32, c netpolicy.CompiledPolicy) ([]DenyEntry, error) {
+	out := make([]DenyEntry, 0, len(c.DenyRules))
+	for _, d := range c.DenyRules {
+		if !d.CIDR.Addr().Is4() {
+			return nil, fmt.Errorf("netbpf: deny CIDR %s is not IPv4 (Phase A is IPv4-only)", d.CIDR)
+		}
+		out = append(out, DenyEntry{
+			PrefixLen: tenantPrefixBits + safecast.U32(d.CIDR.Bits()),
+			TenantID:  tenantID,
+			Addr:      d.CIDR.Addr().As4(),
+			Port:      d.Port,
+			Proto:     d.Proto,
+		})
+	}
+	return out, nil
+}
+
 // CompileConfig renders the per-veth policy config from a CompiledPolicy for a
 // caller-assigned tenant ID. Tenant ID assignment (registry vs. hash) is a
 // daemon concern resolved at the call site, so this layer takes it explicitly.

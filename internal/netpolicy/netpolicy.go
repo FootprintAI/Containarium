@@ -14,7 +14,9 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -32,6 +34,29 @@ type CompiledPolicy struct {
 	// LogOnly is true unless Mode is ENFORCE — i.e. UNSPECIFIED and LOG_ONLY
 	// both observe-only (Phase A default), only ENFORCE drops packets.
 	LogOnly bool
+	// DenyRules are virtual-patch block rules (#660): parsed/masked/deduped/sorted
+	// destination prefixes (optionally port/proto-scoped) that are denied BEFORE
+	// the egress allow-list is consulted — deny beats allow. Expiry is preserved
+	// here (not filtered) so the package stays time-pure; the daemon drops expired
+	// rules with DenyRule.Expired(now) before pushing them to the kernel.
+	DenyRules []DenyRule
+}
+
+// DenyRule is one normalized virtual-patch block rule (#660). The destination
+// CIDR is matched first; Port/Proto (0 = any) further scope the block to a
+// single service. A host IP is carried as a /32.
+type DenyRule struct {
+	CIDR      netip.Prefix
+	Port      uint16    // 0 = any port
+	Proto     uint8     // IP protocol number (0 = any; 6 = tcp, 17 = udp)
+	Note      string    // operator note, typically a CVE id
+	ExpiresAt time.Time // zero = no expiry
+}
+
+// Expired reports whether the rule's expiry has passed relative to now. A
+// zero ExpiresAt never expires.
+func (d DenyRule) Expired(now time.Time) bool {
+	return !d.ExpiresAt.IsZero() && now.After(d.ExpiresAt)
 }
 
 // Validate reports whether a NetworkPolicy is well-formed without compiling it.
@@ -60,6 +85,10 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 	if err != nil {
 		return CompiledPolicy{}, err
 	}
+	deny, err := compileDenyRules(p.GetDenyRules())
+	if err != nil {
+		return CompiledPolicy{}, err
+	}
 
 	// Unspecified defaults to log-only in Phase A; reject unknown enum values.
 	mode := p.GetMode()
@@ -81,6 +110,7 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		AllowMetadata:    p.GetAllowMetadata(),
 		Mode:             mode,
 		LogOnly:          mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
+		DenyRules:        deny,
 	}, nil
 }
 
@@ -92,6 +122,23 @@ func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
 	for i, p := range c.EgressCIDRs {
 		cidrs[i] = p.String()
 	}
+	var deny []*pb.NetworkPolicyDenyRule
+	if len(c.DenyRules) > 0 {
+		deny = make([]*pb.NetworkPolicyDenyRule, len(c.DenyRules))
+		for i, d := range c.DenyRules {
+			var exp string
+			if !d.ExpiresAt.IsZero() {
+				exp = d.ExpiresAt.UTC().Format(time.RFC3339)
+			}
+			deny[i] = &pb.NetworkPolicyDenyRule{
+				Cidr:      d.CIDR.String(),
+				Port:      uint32(d.Port),
+				Proto:     protoName(d.Proto),
+				Note:      d.Note,
+				ExpiresAt: exp,
+			}
+		}
+	}
 	return &pb.NetworkPolicy{
 		Tenant:           c.Tenant,
 		AllowIntraTenant: c.AllowIntraTenant,
@@ -99,6 +146,7 @@ func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
 		EgressDomains:    append([]string(nil), c.EgressDomains...),
 		AllowMetadata:    c.AllowMetadata,
 		Mode:             c.Mode,
+		DenyRules:        deny,
 	}
 }
 
@@ -124,6 +172,102 @@ func compileCIDRs(raw []string) ([]netip.Prefix, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out, nil
+}
+
+// compileDenyRules parses each virtual-patch deny rule (#660): the CIDR is
+// required (a bare host IP is taken as /32 and masked); port must fit a u16;
+// proto is "tcp"|"udp"|""(any); expires_at, if set, must be RFC3339.
+//
+// Rules are deduped by CIDR — at most one rule per destination prefix, the LAST
+// one in the list winning. This matches the kernel's deny_cidr LPM map, whose
+// key is CIDR-only (port/proto live in the value), so a single CIDR maps to a
+// single slot. Allowing two rules for the same CIDR with different ports here
+// would compile to the same kernel slot and one would silently clobber the
+// other; collapsing to one-per-CIDR makes the policy say exactly what the kernel
+// can enforce. To block more than one port on a host, deny the host (port 0).
+//
+// Sorted by CIDR so reconcile diffs are stable. Expiry is NOT applied here (the
+// package is time-pure); it is carried on the DenyRule for the daemon to drop.
+func compileDenyRules(raw []*pb.NetworkPolicyDenyRule) ([]DenyRule, error) {
+	seen := make(map[string]DenyRule, len(raw))
+	for _, r := range raw {
+		if r == nil {
+			continue
+		}
+		c := strings.TrimSpace(r.GetCidr())
+		if c == "" {
+			return nil, fmt.Errorf("network policy: deny rule cidr is required")
+		}
+		var prefix netip.Prefix
+		if strings.Contains(c, "/") {
+			p, err := netip.ParsePrefix(c)
+			if err != nil {
+				return nil, fmt.Errorf("network policy: invalid deny cidr %q: %w", c, err)
+			}
+			prefix = p.Masked()
+		} else {
+			a, err := netip.ParseAddr(c)
+			if err != nil {
+				return nil, fmt.Errorf("network policy: invalid deny address %q: %w", c, err)
+			}
+			prefix = netip.PrefixFrom(a, a.BitLen())
+		}
+		if r.GetPort() > 65535 {
+			return nil, fmt.Errorf("network policy: deny rule port %d out of range (0-65535)", r.GetPort())
+		}
+		proto, err := parseProto(r.GetProto())
+		if err != nil {
+			return nil, err
+		}
+		var exp time.Time
+		if s := strings.TrimSpace(r.GetExpiresAt()); s != "" {
+			t, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return nil, fmt.Errorf("network policy: invalid deny expires_at %q (want RFC3339): %w", s, err)
+			}
+			exp = t
+		}
+		seen[prefix.String()] = DenyRule{
+			CIDR:      prefix,
+			Port:      safecast.U16FromUint(r.GetPort()), // range already checked above; G115-safe net
+			Proto:     proto,
+			Note:      strings.TrimSpace(r.GetNote()),
+			ExpiresAt: exp,
+		}
+	}
+	out := make([]DenyRule, 0, len(seen))
+	for _, d := range seen {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CIDR.String() < out[j].CIDR.String() })
+	return out, nil
+}
+
+// parseProto maps a friendly protocol name to its IP protocol number. ""/"any"
+// is 0 (match any protocol).
+func parseProto(s string) (uint8, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "any":
+		return 0, nil
+	case "tcp":
+		return 6, nil
+	case "udp":
+		return 17, nil
+	default:
+		return 0, fmt.Errorf("network policy: unknown deny proto %q (want tcp, udp, or empty)", s)
+	}
+}
+
+// protoName is the inverse of parseProto for echoing a normalized policy back.
+func protoName(p uint8) string {
+	switch p {
+	case 6:
+		return "tcp"
+	case 17:
+		return "udp"
+	default:
+		return ""
+	}
 }
 
 // compileDomains normalizes egress domains (lowercase, trim, strip a trailing

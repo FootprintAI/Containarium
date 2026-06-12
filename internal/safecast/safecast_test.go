@@ -92,6 +92,18 @@ func TestU32FromUint(t *testing.T) {
 	}
 }
 
+func TestU16FromUint(t *testing.T) {
+	if got := U16FromUint(uint32(6379)); got != 6379 {
+		t.Errorf("U16FromUint(6379) = %d, want 6379", got)
+	}
+	if got := U16FromUint(uint32(math.MaxUint16)); got != math.MaxUint16 {
+		t.Errorf("U16FromUint(MaxUint16) = %d, want MaxUint16", got)
+	}
+	if got := U16FromUint(uint32(math.MaxUint16) + 1); got != math.MaxUint16 {
+		t.Errorf("U16FromUint(MaxUint16+1) = %d, want clamp to MaxUint16", got)
+	}
+}
+
 func TestI16(t *testing.T) {
 	cases := []struct {
 		in   int32

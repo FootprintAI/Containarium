@@ -72,6 +72,16 @@ func U32FromUint[T ~uint | ~uint64](v T) uint32 {
 	return uint32(v)
 }
 
+// U16FromUint converts an unsigned integer to uint16, clamping at MaxUint16.
+// Used e.g. for a proto uint32 port field flowing into a uint16 (the call site
+// already range-checks; this is the overflow-safe net gosec G115 wants).
+func U16FromUint[T ~uint | ~uint32 | ~uint64](v T) uint16 {
+	if v > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(v)
+}
+
 // U64FromI64 converts a signed integer to uint64, clamping negatives to 0. No
 // upper clamp is needed — every int64 fits in uint64. Generic over the signed
 // widths so it covers both time.Duration nanoseconds and unix.Timespec fields

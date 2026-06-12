@@ -24,6 +24,7 @@ const (
 	mapStats            = "stats"
 	mapEvents           = "events"
 	mapFlows            = "flows"
+	mapDenyCIDR         = "deny_cidr"
 	statSeen            = uint32(0)
 	statWouldDeny       = uint32(1)
 	statsEntryCount     = 2
@@ -222,6 +223,49 @@ func (l *Loader) DeleteEgress(e EgressEntry) error {
 	return nil
 }
 
+// HasDenyRules reports whether the loaded object carries the virtual-patch
+// deny_cidr map (#660). Like the flows map it is NOT required by Load — an
+// object built before this feature still loads and enforces the allow-list; the
+// daemon just skips deny-rule installation until the operator rebuilds
+// netpolicy.bpf.o. AddDeny/DeleteDeny error if it's absent.
+func (l *Loader) HasDenyRules() bool { return l.coll.Maps[mapDenyCIDR] != nil }
+
+// AddDeny installs (or updates) one virtual-patch deny entry: an LPM key
+// (tenant + CIDR) mapping to the rule's port/proto scope. Update is an upsert, so
+// changing only a rule's port/proto rewrites the same map slot. Errors if the
+// loaded object lacks the deny map (HasDenyRules is false).
+func (l *Loader) AddDeny(e DenyEntry) error {
+	m := l.coll.Maps[mapDenyCIDR]
+	if m == nil {
+		return fmt.Errorf("netbpf: deny_cidr map not present (rebuild netpolicy.bpf.o?)")
+	}
+	key := denyKeyBytes(e.Key())
+	val := denyValueBytes(e)
+	if err := m.Update(key[:], val[:], ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("netbpf: update deny_cidr: %w", err)
+	}
+	return nil
+}
+
+// DeleteDeny removes a virtual-patch deny entry by its LPM key. Used by the
+// reconcile loop to converge the map when a deny rule is removed (or expires) —
+// a stale deny entry would keep blocking traffic after the operator cleared the
+// rule. A missing key is not an error (desired state already reached).
+func (l *Loader) DeleteDeny(k DenyKey) error {
+	m := l.coll.Maps[mapDenyCIDR]
+	if m == nil {
+		return fmt.Errorf("netbpf: deny_cidr map not present (rebuild netpolicy.bpf.o?)")
+	}
+	key := denyKeyBytes(k)
+	if err := m.Delete(key[:]); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netbpf: delete deny_cidr: %w", err)
+	}
+	return nil
+}
+
 // SetIPTenant maps a managed container IP (network byte order, 4 bytes) to its
 // tenant ID, so the program can distinguish same-tenant peers from external
 // destinations.
@@ -372,5 +416,26 @@ func egressKeyBytes(e EgressEntry) [12]byte {
 	binary.NativeEndian.PutUint32(b[0:4], e.PrefixLen)
 	binary.NativeEndian.PutUint32(b[4:8], e.TenantID)
 	copy(b[8:12], e.Addr[:])
+	return b
+}
+
+// denyKeyBytes serializes a DenyKey into the 12-byte `struct egress_key` layout
+// the deny_cidr LPM trie shares with egress_cidr (u32 prefixlen, u32 tenant_id,
+// 4 addr bytes). Same byte-order rules as egressKeyBytes.
+func denyKeyBytes(k DenyKey) [12]byte {
+	var b [12]byte
+	binary.NativeEndian.PutUint32(b[0:4], k.PrefixLen)
+	binary.NativeEndian.PutUint32(b[4:8], k.TenantID)
+	copy(b[8:12], k.Addr[:])
+	return b
+}
+
+// denyValueBytes serializes a DenyEntry's scope into the 4-byte `struct deny_val`
+// layout: u16 port (host byte order — the program compares it against the ntoh'd
+// dport), u8 proto, u8 flags (reserved 0).
+func denyValueBytes(e DenyEntry) [4]byte {
+	var b [4]byte
+	binary.NativeEndian.PutUint16(b[0:2], e.Port)
+	b[2] = e.Proto
 	return b
 }
