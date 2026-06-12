@@ -27,7 +27,9 @@ const containerSuffix = "-container"
 // defaultNetPolicyReconcileInterval is how often the enforcer re-converges the BPF maps
 // to the live container + policy state. The reconcile loop is the source of
 // truth (robust against dropped bus events); the bus only triggers an early
-// reconcile for latency.
+// reconcile for latency. Each cycle does one Incus ListContainers plus a cheap
+// per-container netlink lookup; the expensive per-container Incus inspect is
+// cached and only re-runs when a container starts/restarts (#654).
 const defaultNetPolicyReconcileInterval = 10 * time.Second
 
 // defaultFlowPollInterval is how often the enforcer reads the BPF per-flow
@@ -95,6 +97,13 @@ type NetworkPolicyEnforcer struct {
 
 	loader *netbpf.Loader
 
+	// vethCache maps a running container name -> its host veth name, so a steady
+	// reconcile resolves the ifindex with a cheap local netlink lookup
+	// (VethIndex) instead of an Incus inspect (GetRawInstance) every cycle (#654).
+	// Only touched from gather, which runs serially inside reconcile (the reconcile
+	// loop is single-goroutine), so it needs no lock.
+	vethCache map[string]string
+
 	mu              sync.Mutex
 	attached        map[int]string              // ifindex -> container name currently attached
 	idName          map[uint32]string           // tenant id -> name (for audit/log)
@@ -120,6 +129,7 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		domainRefresh:   defaultDomainRefreshInterval,
 		flowPoll:        defaultFlowPollInterval,
 		flowIdleTimeout: defaultFlowIdleTimeout,
+		vethCache:       make(map[string]string),
 		attached:        make(map[int]string),
 		idName:          make(map[uint32]string),
 		enforced:        make(map[uint32]bool),
@@ -538,6 +548,7 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	}
 	views := make([]containerView, 0, len(containers))
 	idName := make(map[uint32]string)
+	running := make(map[string]bool, len(containers))
 	for _, c := range containers {
 		tenant := resolveTenant(c.Tenant, c.Name)
 		if tenant == "" {
@@ -556,19 +567,52 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 		}
 		if strings.EqualFold(c.State, "running") {
 			v.Running = true
-			cfg, _, err := e.insp.GetRawInstance(c.Name)
-			if err == nil {
-				if veth := netbpf.HostVethFromConfig(cfg); veth != "" {
-					if ifindex, err := netbpf.VethIndex(veth); err == nil {
-						v.Ifindex = ifindex
-						v.HasVeth = true
-					}
-				}
+			running[c.Name] = true
+			if ifindex, ok := e.resolveVeth(c.Name); ok {
+				v.Ifindex = ifindex
+				v.HasVeth = true
 			}
 		}
 		views = append(views, v)
 	}
+	// Evict cache entries for containers that are gone or no longer running, so the
+	// map stays bounded and a container that restarts re-inspects for its new veth.
+	for name := range e.vethCache {
+		if !running[name] {
+			delete(e.vethCache, name)
+		}
+	}
 	return views, idName, nil
+}
+
+// resolveVeth maps a running container to its host veth ifindex (#654). It caches
+// the container's veth *name* so the steady-state path is a cheap local netlink
+// lookup (VethIndex) rather than an Incus inspect (GetRawInstance) every cycle.
+// The expensive inspect runs only on a cache miss or when the cached veth has
+// disappeared from the host — which is exactly when a container has just started
+// or restarted (a restart yields a new veth, so the stale lookup fails and we
+// re-inspect, self-healing without depending on perfect bus-event delivery).
+func (e *NetworkPolicyEnforcer) resolveVeth(name string) (int, bool) {
+	if veth := e.vethCache[name]; veth != "" {
+		if ifindex, err := netbpf.VethIndex(veth); err == nil {
+			return ifindex, true
+		}
+		delete(e.vethCache, name) // veth gone (restart) — fall through to re-inspect
+	}
+	cfg, _, err := e.insp.GetRawInstance(name)
+	if err != nil {
+		return 0, false
+	}
+	veth := netbpf.HostVethFromConfig(cfg)
+	if veth == "" {
+		return 0, false
+	}
+	ifindex, err := netbpf.VethIndex(veth)
+	if err != nil {
+		return 0, false
+	}
+	e.vethCache[name] = veth
+	return ifindex, true
 }
 
 // compiledPolicies loads + compiles every stored policy, keyed by tenant.
