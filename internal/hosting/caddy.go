@@ -169,6 +169,9 @@ func (m *CaddyManager) InstallCaddy(ctx context.Context) error {
 		return fmt.Errorf("create build dir: %w", err)
 	}
 
+	// #nosec G204 -- args are a DNS-provider module name resolved from config,
+	// compile-time-constant module paths, and the configured output path; no
+	// user/tainted input reaches the command line.
 	cmd := exec.CommandContext(ctx, "xcaddy", xcaddyBuildArgs(module, m.config.WAF, m.config.CaddyBin)...)
 	cmd.Dir = buildDir
 	cmd.Env = os.Environ()
