@@ -25,7 +25,7 @@ func echoServer(t *testing.T) net.Listener {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				_, _ = io.Copy(c, c) // echo
 			}(c)
 		}
@@ -40,13 +40,13 @@ func echoServer(t *testing.T) net.Listener {
 // pipe the echo back.
 func TestTransparentProxy_ForwardPath(t *testing.T) {
 	echo := echoServer(t)
-	defer echo.Close()
+	defer func() { _ = echo.Close() }()
 
 	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}
-	defer proxyLn.Close()
+	defer func() { _ = proxyLn.Close() }()
 
 	var (
 		mu       sync.Mutex
@@ -69,7 +69,7 @@ func TestTransparentProxy_ForwardPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := conn.Write([]byte("hello-waf\n")); err != nil {
 		t.Fatalf("write: %v", err)
@@ -97,7 +97,7 @@ func TestTransparentProxy_DialFailureClosesClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer proxyLn.Close()
+	defer func() { _ = proxyLn.Close() }()
 
 	p := &TransparentProxy{
 		// A dialer that always fails (stands in for a dead upstream).
@@ -115,7 +115,7 @@ func TestTransparentProxy_DialFailureClosesClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// The proxy should close our side once the upstream dial fails: a read returns
 	// EOF promptly (well within the deadline).

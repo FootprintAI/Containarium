@@ -99,7 +99,7 @@ func (p *TransparentProxy) Serve(ctx context.Context, ln net.Listener) error {
 // handle recovers a connection's original destination, dials it, and pipes bytes
 // both ways until either side closes.
 func (p *TransparentProxy) handle(ctx context.Context, client net.Conn) {
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	orig := p.origDst(client)
 	if p.OnForward != nil {
 		p.OnForward(orig)
@@ -112,7 +112,7 @@ func (p *TransparentProxy) handle(ctx context.Context, client net.Conn) {
 		log.Printf("[waf] steer: dial original dst %s failed: %v", orig, err)
 		return
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	// Bidirectional copy with TCP half-close so an EOF in one direction is
 	// propagated (a half-closed client shouldn't tear down the still-active
