@@ -45,6 +45,24 @@ func TestI64FromU64(t *testing.T) {
 	}
 }
 
+func TestU64FromI64(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want uint64
+	}{
+		{0, 0},
+		{42, 42},
+		{-1, 0},            // clamp negative
+		{math.MinInt64, 0}, // clamp negative
+		{math.MaxInt64, math.MaxInt64},
+	}
+	for _, c := range cases {
+		if got := U64FromI64(c.in); got != c.want {
+			t.Errorf("U64FromI64(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
 func TestU32(t *testing.T) {
 	cases := []struct {
 		in   int64

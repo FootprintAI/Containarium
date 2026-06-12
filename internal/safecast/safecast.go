@@ -72,6 +72,17 @@ func U32FromUint[T ~uint | ~uint64](v T) uint32 {
 	return uint32(v)
 }
 
+// U64FromI64 converts a signed integer to uint64, clamping negatives to 0. No
+// upper clamp is needed — every int64 fits in uint64. Generic over the signed
+// widths so it covers both time.Duration nanoseconds and unix.Timespec fields
+// (whose Sec/Nsec are int64 on 64-bit, int32 on 32-bit platforms).
+func U64FromI64[T ~int | ~int32 | ~int64](v T) uint64 {
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
+}
+
 // U8 converts a signed integer to uint8, clamping to [0, 255].
 func U8[T ~int | ~int32 | ~int64](v T) uint8 {
 	if v < 0 {

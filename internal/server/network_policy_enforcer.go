@@ -371,7 +371,7 @@ func (e *NetworkPolicyEnforcer) pollFlows() {
 // unit-testable. A zero/garbage nowNs (clock read failed) yields no idle flows —
 // the sweep simply no-ops that poll rather than reaping live flows.
 func splitIdleFlows(records []netbpf.FlowRecord, nowNs uint64, idleFor time.Duration) (active, idle []netbpf.FlowRecord) {
-	cutoff := uint64(idleFor.Nanoseconds())
+	cutoff := safecast.U64FromI64(idleFor.Nanoseconds())
 	for _, r := range records {
 		if nowNs > r.LastNs && nowNs-r.LastNs > cutoff {
 			idle = append(idle, r)
@@ -391,7 +391,7 @@ func monotonicNowNs() uint64 {
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
 		return 0
 	}
-	return uint64(ts.Sec)*1_000_000_000 + uint64(ts.Nsec)
+	return safecast.U64FromI64(ts.Sec)*1_000_000_000 + safecast.U64FromI64(ts.Nsec)
 }
 
 // flowsToEBPF attributes each BPF flow record to its container via the veth
