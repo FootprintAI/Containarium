@@ -1018,6 +1018,18 @@ skipAppHosting:
 					// Create scanner first so we can pass it to the server
 					securityScanner = security.NewScanner(securityIncusClient, securityStore)
 
+					// Auto-quarantine (#659): on malware detection, block the
+					// tenant's egress via a deny rule; release on a clean scan.
+					// Opt-in — the quarantine only bites when the network-policy BPF
+					// enforcer is also armed. Uses npServer's deny-rule store directly
+					// (in-process, no RPC/auth).
+					switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_SECURITY_AUTO_QUARANTINE"))) {
+					case "1", "true", "yes", "on":
+						aq := NewAutoQuarantine(npServer.Store())
+						securityScanner.SetScanResultHook(aq.OnScanResult)
+						log.Printf("Security auto-quarantine enabled: malware-infected containers will have their tenant's egress blocked (release on clean scan)")
+					}
+
 					securityServerInstance = NewSecurityServer(securityStore, securityIncusClient, securityScanner)
 					pb.RegisterSecurityServiceServer(grpcServer, securityServerInstance)
 					log.Printf("Security service enabled")
