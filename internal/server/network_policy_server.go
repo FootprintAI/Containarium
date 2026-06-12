@@ -27,11 +27,24 @@ var errDenyRuleNotFound = errors.New("deny rule not found")
 // (a later increment) consumes the stored policies.
 type NetworkPolicyServer struct {
 	pb.UnimplementedNetworkPolicyServiceServer
-	store NetworkPolicyStore
+	store    NetworkPolicyStore
+	sigStore NetworkPolicySignatureStore // #661 PR-B: operator exploit signatures (global)
 }
 
 func NewNetworkPolicyServer(store NetworkPolicyStore) *NetworkPolicyServer {
 	return &NetworkPolicyServer{store: store}
+}
+
+// SetSignatureStore wires the operator-signature store (#661 PR-B). Startup-only,
+// same contract as SetStore. Nil leaves the signature RPCs returning Unavailable.
+func (s *NetworkPolicyServer) SetSignatureStore(store NetworkPolicySignatureStore) {
+	s.sigStore = store
+}
+
+// SignatureStore returns the operator-signature store (for the enforcer to read
+// during reconcile). Nil until SetSignatureStore is called.
+func (s *NetworkPolicyServer) SignatureStore() NetworkPolicySignatureStore {
+	return s.sigStore
 }
 
 // SetStore swaps the backing store. Intended for startup only — called during
@@ -188,4 +201,57 @@ func (s *NetworkPolicyServer) DeleteNetworkPolicy(ctx context.Context, req *pb.D
 		return nil, status.Errorf(codes.Internal, "delete network policy: %v", err)
 	}
 	return &pb.DeleteNetworkPolicyResponse{}, nil
+}
+
+// --- Tier 2 operator signatures (#661 PR-B) ---
+
+func (s *NetworkPolicyServer) SetNetworkPolicySignature(ctx context.Context, req *pb.SetNetworkPolicySignatureRequest) (*pb.SetNetworkPolicySignatureResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if s.sigStore == nil {
+		return nil, status.Error(codes.Unavailable, "network-policy signatures are not configured on this daemon")
+	}
+	name, pattern, err := netpolicy.ValidateSignature(req.GetSignature())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	// Default enabled=true unless the caller explicitly disabled it. (The proto
+	// bool defaults to false; an operator adding a signature almost always wants it
+	// on, and an explicit disable is the rare case — but we honor what's sent.)
+	stored, err := s.sigStore.Set(ctx, name, pattern, req.GetSignature().GetEnabled(), req.GetSignature().GetNote())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "store signature: %v", err)
+	}
+	return &pb.SetNetworkPolicySignatureResponse{Signature: stored}, nil
+}
+
+func (s *NetworkPolicyServer) ListNetworkPolicySignatures(ctx context.Context, _ *pb.ListNetworkPolicySignaturesRequest) (*pb.ListNetworkPolicySignaturesResponse, error) {
+	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeNetworkPolicyRead); err != nil {
+		return nil, err
+	}
+	if s.sigStore == nil {
+		return &pb.ListNetworkPolicySignaturesResponse{}, nil
+	}
+	sigs, err := s.sigStore.List(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list signatures: %v", err)
+	}
+	return &pb.ListNetworkPolicySignaturesResponse{Signatures: sigs}, nil
+}
+
+func (s *NetworkPolicyServer) DeleteNetworkPolicySignature(ctx context.Context, req *pb.DeleteNetworkPolicySignatureRequest) (*pb.DeleteNetworkPolicySignatureResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if s.sigStore == nil {
+		return nil, status.Error(codes.Unavailable, "network-policy signatures are not configured on this daemon")
+	}
+	if req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+	if err := s.sigStore.Delete(ctx, req.GetName()); err != nil && !errors.Is(err, ErrSignatureNotFound) {
+		return nil, status.Errorf(codes.Internal, "delete signature: %v", err)
+	}
+	return &pb.DeleteNetworkPolicySignatureResponse{}, nil
 }

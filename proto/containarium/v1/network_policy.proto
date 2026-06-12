@@ -82,4 +82,45 @@ service NetworkPolicyService {
       tags: "NetworkPolicy";
     };
   }
+
+  // SetNetworkPolicySignature creates or replaces a global operator exploit
+  // signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
+  // form (with its assigned id) is echoed back.
+  rpc SetNetworkPolicySignature(SetNetworkPolicySignatureRequest) returns (SetNetworkPolicySignatureResponse) {
+    option (google.api.http) = {
+      post: "/v1/network-policy-signatures"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set network-policy signature";
+      description: "Create or replace a global cleartext exploit signature (#661). Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+
+  // ListNetworkPolicySignatures returns every operator-managed signature (the
+  // built-in curated set is implicit and not listed here).
+  rpc ListNetworkPolicySignatures(ListNetworkPolicySignaturesRequest) returns (ListNetworkPolicySignaturesResponse) {
+    option (google.api.http) = {
+      get: "/v1/network-policy-signatures"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List network-policy signatures";
+      description: "List every operator-managed exploit signature (#661). Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+
+  // DeleteNetworkPolicySignature removes an operator signature by name.
+  // Idempotent.
+  rpc DeleteNetworkPolicySignature(DeleteNetworkPolicySignatureRequest) returns (DeleteNetworkPolicySignatureResponse) {
+    option (google.api.http) = {
+      delete: "/v1/network-policy-signatures/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete network-policy signature";
+      description: "Remove an operator-managed exploit signature (#661, idempotent). Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
 }

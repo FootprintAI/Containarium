@@ -132,6 +132,24 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	return &pb.RunAgentSkillResponse{Container: container, ArtifactJson: artifact}, nil
 }
 
+// agentRuntimeReleaseTag returns the GitHub release tag the agent-runtime box
+// pulls its artifacts from. version.GetVersion() is the BARE semver ("0.26.6")
+// — the release workflow builds with VERSION=${tag#v}, so the `v` is stripped
+// at build time — but the git tag and release are `v`-prefixed ("v0.26.6"),
+// and the recipe's post_start uses this value directly in
+// raw.githubusercontent.com/<repo>/<ref>/... and releases/download/<ref>/...
+// URLs. Without the `v` those 404 and the best-effort assembly silently skips,
+// so the box comes up without the in-box loop. Re-add the prefix (idempotent —
+// a value that already carries it, or a dev/unpublished version, is left as-is
+// and just degrades to skip-assembly as before).
+func agentRuntimeReleaseTag() string {
+	v := version.GetVersion()
+	if v == "" || strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
+}
+
 // provisionSkillBox provisions a skill's box and gets it ready to run: resolve
 // the box recipe, deploy it, mint a JWT scoped to exactly the skill's
 // allowed_scopes, seed the prompt/token/input/card, and compile allowed_peers
@@ -154,20 +172,42 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		return "", nil, err
 	}
 
-	// Provision the box by reusing the recipe deploy path. Pass the daemon's
-	// version as the agent-runtime recipe's `release` param so the box's
-	// post_start pulls matching agent-box + agent-runtime artifacts (box-image
-	// assembly). Recipes that don't declare these params ignore the extras;
-	// assembly is best-effort (a dev/unpublished version just skips it).
-	dep, err := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
-		RecipeId:   recipeID,
-		Name:       name,
-		BackendId:  backendID,
-		Pool:       pool,
-		Parameters: map[string]string{"release": version.GetVersion()},
-	})
-	if err != nil {
-		return "", nil, err // already a gRPC status from deploy/CreateContainer
+	// Provision the box, idempotently. The normal skill flow is run → (set a
+	// secret / inspect) → run again, and a crew re-drives its members every
+	// run, so the SAME box name recurs. The deploy path's CreateContainer
+	// errors on an existing instance ("already exists"), which would make every
+	// re-run fail. So if the box is already provisioned, reuse it: skip deploy
+	// (and its one-time post_start assembly) and just re-mint the token,
+	// re-seed, and re-apply policy below. A stopped box (idle-sleep, host
+	// reboot) is started so the subsequent seed-exec / loop-exec lands.
+	var container *pb.Container
+	if info, gerr := s.recipes.containers.manager.Get(name); gerr == nil && info != nil {
+		if info.State != "Running" {
+			if err := s.recipes.containers.manager.Start(name); err != nil {
+				return "", nil, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+			}
+			if reread, rerr := s.recipes.containers.manager.Get(name); rerr == nil && reread != nil {
+				info = reread
+			}
+		}
+		container = toProtoContainer(info)
+	} else {
+		// First provision. Pass the daemon's version as the agent-runtime
+		// recipe's `release` param so the box's post_start pulls matching
+		// agent-box + agent-runtime artifacts (box-image assembly). Recipes that
+		// don't declare these params ignore the extras; assembly is best-effort
+		// (a dev/unpublished version just skips it).
+		dep, err := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
+			RecipeId:   recipeID,
+			Name:       name,
+			BackendId:  backendID,
+			Pool:       pool,
+			Parameters: map[string]string{"release": agentRuntimeReleaseTag()},
+		})
+		if err != nil {
+			return "", nil, err // already a gRPC status from deploy/CreateContainer
+		}
+		container = dep.Container
 	}
 
 	// Mint a JWT scoped to EXACTLY the skill's allowed_scopes (catalog
@@ -193,7 +233,7 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	// Compile allowed_peers into the per-box egress policy (Phase 2).
 	s.applyAllowedPeersPolicy(ctx, name, skill)
 
-	return containerName, dep.Container, nil
+	return containerName, container, nil
 }
 
 // startServeMode launches the in-box agent-runtime in serve mode (the A2A

@@ -510,6 +510,47 @@ message PatchNetworkPolicyDenyRulesRequest {
   repeated string remove_cidrs = 3;
 }
 
+// NetworkPolicySignature is one operator-managed cleartext exploit signature
+// (#661 Tier 2, PR-B). Unlike deny rules these are GLOBAL (fleet-wide), not
+// tenant-scoped — an exploit pattern is matched against every scanned container's
+// inbound payload. They augment the daemon's curated built-in set.
+message NetworkPolicySignature {
+  // Unique operator label, typically the CVE id (e.g. "CVE-2024-1234"). The
+  // identity for upsert/delete.
+  string name = 1;
+
+  // The cleartext bytes to substring-match in the inbound payload, 1..32 bytes
+  // (the BPF SIG_MAX_LEN). Matched as raw bytes; a longer pattern is rejected.
+  string pattern = 2;
+
+  // Whether this signature is active. Default true; a disabled signature is
+  // stored but not loaded into the kernel scan.
+  bool enabled = 3;
+
+  // Assigned signature id (output only), echoed in the audit on a match. Operator
+  // signatures get ids in a reserved high range so they never collide with the
+  // built-in set's low ids.
+  uint32 id = 4;
+
+  // Optional operator note.
+  string note = 5;
+}
+
+message SetNetworkPolicySignatureRequest {
+  NetworkPolicySignature signature = 1;
+}
+message SetNetworkPolicySignatureResponse {
+  NetworkPolicySignature signature = 1; // stored form, with the assigned id
+}
+message ListNetworkPolicySignaturesRequest {}
+message ListNetworkPolicySignaturesResponse {
+  repeated NetworkPolicySignature signatures = 1; // operator signatures only (built-ins are implicit)
+}
+message DeleteNetworkPolicySignatureRequest {
+  string name = 1;
+}
+message DeleteNetworkPolicySignatureResponse {}
+
 // BackendType represents the type of backend instance
 enum BackendType {
   BACKEND_TYPE_UNSPECIFIED = 0;

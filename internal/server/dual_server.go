@@ -313,6 +313,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// agent-skill service so it can compile a skill's allowed_peers into a
 	// per-box network policy at launch (Phase 2 / #573).
 	npServer := NewNetworkPolicyServer(NewMemNetworkPolicyStore())
+	npServer.SetSignatureStore(NewMemNetworkPolicySignatureStore()) // #661 PR-B; swapped to Postgres below when available
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
 
@@ -955,6 +956,13 @@ skipAppHosting:
 		} else {
 			npServer.SetStore(pgStore)
 			log.Printf("NetworkPolicy persistence enabled (Postgres store)")
+			// Operator signatures (#661 PR-B) share the same pool.
+			if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
+				log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)
+			} else {
+				npServer.SetSignatureStore(sigStore)
+				log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
+			}
 		}
 	}
 
@@ -1010,6 +1018,18 @@ skipAppHosting:
 				} else {
 					// Create scanner first so we can pass it to the server
 					securityScanner = security.NewScanner(securityIncusClient, securityStore)
+
+					// Auto-quarantine (#659): on malware detection, block the
+					// tenant's egress via a deny rule; release on a clean scan.
+					// Opt-in — the quarantine only bites when the network-policy BPF
+					// enforcer is also armed. Uses npServer's deny-rule store directly
+					// (in-process, no RPC/auth).
+					switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_SECURITY_AUTO_QUARANTINE"))) {
+					case "1", "true", "yes", "on":
+						aq := NewAutoQuarantine(npServer.Store())
+						securityScanner.SetScanResultHook(aq.OnScanResult)
+						log.Printf("Security auto-quarantine enabled: malware-infected containers will have their tenant's egress blocked (release on clean scan)")
+					}
 
 					securityServerInstance = NewSecurityServer(securityStore, securityIncusClient, securityScanner)
 					pb.RegisterSecurityServiceServer(grpcServer, securityServerInstance)
@@ -1177,10 +1197,23 @@ skipAppHosting:
 			enforceArmed = true
 		}
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
+		// Tier 2 (#661): opt into inbound cleartext exploit-signature scanning.
+		// Separate from ENFORCE — loading signatures is harmless in observation
+		// mode (logs matches), but the per-packet scan cost only runs when set.
+		var sigArmed bool
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_SIGNATURES"))) {
+		case "1", "true", "yes", "on":
+			sigArmed = true
+		}
+		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
+		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {
 			log.Printf("NetworkPolicy enforcer configured (obj=%s); ENFORCE ARMED — enforce-mode policies will drop packets", bpfObj)
 		} else {
 			log.Printf("NetworkPolicy enforcer configured (obj=%s); observation-only (set CONTAINARIUM_NETWORK_POLICY_ENFORCE=1 to arm drops)", bpfObj)
+		}
+		if sigArmed {
+			log.Printf("NetworkPolicy Tier 2 signature scanning enabled (CONTAINARIUM_NETWORK_POLICY_SIGNATURES=1)")
 		}
 	}
 

@@ -2736,6 +2736,94 @@
         ]
       }
     },
+    "/v1/network-policy-signatures": {
+      "get": {
+        "summary": "List network-policy signatures",
+        "description": "List every operator-managed exploit signature (#661). Admin-only.",
+        "operationId": "NetworkPolicyService_ListNetworkPolicySignatures",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListNetworkPolicySignaturesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "NetworkPolicy"
+        ]
+      },
+      "post": {
+        "summary": "Set network-policy signature",
+        "description": "Create or replace a global cleartext exploit signature (#661). Admin-only.",
+        "operationId": "NetworkPolicyService_SetNetworkPolicySignature",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetNetworkPolicySignatureResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetNetworkPolicySignatureRequest"
+            }
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
+    "/v1/network-policy-signatures/{name}": {
+      "delete": {
+        "summary": "Delete network-policy signature",
+        "description": "Remove an operator-managed exploit signature (#661, idempotent). Admin-only.",
+        "operationId": "NetworkPolicyService_DeleteNetworkPolicySignature",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteNetworkPolicySignatureResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
     "/v1/network/acl-presets": {
       "get": {
         "summary": "List ACL presets",
@@ -6828,6 +6916,9 @@
     "DeleteNetworkPolicyResponse": {
       "type": "object"
     },
+    "DeleteNetworkPolicySignatureResponse": {
+      "type": "object"
+    },
     "DeletePassthroughRouteResponse": {
       "type": "object",
       "properties": {
@@ -8113,6 +8204,19 @@
         }
       }
     },
+    "ListNetworkPolicySignaturesResponse": {
+      "type": "object",
+      "properties": {
+        "signatures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NetworkPolicySignature"
+          },
+          "title": "operator signatures only (built-ins are implicit)"
+        }
+      }
+    },
     "ListPassthroughRoutesResponse": {
       "type": "object",
       "properties": {
@@ -8562,6 +8666,33 @@
         }
       },
       "description": "NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a\ntenant's container to the destination is denied — dropped in ENFORCE mode,\naudited (action network_policy.virtual_patch) in every mode. Deny beats the\negress allow-list."
+    },
+    "NetworkPolicySignature": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique operator label, typically the CVE id (e.g. \"CVE-2024-1234\"). The\nidentity for upsert/delete."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "The cleartext bytes to substring-match in the inbound payload, 1..32 bytes\n(the BPF SIG_MAX_LEN). Matched as raw bytes; a longer pattern is rejected."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this signature is active. Default true; a disabled signature is\nstored but not loaded into the kernel scan."
+        },
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Assigned signature id (output only), echoed in the audit on a match. Operator\nsignatures get ids in a reserved high range so they never collide with the\nbuilt-in set's low ids."
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional operator note."
+        }
+      },
+      "description": "NetworkPolicySignature is one operator-managed cleartext exploit signature\n(#661 Tier 2, PR-B). Unlike deny rules these are GLOBAL (fleet-wide), not\ntenant-scoped — an exploit pattern is matched against every scanned container's\ninbound payload. They augment the daemon's curated built-in set."
     },
     "NetworkTopology": {
       "type": "object",
@@ -9676,6 +9807,23 @@
         "policy": {
           "$ref": "#/definitions/containarium.v1.NetworkPolicy",
           "description": "The stored policy (echoed back in its normalized form)."
+        }
+      }
+    },
+    "SetNetworkPolicySignatureRequest": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "$ref": "#/definitions/NetworkPolicySignature"
+        }
+      }
+    },
+    "SetNetworkPolicySignatureResponse": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "$ref": "#/definitions/NetworkPolicySignature",
+          "title": "stored form, with the assigned id"
         }
       }
     },

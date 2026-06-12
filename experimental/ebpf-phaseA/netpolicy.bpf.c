@@ -38,6 +38,7 @@
 // the struct's former pad, so the wire size is unchanged.
 #define DENY_REASON_POLICY        0  // failed allow-list / intra-tenant / metadata
 #define DENY_REASON_VIRTUAL_PATCH 1  // matched an explicit virtual-patch deny rule (#660)
+#define DENY_REASON_SIGNATURE     2  // matched a cleartext exploit signature (#661, Tier 2)
 
 // Per-veth policy config, keyed by the veth's host ifindex. The loader writes
 // one entry per managed container veth.
@@ -184,7 +185,150 @@ struct deny_event {
     __u16 dport;         // host byte order
     __u8  proto;
     __u8  reason;        // DENY_REASON_* (was pad; size unchanged) #660
+    __u16 sig_id;        // matched signature id when reason==SIGNATURE, else 0 (#661)
+    __u16 pad2;
 };
+
+// --- Tier 2 (#661): cleartext exploit-signature scanning --------------------
+//
+// The container's INBOUND direction (host→container, seen on the veth TC_EGRESS
+// hook) is scanned for a small set of operator-curated cleartext signatures, to
+// virtually patch a vulnerable service in the container (a WAF-style block of
+// e.g. a Log4Shell `${jndi:` request) before the vendor fix ships.
+//
+// The verifier-feasible shape (proved out in sigscan-proto.bpf.c): one bpf_loop
+// over the flattened (signature × offset) space with only the pattern-compare
+// loop unrolled, the payload window in a per-CPU scratch map re-looked-up inside
+// the callback, and tiered CONSTANT-size payload loads (a variable length gets
+// re-derived from skb arithmetic past every guard and rejected). Best-effort by
+// construction: single packet (no reassembly), cleartext only (TLS is opaque),
+// first SCAN_WINDOW bytes only.
+#define SIG_MAX_LEN   32   // bytes per signature pattern
+#define SIG_MAX_COUNT 32   // signature slots scanned per packet
+#define SCAN_WINDOW   256  // payload bytes scanned (power of two for index masking)
+#define SIG_SCAN_MIN  32   // don't bother scanning a payload shorter than this
+
+struct signature {
+    __u8  len;                 // active bytes in pat, 1..SIG_MAX_LEN (0 = empty slot)
+    __u8  enabled;             // 1 = scan this slot
+    __u16 id;                  // signature id (>0), echoed on a match
+    __u8  pat[SIG_MAX_LEN];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct signature);
+    __uint(max_entries, SIG_MAX_COUNT);
+} signatures SEC(".maps");
+
+// Per-CPU scratch for the copied payload window (per-CPU so concurrent packets on
+// different CPUs don't clobber it; one entry suffices).
+struct scan_scratch {
+    __u8 buf[SCAN_WINDOW];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct scan_scratch);
+    __uint(max_entries, 1);
+} scan_buf SEC(".maps");
+
+// sig_config[0] gates the whole scan: 0 = skip it entirely (the default, so the
+// bpf_loop cost is never paid on hosts that haven't opted into Tier 2). The
+// loader sets it to 1 only once signatures are populated.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 1);
+} sig_config SEC(".maps");
+
+static __always_inline int sig_scan_enabled(void) {
+    __u32 zero = 0;
+    __u32 *on = bpf_map_lookup_elem(&sig_config, &zero);
+    return on && *on;
+}
+
+struct sig_scan_ctx {
+    __u32 n;        // valid bytes in the window
+    __u32 match_id; // out: matched signature id, or 0
+};
+
+// sig_match_at is the bpf_loop callback over the flattened (signature, offset)
+// space. The verifier checks it ONCE regardless of trip count, so there is no
+// back-edge to mistake for an infinite loop.
+static long sig_match_at(__u32 idx, void *vctx) {
+    struct sig_scan_ctx *c = vctx;
+    if (c->match_id)
+        return 1; // already matched — stop
+
+    __u32 si = idx / SCAN_WINDOW;        // signature slot
+    __u32 i  = idx & (SCAN_WINDOW - 1);  // start offset in the window
+
+    struct signature *s = bpf_map_lookup_elem(&signatures, &si);
+    if (!s || !s->enabled)
+        return 0;
+    __u32 slen = s->len;
+    if (slen == 0 || slen > SIG_MAX_LEN || i + slen > c->n)
+        return 0;
+
+    __u32 zero = 0;
+    struct scan_scratch *sc = bpf_map_lookup_elem(&scan_buf, &zero);
+    if (!sc)
+        return 1;
+
+    int miss = 0;
+#pragma clang loop unroll(full)
+    for (__u32 j = 0; j < SIG_MAX_LEN; j++) {
+        if (j < slen) {
+            __u32 k = (i + j) & (SCAN_WINDOW - 1); // static bound; i+slen<=n<=WINDOW so never wraps a real compare
+            if (sc->buf[k] != s->pat[j])
+                miss = 1;
+        }
+    }
+    if (!miss) {
+        c->match_id = s->id;
+        return 1;
+    }
+    return 0;
+}
+
+// scan_inbound copies up to SCAN_WINDOW payload bytes (largest fitting power-of-
+// two via tiered constant loads) and searches for any enabled signature. Returns
+// the matched id, or 0.
+static __always_inline __u32 scan_inbound(struct __sk_buff *skb, __u32 off, __u32 avail) {
+    __u32 zero = 0;
+    struct scan_scratch *sc = bpf_map_lookup_elem(&scan_buf, &zero);
+    if (!sc)
+        return 0;
+    __u32 n;
+    // Each load size is a literal constant (a variable size is rejected — see the
+    // prototype notes). Largest window that fits the payload wins.
+    if (avail >= 256) {
+        if (bpf_skb_load_bytes(skb, off, sc->buf, 256) < 0)
+            return 0;
+        n = 256;
+    } else if (avail >= 128) {
+        if (bpf_skb_load_bytes(skb, off, sc->buf, 128) < 0)
+            return 0;
+        n = 128;
+    } else if (avail >= 64) {
+        if (bpf_skb_load_bytes(skb, off, sc->buf, 64) < 0)
+            return 0;
+        n = 64;
+    } else if (avail >= SIG_SCAN_MIN) {
+        if (bpf_skb_load_bytes(skb, off, sc->buf, SIG_SCAN_MIN) < 0)
+            return 0;
+        n = SIG_SCAN_MIN;
+    } else {
+        return 0; // too short to be worth scanning
+    }
+    struct sig_scan_ctx ctx = {.n = n, .match_id = 0};
+    bpf_loop(SIG_MAX_COUNT * SCAN_WINDOW, sig_match_at, &ctx, 0);
+    return ctx.match_id;
+}
 
 static __always_inline void bump(__u32 idx) {
     __u64 *v = bpf_map_lookup_elem(&stats, &idx);
@@ -407,9 +551,10 @@ int netpolicy_egress(struct __sk_buff *skb) {
         return TC_ACT_OK;
 
     // On the egress hook the veth is the transmit interface: skb->ifindex
-    // (ingress_ifindex is 0 here). Only account managed veths.
+    // (ingress_ifindex is 0 here). Only manage known veths.
     __u32 ifindex = skb->ifindex;
-    if (!bpf_map_lookup_elem(&veth_policy, &ifindex))
+    struct policy_cfg *cfg = bpf_map_lookup_elem(&veth_policy, &ifindex);
+    if (!cfg)
         return TC_ACT_OK;
 
     __u16 sport = 0, dport = 0;
@@ -434,6 +579,36 @@ int netpolicy_egress(struct __sk_buff *skb) {
                   dport,      // sport (request) = reply dport = container port
                   sport,      // dport (request) = reply sport = peer port
                   ip->protocol);
+
+    // Tier 2 (#661): scan the INBOUND payload (peer→container) for cleartext
+    // exploit signatures and virtually-patch the container's service. TCP only,
+    // and only when the operator has enabled scanning (gates the bpf_loop cost).
+    if (ip->protocol == IPPROTO_TCP && sig_scan_enabled()) {
+        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
+        if ((void *)(tcp + 1) <= data_end) {
+            __u32 tcp_hlen = tcp->doff * 4;
+            __u32 payload_off = sizeof(*eth) + sizeof(*ip) + tcp_hlen;
+            __u32 skb_len = skb->len;
+            if (tcp_hlen >= sizeof(*tcp) && payload_off < skb_len) {
+                __u32 sig = scan_inbound(skb, payload_off, skb_len - payload_off);
+                if (sig) {
+                    bump(STAT_WOULD_DENY);
+                    struct deny_event ev = {};
+                    ev.ifindex = ifindex;
+                    ev.tenant_id = cfg->tenant_id;
+                    ev.saddr = ip->saddr; // peer (the attacker)
+                    ev.daddr = ip->daddr; // the container
+                    ev.proto = ip->protocol;
+                    ev.dport = dport; // the container's service port (tcp->dest)
+                    ev.reason = DENY_REASON_SIGNATURE;
+                    ev.sig_id = (__u16)sig;
+                    bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+                    if (cfg->mode == MODE_ENFORCE)
+                        return TC_ACT_SHOT; // drop the exploit before it reaches the service
+                }
+            }
+        }
+    }
     return TC_ACT_OK;
 }
 

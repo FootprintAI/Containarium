@@ -1,7 +1,6 @@
 package netbpf
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -21,6 +20,7 @@ type DenyEvent struct {
 	Dport    uint16 // host byte order (the program already ntoh'd it)
 	Proto    uint8  // IP protocol number (1=ICMP, 6=TCP, 17=UDP)
 	Reason   uint8  // why the flow was denied (DenyReason*); 0 on objects predating #660
+	SigID    uint16 // matched signature id when Reason==SIGNATURE, else 0 (#661); 0 on objects predating it
 }
 
 // Deny reasons carried in DenyEvent.Reason — mirror the DENY_REASON_* #defines
@@ -29,21 +29,34 @@ type DenyEvent struct {
 const (
 	DenyReasonPolicy       uint8 = 0 // failed the egress allow-list / intra-tenant / metadata check
 	DenyReasonVirtualPatch uint8 = 1 // matched an explicit virtual-patch deny rule (#660)
+	DenyReasonSignature    uint8 = 2 // matched a cleartext exploit signature (#661, Tier 2)
 )
 
-// denyEventSize is the wire size of struct deny_event (4+4+4+4+2+1+1).
-const denyEventSize = 20
+// denyEventSizeV1 is the wire size of struct deny_event through the Reason byte
+// (#660). #661 appends u16 sig_id + u16 pad (→ 24 bytes); decoding stays tolerant
+// of both so an object built before either feature still parses (missing tail → 0).
+const denyEventSizeV1 = 20
 
 // ParseDenyEvent decodes one perf-ring sample into a DenyEvent. It tolerates a
-// sample longer than the struct (perf samples are padded) but rejects a short
-// one.
+// sample longer than the struct (perf samples are padded, and newer objects
+// carry the #661 sig_id tail) but rejects a short one. Decoded field-by-field so
+// the optional tail is handled cleanly.
 func ParseDenyEvent(raw []byte) (DenyEvent, error) {
-	if len(raw) < denyEventSize {
-		return DenyEvent{}, fmt.Errorf("netbpf: deny event sample too short: %d < %d bytes", len(raw), denyEventSize)
+	if len(raw) < denyEventSizeV1 {
+		return DenyEvent{}, fmt.Errorf("netbpf: deny event sample too short: %d < %d bytes", len(raw), denyEventSizeV1)
 	}
-	var ev DenyEvent
-	if err := binary.Read(bytes.NewReader(raw[:denyEventSize]), binary.NativeEndian, &ev); err != nil {
-		return DenyEvent{}, fmt.Errorf("netbpf: decode deny event: %w", err)
+	b := binary.NativeEndian
+	ev := DenyEvent{
+		Ifindex:  b.Uint32(raw[0:4]),
+		TenantID: b.Uint32(raw[4:8]),
+		Saddr:    b.Uint32(raw[8:12]),
+		Daddr:    b.Uint32(raw[12:16]),
+		Dport:    b.Uint16(raw[16:18]),
+		Proto:    raw[18],
+		Reason:   raw[19],
+	}
+	if len(raw) >= 22 { // #661 sig_id tail present
+		ev.SigID = b.Uint16(raw[20:22])
 	}
 	return ev, nil
 }

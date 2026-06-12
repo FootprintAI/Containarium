@@ -27,6 +27,17 @@ type Scanner struct {
 	interval    time.Duration
 	storagePool string
 	cancel      context.CancelFunc
+	// onScanResult, if set, is called after each completed scan with the
+	// container name, owning tenant, and result status ("clean"|"infected").
+	// The daemon wires this to the auto-quarantine hook (#659). Kept a plain
+	// callback so internal/security keeps no dependency on internal/server.
+	onScanResult func(containerName, username, status string)
+}
+
+// SetScanResultHook registers a callback invoked after each completed scan
+// (auto-quarantine, #659). Set before Start; nil disables it.
+func (s *Scanner) SetScanResultHook(fn func(containerName, username, status string)) {
+	s.onScanResult = fn
 }
 
 // NewScanner creates a new scanner
@@ -285,6 +296,12 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 		log.Printf("Security scan: %s (%s) INFECTED - %d findings", containerName, username, findingsCount)
 	} else {
 		log.Printf("Security scan: %s (%s) clean (took %s)", containerName, username, scanDuration.Truncate(time.Second))
+	}
+
+	// Auto-quarantine hook (#659): block/release the tenant's egress on
+	// infected/clean. No-op unless the daemon wired it (opt-in).
+	if s.onScanResult != nil {
+		s.onScanResult(containerName, username, status)
 	}
 
 	return nil

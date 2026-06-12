@@ -10,7 +10,7 @@ import (
 )
 
 func encodeDenyEvent(e DenyEvent) []byte {
-	b := make([]byte, denyEventSize)
+	b := make([]byte, denyEventSizeV1)
 	binary.NativeEndian.PutUint32(b[0:4], e.Ifindex)
 	binary.NativeEndian.PutUint32(b[4:8], e.TenantID)
 	binary.NativeEndian.PutUint32(b[8:12], e.Saddr)
