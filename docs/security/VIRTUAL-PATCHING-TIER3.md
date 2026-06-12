@@ -151,10 +151,12 @@ work.
   ability over a best-effort protection layer), operator-overridable.
 - **Overlap with Caddy.** The daemon already fronts HTTP via Caddy for ingress;
   is the WAF better as a Caddy plugin (coraza-caddy) than a standalone TPROXY
-  listener? Worth evaluating in PR-1 — it could reuse the existing ingress +
-  cert path and shrink the steering problem to "route ingress through the WAF
-  handler" for the Caddy-fronted case, with TPROXY only for non-ingress
-  (east-west / direct) traffic.
+  listener? **Evaluated** in
+  [`TIER3-WAF-ENGINE-DECISION.md`](./TIER3-WAF-ENGINE-DECISION.md): they're
+  complementary by traffic topology — recommendation is **coraza-caddy first**
+  for north-south ingress (TLS + HTTP parsing free, zero daemon dependency), the
+  standalone proxy (PR-1/PR-2) for east-west. Awaiting a go/no-go on the custom
+  Caddy build + whether east-west coverage is in scope now.
 
 ## Acceptance (from #662)
 
