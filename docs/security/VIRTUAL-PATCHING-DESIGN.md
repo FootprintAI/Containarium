@@ -162,8 +162,22 @@ per tenant and justified only where Tiers 1–2 fall short.
 ## Validation (Tier 1)
 
 The BPF object only builds and runs on a Linux backend (it needs kernel UAPI
-headers + a ≥6.6 kernel for TCX); it cannot be compiled on the dev mac. Steps,
-run on a backend with the feature enabled:
+headers + a ≥6.6 kernel for TCX); it cannot be compiled on the dev mac.
+
+A runnable harness automates the steps below —
+[`experimental/ebpf-phaseA/validate-virtual-patch.sh`](../../experimental/ebpf-phaseA/validate-virtual-patch.sh).
+It drives the policy API + a throwaway container's egress through deny-beats-allow,
+port scoping, expiry self-removal, `patch rm`, and a regression check, and adapts
+its assertions to whether enforcement is armed (observe-only → drops become SKIPs,
+the audit path is still verified):
+
+```sh
+DAEMON=http://127.0.0.1:8080 JWT=<admin-jwt> CONTAINER=<tenant>-container \
+  ./experimental/ebpf-phaseA/validate-virtual-patch.sh
+# BUILD=1 also (re)compiles netpolicy.bpf.o first.
+```
+
+The equivalent manual steps, run on a backend with the feature enabled:
 
 1. `make build-bpf` and rebuild the daemon with `-tags embed_bpf` (or point
    `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` at the freshly built `.o`).
