@@ -32,6 +32,7 @@ import (
 	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/internal/ttlsweeper"
+	"github.com/footprintai/containarium/internal/waf"
 	"github.com/footprintai/containarium/internal/wake"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
@@ -1018,6 +1019,18 @@ skipAppHosting:
 					// Create scanner first so we can pass it to the server
 					securityScanner = security.NewScanner(securityIncusClient, securityStore)
 
+					// Auto-quarantine (#659): on malware detection, block the
+					// tenant's egress via a deny rule; release on a clean scan.
+					// Opt-in — the quarantine only bites when the network-policy BPF
+					// enforcer is also armed. Uses npServer's deny-rule store directly
+					// (in-process, no RPC/auth).
+					switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_SECURITY_AUTO_QUARANTINE"))) {
+					case "1", "true", "yes", "on":
+						aq := NewAutoQuarantine(npServer.Store())
+						securityScanner.SetScanResultHook(aq.OnScanResult)
+						log.Printf("Security auto-quarantine enabled: malware-infected containers will have their tenant's egress blocked (release on clean scan)")
+					}
+
 					securityServerInstance = NewSecurityServer(securityStore, securityIncusClient, securityScanner)
 					pb.RegisterSecurityServiceServer(grpcServer, securityServerInstance)
 					log.Printf("Security service enabled")
@@ -1846,6 +1859,46 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			ds.networkPolicyEnforcer = nil
 		} else {
 			log.Printf("NetworkPolicy enforcer started")
+		}
+	}
+
+	// Tier 3 PR-1 (#662): the WAF steering proxy. OFF by default — only starts
+	// when CONTAINARIUM_WAF_TPROXY_ADDR is set, and steering needs an
+	// operator-applied nft TPROXY rule (see the runbook), so an existing
+	// deployment is unaffected. Forward-only at this stage (no inspection); the
+	// Coraza WAF lands in PR-2. A bind failure is non-fatal.
+	if wafAddr := strings.TrimSpace(os.Getenv("CONTAINARIUM_WAF_TPROXY_ADDR")); wafAddr != "" {
+		if !waf.ListenAddrValid(wafAddr) {
+			log.Printf("Warning: CONTAINARIUM_WAF_TPROXY_ADDR=%q is not a valid host:port; WAF steering disabled", wafAddr)
+		} else {
+			cfg := waf.Config{Addr: wafAddr}
+			// PR-2: attach the reference inspector when CONTAINARIUM_WAF_INSPECT=1.
+			// Observe-only unless ENFORCE is also armed (same gate as the kernel
+			// drop path). Blocks audit as network_policy.waf_block.
+			switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_WAF_INSPECT"))) {
+			case "1", "true", "yes", "on":
+				cfg.Inspector = waf.NewBuiltinInspector()
+				switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))) {
+				case "1", "true", "yes", "on":
+					cfg.EnforceBlock = true
+				}
+				if ds.auditStore != nil {
+					auditStore := ds.auditStore
+					cfg.OnBlock = func(orig string, v waf.Verdict, dropped bool) {
+						detail := `{"orig":"` + orig + `","rule_id":` + itoa(int(v.RuleID)) +
+							`,"rule":"` + v.RuleName + `","dropped":` + boolStr(dropped) + `}`
+						if err := auditStore.Log(ctx, &audit.AuditEntry{
+							Username: "_system", Action: "network_policy.waf_block", ResourceType: "network_policy",
+							ResourceID: orig, Detail: detail,
+						}); err != nil {
+							log.Printf("[waf] audit block: %v", err)
+						}
+					}
+				}
+			}
+			if err := waf.Start(ctx, cfg); err != nil {
+				log.Printf("Warning: WAF steering proxy failed to start: %v (continuing without it)", err)
+			}
 		}
 	}
 
