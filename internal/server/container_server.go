@@ -543,8 +543,8 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 			}
 		}()
 	} else {
-		// Linux container: return SSH command and ensure jump server account
-		resp.SshCommand = fmt.Sprintf("ssh %s@%s", req.Username, info.IPAddress)
+		// Linux container: return SSH command and ensure jump server account.
+		resp.SshCommand = sshCommandFor(req.Username, protoContainer.SshHost, info.IPAddress)
 		go func() {
 			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
 				log.Printf("Warning: failed to create jump server account for %s: %v", req.Username, err)
@@ -2427,6 +2427,20 @@ func (s *ContainerServer) SetStartTime(t time.Time) {
 // fall back to the container IP. Called once from DualServer setup.
 func (s *ContainerServer) SetSSHHost(host string) {
 	s.sshHost = host
+}
+
+// sshCommandFor builds the ssh_command returned by CreateContainer from the
+// reachable target — the daemon-stamped ssh_host (the sentinel this container
+// belongs to) when set, falling back to the container IP only for direct /
+// no-sentinel deployments. Using the private IP unconditionally produced an
+// ssh_command that callers off the backend LAN (notably MCP agents) couldn't
+// reach — they'd see `ssh user@10.x.x.x` and give up. See #658.
+func sshCommandFor(username, sshHost, ip string) string {
+	target := ip
+	if sshHost != "" {
+		target = sshHost
+	}
+	return fmt.Sprintf("ssh %s@%s", username, target)
 }
 
 // SetAutoUpdater wires the daemon's auto-updater so TriggerUpgrade can run an

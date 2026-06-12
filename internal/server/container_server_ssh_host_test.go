@@ -56,6 +56,29 @@ func TestGetContainer_EmptySSHHostDirectMode(t *testing.T) {
 	}
 }
 
+// TestSSHCommandFor — CreateContainer's ssh_command must name the reachable
+// target: the sentinel ssh_host when set (so off-LAN callers like MCP agents
+// can actually connect), and only the container IP for direct deployments.
+// Regression guard for #658, where the command always used the private IP.
+func TestSSHCommandFor(t *testing.T) {
+	cases := []struct {
+		name    string
+		sshHost string
+		ip      string
+		want    string
+	}{
+		{"sentinel mode uses ssh_host", "region-a.example.com", "10.0.0.5", "ssh alice@region-a.example.com"},
+		{"direct mode falls back to ip", "", "10.0.0.5", "ssh alice@10.0.0.5"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sshCommandFor("alice", c.sshHost, c.ip); got != c.want {
+				t.Fatalf("sshCommandFor = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 // TestSetSSHHost — the DualServer wiring setter stores the value the read
 // path stamps.
 func TestSetSSHHost(t *testing.T) {

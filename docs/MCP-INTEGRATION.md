@@ -109,7 +109,7 @@ Create a new LXC container with specified resources.
 - `disk`: Disk limit (e.g., "50GB", "100GB", default: "50GB")
 - `ssh_keys`: Array of SSH public keys (optional)
 - `image`: Container image (default: "images:ubuntu/24.04")
-- `enable_docker`: Enable Docker support (default: true)
+- `enable_podman`: Enable Podman support (default: true)
 
 **Example prompts:**
 - "Create a container for alice"
@@ -169,6 +169,75 @@ Stop a running container.
 - "Shut down bob's container gracefully"
 - "Force stop charlie's container"
 
+### Connecting & Running Code on a Box
+
+> **You do not need to know a hostname or set `CONTAINARIUM_SENTINEL_HOST`.**
+> The daemon stamps every container's reachable SSH target into its
+> `ssh_host` field (the sentinel the container belongs to, or empty for a
+> direct deployment). `create_container` reports it, `get_container` returns
+> it, and the tools below resolve it for you automatically. An agent never
+> has to discover the host or fall back to the env var — that variable is
+> only a last-resort override.
+
+After `create_container`, the canonical flow to get code running on the box is:
+
+```
+create_container  →  read ssh_host (or just use the tools below)
+       │
+       ├─ connect (exec mode)  — run a command inside the box
+       ├─ push                 — ship committed git history into the box
+       └─ sync                 — mirror the working directory into the box
+```
+
+#### `connect`
+Connect to a box, or run a single command inside it. The agent-native half
+of `containarium connect` — it resolves the SSH target from the box's
+`ssh_host`, authorizes a managed key, and either hands back a ready
+`ssh user@host` invocation (config mode) or runs one command and returns its
+stdout / stderr / exit code (exec mode). No PTY, so interactive sessions stay
+CLI-only.
+
+**Parameters:**
+- `box` (required): Container/username to connect to
+- `exec`: A command to run inside the box (omit for config mode — returns the ready `ssh` invocation)
+- `user`, `host`: Optional overrides (default: the box's username / `ssh_host`)
+- `session`: Optional tmux session name for state that persists across calls
+
+**Example prompts:**
+- "Run `uname -a` inside alice's box"
+- "Show me the SSH command to reach bob's container"
+
+#### `push`
+Ship committed git history from the local repo into the box via `git bundle`
+(atomic per commit; refuses a dirty tree unless `include_wip` is set).
+
+**Parameters:**
+- `username` (required): Target container
+- `branch`, `include_wip`, `deploy_cmd`, `local_path`, `remote_path`: Optional
+- `sentinel`: SSH host override — **default: the box's `ssh_host`**, resolved automatically
+
+**Example prompts:**
+- "Push my current branch into alice's box and run `make test`"
+
+#### `sync`
+Mirror the local working directory (including uncommitted + untracked files)
+into the box. Delta-only on subsequent calls.
+
+**Parameters:**
+- `username` (required): Target container
+- `delete`, `exclude`, `local_path`, `remote_path`: Optional
+- `sentinel`: SSH host override — **default: the box's `ssh_host`**, resolved automatically
+
+**Example prompts:**
+- "Sync my working directory into bob's box, then run the tests"
+
+> **If a tool reports it "could not resolve the SSH target":** call
+> `get_container` and read its `ssh_host` — that is the host to reach. Pass it
+> as the `sentinel` argument, or use `connect`. An empty `ssh_host` means a
+> direct / no-sentinel deployment, where you reach the container at its IP
+> (or set up an alias with `sync_ssh_config`). Setting
+> `CONTAINARIUM_SENTINEL_HOST` is **not** required.
+
 ### Monitoring
 
 #### `get_metrics`
@@ -210,6 +279,19 @@ tell me which one is using the most memory.
 ```
 
 Claude will call `get_metrics` and analyze the results.
+
+### Run Code on a New Box
+
+```
+Create a container for atc-crawler, push my current branch into it,
+and run scripts/run_tests.sh inside the box.
+```
+
+Claude calls `create_container` (which reports the box's `ssh_host`), then
+`push` and `connect` — both resolve the SSH target from `ssh_host`
+automatically. No hostname, env var, or manual SSH config is needed. This is
+the path to reach for whenever you want to *build or run* code on a box you
+just created, rather than only manage its lifecycle.
 
 ### Container Lifecycle
 
