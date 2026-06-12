@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -228,7 +229,7 @@ func compileDenyRules(raw []*pb.NetworkPolicyDenyRule) ([]DenyRule, error) {
 		}
 		seen[prefix.String()] = DenyRule{
 			CIDR:      prefix,
-			Port:      uint16(r.GetPort()),
+			Port:      safecast.U16FromUint(r.GetPort()), // range already checked above; G115-safe net
 			Proto:     proto,
 			Note:      strings.TrimSpace(r.GetNote()),
 			ExpiresAt: exp,
