@@ -660,7 +660,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					var proxyManager *app.ProxyManager
 
 					if caddyAdminURL != "" {
-						proxyManager = app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())
+						proxyManager = wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv()))
 						// Ensure Caddy has basic server config for routes
 						if err := proxyManager.EnsureServerConfig(); err != nil {
 							log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
@@ -844,7 +844,7 @@ skipAppHosting:
 				log.Printf("Warning: Failed to create route store: %v", err)
 				pool.Close()
 			} else {
-				proxyManager := app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())
+				proxyManager := wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv()))
 				if err := proxyManager.EnsureServerConfig(); err != nil {
 					log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
 				}
@@ -2064,4 +2064,32 @@ func stripHostFromURL(rawURL string) string {
 		return s // no port, return as is
 	}
 	return host
+}
+
+// wafIngressFromEnv applies the coraza-caddy ingress WAF (#662 PR-3) to pm when
+// CONTAINARIUM_WAF_INGRESS is set, loading the OWASP CRS. The engine runs in
+// DetectionOnly (observe + log, no block) unless CONTAINARIUM_NETWORK_POLICY_ENFORCE
+// is also armed — the same observe-then-arm gate as the kernel tiers. Off by
+// default: ingress routes are unchanged unless an operator opts in (and the
+// Caddy binary must be built with the coraza module — CaddyConfig.WAF).
+func wafIngressFromEnv(pm *app.ProxyManager) *app.ProxyManager {
+	if !envTruthy(os.Getenv("CONTAINARIUM_WAF_INGRESS")) {
+		return pm
+	}
+	enforce := envTruthy(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))
+	mode := "DetectionOnly (observe)"
+	if enforce {
+		mode = "On (blocking)"
+	}
+	log.Printf("Ingress WAF (coraza-caddy) enabled: SecRuleEngine %s — requires a Caddy build with the coraza module", mode)
+	return pm.WithWAF(app.DefaultWAFDirectives(enforce))
+}
+
+// envTruthy reports whether an env value is an explicit on-toggle.
+func envTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }

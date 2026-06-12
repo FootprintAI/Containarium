@@ -101,6 +101,55 @@ type CaddyHeaderOps struct {
 	Delete []string            `json:"delete,omitempty"`
 }
 
+// CaddyWAFHandler represents the coraza-caddy WAF handler (Tier 3 PR-3, #662).
+// It runs BEFORE reverse_proxy in a route's Handle chain: Coraza parses the
+// (already TLS-terminated, reassembled) HTTP request, evaluates the OWASP CRS +
+// any virtual-patch rules carried in Directives, and either blocks (returns the
+// configured deny status) or passes through to the upstream. The Caddy binary
+// must be built with `--with github.com/corazawaf/coraza-caddy/v2` (see
+// internal/hosting/caddy.go); JSON module id is `waf` under http.handlers.
+type CaddyWAFHandler struct {
+	Handler string `json:"handler"` // Always "waf"
+	// Directives is the SecLang config the engine loads — the recommended Coraza
+	// conf + CRS setup + the rule set, plus SecRuleEngine On/DetectionOnly.
+	Directives string `json:"directives,omitempty"`
+}
+
+// HandlerName implements CaddyHandler
+func (h CaddyWAFHandler) HandlerName() string {
+	return "waf"
+}
+
+// DefaultWAFDirectives returns the SecLang the WAF handler loads: the
+// recommended Coraza baseline, the CRS setup, and the full OWASP CRS, all from
+// the rule files coraza-caddy embeds (the @-prefixed paths). enforce selects
+// SecRuleEngine On (block) vs DetectionOnly (observe + log only) — mirroring the
+// rest of the stack's observe-then-arm gating.
+func DefaultWAFDirectives(enforce bool) string {
+	engine := "DetectionOnly"
+	if enforce {
+		engine = "On"
+	}
+	return "Include @coraza.conf-recommended\n" +
+		"Include @crs-setup.conf.example\n" +
+		"Include @owasp_crs/*.conf\n" +
+		"SecRuleEngine " + engine
+}
+
+// PrependWAF returns handlers with a CaddyWAFHandler inserted at the front (so it
+// inspects before reverse_proxy), when enabled. When disabled it returns the
+// handlers unchanged — so ingress routes are byte-identical to today unless an
+// operator opts into the WAF. directives is the SecLang to load (see
+// DefaultWAFDirectives).
+func PrependWAF(handlers []CaddyHandler, enabled bool, directives string) []CaddyHandler {
+	if !enabled {
+		return handlers
+	}
+	out := make([]CaddyHandler, 0, len(handlers)+1)
+	out = append(out, CaddyWAFHandler{Handler: "waf", Directives: directives})
+	return append(out, handlers...)
+}
+
 // CaddyStaticResponseHandler represents a static_response handler
 type CaddyStaticResponseHandler struct {
 	Handler    string              `json:"handler"` // Always "static_response"

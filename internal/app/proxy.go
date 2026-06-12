@@ -31,6 +31,12 @@ type ProxyManager struct {
 	// can re-install the PROXY listener wrappers after the bundled Caddy
 	// reverts to its stub Caddyfile. Empty = PROXY protocol not enabled. #400.
 	proxyProtocolTrusted []string
+	// wafEnabled prepends the coraza-caddy WAF handler to every HTTP route's
+	// handler chain (Tier 3 PR-3, #662). Off by default — when false, routes are
+	// byte-identical to before. Requires the Caddy binary built with the coraza
+	// module. wafDirectives is the SecLang the engine loads (CRS + engine mode).
+	wafEnabled    bool
+	wafDirectives string
 }
 
 // RouteProtocol represents the protocol type for a route
@@ -54,12 +60,14 @@ type Route struct {
 	Protocol     RouteProtocol `json:"protocol,omitempty"` // "http" or "grpc", defaults to "http"
 }
 
-// caddyRouteJSON is used for JSON marshaling routes to Caddy API
-// It uses a concrete handler type for type safety while remaining JSON-compatible
+// caddyRouteJSON is used for JSON marshaling routes to Caddy API. Handle is the
+// CaddyHandler interface so the chain can carry a WAF handler before
+// reverse_proxy (#662 PR-3); a reverse_proxy handler marshals identically either
+// way, so a WAF-disabled route is byte-for-byte what it was.
 type caddyRouteJSON struct {
-	ID     string                     `json:"@id,omitempty"`
-	Match  []CaddyMatchTyped          `json:"match,omitempty"`
-	Handle []CaddyReverseProxyHandler `json:"handle,omitempty"`
+	ID     string            `json:"@id,omitempty"`
+	Match  []CaddyMatchTyped `json:"match,omitempty"`
+	Handle []CaddyHandler    `json:"handle,omitempty"`
 }
 
 // caddyRouteRaw is used for unmarshaling routes from Caddy API
@@ -98,6 +106,21 @@ func (p *ProxyManager) WithDNSChallenge(dns *CaddyACMEChallenges) *ProxyManager 
 func (p *ProxyManager) HasDNSChallenge() bool {
 	return p.dnsChallenge != nil
 }
+
+// WithWAF enables the coraza-caddy WAF on every HTTP route this manager programs
+// (#662 PR-3): the WAF handler is prepended to the handler chain so Coraza
+// evaluates the request (CRS + virtual-patch rules in directives) before it
+// reaches the upstream. Requires the Caddy binary built with the coraza module.
+// directives is the SecLang to load (see DefaultWAFDirectives — enforce vs
+// detection-only). Off by default; returns the manager for chaining.
+func (p *ProxyManager) WithWAF(directives string) *ProxyManager {
+	p.wafEnabled = true
+	p.wafDirectives = directives
+	return p
+}
+
+// WAFEnabled reports whether ingress WAF inspection is on.
+func (p *ProxyManager) WAFEnabled() bool { return p.wafEnabled }
 
 // SetServerName sets the Caddy server name (useful when Caddy uses a custom server name)
 func (p *ProxyManager) SetServerName(name string) {
@@ -157,7 +180,9 @@ func (p *ProxyManager) addRouteWithProtocol(subdomain, containerIP string, port 
 		Match: []CaddyMatchTyped{
 			{Host: []string{fullDomain}},
 		},
-		Handle: []CaddyReverseProxyHandler{handler},
+		// Prepend the coraza WAF handler when enabled, so it inspects before
+		// reverse_proxy; a no-op (unchanged chain) when disabled (#662 PR-3).
+		Handle: PrependWAF([]CaddyHandler{handler}, p.wafEnabled, p.wafDirectives),
 	}
 
 	// Serialize route to JSON

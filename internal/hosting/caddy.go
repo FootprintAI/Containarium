@@ -49,6 +49,31 @@ type CaddyConfig struct {
 
 	// NoWildcard skips wildcard domain configuration (only main domain)
 	NoWildcard bool
+
+	// WAF, when true, builds Caddy with the coraza-caddy WAF module (Tier 3
+	// PR-3, #662) so ingress routes can run the OWASP CRS. Off by default — the
+	// module is only pulled into the build when an operator opts into ingress WAF,
+	// keeping the default Caddy build (and its dependency surface) unchanged.
+	WAF bool
+}
+
+// corazaCaddyModule is the coraza-caddy WAF plugin added to the xcaddy build
+// when CaddyConfig.WAF is set. Pinned major version; the exact patch is resolved
+// by xcaddy/go at build time.
+const corazaCaddyModule = "github.com/corazawaf/coraza-caddy/v2"
+
+// xcaddyBuildArgs assembles the `xcaddy build` arguments: always the DNS
+// provider + caddy-l4, plus the coraza WAF module when waf is set (#662 PR-3),
+// then the output path. Pure so the gating is unit-tested without running xcaddy.
+func xcaddyBuildArgs(providerModule string, waf bool, output string) []string {
+	args := []string{"build",
+		"--with", providerModule,
+		"--with", "github.com/mholt/caddy-l4",
+	}
+	if waf {
+		args = append(args, "--with", corazaCaddyModule)
+	}
+	return append(args, "--output", output)
 }
 
 // CaddyManager handles Caddy installation and configuration
@@ -106,7 +131,15 @@ func (m *CaddyManager) IsCaddyInstalled() bool {
 	// Look for dns.providers.<provider> and layer4 module
 	expectedModule := fmt.Sprintf("dns.providers.%s", m.config.Provider)
 	outputStr := string(output)
-	return strings.Contains(outputStr, expectedModule) && strings.Contains(outputStr, "layer4")
+	if !strings.Contains(outputStr, expectedModule) || !strings.Contains(outputStr, "layer4") {
+		return false
+	}
+	// When WAF is requested, the coraza handler (http.handlers.waf) must be in
+	// the build too — otherwise a route's WAF handler would fail to load.
+	if m.config.WAF && !strings.Contains(outputStr, "http.handlers.waf") {
+		return false
+	}
+	return true
 }
 
 // InstallCaddy installs Caddy with the DNS provider plugin using xcaddy
@@ -136,10 +169,7 @@ func (m *CaddyManager) InstallCaddy(ctx context.Context) error {
 		return fmt.Errorf("create build dir: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "xcaddy", "build",
-		"--with", module,
-		"--with", "github.com/mholt/caddy-l4",
-		"--output", m.config.CaddyBin)
+	cmd := exec.CommandContext(ctx, "xcaddy", xcaddyBuildArgs(module, m.config.WAF, m.config.CaddyBin)...)
 	cmd.Dir = buildDir
 	cmd.Env = os.Environ()
 

@@ -239,8 +239,8 @@ func TestProxyManager_ListRoutes(t *testing.T) {
 				Match: []CaddyMatchTyped{
 					{Host: []string{"testuser-app1.containarium.dev"}},
 				},
-				Handle: []CaddyReverseProxyHandler{
-					{
+				Handle: []CaddyHandler{
+					CaddyReverseProxyHandler{
 						Handler: "reverse_proxy",
 						Upstreams: []CaddyUpstreamTyped{
 							{Dial: "10.100.0.15:3000"},
