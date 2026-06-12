@@ -107,12 +107,22 @@ believes a TLS flow was inspected when it wasn't.
 
 ## Phased PR breakdown (proposed)
 
-1. **PR-1 — transparent proxy skeleton.** Daemon binds an `IP_TRANSPARENT`
-   listener; an nft TPROXY rule (manually applied) steers one test port to it;
-   the proxy forwards to the original dst (no WAF yet). Proves the steering +
-   original-dst recovery + forward path end to end. Backend-validated.
-2. **PR-2 — embed Coraza + CRS.** Run Coraza over the proxied HTTP; block on a
-   CRS hit; audit. Cleartext (HTTP) only.
+1. **PR-1 — transparent proxy skeleton (DONE).** Daemon binds an
+   `IP_TRANSPARENT` listener; an nft TPROXY rule (manually applied) steers one
+   test port to it; the proxy forwards to the original dst (no WAF yet). Proves
+   the steering + original-dst recovery + forward path end to end.
+2. **PR-2 — inspection seam + reference inspector (DONE).** An `Inspector`
+   interface is wired into the proxy: it reads + **reassembles** the request head
+   across TCP segments, inspects, and — armed — returns a 403 instead of
+   forwarding (observe-only otherwise; both audit `network_policy.waf_block`).
+   The reference `BuiltinInspector` substring-matches the curated cleartext
+   signatures over the reassembled head — already a win over Tier 2 (which can't
+   reassemble), with **no new dependency**. The Coraza-backed inspector (full
+   HTTP parse + OWASP CRS) is a drop-in behind the same `Inspector` interface,
+   deliberately deferred so the supply-chain decision (Coraza + CRS into go.mod,
+   likely behind a `waf` build tag) is made explicitly rather than smuggled in —
+   see the open questions. Enabled via `CONTAINARIUM_WAF_INSPECT=1`; blocks only
+   when `CONTAINARIUM_NETWORK_POLICY_ENFORCE=1` (same arm as the kernel tiers).
 3. **PR-3 — policy-driven nft generation.** Per-tenant/per-port `waf_ports`
    reconciled into nft rules by the enforcer (no manual nft); eBPF classification
    wired.

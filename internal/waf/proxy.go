@@ -48,6 +48,19 @@ type TransparentProxy struct {
 	// OnForward, if set, is called once per accepted connection with the recovered
 	// original destination — used by the validator/tests to observe steering.
 	OnForward func(orig string)
+
+	// Inspector, if set (#662 PR-2), examines the reassembled request head before
+	// forwarding. Nil → forward-only (PR-1). When a verdict blocks:
+	//   - EnforceBlock true  → write a 403 and DON'T forward.
+	//   - EnforceBlock false → forward anyway (observe-only), still calling OnBlock.
+	// Mirrors the rest of the stack: audit always, drop only when armed.
+	Inspector    Inspector
+	EnforceBlock bool
+
+	// OnBlock, if set, is called when the Inspector returns a blocking verdict
+	// (whether or not EnforceBlock dropped it), with the original dst and verdict —
+	// the daemon wires this to the audit log.
+	OnBlock func(orig string, v Verdict, dropped bool)
 }
 
 func (p *TransparentProxy) origDst(c net.Conn) string {
@@ -105,6 +118,25 @@ func (p *TransparentProxy) handle(ctx context.Context, client net.Conn) {
 		p.OnForward(orig)
 	}
 
+	// PR-2 inspection: read + inspect the reassembled request head before
+	// forwarding. The head bytes are replayed verbatim to the upstream after a
+	// pass (byte-preserving), so a steered HTTP request is unmodified end to end.
+	var head []byte
+	if p.Inspector != nil {
+		head = readHead(client, maxHeadBytes)
+		v := p.Inspector.Inspect(head)
+		if v.Block {
+			if p.OnBlock != nil {
+				p.OnBlock(orig, v, p.EnforceBlock)
+			}
+			if p.EnforceBlock {
+				_, _ = client.Write(block403) // refuse; don't forward the exploit
+				return
+			}
+			// observe-only: fall through and forward, having audited the match.
+		}
+	}
+
 	dctx, cancel := context.WithTimeout(ctx, p.dialTimeout())
 	defer cancel()
 	upstream, err := p.dial(dctx, orig)
@@ -113,6 +145,14 @@ func (p *TransparentProxy) handle(ctx context.Context, client net.Conn) {
 		return
 	}
 	defer func() { _ = upstream.Close() }()
+
+	// Replay the inspected head to the upstream, then pipe the remainder both ways.
+	if len(head) > 0 {
+		if _, err := upstream.Write(head); err != nil {
+			log.Printf("[waf] steer: replay head to %s failed: %v", orig, err)
+			return
+		}
+	}
 
 	// Bidirectional copy with TCP half-close so an EOF in one direction is
 	// propagated (a half-closed client shouldn't tear down the still-active

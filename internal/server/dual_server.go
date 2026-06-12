@@ -1837,8 +1837,35 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if wafAddr := strings.TrimSpace(os.Getenv("CONTAINARIUM_WAF_TPROXY_ADDR")); wafAddr != "" {
 		if !waf.ListenAddrValid(wafAddr) {
 			log.Printf("Warning: CONTAINARIUM_WAF_TPROXY_ADDR=%q is not a valid host:port; WAF steering disabled", wafAddr)
-		} else if err := waf.Start(ctx, wafAddr); err != nil {
-			log.Printf("Warning: WAF steering proxy failed to start: %v (continuing without it)", err)
+		} else {
+			cfg := waf.Config{Addr: wafAddr}
+			// PR-2: attach the reference inspector when CONTAINARIUM_WAF_INSPECT=1.
+			// Observe-only unless ENFORCE is also armed (same gate as the kernel
+			// drop path). Blocks audit as network_policy.waf_block.
+			switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_WAF_INSPECT"))) {
+			case "1", "true", "yes", "on":
+				cfg.Inspector = waf.NewBuiltinInspector()
+				switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))) {
+				case "1", "true", "yes", "on":
+					cfg.EnforceBlock = true
+				}
+				if ds.auditStore != nil {
+					auditStore := ds.auditStore
+					cfg.OnBlock = func(orig string, v waf.Verdict, dropped bool) {
+						detail := `{"orig":"` + orig + `","rule_id":` + itoa(int(v.RuleID)) +
+							`,"rule":"` + v.RuleName + `","dropped":` + boolStr(dropped) + `}`
+						if err := auditStore.Log(ctx, &audit.AuditEntry{
+							Username: "_system", Action: "network_policy.waf_block", ResourceType: "network_policy",
+							ResourceID: orig, Detail: detail,
+						}); err != nil {
+							log.Printf("[waf] audit block: %v", err)
+						}
+					}
+				}
+			}
+			if err := waf.Start(ctx, cfg); err != nil {
+				log.Printf("Warning: WAF steering proxy failed to start: %v (continuing without it)", err)
+			}
 		}
 	}
 
