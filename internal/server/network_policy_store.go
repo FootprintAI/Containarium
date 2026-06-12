@@ -138,14 +138,29 @@ func (s *PostgresNetworkPolicyStore) Set(ctx context.Context, p *pb.NetworkPolic
 			source = EXCLUDED.source,
 			updated_at = NOW()
 	`
+	// egress_cidrs / egress_domains are `TEXT[] NOT NULL DEFAULT '{}'`, but the
+	// DEFAULT only applies when the column is OMITTED — here we pass them
+	// explicitly, and pgx encodes a nil []string as SQL NULL, which violates the
+	// NOT NULL constraint (SQLSTATE 23502). A policy that allows no domains (or no
+	// CIDRs) arrives with a nil slice, so coerce nil -> empty so the array lands
+	// as '{}' rather than NULL.
 	_, err := s.pool.Exec(ctx, q,
 		p.GetTenant(), p.GetAllowIntraTenant(),
-		p.GetEgressCidrs(), p.GetEgressDomains(), int32(p.GetMode()),
+		nonNilStrings(p.GetEgressCidrs()), nonNilStrings(p.GetEgressDomains()), int32(p.GetMode()),
 		p.GetAllowMetadata(), p.GetSource())
 	if err != nil {
 		return fmt.Errorf("save network policy: %w", err)
 	}
 	return nil
+}
+
+// nonNilStrings returns s, or an empty (non-nil) slice when s is nil, so a
+// NOT NULL Postgres array column stores '{}' instead of NULL.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func (s *PostgresNetworkPolicyStore) Get(ctx context.Context, tenant string) (*pb.NetworkPolicy, error) {
