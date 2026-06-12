@@ -13,13 +13,13 @@ func TestCompile_DenyRules_OK(t *testing.T) {
 		DenyRules: []*pb.NetworkPolicyDenyRule{
 			{Cidr: "1.2.3.4", Port: 6379, Proto: "TCP", Note: "CVE-2024-0001"}, // bare host → /32, proto upper-cased
 			{Cidr: "10.0.0.0/8"}, // CIDR, any port/proto
-			{Cidr: "1.2.3.4", Port: 6379, Proto: "tcp", Note: "dup-key-wins"}, // same (cidr,port,proto) → dedup
+			{Cidr: "1.2.3.4", Port: 6379, Proto: "tcp", Note: "dup-key-wins"}, // same CIDR → dedup (last wins)
 		},
 	})
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	// 3 input rules, two share a (cidr,port,proto) key → 2 unique.
+	// 3 input rules, two share the CIDR 1.2.3.4/32 → 2 unique.
 	if len(got.DenyRules) != 2 {
 		t.Fatalf("want 2 deny rules, got %d: %+v", len(got.DenyRules), got.DenyRules)
 	}
@@ -36,6 +36,28 @@ func TestCompile_DenyRules_OK(t *testing.T) {
 	}
 	if r1.CIDR.String() != "10.0.0.0/8" || r1.Port != 0 || r1.Proto != 0 {
 		t.Errorf("rule1 = %+v, want 10.0.0.0/8 any/any", r1)
+	}
+}
+
+func TestCompile_DenyRules_DedupByCIDR(t *testing.T) {
+	// Two rules for the SAME CIDR with DIFFERENT ports collapse to one (the last
+	// wins) — the kernel deny_cidr map is keyed by CIDR alone, so the policy must
+	// not express two rules the kernel can't represent.
+	got, err := Compile(&pb.NetworkPolicy{
+		Tenant: "t",
+		DenyRules: []*pb.NetworkPolicyDenyRule{
+			{Cidr: "1.2.3.4/32", Port: 80, Note: "first"},
+			{Cidr: "1.2.3.4/32", Port: 443, Note: "last-wins"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(got.DenyRules) != 1 {
+		t.Fatalf("want 1 deny rule (deduped by CIDR), got %d: %+v", len(got.DenyRules), got.DenyRules)
+	}
+	if got.DenyRules[0].Port != 443 || got.DenyRules[0].Note != "last-wins" {
+		t.Errorf("last rule for a CIDR should win, got %+v", got.DenyRules[0])
 	}
 }
 

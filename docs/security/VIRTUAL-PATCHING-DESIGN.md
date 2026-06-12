@@ -88,9 +88,12 @@ audited (`TC_ACT_OK`). Same disarm-by-default safety as the rest of the policy.
   ```
 
   The LPM key is **CIDR-only** (port/proto live in the value). Consequence:
-  at most one deny entry per `(tenant, CIDR)`. To block two distinct ports on
-  the same host, deny the host outright (`port 0 = any`). Documented Tier-1
-  limitation; lifting it (port in the key) is a follow-up if needed.
+  at most one deny entry per `(tenant, CIDR)`. The compile layer enforces this
+  to match — deny rules dedup by CIDR, the last rule for a CIDR winning — so the
+  policy can never express two rules for one CIDR that the kernel would collapse
+  nondeterministically. To block two distinct ports on the same host, deny the
+  host outright (`port 0 = any`). Lifting this (port in the key) is a follow-up
+  if needed.
 - `deny_event.reason` reuses the struct's former pad byte (wire size
   unchanged) to distinguish a virtual-patch drop from a routine allow-list
   miss, so the audit log can label them differently

@@ -175,18 +175,20 @@ func compileCIDRs(raw []string) ([]netip.Prefix, error) {
 
 // compileDenyRules parses each virtual-patch deny rule (#660): the CIDR is
 // required (a bare host IP is taken as /32 and masked); port must fit a u16;
-// proto is "tcp"|"udp"|""(any); expires_at, if set, must be RFC3339. Rules are
-// deduped by (cidr, port, proto) — the last note/expiry for a duplicate key
-// wins — and sorted deterministically so reconcile diffs are stable. Expiry is
-// NOT applied here (the package is time-pure); it is carried on the DenyRule
-// for the daemon to enforce.
+// proto is "tcp"|"udp"|""(any); expires_at, if set, must be RFC3339.
+//
+// Rules are deduped by CIDR — at most one rule per destination prefix, the LAST
+// one in the list winning. This matches the kernel's deny_cidr LPM map, whose
+// key is CIDR-only (port/proto live in the value), so a single CIDR maps to a
+// single slot. Allowing two rules for the same CIDR with different ports here
+// would compile to the same kernel slot and one would silently clobber the
+// other; collapsing to one-per-CIDR makes the policy say exactly what the kernel
+// can enforce. To block more than one port on a host, deny the host (port 0).
+//
+// Sorted by CIDR so reconcile diffs are stable. Expiry is NOT applied here (the
+// package is time-pure); it is carried on the DenyRule for the daemon to drop.
 func compileDenyRules(raw []*pb.NetworkPolicyDenyRule) ([]DenyRule, error) {
-	type key struct {
-		cidr  string
-		port  uint16
-		proto uint8
-	}
-	seen := make(map[key]DenyRule, len(raw))
+	seen := make(map[string]DenyRule, len(raw))
 	for _, r := range raw {
 		if r == nil {
 			continue
@@ -224,7 +226,7 @@ func compileDenyRules(raw []*pb.NetworkPolicyDenyRule) ([]DenyRule, error) {
 			}
 			exp = t
 		}
-		seen[key{prefix.String(), uint16(r.GetPort()), proto}] = DenyRule{
+		seen[prefix.String()] = DenyRule{
 			CIDR:      prefix,
 			Port:      uint16(r.GetPort()),
 			Proto:     proto,
@@ -236,15 +238,7 @@ func compileDenyRules(raw []*pb.NetworkPolicyDenyRule) ([]DenyRule, error) {
 	for _, d := range seen {
 		out = append(out, d)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CIDR.String() != out[j].CIDR.String() {
-			return out[i].CIDR.String() < out[j].CIDR.String()
-		}
-		if out[i].Port != out[j].Port {
-			return out[i].Port < out[j].Port
-		}
-		return out[i].Proto < out[j].Proto
-	})
+	sort.Slice(out, func(i, j int) bool { return out[i].CIDR.String() < out[j].CIDR.String() })
 	return out, nil
 }
 

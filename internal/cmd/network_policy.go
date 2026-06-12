@@ -140,13 +140,14 @@ func init() {
 
 	networkPolicyCmd.AddCommand(networkPolicyPatchCmd)
 	networkPolicyPatchCmd.AddCommand(networkPolicyPatchAddCmd, networkPolicyPatchRmCmd, networkPolicyPatchListCmd)
-	for _, c := range []*cobra.Command{networkPolicyPatchAddCmd, networkPolicyPatchRmCmd} {
-		c.Flags().StringVar(&npDenyCidr, "cidr", "", "Destination CIDR or host IP to block (required, IPv4)")
-		c.Flags().Uint32Var(&npDenyPort, "port", 0, "Destination port to scope the block (0 = any)")
-		c.Flags().StringVar(&npDenyProto, "proto", "", "Protocol to scope the block: tcp | udp (empty = any)")
-	}
+	// add carries the full rule; rm identifies a rule by CIDR alone (there is at
+	// most one deny rule per CIDR — see compileDenyRules).
+	networkPolicyPatchAddCmd.Flags().StringVar(&npDenyCidr, "cidr", "", "Destination CIDR or host IP to block (required, IPv4)")
+	networkPolicyPatchAddCmd.Flags().Uint32Var(&npDenyPort, "port", 0, "Destination port to scope the block (0 = any)")
+	networkPolicyPatchAddCmd.Flags().StringVar(&npDenyProto, "proto", "", "Protocol to scope the block: tcp | udp (empty = any)")
 	networkPolicyPatchAddCmd.Flags().StringVar(&npDenyNote, "note", "", "Operator note, typically the CVE id this virtual-patches")
 	networkPolicyPatchAddCmd.Flags().StringVar(&npDenyExpires, "expires", "", "RFC3339 expiry; the rule auto-removes after this (empty = never)")
+	networkPolicyPatchRmCmd.Flags().StringVar(&npDenyCidr, "cidr", "", "Destination CIDR or host IP of the rule to remove (required)")
 	networkPolicyPatchAddCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output the stored policy as JSON")
 	networkPolicyPatchListCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output as JSON")
 }
@@ -401,11 +402,13 @@ func denyRuleFromFlags(withMeta bool) (denyRuleJSON, error) {
 	return r, nil
 }
 
-// denyKeyOf is the identity of a deny rule for upsert/remove: (cidr, port,
-// proto). Note and expiry are mutable attributes of that identity, not part of
-// it — so re-adding the same CIDR/port/proto updates the note/expiry in place.
+// denyKeyOf is the identity of a deny rule for upsert/remove: the CIDR alone.
+// The kernel deny_cidr map is keyed by CIDR (port/proto/note live in the value),
+// so there is at most one deny rule per destination — re-adding the same CIDR
+// replaces the whole rule (port, proto, note, expiry included). Matches
+// compileDenyRules' CIDR-only dedup.
 func denyKeyOf(r denyRuleJSON) string {
-	return strings.ToLower(strings.TrimSpace(r.Cidr)) + "|" + strconv.Itoa(int(r.Port)) + "|" + strings.ToLower(r.Proto)
+	return strings.ToLower(strings.TrimSpace(r.Cidr))
 }
 
 func upsertDenyRule(rules []denyRuleJSON, r denyRuleJSON) []denyRuleJSON {
