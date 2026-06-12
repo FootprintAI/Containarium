@@ -125,6 +125,20 @@ func TestParseArtifactOutput(t *testing.T) {
 	})
 }
 
+func TestAgentRuntimeReleaseTag(t *testing.T) {
+	// version.GetVersion() is the bare semver at runtime (the release workflow
+	// builds with VERSION=${tag#v}); the recipe needs the v-prefixed git tag or
+	// the artifact URLs 404 and box assembly silently skips. The helper must
+	// re-add the prefix without double-prefixing an already-tagged value.
+	got := agentRuntimeReleaseTag()
+	if !strings.HasPrefix(got, "v") {
+		t.Errorf("agentRuntimeReleaseTag() = %q, want a v-prefixed tag", got)
+	}
+	if strings.HasPrefix(got, "vv") {
+		t.Errorf("agentRuntimeReleaseTag() = %q, double-prefixed", got)
+	}
+}
+
 func TestGenTraceID(t *testing.T) {
 	a, b := genTraceID(), genTraceID()
 	if len(a) != 32 { // 16 bytes hex

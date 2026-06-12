@@ -132,6 +132,24 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	return &pb.RunAgentSkillResponse{Container: container, ArtifactJson: artifact}, nil
 }
 
+// agentRuntimeReleaseTag returns the GitHub release tag the agent-runtime box
+// pulls its artifacts from. version.GetVersion() is the BARE semver ("0.26.6")
+// — the release workflow builds with VERSION=${tag#v}, so the `v` is stripped
+// at build time — but the git tag and release are `v`-prefixed ("v0.26.6"),
+// and the recipe's post_start uses this value directly in
+// raw.githubusercontent.com/<repo>/<ref>/... and releases/download/<ref>/...
+// URLs. Without the `v` those 404 and the best-effort assembly silently skips,
+// so the box comes up without the in-box loop. Re-add the prefix (idempotent —
+// a value that already carries it, or a dev/unpublished version, is left as-is
+// and just degrades to skip-assembly as before).
+func agentRuntimeReleaseTag() string {
+	v := version.GetVersion()
+	if v == "" || strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
+}
+
 // provisionSkillBox provisions a skill's box and gets it ready to run: resolve
 // the box recipe, deploy it, mint a JWT scoped to exactly the skill's
 // allowed_scopes, seed the prompt/token/input/card, and compile allowed_peers
@@ -164,7 +182,7 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		Name:       name,
 		BackendId:  backendID,
 		Pool:       pool,
-		Parameters: map[string]string{"release": version.GetVersion()},
+		Parameters: map[string]string{"release": agentRuntimeReleaseTag()},
 	})
 	if err != nil {
 		return "", nil, err // already a gRPC status from deploy/CreateContainer
