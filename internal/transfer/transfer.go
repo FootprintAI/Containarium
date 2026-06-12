@@ -18,11 +18,20 @@
 package transfer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ErrSentinelUnresolved is returned by resolve when no SSH endpoint could
+// be determined — neither an explicit SentinelHost, the container's
+// daemon-stamped ssh_host (tried by callers before reaching here), nor
+// $CONTAINARIUM_SENTINEL_HOST. Callers (notably the MCP push/sync
+// handlers) check this with errors.Is to attach surface-specific guidance
+// instead of leaving the agent to chase the env var.
+var ErrSentinelUnresolved = errors.New("sentinel host not set")
 
 // Options carries the inputs both Push and Sync need.
 type Options struct {
@@ -61,7 +70,11 @@ func (o *Options) resolve() error {
 	if o.SentinelHost == "" {
 		o.SentinelHost = os.Getenv("CONTAINARIUM_SENTINEL_HOST")
 		if o.SentinelHost == "" {
-			return fmt.Errorf("sentinel host not set: pass --sentinel or set CONTAINARIUM_SENTINEL_HOST")
+			return fmt.Errorf("%w: the daemon reports the reachable SSH target in the "+
+				"container's ssh_host (see `containarium get %s` / the get_container tool) — "+
+				"pass it as --sentinel <host>, or set CONTAINARIUM_SENTINEL_HOST. "+
+				"An empty ssh_host means a direct / no-sentinel deployment; reach the "+
+				"container at its IP instead", ErrSentinelUnresolved, o.Username)
 		}
 	}
 	if o.KeyPath == "" {

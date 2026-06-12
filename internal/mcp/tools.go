@@ -1338,6 +1338,31 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 	}
 	result += fmt.Sprintf("\n%s", resp.Message)
 
+	// Always tell the caller how to reach the box and which tool to use —
+	// independent of whether we generated a key. The daemon stamps ssh_host
+	// with the reachable SSH target (the sentinel this container belongs to,
+	// or empty for a direct deployment), so the caller never has to discover
+	// a host or set CONTAINARIUM_SENTINEL_HOST. Without this, agents that pass
+	// their own ssh_keys got no connection guidance at all and tended to go
+	// hunting for the env var and give up (see issue #658).
+	result += "\n\n--- CONNECTING ---\n"
+	if resp.Container.SSHHost != "" {
+		result += fmt.Sprintf("SSH target: %s@%s  (resolved from ssh_host — no env/config needed)\n",
+			resp.Container.Username, resp.Container.SSHHost)
+	} else {
+		result += "SSH target: direct / no-sentinel deployment — the daemon reported no\n"
+		result += "ssh_host. Reach the container at its IP"
+		if resp.Container.Network != nil && resp.Container.Network.IPAddress != "" {
+			result += fmt.Sprintf(" (%s)", resp.Container.Network.IPAddress)
+		}
+		result += ", or call sync_ssh_config for an alias.\n"
+	}
+	result += "\nTo run code on this box, prefer the MCP tools — they resolve the SSH\n"
+	result += "target from ssh_host automatically (you do NOT need to know a hostname\n"
+	result += "or set CONTAINARIUM_SENTINEL_HOST):\n"
+	result += "  - connect (exec mode): run a command inside the box.\n"
+	result += "  - push / sync: transfer code into the box.\n"
+
 	if ephemeralPrivKey != nil {
 		// Write the key to the local filesystem ourselves rather than
 		// asking the agent to do it. The agent could forget the save step
