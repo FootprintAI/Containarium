@@ -99,6 +99,79 @@ func TestNetworkPolicy_ListAndDelete(t *testing.T) {
 	}
 }
 
+func TestNetworkPolicy_PatchDenyRules(t *testing.T) {
+	s := newNPServer()
+	ctx := npAdminCtx()
+
+	// Add to a tenant with no prior policy: the patch creates a minimal policy.
+	res, err := s.PatchNetworkPolicyDenyRules(ctx, &pb.PatchNetworkPolicyDenyRulesRequest{
+		Tenant: "acme",
+		Add:    []*pb.NetworkPolicyDenyRule{{Cidr: "1.2.3.4", Port: 6379, Proto: "tcp", Note: "CVE-x"}},
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	rules := res.GetPolicy().GetDenyRules()
+	if len(rules) != 1 || rules[0].GetCidr() != "1.2.3.4/32" || rules[0].GetPort() != 6379 {
+		t.Fatalf("add result wrong (host should normalize to /32): %+v", rules)
+	}
+
+	// Re-adding the same CIDR replaces it (CIDR-keyed), so count stays 1.
+	res, err = s.PatchNetworkPolicyDenyRules(ctx, &pb.PatchNetworkPolicyDenyRulesRequest{
+		Tenant: "acme",
+		Add:    []*pb.NetworkPolicyDenyRule{{Cidr: "1.2.3.4/32", Port: 443, Note: "CVE-y"}},
+	})
+	if err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	if rs := res.GetPolicy().GetDenyRules(); len(rs) != 1 || rs[0].GetPort() != 443 {
+		t.Fatalf("re-add same CIDR should replace, got %+v", rs)
+	}
+
+	// The allow-policy survives a deny patch (and vice versa): set an allow-list,
+	// then patch — both must coexist.
+	if _, err := s.SetNetworkPolicy(ctx, &pb.SetNetworkPolicyRequest{Policy: &pb.NetworkPolicy{Tenant: "acme", EgressCidrs: []string{"0.0.0.0/0"}}}); err != nil {
+		t.Fatalf("set allow-list: %v", err)
+	}
+	got, _ := s.GetNetworkPolicy(ctx, &pb.GetNetworkPolicyRequest{Tenant: "acme"})
+	if len(got.GetPolicy().GetDenyRules()) != 1 || len(got.GetPolicy().GetEgressCidrs()) != 1 {
+		t.Fatalf("allow-list and deny rule should coexist: %+v", got.GetPolicy())
+	}
+
+	// Remove by bare host (must match the stored /32).
+	res, err = s.PatchNetworkPolicyDenyRules(ctx, &pb.PatchNetworkPolicyDenyRulesRequest{Tenant: "acme", RemoveCidrs: []string{"1.2.3.4"}})
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if len(res.GetPolicy().GetDenyRules()) != 0 {
+		t.Fatalf("remove should empty the deny rules, got %+v", res.GetPolicy().GetDenyRules())
+	}
+
+	// Removing a rule that isn't there → NotFound (pure removal).
+	if _, err := s.PatchNetworkPolicyDenyRules(ctx, &pb.PatchNetworkPolicyDenyRulesRequest{Tenant: "acme", RemoveCidrs: []string{"9.9.9.9/32"}}); status.Code(err) != codes.NotFound {
+		t.Fatalf("removing a missing rule should be NotFound, got %v", err)
+	}
+
+	// An invalid add rule → InvalidArgument, store untouched.
+	if _, err := s.PatchNetworkPolicyDenyRules(ctx, &pb.PatchNetworkPolicyDenyRulesRequest{Tenant: "acme", Add: []*pb.NetworkPolicyDenyRule{{Cidr: "not-a-cidr"}}}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("bad add cidr should be InvalidArgument, got %v", err)
+	}
+
+	// Empty patch → InvalidArgument.
+	if _, err := s.PatchNetworkPolicyDenyRules(ctx, &pb.PatchNetworkPolicyDenyRulesRequest{Tenant: "acme"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty patch should be InvalidArgument, got %v", err)
+	}
+}
+
+func TestNetworkPolicy_PatchDenyRulesAdminOnly(t *testing.T) {
+	s := newNPServer()
+	userCtx := auth.ContextWithTestSubject(context.Background(), "alice", "user")
+	_, err := s.PatchNetworkPolicyDenyRules(userCtx, &pb.PatchNetworkPolicyDenyRulesRequest{Tenant: "acme", Add: []*pb.NetworkPolicyDenyRule{{Cidr: "1.2.3.4/32"}}})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("non-admin patch should be PermissionDenied, got %v", err)
+	}
+}
+
 func TestNetworkPolicy_AdminOnly(t *testing.T) {
 	s := newNPServer()
 	userCtx := auth.ContextWithTestSubject(context.Background(), "alice", "user")

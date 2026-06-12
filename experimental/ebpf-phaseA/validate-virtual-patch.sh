@@ -196,9 +196,11 @@ esac
 # ---------------------------------------------------------------------------
 phase "Phase 2 — port/proto-scoped deny"
 "$CTR" "${CTR_ARGS[@]}" network-policy patch add "$TENANT" --cidr "$PROBE_IP/32" --port "$PROBE_PORT" --proto tcp --note "CVE-validate-port-$$" >/dev/null
-# NOTE: same CIDR as Phase 1 — the deny LPM key is CIDR-only, so this REPLACES
-# the whole-host rule with the port-scoped one (documented Tier-1 behaviour: one
-# deny entry per (tenant,CIDR)). Track the same key for cleanup.
+# NOTE: same CIDR as Phase 1. Deny rules are CIDR-keyed (one per tenant+CIDR), so
+# the server REPLACES the whole-host rule with this port-scoped one — no new
+# cleanup tracking is needed: the Phase 1 ADDED_DENY entry (--cidr $PROBE_IP/32)
+# already covers it, and `patch rm --cidr` removes whatever rule holds that CIDR
+# regardless of port.
 reconcile
 tcp_reachable; tcp_rc=$?
 if [ "$tcp_rc" = 99 ]; then

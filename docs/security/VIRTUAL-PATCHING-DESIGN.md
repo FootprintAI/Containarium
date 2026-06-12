@@ -101,16 +101,29 @@ audited (`TC_ACT_OK`). Same disarm-by-default safety as the rest of the policy.
 
 ### Control plane
 
-- `internal/netpolicy` parses/validates/dedupes/sorts deny rules into
-  `CompiledPolicy.DenyRules` (time-pure: expiry is *parsed* but not *applied*
-  here).
+- **Storage.** Deny rules are persisted alongside the allow-policy: a
+  `deny_rules JSONB` column on `network_policies` (Postgres) and the in-memory
+  store. They are owned by a dedicated atomic mutator, NOT by `Set` — `Set`
+  declares the allow-policy and **preserves** existing deny rules untouched (the
+  Postgres upsert simply omits `deny_rules` from its `UPDATE` set; the in-memory
+  `Set` carries the prior rules forward). So `network-policy set` never has to
+  read-then-write to avoid clobbering them.
+- **Atomic patch.** `PatchNetworkPolicyDenyRules(tenant, add[], remove_cidrs[])`
+  does the read-modify-write **server-side under a row lock** (`SELECT … FOR
+  UPDATE` / mem mutex), so two concurrent edits serialize rather than lost-update.
+  The merge removes by CIDR, applies the adds (CIDR-keyed — an add replaces the
+  rule for that CIDR), and re-normalizes through `netpolicy.Compile`. A pure
+  removal that matches nothing returns `NotFound`; a bad add returns
+  `InvalidArgument` without touching the store.
+- `internal/netpolicy` parses/validates/dedupes(by CIDR)/sorts deny rules into
+  `CompiledPolicy.DenyRules` (time-pure: expiry is *parsed* but not *applied*).
 - The daemon (`compiledPolicies`) drops expired rules with
   `DenyRule.Expired(now)` before planning, so an expired patch self-removes on
   the next reconcile.
-- `planReconcile` emits per-tenant `DenyEntry`s; `diffDeny` converges the map.
-  Unlike egress, a deny entry's kernel key is narrower than the full entry (the
-  value carries port/proto), so a rule whose *only* change is its port is an
-  **upsert** of the same slot, never a delete-then-add of two slots.
+- `planReconcile` emits per-tenant `DenyEntry`s; `diffDeny`/`applyDeny` converge
+  the map. Unlike egress, a deny entry's kernel key is narrower than the full
+  entry (the value carries port/proto), so a rule whose *only* change is its port
+  is an **upsert** of the same slot, never a delete-then-add of two slots.
 - Backward-compatible: if the loaded BPF object predates the `deny_cidr` map
   (an older release binary), the daemon logs that deny rules are configured but
   unenforceable until `netpolicy.bpf.o` is rebuilt — it does not fail.
@@ -120,14 +133,14 @@ audited (`TC_ACT_OK`). Same disarm-by-default safety as the rest of the policy.
 ```
 containarium network-policy patch add <tenant> --cidr 1.2.3.4/32 \
     [--port 6379] [--proto tcp] [--note CVE-2024-XXXX] [--expires 2026-07-01T00:00:00Z]
-containarium network-policy patch rm   <tenant> --cidr 1.2.3.4/32 [--port 6379] [--proto tcp]
+containarium network-policy patch rm   <tenant> --cidr 1.2.3.4/32
 containarium network-policy patch list <tenant>
 ```
 
-`patch add/rm` read-modify-write only the `deny_rules` of the tenant's policy
-(the allow-list is untouched). `network-policy set`, which has no deny flags,
-fetches and **preserves** any existing deny rules rather than wiping them. The
-platform MCP tool wraps the same endpoints.
+`patch add/rm` make a single call to the atomic `PatchNetworkPolicyDenyRules`
+endpoint (no client read-modify-write, no lost-update race). `network-policy
+set` touches only the allow-policy; the server preserves deny rules across it.
+`list` shows a `PATCHES` column. The platform MCP tool wraps the same endpoints.
 
 ### Product hook (scanner → virtual patch)
 

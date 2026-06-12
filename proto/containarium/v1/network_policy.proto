@@ -66,4 +66,20 @@ service NetworkPolicyService {
       tags: "NetworkPolicy";
     };
   }
+
+  // PatchNetworkPolicyDenyRules atomically adds/removes a tenant's virtual-patch
+  // deny rules (#660) under a store-side lock, so concurrent edits don't lose
+  // updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
+  // through the client to preserve them. Echoes the normalized stored policy.
+  rpc PatchNetworkPolicyDenyRules(PatchNetworkPolicyDenyRulesRequest) returns (SetNetworkPolicyResponse) {
+    option (google.api.http) = {
+      post: "/v1/network-policies/deny-rules"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Patch network-policy deny rules";
+      description: "Atomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
 }

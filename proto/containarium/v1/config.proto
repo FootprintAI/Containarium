@@ -497,6 +497,19 @@ message DeleteNetworkPolicyRequest {
 }
 message DeleteNetworkPolicyResponse {}
 
+// PatchNetworkPolicyDenyRulesRequest atomically mutates a tenant's virtual-patch
+// deny rules (#660): the server reads the current rules, removes any whose CIDR
+// is in remove_cidrs, adds/replaces the `add` rules (deny rules are keyed by
+// CIDR — an add for an existing CIDR replaces it), re-normalizes, and writes
+// back under a lock, so concurrent edits don't lose updates. The allow-policy
+// (egress, mode, intra, metadata) is untouched. The normalized stored policy is
+// echoed back.
+message PatchNetworkPolicyDenyRulesRequest {
+  string tenant = 1;
+  repeated NetworkPolicyDenyRule add = 2;
+  repeated string remove_cidrs = 3;
+}
+
 // BackendType represents the type of backend instance
 enum BackendType {
   BACKEND_TYPE_UNSPECIFIED = 0;

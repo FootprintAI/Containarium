@@ -2462,6 +2462,73 @@ func (*DeleteNetworkPolicyResponse) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_config_proto_rawDescGZIP(), []int{30}
 }
 
+// PatchNetworkPolicyDenyRulesRequest atomically mutates a tenant's virtual-patch
+// deny rules (#660): the server reads the current rules, removes any whose CIDR
+// is in remove_cidrs, adds/replaces the `add` rules (deny rules are keyed by
+// CIDR — an add for an existing CIDR replaces it), re-normalizes, and writes
+// back under a lock, so concurrent edits don't lose updates. The allow-policy
+// (egress, mode, intra, metadata) is untouched. The normalized stored policy is
+// echoed back.
+type PatchNetworkPolicyDenyRulesRequest struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Tenant        string                   `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Add           []*NetworkPolicyDenyRule `protobuf:"bytes,2,rep,name=add,proto3" json:"add,omitempty"`
+	RemoveCidrs   []string                 `protobuf:"bytes,3,rep,name=remove_cidrs,json=removeCidrs,proto3" json:"remove_cidrs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PatchNetworkPolicyDenyRulesRequest) Reset() {
+	*x = PatchNetworkPolicyDenyRulesRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PatchNetworkPolicyDenyRulesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PatchNetworkPolicyDenyRulesRequest) ProtoMessage() {}
+
+func (x *PatchNetworkPolicyDenyRulesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PatchNetworkPolicyDenyRulesRequest.ProtoReflect.Descriptor instead.
+func (*PatchNetworkPolicyDenyRulesRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *PatchNetworkPolicyDenyRulesRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *PatchNetworkPolicyDenyRulesRequest) GetAdd() []*NetworkPolicyDenyRule {
+	if x != nil {
+		return x.Add
+	}
+	return nil
+}
+
+func (x *PatchNetworkPolicyDenyRulesRequest) GetRemoveCidrs() []string {
+	if x != nil {
+		return x.RemoveCidrs
+	}
+	return nil
+}
+
 // BackendInfo describes one backend in the fleet — the local daemon
 // plus any tunnel-connected peers. Emitted by ListBackends (GET
 // /v1/backends). The field shape is the wire contract the CLI and MCP
@@ -2495,7 +2562,7 @@ type BackendInfo struct {
 
 func (x *BackendInfo) Reset() {
 	*x = BackendInfo{}
-	mi := &file_containarium_v1_config_proto_msgTypes[31]
+	mi := &file_containarium_v1_config_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2507,7 +2574,7 @@ func (x *BackendInfo) String() string {
 func (*BackendInfo) ProtoMessage() {}
 
 func (x *BackendInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[31]
+	mi := &file_containarium_v1_config_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2520,7 +2587,7 @@ func (x *BackendInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendInfo.ProtoReflect.Descriptor instead.
 func (*BackendInfo) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{31}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *BackendInfo) GetId() string {
@@ -2608,7 +2675,7 @@ type BackendGPU struct {
 
 func (x *BackendGPU) Reset() {
 	*x = BackendGPU{}
-	mi := &file_containarium_v1_config_proto_msgTypes[32]
+	mi := &file_containarium_v1_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2620,7 +2687,7 @@ func (x *BackendGPU) String() string {
 func (*BackendGPU) ProtoMessage() {}
 
 func (x *BackendGPU) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[32]
+	mi := &file_containarium_v1_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2633,7 +2700,7 @@ func (x *BackendGPU) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendGPU.ProtoReflect.Descriptor instead.
 func (*BackendGPU) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{32}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *BackendGPU) GetVendor() string {
@@ -2666,7 +2733,7 @@ type ListBackendsRequest struct {
 
 func (x *ListBackendsRequest) Reset() {
 	*x = ListBackendsRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[33]
+	mi := &file_containarium_v1_config_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2678,7 +2745,7 @@ func (x *ListBackendsRequest) String() string {
 func (*ListBackendsRequest) ProtoMessage() {}
 
 func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[33]
+	mi := &file_containarium_v1_config_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2691,7 +2758,7 @@ func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{33}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{34}
 }
 
 // ListBackendsResponse is the response from listing backends
@@ -2705,7 +2772,7 @@ type ListBackendsResponse struct {
 
 func (x *ListBackendsResponse) Reset() {
 	*x = ListBackendsResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[34]
+	mi := &file_containarium_v1_config_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2717,7 +2784,7 @@ func (x *ListBackendsResponse) String() string {
 func (*ListBackendsResponse) ProtoMessage() {}
 
 func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[34]
+	mi := &file_containarium_v1_config_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2730,7 +2797,7 @@ func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{34}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
@@ -2904,7 +2971,11 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\bpolicies\x18\x01 \x03(\v2\x1e.containarium.v1.NetworkPolicyR\bpolicies\"4\n" +
 	"\x1aDeleteNetworkPolicyRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"\x1d\n" +
-	"\x1bDeleteNetworkPolicyResponse\"\xb4\x02\n" +
+	"\x1bDeleteNetworkPolicyResponse\"\x99\x01\n" +
+	"\"PatchNetworkPolicyDenyRulesRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x128\n" +
+	"\x03add\x18\x02 \x03(\v2&.containarium.v1.NetworkPolicyDenyRuleR\x03add\x12!\n" +
+	"\fremove_cidrs\x18\x03 \x03(\tR\vremoveCidrs\"\xb4\x02\n" +
 	"\vBackendInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -2981,58 +3052,59 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_containarium_v1_config_proto_goTypes = []any{
-	(GPUVendor)(0),                      // 0: containarium.v1.GPUVendor
-	(GPUModel)(0),                       // 1: containarium.v1.GPUModel
-	(NetworkPolicyMode)(0),              // 2: containarium.v1.NetworkPolicyMode
-	(BackendType)(0),                    // 3: containarium.v1.BackendType
-	(ValidateGPUResponse_GPUStatus)(0),  // 4: containarium.v1.ValidateGPUResponse.GPUStatus
-	(*Config)(nil),                      // 5: containarium.v1.Config
-	(*IncusConfig)(nil),                 // 6: containarium.v1.IncusConfig
-	(*NetworkConfig)(nil),               // 7: containarium.v1.NetworkConfig
-	(*StorageConfig)(nil),               // 8: containarium.v1.StorageConfig
-	(*SecurityConfig)(nil),              // 9: containarium.v1.SecurityConfig
-	(*GetConfigRequest)(nil),            // 10: containarium.v1.GetConfigRequest
-	(*GetConfigResponse)(nil),           // 11: containarium.v1.GetConfigResponse
-	(*UpdateConfigRequest)(nil),         // 12: containarium.v1.UpdateConfigRequest
-	(*UpdateConfigResponse)(nil),        // 13: containarium.v1.UpdateConfigResponse
-	(*SystemInfo)(nil),                  // 14: containarium.v1.SystemInfo
-	(*GPUInfo)(nil),                     // 15: containarium.v1.GPUInfo
-	(*GetSystemInfoRequest)(nil),        // 16: containarium.v1.GetSystemInfoRequest
-	(*GetSystemInfoResponse)(nil),       // 17: containarium.v1.GetSystemInfoResponse
-	(*GetLatestReleaseRequest)(nil),     // 18: containarium.v1.GetLatestReleaseRequest
-	(*GetLatestReleaseResponse)(nil),    // 19: containarium.v1.GetLatestReleaseResponse
-	(*ValidateGPURequest)(nil),          // 20: containarium.v1.ValidateGPURequest
-	(*ValidateGPUResponse)(nil),         // 21: containarium.v1.ValidateGPUResponse
-	(*TriggerUpgradeRequest)(nil),       // 22: containarium.v1.TriggerUpgradeRequest
-	(*TriggerUpgradeResponse)(nil),      // 23: containarium.v1.TriggerUpgradeResponse
-	(*GetUpgradeStatusRequest)(nil),     // 24: containarium.v1.GetUpgradeStatusRequest
-	(*GetUpgradeStatusResponse)(nil),    // 25: containarium.v1.GetUpgradeStatusResponse
-	(*NetworkPolicy)(nil),               // 26: containarium.v1.NetworkPolicy
-	(*NetworkPolicyDenyRule)(nil),       // 27: containarium.v1.NetworkPolicyDenyRule
-	(*SetNetworkPolicyRequest)(nil),     // 28: containarium.v1.SetNetworkPolicyRequest
-	(*SetNetworkPolicyResponse)(nil),    // 29: containarium.v1.SetNetworkPolicyResponse
-	(*GetNetworkPolicyRequest)(nil),     // 30: containarium.v1.GetNetworkPolicyRequest
-	(*GetNetworkPolicyResponse)(nil),    // 31: containarium.v1.GetNetworkPolicyResponse
-	(*ListNetworkPoliciesRequest)(nil),  // 32: containarium.v1.ListNetworkPoliciesRequest
-	(*ListNetworkPoliciesResponse)(nil), // 33: containarium.v1.ListNetworkPoliciesResponse
-	(*DeleteNetworkPolicyRequest)(nil),  // 34: containarium.v1.DeleteNetworkPolicyRequest
-	(*DeleteNetworkPolicyResponse)(nil), // 35: containarium.v1.DeleteNetworkPolicyResponse
-	(*BackendInfo)(nil),                 // 36: containarium.v1.BackendInfo
-	(*BackendGPU)(nil),                  // 37: containarium.v1.BackendGPU
-	(*ListBackendsRequest)(nil),         // 38: containarium.v1.ListBackendsRequest
-	(*ListBackendsResponse)(nil),        // 39: containarium.v1.ListBackendsResponse
-	(*ResourceLimits)(nil),              // 40: containarium.v1.ResourceLimits
-	(OSType)(0),                         // 41: containarium.v1.OSType
+	(GPUVendor)(0),                             // 0: containarium.v1.GPUVendor
+	(GPUModel)(0),                              // 1: containarium.v1.GPUModel
+	(NetworkPolicyMode)(0),                     // 2: containarium.v1.NetworkPolicyMode
+	(BackendType)(0),                           // 3: containarium.v1.BackendType
+	(ValidateGPUResponse_GPUStatus)(0),         // 4: containarium.v1.ValidateGPUResponse.GPUStatus
+	(*Config)(nil),                             // 5: containarium.v1.Config
+	(*IncusConfig)(nil),                        // 6: containarium.v1.IncusConfig
+	(*NetworkConfig)(nil),                      // 7: containarium.v1.NetworkConfig
+	(*StorageConfig)(nil),                      // 8: containarium.v1.StorageConfig
+	(*SecurityConfig)(nil),                     // 9: containarium.v1.SecurityConfig
+	(*GetConfigRequest)(nil),                   // 10: containarium.v1.GetConfigRequest
+	(*GetConfigResponse)(nil),                  // 11: containarium.v1.GetConfigResponse
+	(*UpdateConfigRequest)(nil),                // 12: containarium.v1.UpdateConfigRequest
+	(*UpdateConfigResponse)(nil),               // 13: containarium.v1.UpdateConfigResponse
+	(*SystemInfo)(nil),                         // 14: containarium.v1.SystemInfo
+	(*GPUInfo)(nil),                            // 15: containarium.v1.GPUInfo
+	(*GetSystemInfoRequest)(nil),               // 16: containarium.v1.GetSystemInfoRequest
+	(*GetSystemInfoResponse)(nil),              // 17: containarium.v1.GetSystemInfoResponse
+	(*GetLatestReleaseRequest)(nil),            // 18: containarium.v1.GetLatestReleaseRequest
+	(*GetLatestReleaseResponse)(nil),           // 19: containarium.v1.GetLatestReleaseResponse
+	(*ValidateGPURequest)(nil),                 // 20: containarium.v1.ValidateGPURequest
+	(*ValidateGPUResponse)(nil),                // 21: containarium.v1.ValidateGPUResponse
+	(*TriggerUpgradeRequest)(nil),              // 22: containarium.v1.TriggerUpgradeRequest
+	(*TriggerUpgradeResponse)(nil),             // 23: containarium.v1.TriggerUpgradeResponse
+	(*GetUpgradeStatusRequest)(nil),            // 24: containarium.v1.GetUpgradeStatusRequest
+	(*GetUpgradeStatusResponse)(nil),           // 25: containarium.v1.GetUpgradeStatusResponse
+	(*NetworkPolicy)(nil),                      // 26: containarium.v1.NetworkPolicy
+	(*NetworkPolicyDenyRule)(nil),              // 27: containarium.v1.NetworkPolicyDenyRule
+	(*SetNetworkPolicyRequest)(nil),            // 28: containarium.v1.SetNetworkPolicyRequest
+	(*SetNetworkPolicyResponse)(nil),           // 29: containarium.v1.SetNetworkPolicyResponse
+	(*GetNetworkPolicyRequest)(nil),            // 30: containarium.v1.GetNetworkPolicyRequest
+	(*GetNetworkPolicyResponse)(nil),           // 31: containarium.v1.GetNetworkPolicyResponse
+	(*ListNetworkPoliciesRequest)(nil),         // 32: containarium.v1.ListNetworkPoliciesRequest
+	(*ListNetworkPoliciesResponse)(nil),        // 33: containarium.v1.ListNetworkPoliciesResponse
+	(*DeleteNetworkPolicyRequest)(nil),         // 34: containarium.v1.DeleteNetworkPolicyRequest
+	(*DeleteNetworkPolicyResponse)(nil),        // 35: containarium.v1.DeleteNetworkPolicyResponse
+	(*PatchNetworkPolicyDenyRulesRequest)(nil), // 36: containarium.v1.PatchNetworkPolicyDenyRulesRequest
+	(*BackendInfo)(nil),                        // 37: containarium.v1.BackendInfo
+	(*BackendGPU)(nil),                         // 38: containarium.v1.BackendGPU
+	(*ListBackendsRequest)(nil),                // 39: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),               // 40: containarium.v1.ListBackendsResponse
+	(*ResourceLimits)(nil),                     // 41: containarium.v1.ResourceLimits
+	(OSType)(0),                                // 42: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	40, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	41, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	41, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	42, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -3048,13 +3120,14 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	26, // 18: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
 	26, // 19: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
 	26, // 20: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
-	37, // 21: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	36, // 22: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	23, // [23:23] is the sub-list for method output_type
-	23, // [23:23] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	27, // 21: containarium.v1.PatchNetworkPolicyDenyRulesRequest.add:type_name -> containarium.v1.NetworkPolicyDenyRule
+	38, // 22: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	37, // 23: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -3069,7 +3142,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   35,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

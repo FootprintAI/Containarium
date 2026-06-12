@@ -2639,6 +2639,41 @@
         ]
       }
     },
+    "/v1/network-policies/deny-rules": {
+      "post": {
+        "summary": "Patch network-policy deny rules",
+        "description": "Atomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.",
+        "operationId": "NetworkPolicyService_PatchNetworkPolicyDenyRules",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetNetworkPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "PatchNetworkPolicyDenyRulesRequest atomically mutates a tenant's virtual-patch\ndeny rules (#660): the server reads the current rules, removes any whose CIDR\nis in remove_cidrs, adds/replaces the `add` rules (deny rules are keyed by\nCIDR — an add for an existing CIDR replaces it), re-normalizes, and writes\nback under a lock, so concurrent edits don't lose updates. The allow-policy\n(egress, mode, intra, metadata) is untouched. The normalized stored policy is\nechoed back.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PatchNetworkPolicyDenyRulesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
     "/v1/network-policies/{tenant}": {
       "get": {
         "summary": "Get network policy",
@@ -8606,6 +8641,28 @@
         }
       },
       "title": "PassthroughRoute represents a direct TCP/UDP port forwarding rule"
+    },
+    "PatchNetworkPolicyDenyRulesRequest": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string"
+        },
+        "add": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NetworkPolicyDenyRule"
+          }
+        },
+        "removeCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "PatchNetworkPolicyDenyRulesRequest atomically mutates a tenant's virtual-patch\ndeny rules (#660): the server reads the current rules, removes any whose CIDR\nis in remove_cidrs, adds/replaces the `add` rules (deny rules are keyed by\nCIDR — an add for an existing CIDR replaces it), re-normalizes, and writes\nback under a lock, so concurrent edits don't lose updates. The allow-policy\n(egress, mode, intra, metadata) is untouched. The normalized stored policy is\nechoed back."
     },
     "PentestConfig": {
       "type": "object",

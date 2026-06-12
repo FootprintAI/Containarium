@@ -206,15 +206,9 @@ func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	// `set` declares the allow-policy but has no deny-rule flags; a NetworkPolicy
-	// POST replaces the whole record, so fetch and carry over any virtual-patch
-	// deny rules (#660) rather than silently wiping them. Use `network-policy
-	// patch` to manage those. A real fetch error aborts (don't clobber on a blip);
-	// a missing policy is fine (no rules to preserve).
-	existing, _, err := getNetworkPolicy(args[0])
-	if err != nil {
-		return fmt.Errorf("fetch existing policy to preserve deny rules: %w", err)
-	}
+	// `set` declares the allow-policy only; virtual-patch deny rules (#660) are
+	// owned by `network-policy patch` and preserved server-side across a set, so
+	// no client round-trip is needed to keep them.
 	body := setNetworkPolicyRequest{Policy: netPolicyJSON{
 		Tenant:           args[0],
 		AllowIntraTenant: npAllowIntraTenant,
@@ -222,7 +216,6 @@ func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 		EgressDomains:    npEgressDomains,
 		AllowMetadata:    npAllowMetadata,
 		Mode:             mode,
-		DenyRules:        existing.DenyRules,
 	}}
 	var out policyEnvelope
 	if err := doJSON("POST", strings.TrimSuffix(serverAddr, "/")+"/v1/network-policies", body, &out); err != nil {
@@ -300,16 +293,13 @@ func runNetworkPolicyPatchAdd(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return errServerRequired()
 	}
-	rule, err := denyRuleFromFlags(true)
+	rule, err := denyRuleFromFlags()
 	if err != nil {
 		return err
 	}
-	pol, _, err := getNetworkPolicy(args[0])
-	if err != nil {
-		return err
-	}
-	pol.DenyRules = upsertDenyRule(pol.DenyRules, rule)
-	out, err := putNetworkPolicy(pol)
+	// One atomic server-side patch — no client read-modify-write, so a concurrent
+	// edit can't lose this rule and `set` never has to round-trip to preserve it.
+	out, err := patchDenyRules(patchDenyRulesRequest{Tenant: args[0], Add: []denyRuleJSON{rule}})
 	if err != nil {
 		return err
 	}
@@ -325,36 +315,37 @@ func runNetworkPolicyPatchRm(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return errServerRequired()
 	}
-	target, err := denyRuleFromFlags(false)
+	cidr := strings.TrimSpace(npDenyCidr)
+	if cidr == "" {
+		return fmt.Errorf("--cidr is required")
+	}
+	out, err := patchDenyRules(patchDenyRulesRequest{Tenant: args[0], RemoveCidrs: []string{cidr}})
 	if err != nil {
 		return err
 	}
-	pol, found, err := getNetworkPolicy(args[0])
-	if err != nil {
-		return err
+	if npJSONOut {
+		return printJSON(out)
 	}
-	if !found {
-		return fmt.Errorf("no network policy for tenant %q", args[0])
-	}
-	k := denyKeyOf(target)
-	kept := make([]denyRuleJSON, 0, len(pol.DenyRules))
-	removed := false
-	for _, r := range pol.DenyRules {
-		if denyKeyOf(r) == k {
-			removed = true
-			continue
-		}
-		kept = append(kept, r)
-	}
-	if !removed {
-		return fmt.Errorf("no matching deny rule (%s) for tenant %q", denyRuleSummary(target), args[0])
-	}
-	pol.DenyRules = kept
-	if _, err := putNetworkPolicy(pol); err != nil {
-		return err
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ removed virtual-patch deny rule for %q: %s\n", args[0], denyRuleSummary(target))
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ removed virtual-patch deny rule %q for %q\n", cidr, args[0])
 	return nil
+}
+
+// patchDenyRulesRequest mirrors PatchNetworkPolicyDenyRulesRequest (grpc-gateway
+// camelCase).
+type patchDenyRulesRequest struct {
+	Tenant      string         `json:"tenant"`
+	Add         []denyRuleJSON `json:"add,omitempty"`
+	RemoveCidrs []string       `json:"removeCidrs,omitempty"`
+}
+
+// patchDenyRules calls the atomic deny-rule patch endpoint and returns the
+// stored (normalized) policy.
+func patchDenyRules(body patchDenyRulesRequest) (netPolicyJSON, error) {
+	var out policyEnvelope
+	if err := doJSON("POST", strings.TrimSuffix(serverAddr, "/")+"/v1/network-policies/deny-rules", body, &out); err != nil {
+		return netPolicyJSON{}, err
+	}
+	return out.Policy, nil
 }
 
 func runNetworkPolicyPatchList(cmd *cobra.Command, args []string) error {
@@ -380,10 +371,10 @@ func runNetworkPolicyPatchList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// denyRuleFromFlags builds a denyRuleJSON from the --cidr/--port/--proto (and,
-// for add, --note/--expires) flags, validating them. withMeta includes the
-// note/expiry fields (add) vs. only the identity fields (rm).
-func denyRuleFromFlags(withMeta bool) (denyRuleJSON, error) {
+// denyRuleFromFlags builds a denyRuleJSON for `patch add` from the
+// --cidr/--port/--proto/--note/--expires flags, validating them client-side
+// (the server re-validates authoritatively).
+func denyRuleFromFlags() (denyRuleJSON, error) {
 	cidr := strings.TrimSpace(npDenyCidr)
 	if cidr == "" {
 		return denyRuleJSON{}, fmt.Errorf("--cidr is required")
@@ -397,32 +388,13 @@ func denyRuleFromFlags(withMeta bool) (denyRuleJSON, error) {
 	if npDenyPort > 65535 {
 		return denyRuleJSON{}, fmt.Errorf("--port %d out of range (0-65535)", npDenyPort)
 	}
-	r := denyRuleJSON{Cidr: cidr, Port: npDenyPort, Proto: proto}
-	if withMeta {
-		r.Note = strings.TrimSpace(npDenyNote)
-		r.ExpiresAt = strings.TrimSpace(npDenyExpires)
-	}
-	return r, nil
-}
-
-// denyKeyOf is the identity of a deny rule for upsert/remove: the CIDR alone.
-// The kernel deny_cidr map is keyed by CIDR (port/proto/note live in the value),
-// so there is at most one deny rule per destination — re-adding the same CIDR
-// replaces the whole rule (port, proto, note, expiry included). Matches
-// compileDenyRules' CIDR-only dedup.
-func denyKeyOf(r denyRuleJSON) string {
-	return strings.ToLower(strings.TrimSpace(r.Cidr))
-}
-
-func upsertDenyRule(rules []denyRuleJSON, r denyRuleJSON) []denyRuleJSON {
-	k := denyKeyOf(r)
-	for i := range rules {
-		if denyKeyOf(rules[i]) == k {
-			rules[i] = r
-			return rules
-		}
-	}
-	return append(rules, r)
+	return denyRuleJSON{
+		Cidr:      cidr,
+		Port:      npDenyPort,
+		Proto:     proto,
+		Note:      strings.TrimSpace(npDenyNote),
+		ExpiresAt: strings.TrimSpace(npDenyExpires),
+	}, nil
 }
 
 func denyRuleSummary(r denyRuleJSON) string {
@@ -475,9 +447,9 @@ func denyExpiresStr(s string) string {
 }
 
 // getNetworkPolicy fetches a tenant's policy, distinguishing a genuine 404
-// (found=false, no error) from a transport/other error — so a read-modify-write
-// caller can start from an empty policy on 404 but abort on a real failure
-// rather than clobbering. On 404 the returned policy has Tenant pre-filled.
+// (found=false, no error) from a transport/other error — so `patch list` can
+// print "no deny rules" on 404 but surface a real failure. On 404 the returned
+// policy has Tenant pre-filled.
 func getNetworkPolicy(tenant string) (netPolicyJSON, bool, error) {
 	url := strings.TrimSuffix(serverAddr, "/") + "/v1/network-policies/" + tenant
 	req, err := http.NewRequest("GET", url, nil)
@@ -507,16 +479,6 @@ func getNetworkPolicy(tenant string) (netPolicyJSON, bool, error) {
 		env.Policy.Tenant = tenant
 	}
 	return env.Policy, true, nil
-}
-
-// putNetworkPolicy upserts a full NetworkPolicy via the set endpoint and returns
-// the stored (normalized) form.
-func putNetworkPolicy(p netPolicyJSON) (netPolicyJSON, error) {
-	var out policyEnvelope
-	if err := doJSON("POST", strings.TrimSuffix(serverAddr, "/")+"/v1/network-policies", setNetworkPolicyRequest{Policy: p}, &out); err != nil {
-		return netPolicyJSON{}, err
-	}
-	return out.Policy, nil
 }
 
 func shortMode(m string) string {

@@ -26,7 +26,8 @@ var File_containarium_v1_network_policy_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\n" +
-	"$containarium/v1/network_policy.proto\x12\x0fcontainarium.v1\x1a\x1ccontainarium/v1/config.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\x97\b\n" +
+	"$containarium/v1/network_policy.proto\x12\x0fcontainarium.v1\x1a\x1ccontainarium/v1/config.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\xc6\n" +
+	"\n" +
 	"\x14NetworkPolicyService\x12\x8d\x02\n" +
 	"\x10SetNetworkPolicy\x12(.containarium.v1.SetNetworkPolicyRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xa3\x01\x92A\x80\x01\n" +
 	"\rNetworkPolicy\x12\x12Set network policy\x1a[Create or replace a tenant's network-isolation policy (validated + normalized). Admin-only.\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/network-policies\x12\xee\x01\n" +
@@ -35,29 +36,34 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\x13ListNetworkPolicies\x12+.containarium.v1.ListNetworkPoliciesRequest\x1a,.containarium.v1.ListNetworkPoliciesResponse\"\x80\x01\x92Aa\n" +
 	"\rNetworkPolicy\x12\x15List network policies\x1a9List every tenant's network-isolation policy. Admin-only.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/network-policies\x12\x87\x02\n" +
 	"\x13DeleteNetworkPolicy\x12+.containarium.v1.DeleteNetworkPolicyRequest\x1a,.containarium.v1.DeleteNetworkPolicyResponse\"\x94\x01\x92Al\n" +
-	"\rNetworkPolicy\x12\x15Delete network policy\x1aDRemove a tenant's network-isolation policy (idempotent). Admin-only.\x82\xd3\xe4\x93\x02\x1f*\x1d/v1/network-policies/{tenant}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\rNetworkPolicy\x12\x15Delete network policy\x1aDRemove a tenant's network-isolation policy (idempotent). Admin-only.\x82\xd3\xe4\x93\x02\x1f*\x1d/v1/network-policies/{tenant}\x12\xac\x02\n" +
+	"\x1bPatchNetworkPolicyDenyRules\x123.containarium.v1.PatchNetworkPolicyDenyRulesRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xac\x01\x92A\x7f\n" +
+	"\rNetworkPolicy\x12\x1fPatch network-policy deny rules\x1aMAtomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/network-policies/deny-rulesBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var file_containarium_v1_network_policy_proto_goTypes = []any{
-	(*SetNetworkPolicyRequest)(nil),     // 0: containarium.v1.SetNetworkPolicyRequest
-	(*GetNetworkPolicyRequest)(nil),     // 1: containarium.v1.GetNetworkPolicyRequest
-	(*ListNetworkPoliciesRequest)(nil),  // 2: containarium.v1.ListNetworkPoliciesRequest
-	(*DeleteNetworkPolicyRequest)(nil),  // 3: containarium.v1.DeleteNetworkPolicyRequest
-	(*SetNetworkPolicyResponse)(nil),    // 4: containarium.v1.SetNetworkPolicyResponse
-	(*GetNetworkPolicyResponse)(nil),    // 5: containarium.v1.GetNetworkPolicyResponse
-	(*ListNetworkPoliciesResponse)(nil), // 6: containarium.v1.ListNetworkPoliciesResponse
-	(*DeleteNetworkPolicyResponse)(nil), // 7: containarium.v1.DeleteNetworkPolicyResponse
+	(*SetNetworkPolicyRequest)(nil),            // 0: containarium.v1.SetNetworkPolicyRequest
+	(*GetNetworkPolicyRequest)(nil),            // 1: containarium.v1.GetNetworkPolicyRequest
+	(*ListNetworkPoliciesRequest)(nil),         // 2: containarium.v1.ListNetworkPoliciesRequest
+	(*DeleteNetworkPolicyRequest)(nil),         // 3: containarium.v1.DeleteNetworkPolicyRequest
+	(*PatchNetworkPolicyDenyRulesRequest)(nil), // 4: containarium.v1.PatchNetworkPolicyDenyRulesRequest
+	(*SetNetworkPolicyResponse)(nil),           // 5: containarium.v1.SetNetworkPolicyResponse
+	(*GetNetworkPolicyResponse)(nil),           // 6: containarium.v1.GetNetworkPolicyResponse
+	(*ListNetworkPoliciesResponse)(nil),        // 7: containarium.v1.ListNetworkPoliciesResponse
+	(*DeleteNetworkPolicyResponse)(nil),        // 8: containarium.v1.DeleteNetworkPolicyResponse
 }
 var file_containarium_v1_network_policy_proto_depIdxs = []int32{
 	0, // 0: containarium.v1.NetworkPolicyService.SetNetworkPolicy:input_type -> containarium.v1.SetNetworkPolicyRequest
 	1, // 1: containarium.v1.NetworkPolicyService.GetNetworkPolicy:input_type -> containarium.v1.GetNetworkPolicyRequest
 	2, // 2: containarium.v1.NetworkPolicyService.ListNetworkPolicies:input_type -> containarium.v1.ListNetworkPoliciesRequest
 	3, // 3: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:input_type -> containarium.v1.DeleteNetworkPolicyRequest
-	4, // 4: containarium.v1.NetworkPolicyService.SetNetworkPolicy:output_type -> containarium.v1.SetNetworkPolicyResponse
-	5, // 5: containarium.v1.NetworkPolicyService.GetNetworkPolicy:output_type -> containarium.v1.GetNetworkPolicyResponse
-	6, // 6: containarium.v1.NetworkPolicyService.ListNetworkPolicies:output_type -> containarium.v1.ListNetworkPoliciesResponse
-	7, // 7: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:output_type -> containarium.v1.DeleteNetworkPolicyResponse
-	4, // [4:8] is the sub-list for method output_type
-	0, // [0:4] is the sub-list for method input_type
+	4, // 4: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:input_type -> containarium.v1.PatchNetworkPolicyDenyRulesRequest
+	5, // 5: containarium.v1.NetworkPolicyService.SetNetworkPolicy:output_type -> containarium.v1.SetNetworkPolicyResponse
+	6, // 6: containarium.v1.NetworkPolicyService.GetNetworkPolicy:output_type -> containarium.v1.GetNetworkPolicyResponse
+	7, // 7: containarium.v1.NetworkPolicyService.ListNetworkPolicies:output_type -> containarium.v1.ListNetworkPoliciesResponse
+	8, // 8: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:output_type -> containarium.v1.DeleteNetworkPolicyResponse
+	5, // 9: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:output_type -> containarium.v1.SetNetworkPolicyResponse
+	5, // [5:10] is the sub-list for method output_type
+	0, // [0:5] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name

@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NetworkPolicyService_SetNetworkPolicy_FullMethodName    = "/containarium.v1.NetworkPolicyService/SetNetworkPolicy"
-	NetworkPolicyService_GetNetworkPolicy_FullMethodName    = "/containarium.v1.NetworkPolicyService/GetNetworkPolicy"
-	NetworkPolicyService_ListNetworkPolicies_FullMethodName = "/containarium.v1.NetworkPolicyService/ListNetworkPolicies"
-	NetworkPolicyService_DeleteNetworkPolicy_FullMethodName = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicy"
+	NetworkPolicyService_SetNetworkPolicy_FullMethodName            = "/containarium.v1.NetworkPolicyService/SetNetworkPolicy"
+	NetworkPolicyService_GetNetworkPolicy_FullMethodName            = "/containarium.v1.NetworkPolicyService/GetNetworkPolicy"
+	NetworkPolicyService_ListNetworkPolicies_FullMethodName         = "/containarium.v1.NetworkPolicyService/ListNetworkPolicies"
+	NetworkPolicyService_DeleteNetworkPolicy_FullMethodName         = "/containarium.v1.NetworkPolicyService/DeleteNetworkPolicy"
+	NetworkPolicyService_PatchNetworkPolicyDenyRules_FullMethodName = "/containarium.v1.NetworkPolicyService/PatchNetworkPolicyDenyRules"
 )
 
 // NetworkPolicyServiceClient is the client API for NetworkPolicyService service.
@@ -47,6 +48,11 @@ type NetworkPolicyServiceClient interface {
 	// DeleteNetworkPolicy removes a tenant's policy. Idempotent — deleting a
 	// missing policy is not an error.
 	DeleteNetworkPolicy(ctx context.Context, in *DeleteNetworkPolicyRequest, opts ...grpc.CallOption) (*DeleteNetworkPolicyResponse, error)
+	// PatchNetworkPolicyDenyRules atomically adds/removes a tenant's virtual-patch
+	// deny rules (#660) under a store-side lock, so concurrent edits don't lose
+	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
+	// through the client to preserve them. Echoes the normalized stored policy.
+	PatchNetworkPolicyDenyRules(ctx context.Context, in *PatchNetworkPolicyDenyRulesRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error)
 }
 
 type networkPolicyServiceClient struct {
@@ -97,6 +103,16 @@ func (c *networkPolicyServiceClient) DeleteNetworkPolicy(ctx context.Context, in
 	return out, nil
 }
 
+func (c *networkPolicyServiceClient) PatchNetworkPolicyDenyRules(ctx context.Context, in *PatchNetworkPolicyDenyRulesRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetNetworkPolicyResponse)
+	err := c.cc.Invoke(ctx, NetworkPolicyService_PatchNetworkPolicyDenyRules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NetworkPolicyServiceServer is the server API for NetworkPolicyService service.
 // All implementations must embed UnimplementedNetworkPolicyServiceServer
 // for forward compatibility.
@@ -119,6 +135,11 @@ type NetworkPolicyServiceServer interface {
 	// DeleteNetworkPolicy removes a tenant's policy. Idempotent — deleting a
 	// missing policy is not an error.
 	DeleteNetworkPolicy(context.Context, *DeleteNetworkPolicyRequest) (*DeleteNetworkPolicyResponse, error)
+	// PatchNetworkPolicyDenyRules atomically adds/removes a tenant's virtual-patch
+	// deny rules (#660) under a store-side lock, so concurrent edits don't lose
+	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
+	// through the client to preserve them. Echoes the normalized stored policy.
+	PatchNetworkPolicyDenyRules(context.Context, *PatchNetworkPolicyDenyRulesRequest) (*SetNetworkPolicyResponse, error)
 	mustEmbedUnimplementedNetworkPolicyServiceServer()
 }
 
@@ -140,6 +161,9 @@ func (UnimplementedNetworkPolicyServiceServer) ListNetworkPolicies(context.Conte
 }
 func (UnimplementedNetworkPolicyServiceServer) DeleteNetworkPolicy(context.Context, *DeleteNetworkPolicyRequest) (*DeleteNetworkPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteNetworkPolicy not implemented")
+}
+func (UnimplementedNetworkPolicyServiceServer) PatchNetworkPolicyDenyRules(context.Context, *PatchNetworkPolicyDenyRulesRequest) (*SetNetworkPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PatchNetworkPolicyDenyRules not implemented")
 }
 func (UnimplementedNetworkPolicyServiceServer) mustEmbedUnimplementedNetworkPolicyServiceServer() {}
 func (UnimplementedNetworkPolicyServiceServer) testEmbeddedByValue()                              {}
@@ -234,6 +258,24 @@ func _NetworkPolicyService_DeleteNetworkPolicy_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NetworkPolicyService_PatchNetworkPolicyDenyRules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PatchNetworkPolicyDenyRulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkPolicyServiceServer).PatchNetworkPolicyDenyRules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkPolicyService_PatchNetworkPolicyDenyRules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkPolicyServiceServer).PatchNetworkPolicyDenyRules(ctx, req.(*PatchNetworkPolicyDenyRulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NetworkPolicyService_ServiceDesc is the grpc.ServiceDesc for NetworkPolicyService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -256,6 +298,10 @@ var NetworkPolicyService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteNetworkPolicy",
 			Handler:    _NetworkPolicyService_DeleteNetworkPolicy_Handler,
+		},
+		{
+			MethodName: "PatchNetworkPolicyDenyRules",
+			Handler:    _NetworkPolicyService_PatchNetworkPolicyDenyRules_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
