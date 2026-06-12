@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-06-13
+
+eBPF virtual patching (Tier 1) + the agent-skills Phase 4 box-assembly fixes
+that make the in-box loop provision end-to-end.
+
 ### Added
 
 - **eBPF virtual patching — Tier 1 (L3/L4 deny rules).** A network policy can now carry **deny rules** that block a tenant's egress to a destination CIDR (optionally scoped to a port/proto) **before** the egress allow-list is consulted — deny beats allow, the same way the cloud-metadata IP does. This "virtually patches" a known-vulnerable destination in-kernel, with zero downtime, until the real upstream fix ships; an optional `expires_at` makes the rule self-remove once the fix lands. Manage them with `containarium network-policy patch add/rm/list` (e.g. `patch add <tenant> --cidr 1.2.3.4/32 --port 6379 --proto tcp --note CVE-… --expires 2026-07-01T00:00:00Z`); `list` shows a `PATCHES` column. Deny rules are persisted alongside the allow-policy (a `deny_rules` JSONB column) and mutated atomically server-side, so concurrent edits can't lose updates and `network-policy set` (which manages only the allow-policy) preserves them without a client round-trip. Denied flows audit as `network_policy.virtual_patch`, and — like the rest of the policy — only **drop** when enforcement is armed (`CONTAINARIUM_NETWORK_POLICY_ENFORCE=1`); otherwise they are observed and audited. Off entirely unless `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` is set. There is at most one deny rule per `(tenant, CIDR)` — the kernel `deny_cidr` LPM map is keyed by CIDR, so block a whole host with `--port 0` (any). Kernel verifier acceptance of the new map + deny-first branch validated on a Linux backend (kernel 6.8, TCX); the end-to-end armed-drop path rides the normal backend upgrade cycle. Design + runbook: `docs/security/VIRTUAL-PATCHING-DESIGN.md`. First tier of the virtual-patching epic (#659); #660. Tiers 2–3 (cleartext signature match, userspace WAF steering) are designed (#661, #662).
+
+### Fixed
+
+- **Agent-skill boxes now assemble the in-box loop.** The `agent-runtime` recipe's `post_start` pulls `install-agent-runtime.sh` + the `agent-box`/`agent-runtime-bundle` artifacts from `…/<release>/…`, where `<release>` is the param the daemon passes — `version.GetVersion()`. But that's the **bare** semver (`0.26.6`; the release workflow builds with `VERSION=${tag#v}`), while the git tag/release is `v`-prefixed (`v0.26.6`), so every URL 404'd and the best-effort assembly silently skipped — agent boxes came up without `agent-runtime`/`agent-box`, and `agent run` fell back to an empty artifact regardless of provider key. The daemon now passes the `v`-prefixed tag (#668).
+- **Agent-skill runs are now idempotent.** `provisionSkillBox` always went through the recipe deploy path, whose `CreateContainer` errors `already exists` on a box that's already provisioned — so any re-run (the normal `run → set key → run again` flow, or a crew re-driving its members) failed with `code=Internal`. An existing box is now reused (token re-minted, seed re-applied, policy re-applied; started first if stopped) (#669).
+- **MCP container connection path is discoverable to agents** (#658, #663).
 
 ## [0.26.6] - 2026-06-12
 
