@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.6] - 2026-06-12
+
+Network-policy reconcile + egress fixes (hardening for eBPF traffic accounting).
+
+### Fixed
+
+- **Network-policy reconcile no longer hammers Incus.** The enforcer's reconcile loop did an `incus` inspect (`GetRawInstance`) for **every** container **every 10s** to resolve its veth — which could wedge `incusd` on busy or resource-constrained hosts (observed taking down container listing on a host running ~38 containers). Reconcile now caches the container→veth mapping and resolves the ifindex with a cheap local netlink lookup, re-inspecting only when a container starts/restarts (#654, #655).
+- **Creating a network policy with no egress domains no longer 500s.** `egress_cidrs`/`egress_domains` are `TEXT[] NOT NULL`; a nil slice was encoded as SQL `NULL` and violated the constraint, so a domains-less policy (e.g. `--mode log_only --egress-cidr 0.0.0.0/0`) failed with SQLSTATE 23502. Nil arrays are now coerced to `'{}'` (#653).
+- **Idle-flow reaper:** guarded the `int64`→`uint64` casts (gosec G115) in the #632 reaper path (#656).
+
 ## [0.26.5] - 2026-06-12
 
 eBPF traffic history + signed external catalogs.
