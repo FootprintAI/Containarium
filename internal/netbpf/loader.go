@@ -25,6 +25,8 @@ const (
 	mapEvents           = "events"
 	mapFlows            = "flows"
 	mapDenyCIDR         = "deny_cidr"
+	mapSignatures       = "signatures"
+	mapSigConfig        = "sig_config"
 	statSeen            = uint32(0)
 	statWouldDeny       = uint32(1)
 	statsEntryCount     = 2

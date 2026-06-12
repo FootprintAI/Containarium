@@ -1176,10 +1176,22 @@ skipAppHosting:
 			enforceArmed = true
 		}
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
+		// Tier 2 (#661): opt into inbound cleartext exploit-signature scanning.
+		// Separate from ENFORCE — loading signatures is harmless in observation
+		// mode (logs matches), but the per-packet scan cost only runs when set.
+		var sigArmed bool
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_SIGNATURES"))) {
+		case "1", "true", "yes", "on":
+			sigArmed = true
+		}
+		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		if enforceArmed {
 			log.Printf("NetworkPolicy enforcer configured (obj=%s); ENFORCE ARMED — enforce-mode policies will drop packets", bpfObj)
 		} else {
 			log.Printf("NetworkPolicy enforcer configured (obj=%s); observation-only (set CONTAINARIUM_NETWORK_POLICY_ENFORCE=1 to arm drops)", bpfObj)
+		}
+		if sigArmed {
+			log.Printf("NetworkPolicy Tier 2 signature scanning enabled (CONTAINARIUM_NETWORK_POLICY_SIGNATURES=1)")
 		}
 	}
 

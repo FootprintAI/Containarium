@@ -104,6 +104,9 @@ type NetworkPolicyEnforcer struct {
 	// loop is single-goroutine), so it needs no lock.
 	vethCache map[string]string
 
+	sigEnabled bool              // #661: populate + scan Tier 2 signatures (operator opt-in)
+	sigNames   map[uint16]string // signature id -> name, for audit labelling (built at populate)
+
 	mu              sync.Mutex
 	attached        map[int]string                      // ifindex -> container name currently attached
 	idName          map[uint32]string                   // tenant id -> name (for audit/log)
@@ -144,6 +147,62 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 // Nil leaves flow accounting off.
 func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
 
+// SetSignaturesEnabled opts into Tier 2 (#661) cleartext exploit-signature
+// scanning on the inbound (container-receive) path: the curated built-in set is
+// loaded into the BPF signature map and the per-packet scan is switched on. Must
+// be called before Start. Off by default — scanning costs a per-packet bpf_loop,
+// so it only runs when the operator opts in; drops still require enforce mode.
+func (e *NetworkPolicyEnforcer) SetSignaturesEnabled(on bool) { e.sigEnabled = on }
+
+// populateSignatures loads the built-in signatures into the BPF map and arms the
+// scan gate (sig_config). Called once at Start. No-op unless opted in; logs (not
+// fatal) when the loaded object predates Tier 2.
+func (e *NetworkPolicyEnforcer) populateSignatures() {
+	if !e.sigEnabled || e.loader == nil {
+		return
+	}
+	if !e.loader.HasSignatures() {
+		log.Printf("[netpolicy] Tier 2 signatures enabled but the loaded BPF object lacks the 'signatures' map (rebuild netpolicy.bpf.o to enable #661)")
+		return
+	}
+	sigs := netpolicy.BuiltinSignatures()
+	names := make(map[uint16]string, len(sigs))
+	// Fill every slot so a rebuild that shrinks the set clears stale slots.
+	for slot := 0; slot < netbpf.SigMaxCount; slot++ {
+		var entry netbpf.SignatureEntry
+		if slot < len(sigs) {
+			entry = toSigEntry(sigs[slot])
+			names[sigs[slot].ID] = sigs[slot].Name
+		}
+		if err := e.loader.SetSignature(safecast.U32(slot), entry); err != nil {
+			log.Printf("[netpolicy] set signature slot %d: %v", slot, err)
+		}
+	}
+	if err := e.loader.SetScanEnabled(true); err != nil {
+		log.Printf("[netpolicy] enable signature scan: %v", err)
+		return
+	}
+	e.mu.Lock()
+	e.sigNames = names
+	e.mu.Unlock()
+	log.Printf("[netpolicy] Tier 2 cleartext signature scanning ENABLED (%d signatures, inbound)", len(sigs))
+}
+
+// toSigEntry converts a curated Signature into the BPF map entry, truncating an
+// over-long pattern to SigMaxLen (the built-ins all fit; this is belt-and-suspenders).
+func toSigEntry(s netpolicy.Signature) netbpf.SignatureEntry {
+	var e netbpf.SignatureEntry
+	e.ID = s.ID
+	e.Enabled = true
+	n := len(s.Pattern)
+	if n > netbpf.SigMaxLen {
+		n = netbpf.SigMaxLen
+	}
+	e.Len = safecast.U8(n)
+	copy(e.Pattern[:], s.Pattern[:n])
+	return e
+}
+
 // Start loads the BPF object, runs an initial reconcile, and launches the
 // perf-ring consumer + the periodic reconcile loop (also woken by container bus
 // events). Returns an error if the object fails to load (e.g. not on Linux);
@@ -158,6 +217,10 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	}
 	e.loader = loader
 	e.ctx, e.cancel = context.WithCancel(ctx)
+
+	// Tier 2 (#661): load the built-in exploit signatures + arm the scan gate once
+	// (the set is static; no per-reconcile churn). No-op unless opted in.
+	e.populateSignatures()
 
 	// Resolve egress_domains once before the first reconcile so the initial
 	// allow-list already includes domain IPs.
@@ -298,23 +361,47 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 		action = "DROPPED (enforce)"
 	}
 	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
+	signature := ev.Reason == netbpf.DenyReasonSignature
 	kind := "deny"
-	if vpatch {
+	switch {
+	case vpatch:
 		kind = "virtual-patch"
+	case signature:
+		kind = "signature"
 	}
-	log.Printf("[netpolicy] %s: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
-		kind, tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
+	var sigName string
+	if signature {
+		e.mu.Lock()
+		sigName = e.sigNames[ev.SigID]
+		e.mu.Unlock()
+	}
+	if signature {
+		log.Printf("[netpolicy] signature: tenant=%q src=%s dst=%s dport=%d sig=%d(%s) %s",
+			tenant, ev.Src(), ev.Dst(), ev.Dport, ev.SigID, sigName, action)
+	} else {
+		log.Printf("[netpolicy] %s: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
+			kind, tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
+	}
 	if e.audit == nil {
 		return
 	}
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
 		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) +
 		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) + `}`
-	// A virtual-patch deny (#660) gets its own audit action so an operator can
-	// distinguish "blocked a known-vulnerable destination" from a routine
-	// allow-list miss.
+	if signature {
+		// A Tier 2 signature match (#661): record which signature, on the INBOUND
+		// (container-receive) path, so the audit names the blocked exploit.
+		detail = `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
+			`","dport":` + itoa(int(ev.Dport)) + `,"sig_id":` + itoa(int(ev.SigID)) +
+			`,"sig_name":"` + sigName + `","dropped":` + boolStr(dropped) + `}`
+	}
+	// Each deny reason gets its own audit action so an operator can tell a blocked
+	// vulnerable destination (#660) and a blocked inbound exploit (#661) apart from
+	// a routine allow-list miss.
 	var action2 string
 	switch {
+	case signature:
+		action2 = "network_policy.signature_match"
 	case vpatch:
 		action2 = "network_policy.virtual_patch"
 	case dropped:
