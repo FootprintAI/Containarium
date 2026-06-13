@@ -1356,7 +1356,14 @@ type CreateContainerRequest struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 	Image        string            `json:"image,omitempty"`
 	EnablePodman bool              `json:"enablePodman,omitempty"`
-	GPU          string            `json:"gpu,omitempty"`
+
+	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
+	// supersedes this on the daemon side.
+	GPU string `json:"gpu,omitempty"`
+
+	// GPUs lists the GPU devices to attach (index "0"/"1" or PCI address per
+	// entry) for multi-GPU passthrough. Empty = no GPU.
+	GPUs []string `json:"gpus,omitempty"`
 
 	// Monitoring opts the container into application-emitted
 	// OpenTelemetry. When true, the daemon stamps the LXC with

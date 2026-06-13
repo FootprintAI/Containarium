@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -129,6 +130,42 @@ type GPUDevice struct {
 	PCI string
 }
 
+// gpuDeviceName returns the Incus device name for the i-th attached GPU.
+// The first GPU keeps the legacy "gpu" name so single-GPU containers are
+// byte-identical to the pre-multi-GPU config; subsequent GPUs are "gpu1",
+// "gpu2", ... Device names must be unique within a container.
+func gpuDeviceName(i int) string {
+	if i == 0 {
+		return "gpu"
+	}
+	return fmt.Sprintf("gpu%d", i)
+}
+
+// gpuDeviceIdentity extracts a human-readable identity for a GPU device
+// from its Incus device config map — the PCI address if pinned (preferred,
+// stable), else the DRM id, else a generic "GPU" marker.
+func gpuDeviceIdentity(device map[string]string) string {
+	if pci, ok := device["pci"]; ok && pci != "" {
+		return pci
+	}
+	if id, ok := device["id"]; ok && id != "" {
+		return id
+	}
+	return "GPU" // Generic GPU indicator (pass-through-all, no pin)
+}
+
+// finalizeGPUInfo sorts the collected GPU identities for stable output and
+// derives the single-value GPU field (first entry) for display/back-compat.
+// Incus returns devices as an unordered map, so sorting is what makes the
+// read-back deterministic.
+func finalizeGPUInfo(info *ContainerInfo) {
+	if len(info.GPUs) == 0 {
+		return
+	}
+	sort.Strings(info.GPUs)
+	info.GPU = info.GPUs[0]
+}
+
 // ToMap converts GPUDevice to the map format required by Incus API
 func (g GPUDevice) ToMap() map[string]string {
 	m := map[string]string{
@@ -211,7 +248,7 @@ type ContainerConfig struct {
 	Memory                 string
 	Disk                   *DiskDevice      // Root disk configuration
 	NIC                    *NICDevice       // Network interface configuration
-	GPU                    *GPUDevice       // GPU device configuration for passthrough
+	GPUs                   []GPUDevice      // GPU devices for passthrough (one per attached GPU; empty = none)
 	InstanceType           api.InstanceType // Container (LXC) or VM (QEMU/KVM). Defaults to Container.
 	EnableNesting          bool
 	EnablePodmanPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
@@ -275,8 +312,9 @@ type ContainerInfo struct {
 	CPU          string
 	Memory       string
 	Disk         string
-	GPU          string // GPU device info (e.g., "nvidia.com/gpu" or GPU ID)
-	InstanceType string // "container" or "virtual-machine"
+	GPU          string   // First GPU device info, for display/back-compat (e.g., PCI address or GPU ID); empty if none
+	GPUs         []string // All attached GPU devices (PCI address or ID per entry), sorted for stable output
+	InstanceType string   // "container" or "virtual-machine"
 	Labels       map[string]string
 	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
 	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
@@ -636,10 +674,14 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 		}
 	}
 
-	// GPU device passthrough
-	if config.GPU != nil {
-		req.Devices["gpu"] = config.GPU.ToMap()
-		fmt.Printf("[DEBUG] CreateContainer - GPU: id=%s, pci=%s\n", config.GPU.ID, config.GPU.PCI)
+	// GPU device passthrough. Each attached GPU is a distinct Incus device:
+	// the first keeps the legacy name "gpu" (byte-identical to the old
+	// single-GPU config), the rest are "gpu1", "gpu2", ... — Incus device
+	// names must be unique within a container.
+	for i, g := range config.GPUs {
+		name := gpuDeviceName(i)
+		req.Devices[name] = g.ToMap()
+		fmt.Printf("[DEBUG] CreateContainer - GPU[%s]: id=%s, pci=%s\n", name, g.ID, g.PCI)
 	}
 
 	// Create the container
@@ -765,18 +807,13 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 				}
 			}
 
-			// Check for GPU devices
+			// Check for GPU devices — a container may have several
+			// (gpu, gpu1, gpu2, ...); collect every one.
 			if deviceType == "gpu" {
-				// GPU device found - could be physical GPU passthrough or mdev
-				if id, ok := device["id"]; ok {
-					info.GPU = id
-				} else if pci, ok := device["pci"]; ok {
-					info.GPU = pci
-				} else {
-					info.GPU = "GPU" // Generic GPU indicator
-				}
+				info.GPUs = append(info.GPUs, gpuDeviceIdentity(device))
 			}
 		}
+		finalizeGPUInfo(&info)
 
 		// If no disk size found, check expanded devices (includes profile devices)
 		if info.Disk == "" {
@@ -896,18 +933,13 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 			}
 		}
 
-		// Check for GPU devices
+		// Check for GPU devices — a container may have several
+		// (gpu, gpu1, gpu2, ...); collect every one.
 		if deviceType == "gpu" {
-			// GPU device found - could be physical GPU passthrough or mdev
-			if id, ok := device["id"]; ok {
-				info.GPU = id
-			} else if pci, ok := device["pci"]; ok {
-				info.GPU = pci
-			} else {
-				info.GPU = "GPU" // Generic GPU indicator
-			}
+			info.GPUs = append(info.GPUs, gpuDeviceIdentity(device))
 		}
 	}
+	finalizeGPUInfo(info)
 
 	// If no disk size found, check expanded devices (includes profile devices)
 	if info.Disk == "" {

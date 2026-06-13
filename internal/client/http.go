@@ -168,6 +168,7 @@ type containerResponse struct {
 	Image                string            `json:"image"`
 	PodmanEnabled        bool              `json:"dockerEnabled"`
 	GpuDevice            string            `json:"gpuDevice"`
+	GpuDevices           []string          `json:"gpuDevices"`
 	MonitoringEnabled    bool              `json:"monitoringEnabled"`
 	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
 	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
@@ -235,6 +236,7 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	}
 
 	info.GPU = c.GpuDevice
+	info.GPUs = c.GpuDevices
 
 	// Parse createdAt timestamp (RFC3339 format from protobuf JSON)
 	if c.CreatedAt != "" {
@@ -282,7 +284,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -297,7 +299,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		"image":        image,
 		"enablePodman": enablePodman,
 		"stack":        stack,
-		"gpu":          gpu,
+		"gpus":         gpus,
 		"osType":       osType,
 		"monitoring":   monitoring,
 		"pool":         pool,

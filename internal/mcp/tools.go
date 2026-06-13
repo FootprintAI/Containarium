@@ -180,7 +180,12 @@ func (s *Server) registerTools() {
 					},
 					"gpu": map[string]interface{}{
 						"type":        "string",
-						"description": "GPU device ID for passthrough (e.g., '0' for first GPU, PCI address, or empty for none)",
+						"description": "Deprecated single-GPU field; prefer 'gpus'. GPU device ID for passthrough (e.g., '0' for first GPU, PCI address, or empty for none)",
+					},
+					"gpus": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "GPU devices for passthrough — one entry per GPU (index like '0'/'1' or PCI address). Use for multi-GPU boxes. Supersedes 'gpu' when set.",
 					},
 					"os_type": map[string]interface{}{
 						"type":        "string",
@@ -1290,6 +1295,7 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 		Image:        getStringArg(args, "image", "images:ubuntu/24.04"),
 		EnablePodman: getBoolArg(args, "enable_podman", true),
 		GPU:          getStringArg(args, "gpu", ""),
+		GPUs:         getStringSliceArg(args, "gpus"),
 		Monitoring:   getBoolArg(args, "monitoring", false),
 		Pool:         getStringArg(args, "pool", ""),
 		BackendID:    getStringArg(args, "backend_id", ""),
@@ -2154,6 +2160,26 @@ func getStringArg(args map[string]interface{}, key, defaultValue string) string 
 		return val
 	}
 	return defaultValue
+}
+
+// getStringSliceArg reads a JSON array argument into a []string, dropping
+// non-string and empty entries. Returns nil when the key is absent or not an
+// array — JSON-RPC decodes arrays as []interface{}.
+func getStringSliceArg(args map[string]interface{}, key string) []string {
+	raw, ok := args[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func getBoolArg(args map[string]interface{}, key string, defaultValue bool) bool {

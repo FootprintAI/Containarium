@@ -24,8 +24,8 @@ func TestBuildContainerConfig(t *testing.T) {
 	if cfg.Disk == nil || cfg.Disk.Size != "40GB" || cfg.Disk.Path != "/" || cfg.Disk.Pool != "default" {
 		t.Errorf("disk wrong: %+v", cfg.Disk)
 	}
-	if cfg.GPU == nil {
-		t.Error("GPUCount>0 should request GPU passthrough")
+	if len(cfg.GPUs) != 1 {
+		t.Errorf("GPUCount>0 should request one GPU passthrough device, got %+v", cfg.GPUs)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestBuildContainerConfig_MinimalOmitsDevices(t *testing.T) {
 	if cfg.Disk != nil {
 		t.Errorf("no disk → Disk nil, got %+v", cfg.Disk)
 	}
-	if cfg.GPU != nil {
-		t.Errorf("no GPU → GPU nil, got %+v", cfg.GPU)
+	if len(cfg.GPUs) != 0 {
+		t.Errorf("no GPU → GPUs empty, got %+v", cfg.GPUs)
 	}
 }

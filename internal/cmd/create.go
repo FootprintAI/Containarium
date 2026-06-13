@@ -28,7 +28,7 @@ var (
 	labels                   []string
 	forceRecreate            bool
 	stackID                  string
-	gpuDevice                string
+	gpuDevices               []string
 	osTypeStr                string
 	monitoring               bool
 	createPool               string
@@ -102,7 +102,7 @@ func init() {
 	createCmd.Flags().StringVar(&containerImage, "image", "images:ubuntu/24.04", "Container image to use")
 	createCmd.Flags().BoolVar(&enablePodman, "podman", true, "Enable Podman support (nesting)")
 	createCmd.Flags().StringVar(&stackID, "stack", "", "Software stack to install (nodejs, python, golang, rust, datascience, devops, database, fullstack)")
-	createCmd.Flags().StringVar(&gpuDevice, "gpu", "", "GPU device ID for passthrough (e.g., '0' for first GPU, PCI address)")
+	createCmd.Flags().StringSliceVar(&gpuDevices, "gpu", nil, "GPU device(s) for passthrough — index ('0') or PCI address. Repeat or comma-separate for multiple GPUs (e.g., --gpu 0 --gpu 1 or --gpu 0,1)")
 	createCmd.Flags().StringSliceVar(&labels, "labels", []string{}, "Labels in key=value format (can be specified multiple times)")
 	createCmd.Flags().BoolVar(&forceRecreate, "force", false, "Delete and recreate if container already exists")
 	createCmd.Flags().StringVar(&osTypeStr, "os-type", "", "Container OS type: ubuntu, rocky9, rhel9 (overrides --image)")
@@ -212,8 +212,8 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if stackID != "" {
 			fmt.Printf("  Stack: %s\n", stackID)
 		}
-		if gpuDevice != "" {
-			fmt.Printf("  GPU: %s\n", gpuDevice)
+		if len(gpuDevices) > 0 {
+			fmt.Printf("  GPU: %s\n", strings.Join(gpuDevices, ", "))
 		}
 		if ttlSeconds > 0 {
 			fmt.Printf("  TTL: %s (auto-delete at create+TTL)\n", createTTL)
@@ -387,13 +387,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
-		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
+		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 		if err != nil {
 			return fmt.Errorf("failed to create container via HTTP API: %w", err)
 		}
 	} else if serverAddr != "" {
 		// Remote mode via gRPC
-		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevice, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
+		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 		if err != nil {
 			return fmt.Errorf("failed to create container via remote server: %w", err)
 		}
@@ -402,7 +402,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if verbose {
 			fmt.Println("Creating container...")
 		}
-		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevice, osType, monitoring, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
+		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevices, osType, monitoring, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 		if err != nil {
 			// Cleanup jump server account on failure
 			_ = container.DeleteJumpServerAccount(username, false)
@@ -544,7 +544,7 @@ func resolveGitSourceOpts() (client.GitSourceOpts, error) {
 }
 
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -556,7 +556,7 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 		CPU:                    cpu,
 		Memory:                 memory,
 		Disk:                   disk,
-		GPU:                    gpu,
+		GPUs:                   gpus,
 		StaticIP:               staticIP,
 		SSHKeys:                sshKeys,
 		Labels:                 labelMap,
@@ -633,23 +633,23 @@ func parseLabels(labelSlice []string) map[string]string {
 }
 
 // createRemote creates a container using remote gRPC server
-func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
+func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = grpcClient.Close() }()
 
-	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
+	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 }
 
 // createRemoteHTTP creates a container using remote HTTP API
-func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
+func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = httpClient.Close() }()
 
-	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpu, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
+	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds)
 }

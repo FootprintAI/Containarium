@@ -269,7 +269,15 @@ type ResourceLimits struct {
 	// Disk/storage limit (e.g., "50GB", "100GB")
 	Disk string `protobuf:"bytes,3,opt,name=disk,proto3" json:"disk,omitempty"`
 	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
-	Gpu           string `protobuf:"bytes,4,opt,name=gpu,proto3" json:"gpu,omitempty"`
+	//
+	// Deprecated: single-GPU field. Prefer `gpus` for one-or-many. When `gpus`
+	// is non-empty it takes precedence and this field is ignored; when `gpus`
+	// is empty a non-empty `gpu` is treated as a single-element list.
+	Gpu string `protobuf:"bytes,4,opt,name=gpu,proto3" json:"gpu,omitempty"`
+	// GPU device IDs for passthrough — one entry per GPU to attach (each is a
+	// device index like "0"/"1" or a PCI address like "0000:0b:00.0"). Empty
+	// means no GPU. Supersedes the singular `gpu` field.
+	Gpus          []string `protobuf:"bytes,5,rep,name=gpus,proto3" json:"gpus,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -330,6 +338,13 @@ func (x *ResourceLimits) GetGpu() string {
 		return x.Gpu
 	}
 	return ""
+}
+
+func (x *ResourceLimits) GetGpus() []string {
+	if x != nil {
+		return x.Gpus
+	}
+	return nil
 }
 
 // NetworkInfo contains network configuration for a container
@@ -432,7 +447,8 @@ type Container struct {
 	PodmanEnabled bool `protobuf:"varint,11,opt,name=podman_enabled,json=podmanEnabled,proto3" json:"podman_enabled,omitempty"`
 	// Software stack installed in the container (e.g., "nodejs", "python")
 	Stack string `protobuf:"bytes,12,opt,name=stack,proto3" json:"stack,omitempty"`
-	// GPU device info (e.g., GPU ID or PCI address if attached)
+	// GPU device info (e.g., GPU ID or PCI address if attached). For a
+	// multi-GPU container this is the first device; see `gpu_devices` for all.
 	GpuDevice string `protobuf:"bytes,13,opt,name=gpu_device,json=gpuDevice,proto3" json:"gpu_device,omitempty"`
 	// Backend ID this container runs on (e.g., "gcp-spot", "tunnel-node-a-gpu")
 	BackendId string `protobuf:"bytes,14,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
@@ -504,7 +520,11 @@ type Container struct {
 	// `containarium prune` skip it; a deliberate single-box delete still removes
 	// it. Read from the user.containarium.delete_policy Incus config key; set via
 	// SetContainerDeletePolicy. Absent/unprotected = DELETE_POLICY_UNSPECIFIED.
-	DeletePolicy  DeletePolicy `protobuf:"varint,26,opt,name=delete_policy,json=deletePolicy,proto3,enum=containarium.v1.DeletePolicy" json:"delete_policy,omitempty"`
+	DeletePolicy DeletePolicy `protobuf:"varint,26,opt,name=delete_policy,json=deletePolicy,proto3,enum=containarium.v1.DeletePolicy" json:"delete_policy,omitempty"`
+	// All GPU devices attached to this container (device index or PCI address
+	// per entry). For a single-GPU container this has one entry mirroring
+	// `gpu_device`; empty when no GPU is attached.
+	GpuDevices    []string `protobuf:"bytes,27,rep,name=gpu_devices,json=gpuDevices,proto3" json:"gpu_devices,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -721,6 +741,13 @@ func (x *Container) GetDeletePolicy() DeletePolicy {
 	return DeletePolicy_DELETE_POLICY_UNSPECIFIED
 }
 
+func (x *Container) GetGpuDevices() []string {
+	if x != nil {
+		return x.GpuDevices
+	}
+	return nil
+}
+
 // ContainerMetrics contains runtime metrics for a container
 type ContainerMetrics struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -856,6 +883,10 @@ type CreateContainerRequest struct {
 	// See available stacks in configs/stacks.yaml
 	Stack string `protobuf:"bytes,9,opt,name=stack,proto3" json:"stack,omitempty"`
 	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
+	//
+	// Deprecated: single-GPU field. Prefer `gpus`. When `gpus` is non-empty it
+	// takes precedence; when `gpus` is empty a non-empty `gpu` is treated as a
+	// single-element list.
 	Gpu string `protobuf:"bytes,10,opt,name=gpu,proto3" json:"gpu,omitempty"`
 	// Target backend ID for creation (empty = primary backend)
 	BackendId string `protobuf:"bytes,11,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
@@ -928,8 +959,14 @@ type CreateContainerRequest struct {
 	// box that merely sleeps must never be deleted just for being stopped.
 	// 0 = never delete on stop (today's behavior).
 	DeleteAfterStoppedSeconds int64 `protobuf:"varint,22,opt,name=delete_after_stopped_seconds,json=deleteAfterStoppedSeconds,proto3" json:"delete_after_stopped_seconds,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// GPU device IDs for passthrough — one entry per GPU to attach (device
+	// index like "0"/"1" or PCI address like "0000:0b:00.0"). Supersedes the
+	// singular `gpu` field: when non-empty `gpu` is ignored; when empty a
+	// non-empty `gpu` is treated as a single-element list. Each device is
+	// resolved to a stable PCI address at create time.
+	Gpus          []string `protobuf:"bytes,23,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateContainerRequest) Reset() {
@@ -1114,6 +1151,13 @@ func (x *CreateContainerRequest) GetDeleteAfterStoppedSeconds() int64 {
 		return x.DeleteAfterStoppedSeconds
 	}
 	return 0
+}
+
+func (x *CreateContainerRequest) GetGpus() []string {
+	if x != nil {
+		return x.Gpus
+	}
+	return nil
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -4243,19 +4287,20 @@ var File_containarium_v1_container_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
-	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"`\n" +
+	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"t\n" +
 	"\x0eResourceLimits\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\tR\x06memory\x12\x12\n" +
 	"\x04disk\x18\x03 \x01(\tR\x04disk\x12\x10\n" +
-	"\x03gpu\x18\x04 \x01(\tR\x03gpu\"\x83\x01\n" +
+	"\x03gpu\x18\x04 \x01(\tR\x03gpu\x12\x12\n" +
+	"\x04gpus\x18\x05 \x03(\tR\x04gpus\"\x83\x01\n" +
 	"\vNetworkInfo\x12\x1d\n" +
 	"\n" +
 	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1f\n" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xa3\t\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xc4\t\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -4290,7 +4335,9 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
 	"stopped_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tstoppedAt\x12?\n" +
 	"\x1cdelete_after_stopped_seconds\x18\x19 \x01(\x03R\x19deleteAfterStoppedSeconds\x12B\n" +
-	"\rdelete_policy\x18\x1a \x01(\x0e2\x1d.containarium.v1.DeletePolicyR\fdeletePolicy\x1a9\n" +
+	"\rdelete_policy\x18\x1a \x01(\x0e2\x1d.containarium.v1.DeletePolicyR\fdeletePolicy\x12\x1f\n" +
+	"\vgpu_devices\x18\x1b \x03(\tR\n" +
+	"gpuDevices\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
@@ -4302,7 +4349,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xf2\a\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\x86\b\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -4331,7 +4378,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vttl_seconds\x18\x14 \x01(\x03R\n" +
 	"ttlSeconds\x12*\n" +
 	"\x11idle_stop_minutes\x18\x15 \x01(\x05R\x0fidleStopMinutes\x12?\n" +
-	"\x1cdelete_after_stopped_seconds\x18\x16 \x01(\x03R\x19deleteAfterStoppedSeconds\x1a9\n" +
+	"\x1cdelete_after_stopped_seconds\x18\x16 \x01(\x03R\x19deleteAfterStoppedSeconds\x12\x12\n" +
+	"\x04gpus\x18\x17 \x03(\tR\x04gpus\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +

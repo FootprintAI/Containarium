@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-GPU passthrough per container.** A container can now be created with more than one GPU attached. `containarium create` takes a repeatable/comma-separated `--gpu` flag (`--gpu 0 --gpu 1` or `--gpu 0,1`), each entry an index or PCI address; every device is resolved to a stable PCI address at create time (same kernel-upgrade-safe pinning as the single-GPU path) and attached as a distinct Incus device (`gpu`, `gpu1`, `gpu2`, …). A GPU requested twice (same resolved PCI) is rejected. The proto contract gains `repeated string gpus` on `CreateContainerRequest`/`ResourceLimits` and `repeated string gpu_devices` on `Container`; the singular `gpu`/`gpu_device` fields stay for back-compat (`gpus` supersedes `gpu` when set, a lone `gpu` is promoted to a one-element list). The single-GPU device name stays `gpu`, so existing single-GPU containers are byte-identical. Surfaced through the gRPC + HTTP clients, and the platform MCP `create_container` tool gains a `gpus` array argument. Read-back (`list`/`get`) reports all attached GPUs (`gpu_devices`), sorted for stable output.
+
 ## [0.27.0] - 2026-06-13
 
 eBPF virtual patching (Tier 1) + the agent-skills Phase 4 box-assembly fixes

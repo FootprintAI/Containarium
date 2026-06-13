@@ -47,9 +47,9 @@ func (m *Manager) ValidateGPU(pci string) GPUValidationResult {
 
 	cfg := incus.ContainerConfig{Name: ct, Image: gpuValidationImage}
 	if pci != "" {
-		cfg.GPU = &incus.GPUDevice{PCI: pci}
+		cfg.GPUs = []incus.GPUDevice{{PCI: pci}}
 	} else {
-		cfg.GPU = &incus.GPUDevice{} // empty = pass through all GPUs
+		cfg.GPUs = []incus.GPUDevice{{}} // empty device = pass through all GPUs
 	}
 
 	if err := m.incus.CreateContainer(cfg); err != nil {

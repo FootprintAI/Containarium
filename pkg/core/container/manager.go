@@ -28,9 +28,9 @@ type CreateOptions struct {
 	Image                  string
 	CPU                    string
 	Memory                 string
-	Disk                   string // Disk size (e.g., "20GB")
-	GPU                    string // GPU device ID for passthrough (e.g., "0", PCI address, or empty for none)
-	StaticIP               string // Static IP address (e.g., "10.100.0.100") - empty for DHCP
+	Disk                   string   // Disk size (e.g., "20GB")
+	GPUs                   []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
+	StaticIP               string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 	SSHKeys                []string
 	Labels                 map[string]string // Kubernetes-style labels
 	EnablePodman           bool
@@ -95,6 +95,28 @@ func New() (*Manager, error) {
 // implementation. Used by tests to inject a mock; production code uses New.
 func NewWithBackend(backend incus.Backend) *Manager {
 	return &Manager{incus: backend}
+}
+
+// resolveGPUDevices turns user-supplied GPU inputs ("0"/"1" or PCI address)
+// into Incus GPU device configs pinned by stable PCI address. Each input is
+// resolved via the backend; a GPU requested more than once (same resolved
+// PCI) is rejected — attaching one physical GPU twice is always a mistake.
+// See the create-time comment in Create for why we pin by PCI not DRM id.
+func resolveGPUDevices(b incus.Backend, inputs []string) ([]incus.GPUDevice, error) {
+	devices := make([]incus.GPUDevice, 0, len(inputs))
+	seen := make(map[string]bool, len(inputs))
+	for _, in := range inputs {
+		pci, err := b.ResolveGPUInputToPCI(in)
+		if err != nil {
+			return nil, err
+		}
+		if seen[pci] {
+			return nil, fmt.Errorf("GPU %q (PCI %s) requested more than once", in, pci)
+		}
+		seen[pci] = true
+		devices = append(devices, incus.GPUDevice{PCI: pci})
+	}
+	return devices, nil
 }
 
 // Create creates a new container with full setup
@@ -166,21 +188,20 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 
 	// Configure GPU passthrough.
 	//
-	// Resolve the user-supplied input ("0", "1", or a PCI address) to
-	// a stable PCI address. Passing the input through as Incus' "id"
-	// field is brittle: that field maps to the DRM card minor index,
-	// which can shift across kernel upgrades. We hit this in production
-	// when the 6.8.0-110 → 6.8.0-111 upgrade renumbered a backend host's
-	// RTX 4090 from card0 to card1, breaking every container with
-	// id="0". PCI addresses are stable, so we always pin by PCI.
-	if opts.GPU != "" {
-		pci, err := m.incus.ResolveGPUInputToPCI(opts.GPU)
+	// Resolve each user-supplied input ("0", "1", or a PCI address) to a
+	// stable PCI address. Passing the input through as Incus' "id" field is
+	// brittle: that field maps to the DRM card minor index, which can shift
+	// across kernel upgrades. We hit this in production when the 6.8.0-110 →
+	// 6.8.0-111 upgrade renumbered a backend host's RTX 4090 from card0 to
+	// card1, breaking every container with id="0". PCI addresses are stable,
+	// so we always pin by PCI. Duplicate GPUs (same resolved PCI) are
+	// rejected — attaching one physical GPU twice is always a mistake.
+	if len(opts.GPUs) > 0 {
+		gpus, err := resolveGPUDevices(m.incus, opts.GPUs)
 		if err != nil {
 			return nil, fmt.Errorf("GPU passthrough setup failed: %w", err)
 		}
-		config.GPU = &incus.GPUDevice{
-			PCI: pci,
-		}
+		config.GPUs = gpus
 	}
 
 	if err := m.incus.CreateContainer(config); err != nil {

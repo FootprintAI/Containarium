@@ -6350,7 +6350,7 @@
         },
         "gpuDevice": {
           "type": "string",
-          "title": "GPU device info (e.g., GPU ID or PCI address if attached)"
+          "description": "GPU device info (e.g., GPU ID or PCI address if attached). For a\nmulti-GPU container this is the first device; see `gpu_devices` for all."
         },
         "backendId": {
           "type": "string",
@@ -6408,6 +6408,13 @@
         "deletePolicy": {
           "$ref": "#/definitions/DeletePolicy",
           "description": "Whether this box is protected from the daemon's automated/bulk deletion\npaths (#284). DELETE_POLICY_PROTECTED means the ttlsweeper auto-reap and\n`containarium prune` skip it; a deliberate single-box delete still removes\nit. Read from the user.containarium.delete_policy Incus config key; set via\nSetContainerDeletePolicy. Absent/unprotected = DELETE_POLICY_UNSPECIFIED."
+        },
+        "gpuDevices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "All GPU devices attached to this container (device index or PCI address\nper entry). For a single-GPU container this has one entry mirroring\n`gpu_device`; empty when no GPU is attached."
         }
       },
       "title": "Container represents a complete container instance"
@@ -6613,6 +6620,7 @@
         },
         "gpu": {
           "type": "string",
+          "description": "Deprecated: single-GPU field. Prefer `gpus`. When `gpus` is non-empty it\ntakes precedence; when `gpus` is empty a non-empty `gpu` is treated as a\nsingle-element list.",
           "title": "GPU device ID for passthrough (e.g., \"0\" for first GPU, PCI address, or empty for none)"
         },
         "backendId": {
@@ -6668,6 +6676,13 @@
           "type": "string",
           "format": "int64",
           "description": "Birth stopped→delete (optional) — seconds the box may remain STOPPED\nbefore it is auto-deleted, reclaiming disk after idle_stop_minutes\nalready reclaimed CPU/RAM (#525, the second timer of #522's two-phase\nlifecycle). The clock runs from the stop transition and RESETS when the\nbox is woken (accessed), so a box someone keeps investigating is never\nreaped; only one left continuously stopped past this window is. This is\na SEPARATE opt-in from idle_stop_minutes / auto-sleep: a scale-to-zero\nbox that merely sleeps must never be deleted just for being stopped.\n0 = never delete on stop (today's behavior)."
+        },
+        "gpus": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "GPU device IDs for passthrough — one entry per GPU to attach (device\nindex like \"0\"/\"1\" or PCI address like \"0000:0b:00.0\"). Supersedes the\nsingular `gpu` field: when non-empty `gpu` is ignored; when empty a\nnon-empty `gpu` is treated as a single-element list. Each device is\nresolved to a stable PCI address at create time."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -9454,7 +9469,15 @@
         },
         "gpu": {
           "type": "string",
+          "description": "Deprecated: single-GPU field. Prefer `gpus` for one-or-many. When `gpus`\nis non-empty it takes precedence and this field is ignored; when `gpus`\nis empty a non-empty `gpu` is treated as a single-element list.",
           "title": "GPU device ID for passthrough (e.g., \"0\" for first GPU, PCI address, or empty for none)"
+        },
+        "gpus": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "GPU device IDs for passthrough — one entry per GPU to attach (each is a\ndevice index like \"0\"/\"1\" or a PCI address like \"0000:0b:00.0\"). Empty\nmeans no GPU. Supersedes the singular `gpu` field."
         }
       },
       "title": "ResourceLimits defines resource constraints for a container"

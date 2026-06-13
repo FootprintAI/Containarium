@@ -116,7 +116,10 @@ func buildContainerConfig(spec cloud.ContainerSpec) incus.ContainerConfig {
 		cfg.Disk = &incus.DiskDevice{Path: "/", Pool: "default", Size: fmt.Sprintf("%dGB", spec.DiskGB)}
 	}
 	if spec.GPUCount > 0 {
-		cfg.GPU = &incus.GPUDevice{} // empty = pass through all GPUs
+		// A single empty GPU device means "pass through all GPUs" (no PCI
+		// pin) — the cloud-v1 "this is a GPU box" semantics. Per-GPU pinning
+		// would need host GPU inventory the assignment doesn't carry.
+		cfg.GPUs = []incus.GPUDevice{{}}
 	}
 	if len(spec.SecretEnv) > 0 {
 		cfg.Env = make(map[string]string, len(spec.SecretEnv))

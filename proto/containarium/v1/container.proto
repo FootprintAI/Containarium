@@ -92,7 +92,16 @@ message ResourceLimits {
   string disk = 3;
 
   // GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
+  //
+  // Deprecated: single-GPU field. Prefer `gpus` for one-or-many. When `gpus`
+  // is non-empty it takes precedence and this field is ignored; when `gpus`
+  // is empty a non-empty `gpu` is treated as a single-element list.
   string gpu = 4;
+
+  // GPU device IDs for passthrough — one entry per GPU to attach (each is a
+  // device index like "0"/"1" or a PCI address like "0000:0b:00.0"). Empty
+  // means no GPU. Supersedes the singular `gpu` field.
+  repeated string gpus = 5;
 }
 
 // NetworkInfo contains network configuration for a container
@@ -148,7 +157,8 @@ message Container {
   // Software stack installed in the container (e.g., "nodejs", "python")
   string stack = 12;
 
-  // GPU device info (e.g., GPU ID or PCI address if attached)
+  // GPU device info (e.g., GPU ID or PCI address if attached). For a
+  // multi-GPU container this is the first device; see `gpu_devices` for all.
   string gpu_device = 13;
 
   // Backend ID this container runs on (e.g., "gcp-spot", "tunnel-node-a-gpu")
@@ -234,6 +244,11 @@ message Container {
   // it. Read from the user.containarium.delete_policy Incus config key; set via
   // SetContainerDeletePolicy. Absent/unprotected = DELETE_POLICY_UNSPECIFIED.
   DeletePolicy delete_policy = 26;
+
+  // All GPU devices attached to this container (device index or PCI address
+  // per entry). For a single-GPU container this has one entry mirroring
+  // `gpu_device`; empty when no GPU is attached.
+  repeated string gpu_devices = 27;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -297,6 +312,10 @@ message CreateContainerRequest {
   string stack = 9;
 
   // GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
+  //
+  // Deprecated: single-GPU field. Prefer `gpus`. When `gpus` is non-empty it
+  // takes precedence; when `gpus` is empty a non-empty `gpu` is treated as a
+  // single-element list.
   string gpu = 10;
 
   // Target backend ID for creation (empty = primary backend)
@@ -381,6 +400,13 @@ message CreateContainerRequest {
   // box that merely sleeps must never be deleted just for being stopped.
   // 0 = never delete on stop (today's behavior).
   int64 delete_after_stopped_seconds = 22;
+
+  // GPU device IDs for passthrough — one entry per GPU to attach (device
+  // index like "0"/"1" or PCI address like "0000:0b:00.0"). Supersedes the
+  // singular `gpu` field: when non-empty `gpu` is ignored; when empty a
+  // non-empty `gpu` is treated as a single-element list. Each device is
+  // resolved to a stable PCI address at create time.
+  repeated string gpus = 23;
 }
 
 // CreateContainerResponse is the response from creating a container

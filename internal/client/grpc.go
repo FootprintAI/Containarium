@@ -160,7 +160,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack, gpu string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
 
@@ -175,7 +175,7 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Image:                     image,
 		EnablePodman:              enablePodman,
 		Stack:                     stack,
-		Gpu:                       gpu,
+		Gpus:                      gpus,
 		OsType:                    osType,
 		Monitoring:                monitoring,
 		Pool:                      pool,
@@ -210,6 +210,9 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		info.CPU = container.Resources.Cpu
 		info.Memory = container.Resources.Memory
 	}
+
+	info.GPU = container.GpuDevice
+	info.GPUs = container.GpuDevices
 
 	if container.CreatedAt > 0 {
 		info.CreatedAt = time.Unix(container.CreatedAt, 0)
@@ -466,6 +469,9 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 		info.CPU = container.Resources.Cpu
 		info.Memory = container.Resources.Memory
 	}
+
+	info.GPU = container.GpuDevice
+	info.GPUs = container.GpuDevices
 
 	if container.CreatedAt > 0 {
 		info.CreatedAt = time.Unix(container.CreatedAt, 0)

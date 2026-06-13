@@ -374,7 +374,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				splitNonEmpty(sshKey),
 				true, // podman
 				"",   // stack
-				"",   // gpu
+				nil,  // gpus
 				ostype.OSTypeFromString("ubuntu"),
 				false,                  // monitoring
 				"",                     // pool
@@ -410,8 +410,8 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			"50GB",
 			splitNonEmpty(sshKey),
 			true,
-			"",
-			"",
+			"",  // stack
+			nil, // gpus
 			ostype.OSTypeFromString("ubuntu"),
 			false,
 			"",

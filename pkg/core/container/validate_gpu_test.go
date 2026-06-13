@@ -58,8 +58,8 @@ func TestValidateGPU_OK(t *testing.T) {
 	if got.Model != "NVIDIA GeForce RTX 3090" || got.DriverVersion != "570.211.01" {
 		t.Errorf("model/driver = %q / %q", got.Model, got.DriverVersion)
 	}
-	if created.GPU == nil || created.GPU.PCI != "0000:01:00.0" {
-		t.Errorf("expected throwaway created with GPU pci=0000:01:00.0, got %+v", created.GPU)
+	if len(created.GPUs) != 1 || created.GPUs[0].PCI != "0000:01:00.0" {
+		t.Errorf("expected throwaway created with one GPU pci=0000:01:00.0, got %+v", created.GPUs)
 	}
 	if nvruntime != "true" {
 		t.Errorf("expected nvidia.runtime=true set, got %q", nvruntime)
@@ -84,8 +84,8 @@ func TestValidateGPU_AllGPUsWhenNoPCI(t *testing.T) {
 	if got.Status != GPUStatusOK {
 		t.Fatalf("status = %q, want ok", got.Status)
 	}
-	if created.GPU == nil || created.GPU.PCI != "" {
-		t.Errorf("expected GPU device with empty PCI (all GPUs), got %+v", created.GPU)
+	if len(created.GPUs) != 1 || created.GPUs[0].PCI != "" {
+		t.Errorf("expected one GPU device with empty PCI (all GPUs), got %+v", created.GPUs)
 	}
 }
 
