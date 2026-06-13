@@ -149,7 +149,7 @@ func runnerTools() []Tool {
 // interface. The MCP client doesn't return incus.ContainerInfo
 // directly — we translate from its own Container shape, copying
 // over the fields runner.List needs (just Name, in practice).
-type mcpDaemonAPI struct{ c *Client }
+type mcpDaemonAPI struct{ c API }
 
 func (a *mcpDaemonAPI) ListContainers() ([]incus.ContainerInfo, error) {
 	resp, err := a.c.ListContainers()
@@ -184,7 +184,7 @@ func (a *mcpDaemonAPI) DeleteContainer(username string, force bool) error {
 // Per CLAUDE.md: this is the same shape of dependency graph the
 // CLI builds in internal/cmd/runner.go — both call into
 // internal/runner with the same orchestrator.
-func buildMCPRunnerDeps(client *Client, sentinel, sshKeyPath string, withSSH bool) (runner.Deps, string, error) {
+func buildMCPRunnerDeps(client API, sentinel, sshKeyPath string, withSSH bool) (runner.Deps, string, error) {
 	api := &mcpDaemonAPI{c: client}
 	creator := func(_ context.Context, name, sshPubKey string) (string, string, error) {
 		req := CreateContainerRequest{
@@ -344,7 +344,7 @@ func resolveMCPSSHKey(pubPathFlag string) (pubPath, privPath string, err error) 
 // args, builds deps, calls runner.Provision, returns the typed
 // result as JSON so the agent has structured fields to reason
 // about (not just a human-readable paragraph).
-func handleProvisionRunners(client *Client, args map[string]interface{}) (string, error) {
+func handleProvisionRunners(client API, args map[string]interface{}) (string, error) {
 	repo, _ := args["repo"].(string)
 	pat, _ := args["github_pat"].(string)
 	if repo == "" || pat == "" {
@@ -381,7 +381,7 @@ func handleProvisionRunners(client *Client, args map[string]interface{}) (string
 	return renderRunnerResultJSON(res), nil
 }
 
-func handleListRunners(client *Client, args map[string]interface{}) (string, error) {
+func handleListRunners(client API, args map[string]interface{}) (string, error) {
 	repo, _ := args["repo"].(string)
 	pat, _ := args["github_pat"].(string)
 	if repo == "" || pat == "" {
@@ -402,7 +402,7 @@ func handleListRunners(client *Client, args map[string]interface{}) (string, err
 	return renderRunnerResultJSON(res), nil
 }
 
-func handleRemoveRunner(client *Client, args map[string]interface{}) (string, error) {
+func handleRemoveRunner(client API, args map[string]interface{}) (string, error) {
 	repo, _ := args["repo"].(string)
 	pat, _ := args["github_pat"].(string)
 	name, _ := args["name"].(string)

@@ -28,7 +28,7 @@ func sentinelHint(verb string, username string, err error) error {
 // handlePush is the agent-native version of `containarium push <user>`.
 // Same Go function (transfer.Push) backs both surfaces; this just adapts
 // the MCP args dict into a typed PushOptions struct.
-func handlePush(client *Client, args map[string]interface{}) (string, error) {
+func handlePush(client API, args map[string]interface{}) (string, error) {
 	username := getStringArg(args, "username", "")
 	if username == "" {
 		return "", fmt.Errorf("username is required")
@@ -70,7 +70,7 @@ func handlePush(client *Client, args map[string]interface{}) (string, error) {
 }
 
 // handleSync is the agent-native version of `containarium sync <user>`.
-func handleSync(client *Client, args map[string]interface{}) (string, error) {
+func handleSync(client API, args map[string]interface{}) (string, error) {
 	username := getStringArg(args, "username", "")
 	if username == "" {
 		return "", fmt.Errorf("username is required")
@@ -114,7 +114,7 @@ func handleSync(client *Client, args map[string]interface{}) (string, error) {
 // container's daemon-stamped ssh_host — the sentinel it actually belongs
 // to. Returning "" (a direct / no-sentinel deployment, or a lookup miss)
 // lets transfer.Options.resolve surface the uniform "pass --sentinel" error.
-func pickSentinel(client *Client, args map[string]interface{}) string {
+func pickSentinel(client API, args map[string]interface{}) string {
 	if h := getStringArg(args, "sentinel", ""); h != "" {
 		return h
 	}

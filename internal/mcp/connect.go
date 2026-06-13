@@ -29,7 +29,7 @@ import (
 //     stdout / stderr / exit_code — operate the box without a TTY.
 //
 // Interactive (PTY) stays CLI-only.
-func handleConnect(client *Client, args map[string]interface{}) (string, error) {
+func handleConnect(client API, args map[string]interface{}) (string, error) {
 	box := strings.TrimSpace(getStringArg(args, "box", ""))
 	if box == "" {
 		return "", fmt.Errorf("`box` is required")
@@ -180,7 +180,7 @@ func runMCPSessionExec(target connectcore.Target, identity, session, command str
 // mcpGetContainer GETs the box over the MCP client's daemon connection and
 // decodes it into the shared connectcore DTO. doRequest folds the status
 // into its error string; we detect 404 there to give a clean "not found".
-func mcpGetContainer(client *Client, box string) (*connectcore.Container, error) {
+func mcpGetContainer(client API, box string) (*connectcore.Container, error) {
 	body, err := client.doRequest("GET", "/v1/containers/"+url.PathEscape(box), nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "status 404") {
@@ -195,7 +195,7 @@ func mcpGetContainer(client *Client, box string) (*connectcore.Container, error)
 	return &resp.Container, nil
 }
 
-func mcpAuthorizeKey(client *Client, box, pub string) error {
+func mcpAuthorizeKey(client API, box, pub string) error {
 	_, err := client.doRequest("POST",
 		"/v1/containers/"+url.PathEscape(box)+"/ssh-keys",
 		connectcore.AuthorizeKeyRequest{SshPublicKey: pub})

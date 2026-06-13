@@ -255,7 +255,7 @@ func TestHandleToolsCallSurfacesHandlerError(t *testing.T) {
 	const sentinel = "ssh key not readable at ~/.containarium/keys/voice-dev"
 	for i := range server.tools {
 		if server.tools[i].Name == "push" {
-			server.tools[i].Handler = func(_ *Client, _ map[string]interface{}) (string, error) {
+			server.tools[i].Handler = func(_ API, _ map[string]interface{}) (string, error) {
 				return "", errors.New(sentinel)
 			}
 			break

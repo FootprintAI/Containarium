@@ -13,20 +13,18 @@ import (
 // Server implements the MCP (Model Context Protocol) server
 type Server struct {
 	config *Config
-	client *Client
+	client API
 	tools  []Tool
 }
 
-// NewServer creates a new MCP server
+// NewServer creates a new MCP server. The backend is selected by newBackend
+// from the credential: a hosted-control-plane API token (`ctnr_…`) gets the
+// cloud backend (host-level ops report "not available here"); anything else
+// gets the OSS daemon backend.
 func NewServer(config *Config) (*Server, error) {
-	client := NewClient(config.ServerURL, config.JWTToken)
-	if config.JWTTokenFile != "" {
-		client.SetTokenFile(config.JWTTokenFile)
-	}
-
 	server := &Server{
 		config: config,
-		client: client,
+		client: newBackend(config),
 		tools:  []Tool{},
 	}
 
