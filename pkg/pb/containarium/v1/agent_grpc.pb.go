@@ -26,6 +26,7 @@ const (
 	AgentSkillService_EnqueueAgentTask_FullMethodName  = "/containarium.v1.AgentSkillService/EnqueueAgentTask"
 	AgentSkillService_LeaseAgentTask_FullMethodName    = "/containarium.v1.AgentSkillService/LeaseAgentTask"
 	AgentSkillService_CompleteAgentTask_FullMethodName = "/containarium.v1.AgentSkillService/CompleteAgentTask"
+	AgentSkillService_StartAgentWorker_FullMethodName  = "/containarium.v1.AgentSkillService/StartAgentWorker"
 )
 
 // AgentSkillServiceClient is the client API for AgentSkillService service.
@@ -56,6 +57,14 @@ type AgentSkillServiceClient interface {
 	// removes it from the queue. Rejected (accepted=false) if the lease token is
 	// stale — i.e. the lease already expired and the task was redelivered.
 	CompleteAgentTask(ctx context.Context, in *CompleteAgentTaskRequest, opts ...grpc.CallOption) (*CompleteAgentTaskResponse, error)
+	// StartAgentWorker provisions (or reuses) a skill's box and launches the
+	// in-box runtime in poll mode: a long-lived worker that leases tasks for the
+	// skill, runs them, and reports back — the consumer side of the pull model.
+	// The daemon mints a SEPARATE queue credential (a JWT scoped to agents:run,
+	// distinct from the skill's in-box token) and seeds it so the box can reach
+	// the queue endpoints; the worker resolves the daemon URL from its default
+	// route (the backend host) at launch.
+	StartAgentWorker(ctx context.Context, in *StartAgentWorkerRequest, opts ...grpc.CallOption) (*StartAgentWorkerResponse, error)
 }
 
 type agentSkillServiceClient struct {
@@ -136,6 +145,16 @@ func (c *agentSkillServiceClient) CompleteAgentTask(ctx context.Context, in *Com
 	return out, nil
 }
 
+func (c *agentSkillServiceClient) StartAgentWorker(ctx context.Context, in *StartAgentWorkerRequest, opts ...grpc.CallOption) (*StartAgentWorkerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartAgentWorkerResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_StartAgentWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentSkillServiceServer is the server API for AgentSkillService service.
 // All implementations must embed UnimplementedAgentSkillServiceServer
 // for forward compatibility.
@@ -164,6 +183,14 @@ type AgentSkillServiceServer interface {
 	// removes it from the queue. Rejected (accepted=false) if the lease token is
 	// stale — i.e. the lease already expired and the task was redelivered.
 	CompleteAgentTask(context.Context, *CompleteAgentTaskRequest) (*CompleteAgentTaskResponse, error)
+	// StartAgentWorker provisions (or reuses) a skill's box and launches the
+	// in-box runtime in poll mode: a long-lived worker that leases tasks for the
+	// skill, runs them, and reports back — the consumer side of the pull model.
+	// The daemon mints a SEPARATE queue credential (a JWT scoped to agents:run,
+	// distinct from the skill's in-box token) and seeds it so the box can reach
+	// the queue endpoints; the worker resolves the daemon URL from its default
+	// route (the backend host) at launch.
+	StartAgentWorker(context.Context, *StartAgentWorkerRequest) (*StartAgentWorkerResponse, error)
 	mustEmbedUnimplementedAgentSkillServiceServer()
 }
 
@@ -194,6 +221,9 @@ func (UnimplementedAgentSkillServiceServer) LeaseAgentTask(context.Context, *Lea
 }
 func (UnimplementedAgentSkillServiceServer) CompleteAgentTask(context.Context, *CompleteAgentTaskRequest) (*CompleteAgentTaskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompleteAgentTask not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) StartAgentWorker(context.Context, *StartAgentWorkerRequest) (*StartAgentWorkerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartAgentWorker not implemented")
 }
 func (UnimplementedAgentSkillServiceServer) mustEmbedUnimplementedAgentSkillServiceServer() {}
 func (UnimplementedAgentSkillServiceServer) testEmbeddedByValue()                           {}
@@ -342,6 +372,24 @@ func _AgentSkillService_CompleteAgentTask_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentSkillService_StartAgentWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartAgentWorkerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).StartAgentWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_StartAgentWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).StartAgentWorker(ctx, req.(*StartAgentWorkerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentSkillService_ServiceDesc is the grpc.ServiceDesc for AgentSkillService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -376,6 +424,10 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CompleteAgentTask",
 			Handler:    _AgentSkillService_CompleteAgentTask_Handler,
+		},
+		{
+			MethodName: "StartAgentWorker",
+			Handler:    _AgentSkillService_StartAgentWorker_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

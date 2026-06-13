@@ -243,14 +243,38 @@ is prototyped, Phase 0:
   `agents:run`).
 - **Producer CLI**: `containarium agent enqueue <skill> --input …`
   (`internal/cmd/agent_enqueue.go`), plus gRPC/HTTP client methods.
+- **Worker provisioning**: `StartAgentWorker` RPC + `containarium agent worker
+  <skill>` (`internal/server/agent_queue_server.go`, `internal/cmd/agent_worker.go`).
+  Provisions/reuses the skill's box, **mints a queue credential** — a JWT scoped
+  to `agents:run` only, *separate* from the skill's in-box token, since leasing
+  is a runtime action the skill's own scopes don't grant — and launches the
+  runtime in poll mode with that credential + the daemon URL seeded as env
+  (`buildWorkerPollCommand`). The worker resolves the daemon host from its
+  default route (the backend) at launch, so the daemon needn't know the bridge
+  address. Gated on `agents:run`; the launch is best-effort like serve mode.
 - **Worker**: `agent-runtime` `poll` mode (`agent-runtime/src/poll.ts`,
   `CONTAINARIUM_AGENT_MODE=poll`) — lease → run engine → complete, **outbound
   only** (NAT/tunnel-friendly), reusing the A2A path's `runTask`.
 
-**Open before promoting past prototype**: (a) durability — the queue is memory
-only, so a daemon restart drops in-flight tasks; (b) the worker's *queue*
-credential (needs `agents:run`) is distinct from the skill's in-box token and
-isn't minted yet — same "who issues the runtime credential" question the
-gateway token raises; (c) per-tenant fairness + dead-letter on repeated
-failure. These are deliberately deferred — the prototype proves the
-lease/redelivery semantics and the outbound-only worker shape.
+End-to-end loop:
+
+```
+containarium agent worker  hello-agent --server <host>   # start a poll-mode worker
+containarium agent enqueue hello-agent --input '{"q":…}' --server <host>   # produce
+# worker leases → runs the engine → completes; repeat per enqueue.
+```
+
+The producer→worker cycle (enqueue → lease → run → complete, incl. the
+`agents:run`-credential auth and the stale-lease guard) is covered end-to-end
+through the real RPC handlers in `agent_queue_server_test.go`.
+
+**Open before promoting past prototype**: (a) **durability** — the queue is
+memory only, so a daemon restart drops in-flight tasks; (b) **credential
+lifetime** — the worker's `agents:run` token has the 30-minute agent TTL, so a
+long-lived worker needs a refresh path (the same open question the gateway token
+raises; a durable answer is a re-mint-on-401 or a daemon-side renew); (c)
+**egress** — when the eBPF policy is enforced, a worker box must be allowed out
+to the daemon's host:port (today's allowlist is the model providers); (d)
+**per-tenant fairness + dead-letter** on repeated failure. These are
+deliberately deferred — the prototype proves the credential-scoped lease/run/
+complete loop and the outbound-only worker shape.

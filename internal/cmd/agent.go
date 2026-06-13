@@ -33,6 +33,7 @@ type agentAPI interface {
 	GetAgentSkill(id string) (*pb.AgentSkill, error)
 	RunAgentSkill(skillID, backendID, pool, inputJSON string) (*pb.RunAgentSkillResponse, error)
 	EnqueueAgentTask(skillID, inputJSON string) (*pb.EnqueueAgentTaskResponse, error)
+	StartAgentWorker(skillID, backendID, pool, workerID string) (*pb.StartAgentWorkerResponse, error)
 	SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb.AgentArtifact, error)
 	Close() error
 }

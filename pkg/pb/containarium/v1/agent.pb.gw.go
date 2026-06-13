@@ -284,6 +284,51 @@ func local_request_AgentSkillService_CompleteAgentTask_0(ctx context.Context, ma
 	return msg, metadata, err
 }
 
+func request_AgentSkillService_StartAgentWorker_0(ctx context.Context, marshaler runtime.Marshaler, client AgentSkillServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq StartAgentWorkerRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	val, ok := pathParams["skill_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "skill_id")
+	}
+	protoReq.SkillId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "skill_id", err)
+	}
+	msg, err := client.StartAgentWorker(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_AgentSkillService_StartAgentWorker_0(ctx context.Context, marshaler runtime.Marshaler, server AgentSkillServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq StartAgentWorkerRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["skill_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "skill_id")
+	}
+	protoReq.SkillId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "skill_id", err)
+	}
+	msg, err := server.StartAgentWorker(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_CrewService_ListCrews_0(ctx context.Context, marshaler runtime.Marshaler, client CrewServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq ListCrewsRequest
@@ -574,6 +619,26 @@ func RegisterAgentSkillServiceHandlerServer(ctx context.Context, mux *runtime.Se
 		}
 		forward_AgentSkillService_CompleteAgentTask_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_AgentSkillService_StartAgentWorker_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.AgentSkillService/StartAgentWorker", runtime.WithHTTPPathPattern("/v1/agent-skills/{skill_id}/worker"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_AgentSkillService_StartAgentWorker_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_AgentSkillService_StartAgentWorker_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 
 	return nil
 }
@@ -823,6 +888,23 @@ func RegisterAgentSkillServiceHandlerClient(ctx context.Context, mux *runtime.Se
 		}
 		forward_AgentSkillService_CompleteAgentTask_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_AgentSkillService_StartAgentWorker_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.AgentSkillService/StartAgentWorker", runtime.WithHTTPPathPattern("/v1/agent-skills/{skill_id}/worker"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_AgentSkillService_StartAgentWorker_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_AgentSkillService_StartAgentWorker_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	return nil
 }
 
@@ -834,6 +916,7 @@ var (
 	pattern_AgentSkillService_EnqueueAgentTask_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "agent-tasks"}, ""))
 	pattern_AgentSkillService_LeaseAgentTask_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "agent-tasks", "lease"}, ""))
 	pattern_AgentSkillService_CompleteAgentTask_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "agent-tasks", "task_id", "complete"}, ""))
+	pattern_AgentSkillService_StartAgentWorker_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "agent-skills", "skill_id", "worker"}, ""))
 )
 
 var (
@@ -844,6 +927,7 @@ var (
 	forward_AgentSkillService_EnqueueAgentTask_0  = runtime.ForwardResponseMessage
 	forward_AgentSkillService_LeaseAgentTask_0    = runtime.ForwardResponseMessage
 	forward_AgentSkillService_CompleteAgentTask_0 = runtime.ForwardResponseMessage
+	forward_AgentSkillService_StartAgentWorker_0  = runtime.ForwardResponseMessage
 )
 
 // RegisterCrewServiceHandlerFromEndpoint is same as RegisterCrewServiceHandler but

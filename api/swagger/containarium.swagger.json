@@ -252,6 +252,47 @@
         ]
       }
     },
+    "/v1/agent-skills/{skillId}/worker": {
+      "post": {
+        "summary": "Start a pull-queue worker for a skill",
+        "description": "Provisions the skill's box, mints an agents:run queue credential, and launches the in-box runtime in poll mode to lease and run queued tasks.",
+        "operationId": "AgentSkillService_StartAgentWorker",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StartAgentWorkerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "description": "Skill whose box runs as the worker (its persona is the worker's; the\nworker leases only this skill's tasks).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StartAgentWorkerBody"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent-skills/{toPeerId}/call": {
       "post": {
         "summary": "Send a task to a peer agent (A2A)",
@@ -10139,6 +10180,37 @@
         }
       },
       "description": "StackParameter describes an input the stack accepts at install time.\nReturned by ListStacks so the web UI can render appropriate form fields."
+    },
+    "StartAgentWorkerBody": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Target backend (must be local in the prototype)."
+        },
+        "pool": {
+          "type": "string",
+          "description": "Target pool (unsupported in the prototype)."
+        },
+        "workerId": {
+          "type": "string",
+          "description": "Optional stable worker id for audit/debug; defaults to the box name."
+        }
+      },
+      "description": "StartAgentWorkerRequest launches a poll-mode worker for a skill."
+    },
+    "StartAgentWorkerResponse": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container",
+          "description": "The worker box."
+        },
+        "workerId": {
+          "type": "string",
+          "description": "The worker id the daemon used."
+        }
+      }
     },
     "StartAppBody": {
       "type": "object",

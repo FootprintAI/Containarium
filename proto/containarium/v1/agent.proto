@@ -302,6 +302,25 @@ service AgentSkillService {
       tags: "Agents";
     };
   }
+
+  // StartAgentWorker provisions (or reuses) a skill's box and launches the
+  // in-box runtime in poll mode: a long-lived worker that leases tasks for the
+  // skill, runs them, and reports back — the consumer side of the pull model.
+  // The daemon mints a SEPARATE queue credential (a JWT scoped to agents:run,
+  // distinct from the skill's in-box token) and seeds it so the box can reach
+  // the queue endpoints; the worker resolves the daemon URL from its default
+  // route (the backend host) at launch.
+  rpc StartAgentWorker(StartAgentWorkerRequest) returns (StartAgentWorkerResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-skills/{skill_id}/worker"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Start a pull-queue worker for a skill";
+      description: "Provisions the skill's box, mints an agents:run queue credential, and launches the in-box runtime in poll mode to lease and run queued tasks.";
+      tags: "Agents";
+    };
+  }
 }
 
 // EnqueueAgentTaskRequest places one task on the pull queue.
@@ -355,6 +374,26 @@ message CompleteAgentTaskResponse {
   // False when the lease was stale (expired + redelivered); the worker should
   // drop its result — another lease owns the task now.
   bool accepted = 1;
+}
+
+// StartAgentWorkerRequest launches a poll-mode worker for a skill.
+message StartAgentWorkerRequest {
+  // Skill whose box runs as the worker (its persona is the worker's; the
+  // worker leases only this skill's tasks).
+  string skill_id = 1;
+  // Target backend (must be local in the prototype).
+  string backend_id = 2;
+  // Target pool (unsupported in the prototype).
+  string pool = 3;
+  // Optional stable worker id for audit/debug; defaults to the box name.
+  string worker_id = 4;
+}
+
+message StartAgentWorkerResponse {
+  // The worker box.
+  Container container = 1;
+  // The worker id the daemon used.
+  string worker_id = 2;
 }
 
 // =============================================================================
