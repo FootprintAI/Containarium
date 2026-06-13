@@ -59,7 +59,7 @@ type SecurityRemediateResponse struct {
 // the daemon has accepted the trigger(s). Agents should call
 // security_findings after a reasonable delay (scan durations vary —
 // ClamAV is fast, pentest tens of seconds, ZAP minutes).
-func handleSecurityScan(client *Client, args map[string]interface{}) (string, error) {
+func handleSecurityScan(client API, args map[string]interface{}) (string, error) {
 	username := getStringArg(args, "username", "")
 	if username == "" {
 		return "", fmt.Errorf("username is required")
@@ -83,7 +83,7 @@ func handleSecurityScan(client *Client, args map[string]interface{}) (string, er
 // handleSecurityFindings returns the normalized list of findings across
 // scanner kinds. By default it fetches findings for the username's
 // container; pass kind="all" (default) or restrict to one scanner.
-func handleSecurityFindings(client *Client, args map[string]interface{}) (string, error) {
+func handleSecurityFindings(client API, args map[string]interface{}) (string, error) {
 	username := getStringArg(args, "username", "")
 	if username == "" {
 		return "", fmt.Errorf("username is required")
@@ -122,7 +122,7 @@ func handleSecurityFindings(client *Client, args map[string]interface{}) (string
 // description doesn't tell the agent to chain scan→pick→remediate
 // autonomously. Continuous/hosted remediation is a paywalled cloud
 // feature; see Containarium-cloud's prd/cloud/security-patch-agent.md.
-func handleSecurityRemediate(client *Client, args map[string]interface{}) (string, error) {
+func handleSecurityRemediate(client API, args map[string]interface{}) (string, error) {
 	fid, ok := getInt64Arg(args, "finding_id")
 	if !ok {
 		return "", fmt.Errorf("finding_id is required")

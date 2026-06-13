@@ -65,7 +65,7 @@ func kmsTools() []Tool {
 	}
 }
 
-func handleKMSStatus(client *Client, args map[string]interface{}) (string, error) {
+func handleKMSStatus(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.GetKMSStatus()
 	if err != nil {
 		return "", err
@@ -78,7 +78,7 @@ func handleKMSStatus(client *Client, args map[string]interface{}) (string, error
 	return b.String(), nil
 }
 
-func handleKMSCoverage(client *Client, args map[string]interface{}) (string, error) {
+func handleKMSCoverage(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.GetEnvelopeCoverage()
 	if err != nil {
 		return "", err
@@ -93,7 +93,7 @@ func handleKMSCoverage(client *Client, args map[string]interface{}) (string, err
 	return out, nil
 }
 
-func handleKMSMigrate(client *Client, args map[string]interface{}) (string, error) {
+func handleKMSMigrate(client API, args map[string]interface{}) (string, error) {
 	maxRows := 0
 	if v, ok := getIntArg(args, "max_rows"); ok {
 		maxRows = v

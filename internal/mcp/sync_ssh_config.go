@@ -14,7 +14,7 @@ import (
 // the CLI binary installed on the operator's machine. Same internal
 // generator, different invocation surface — preserves the CLI-first
 // principle (one Go function, two surfaces) from CLAUDE.md.
-func handleSyncSSHConfig(client *Client, args map[string]interface{}) (string, error) {
+func handleSyncSSHConfig(client API, args map[string]interface{}) (string, error) {
 	// Resolve output path. Default lives under $HOME so it works the
 	// same way the CLI version does — both produce a file that the
 	// user's ~/.ssh/config can Include.
@@ -62,7 +62,7 @@ func handleSyncSSHConfig(client *Client, args map[string]interface{}) (string, e
 // client and translates from mcp.Container to incus.ContainerInfo —
 // the shape the shared sshconfig generator expects. Same logic the
 // CLI uses; just a different list source.
-func fetchContainersForSSHConfig(client *Client) ([]incus.ContainerInfo, error) {
+func fetchContainersForSSHConfig(client API) ([]incus.ContainerInfo, error) {
 	resp, err := client.ListContainers()
 	if err != nil {
 		return nil, fmt.Errorf("list containers: %w", err)

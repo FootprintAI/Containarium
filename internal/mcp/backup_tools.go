@@ -102,7 +102,7 @@ func backupTools() []Tool {
 	}
 }
 
-func handleCreateBackup(client *Client, args map[string]interface{}) (string, error) {
+func handleCreateBackup(client API, args map[string]interface{}) (string, error) {
 	dest := getStringArg(args, "dest", "local")
 	var destEnum string
 	switch dest {
@@ -137,7 +137,7 @@ func handleCreateBackup(client *Client, args map[string]interface{}) (string, er
 	return out, nil
 }
 
-func handleListBackups(client *Client, args map[string]interface{}) (string, error) {
+func handleListBackups(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.ListBackups(getStringArg(args, "username", ""))
 	if err != nil {
 		return "", err
@@ -154,7 +154,7 @@ func handleListBackups(client *Client, args map[string]interface{}) (string, err
 	return b.String(), nil
 }
 
-func handleRestoreBackup(client *Client, args map[string]interface{}) (string, error) {
+func handleRestoreBackup(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.RestoreBackup(RestoreBackupRequest{
 		ID:    getStringArg(args, "id", ""),
 		Clean: getBoolArg(args, "clean", false),

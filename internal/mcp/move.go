@@ -11,7 +11,7 @@ import (
 // runs daemon-side. The MCP server just relays the call and renders
 // the response in a human-readable shape that the agent can show
 // directly to the operator.
-func handleMoveContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleMoveContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")

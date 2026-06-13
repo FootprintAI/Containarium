@@ -77,7 +77,7 @@ func (c *Client) composeStatus(username, dir string) (json.RawMessage, error) {
 
 // ---- Handlers ------------------------------------------------------
 
-func handleComposeDiscoverPlatform(client *Client, args map[string]interface{}) (string, error) {
+func handleComposeDiscoverPlatform(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	req := composeDiscoverReq{
 		Username: username,
@@ -111,7 +111,7 @@ func handleComposeDiscoverPlatform(client *Client, args map[string]interface{}) 
 	return string(body), nil
 }
 
-func handleComposeEnablePlatform(client *Client, args map[string]interface{}) (string, error) {
+func handleComposeEnablePlatform(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	req := composeEnableReq{
 		Username: username,
@@ -128,7 +128,7 @@ func handleComposeEnablePlatform(client *Client, args map[string]interface{}) (s
 	return string(body), nil
 }
 
-func handleComposeDisablePlatform(client *Client, args map[string]interface{}) (string, error) {
+func handleComposeDisablePlatform(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	req := composeDisableReq{
 		Username: username,
@@ -144,7 +144,7 @@ func handleComposeDisablePlatform(client *Client, args map[string]interface{}) (
 	return string(body), nil
 }
 
-func handleComposeStatusPlatform(client *Client, args map[string]interface{}) (string, error) {
+func handleComposeStatusPlatform(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	dir := getStringArg(args, "dir", "")
 	body, err := client.composeStatus(username, dir)

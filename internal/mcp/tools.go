@@ -98,7 +98,7 @@ type Tool struct {
 }
 
 // ToolHandler is a function that handles a tool call
-type ToolHandler func(client *Client, args map[string]interface{}) (string, error)
+type ToolHandler func(client API, args map[string]interface{}) (string, error)
 
 // registerTools registers all available MCP tools
 func (s *Server) registerTools() {
@@ -1279,7 +1279,7 @@ func toolScopeAssignments() map[string]string {
 
 // Tool handlers
 
-func handleCreateContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleCreateContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1421,7 +1421,7 @@ func handleCreateContainer(client *Client, args map[string]interface{}) (string,
 	return result, nil
 }
 
-func handleListContainers(client *Client, args map[string]interface{}) (string, error) {
+func handleListContainers(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.ListContainers()
 	if err != nil {
 		return "", fmt.Errorf("failed to list containers: %w", err)
@@ -1449,7 +1449,7 @@ func handleListContainers(client *Client, args map[string]interface{}) (string, 
 	return result, nil
 }
 
-func handleGetContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleGetContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1469,7 +1469,7 @@ func handleGetContainer(client *Client, args map[string]interface{}) (string, er
 	return string(jsonData), nil
 }
 
-func handleDebugContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleDebugContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1488,7 +1488,7 @@ func handleDebugContainer(client *Client, args map[string]interface{}) (string, 
 	return string(jsonData), nil
 }
 
-func handleRevokeToken(client *Client, args map[string]interface{}) (string, error) {
+func handleRevokeToken(client API, args map[string]interface{}) (string, error) {
 	jti, _ := args["jti"].(string)
 	if jti == "" {
 		return "", fmt.Errorf("jti is required")
@@ -1502,7 +1502,7 @@ func handleRevokeToken(client *Client, args map[string]interface{}) (string, err
 	return fmt.Sprintf("✅ revoked jti=%s — %s", jti, msg), nil
 }
 
-func handleSetSecret(client *Client, args map[string]interface{}) (string, error) {
+func handleSetSecret(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	name, _ := args["name"].(string)
 	value, _ := args["value"].(string)
@@ -1516,7 +1516,7 @@ func handleSetSecret(client *Client, args map[string]interface{}) (string, error
 	return fmt.Sprintf("✅ %s", resp.Message), nil
 }
 
-func handleGetSecret(client *Client, args map[string]interface{}) (string, error) {
+func handleGetSecret(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	name, _ := args["name"].(string)
 	if username == "" || name == "" {
@@ -1529,7 +1529,7 @@ func handleGetSecret(client *Client, args map[string]interface{}) (string, error
 	return value, nil
 }
 
-func handleListSecrets(client *Client, args map[string]interface{}) (string, error) {
+func handleListSecrets(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	if username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1548,7 +1548,7 @@ func handleListSecrets(client *Client, args map[string]interface{}) (string, err
 	return string(b), nil
 }
 
-func handleDeleteSecret(client *Client, args map[string]interface{}) (string, error) {
+func handleDeleteSecret(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	name, _ := args["name"].(string)
 	if username == "" || name == "" {
@@ -1560,7 +1560,7 @@ func handleDeleteSecret(client *Client, args map[string]interface{}) (string, er
 	return fmt.Sprintf("✅ secret %s deleted", name), nil
 }
 
-func handleRefreshSecrets(client *Client, args map[string]interface{}) (string, error) {
+func handleRefreshSecrets(client API, args map[string]interface{}) (string, error) {
 	username, _ := args["username"].(string)
 	if username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1572,7 +1572,7 @@ func handleRefreshSecrets(client *Client, args map[string]interface{}) (string, 
 	return fmt.Sprintf("✅ %s", resp.Message), nil
 }
 
-func handleResizeContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleResizeContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1591,7 +1591,7 @@ func handleResizeContainer(client *Client, args map[string]interface{}) (string,
 	return fmt.Sprintf("✅ %s", resp.Message), nil
 }
 
-func handleToggleMonitoring(client *Client, args map[string]interface{}) (string, error) {
+func handleToggleMonitoring(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1608,7 +1608,7 @@ func handleToggleMonitoring(client *Client, args map[string]interface{}) (string
 	return fmt.Sprintf("✅ %s (monitoring_enabled=%v)", resp.Message, resp.MonitoringEnabled), nil
 }
 
-func handleDeleteContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleDeleteContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1624,7 +1624,7 @@ func handleDeleteContainer(client *Client, args map[string]interface{}) (string,
 	return fmt.Sprintf("✅ %s", resp.Message), nil
 }
 
-func handleStartContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleStartContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1642,7 +1642,7 @@ func handleStartContainer(client *Client, args map[string]interface{}) (string, 
 	return fmt.Sprintf("✅ %s\nContainer state: %s", resp.Message, resp.Container.State), nil
 }
 
-func handleToggleAutoSleep(client *Client, args map[string]interface{}) (string, error) {
+func handleToggleAutoSleep(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1664,7 +1664,7 @@ func handleToggleAutoSleep(client *Client, args map[string]interface{}) (string,
 		resp.Message, resp.AutoSleepEnabled, resp.IdleThresholdMinutes), nil
 }
 
-func handleStopContainer(client *Client, args map[string]interface{}) (string, error) {
+func handleStopContainer(client API, args map[string]interface{}) (string, error) {
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
@@ -1680,7 +1680,7 @@ func handleStopContainer(client *Client, args map[string]interface{}) (string, e
 	return fmt.Sprintf("✅ %s\nContainer state: %s", resp.Message, resp.Container.State), nil
 }
 
-func handleGetMetrics(client *Client, args map[string]interface{}) (string, error) {
+func handleGetMetrics(client API, args map[string]interface{}) (string, error) {
 	username := getStringArg(args, "username", "")
 
 	resp, err := client.GetMetrics(username)
@@ -1708,7 +1708,7 @@ func handleGetMetrics(client *Client, args map[string]interface{}) (string, erro
 	return result, nil
 }
 
-func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, error) {
+func handleGetSystemInfo(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.GetSystemInfo()
 	if err != nil {
 		return "", fmt.Errorf("failed to get system info: %w", err)
@@ -1739,7 +1739,7 @@ func handleGetSystemInfo(client *Client, args map[string]interface{}) (string, e
 	return result, nil
 }
 
-func handleBackendValidateGPU(client *Client, args map[string]interface{}) (string, error) {
+func handleBackendValidateGPU(client API, args map[string]interface{}) (string, error) {
 	backendID, _ := args["backend_id"].(string)
 	pci, _ := args["pci"].(string)
 
@@ -1759,7 +1759,7 @@ func handleBackendValidateGPU(client *Client, args map[string]interface{}) (stri
 	return fmt.Sprintf("✗ GPU passthrough %s on %s: %s", status, target, resp.Detail), nil
 }
 
-func handleCheckForUpdates(client *Client, args map[string]interface{}) (string, error) {
+func handleCheckForUpdates(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.GetLatestRelease()
 	if err != nil {
 		return "", fmt.Errorf("failed to check for updates: %w", err)
@@ -1778,7 +1778,7 @@ func handleCheckForUpdates(client *Client, args map[string]interface{}) (string,
 	return result, nil
 }
 
-func handleUpgradeBackend(client *Client, args map[string]interface{}) (string, error) {
+func handleUpgradeBackend(client API, args map[string]interface{}) (string, error) {
 	backendID, _ := args["backend_id"].(string)
 	force, _ := args["force"].(bool)
 	resp, err := client.TriggerUpgrade(backendID, force)
@@ -1799,7 +1799,7 @@ func handleUpgradeBackend(client *Client, args map[string]interface{}) (string, 
 	return result, nil
 }
 
-func handleGetUpgradeStatus(client *Client, args map[string]interface{}) (string, error) {
+func handleGetUpgradeStatus(client API, args map[string]interface{}) (string, error) {
 	upgradeID, _ := args["upgrade_id"].(string)
 	if upgradeID == "" {
 		return "", fmt.Errorf("upgrade_id is required")
@@ -1824,7 +1824,7 @@ func handleGetUpgradeStatus(client *Client, args map[string]interface{}) (string
 	return result, nil
 }
 
-func handleListBackends(client *Client, args map[string]interface{}) (string, error) {
+func handleListBackends(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.ListBackends()
 	if err != nil {
 		return "", fmt.Errorf("failed to list backends: %w", err)
@@ -1842,7 +1842,7 @@ func handleListBackends(client *Client, args map[string]interface{}) (string, er
 	return b.String(), nil
 }
 
-func handleGetBackend(client *Client, args map[string]interface{}) (string, error) {
+func handleGetBackend(client API, args map[string]interface{}) (string, error) {
 	id, ok := args["id"].(string)
 	if !ok || id == "" {
 		return "", fmt.Errorf("id is required")
@@ -1924,7 +1924,7 @@ func humanBytes(n int64) string {
 	}
 }
 
-func handleListRoutes(client *Client, args map[string]interface{}) (string, error) {
+func handleListRoutes(client API, args map[string]interface{}) (string, error) {
 	username := getStringArg(args, "username", "")
 	activeOnly := getBoolArg(args, "active_only", false)
 
@@ -1940,7 +1940,7 @@ func handleListRoutes(client *Client, args map[string]interface{}) (string, erro
 	return string(out), nil
 }
 
-func handleExposePort(client *Client, args map[string]interface{}) (string, error) {
+func handleExposePort(client API, args map[string]interface{}) (string, error) {
 	port, _ := getIntArg(args, "container_port")
 	res, err := expose.Run(context.Background(), &mcpExposeAdapter{c: client}, expose.Options{
 		Username:      getStringArg(args, "username", ""),
@@ -1968,7 +1968,7 @@ func handleExposePort(client *Client, args map[string]interface{}) (string, erro
 	return out, nil
 }
 
-func handleListRecipes(client *Client, _ map[string]interface{}) (string, error) {
+func handleListRecipes(client API, _ map[string]interface{}) (string, error) {
 	resp, err := client.ListRecipes()
 	if err != nil {
 		return "", err
@@ -1988,7 +1988,7 @@ func handleListRecipes(client *Client, _ map[string]interface{}) (string, error)
 	return b.String(), nil
 }
 
-func handleDeployRecipe(client *Client, args map[string]interface{}) (string, error) {
+func handleDeployRecipe(client API, args map[string]interface{}) (string, error) {
 	params := map[string]string{}
 	if raw, ok := args["parameters"].(map[string]interface{}); ok {
 		for k, v := range raw {
@@ -2014,7 +2014,7 @@ func handleDeployRecipe(client *Client, args map[string]interface{}) (string, er
 	return out, nil
 }
 
-func handleListAgentSkills(client *Client, _ map[string]interface{}) (string, error) {
+func handleListAgentSkills(client API, _ map[string]interface{}) (string, error) {
 	resp, err := client.ListAgentSkills()
 	if err != nil {
 		return "", err
@@ -2031,7 +2031,7 @@ func handleListAgentSkills(client *Client, _ map[string]interface{}) (string, er
 	return b.String(), nil
 }
 
-func handleRunAgentSkill(client *Client, args map[string]interface{}) (string, error) {
+func handleRunAgentSkill(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.RunAgentSkill(RunAgentSkillRequest{
 		SkillID:   getStringArg(args, "skill_id", ""),
 		InputJSON: getStringArg(args, "input_json", ""),
@@ -2051,7 +2051,7 @@ func handleRunAgentSkill(client *Client, args map[string]interface{}) (string, e
 	return out, nil
 }
 
-func handleCallAgent(client *Client, args map[string]interface{}) (string, error) {
+func handleCallAgent(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.CallAgent(CallAgentRequest{
 		ToPeerID:    getStringArg(args, "to_peer_id", ""),
 		FromSkillID: getStringArg(args, "from_skill_id", ""),
@@ -2073,7 +2073,7 @@ func handleCallAgent(client *Client, args map[string]interface{}) (string, error
 	return out, nil
 }
 
-func handleListCrews(client *Client, _ map[string]interface{}) (string, error) {
+func handleListCrews(client API, _ map[string]interface{}) (string, error) {
 	resp, err := client.ListCrews()
 	if err != nil {
 		return "", err
@@ -2089,7 +2089,7 @@ func handleListCrews(client *Client, _ map[string]interface{}) (string, error) {
 	return b.String(), nil
 }
 
-func handleRunCrew(client *Client, args map[string]interface{}) (string, error) {
+func handleRunCrew(client API, args map[string]interface{}) (string, error) {
 	resp, err := client.RunCrew(RunCrewRequest{
 		CrewID:    getStringArg(args, "crew_id", ""),
 		InputJSON: getStringArg(args, "input_json", ""),
@@ -2111,7 +2111,7 @@ func handleRunCrew(client *Client, args map[string]interface{}) (string, error) 
 // HTTP Client. Identical responsibilities to the CLI's grpcExposeAdapter
 // in internal/cmd/expose_port.go — both transports speak through the
 // same expose.Run() so behavior can never drift.
-type mcpExposeAdapter struct{ c *Client }
+type mcpExposeAdapter struct{ c API }
 
 func (a *mcpExposeAdapter) LookupContainer(_ context.Context, username string) (string, string, string, error) {
 	got, err := a.c.GetContainer(username)
