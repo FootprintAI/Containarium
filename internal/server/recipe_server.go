@@ -127,8 +127,12 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		Username:     req.Name,
 		Image:        recipeBaseImage,
 		EnablePodman: true,
-		Gpu:          req.Gpu,
 		Resources:    resourceLimits(recipe, req.ResourceOverrides),
+	}
+	// A recipe requests a single GPU device; map it onto the container's
+	// repeated `gpus` (the singular `gpu` is no longer honored — #673).
+	if req.Gpu != "" {
+		createReq.Gpus = []string{req.Gpu}
 	}
 	if _, err := s.containers.CreateContainer(ctx, createReq); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to provision container: %v", err)

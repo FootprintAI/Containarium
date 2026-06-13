@@ -600,7 +600,7 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 		"enablePodman":    pbReq.EnablePodman,
 		"stack":           pbReq.Stack,
 		"stackParameters": pbReq.StackParameters,
-		"gpu":             pbReq.Gpu,
+		"gpus":            pbReq.Gpus,
 		"staticIp":        pbReq.StaticIp,
 		"labels":          pbReq.Labels,
 		"async":           pbReq.Async,
