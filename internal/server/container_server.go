@@ -161,19 +161,6 @@ func NewContainerServer() (*ContainerServer, error) {
 	}, nil
 }
 
-// mergeGPURequests reconciles the repeated `gpus` field with the legacy
-// singular `gpu`. `gpus` wins when set; otherwise a non-empty `gpu` is
-// promoted to a single-element list. Returns nil when neither is set.
-func mergeGPURequests(gpus []string, gpu string) []string {
-	if len(gpus) > 0 {
-		return gpus
-	}
-	if gpu != "" {
-		return []string{gpu}
-	}
-	return nil
-}
-
 // CreateContainer creates a new container
 func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -333,9 +320,9 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		opts.Disk = req.Resources.Disk
 	}
 
-	// Set GPU passthrough. `gpus` (repeated) supersedes the legacy singular
-	// `gpu`; a non-empty `gpu` with empty `gpus` is treated as one GPU.
-	opts.GPUs = mergeGPURequests(req.Gpus, req.Gpu)
+	// Set GPU passthrough from the repeated `gpus` field. The legacy singular
+	// `gpu` is no longer honored (#673) — multi-GPU is the only supported shape.
+	opts.GPUs = req.Gpus
 
 	// Set static IP if specified
 	if req.StaticIp != "" {
