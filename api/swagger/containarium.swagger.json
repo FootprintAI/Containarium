@@ -293,6 +293,116 @@
         ]
       }
     },
+    "/v1/agent-tasks": {
+      "post": {
+        "summary": "Enqueue an agent task (pull queue)",
+        "description": "Places a task on the pull queue for a skill; worker boxes lease and run it.",
+        "operationId": "AgentSkillService_EnqueueAgentTask",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/EnqueueAgentTaskResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "EnqueueAgentTaskRequest places one task on the pull queue.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/EnqueueAgentTaskRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-tasks/lease": {
+      "post": {
+        "summary": "Lease the next agent task (pull queue)",
+        "description": "Worker boxes poll this to lease the next task; the task is hidden from other workers until completed or the lease expires.",
+        "operationId": "AgentSkillService_LeaseAgentTask",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/LeaseAgentTaskResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "LeaseAgentTaskRequest asks for the next runnable task.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LeaseAgentTaskRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-tasks/{taskId}/complete": {
+      "post": {
+        "summary": "Complete a leased agent task (pull queue)",
+        "description": "Worker boxes report a leased task's artifact/error here; a stale lease is rejected.",
+        "operationId": "AgentSkillService_CompleteAgentTask",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CompleteAgentTaskResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CompleteAgentTaskBody"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/alerts": {
       "get": {
         "summary": "List alert rules",
@@ -6105,6 +6215,32 @@
       },
       "title": "Collaborator represents a user with access to a container"
     },
+    "CompleteAgentTaskBody": {
+      "type": "object",
+      "properties": {
+        "leaseToken": {
+          "type": "string"
+        },
+        "artifactJson": {
+          "type": "string",
+          "description": "The run artifact as JSON; empty when error is set."
+        },
+        "error": {
+          "type": "string",
+          "description": "Non-empty when the run failed; the task is removed (no auto-retry in the\nprototype) and the error is recorded."
+        }
+      },
+      "description": "CompleteAgentTaskRequest reports a leased task's outcome."
+    },
+    "CompleteAgentTaskResponse": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "description": "False when the lease was stale (expired + redelivered); the worker should\ndrop its result — another lease owns the task now."
+        }
+      }
+    },
     "ComposeStack": {
       "type": "object",
       "properties": {
@@ -7247,6 +7383,29 @@
         }
       }
     },
+    "EnqueueAgentTaskRequest": {
+      "type": "object",
+      "properties": {
+        "skillId": {
+          "type": "string",
+          "description": "Skill this task is for (workers may filter their lease by it)."
+        },
+        "inputJson": {
+          "type": "string",
+          "description": "Task input as JSON (the same shape RunAgentSkill takes as input_json)."
+        }
+      },
+      "description": "EnqueueAgentTaskRequest places one task on the pull queue."
+    },
+    "EnqueueAgentTaskResponse": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "description": "Server-assigned task id, used later to correlate the completion."
+        }
+      }
+    },
     "Event": {
       "type": "object",
       "properties": {
@@ -8019,6 +8178,47 @@
         },
         "message": {
           "type": "string"
+        }
+      }
+    },
+    "LeaseAgentTaskRequest": {
+      "type": "object",
+      "properties": {
+        "workerId": {
+          "type": "string",
+          "description": "Stable id of the polling worker (audit/debug; not a security boundary)."
+        },
+        "skillId": {
+          "type": "string",
+          "description": "Optional: lease only tasks for this skill. Empty = any skill."
+        },
+        "leaseSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "How long the lease is held before the task becomes visible again. 0 = a\nserver default. Keep it longer than the worst-case run time."
+        }
+      },
+      "description": "LeaseAgentTaskRequest asks for the next runnable task."
+    },
+    "LeaseAgentTaskResponse": {
+      "type": "object",
+      "properties": {
+        "hasTask": {
+          "type": "boolean",
+          "description": "False when the queue had nothing visible — the worker should back off."
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "skillId": {
+          "type": "string"
+        },
+        "inputJson": {
+          "type": "string"
+        },
+        "leaseToken": {
+          "type": "string",
+          "description": "Opaque token proving this worker holds the current lease; must be presented\nto CompleteAgentTask. A new lease (after expiry) mints a new token, so a\nslow worker's stale completion is rejected rather than clobbering a retry."
         }
       }
     },
