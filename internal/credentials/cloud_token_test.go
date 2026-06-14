@@ -8,7 +8,7 @@ func TestIsCloudToken(t *testing.T) {
 		want bool
 	}{
 		{"ctnr_abc.def", true},
-		{"  ctnr_abc  ", true}, // surrounding whitespace trimmed
+		{"  ctnr_abc  ", true},              // surrounding whitespace trimmed
 		{"eyJhbGciOiJIUzI1NiJ9.x.y", false}, // a JWT
 		{"", false},
 		{"ctnr", false},   // prefix must include the underscore
