@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/capacity"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/releasecheck"
@@ -63,6 +64,11 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  *app.DaemonConfigStore
 	peerPool           *PeerPool
+	// capacityStore holds this backend's spare-capacity advertise/withdraw
+	// state + local policy (#680). Lazily initialized so an unwired server
+	// (tests) still answers GetCapacityHeadroom with "not advertised".
+	capacityStore     *capacity.Store
+	capacityStoreOnce sync.Once
 	// startTime is when this daemon process started; ListBackends reports
 	// the local backend's uptime from it. Set by DualServer wiring
 	// (SetStartTime); zero on a server that was never wired, in which case
@@ -2163,6 +2169,13 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
 		}
 	}
+	// Surface the local backend's spare-capacity advertisement (#680). Only
+	// attach when something is actively advertised — an unadvertised backend
+	// leaves headroom null so the control plane can tell "not offering" from
+	// "offering zero".
+	if h := s.capStore().Current(s.hostStateSnapshot()); h.Advertised {
+		local.Headroom = headroomToProto(h)
+	}
 	backends = append(backends, local)
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
@@ -2194,6 +2207,119 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	}
 
 	return &pb.ListBackendsResponse{Backends: backends}, nil
+}
+
+// capStore returns the lazily-initialized per-daemon capacity store. Safe to
+// call from any RPC; the first caller wins.
+func (s *ContainerServer) capStore() *capacity.Store {
+	s.capacityStoreOnce.Do(func() {
+		if s.capacityStore == nil {
+			s.capacityStore = capacity.NewStore()
+		}
+	})
+	return s.capacityStore
+}
+
+// hostStateSnapshot gathers the current host-level resource + container
+// snapshot the headroom computation consumes. It reuses the same Incus
+// system-resources call GetSystemInfo uses and the manager's container list,
+// so the figures match what ListBackends already reports. Best-effort: a
+// missing manager or Incus call yields a zero-resource snapshot rather than an
+// error, so advertise/withdraw still work on an unwired server.
+func (s *ContainerServer) hostStateSnapshot() capacity.HostState {
+	st := capacity.HostState{Now: time.Now()}
+	if s.manager == nil {
+		return st
+	}
+	if containers, err := s.manager.List(); err == nil {
+		st.Containers = containers
+	}
+	client, err := incus.New()
+	if err != nil {
+		return st
+	}
+	res, err := client.GetSystemResources()
+	if err != nil || res == nil {
+		return st
+	}
+	st.AvailableMemoryBytes = res.TotalMemoryBytes - res.UsedMemoryBytes
+	st.AvailableDiskBytes = res.TotalDiskBytes - res.UsedDiskBytes
+	// Available CPU cores ≈ total cores minus the 1-minute load average,
+	// clamped at zero. A coarse but honest host-level idle-CPU proxy.
+	avail := float64(res.TotalCPUs) - res.CPULoad1Min
+	if avail < 0 {
+		avail = 0
+	}
+	st.AvailableCPUs = int32(avail)
+	return st
+}
+
+// policyFromProto maps the wire CapacityPolicy onto the internal policy. A nil
+// proto policy yields the zero (always-open, no-exclusion) policy.
+func policyFromProto(p *pb.CapacityPolicy) capacity.Policy {
+	if p == nil {
+		return capacity.Policy{}
+	}
+	return capacity.Policy{
+		WindowStartHour:         p.GetWindowStartHour(),
+		WindowEndHour:           p.GetWindowEndHour(),
+		ExcludedWorkloadClasses: p.GetExcludedWorkloadClasses(),
+		ReserveFraction:         p.GetReserveFraction(),
+	}
+}
+
+// headroomToProto maps the internal headroom onto the wire type.
+func headroomToProto(h capacity.Headroom) *pb.CapacityHeadroom {
+	out := &pb.CapacityHeadroom{
+		Advertised:       h.Advertised,
+		SpareCpus:        h.SpareCPUs,
+		SpareMemoryBytes: h.SpareMemoryBytes,
+		SpareDiskBytes:   h.SpareDiskBytes,
+		IdleFraction:     h.IdleFraction,
+		Policy: &pb.CapacityPolicy{
+			WindowStartHour:         h.Policy.WindowStartHour,
+			WindowEndHour:           h.Policy.WindowEndHour,
+			ExcludedWorkloadClasses: h.Policy.ExcludedWorkloadClasses,
+			ReserveFraction:         h.Policy.ReserveFraction,
+		},
+	}
+	if !h.AdvertisedAt.IsZero() {
+		out.AdvertisedAt = h.AdvertisedAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// AdvertiseCapacity publishes this backend's spare scheduling headroom to the
+// control plane, bounded by the supplied local policy. The advertisement is
+// surfaced through ListBackends. Admin-only. See #680.
+func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.AdvertiseCapacityRequest) (*pb.AdvertiseCapacityResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	p := policyFromProto(req.GetPolicy())
+	h := s.capStore().Advertise(p, s.hostStateSnapshot())
+	return &pb.AdvertiseCapacityResponse{Headroom: headroomToProto(h)}, nil
+}
+
+// WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
+// withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
+// See #680.
+func (s *ContainerServer) WithdrawCapacity(ctx context.Context, _ *pb.WithdrawCapacityRequest) (*pb.WithdrawCapacityResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	h := s.capStore().Withdraw()
+	return &pb.WithdrawCapacityResponse{Headroom: headroomToProto(h)}, nil
+}
+
+// GetCapacityHeadroom returns this backend's current advertisement with spare
+// figures recomputed against the live host snapshot. Admin-only. See #680.
+func (s *ContainerServer) GetCapacityHeadroom(ctx context.Context, _ *pb.GetCapacityHeadroomRequest) (*pb.GetCapacityHeadroomResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	h := s.capStore().Current(s.hostStateSnapshot())
+	return &pb.GetCapacityHeadroomResponse{Headroom: headroomToProto(h)}, nil
 }
 
 // backendGPUsFromSystemInfo projects a SystemInfo's GPU list onto the

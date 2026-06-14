@@ -2893,7 +2893,12 @@ type BackendInfo struct {
 	// Number of containers currently running on this backend.
 	ContainerCount int32 `protobuf:"varint,9,opt,name=container_count,json=containerCount,proto3" json:"container_count,omitempty"`
 	// GPUs present on this backend.
-	Gpus          []*BackendGPU `protobuf:"bytes,10,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	Gpus []*BackendGPU `protobuf:"bytes,10,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	// Spare scheduling capacity this backend currently advertises to the
+	// control plane, or null when nothing is advertised (withdrawn or never
+	// published). Lets the control plane direct scheduling at hosts that have
+	// explicitly offered freed headroom. See #680.
+	Headroom      *CapacityHeadroom `protobuf:"bytes,11,opt,name=headroom,proto3" json:"headroom,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2998,6 +3003,207 @@ func (x *BackendInfo) GetGpus() []*BackendGPU {
 	return nil
 }
 
+func (x *BackendInfo) GetHeadroom() *CapacityHeadroom {
+	if x != nil {
+		return x.Headroom
+	}
+	return nil
+}
+
+// CapacityHeadroom is a backend's explicit, policy-bounded offer of spare
+// scheduling capacity to the control plane. Today a backend's capacity is
+// implicit (derived from system info); a box that would otherwise scale down
+// can instead publish its freed headroom here so the control plane can direct
+// work at it. Surfaced through BackendInfo (ListBackends). See #680.
+type CapacityHeadroom struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether an advertisement is currently active. False means the backend has
+	// withdrawn (or never published) — the rest of the fields are then a stale
+	// snapshot the control plane must ignore.
+	Advertised bool `protobuf:"varint,1,opt,name=advertised,proto3" json:"advertised,omitempty"`
+	// Spare CPU cores the backend offers for control-plane-directed scheduling.
+	SpareCpus int32 `protobuf:"varint,2,opt,name=spare_cpus,json=spareCpus,proto3" json:"spare_cpus,omitempty"`
+	// Spare memory in bytes (derived from SystemInfo.available_memory_bytes,
+	// bounded by policy headroom reservation).
+	SpareMemoryBytes int64 `protobuf:"varint,3,opt,name=spare_memory_bytes,json=spareMemoryBytes,proto3" json:"spare_memory_bytes,omitempty"`
+	// Spare disk in bytes (derived from SystemInfo.available_disk_bytes,
+	// bounded by policy headroom reservation).
+	SpareDiskBytes int64 `protobuf:"varint,4,opt,name=spare_disk_bytes,json=spareDiskBytes,proto3" json:"spare_disk_bytes,omitempty"`
+	// Host-level idle fraction in [0,1]: the share of running user containers
+	// currently idle (a host aggregate over the per-container idle signal). A
+	// high value indicates a box that would scale down and can instead offer
+	// its headroom. 0 when no signal is available.
+	IdleFraction float64 `protobuf:"fixed64,5,opt,name=idle_fraction,json=idleFraction,proto3" json:"idle_fraction,omitempty"`
+	// RFC3339 timestamp the advertisement was last (re)published.
+	AdvertisedAt string `protobuf:"bytes,6,opt,name=advertised_at,json=advertisedAt,proto3" json:"advertised_at,omitempty"`
+	// The local policy that bounds this advertisement.
+	Policy        *CapacityPolicy `protobuf:"bytes,7,opt,name=policy,proto3" json:"policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CapacityHeadroom) Reset() {
+	*x = CapacityHeadroom{}
+	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CapacityHeadroom) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CapacityHeadroom) ProtoMessage() {}
+
+func (x *CapacityHeadroom) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CapacityHeadroom.ProtoReflect.Descriptor instead.
+func (*CapacityHeadroom) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *CapacityHeadroom) GetAdvertised() bool {
+	if x != nil {
+		return x.Advertised
+	}
+	return false
+}
+
+func (x *CapacityHeadroom) GetSpareCpus() int32 {
+	if x != nil {
+		return x.SpareCpus
+	}
+	return 0
+}
+
+func (x *CapacityHeadroom) GetSpareMemoryBytes() int64 {
+	if x != nil {
+		return x.SpareMemoryBytes
+	}
+	return 0
+}
+
+func (x *CapacityHeadroom) GetSpareDiskBytes() int64 {
+	if x != nil {
+		return x.SpareDiskBytes
+	}
+	return 0
+}
+
+func (x *CapacityHeadroom) GetIdleFraction() float64 {
+	if x != nil {
+		return x.IdleFraction
+	}
+	return 0
+}
+
+func (x *CapacityHeadroom) GetAdvertisedAt() string {
+	if x != nil {
+		return x.AdvertisedAt
+	}
+	return ""
+}
+
+func (x *CapacityHeadroom) GetPolicy() *CapacityPolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
+// CapacityPolicy bounds what a backend is willing to advertise. The
+// advertisement only computes spare capacity when the current time falls
+// inside the allowed window and respects the excluded workload classes.
+// Operator-set per backend. See #680.
+type CapacityPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Local-clock hour the advertisement window opens (0-23). When
+	// window_start_hour == window_end_hour the window is always open.
+	WindowStartHour int32 `protobuf:"varint,1,opt,name=window_start_hour,json=windowStartHour,proto3" json:"window_start_hour,omitempty"`
+	// Local-clock hour the advertisement window closes (0-23, exclusive). May be
+	// less than window_start_hour to express an overnight window (e.g. 22..6).
+	WindowEndHour int32 `protobuf:"varint,2,opt,name=window_end_hour,json=windowEndHour,proto3" json:"window_end_hour,omitempty"`
+	// Workload classes that must NOT be displaced or co-scheduled — running
+	// containers carrying any of these classes are excluded from the idle/spare
+	// computation, so a host running protected work never advertises it as free.
+	// Matched against the container's "user.containarium.workload_class" label.
+	ExcludedWorkloadClasses []string `protobuf:"bytes,3,rep,name=excluded_workload_classes,json=excludedWorkloadClasses,proto3" json:"excluded_workload_classes,omitempty"`
+	// Fraction of host resources to hold back as a safety reservation, in
+	// [0,1). Spare = available * (1 - reserve_fraction). 0 means offer all
+	// available headroom.
+	ReserveFraction float64 `protobuf:"fixed64,4,opt,name=reserve_fraction,json=reserveFraction,proto3" json:"reserve_fraction,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *CapacityPolicy) Reset() {
+	*x = CapacityPolicy{}
+	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CapacityPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CapacityPolicy) ProtoMessage() {}
+
+func (x *CapacityPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CapacityPolicy.ProtoReflect.Descriptor instead.
+func (*CapacityPolicy) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *CapacityPolicy) GetWindowStartHour() int32 {
+	if x != nil {
+		return x.WindowStartHour
+	}
+	return 0
+}
+
+func (x *CapacityPolicy) GetWindowEndHour() int32 {
+	if x != nil {
+		return x.WindowEndHour
+	}
+	return 0
+}
+
+func (x *CapacityPolicy) GetExcludedWorkloadClasses() []string {
+	if x != nil {
+		return x.ExcludedWorkloadClasses
+	}
+	return nil
+}
+
+func (x *CapacityPolicy) GetReserveFraction() float64 {
+	if x != nil {
+		return x.ReserveFraction
+	}
+	return 0
+}
+
 // BackendGPU describes one GPU on a backend.
 type BackendGPU struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3013,7 +3219,7 @@ type BackendGPU struct {
 
 func (x *BackendGPU) Reset() {
 	*x = BackendGPU{}
-	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	mi := &file_containarium_v1_config_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3025,7 +3231,7 @@ func (x *BackendGPU) String() string {
 func (*BackendGPU) ProtoMessage() {}
 
 func (x *BackendGPU) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	mi := &file_containarium_v1_config_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3038,7 +3244,7 @@ func (x *BackendGPU) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendGPU.ProtoReflect.Descriptor instead.
 func (*BackendGPU) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{40}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *BackendGPU) GetVendor() string {
@@ -3071,7 +3277,7 @@ type ListBackendsRequest struct {
 
 func (x *ListBackendsRequest) Reset() {
 	*x = ListBackendsRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	mi := &file_containarium_v1_config_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3083,7 +3289,7 @@ func (x *ListBackendsRequest) String() string {
 func (*ListBackendsRequest) ProtoMessage() {}
 
 func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	mi := &file_containarium_v1_config_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3096,7 +3302,7 @@ func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{41}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{43}
 }
 
 // ListBackendsResponse is the response from listing backends
@@ -3110,7 +3316,7 @@ type ListBackendsResponse struct {
 
 func (x *ListBackendsResponse) Reset() {
 	*x = ListBackendsResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[42]
+	mi := &file_containarium_v1_config_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3122,7 +3328,7 @@ func (x *ListBackendsResponse) String() string {
 func (*ListBackendsResponse) ProtoMessage() {}
 
 func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[42]
+	mi := &file_containarium_v1_config_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3135,12 +3341,276 @@ func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{42}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
 	if x != nil {
 		return x.Backends
+	}
+	return nil
+}
+
+// AdvertiseCapacityRequest publishes (or republishes) this backend's spare
+// scheduling headroom to the control plane, bounded by the supplied policy.
+// See #680.
+type AdvertiseCapacityRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The local policy that bounds the advertisement. When omitted the backend
+	// applies its current/default policy (always-open window, no exclusions, no
+	// reservation).
+	Policy        *CapacityPolicy `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdvertiseCapacityRequest) Reset() {
+	*x = AdvertiseCapacityRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdvertiseCapacityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdvertiseCapacityRequest) ProtoMessage() {}
+
+func (x *AdvertiseCapacityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdvertiseCapacityRequest.ProtoReflect.Descriptor instead.
+func (*AdvertiseCapacityRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *AdvertiseCapacityRequest) GetPolicy() *CapacityPolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
+// AdvertiseCapacityResponse returns the headroom the backend computed and is
+// now advertising. When the policy window is closed, advertised is true but
+// the spare figures are zero.
+type AdvertiseCapacityResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Headroom      *CapacityHeadroom      `protobuf:"bytes,1,opt,name=headroom,proto3" json:"headroom,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdvertiseCapacityResponse) Reset() {
+	*x = AdvertiseCapacityResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdvertiseCapacityResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdvertiseCapacityResponse) ProtoMessage() {}
+
+func (x *AdvertiseCapacityResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdvertiseCapacityResponse.ProtoReflect.Descriptor instead.
+func (*AdvertiseCapacityResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *AdvertiseCapacityResponse) GetHeadroom() *CapacityHeadroom {
+	if x != nil {
+		return x.Headroom
+	}
+	return nil
+}
+
+// WithdrawCapacityRequest withdraws any active advertisement. Idempotent —
+// withdrawing when nothing is advertised succeeds and is a no-op.
+type WithdrawCapacityRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WithdrawCapacityRequest) Reset() {
+	*x = WithdrawCapacityRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WithdrawCapacityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WithdrawCapacityRequest) ProtoMessage() {}
+
+func (x *WithdrawCapacityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WithdrawCapacityRequest.ProtoReflect.Descriptor instead.
+func (*WithdrawCapacityRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{47}
+}
+
+// WithdrawCapacityResponse confirms the backend is no longer advertising.
+type WithdrawCapacityResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The post-withdraw headroom (advertised=false).
+	Headroom      *CapacityHeadroom `protobuf:"bytes,1,opt,name=headroom,proto3" json:"headroom,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WithdrawCapacityResponse) Reset() {
+	*x = WithdrawCapacityResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WithdrawCapacityResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WithdrawCapacityResponse) ProtoMessage() {}
+
+func (x *WithdrawCapacityResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WithdrawCapacityResponse.ProtoReflect.Descriptor instead.
+func (*WithdrawCapacityResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *WithdrawCapacityResponse) GetHeadroom() *CapacityHeadroom {
+	if x != nil {
+		return x.Headroom
+	}
+	return nil
+}
+
+// GetCapacityHeadroomRequest reads the backend's current advertisement and the
+// freshly recomputed spare figures, without changing advertise/withdraw state.
+type GetCapacityHeadroomRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetCapacityHeadroomRequest) Reset() {
+	*x = GetCapacityHeadroomRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetCapacityHeadroomRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetCapacityHeadroomRequest) ProtoMessage() {}
+
+func (x *GetCapacityHeadroomRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetCapacityHeadroomRequest.ProtoReflect.Descriptor instead.
+func (*GetCapacityHeadroomRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{49}
+}
+
+// GetCapacityHeadroomResponse returns the current headroom snapshot.
+type GetCapacityHeadroomResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Headroom      *CapacityHeadroom      `protobuf:"bytes,1,opt,name=headroom,proto3" json:"headroom,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetCapacityHeadroomResponse) Reset() {
+	*x = GetCapacityHeadroomResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetCapacityHeadroomResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetCapacityHeadroomResponse) ProtoMessage() {}
+
+func (x *GetCapacityHeadroomResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetCapacityHeadroomResponse.ProtoReflect.Descriptor instead.
+func (*GetCapacityHeadroomResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *GetCapacityHeadroomResponse) GetHeadroom() *CapacityHeadroom {
+	if x != nil {
+		return x.Headroom
 	}
 	return nil
 }
@@ -3331,7 +3801,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"signatures\"9\n" +
 	"#DeleteNetworkPolicySignatureRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"&\n" +
-	"$DeleteNetworkPolicySignatureResponse\"\xb4\x02\n" +
+	"$DeleteNetworkPolicySignatureResponse\"\xf3\x02\n" +
 	"\vBackendInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -3344,7 +3814,24 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x02os\x18\b \x01(\tR\x02os\x12'\n" +
 	"\x0fcontainer_count\x18\t \x01(\x05R\x0econtainerCount\x12/\n" +
 	"\x04gpus\x18\n" +
-	" \x03(\v2\x1b.containarium.v1.BackendGPUR\x04gpus\"b\n" +
+	" \x03(\v2\x1b.containarium.v1.BackendGPUR\x04gpus\x12=\n" +
+	"\bheadroom\x18\v \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"\xac\x02\n" +
+	"\x10CapacityHeadroom\x12\x1e\n" +
+	"\n" +
+	"advertised\x18\x01 \x01(\bR\n" +
+	"advertised\x12\x1d\n" +
+	"\n" +
+	"spare_cpus\x18\x02 \x01(\x05R\tspareCpus\x12,\n" +
+	"\x12spare_memory_bytes\x18\x03 \x01(\x03R\x10spareMemoryBytes\x12(\n" +
+	"\x10spare_disk_bytes\x18\x04 \x01(\x03R\x0espareDiskBytes\x12#\n" +
+	"\ridle_fraction\x18\x05 \x01(\x01R\fidleFraction\x12#\n" +
+	"\radvertised_at\x18\x06 \x01(\tR\fadvertisedAt\x127\n" +
+	"\x06policy\x18\a \x01(\v2\x1f.containarium.v1.CapacityPolicyR\x06policy\"\xcb\x01\n" +
+	"\x0eCapacityPolicy\x12*\n" +
+	"\x11window_start_hour\x18\x01 \x01(\x05R\x0fwindowStartHour\x12&\n" +
+	"\x0fwindow_end_hour\x18\x02 \x01(\x05R\rwindowEndHour\x12:\n" +
+	"\x19excluded_workload_classes\x18\x03 \x03(\tR\x17excludedWorkloadClasses\x12)\n" +
+	"\x10reserve_fraction\x18\x04 \x01(\x01R\x0freserveFraction\"b\n" +
 	"\n" +
 	"BackendGPU\x12\x16\n" +
 	"\x06vendor\x18\x01 \x01(\tR\x06vendor\x12\x1d\n" +
@@ -3354,7 +3841,17 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"vram_bytes\x18\x03 \x01(\x03R\tvramBytes\"\x15\n" +
 	"\x13ListBackendsRequest\"P\n" +
 	"\x14ListBackendsResponse\x128\n" +
-	"\bbackends\x18\x01 \x03(\v2\x1c.containarium.v1.BackendInfoR\bbackends*h\n" +
+	"\bbackends\x18\x01 \x03(\v2\x1c.containarium.v1.BackendInfoR\bbackends\"S\n" +
+	"\x18AdvertiseCapacityRequest\x127\n" +
+	"\x06policy\x18\x01 \x01(\v2\x1f.containarium.v1.CapacityPolicyR\x06policy\"Z\n" +
+	"\x19AdvertiseCapacityResponse\x12=\n" +
+	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"\x19\n" +
+	"\x17WithdrawCapacityRequest\"Y\n" +
+	"\x18WithdrawCapacityResponse\x12=\n" +
+	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"\x1c\n" +
+	"\x1aGetCapacityHeadroomRequest\"\\\n" +
+	"\x1bGetCapacityHeadroomResponse\x12=\n" +
+	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom*h\n" +
 	"\tGPUVendor\x12\x1a\n" +
 	"\x16GPU_VENDOR_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11GPU_VENDOR_NVIDIA\x10\x01\x12\x12\n" +
@@ -3408,7 +3905,7 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                               // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                                // 1: containarium.v1.GPUModel
@@ -3455,19 +3952,27 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*DeleteNetworkPolicySignatureRequest)(nil),  // 42: containarium.v1.DeleteNetworkPolicySignatureRequest
 	(*DeleteNetworkPolicySignatureResponse)(nil), // 43: containarium.v1.DeleteNetworkPolicySignatureResponse
 	(*BackendInfo)(nil),                          // 44: containarium.v1.BackendInfo
-	(*BackendGPU)(nil),                           // 45: containarium.v1.BackendGPU
-	(*ListBackendsRequest)(nil),                  // 46: containarium.v1.ListBackendsRequest
-	(*ListBackendsResponse)(nil),                 // 47: containarium.v1.ListBackendsResponse
-	(*ResourceLimits)(nil),                       // 48: containarium.v1.ResourceLimits
-	(OSType)(0),                                  // 49: containarium.v1.OSType
+	(*CapacityHeadroom)(nil),                     // 45: containarium.v1.CapacityHeadroom
+	(*CapacityPolicy)(nil),                       // 46: containarium.v1.CapacityPolicy
+	(*BackendGPU)(nil),                           // 47: containarium.v1.BackendGPU
+	(*ListBackendsRequest)(nil),                  // 48: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),                 // 49: containarium.v1.ListBackendsResponse
+	(*AdvertiseCapacityRequest)(nil),             // 50: containarium.v1.AdvertiseCapacityRequest
+	(*AdvertiseCapacityResponse)(nil),            // 51: containarium.v1.AdvertiseCapacityResponse
+	(*WithdrawCapacityRequest)(nil),              // 52: containarium.v1.WithdrawCapacityRequest
+	(*WithdrawCapacityResponse)(nil),             // 53: containarium.v1.WithdrawCapacityResponse
+	(*GetCapacityHeadroomRequest)(nil),           // 54: containarium.v1.GetCapacityHeadroomRequest
+	(*GetCapacityHeadroomResponse)(nil),          // 55: containarium.v1.GetCapacityHeadroomResponse
+	(*ResourceLimits)(nil),                       // 56: containarium.v1.ResourceLimits
+	(OSType)(0),                                  // 57: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	48, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	56, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	49, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	57, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -3487,13 +3992,19 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	37, // 22: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
 	37, // 23: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
 	37, // 24: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
-	45, // 25: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	44, // 26: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	47, // 25: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	45, // 26: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
+	46, // 27: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
+	44, // 28: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	46, // 29: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
+	45, // 30: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	45, // 31: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	45, // 32: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -3508,7 +4019,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   43,
+			NumMessages:   51,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

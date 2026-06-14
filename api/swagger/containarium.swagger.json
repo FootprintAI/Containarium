@@ -1076,6 +1076,85 @@
         ]
       }
     },
+    "/v1/capacity/headroom": {
+      "get": {
+        "summary": "Get spare scheduling capacity",
+        "description": "Returns this backend's current headroom advertisement and recomputed spare figures. Admin-only.",
+        "operationId": "ContainerService_GetCapacityHeadroom",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCapacityHeadroomResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      },
+      "delete": {
+        "summary": "Withdraw spare scheduling capacity",
+        "description": "Withdraws this backend's headroom advertisement. Idempotent — succeeds even when nothing is currently advertised. Admin-only.",
+        "operationId": "ContainerService_WithdrawCapacity",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/WithdrawCapacityResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      },
+      "post": {
+        "summary": "Advertise spare scheduling capacity",
+        "description": "Publishes this backend's spare scheduling headroom (spare CPU/memory/disk + host idle fraction) to the control plane, bounded by a local policy. Surfaced through ListBackends. Admin-only.",
+        "operationId": "ContainerService_AdvertiseCapacity",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AdvertiseCapacityResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "AdvertiseCapacityRequest publishes (or republishes) this backend's spare\nscheduling headroom to the control plane, bounded by the supplied policy.\nSee #680.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AdvertiseCapacityRequest"
+            }
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/containers": {
       "get": {
         "summary": "List all containers",
@@ -5440,6 +5519,25 @@
       },
       "description": "AdoptMigratedContainerResponse confirms the destination registered\nthe container and returns its IP for the source's route swap."
     },
+    "AdvertiseCapacityRequest": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/CapacityPolicy",
+          "description": "The local policy that bounds the advertisement. When omitted the backend\napplies its current/default policy (always-open window, no exclusions, no\nreservation)."
+        }
+      },
+      "description": "AdvertiseCapacityRequest publishes (or republishes) this backend's spare\nscheduling headroom to the control plane, bounded by the supplied policy.\nSee #680."
+    },
+    "AdvertiseCapacityResponse": {
+      "type": "object",
+      "properties": {
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom"
+        }
+      },
+      "description": "AdvertiseCapacityResponse returns the headroom the backend computed and is\nnow advertising. When the policy window is closed, advertised is true but\nthe spare figures are zero."
+    },
     "AgentArtifact": {
       "type": "object",
       "properties": {
@@ -5863,6 +5961,10 @@
             "$ref": "#/definitions/BackendGPU"
           },
           "description": "GPUs present on this backend."
+        },
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom",
+          "description": "Spare scheduling capacity this backend currently advertises to the\ncontrol plane, or null when nothing is advertised (withdrawn or never\npublished). Lets the control plane direct scheduling at hosts that have\nexplicitly offered freed headroom. See #680."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
@@ -5945,6 +6047,72 @@
         }
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
+    },
+    "CapacityHeadroom": {
+      "type": "object",
+      "properties": {
+        "advertised": {
+          "type": "boolean",
+          "description": "Whether an advertisement is currently active. False means the backend has\nwithdrawn (or never published) — the rest of the fields are then a stale\nsnapshot the control plane must ignore."
+        },
+        "spareCpus": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Spare CPU cores the backend offers for control-plane-directed scheduling."
+        },
+        "spareMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Spare memory in bytes (derived from SystemInfo.available_memory_bytes,\nbounded by policy headroom reservation)."
+        },
+        "spareDiskBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Spare disk in bytes (derived from SystemInfo.available_disk_bytes,\nbounded by policy headroom reservation)."
+        },
+        "idleFraction": {
+          "type": "number",
+          "format": "double",
+          "description": "Host-level idle fraction in [0,1]: the share of running user containers\ncurrently idle (a host aggregate over the per-container idle signal). A\nhigh value indicates a box that would scale down and can instead offer\nits headroom. 0 when no signal is available."
+        },
+        "advertisedAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp the advertisement was last (re)published."
+        },
+        "policy": {
+          "$ref": "#/definitions/CapacityPolicy",
+          "description": "The local policy that bounds this advertisement."
+        }
+      },
+      "description": "CapacityHeadroom is a backend's explicit, policy-bounded offer of spare\nscheduling capacity to the control plane. Today a backend's capacity is\nimplicit (derived from system info); a box that would otherwise scale down\ncan instead publish its freed headroom here so the control plane can direct\nwork at it. Surfaced through BackendInfo (ListBackends). See #680."
+    },
+    "CapacityPolicy": {
+      "type": "object",
+      "properties": {
+        "windowStartHour": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Local-clock hour the advertisement window opens (0-23). When\nwindow_start_hour == window_end_hour the window is always open."
+        },
+        "windowEndHour": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Local-clock hour the advertisement window closes (0-23, exclusive). May be\nless than window_start_hour to express an overnight window (e.g. 22..6)."
+        },
+        "excludedWorkloadClasses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Workload classes that must NOT be displaced or co-scheduled — running\ncontainers carrying any of these classes are excluded from the idle/spare\ncomputation, so a host running protected work never advertises it as free.\nMatched against the container's \"user.containarium.workload_class\" label."
+        },
+        "reserveFraction": {
+          "type": "number",
+          "format": "double",
+          "description": "Fraction of host resources to hold back as a safety reservation, in\n[0,1). Spare = available * (1 - reserve_fraction). 0 means offer all\navailable headroom."
+        }
+      },
+      "description": "CapacityPolicy bounds what a backend is willing to advertise. The\nadvertisement only computes spare capacity when the current time falls\ninside the allowed window and respects the excluded workload classes.\nOperator-set per backend. See #680."
     },
     "ClamavContainerSummary": {
       "type": "object",
@@ -7488,6 +7656,15 @@
           "$ref": "#/definitions/BackupRecord"
         }
       }
+    },
+    "GetCapacityHeadroomResponse": {
+      "type": "object",
+      "properties": {
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom"
+        }
+      },
+      "description": "GetCapacityHeadroomResponse returns the current headroom snapshot."
     },
     "GetClamavSummaryResponse": {
       "type": "object",
@@ -10787,6 +10964,16 @@
         }
       },
       "title": "WebhookDelivery represents a single webhook delivery attempt"
+    },
+    "WithdrawCapacityResponse": {
+      "type": "object",
+      "properties": {
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom",
+          "description": "The post-withdraw headroom (advertised=false)."
+        }
+      },
+      "description": "WithdrawCapacityResponse confirms the backend is no longer advertising."
     },
     "ZapAlert": {
       "type": "object",

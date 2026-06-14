@@ -593,6 +593,72 @@ message BackendInfo {
 
   // GPUs present on this backend.
   repeated BackendGPU gpus = 10;
+
+  // Spare scheduling capacity this backend currently advertises to the
+  // control plane, or null when nothing is advertised (withdrawn or never
+  // published). Lets the control plane direct scheduling at hosts that have
+  // explicitly offered freed headroom. See #680.
+  CapacityHeadroom headroom = 11;
+}
+
+// CapacityHeadroom is a backend's explicit, policy-bounded offer of spare
+// scheduling capacity to the control plane. Today a backend's capacity is
+// implicit (derived from system info); a box that would otherwise scale down
+// can instead publish its freed headroom here so the control plane can direct
+// work at it. Surfaced through BackendInfo (ListBackends). See #680.
+message CapacityHeadroom {
+  // Whether an advertisement is currently active. False means the backend has
+  // withdrawn (or never published) — the rest of the fields are then a stale
+  // snapshot the control plane must ignore.
+  bool advertised = 1;
+
+  // Spare CPU cores the backend offers for control-plane-directed scheduling.
+  int32 spare_cpus = 2;
+
+  // Spare memory in bytes (derived from SystemInfo.available_memory_bytes,
+  // bounded by policy headroom reservation).
+  int64 spare_memory_bytes = 3;
+
+  // Spare disk in bytes (derived from SystemInfo.available_disk_bytes,
+  // bounded by policy headroom reservation).
+  int64 spare_disk_bytes = 4;
+
+  // Host-level idle fraction in [0,1]: the share of running user containers
+  // currently idle (a host aggregate over the per-container idle signal). A
+  // high value indicates a box that would scale down and can instead offer
+  // its headroom. 0 when no signal is available.
+  double idle_fraction = 5;
+
+  // RFC3339 timestamp the advertisement was last (re)published.
+  string advertised_at = 6;
+
+  // The local policy that bounds this advertisement.
+  CapacityPolicy policy = 7;
+}
+
+// CapacityPolicy bounds what a backend is willing to advertise. The
+// advertisement only computes spare capacity when the current time falls
+// inside the allowed window and respects the excluded workload classes.
+// Operator-set per backend. See #680.
+message CapacityPolicy {
+  // Local-clock hour the advertisement window opens (0-23). When
+  // window_start_hour == window_end_hour the window is always open.
+  int32 window_start_hour = 1;
+
+  // Local-clock hour the advertisement window closes (0-23, exclusive). May be
+  // less than window_start_hour to express an overnight window (e.g. 22..6).
+  int32 window_end_hour = 2;
+
+  // Workload classes that must NOT be displaced or co-scheduled — running
+  // containers carrying any of these classes are excluded from the idle/spare
+  // computation, so a host running protected work never advertises it as free.
+  // Matched against the container's "user.containarium.workload_class" label.
+  repeated string excluded_workload_classes = 3;
+
+  // Fraction of host resources to hold back as a safety reservation, in
+  // [0,1). Spare = available * (1 - reserve_fraction). 0 means offer all
+  // available headroom.
+  double reserve_fraction = 4;
 }
 
 // BackendGPU describes one GPU on a backend.
@@ -614,4 +680,40 @@ message ListBackendsRequest {}
 message ListBackendsResponse {
   // List of available backends
   repeated BackendInfo backends = 1;
+}
+
+// AdvertiseCapacityRequest publishes (or republishes) this backend's spare
+// scheduling headroom to the control plane, bounded by the supplied policy.
+// See #680.
+message AdvertiseCapacityRequest {
+  // The local policy that bounds the advertisement. When omitted the backend
+  // applies its current/default policy (always-open window, no exclusions, no
+  // reservation).
+  CapacityPolicy policy = 1;
+}
+
+// AdvertiseCapacityResponse returns the headroom the backend computed and is
+// now advertising. When the policy window is closed, advertised is true but
+// the spare figures are zero.
+message AdvertiseCapacityResponse {
+  CapacityHeadroom headroom = 1;
+}
+
+// WithdrawCapacityRequest withdraws any active advertisement. Idempotent —
+// withdrawing when nothing is advertised succeeds and is a no-op.
+message WithdrawCapacityRequest {}
+
+// WithdrawCapacityResponse confirms the backend is no longer advertising.
+message WithdrawCapacityResponse {
+  // The post-withdraw headroom (advertised=false).
+  CapacityHeadroom headroom = 1;
+}
+
+// GetCapacityHeadroomRequest reads the backend's current advertisement and the
+// freshly recomputed spare figures, without changing advertise/withdraw state.
+message GetCapacityHeadroomRequest {}
+
+// GetCapacityHeadroomResponse returns the current headroom snapshot.
+message GetCapacityHeadroomResponse {
+  CapacityHeadroom headroom = 1;
 }

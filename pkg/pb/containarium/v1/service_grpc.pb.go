@@ -44,6 +44,9 @@ const (
 	ContainerService_ListStacks_FullMethodName               = "/containarium.v1.ContainerService/ListStacks"
 	ContainerService_GetSystemInfo_FullMethodName            = "/containarium.v1.ContainerService/GetSystemInfo"
 	ContainerService_ListBackends_FullMethodName             = "/containarium.v1.ContainerService/ListBackends"
+	ContainerService_AdvertiseCapacity_FullMethodName        = "/containarium.v1.ContainerService/AdvertiseCapacity"
+	ContainerService_WithdrawCapacity_FullMethodName         = "/containarium.v1.ContainerService/WithdrawCapacity"
+	ContainerService_GetCapacityHeadroom_FullMethodName      = "/containarium.v1.ContainerService/GetCapacityHeadroom"
 	ContainerService_GetLatestRelease_FullMethodName         = "/containarium.v1.ContainerService/GetLatestRelease"
 	ContainerService_ValidateGPU_FullMethodName              = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName           = "/containarium.v1.ContainerService/TriggerUpgrade"
@@ -175,6 +178,20 @@ type ContainerServiceClient interface {
 	// /v1/backends HTTP handler with the proto-first, gateway-generated
 	// contract (proto-first convention; #354).
 	ListBackends(ctx context.Context, in *ListBackendsRequest, opts ...grpc.CallOption) (*ListBackendsResponse, error)
+	// AdvertiseCapacity publishes this backend's spare scheduling headroom to
+	// the control plane, bounded by a local policy (time window, excluded
+	// workload classes, safety reservation). A box that would scale down can
+	// instead offer its freed headroom for control-plane-directed scheduling.
+	// The advertisement is surfaced through ListBackends. Admin-only. See #680.
+	AdvertiseCapacity(ctx context.Context, in *AdvertiseCapacityRequest, opts ...grpc.CallOption) (*AdvertiseCapacityResponse, error)
+	// WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
+	// withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
+	// See #680.
+	WithdrawCapacity(ctx context.Context, in *WithdrawCapacityRequest, opts ...grpc.CallOption) (*WithdrawCapacityResponse, error)
+	// GetCapacityHeadroom reads this backend's current advertisement and the
+	// freshly recomputed spare figures without changing advertise/withdraw
+	// state. Admin-only. See #680.
+	GetCapacityHeadroom(ctx context.Context, in *GetCapacityHeadroomRequest, opts ...grpc.CallOption) (*GetCapacityHeadroomResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -497,6 +514,36 @@ func (c *containerServiceClient) ListBackends(ctx context.Context, in *ListBacke
 	return out, nil
 }
 
+func (c *containerServiceClient) AdvertiseCapacity(ctx context.Context, in *AdvertiseCapacityRequest, opts ...grpc.CallOption) (*AdvertiseCapacityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdvertiseCapacityResponse)
+	err := c.cc.Invoke(ctx, ContainerService_AdvertiseCapacity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) WithdrawCapacity(ctx context.Context, in *WithdrawCapacityRequest, opts ...grpc.CallOption) (*WithdrawCapacityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WithdrawCapacityResponse)
+	err := c.cc.Invoke(ctx, ContainerService_WithdrawCapacity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetCapacityHeadroom(ctx context.Context, in *GetCapacityHeadroomRequest, opts ...grpc.CallOption) (*GetCapacityHeadroomResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCapacityHeadroomResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetCapacityHeadroom_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetLatestReleaseResponse)
@@ -806,6 +853,20 @@ type ContainerServiceServer interface {
 	// /v1/backends HTTP handler with the proto-first, gateway-generated
 	// contract (proto-first convention; #354).
 	ListBackends(context.Context, *ListBackendsRequest) (*ListBackendsResponse, error)
+	// AdvertiseCapacity publishes this backend's spare scheduling headroom to
+	// the control plane, bounded by a local policy (time window, excluded
+	// workload classes, safety reservation). A box that would scale down can
+	// instead offer its freed headroom for control-plane-directed scheduling.
+	// The advertisement is surfaced through ListBackends. Admin-only. See #680.
+	AdvertiseCapacity(context.Context, *AdvertiseCapacityRequest) (*AdvertiseCapacityResponse, error)
+	// WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
+	// withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
+	// See #680.
+	WithdrawCapacity(context.Context, *WithdrawCapacityRequest) (*WithdrawCapacityResponse, error)
+	// GetCapacityHeadroom reads this backend's current advertisement and the
+	// freshly recomputed spare figures without changing advertise/withdraw
+	// state. Admin-only. See #680.
+	GetCapacityHeadroom(context.Context, *GetCapacityHeadroomRequest) (*GetCapacityHeadroomResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -952,6 +1013,15 @@ func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSy
 }
 func (UnimplementedContainerServiceServer) ListBackends(context.Context, *ListBackendsRequest) (*ListBackendsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListBackends not implemented")
+}
+func (UnimplementedContainerServiceServer) AdvertiseCapacity(context.Context, *AdvertiseCapacityRequest) (*AdvertiseCapacityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdvertiseCapacity not implemented")
+}
+func (UnimplementedContainerServiceServer) WithdrawCapacity(context.Context, *WithdrawCapacityRequest) (*WithdrawCapacityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WithdrawCapacity not implemented")
+}
+func (UnimplementedContainerServiceServer) GetCapacityHeadroom(context.Context, *GetCapacityHeadroomRequest) (*GetCapacityHeadroomResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCapacityHeadroom not implemented")
 }
 func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLatestRelease not implemented")
@@ -1484,6 +1554,60 @@ func _ContainerService_ListBackends_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_AdvertiseCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdvertiseCapacityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).AdvertiseCapacity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_AdvertiseCapacity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).AdvertiseCapacity(ctx, req.(*AdvertiseCapacityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_WithdrawCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WithdrawCapacityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).WithdrawCapacity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_WithdrawCapacity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).WithdrawCapacity(ctx, req.(*WithdrawCapacityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetCapacityHeadroom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCapacityHeadroomRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetCapacityHeadroom(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetCapacityHeadroom_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetCapacityHeadroom(ctx, req.(*GetCapacityHeadroomRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetLatestRelease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetLatestReleaseRequest)
 	if err := dec(in); err != nil {
@@ -1950,6 +2074,18 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListBackends",
 			Handler:    _ContainerService_ListBackends_Handler,
+		},
+		{
+			MethodName: "AdvertiseCapacity",
+			Handler:    _ContainerService_AdvertiseCapacity_Handler,
+		},
+		{
+			MethodName: "WithdrawCapacity",
+			Handler:    _ContainerService_WithdrawCapacity_Handler,
+		},
+		{
+			MethodName: "GetCapacityHeadroom",
+			Handler:    _ContainerService_GetCapacityHeadroom_Handler,
 		},
 		{
 			MethodName: "GetLatestRelease",

@@ -422,6 +422,51 @@ service ContainerService {
     };
   }
 
+  // AdvertiseCapacity publishes this backend's spare scheduling headroom to
+  // the control plane, bounded by a local policy (time window, excluded
+  // workload classes, safety reservation). A box that would scale down can
+  // instead offer its freed headroom for control-plane-directed scheduling.
+  // The advertisement is surfaced through ListBackends. Admin-only. See #680.
+  rpc AdvertiseCapacity(AdvertiseCapacityRequest) returns (AdvertiseCapacityResponse) {
+    option (google.api.http) = {
+      post: "/v1/capacity/headroom"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Advertise spare scheduling capacity";
+      description: "Publishes this backend's spare scheduling headroom (spare CPU/memory/disk + host idle fraction) to the control plane, bounded by a local policy. Surfaced through ListBackends. Admin-only.";
+      tags: "System";
+    };
+  }
+
+  // WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
+  // withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
+  // See #680.
+  rpc WithdrawCapacity(WithdrawCapacityRequest) returns (WithdrawCapacityResponse) {
+    option (google.api.http) = {
+      delete: "/v1/capacity/headroom"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Withdraw spare scheduling capacity";
+      description: "Withdraws this backend's headroom advertisement. Idempotent — succeeds even when nothing is currently advertised. Admin-only.";
+      tags: "System";
+    };
+  }
+
+  // GetCapacityHeadroom reads this backend's current advertisement and the
+  // freshly recomputed spare figures without changing advertise/withdraw
+  // state. Admin-only. See #680.
+  rpc GetCapacityHeadroom(GetCapacityHeadroomRequest) returns (GetCapacityHeadroomResponse) {
+    option (google.api.http) = {
+      get: "/v1/capacity/headroom"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get spare scheduling capacity";
+      description: "Returns this backend's current headroom advertisement and recomputed spare figures. Admin-only.";
+      tags: "System";
+    };
+  }
+
   // GetLatestRelease reports the latest Containarium release on GitHub vs the
   // running version, so operators see "update available" without SSHing in.
   // The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
