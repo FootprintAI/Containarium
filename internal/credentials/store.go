@@ -54,6 +54,24 @@ func (m AccessModel) Known() bool {
 	return m == AccessModelToken || m == AccessModelSSHKey
 }
 
+// APITokenPrefix is the prefix the hosted control plane mints its API tokens
+// with. It is a ONE-WAY target signal: only the control plane issues it, so a
+// credential carrying it unambiguously targets the cloud. A bare JWT (`eyJ…`)
+// is ambiguous — a self-hosted daemon and the cloud both accept JWTs — so it
+// is NOT a cloud signal on its own (fall back to the stored AccessModel).
+//
+// Single source of truth for both the MCP backend classifier and the CLI's
+// target-aware command guards.
+const APITokenPrefix = "ctnr_"
+
+// IsCloudToken reports whether a credential is a hosted-control-plane API key,
+// purely from its shape (the APITokenPrefix). One-way: true ⇒ cloud; false ⇒
+// unknown (could be a daemon JWT or a cloud JWT), so callers that have the
+// server URL should also consult the cached AccessModel.
+func IsCloudToken(token string) bool {
+	return strings.HasPrefix(strings.TrimSpace(token), APITokenPrefix)
+}
+
 type ServerCreds struct {
 	Token     string     `json:"token"`
 	UserEmail string     `json:"user_email"`

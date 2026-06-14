@@ -41,6 +41,11 @@ func init() {
 
 func runDebug(cmd *cobra.Command, args []string) error {
 	username := args[0]
+	// debug reads a box's host-level diagnostics (sshd journal, shell); the
+	// hosted control plane has no per-tenant equivalent (#456).
+	if isCloudTarget(serverAddr, authToken) {
+		return errUnsupportedOnCloud("debug", "use `containarium connect "+username+"` to inspect the box")
+	}
 
 	report, err := fetchDebugReport(username)
 	if err != nil {

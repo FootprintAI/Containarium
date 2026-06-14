@@ -79,6 +79,11 @@ func backendVersionStatus(current, latest string) string {
 }
 
 func runBackendsVersions(cmd *cobra.Command, args []string) error {
+	// Backend version / release checks are operator-owned on the hosted
+	// control plane (the platform keeps it current) — refuse client-side (#456).
+	if isCloudTarget(serverAddr, authToken) {
+		return errUnsupportedOnCloud("backends versions", "the platform keeps the control plane current")
+	}
 	if serverAddr == "" {
 		return fmt.Errorf("--server is required (the platform daemon's HTTP address, e.g. http://host:8080)")
 	}

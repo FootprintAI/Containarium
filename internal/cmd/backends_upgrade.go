@@ -58,6 +58,11 @@ type triggerUpgradeResp struct {
 }
 
 func runBackendsUpgrade(cmd *cobra.Command, args []string) error {
+	// Control-plane upgrades are operator-owned; not a tenant op on the
+	// hosted control plane (#456).
+	if isCloudTarget(serverAddr, authToken) {
+		return errUnsupportedOnCloud("backends upgrade", "the platform operator owns control-plane upgrades")
+	}
 	if serverAddr == "" {
 		return fmt.Errorf("--server is required (the platform daemon's HTTP address, e.g. http://host:8080)")
 	}

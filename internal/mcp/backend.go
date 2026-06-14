@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+
+	"github.com/footprintai/containarium/internal/credentials"
 )
 
 // API is the contract the MCP tool handlers consume. It has two
@@ -100,18 +101,6 @@ var (
 	_ API = cloudClient{}
 )
 
-// apiTokenPrefix is the prefix the hosted control plane mints API tokens with
-// (the cloud's auth.APITokenPrefix). It is a ONE-WAY signal: only the cloud
-// issues it, so a credential carrying it unambiguously targets the cloud. A
-// bare JWT (`eyJ…`) is ambiguous — a daemon and the cloud both accept JWTs —
-// so it falls through to the daemon backend.
-const apiTokenPrefix = "ctnr_"
-
-// isCloudToken reports whether a credential is a hosted-control-plane API key.
-func isCloudToken(token string) bool {
-	return strings.HasPrefix(strings.TrimSpace(token), apiTokenPrefix)
-}
-
 // cloudClient is the hosted-control-plane backend. It embeds *Client for the
 // shared surface (create / list / expose / … map identically through the
 // cloud's OSS-compatible REST shim) and overrides ONLY the host-level
@@ -160,7 +149,7 @@ func newBackend(cfg *Config) API {
 		base.SetTokenFile(cfg.JWTTokenFile)
 	}
 	tok, _ := base.readToken()
-	if isCloudToken(tok) {
+	if credentials.IsCloudToken(tok) {
 		return cloudClient{base}
 	}
 	return base

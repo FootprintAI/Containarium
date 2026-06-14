@@ -53,6 +53,11 @@ func runInfo(cmd *cobra.Command, args []string) error {
 }
 
 func showSystemInfo() error {
+	// System info is a host-level view; the hosted control plane has no
+	// per-tenant equivalent. Refuse client-side (#456) rather than 404.
+	if isCloudTarget(serverAddr, authToken) {
+		return errUnsupportedOnCloud("system info", "use `containarium backends` for the fleet view")
+	}
 	fmt.Println("=== Containarium System Information ===")
 	fmt.Println()
 
