@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
@@ -69,6 +70,19 @@ type ContainerServer struct {
 	// (tests) still answers GetCapacityHeadroom with "not advertised".
 	capacityStore     *capacity.Store
 	capacityStoreOnce sync.Once
+	// capabilityStore holds this backend's last-recorded hardware capability
+	// profile (#681). Lazily initialized like capacityStore so an unwired
+	// server (tests) answers GetCapabilityProfile with "not profiled yet".
+	capabilityStore     *capabilities.Store
+	capabilityStoreOnce sync.Once
+	// region is the region this backend serves, wired from --region (falling
+	// back to the pool name). Recorded into the capability profile. Empty when
+	// unset.
+	region string
+	// reportedClass is the self-reported hardware class the operator assigned
+	// this backend (defaults to the pool name). Reconciled against the measured
+	// class in the capability profile. Empty when unset.
+	reportedClass string
 	// startTime is when this daemon process started; ListBackends reports
 	// the local backend's uptime from it. Set by DualServer wiring
 	// (SetStartTime); zero on a server that was never wired, in which case
@@ -2176,6 +2190,12 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	if h := s.capStore().Current(s.hostStateSnapshot()); h.Advertised {
 		local.Headroom = headroomToProto(h)
 	}
+	// Surface the local backend's last-recorded capability profile (#681).
+	// Null until ProfileBackend has run, so the control plane can tell
+	// "unprofiled" from "profiled CPU-only".
+	if p, ok := s.capabStore().Current(); ok {
+		local.CapabilityProfile = profileToProto(p)
+	}
 	backends = append(backends, local)
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
@@ -2320,6 +2340,172 @@ func (s *ContainerServer) GetCapacityHeadroom(ctx context.Context, _ *pb.GetCapa
 	}
 	h := s.capStore().Current(s.hostStateSnapshot())
 	return &pb.GetCapacityHeadroomResponse{Headroom: headroomToProto(h)}, nil
+}
+
+// capabStore returns the lazily-initialized per-daemon capability-profile
+// store. Safe to call from any RPC; the first caller wins.
+func (s *ContainerServer) capabStore() *capabilities.Store {
+	s.capabilityStoreOnce.Do(func() {
+		if s.capabilityStore == nil {
+			s.capabilityStore = capabilities.NewStore()
+		}
+	})
+	return s.capabilityStore
+}
+
+// gatherHostFacts collects the inputs the capability profile is computed from:
+// host system resources (CPU cores + model, RAM, disk) via the same Incus call
+// GetSystemInfo uses, the GPU passthrough probe (unless skipped), the bounded
+// CPU/memory micro-benchmark, and the operator-set region / reported class.
+// Best-effort on the resource read: a missing Incus client yields zero hardware
+// figures rather than an error, so a profile is always recordable.
+func (s *ContainerServer) gatherHostFacts(skipGPU bool) capabilities.HostFacts {
+	f := capabilities.HostFacts{
+		Now:           time.Now(),
+		Region:        s.region,
+		ReportedClass: s.reportedClass,
+	}
+
+	if client, err := incus.New(); err == nil {
+		if res, err := client.GetSystemResources(); err == nil && res != nil {
+			f.CPUCores = res.TotalCPUs
+			f.CPUModel = res.CPUModel
+			f.TotalMemoryBytes = res.TotalMemoryBytes
+			f.TotalDiskBytes = res.TotalDiskBytes
+		}
+	}
+
+	// GPU model/driver from the existing nvidia.runtime passthrough probe —
+	// the same ValidateGPU the validate-gpu command runs. Skipped on request
+	// (CPU-only backends) or when no container manager is wired.
+	if !skipGPU && s.manager != nil {
+		res := s.manager.ValidateGPU("")
+		if res.Status == container.GPUStatusOK {
+			f.GPUAvailable = true
+			f.GPUModel = res.Model
+			f.GPUDriverVersion = res.DriverVersion
+		}
+	}
+
+	// Bounded CPU/memory micro-benchmark.
+	b := container.RunBenchmark()
+	f.Benchmark = capabilities.Benchmark{
+		CPUOpsPerSec:   b.CPUOpsPerSec,
+		MemBytesPerSec: b.MemBytesPerSec,
+		DurationMs:     b.DurationMs,
+	}
+	return f
+}
+
+// profileToProto maps the internal capability profile onto the wire type.
+func profileToProto(p capabilities.Profile) *pb.CapabilityProfile {
+	out := &pb.CapabilityProfile{
+		CpuCores:         p.CPUCores,
+		CpuModel:         p.CPUModel,
+		TotalMemoryBytes: p.TotalMemoryBytes,
+		TotalDiskBytes:   p.TotalDiskBytes,
+		GpuModel:         p.GPUModel,
+		GpuDriverVersion: p.GPUDriverVersion,
+		GpuAvailable:     p.GPUAvailable,
+		Region:           p.Region,
+		ReportedClass:    p.ReportedClass,
+		MeasuredClass:    p.MeasuredClass,
+		ClassConsistent:  p.ClassConsistent,
+		Benchmark: &pb.CapabilityBenchmark{
+			CpuOpsPerSec:   p.Benchmark.CPUOpsPerSec,
+			MemBytesPerSec: p.Benchmark.MemBytesPerSec,
+			DurationMs:     p.Benchmark.DurationMs,
+		},
+	}
+	if !p.ProfiledAt.IsZero() {
+		out.ProfiledAt = p.ProfiledAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// ProfileBackend records a backend's hardware capability profile: read system
+// info, run the GPU passthrough probe + bounded micro-benchmark, derive the
+// measured class, reconcile it against the self-reported class, and persist it.
+// Admin-only. An empty (or local) backend_id profiles this daemon; a peer
+// backend_id forwards to that peer, which profiles itself. See #681.
+func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBackendRequest) (*pb.ProfileBackendResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Remote backend → forward to the owning peer (it profiles its own host).
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		body, err := protojson.Marshal(req)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "marshal profile request: %v", err)
+		}
+		respBody, st, err := peer.ForwardRequest("POST", "/v1/capabilities/profile", extractAuthToken(ctx), body)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward profile to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for profile", req.BackendId, st)
+		}
+		var resp pb.ProfileBackendResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s profile response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	// Local backend.
+	p := s.capabStore().Record(s.gatherHostFacts(req.SkipGpu))
+	return &pb.ProfileBackendResponse{
+		Profile:   profileToProto(p),
+		BackendId: req.BackendId,
+	}, nil
+}
+
+// GetCapabilityProfile returns a backend's last-recorded capability profile
+// without re-running the benchmark/probe. Admin-only. A peer backend_id
+// forwards to that peer. Returns a null profile when nothing has been recorded
+// yet. See #681.
+func (s *ContainerServer) GetCapabilityProfile(ctx context.Context, req *pb.GetCapabilityProfileRequest) (*pb.GetCapabilityProfileResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		respBody, st, err := peer.ForwardRequest("GET", "/v1/capabilities/profile", extractAuthToken(ctx), nil)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward get-profile to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for get-profile", req.BackendId, st)
+		}
+		var resp pb.GetCapabilityProfileResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s get-profile response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	resp := &pb.GetCapabilityProfileResponse{BackendId: req.BackendId}
+	if p, ok := s.capabStore().Current(); ok {
+		resp.Profile = profileToProto(p)
+	}
+	return resp, nil
 }
 
 // backendGPUsFromSystemInfo projects a SystemInfo's GPU list onto the
@@ -2545,6 +2731,16 @@ func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 // report the local backend's uptime. Called once from DualServer setup.
 func (s *ContainerServer) SetStartTime(t time.Time) {
 	s.startTime = t
+}
+
+// SetCapabilityIdentity wires the region this backend serves and its
+// self-reported hardware class into the capability profile (#681). Both are
+// operator-set: region from --region (falling back to the pool name) and the
+// reported class from the pool name. Called once from DualServer setup; either
+// may be empty.
+func (s *ContainerServer) SetCapabilityIdentity(region, reportedClass string) {
+	s.region = region
+	s.reportedClass = reportedClass
 }
 
 // SetSSHHost wires the public SSH host clients dial to reach this daemon's

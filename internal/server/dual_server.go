@@ -101,6 +101,7 @@ type DualServerConfig struct {
 	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
+	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
@@ -1619,6 +1620,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
+		// Capability-profile identity (#681): region from --region, falling
+		// back to the pool name; self-reported class from the pool name. Both
+		// may be empty. Wired unconditionally — profiling works on a
+		// single-backend daemon with no peer pool.
+		region := ds.config.Region
+		if region == "" {
+			region = ds.config.Pool
+		}
+		ds.containerServer.SetCapabilityIdentity(region, ds.config.Pool)
 	}
 
 	// Start peer discovery for multi-backend support

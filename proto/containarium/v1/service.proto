@@ -467,6 +467,37 @@ service ContainerService {
     };
   }
 
+  // ProfileBackend records a backend's hardware capability profile: it reads
+  // system info, runs the GPU passthrough probe and a bounded CPU/memory
+  // micro-benchmark, derives the measured hardware class, reconciles it
+  // against the self-reported class, and persists the profile. The profile is
+  // surfaced through ListBackends. Admin-only; runs a short-lived benchmark and
+  // (unless skipped) a throwaway GPU probe LXC. See #681.
+  rpc ProfileBackend(ProfileBackendRequest) returns (ProfileBackendResponse) {
+    option (google.api.http) = {
+      post: "/v1/capabilities/profile"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Profile a backend's hardware capability";
+      description: "Records a backend's capability profile (hardware class, GPU probe, bounded CPU/memory micro-benchmark, region) and reconciles measured vs self-reported class. Surfaced through ListBackends. Admin-only.";
+      tags: "System";
+    };
+  }
+
+  // GetCapabilityProfile reads a backend's last-recorded capability profile
+  // without re-running the benchmark/probe. Admin-only. See #681.
+  rpc GetCapabilityProfile(GetCapabilityProfileRequest) returns (GetCapabilityProfileResponse) {
+    option (google.api.http) = {
+      get: "/v1/capabilities/profile"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a backend's capability profile";
+      description: "Returns a backend's last-recorded capability profile (hardware class, GPU probe, micro-benchmark, region) without re-running it. Admin-only.";
+      tags: "System";
+    };
+  }
+
   // GetLatestRelease reports the latest Containarium release on GitHub vs the
   // running version, so operators see "update available" without SSHing in.
   // The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.

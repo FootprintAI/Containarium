@@ -599,6 +599,86 @@ message BackendInfo {
   // published). Lets the control plane direct scheduling at hosts that have
   // explicitly offered freed headroom. See #680.
   CapacityHeadroom headroom = 11;
+
+  // The backend's hardware capability profile recorded at join (hardware
+  // class, a bounded CPU/memory micro-benchmark, and region), or null when no
+  // profile has been recorded yet. Lets the control plane place work by
+  // measured class rather than self-reported class alone. See #681.
+  CapabilityProfile capability_profile = 12;
+}
+
+// CapabilityProfile is a backend's hardware capability snapshot recorded at
+// join (and refreshable on demand): the hardware class derived from the host's
+// system info + GPU probe, a lightweight bounded CPU/memory micro-benchmark,
+// and the region. The control plane reads it through the backend surface to
+// place work by measured capability rather than by the self-reported class
+// alone, and to detect a backend whose measured class drifts from what it
+// reports. See #681.
+message CapabilityProfile {
+  // Total physical CPU cores on the host (from SystemInfo.total_cpus).
+  int32 cpu_cores = 1;
+
+  // Best-effort CPU model/generation string (e.g. "AMD EPYC 7B13"), empty when
+  // the host doesn't expose one.
+  string cpu_model = 2;
+
+  // Total RAM in bytes (from SystemInfo.total_memory_bytes).
+  int64 total_memory_bytes = 3;
+
+  // Total disk in bytes (from SystemInfo.total_disk_bytes).
+  int64 total_disk_bytes = 4;
+
+  // GPU model name from the existing nvidia.runtime passthrough probe
+  // (ValidateGPU), empty on a CPU-only backend.
+  string gpu_model = 5;
+
+  // GPU driver version from the same probe, empty on a CPU-only backend.
+  string gpu_driver_version = 6;
+
+  // Whether the GPU passthrough probe saw a usable GPU.
+  bool gpu_available = 7;
+
+  // Region the backend serves (operator-set via --region; falls back to the
+  // pool name). Empty when unset.
+  string region = 8;
+
+  // Self-reported hardware class the operator assigned the backend (e.g. the
+  // pool name / declared tier), if any.
+  string reported_class = 9;
+
+  // Measured hardware class derived from the profile (e.g. "gpu", "cpu-large",
+  // "cpu-small"). Coarse buckets; the control plane refines placement from the
+  // raw figures.
+  string measured_class = 10;
+
+  // True when measured_class matches reported_class (or reported_class is
+  // empty, treated as consistent). False flags a drift the control plane and
+  // operator should reconcile.
+  bool class_consistent = 11;
+
+  // The bounded micro-benchmark result. See CapabilityBenchmark.
+  CapabilityBenchmark benchmark = 12;
+
+  // RFC3339 timestamp the profile was recorded.
+  string profiled_at = 13;
+}
+
+// CapabilityBenchmark is a lightweight, time-bounded CPU/memory micro-benchmark
+// run when the profile is recorded. The scores are relative integrity/capacity
+// signals, not absolute hardware specs — they let the control plane confirm a
+// backend's self-reported class is plausible. See #681.
+message CapabilityBenchmark {
+  // CPU score: integer-work iterations completed per second during the bounded
+  // run (higher is faster). Single-threaded.
+  int64 cpu_ops_per_sec = 1;
+
+  // Memory score: bytes per second moved through a bounded buffer copy/sum
+  // loop (higher is faster).
+  int64 mem_bytes_per_sec = 2;
+
+  // Wall-clock duration of the benchmark in milliseconds (bounded; the runner
+  // caps each phase).
+  int64 duration_ms = 3;
 }
 
 // CapacityHeadroom is a backend's explicit, policy-bounded offer of spare
@@ -716,4 +796,43 @@ message GetCapacityHeadroomRequest {}
 // GetCapacityHeadroomResponse returns the current headroom snapshot.
 message GetCapacityHeadroomResponse {
   CapacityHeadroom headroom = 1;
+}
+
+// ProfileBackendRequest asks a backend to (re)record its capability profile:
+// read system info, run the GPU passthrough probe and the bounded
+// CPU/memory micro-benchmark, derive the measured class, and persist it. See
+// #681.
+message ProfileBackendRequest {
+  // Backend to profile. Empty = the local/primary daemon's own host; a peer id
+  // forwards to that peer (which profiles itself).
+  string backend_id = 1;
+
+  // Skip the GPU passthrough probe (which creates+deletes a throwaway LXC and
+  // can take ~30s). The profile then records gpu_available=false. Useful on a
+  // backend known to be CPU-only.
+  bool skip_gpu = 2;
+}
+
+// ProfileBackendResponse returns the freshly recorded capability profile.
+message ProfileBackendResponse {
+  CapabilityProfile profile = 1;
+
+  // Echoes the profiled backend ("" = local).
+  string backend_id = 2;
+}
+
+// GetCapabilityProfileRequest reads a backend's last-recorded capability
+// profile without re-running the benchmark/probe. See #681.
+message GetCapabilityProfileRequest {
+  // Backend to read. Empty = the local/primary daemon's own host.
+  string backend_id = 1;
+}
+
+// GetCapabilityProfileResponse returns the last-recorded profile, or null when
+// nothing has been profiled yet.
+message GetCapabilityProfileResponse {
+  CapabilityProfile profile = 1;
+
+  // Echoes the backend ("" = local).
+  string backend_id = 2;
 }

@@ -2898,9 +2898,14 @@ type BackendInfo struct {
 	// control plane, or null when nothing is advertised (withdrawn or never
 	// published). Lets the control plane direct scheduling at hosts that have
 	// explicitly offered freed headroom. See #680.
-	Headroom      *CapacityHeadroom `protobuf:"bytes,11,opt,name=headroom,proto3" json:"headroom,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Headroom *CapacityHeadroom `protobuf:"bytes,11,opt,name=headroom,proto3" json:"headroom,omitempty"`
+	// The backend's hardware capability profile recorded at join (hardware
+	// class, a bounded CPU/memory micro-benchmark, and region), or null when no
+	// profile has been recorded yet. Lets the control plane place work by
+	// measured class rather than self-reported class alone. See #681.
+	CapabilityProfile *CapabilityProfile `protobuf:"bytes,12,opt,name=capability_profile,json=capabilityProfile,proto3" json:"capability_profile,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *BackendInfo) Reset() {
@@ -3010,6 +3015,251 @@ func (x *BackendInfo) GetHeadroom() *CapacityHeadroom {
 	return nil
 }
 
+func (x *BackendInfo) GetCapabilityProfile() *CapabilityProfile {
+	if x != nil {
+		return x.CapabilityProfile
+	}
+	return nil
+}
+
+// CapabilityProfile is a backend's hardware capability snapshot recorded at
+// join (and refreshable on demand): the hardware class derived from the host's
+// system info + GPU probe, a lightweight bounded CPU/memory micro-benchmark,
+// and the region. The control plane reads it through the backend surface to
+// place work by measured capability rather than by the self-reported class
+// alone, and to detect a backend whose measured class drifts from what it
+// reports. See #681.
+type CapabilityProfile struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Total physical CPU cores on the host (from SystemInfo.total_cpus).
+	CpuCores int32 `protobuf:"varint,1,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
+	// Best-effort CPU model/generation string (e.g. "AMD EPYC 7B13"), empty when
+	// the host doesn't expose one.
+	CpuModel string `protobuf:"bytes,2,opt,name=cpu_model,json=cpuModel,proto3" json:"cpu_model,omitempty"`
+	// Total RAM in bytes (from SystemInfo.total_memory_bytes).
+	TotalMemoryBytes int64 `protobuf:"varint,3,opt,name=total_memory_bytes,json=totalMemoryBytes,proto3" json:"total_memory_bytes,omitempty"`
+	// Total disk in bytes (from SystemInfo.total_disk_bytes).
+	TotalDiskBytes int64 `protobuf:"varint,4,opt,name=total_disk_bytes,json=totalDiskBytes,proto3" json:"total_disk_bytes,omitempty"`
+	// GPU model name from the existing nvidia.runtime passthrough probe
+	// (ValidateGPU), empty on a CPU-only backend.
+	GpuModel string `protobuf:"bytes,5,opt,name=gpu_model,json=gpuModel,proto3" json:"gpu_model,omitempty"`
+	// GPU driver version from the same probe, empty on a CPU-only backend.
+	GpuDriverVersion string `protobuf:"bytes,6,opt,name=gpu_driver_version,json=gpuDriverVersion,proto3" json:"gpu_driver_version,omitempty"`
+	// Whether the GPU passthrough probe saw a usable GPU.
+	GpuAvailable bool `protobuf:"varint,7,opt,name=gpu_available,json=gpuAvailable,proto3" json:"gpu_available,omitempty"`
+	// Region the backend serves (operator-set via --region; falls back to the
+	// pool name). Empty when unset.
+	Region string `protobuf:"bytes,8,opt,name=region,proto3" json:"region,omitempty"`
+	// Self-reported hardware class the operator assigned the backend (e.g. the
+	// pool name / declared tier), if any.
+	ReportedClass string `protobuf:"bytes,9,opt,name=reported_class,json=reportedClass,proto3" json:"reported_class,omitempty"`
+	// Measured hardware class derived from the profile (e.g. "gpu", "cpu-large",
+	// "cpu-small"). Coarse buckets; the control plane refines placement from the
+	// raw figures.
+	MeasuredClass string `protobuf:"bytes,10,opt,name=measured_class,json=measuredClass,proto3" json:"measured_class,omitempty"`
+	// True when measured_class matches reported_class (or reported_class is
+	// empty, treated as consistent). False flags a drift the control plane and
+	// operator should reconcile.
+	ClassConsistent bool `protobuf:"varint,11,opt,name=class_consistent,json=classConsistent,proto3" json:"class_consistent,omitempty"`
+	// The bounded micro-benchmark result. See CapabilityBenchmark.
+	Benchmark *CapabilityBenchmark `protobuf:"bytes,12,opt,name=benchmark,proto3" json:"benchmark,omitempty"`
+	// RFC3339 timestamp the profile was recorded.
+	ProfiledAt    string `protobuf:"bytes,13,opt,name=profiled_at,json=profiledAt,proto3" json:"profiled_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CapabilityProfile) Reset() {
+	*x = CapabilityProfile{}
+	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CapabilityProfile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CapabilityProfile) ProtoMessage() {}
+
+func (x *CapabilityProfile) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CapabilityProfile.ProtoReflect.Descriptor instead.
+func (*CapabilityProfile) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *CapabilityProfile) GetCpuCores() int32 {
+	if x != nil {
+		return x.CpuCores
+	}
+	return 0
+}
+
+func (x *CapabilityProfile) GetCpuModel() string {
+	if x != nil {
+		return x.CpuModel
+	}
+	return ""
+}
+
+func (x *CapabilityProfile) GetTotalMemoryBytes() int64 {
+	if x != nil {
+		return x.TotalMemoryBytes
+	}
+	return 0
+}
+
+func (x *CapabilityProfile) GetTotalDiskBytes() int64 {
+	if x != nil {
+		return x.TotalDiskBytes
+	}
+	return 0
+}
+
+func (x *CapabilityProfile) GetGpuModel() string {
+	if x != nil {
+		return x.GpuModel
+	}
+	return ""
+}
+
+func (x *CapabilityProfile) GetGpuDriverVersion() string {
+	if x != nil {
+		return x.GpuDriverVersion
+	}
+	return ""
+}
+
+func (x *CapabilityProfile) GetGpuAvailable() bool {
+	if x != nil {
+		return x.GpuAvailable
+	}
+	return false
+}
+
+func (x *CapabilityProfile) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *CapabilityProfile) GetReportedClass() string {
+	if x != nil {
+		return x.ReportedClass
+	}
+	return ""
+}
+
+func (x *CapabilityProfile) GetMeasuredClass() string {
+	if x != nil {
+		return x.MeasuredClass
+	}
+	return ""
+}
+
+func (x *CapabilityProfile) GetClassConsistent() bool {
+	if x != nil {
+		return x.ClassConsistent
+	}
+	return false
+}
+
+func (x *CapabilityProfile) GetBenchmark() *CapabilityBenchmark {
+	if x != nil {
+		return x.Benchmark
+	}
+	return nil
+}
+
+func (x *CapabilityProfile) GetProfiledAt() string {
+	if x != nil {
+		return x.ProfiledAt
+	}
+	return ""
+}
+
+// CapabilityBenchmark is a lightweight, time-bounded CPU/memory micro-benchmark
+// run when the profile is recorded. The scores are relative integrity/capacity
+// signals, not absolute hardware specs — they let the control plane confirm a
+// backend's self-reported class is plausible. See #681.
+type CapabilityBenchmark struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// CPU score: integer-work iterations completed per second during the bounded
+	// run (higher is faster). Single-threaded.
+	CpuOpsPerSec int64 `protobuf:"varint,1,opt,name=cpu_ops_per_sec,json=cpuOpsPerSec,proto3" json:"cpu_ops_per_sec,omitempty"`
+	// Memory score: bytes per second moved through a bounded buffer copy/sum
+	// loop (higher is faster).
+	MemBytesPerSec int64 `protobuf:"varint,2,opt,name=mem_bytes_per_sec,json=memBytesPerSec,proto3" json:"mem_bytes_per_sec,omitempty"`
+	// Wall-clock duration of the benchmark in milliseconds (bounded; the runner
+	// caps each phase).
+	DurationMs    int64 `protobuf:"varint,3,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CapabilityBenchmark) Reset() {
+	*x = CapabilityBenchmark{}
+	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CapabilityBenchmark) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CapabilityBenchmark) ProtoMessage() {}
+
+func (x *CapabilityBenchmark) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CapabilityBenchmark.ProtoReflect.Descriptor instead.
+func (*CapabilityBenchmark) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *CapabilityBenchmark) GetCpuOpsPerSec() int64 {
+	if x != nil {
+		return x.CpuOpsPerSec
+	}
+	return 0
+}
+
+func (x *CapabilityBenchmark) GetMemBytesPerSec() int64 {
+	if x != nil {
+		return x.MemBytesPerSec
+	}
+	return 0
+}
+
+func (x *CapabilityBenchmark) GetDurationMs() int64 {
+	if x != nil {
+		return x.DurationMs
+	}
+	return 0
+}
+
 // CapacityHeadroom is a backend's explicit, policy-bounded offer of spare
 // scheduling capacity to the control plane. Today a backend's capacity is
 // implicit (derived from system info); a box that would otherwise scale down
@@ -3044,7 +3294,7 @@ type CapacityHeadroom struct {
 
 func (x *CapacityHeadroom) Reset() {
 	*x = CapacityHeadroom{}
-	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	mi := &file_containarium_v1_config_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3056,7 +3306,7 @@ func (x *CapacityHeadroom) String() string {
 func (*CapacityHeadroom) ProtoMessage() {}
 
 func (x *CapacityHeadroom) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	mi := &file_containarium_v1_config_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3069,7 +3319,7 @@ func (x *CapacityHeadroom) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapacityHeadroom.ProtoReflect.Descriptor instead.
 func (*CapacityHeadroom) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{40}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *CapacityHeadroom) GetAdvertised() bool {
@@ -3148,7 +3398,7 @@ type CapacityPolicy struct {
 
 func (x *CapacityPolicy) Reset() {
 	*x = CapacityPolicy{}
-	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	mi := &file_containarium_v1_config_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3160,7 +3410,7 @@ func (x *CapacityPolicy) String() string {
 func (*CapacityPolicy) ProtoMessage() {}
 
 func (x *CapacityPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	mi := &file_containarium_v1_config_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3173,7 +3423,7 @@ func (x *CapacityPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapacityPolicy.ProtoReflect.Descriptor instead.
 func (*CapacityPolicy) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{41}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *CapacityPolicy) GetWindowStartHour() int32 {
@@ -3219,7 +3469,7 @@ type BackendGPU struct {
 
 func (x *BackendGPU) Reset() {
 	*x = BackendGPU{}
-	mi := &file_containarium_v1_config_proto_msgTypes[42]
+	mi := &file_containarium_v1_config_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3231,7 +3481,7 @@ func (x *BackendGPU) String() string {
 func (*BackendGPU) ProtoMessage() {}
 
 func (x *BackendGPU) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[42]
+	mi := &file_containarium_v1_config_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3244,7 +3494,7 @@ func (x *BackendGPU) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendGPU.ProtoReflect.Descriptor instead.
 func (*BackendGPU) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{42}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *BackendGPU) GetVendor() string {
@@ -3277,7 +3527,7 @@ type ListBackendsRequest struct {
 
 func (x *ListBackendsRequest) Reset() {
 	*x = ListBackendsRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[43]
+	mi := &file_containarium_v1_config_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3289,7 +3539,7 @@ func (x *ListBackendsRequest) String() string {
 func (*ListBackendsRequest) ProtoMessage() {}
 
 func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[43]
+	mi := &file_containarium_v1_config_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3302,7 +3552,7 @@ func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{43}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{45}
 }
 
 // ListBackendsResponse is the response from listing backends
@@ -3316,7 +3566,7 @@ type ListBackendsResponse struct {
 
 func (x *ListBackendsResponse) Reset() {
 	*x = ListBackendsResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[44]
+	mi := &file_containarium_v1_config_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3328,7 +3578,7 @@ func (x *ListBackendsResponse) String() string {
 func (*ListBackendsResponse) ProtoMessage() {}
 
 func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[44]
+	mi := &file_containarium_v1_config_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3341,7 +3591,7 @@ func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{44}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
@@ -3366,7 +3616,7 @@ type AdvertiseCapacityRequest struct {
 
 func (x *AdvertiseCapacityRequest) Reset() {
 	*x = AdvertiseCapacityRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[45]
+	mi := &file_containarium_v1_config_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3378,7 +3628,7 @@ func (x *AdvertiseCapacityRequest) String() string {
 func (*AdvertiseCapacityRequest) ProtoMessage() {}
 
 func (x *AdvertiseCapacityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[45]
+	mi := &file_containarium_v1_config_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3391,7 +3641,7 @@ func (x *AdvertiseCapacityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdvertiseCapacityRequest.ProtoReflect.Descriptor instead.
 func (*AdvertiseCapacityRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{45}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *AdvertiseCapacityRequest) GetPolicy() *CapacityPolicy {
@@ -3413,7 +3663,7 @@ type AdvertiseCapacityResponse struct {
 
 func (x *AdvertiseCapacityResponse) Reset() {
 	*x = AdvertiseCapacityResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[46]
+	mi := &file_containarium_v1_config_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3425,7 +3675,7 @@ func (x *AdvertiseCapacityResponse) String() string {
 func (*AdvertiseCapacityResponse) ProtoMessage() {}
 
 func (x *AdvertiseCapacityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[46]
+	mi := &file_containarium_v1_config_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3438,7 +3688,7 @@ func (x *AdvertiseCapacityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdvertiseCapacityResponse.ProtoReflect.Descriptor instead.
 func (*AdvertiseCapacityResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{46}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *AdvertiseCapacityResponse) GetHeadroom() *CapacityHeadroom {
@@ -3458,7 +3708,7 @@ type WithdrawCapacityRequest struct {
 
 func (x *WithdrawCapacityRequest) Reset() {
 	*x = WithdrawCapacityRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[47]
+	mi := &file_containarium_v1_config_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3470,7 +3720,7 @@ func (x *WithdrawCapacityRequest) String() string {
 func (*WithdrawCapacityRequest) ProtoMessage() {}
 
 func (x *WithdrawCapacityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[47]
+	mi := &file_containarium_v1_config_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3483,7 +3733,7 @@ func (x *WithdrawCapacityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WithdrawCapacityRequest.ProtoReflect.Descriptor instead.
 func (*WithdrawCapacityRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{47}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{49}
 }
 
 // WithdrawCapacityResponse confirms the backend is no longer advertising.
@@ -3497,7 +3747,7 @@ type WithdrawCapacityResponse struct {
 
 func (x *WithdrawCapacityResponse) Reset() {
 	*x = WithdrawCapacityResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[48]
+	mi := &file_containarium_v1_config_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3509,7 +3759,7 @@ func (x *WithdrawCapacityResponse) String() string {
 func (*WithdrawCapacityResponse) ProtoMessage() {}
 
 func (x *WithdrawCapacityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[48]
+	mi := &file_containarium_v1_config_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3522,7 +3772,7 @@ func (x *WithdrawCapacityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WithdrawCapacityResponse.ProtoReflect.Descriptor instead.
 func (*WithdrawCapacityResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{48}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *WithdrawCapacityResponse) GetHeadroom() *CapacityHeadroom {
@@ -3542,7 +3792,7 @@ type GetCapacityHeadroomRequest struct {
 
 func (x *GetCapacityHeadroomRequest) Reset() {
 	*x = GetCapacityHeadroomRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[49]
+	mi := &file_containarium_v1_config_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3554,7 +3804,7 @@ func (x *GetCapacityHeadroomRequest) String() string {
 func (*GetCapacityHeadroomRequest) ProtoMessage() {}
 
 func (x *GetCapacityHeadroomRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[49]
+	mi := &file_containarium_v1_config_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3567,7 +3817,7 @@ func (x *GetCapacityHeadroomRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapacityHeadroomRequest.ProtoReflect.Descriptor instead.
 func (*GetCapacityHeadroomRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{49}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{51}
 }
 
 // GetCapacityHeadroomResponse returns the current headroom snapshot.
@@ -3580,7 +3830,7 @@ type GetCapacityHeadroomResponse struct {
 
 func (x *GetCapacityHeadroomResponse) Reset() {
 	*x = GetCapacityHeadroomResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[50]
+	mi := &file_containarium_v1_config_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3592,7 +3842,7 @@ func (x *GetCapacityHeadroomResponse) String() string {
 func (*GetCapacityHeadroomResponse) ProtoMessage() {}
 
 func (x *GetCapacityHeadroomResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[50]
+	mi := &file_containarium_v1_config_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3605,7 +3855,7 @@ func (x *GetCapacityHeadroomResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapacityHeadroomResponse.ProtoReflect.Descriptor instead.
 func (*GetCapacityHeadroomResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{50}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *GetCapacityHeadroomResponse) GetHeadroom() *CapacityHeadroom {
@@ -3613,6 +3863,223 @@ func (x *GetCapacityHeadroomResponse) GetHeadroom() *CapacityHeadroom {
 		return x.Headroom
 	}
 	return nil
+}
+
+// ProfileBackendRequest asks a backend to (re)record its capability profile:
+// read system info, run the GPU passthrough probe and the bounded
+// CPU/memory micro-benchmark, derive the measured class, and persist it. See
+// #681.
+type ProfileBackendRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Backend to profile. Empty = the local/primary daemon's own host; a peer id
+	// forwards to that peer (which profiles itself).
+	BackendId string `protobuf:"bytes,1,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	// Skip the GPU passthrough probe (which creates+deletes a throwaway LXC and
+	// can take ~30s). The profile then records gpu_available=false. Useful on a
+	// backend known to be CPU-only.
+	SkipGpu       bool `protobuf:"varint,2,opt,name=skip_gpu,json=skipGpu,proto3" json:"skip_gpu,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileBackendRequest) Reset() {
+	*x = ProfileBackendRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileBackendRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileBackendRequest) ProtoMessage() {}
+
+func (x *ProfileBackendRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileBackendRequest.ProtoReflect.Descriptor instead.
+func (*ProfileBackendRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *ProfileBackendRequest) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
+func (x *ProfileBackendRequest) GetSkipGpu() bool {
+	if x != nil {
+		return x.SkipGpu
+	}
+	return false
+}
+
+// ProfileBackendResponse returns the freshly recorded capability profile.
+type ProfileBackendResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Profile *CapabilityProfile     `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	// Echoes the profiled backend ("" = local).
+	BackendId     string `protobuf:"bytes,2,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileBackendResponse) Reset() {
+	*x = ProfileBackendResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileBackendResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileBackendResponse) ProtoMessage() {}
+
+func (x *ProfileBackendResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileBackendResponse.ProtoReflect.Descriptor instead.
+func (*ProfileBackendResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *ProfileBackendResponse) GetProfile() *CapabilityProfile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+func (x *ProfileBackendResponse) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
+// GetCapabilityProfileRequest reads a backend's last-recorded capability
+// profile without re-running the benchmark/probe. See #681.
+type GetCapabilityProfileRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Backend to read. Empty = the local/primary daemon's own host.
+	BackendId     string `protobuf:"bytes,1,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetCapabilityProfileRequest) Reset() {
+	*x = GetCapabilityProfileRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetCapabilityProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetCapabilityProfileRequest) ProtoMessage() {}
+
+func (x *GetCapabilityProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetCapabilityProfileRequest.ProtoReflect.Descriptor instead.
+func (*GetCapabilityProfileRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *GetCapabilityProfileRequest) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
+// GetCapabilityProfileResponse returns the last-recorded profile, or null when
+// nothing has been profiled yet.
+type GetCapabilityProfileResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Profile *CapabilityProfile     `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	// Echoes the backend ("" = local).
+	BackendId     string `protobuf:"bytes,2,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetCapabilityProfileResponse) Reset() {
+	*x = GetCapabilityProfileResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetCapabilityProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetCapabilityProfileResponse) ProtoMessage() {}
+
+func (x *GetCapabilityProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetCapabilityProfileResponse.ProtoReflect.Descriptor instead.
+func (*GetCapabilityProfileResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *GetCapabilityProfileResponse) GetProfile() *CapabilityProfile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+func (x *GetCapabilityProfileResponse) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
 }
 
 var File_containarium_v1_config_proto protoreflect.FileDescriptor
@@ -3801,7 +4268,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"signatures\"9\n" +
 	"#DeleteNetworkPolicySignatureRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"&\n" +
-	"$DeleteNetworkPolicySignatureResponse\"\xf3\x02\n" +
+	"$DeleteNetworkPolicySignatureResponse\"\xc6\x03\n" +
 	"\vBackendInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -3815,7 +4282,29 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x0fcontainer_count\x18\t \x01(\x05R\x0econtainerCount\x12/\n" +
 	"\x04gpus\x18\n" +
 	" \x03(\v2\x1b.containarium.v1.BackendGPUR\x04gpus\x12=\n" +
-	"\bheadroom\x18\v \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"\xac\x02\n" +
+	"\bheadroom\x18\v \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\x12Q\n" +
+	"\x12capability_profile\x18\f \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\"\x8b\x04\n" +
+	"\x11CapabilityProfile\x12\x1b\n" +
+	"\tcpu_cores\x18\x01 \x01(\x05R\bcpuCores\x12\x1b\n" +
+	"\tcpu_model\x18\x02 \x01(\tR\bcpuModel\x12,\n" +
+	"\x12total_memory_bytes\x18\x03 \x01(\x03R\x10totalMemoryBytes\x12(\n" +
+	"\x10total_disk_bytes\x18\x04 \x01(\x03R\x0etotalDiskBytes\x12\x1b\n" +
+	"\tgpu_model\x18\x05 \x01(\tR\bgpuModel\x12,\n" +
+	"\x12gpu_driver_version\x18\x06 \x01(\tR\x10gpuDriverVersion\x12#\n" +
+	"\rgpu_available\x18\a \x01(\bR\fgpuAvailable\x12\x16\n" +
+	"\x06region\x18\b \x01(\tR\x06region\x12%\n" +
+	"\x0ereported_class\x18\t \x01(\tR\rreportedClass\x12%\n" +
+	"\x0emeasured_class\x18\n" +
+	" \x01(\tR\rmeasuredClass\x12)\n" +
+	"\x10class_consistent\x18\v \x01(\bR\x0fclassConsistent\x12B\n" +
+	"\tbenchmark\x18\f \x01(\v2$.containarium.v1.CapabilityBenchmarkR\tbenchmark\x12\x1f\n" +
+	"\vprofiled_at\x18\r \x01(\tR\n" +
+	"profiledAt\"\x88\x01\n" +
+	"\x13CapabilityBenchmark\x12%\n" +
+	"\x0fcpu_ops_per_sec\x18\x01 \x01(\x03R\fcpuOpsPerSec\x12)\n" +
+	"\x11mem_bytes_per_sec\x18\x02 \x01(\x03R\x0ememBytesPerSec\x12\x1f\n" +
+	"\vduration_ms\x18\x03 \x01(\x03R\n" +
+	"durationMs\"\xac\x02\n" +
 	"\x10CapacityHeadroom\x12\x1e\n" +
 	"\n" +
 	"advertised\x18\x01 \x01(\bR\n" +
@@ -3851,7 +4340,22 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"\x1c\n" +
 	"\x1aGetCapacityHeadroomRequest\"\\\n" +
 	"\x1bGetCapacityHeadroomResponse\x12=\n" +
-	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom*h\n" +
+	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"Q\n" +
+	"\x15ProfileBackendRequest\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x01 \x01(\tR\tbackendId\x12\x19\n" +
+	"\bskip_gpu\x18\x02 \x01(\bR\askipGpu\"u\n" +
+	"\x16ProfileBackendResponse\x12<\n" +
+	"\aprofile\x18\x01 \x01(\v2\".containarium.v1.CapabilityProfileR\aprofile\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x02 \x01(\tR\tbackendId\"<\n" +
+	"\x1bGetCapabilityProfileRequest\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x01 \x01(\tR\tbackendId\"{\n" +
+	"\x1cGetCapabilityProfileResponse\x12<\n" +
+	"\aprofile\x18\x01 \x01(\v2\".containarium.v1.CapabilityProfileR\aprofile\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x02 \x01(\tR\tbackendId*h\n" +
 	"\tGPUVendor\x12\x1a\n" +
 	"\x16GPU_VENDOR_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11GPU_VENDOR_NVIDIA\x10\x01\x12\x12\n" +
@@ -3905,7 +4409,7 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                               // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                                // 1: containarium.v1.GPUModel
@@ -3952,27 +4456,33 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*DeleteNetworkPolicySignatureRequest)(nil),  // 42: containarium.v1.DeleteNetworkPolicySignatureRequest
 	(*DeleteNetworkPolicySignatureResponse)(nil), // 43: containarium.v1.DeleteNetworkPolicySignatureResponse
 	(*BackendInfo)(nil),                          // 44: containarium.v1.BackendInfo
-	(*CapacityHeadroom)(nil),                     // 45: containarium.v1.CapacityHeadroom
-	(*CapacityPolicy)(nil),                       // 46: containarium.v1.CapacityPolicy
-	(*BackendGPU)(nil),                           // 47: containarium.v1.BackendGPU
-	(*ListBackendsRequest)(nil),                  // 48: containarium.v1.ListBackendsRequest
-	(*ListBackendsResponse)(nil),                 // 49: containarium.v1.ListBackendsResponse
-	(*AdvertiseCapacityRequest)(nil),             // 50: containarium.v1.AdvertiseCapacityRequest
-	(*AdvertiseCapacityResponse)(nil),            // 51: containarium.v1.AdvertiseCapacityResponse
-	(*WithdrawCapacityRequest)(nil),              // 52: containarium.v1.WithdrawCapacityRequest
-	(*WithdrawCapacityResponse)(nil),             // 53: containarium.v1.WithdrawCapacityResponse
-	(*GetCapacityHeadroomRequest)(nil),           // 54: containarium.v1.GetCapacityHeadroomRequest
-	(*GetCapacityHeadroomResponse)(nil),          // 55: containarium.v1.GetCapacityHeadroomResponse
-	(*ResourceLimits)(nil),                       // 56: containarium.v1.ResourceLimits
-	(OSType)(0),                                  // 57: containarium.v1.OSType
+	(*CapabilityProfile)(nil),                    // 45: containarium.v1.CapabilityProfile
+	(*CapabilityBenchmark)(nil),                  // 46: containarium.v1.CapabilityBenchmark
+	(*CapacityHeadroom)(nil),                     // 47: containarium.v1.CapacityHeadroom
+	(*CapacityPolicy)(nil),                       // 48: containarium.v1.CapacityPolicy
+	(*BackendGPU)(nil),                           // 49: containarium.v1.BackendGPU
+	(*ListBackendsRequest)(nil),                  // 50: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),                 // 51: containarium.v1.ListBackendsResponse
+	(*AdvertiseCapacityRequest)(nil),             // 52: containarium.v1.AdvertiseCapacityRequest
+	(*AdvertiseCapacityResponse)(nil),            // 53: containarium.v1.AdvertiseCapacityResponse
+	(*WithdrawCapacityRequest)(nil),              // 54: containarium.v1.WithdrawCapacityRequest
+	(*WithdrawCapacityResponse)(nil),             // 55: containarium.v1.WithdrawCapacityResponse
+	(*GetCapacityHeadroomRequest)(nil),           // 56: containarium.v1.GetCapacityHeadroomRequest
+	(*GetCapacityHeadroomResponse)(nil),          // 57: containarium.v1.GetCapacityHeadroomResponse
+	(*ProfileBackendRequest)(nil),                // 58: containarium.v1.ProfileBackendRequest
+	(*ProfileBackendResponse)(nil),               // 59: containarium.v1.ProfileBackendResponse
+	(*GetCapabilityProfileRequest)(nil),          // 60: containarium.v1.GetCapabilityProfileRequest
+	(*GetCapabilityProfileResponse)(nil),         // 61: containarium.v1.GetCapabilityProfileResponse
+	(*ResourceLimits)(nil),                       // 62: containarium.v1.ResourceLimits
+	(OSType)(0),                                  // 63: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	56, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	62, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	57, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	63, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -3992,19 +4502,23 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	37, // 22: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
 	37, // 23: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
 	37, // 24: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
-	47, // 25: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	45, // 26: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
-	46, // 27: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
-	44, // 28: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	46, // 29: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
-	45, // 30: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	45, // 31: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	45, // 32: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	33, // [33:33] is the sub-list for method output_type
-	33, // [33:33] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	49, // 25: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	47, // 26: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
+	45, // 27: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
+	46, // 28: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
+	48, // 29: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
+	44, // 30: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	48, // 31: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
+	47, // 32: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	47, // 33: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	47, // 34: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	45, // 35: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	45, // 36: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	37, // [37:37] is the sub-list for method output_type
+	37, // [37:37] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -4019,7 +4533,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   51,
+			NumMessages:   57,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

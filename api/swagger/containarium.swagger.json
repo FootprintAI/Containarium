@@ -1076,6 +1076,72 @@
         ]
       }
     },
+    "/v1/capabilities/profile": {
+      "get": {
+        "summary": "Get a backend's capability profile",
+        "description": "Returns a backend's last-recorded capability profile (hardware class, GPU probe, micro-benchmark, region) without re-running it. Admin-only.",
+        "operationId": "ContainerService_GetCapabilityProfile",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCapabilityProfileResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backendId",
+            "description": "Backend to read. Empty = the local/primary daemon's own host.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      },
+      "post": {
+        "summary": "Profile a backend's hardware capability",
+        "description": "Records a backend's capability profile (hardware class, GPU probe, bounded CPU/memory micro-benchmark, region) and reconciles measured vs self-reported class. Surfaced through ListBackends. Admin-only.",
+        "operationId": "ContainerService_ProfileBackend",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ProfileBackendResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ProfileBackendRequest asks a backend to (re)record its capability profile:\nread system info, run the GPU passthrough probe and the bounded\nCPU/memory micro-benchmark, derive the measured class, and persist it. See\n#681.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ProfileBackendRequest"
+            }
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/capacity/headroom": {
       "get": {
         "summary": "Get spare scheduling capacity",
@@ -5965,6 +6031,10 @@
         "headroom": {
           "$ref": "#/definitions/CapacityHeadroom",
           "description": "Spare scheduling capacity this backend currently advertises to the\ncontrol plane, or null when nothing is advertised (withdrawn or never\npublished). Lets the control plane direct scheduling at hosts that have\nexplicitly offered freed headroom. See #680."
+        },
+        "capabilityProfile": {
+          "$ref": "#/definitions/CapabilityProfile",
+          "description": "The backend's hardware capability profile recorded at join (hardware\nclass, a bounded CPU/memory micro-benchmark, and region), or null when no\nprofile has been recorded yet. Lets the control plane place work by\nmeasured class rather than self-reported class alone. See #681."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
@@ -6047,6 +6117,88 @@
         }
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
+    },
+    "CapabilityBenchmark": {
+      "type": "object",
+      "properties": {
+        "cpuOpsPerSec": {
+          "type": "string",
+          "format": "int64",
+          "description": "CPU score: integer-work iterations completed per second during the bounded\nrun (higher is faster). Single-threaded."
+        },
+        "memBytesPerSec": {
+          "type": "string",
+          "format": "int64",
+          "description": "Memory score: bytes per second moved through a bounded buffer copy/sum\nloop (higher is faster)."
+        },
+        "durationMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Wall-clock duration of the benchmark in milliseconds (bounded; the runner\ncaps each phase)."
+        }
+      },
+      "description": "CapabilityBenchmark is a lightweight, time-bounded CPU/memory micro-benchmark\nrun when the profile is recorded. The scores are relative integrity/capacity\nsignals, not absolute hardware specs — they let the control plane confirm a\nbackend's self-reported class is plausible. See #681."
+    },
+    "CapabilityProfile": {
+      "type": "object",
+      "properties": {
+        "cpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Total physical CPU cores on the host (from SystemInfo.total_cpus)."
+        },
+        "cpuModel": {
+          "type": "string",
+          "description": "Best-effort CPU model/generation string (e.g. \"AMD EPYC 7B13\"), empty when\nthe host doesn't expose one."
+        },
+        "totalMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total RAM in bytes (from SystemInfo.total_memory_bytes)."
+        },
+        "totalDiskBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total disk in bytes (from SystemInfo.total_disk_bytes)."
+        },
+        "gpuModel": {
+          "type": "string",
+          "description": "GPU model name from the existing nvidia.runtime passthrough probe\n(ValidateGPU), empty on a CPU-only backend."
+        },
+        "gpuDriverVersion": {
+          "type": "string",
+          "description": "GPU driver version from the same probe, empty on a CPU-only backend."
+        },
+        "gpuAvailable": {
+          "type": "boolean",
+          "description": "Whether the GPU passthrough probe saw a usable GPU."
+        },
+        "region": {
+          "type": "string",
+          "description": "Region the backend serves (operator-set via --region; falls back to the\npool name). Empty when unset."
+        },
+        "reportedClass": {
+          "type": "string",
+          "description": "Self-reported hardware class the operator assigned the backend (e.g. the\npool name / declared tier), if any."
+        },
+        "measuredClass": {
+          "type": "string",
+          "description": "Measured hardware class derived from the profile (e.g. \"gpu\", \"cpu-large\",\n\"cpu-small\"). Coarse buckets; the control plane refines placement from the\nraw figures."
+        },
+        "classConsistent": {
+          "type": "boolean",
+          "description": "True when measured_class matches reported_class (or reported_class is\nempty, treated as consistent). False flags a drift the control plane and\noperator should reconcile."
+        },
+        "benchmark": {
+          "$ref": "#/definitions/CapabilityBenchmark",
+          "description": "The bounded micro-benchmark result. See CapabilityBenchmark."
+        },
+        "profiledAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp the profile was recorded."
+        }
+      },
+      "description": "CapabilityProfile is a backend's hardware capability snapshot recorded at\njoin (and refreshable on demand): the hardware class derived from the host's\nsystem info + GPU probe, a lightweight bounded CPU/memory micro-benchmark,\nand the region. The control plane reads it through the backend surface to\nplace work by measured capability rather than by the self-reported class\nalone, and to detect a backend whose measured class drifts from what it\nreports. See #681."
     },
     "CapacityHeadroom": {
       "type": "object",
@@ -7657,6 +7809,19 @@
         }
       }
     },
+    "GetCapabilityProfileResponse": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "$ref": "#/definitions/CapabilityProfile"
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Echoes the backend (\"\" = local)."
+        }
+      },
+      "description": "GetCapabilityProfileResponse returns the last-recorded profile, or null when\nnothing has been profiled yet."
+    },
     "GetCapacityHeadroomResponse": {
       "type": "object",
       "properties": {
@@ -9245,6 +9410,33 @@
         }
       },
       "description": "PgConnection carries the connection parameters pg_dump / pg_restore use\n*inside the container*. Defaults target a per-container local Postgres\nreached over loopback. db_password is never logged and is passed to the\nchild process via the PGPASSWORD environment variable, not argv."
+    },
+    "ProfileBackendRequest": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Backend to profile. Empty = the local/primary daemon's own host; a peer id\nforwards to that peer (which profiles itself)."
+        },
+        "skipGpu": {
+          "type": "boolean",
+          "description": "Skip the GPU passthrough probe (which creates+deletes a throwaway LXC and\ncan take ~30s). The profile then records gpu_available=false. Useful on a\nbackend known to be CPU-only."
+        }
+      },
+      "description": "ProfileBackendRequest asks a backend to (re)record its capability profile:\nread system info, run the GPU passthrough probe and the bounded\nCPU/memory micro-benchmark, derive the measured class, and persist it. See\n#681."
+    },
+    "ProfileBackendResponse": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "$ref": "#/definitions/CapabilityProfile"
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Echoes the profiled backend (\"\" = local)."
+        }
+      },
+      "description": "ProfileBackendResponse returns the freshly recorded capability profile."
     },
     "Protocol": {
       "type": "string",

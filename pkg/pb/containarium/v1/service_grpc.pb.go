@@ -47,6 +47,8 @@ const (
 	ContainerService_AdvertiseCapacity_FullMethodName        = "/containarium.v1.ContainerService/AdvertiseCapacity"
 	ContainerService_WithdrawCapacity_FullMethodName         = "/containarium.v1.ContainerService/WithdrawCapacity"
 	ContainerService_GetCapacityHeadroom_FullMethodName      = "/containarium.v1.ContainerService/GetCapacityHeadroom"
+	ContainerService_ProfileBackend_FullMethodName           = "/containarium.v1.ContainerService/ProfileBackend"
+	ContainerService_GetCapabilityProfile_FullMethodName     = "/containarium.v1.ContainerService/GetCapabilityProfile"
 	ContainerService_GetLatestRelease_FullMethodName         = "/containarium.v1.ContainerService/GetLatestRelease"
 	ContainerService_ValidateGPU_FullMethodName              = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName           = "/containarium.v1.ContainerService/TriggerUpgrade"
@@ -192,6 +194,16 @@ type ContainerServiceClient interface {
 	// freshly recomputed spare figures without changing advertise/withdraw
 	// state. Admin-only. See #680.
 	GetCapacityHeadroom(ctx context.Context, in *GetCapacityHeadroomRequest, opts ...grpc.CallOption) (*GetCapacityHeadroomResponse, error)
+	// ProfileBackend records a backend's hardware capability profile: it reads
+	// system info, runs the GPU passthrough probe and a bounded CPU/memory
+	// micro-benchmark, derives the measured hardware class, reconciles it
+	// against the self-reported class, and persists the profile. The profile is
+	// surfaced through ListBackends. Admin-only; runs a short-lived benchmark and
+	// (unless skipped) a throwaway GPU probe LXC. See #681.
+	ProfileBackend(ctx context.Context, in *ProfileBackendRequest, opts ...grpc.CallOption) (*ProfileBackendResponse, error)
+	// GetCapabilityProfile reads a backend's last-recorded capability profile
+	// without re-running the benchmark/probe. Admin-only. See #681.
+	GetCapabilityProfile(ctx context.Context, in *GetCapabilityProfileRequest, opts ...grpc.CallOption) (*GetCapabilityProfileResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -544,6 +556,26 @@ func (c *containerServiceClient) GetCapacityHeadroom(ctx context.Context, in *Ge
 	return out, nil
 }
 
+func (c *containerServiceClient) ProfileBackend(ctx context.Context, in *ProfileBackendRequest, opts ...grpc.CallOption) (*ProfileBackendResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProfileBackendResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ProfileBackend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetCapabilityProfile(ctx context.Context, in *GetCapabilityProfileRequest, opts ...grpc.CallOption) (*GetCapabilityProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCapabilityProfileResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetCapabilityProfile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetLatestReleaseResponse)
@@ -867,6 +899,16 @@ type ContainerServiceServer interface {
 	// freshly recomputed spare figures without changing advertise/withdraw
 	// state. Admin-only. See #680.
 	GetCapacityHeadroom(context.Context, *GetCapacityHeadroomRequest) (*GetCapacityHeadroomResponse, error)
+	// ProfileBackend records a backend's hardware capability profile: it reads
+	// system info, runs the GPU passthrough probe and a bounded CPU/memory
+	// micro-benchmark, derives the measured hardware class, reconciles it
+	// against the self-reported class, and persists the profile. The profile is
+	// surfaced through ListBackends. Admin-only; runs a short-lived benchmark and
+	// (unless skipped) a throwaway GPU probe LXC. See #681.
+	ProfileBackend(context.Context, *ProfileBackendRequest) (*ProfileBackendResponse, error)
+	// GetCapabilityProfile reads a backend's last-recorded capability profile
+	// without re-running the benchmark/probe. Admin-only. See #681.
+	GetCapabilityProfile(context.Context, *GetCapabilityProfileRequest) (*GetCapabilityProfileResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -1022,6 +1064,12 @@ func (UnimplementedContainerServiceServer) WithdrawCapacity(context.Context, *Wi
 }
 func (UnimplementedContainerServiceServer) GetCapacityHeadroom(context.Context, *GetCapacityHeadroomRequest) (*GetCapacityHeadroomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCapacityHeadroom not implemented")
+}
+func (UnimplementedContainerServiceServer) ProfileBackend(context.Context, *ProfileBackendRequest) (*ProfileBackendResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProfileBackend not implemented")
+}
+func (UnimplementedContainerServiceServer) GetCapabilityProfile(context.Context, *GetCapabilityProfileRequest) (*GetCapabilityProfileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCapabilityProfile not implemented")
 }
 func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLatestRelease not implemented")
@@ -1608,6 +1656,42 @@ func _ContainerService_GetCapacityHeadroom_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_ProfileBackend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProfileBackendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ProfileBackend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ProfileBackend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ProfileBackend(ctx, req.(*ProfileBackendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetCapabilityProfile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCapabilityProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetCapabilityProfile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetCapabilityProfile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetCapabilityProfile(ctx, req.(*GetCapabilityProfileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetLatestRelease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetLatestReleaseRequest)
 	if err := dec(in); err != nil {
@@ -2086,6 +2170,14 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapacityHeadroom",
 			Handler:    _ContainerService_GetCapacityHeadroom_Handler,
+		},
+		{
+			MethodName: "ProfileBackend",
+			Handler:    _ContainerService_ProfileBackend_Handler,
+		},
+		{
+			MethodName: "GetCapabilityProfile",
+			Handler:    _ContainerService_GetCapabilityProfile_Handler,
 		},
 		{
 			MethodName: "GetLatestRelease",
