@@ -7,9 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-06-14
+
+Multi-GPU passthrough per container, and **target-aware clients** — the MCP and
+CLI now distinguish the hosted control plane from a self-hosted daemon and
+refuse host-level operations client-side instead of round-tripping to an opaque
+error.
+
 ### Added
 
-- **Multi-GPU passthrough per container.** A container can now be created with more than one GPU attached. `containarium create` takes a repeatable/comma-separated `--gpu` flag (`--gpu 0 --gpu 1` or `--gpu 0,1`), each entry an index or PCI address; every device is resolved to a stable PCI address at create time (same kernel-upgrade-safe pinning as the single-GPU path) and attached as a distinct Incus device (`gpu`, `gpu1`, `gpu2`, …). A GPU requested twice (same resolved PCI) is rejected. The proto contract gains `repeated string gpus` on `CreateContainerRequest`/`ResourceLimits` and `repeated string gpu_devices` on `Container`; the singular `gpu`/`gpu_device` fields stay for back-compat (`gpus` supersedes `gpu` when set, a lone `gpu` is promoted to a one-element list). The single-GPU device name stays `gpu`, so existing single-GPU containers are byte-identical. Surfaced through the gRPC + HTTP clients, and the platform MCP `create_container` tool gains a `gpus` array argument. Read-back (`list`/`get`) reports all attached GPUs (`gpu_devices`), sorted for stable output.
+- **Multi-GPU passthrough per container.** A container can now be created with more than one GPU attached. `containarium create` takes a repeatable/comma-separated `--gpu` flag (`--gpu 0 --gpu 1` or `--gpu 0,1`), each entry an index or PCI address; every device is resolved to a stable PCI address at create time (same kernel-upgrade-safe pinning as the single-GPU path) and attached as a distinct Incus device (`gpu`, `gpu1`, `gpu2`, …). A GPU requested twice (same resolved PCI) is rejected. The proto contract gains `repeated string gpus` on `CreateContainerRequest`/`ResourceLimits` and `repeated string gpu_devices` on `Container`. The single-GPU device name stays `gpu`, so existing single-GPU containers are byte-identical. Surfaced through the gRPC + HTTP clients, and the platform MCP `create_container` tool gains a `gpus` array argument. Read-back (`list`/`get`) reports all attached GPUs (`gpu_devices`), sorted for stable output. (#673)
+- **Target-classified MCP backend.** The platform MCP picks its backend from the credential: a hosted-control-plane API token (`ctnr_…`) selects a cloud backend where host-level tools (`get_system_info`, `check_for_updates`, `upgrade_backend`, `debug_container`) report a clear "not available on the hosted control plane" client-side instead of an opaque error; a JWT / daemon credential keeps the full surface. (#676)
+- **Target-aware CLI host-level commands.** `info` (system info), `debug`, `backends upgrade`, and `backends versions` refuse client-side with a clear message when pointed at the hosted control plane, mirroring the MCP. The classifier (`ctnr_` token prefix, or the cached per-server access model) is shared via `credentials.IsCloudToken`. Local and self-hosted-daemon targets are unaffected. (#678)
+
+### Changed
+
+- **Dropped the deprecated singular `gpu` request field.** The server now reads only the repeated `gpus`; a client sending only the old singular `gpu` no longer gets GPU passthrough (`gpus` is the only supported shape). This also fixes a latent bug where a multi-GPU create routed to a peer backend silently lost its GPUs. (#677)
 
 ## [0.27.0] - 2026-06-13
 
