@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,8 +15,11 @@ import (
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/capabilities"
+	"github.com/footprintai/containarium/internal/capacity"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/integrity"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
@@ -63,6 +67,40 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  *app.DaemonConfigStore
 	peerPool           *PeerPool
+	// capacityStore holds this backend's spare-capacity advertise/withdraw
+	// state + local policy (#680). Lazily initialized so an unwired server
+	// (tests) still answers GetCapacityHeadroom with "not advertised".
+	capacityStore     *capacity.Store
+	capacityStoreOnce sync.Once
+	// capabilityStore holds this backend's last-recorded hardware capability
+	// profile (#681). Lazily initialized like capacityStore so an unwired
+	// server (tests) answers GetCapabilityProfile with "not profiled yet".
+	capabilityStore     *capabilities.Store
+	capabilityStoreOnce sync.Once
+	// drainer performs the bounded graceful reclaim of guest workloads when a
+	// backend withdraws headroom (#682). Lazily initialized; a single in-flight
+	// drain at a time guards against repeated advertise/withdraw cycles wedging
+	// the host.
+	drainer     *capacity.Drainer
+	drainerOnce sync.Once
+	// profileMu serializes ProfileBackend: each profile spins a throwaway
+	// GPU-probe LXC + a benchmark on the host, so concurrent/repeated calls
+	// must coalesce rather than stack a probe storm that can wedge the runtime.
+	profileMu sync.Mutex
+	// region is the region this backend serves, wired from --region (falling
+	// back to the pool name). Recorded into the capability profile. Empty when
+	// unset.
+	region string
+	// integrityConfigState is the integrity-relevant policy/config posture this
+	// backend folds into its signed self-measurement (#683): base domain,
+	// network-policy enforcement posture, and any other config the control plane
+	// verifies hasn't been tampered with. Wired once via SetIntegrityConfig;
+	// nil/empty on an unwired server still yields a (config-empty) measurement.
+	integrityConfigState map[string]string
+	// reportedClass is the self-reported hardware class the operator assigned
+	// this backend (defaults to the pool name). Reconciled against the measured
+	// class in the capability profile. Empty when unset.
+	reportedClass string
 	// startTime is when this daemon process started; ListBackends reports
 	// the local backend's uptime from it. Set by DualServer wiring
 	// (SetStartTime); zero on a server that was never wired, in which case
@@ -2163,6 +2201,19 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
 		}
 	}
+	// Surface the local backend's spare-capacity advertisement (#680). Only
+	// attach when something is actively advertised — an unadvertised backend
+	// leaves headroom null so the control plane can tell "not offering" from
+	// "offering zero".
+	if h := s.capStore().Current(s.hostStateSnapshot()); h.Advertised {
+		local.Headroom = headroomToProto(h)
+	}
+	// Surface the local backend's last-recorded capability profile (#681).
+	// Null until ProfileBackend has run, so the control plane can tell
+	// "unprofiled" from "profiled CPU-only".
+	if p, ok := s.capabStore().Current(); ok {
+		local.CapabilityProfile = profileToProto(p)
+	}
 	backends = append(backends, local)
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
@@ -2194,6 +2245,529 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	}
 
 	return &pb.ListBackendsResponse{Backends: backends}, nil
+}
+
+// capStore returns the lazily-initialized per-daemon capacity store. Safe to
+// call from any RPC; the first caller wins.
+func (s *ContainerServer) capStore() *capacity.Store {
+	s.capacityStoreOnce.Do(func() {
+		if s.capacityStore == nil {
+			s.capacityStore = capacity.NewStore()
+		}
+	})
+	return s.capacityStore
+}
+
+// maxDrainWindow caps a caller-supplied drain window so an absurd value can't
+// pin the host (and the drainer's in-flight guard) for an unreasonable time.
+// drainCtxGrace is extra headroom past the window for the final force-stop.
+const (
+	maxDrainWindow = 10 * time.Minute
+	drainCtxGrace  = 30 * time.Second
+)
+
+// drainHandle returns the lazily-initialized per-daemon drainer. A single
+// drainer instance is reused across withdraw calls so its in-flight guard
+// coalesces overlapping drains — repeated advertise/withdraw cycles can't stack
+// concurrent stop storms and wedge the host (#682). The drainer routes each
+// stop back through StopWorkload, which reuses StopContainer's plumbing.
+func (s *ContainerServer) drainHandle() *capacity.Drainer {
+	s.drainerOnce.Do(func() {
+		if s.drainer == nil {
+			s.drainer = capacity.NewDrainer(s)
+		}
+	})
+	return s.drainer
+}
+
+// StopWorkload stops the workload owned by username, satisfying
+// capacity.DrainStopper. It routes through StopContainer so a drained workload
+// emits the same stop event a manual stop does and the control plane can
+// reschedule it — there is no drain-only side door. The daemon context is
+// promoted to the system identity (the drain is daemon-internal, triggered by a
+// headroom withdraw, not by an end-user request).
+func (s *ContainerServer) StopWorkload(ctx context.Context, username string, force bool) error {
+	ctx = auth.ContextWithSystemIdentity(ctx)
+	_, err := s.StopContainer(ctx, &pb.StopContainerRequest{Username: username, Force: force})
+	return err
+}
+
+// hostStateSnapshot gathers the current host-level resource + container
+// snapshot the headroom computation consumes. It reuses the same Incus
+// system-resources call GetSystemInfo uses and the manager's container list,
+// so the figures match what ListBackends already reports. Best-effort: a
+// missing manager or Incus call yields a zero-resource snapshot rather than an
+// error, so advertise/withdraw still work on an unwired server.
+func (s *ContainerServer) hostStateSnapshot() capacity.HostState {
+	st := capacity.HostState{Now: time.Now()}
+	if s.manager == nil {
+		return st
+	}
+	if containers, err := s.manager.List(); err == nil {
+		st.Containers = containers
+	}
+	client, err := incus.New()
+	if err != nil {
+		return st
+	}
+	res, err := client.GetSystemResources()
+	if err != nil || res == nil {
+		return st
+	}
+	st.AvailableMemoryBytes = res.TotalMemoryBytes - res.UsedMemoryBytes
+	st.AvailableDiskBytes = res.TotalDiskBytes - res.UsedDiskBytes
+	// Available CPU cores ≈ total cores minus the 1-minute load average,
+	// clamped to [0, TotalCPUs]. This is a COARSE, burstable hint only: load
+	// average counts runnable+uninterruptible tasks (I/O wait can inflate it
+	// without the CPU being busy), so it neither equals idle cores nor is the
+	// binding constraint — RAM and disk are the hard limits on how many guests
+	// a host can take. The upper clamp guards against a bogus/negative load
+	// reading reporting more spare cores than exist.
+	avail := float64(res.TotalCPUs) - res.CPULoad1Min
+	if avail < 0 {
+		avail = 0
+	}
+	if avail > float64(res.TotalCPUs) {
+		avail = float64(res.TotalCPUs)
+	}
+	st.AvailableCPUs = int32(avail)
+	return st
+}
+
+// policyFromProto maps the wire CapacityPolicy onto the internal policy. A nil
+// proto policy yields the zero (always-open, no-exclusion) policy.
+func policyFromProto(p *pb.CapacityPolicy) capacity.Policy {
+	if p == nil {
+		return capacity.Policy{}
+	}
+	return capacity.Policy{
+		WindowStartHour:         p.GetWindowStartHour(),
+		WindowEndHour:           p.GetWindowEndHour(),
+		ExcludedWorkloadClasses: p.GetExcludedWorkloadClasses(),
+		ReserveFraction:         p.GetReserveFraction(),
+	}
+}
+
+// headroomToProto maps the internal headroom onto the wire type.
+func headroomToProto(h capacity.Headroom) *pb.CapacityHeadroom {
+	out := &pb.CapacityHeadroom{
+		Advertised:       h.Advertised,
+		SpareCpus:        h.SpareCPUs,
+		SpareMemoryBytes: h.SpareMemoryBytes,
+		SpareDiskBytes:   h.SpareDiskBytes,
+		IdleFraction:     h.IdleFraction,
+		Policy: &pb.CapacityPolicy{
+			WindowStartHour:         h.Policy.WindowStartHour,
+			WindowEndHour:           h.Policy.WindowEndHour,
+			ExcludedWorkloadClasses: h.Policy.ExcludedWorkloadClasses,
+			ReserveFraction:         h.Policy.ReserveFraction,
+		},
+	}
+	if !h.AdvertisedAt.IsZero() {
+		out.AdvertisedAt = h.AdvertisedAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// AdvertiseCapacity publishes this backend's spare scheduling headroom to the
+// control plane, bounded by the supplied local policy. The advertisement is
+// surfaced through ListBackends. Admin-only. See #680.
+func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.AdvertiseCapacityRequest) (*pb.AdvertiseCapacityResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	// Validate the policy server-side — the CLI checks these, but a direct
+	// gRPC/REST caller must not be trusted. A negative reserve_fraction would
+	// otherwise clamp to a ZERO reservation (advertising 100% of the host as
+	// spare — the opposite of intent); an out-of-range window hour would make
+	// the window silently never open.
+	if pol := req.GetPolicy(); pol != nil {
+		if rf := pol.GetReserveFraction(); rf < 0 || rf >= 1 {
+			return nil, status.Errorf(codes.InvalidArgument, "reserve_fraction must be in [0,1), got %v", rf)
+		}
+		if hs, he := pol.GetWindowStartHour(), pol.GetWindowEndHour(); hs < 0 || hs > 23 || he < 0 || he > 23 {
+			return nil, status.Errorf(codes.InvalidArgument, "window hours must be in [0,23], got start=%d end=%d", hs, he)
+		}
+	}
+	p := policyFromProto(req.GetPolicy())
+	h := s.capStore().Advertise(p, s.hostStateSnapshot())
+	return &pb.AdvertiseCapacityResponse{Headroom: headroomToProto(h)}, nil
+}
+
+// WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
+// withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
+//
+// When req.Drain is set the backend also reclaims the guest workloads it had
+// implicitly offered: it snapshots the host, selects the same candidate set the
+// headroom computation considered free, and drains them gracefully within a
+// bounded window (req.DrainWindowSeconds, default 120s) instead of hard-killing
+// them. Each drained workload is stopped through the normal StopContainer path
+// so the control plane observes a stop event and can reschedule it. Any
+// candidate still running when the window expires is force-stopped so the host
+// is reliably reclaimed — no wedge on repeated advertise/withdraw cycles, since
+// the drainer coalesces an overlapping drain rather than stacking a second one.
+// See #680, #682.
+func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.WithdrawCapacityRequest) (*pb.WithdrawCapacityResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Flip the advertisement off first so no new work is directed here while we
+	// drain. Withdraw is idempotent, so the order is safe even if the drain
+	// fails partway.
+	h := s.capStore().Withdraw()
+	resp := &pb.WithdrawCapacityResponse{Headroom: headroomToProto(h)}
+
+	if !req.GetDrain() {
+		return resp, nil
+	}
+
+	st := s.hostStateSnapshot()
+	candidates := capacity.DrainCandidates(s.capStore().Policy(), st)
+	if len(candidates) == 0 {
+		return resp, nil
+	}
+
+	window := time.Duration(req.GetDrainWindowSeconds()) * time.Second
+	if window > maxDrainWindow {
+		window = maxDrainWindow // clamp an absurd request so the drain can't pin the host for ages
+	}
+	// Detach the drain from the request context and bound it by the window: a
+	// graceful drain can take the full window (default 120s), far longer than a
+	// typical CLI / grpc-gateway HTTP timeout — we must NOT abandon a
+	// half-finished reclaim just because the caller disconnected. (Same posture
+	// as the upgrade path's context.WithoutCancel.) The +grace covers the final
+	// force-stop after the window elapses.
+	effectiveWindow := window
+	if effectiveWindow <= 0 {
+		effectiveWindow = capacity.DefaultDrainWindow
+	}
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveWindow+drainCtxGrace)
+	defer cancel()
+	result, skipped := s.drainHandle().Drain(drainCtx, candidates, window)
+	if skipped {
+		// A drain was already in flight (e.g. a rapid second withdraw). The
+		// advertisement is already off; the running drain reclaims the host.
+		log.Printf("[drain] withdraw coalesced: a drain is already in flight")
+		return resp, nil
+	}
+
+	resp.Drained = result.Drained
+	resp.ForceStopped = result.ForceStopped
+	resp.DrainWindowExceeded = result.WindowExceeded
+	// Surface guests that couldn't be stopped even after force — a non-empty
+	// map means the host is NOT fully reclaimed, so the control plane must not
+	// treat their resources as freed.
+	if len(result.Failed) > 0 {
+		resp.Failed = result.Failed
+	}
+	log.Printf("[drain] withdraw drained=%d force_stopped=%d failed=%d window_exceeded=%t elapsed=%s",
+		len(result.Drained), len(result.ForceStopped), len(result.Failed), result.WindowExceeded, result.Elapsed)
+	return resp, nil
+}
+
+// GetCapacityHeadroom returns this backend's current advertisement with spare
+// figures recomputed against the live host snapshot. Admin-only. See #680.
+func (s *ContainerServer) GetCapacityHeadroom(ctx context.Context, _ *pb.GetCapacityHeadroomRequest) (*pb.GetCapacityHeadroomResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	h := s.capStore().Current(s.hostStateSnapshot())
+	return &pb.GetCapacityHeadroomResponse{Headroom: headroomToProto(h)}, nil
+}
+
+// capabStore returns the lazily-initialized per-daemon capability-profile
+// store. Safe to call from any RPC; the first caller wins.
+func (s *ContainerServer) capabStore() *capabilities.Store {
+	s.capabilityStoreOnce.Do(func() {
+		if s.capabilityStore == nil {
+			s.capabilityStore = capabilities.NewStore()
+		}
+	})
+	return s.capabilityStore
+}
+
+// gatherHostFacts collects the inputs the capability profile is computed from:
+// host system resources (CPU cores + model, RAM, disk) via the same Incus call
+// GetSystemInfo uses, the GPU passthrough probe (unless skipped), the bounded
+// CPU/memory micro-benchmark, and the operator-set region / reported class.
+// Best-effort on the resource read: a missing Incus client yields zero hardware
+// figures rather than an error, so a profile is always recordable.
+func (s *ContainerServer) gatherHostFacts(skipGPU bool) capabilities.HostFacts {
+	f := capabilities.HostFacts{
+		Now:           time.Now(),
+		Region:        s.region,
+		ReportedClass: s.reportedClass,
+	}
+
+	if client, err := incus.New(); err == nil {
+		if res, err := client.GetSystemResources(); err == nil && res != nil {
+			f.CPUCores = res.TotalCPUs
+			f.CPUModel = res.CPUModel
+			f.TotalMemoryBytes = res.TotalMemoryBytes
+			f.TotalDiskBytes = res.TotalDiskBytes
+		}
+	}
+
+	// GPU model/driver from the existing nvidia.runtime passthrough probe —
+	// the same ValidateGPU the validate-gpu command runs. Skipped on request
+	// (CPU-only backends) or when no container manager is wired.
+	if !skipGPU && s.manager != nil {
+		res := s.manager.ValidateGPU("")
+		if res.Status == container.GPUStatusOK {
+			f.GPUAvailable = true
+			f.GPUModel = res.Model
+			f.GPUDriverVersion = res.DriverVersion
+		}
+	}
+
+	// Bounded CPU/memory micro-benchmark.
+	b := container.RunBenchmark()
+	f.Benchmark = capabilities.Benchmark{
+		CPUOpsPerSec:   b.CPUOpsPerSec,
+		MemBytesPerSec: b.MemBytesPerSec,
+		DurationMs:     b.DurationMs,
+	}
+	return f
+}
+
+// profileToProto maps the internal capability profile onto the wire type.
+func profileToProto(p capabilities.Profile) *pb.CapabilityProfile {
+	out := &pb.CapabilityProfile{
+		CpuCores:         p.CPUCores,
+		CpuModel:         p.CPUModel,
+		TotalMemoryBytes: p.TotalMemoryBytes,
+		TotalDiskBytes:   p.TotalDiskBytes,
+		GpuModel:         p.GPUModel,
+		GpuDriverVersion: p.GPUDriverVersion,
+		GpuAvailable:     p.GPUAvailable,
+		Region:           p.Region,
+		ReportedClass:    p.ReportedClass,
+		MeasuredClass:    p.MeasuredClass,
+		ClassConsistent:  p.ClassConsistent,
+		Benchmark: &pb.CapabilityBenchmark{
+			CpuOpsPerSec:   p.Benchmark.CPUOpsPerSec,
+			MemBytesPerSec: p.Benchmark.MemBytesPerSec,
+			DurationMs:     p.Benchmark.DurationMs,
+		},
+	}
+	if !p.ProfiledAt.IsZero() {
+		out.ProfiledAt = p.ProfiledAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// ProfileBackend records a backend's hardware capability profile: read system
+// info, run the GPU passthrough probe + bounded micro-benchmark, derive the
+// measured class, reconcile it against the self-reported class, and persist it.
+// Admin-only. An empty (or local) backend_id profiles this daemon; a peer
+// backend_id forwards to that peer, which profiles itself. See #681.
+func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBackendRequest) (*pb.ProfileBackendResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Remote backend → forward to the owning peer (it profiles its own host).
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		body, err := protojson.Marshal(req)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "marshal profile request: %v", err)
+		}
+		respBody, st, err := peer.ForwardRequest("POST", "/v1/capabilities/profile", extractAuthToken(ctx), body)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward profile to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for profile", req.BackendId, st)
+		}
+		var resp pb.ProfileBackendResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s profile response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	// Local backend. Serialize against concurrent profiles: gatherHostFacts
+	// spins a throwaway GPU-probe LXC + runs a benchmark, so a second caller
+	// (retry, multi-replica control plane) must not stack a second probe.
+	if !s.profileMu.TryLock() {
+		return nil, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	}
+	defer s.profileMu.Unlock()
+	p := s.capabStore().Record(s.gatherHostFacts(req.SkipGpu))
+	return &pb.ProfileBackendResponse{
+		Profile:   profileToProto(p),
+		BackendId: req.BackendId,
+	}, nil
+}
+
+// GetCapabilityProfile returns a backend's last-recorded capability profile
+// without re-running the benchmark/probe. Admin-only. A peer backend_id
+// forwards to that peer. Returns a null profile when nothing has been recorded
+// yet. See #681.
+func (s *ContainerServer) GetCapabilityProfile(ctx context.Context, req *pb.GetCapabilityProfileRequest) (*pb.GetCapabilityProfileResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		respBody, st, err := peer.ForwardRequest("GET", "/v1/capabilities/profile", extractAuthToken(ctx), nil)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward get-profile to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for get-profile", req.BackendId, st)
+		}
+		var resp pb.GetCapabilityProfileResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s get-profile response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	resp := &pb.GetCapabilityProfileResponse{BackendId: req.BackendId}
+	if p, ok := s.capabStore().Current(); ok {
+		resp.Profile = profileToProto(p)
+	}
+	return resp, nil
+}
+
+// GetSelfMeasurement computes and signs a fresh integrity self-measurement for
+// a backend: digests of the running daemon binary, the loaded in-kernel
+// network-policy program object(s), and the canonical policy/config state,
+// signed with the node's identity key (the sentinel-issued peer leaf reused
+// from the peer-PKI plumbing). The daemon also emits the same measurement on
+// its heartbeat. A peer backend_id forwards to that peer (which measures
+// itself). Admin-only. The control plane verifies the measurement to detect
+// tampering; the verification half lives elsewhere. See #683.
+func (s *ContainerServer) GetSelfMeasurement(ctx context.Context, req *pb.GetSelfMeasurementRequest) (*pb.GetSelfMeasurementResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Remote backend → forward to the owning peer (it measures its own host).
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		respBody, st, err := peer.ForwardRequest("GET", "/v1/integrity/self-measurement", extractAuthToken(ctx), nil)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward self-measurement to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for self-measurement", req.BackendId, st)
+		}
+		var resp pb.GetSelfMeasurementResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s self-measurement response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	// Local backend.
+	m, err := s.computeSelfMeasurement()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "compute self-measurement: %v", err)
+	}
+	return &pb.GetSelfMeasurementResponse{
+		Measurement: measurementToProto(m),
+		BackendId:   req.BackendId,
+	}, nil
+}
+
+// computeSelfMeasurement gathers this backend's integrity inputs (running
+// binary path, loaded in-kernel network-policy program object(s), policy/config
+// state, node identity signer) and computes the signed measurement. The signer
+// is the sentinel-issued peer leaf from the peer pool; when no PKI has been
+// bootstrapped the measurement is produced unsigned.
+func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error) {
+	in := integrity.Inputs{
+		ConfigState:   s.integrityConfigState,
+		DaemonVersion: version.Version,
+		Now:           time.Now(),
+	}
+
+	// Running daemon binary on disk. Best-effort: a path we can't resolve
+	// leaves the binary digest empty rather than failing the measurement.
+	if exe, err := os.Executable(); err == nil {
+		in.BinaryPath = exe
+	}
+
+	// Loaded in-kernel network-policy program object(s). The daemon arms the
+	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
+	// at an object on disk; that object's bytes are exactly what we attest.
+	if bpfObj := strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT")); bpfObj != "" {
+		in.Programs = append(in.Programs, integrity.ProgramObject{Name: bpfObj, Path: bpfObj})
+	}
+
+	// Node identity signer: the sentinel-issued peer leaf key.
+	if s.peerPool != nil {
+		signer, certPEM := s.peerPool.IdentitySigner()
+		in.Signer = signer
+		in.SigningCertPEM = certPEM
+		// TPM-backed signing is a future hook; the software peer key signs today.
+		in.TPMBacked = false
+	}
+
+	return integrity.Compute(in)
+}
+
+// SetIntegrityConfig wires the integrity-relevant policy/config posture this
+// backend folds into its signed self-measurement (#683): base domain and the
+// network-policy enforcement posture. Called once from DualServer setup with
+// the resolved config; either field may be empty. The map is canonicalized
+// (sorted keys) before hashing, so caller ordering is irrelevant.
+func (s *ContainerServer) SetIntegrityConfig(state map[string]string) {
+	s.integrityConfigState = state
+}
+
+// measurementToProto maps the internal integrity measurement onto the wire type.
+func measurementToProto(m integrity.Measurement) *pb.SelfMeasurement {
+	out := &pb.SelfMeasurement{
+		HashAlgorithm:      m.HashAlgorithm,
+		BinaryDigest:       m.BinaryDigest,
+		ConfigDigest:       m.ConfigDigest,
+		MeasurementDigest:  m.MeasurementDigest,
+		Signature:          m.Signature,
+		SignatureAlgorithm: m.SignatureAlgorithm,
+		TpmBacked:          m.TPMBacked,
+		Signed:             m.Signed,
+		SigningCertPem:     m.SigningCertPEM,
+		// RFC3339Nano (not RFC3339): the signed canonical form uses nanosecond
+		// precision, so the wire MUST carry the same precision or a verifier
+		// reconstructing the canonical bytes computes a different digest and
+		// the signature never verifies.
+		MeasuredAt:    m.MeasuredAt.UTC().Format(time.RFC3339Nano),
+		DaemonVersion: m.DaemonVersion,
+	}
+	for _, p := range m.ProgramDigests {
+		out.ProgramDigests = append(out.ProgramDigests, &pb.ProgramDigest{
+			Name:   p.Name,
+			Digest: p.Digest,
+		})
+	}
+	return out
 }
 
 // backendGPUsFromSystemInfo projects a SystemInfo's GPU list onto the
@@ -2419,6 +2993,16 @@ func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 // report the local backend's uptime. Called once from DualServer setup.
 func (s *ContainerServer) SetStartTime(t time.Time) {
 	s.startTime = t
+}
+
+// SetCapabilityIdentity wires the region this backend serves and its
+// self-reported hardware class into the capability profile (#681). Both are
+// operator-set: region from --region (falling back to the pool name) and the
+// reported class from the pool name. Called once from DualServer setup; either
+// may be empty.
+func (s *ContainerServer) SetCapabilityIdentity(region, reportedClass string) {
+	s.region = region
+	s.reportedClass = reportedClass
 }
 
 // SetSSHHost wires the public SSH host clients dial to reach this daemon's

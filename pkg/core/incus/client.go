@@ -1212,6 +1212,7 @@ type GPUInfo struct {
 // SystemResources holds system resource information
 type SystemResources struct {
 	TotalCPUs        int32
+	CPUModel         string // e.g. "AMD EPYC 7B13" (first socket's name), empty when unavailable
 	TotalMemoryBytes int64
 	UsedMemoryBytes  int64
 	TotalDiskBytes   int64
@@ -1237,8 +1238,11 @@ func (c *Client) GetSystemResources() (*SystemResources, error) {
 		UsedMemoryBytes:  safecast.I64FromU64(resources.Memory.Used),
 	}
 
-	// Count total CPU cores
+	// Count total CPU cores and capture the CPU model from the first socket.
 	for _, socket := range resources.CPU.Sockets {
+		if res.CPUModel == "" && socket.Name != "" {
+			res.CPUModel = socket.Name
+		}
 		for _, core := range socket.Cores {
 			res.TotalCPUs += safecast.I32(len(core.Threads))
 		}

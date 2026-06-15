@@ -70,7 +70,10 @@ func main() {
 	}
 
 	log.Println("step 6: print full L4 server config")
-	resp, _ := http.Get(*adminURL + "/config/apps/layer4/servers/tls_passthrough")
+	resp, err := http.Get(*adminURL + "/config/apps/layer4/servers/tls_passthrough")
+	if err != nil {
+		log.Fatalf("get layer4 config: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	var pretty map[string]interface{}

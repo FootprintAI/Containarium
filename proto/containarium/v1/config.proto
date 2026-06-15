@@ -593,6 +593,152 @@ message BackendInfo {
 
   // GPUs present on this backend.
   repeated BackendGPU gpus = 10;
+
+  // Spare scheduling capacity this backend currently advertises to the
+  // control plane, or null when nothing is advertised (withdrawn or never
+  // published). Lets the control plane direct scheduling at hosts that have
+  // explicitly offered freed headroom. See #680.
+  CapacityHeadroom headroom = 11;
+
+  // The backend's hardware capability profile recorded at join (hardware
+  // class, a bounded CPU/memory micro-benchmark, and region), or null when no
+  // profile has been recorded yet. Lets the control plane place work by
+  // measured class rather than self-reported class alone. See #681.
+  CapabilityProfile capability_profile = 12;
+}
+
+// CapabilityProfile is a backend's hardware capability snapshot recorded at
+// join (and refreshable on demand): the hardware class derived from the host's
+// system info + GPU probe, a lightweight bounded CPU/memory micro-benchmark,
+// and the region. The control plane reads it through the backend surface to
+// place work by measured capability rather than by the self-reported class
+// alone, and to detect a backend whose measured class drifts from what it
+// reports. See #681.
+message CapabilityProfile {
+  // Total physical CPU cores on the host (from SystemInfo.total_cpus).
+  int32 cpu_cores = 1;
+
+  // Best-effort CPU model/generation string (e.g. "AMD EPYC 7B13"), empty when
+  // the host doesn't expose one.
+  string cpu_model = 2;
+
+  // Total RAM in bytes (from SystemInfo.total_memory_bytes).
+  int64 total_memory_bytes = 3;
+
+  // Total disk in bytes (from SystemInfo.total_disk_bytes).
+  int64 total_disk_bytes = 4;
+
+  // GPU model name from the existing nvidia.runtime passthrough probe
+  // (ValidateGPU), empty on a CPU-only backend.
+  string gpu_model = 5;
+
+  // GPU driver version from the same probe, empty on a CPU-only backend.
+  string gpu_driver_version = 6;
+
+  // Whether the GPU passthrough probe saw a usable GPU.
+  bool gpu_available = 7;
+
+  // Region the backend serves (operator-set via --region; falls back to the
+  // pool name). Empty when unset.
+  string region = 8;
+
+  // Self-reported hardware class the operator assigned the backend (e.g. the
+  // pool name / declared tier), if any.
+  string reported_class = 9;
+
+  // Measured hardware class derived from the profile (e.g. "gpu", "cpu-large",
+  // "cpu-small"). Coarse buckets; the control plane refines placement from the
+  // raw figures.
+  string measured_class = 10;
+
+  // True when measured_class matches reported_class (or reported_class is
+  // empty, treated as consistent). False flags a drift the control plane and
+  // operator should reconcile.
+  bool class_consistent = 11;
+
+  // The bounded micro-benchmark result. See CapabilityBenchmark.
+  CapabilityBenchmark benchmark = 12;
+
+  // RFC3339 timestamp the profile was recorded.
+  string profiled_at = 13;
+}
+
+// CapabilityBenchmark is a lightweight, time-bounded CPU/memory micro-benchmark
+// run when the profile is recorded. The scores are relative integrity/capacity
+// signals, not absolute hardware specs — they let the control plane confirm a
+// backend's self-reported class is plausible. See #681.
+message CapabilityBenchmark {
+  // CPU score: integer-work iterations completed per second during the bounded
+  // run (higher is faster). Single-threaded.
+  int64 cpu_ops_per_sec = 1;
+
+  // Memory score: bytes per second moved through a bounded buffer copy/sum
+  // loop (higher is faster).
+  int64 mem_bytes_per_sec = 2;
+
+  // Wall-clock duration of the benchmark in milliseconds (bounded; the runner
+  // caps each phase).
+  int64 duration_ms = 3;
+}
+
+// CapacityHeadroom is a backend's explicit, policy-bounded offer of spare
+// scheduling capacity to the control plane. Today a backend's capacity is
+// implicit (derived from system info); a box that would otherwise scale down
+// can instead publish its freed headroom here so the control plane can direct
+// work at it. Surfaced through BackendInfo (ListBackends). See #680.
+message CapacityHeadroom {
+  // Whether an advertisement is currently active. False means the backend has
+  // withdrawn (or never published) — the rest of the fields are then a stale
+  // snapshot the control plane must ignore.
+  bool advertised = 1;
+
+  // Spare CPU cores the backend offers for control-plane-directed scheduling.
+  int32 spare_cpus = 2;
+
+  // Spare memory in bytes (derived from SystemInfo.available_memory_bytes,
+  // bounded by policy headroom reservation).
+  int64 spare_memory_bytes = 3;
+
+  // Spare disk in bytes (derived from SystemInfo.available_disk_bytes,
+  // bounded by policy headroom reservation).
+  int64 spare_disk_bytes = 4;
+
+  // Host-level idle fraction in [0,1]: the share of running user containers
+  // currently idle (a host aggregate over the per-container idle signal). A
+  // high value indicates a box that would scale down and can instead offer
+  // its headroom. 0 when no signal is available.
+  double idle_fraction = 5;
+
+  // RFC3339 timestamp the advertisement was last (re)published.
+  string advertised_at = 6;
+
+  // The local policy that bounds this advertisement.
+  CapacityPolicy policy = 7;
+}
+
+// CapacityPolicy bounds what a backend is willing to advertise. The
+// advertisement only computes spare capacity when the current time falls
+// inside the allowed window and respects the excluded workload classes.
+// Operator-set per backend. See #680.
+message CapacityPolicy {
+  // Local-clock hour the advertisement window opens (0-23). When
+  // window_start_hour == window_end_hour the window is always open.
+  int32 window_start_hour = 1;
+
+  // Local-clock hour the advertisement window closes (0-23, exclusive). May be
+  // less than window_start_hour to express an overnight window (e.g. 22..6).
+  int32 window_end_hour = 2;
+
+  // Workload classes that must NOT be displaced or co-scheduled — running
+  // containers carrying any of these classes are excluded from the idle/spare
+  // computation, so a host running protected work never advertises it as free.
+  // Matched against the container's "user.containarium.workload_class" label.
+  repeated string excluded_workload_classes = 3;
+
+  // Fraction of host resources to hold back as a safety reservation, in
+  // [0,1). Spare = available * (1 - reserve_fraction). 0 means offer all
+  // available headroom.
+  double reserve_fraction = 4;
 }
 
 // BackendGPU describes one GPU on a backend.
@@ -614,4 +760,194 @@ message ListBackendsRequest {}
 message ListBackendsResponse {
   // List of available backends
   repeated BackendInfo backends = 1;
+}
+
+// AdvertiseCapacityRequest publishes (or republishes) this backend's spare
+// scheduling headroom to the control plane, bounded by the supplied policy.
+// See #680.
+message AdvertiseCapacityRequest {
+  // The local policy that bounds the advertisement. When omitted the backend
+  // applies its current/default policy (always-open window, no exclusions, no
+  // reservation).
+  CapacityPolicy policy = 1;
+}
+
+// AdvertiseCapacityResponse returns the headroom the backend computed and is
+// now advertising. When the policy window is closed, advertised is true but
+// the spare figures are zero.
+message AdvertiseCapacityResponse {
+  CapacityHeadroom headroom = 1;
+}
+
+// WithdrawCapacityRequest withdraws any active advertisement. Idempotent —
+// withdrawing when nothing is advertised succeeds and is a no-op.
+message WithdrawCapacityRequest {
+  // When true the backend also reclaims the guest workloads it had implicitly
+  // offered, draining them gracefully within a bounded window instead of
+  // hard-killing them. Each drained workload is stopped through the normal
+  // stop path so the control plane observes a stop event and can reschedule.
+  // When false (default) withdraw only flips the advertisement off and leaves
+  // running guests untouched. See #682.
+  bool drain = 1;
+
+  // Bounded wall-clock budget (seconds) for the graceful drain. Once exhausted
+  // any still-running candidate is force-stopped so the host is reliably
+  // reclaimed (no wedge on repeated advertise/withdraw cycles). 0 applies the
+  // backend default (120s). Only honored when drain is true.
+  int32 drain_window_seconds = 2;
+}
+
+// WithdrawCapacityResponse confirms the backend is no longer advertising.
+message WithdrawCapacityResponse {
+  // The post-withdraw headroom (advertised=false).
+  CapacityHeadroom headroom = 1;
+
+  // Container names that drained gracefully within the window. Empty unless
+  // the request set drain. See #682.
+  repeated string drained = 2;
+
+  // Container names that were force-stopped because the bounded window was
+  // exhausted before they stopped gracefully.
+  repeated string force_stopped = 3;
+
+  // True when the graceful budget was exhausted and the backend fell back to
+  // force-stopping the remaining workloads.
+  bool drain_window_exceeded = 4;
+
+  // Container name → error for guests that could NOT be stopped even after the
+  // force fallback. A non-empty map means the host is NOT fully reclaimed —
+  // the control plane must not treat those guests' resources as freed.
+  map<string, string> failed = 5;
+}
+
+// GetCapacityHeadroomRequest reads the backend's current advertisement and the
+// freshly recomputed spare figures, without changing advertise/withdraw state.
+message GetCapacityHeadroomRequest {}
+
+// GetCapacityHeadroomResponse returns the current headroom snapshot.
+message GetCapacityHeadroomResponse {
+  CapacityHeadroom headroom = 1;
+}
+
+// ProfileBackendRequest asks a backend to (re)record its capability profile:
+// read system info, run the GPU passthrough probe and the bounded
+// CPU/memory micro-benchmark, derive the measured class, and persist it. See
+// #681.
+message ProfileBackendRequest {
+  // Backend to profile. Empty = the local/primary daemon's own host; a peer id
+  // forwards to that peer (which profiles itself).
+  string backend_id = 1;
+
+  // Skip the GPU passthrough probe (which creates+deletes a throwaway LXC and
+  // can take ~30s). The profile then records gpu_available=false. Useful on a
+  // backend known to be CPU-only.
+  bool skip_gpu = 2;
+}
+
+// ProfileBackendResponse returns the freshly recorded capability profile.
+message ProfileBackendResponse {
+  CapabilityProfile profile = 1;
+
+  // Echoes the profiled backend ("" = local).
+  string backend_id = 2;
+}
+
+// GetCapabilityProfileRequest reads a backend's last-recorded capability
+// profile without re-running the benchmark/probe. See #681.
+message GetCapabilityProfileRequest {
+  // Backend to read. Empty = the local/primary daemon's own host.
+  string backend_id = 1;
+}
+
+// GetCapabilityProfileResponse returns the last-recorded profile, or null when
+// nothing has been profiled yet.
+message GetCapabilityProfileResponse {
+  CapabilityProfile profile = 1;
+
+  // Echoes the backend ("" = local).
+  string backend_id = 2;
+}
+
+// SelfMeasurement is a backend's signed integrity attestation, emitted by the
+// daemon on its heartbeat. It hashes the daemon's own binary, the loaded
+// in-kernel network-policy program object(s), and the policy/config state, then
+// signs the canonical measurement with the node's identity key (the
+// sentinel-issued peer leaf key reused from the peer-PKI plumbing; TPM-backed
+// when a TPM is present, software-signed otherwise). The control plane reads
+// this through the backend surface to detect tampering of a backend's control
+// plane out of band of the backend's own reporting. The node-side half only:
+// the control plane's verification/quarantine logic lives elsewhere. See #683.
+message SelfMeasurement {
+  // Hash algorithm used for every component digest below (e.g. "sha256").
+  string hash_algorithm = 1;
+
+  // Hex-encoded digest of the running daemon binary on disk.
+  string binary_digest = 2;
+
+  // Hex-encoded digests of the loaded in-kernel network-policy program
+  // object(s), in stable (sorted) order. Empty when no program object is
+  // configured on this backend.
+  repeated ProgramDigest program_digests = 3;
+
+  // Hex-encoded digest of the canonicalized policy/config state (the
+  // integrity-relevant daemon configuration + active network-policy posture).
+  string config_digest = 4;
+
+  // Hex-encoded digest of the canonical measurement bytes that were signed
+  // (binds all components together). The signature below covers exactly these
+  // bytes.
+  string measurement_digest = 5;
+
+  // Signature over the canonical measurement bytes, base64-encoded.
+  string signature = 6;
+
+  // Signature scheme used (e.g. "ecdsa-p256-sha256"). Empty when the daemon had
+  // no identity key available and the measurement is unsigned (signature empty).
+  string signature_algorithm = 7;
+
+  // Whether the signature was produced by a TPM-backed key. False = the
+  // software identity key (sentinel-issued peer leaf) signed it.
+  bool tpm_backed = 8;
+
+  // Whether an identity key was available to sign. False means the measurement
+  // is present but unsigned (no peer PKI bootstrapped yet); the control plane
+  // treats an unsigned measurement as unverifiable, not as tamper.
+  bool signed = 9;
+
+  // PEM of the signing certificate (the peer leaf), so the control plane can
+  // verify the signature against the sentinel CA chain without a side lookup.
+  // Empty when unsigned.
+  string signing_cert_pem = 10;
+
+  // RFC3339 timestamp the measurement was taken.
+  string measured_at = 11;
+
+  // Daemon version that produced the measurement.
+  string daemon_version = 12;
+}
+
+// ProgramDigest is one loaded in-kernel program object's identity + digest.
+message ProgramDigest {
+  // Stable name/path identifying the program object (e.g. the configured BPF
+  // object path).
+  string name = 1;
+
+  // Hex-encoded digest of the program object bytes.
+  string digest = 2;
+}
+
+// GetSelfMeasurementRequest asks a backend to compute and sign a fresh self
+// measurement. See #683.
+message GetSelfMeasurementRequest {
+  // Backend to measure. Empty = the local/primary daemon's own host; a peer id
+  // forwards to that peer (which measures itself).
+  string backend_id = 1;
+}
+
+// GetSelfMeasurementResponse returns the freshly computed signed measurement.
+message GetSelfMeasurementResponse {
+  SelfMeasurement measurement = 1;
+
+  // Echoes the measured backend ("" = local).
+  string backend_id = 2;
 }

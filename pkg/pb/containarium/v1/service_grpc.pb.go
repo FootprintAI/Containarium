@@ -44,6 +44,12 @@ const (
 	ContainerService_ListStacks_FullMethodName               = "/containarium.v1.ContainerService/ListStacks"
 	ContainerService_GetSystemInfo_FullMethodName            = "/containarium.v1.ContainerService/GetSystemInfo"
 	ContainerService_ListBackends_FullMethodName             = "/containarium.v1.ContainerService/ListBackends"
+	ContainerService_AdvertiseCapacity_FullMethodName        = "/containarium.v1.ContainerService/AdvertiseCapacity"
+	ContainerService_WithdrawCapacity_FullMethodName         = "/containarium.v1.ContainerService/WithdrawCapacity"
+	ContainerService_GetCapacityHeadroom_FullMethodName      = "/containarium.v1.ContainerService/GetCapacityHeadroom"
+	ContainerService_ProfileBackend_FullMethodName           = "/containarium.v1.ContainerService/ProfileBackend"
+	ContainerService_GetCapabilityProfile_FullMethodName     = "/containarium.v1.ContainerService/GetCapabilityProfile"
+	ContainerService_GetSelfMeasurement_FullMethodName       = "/containarium.v1.ContainerService/GetSelfMeasurement"
 	ContainerService_GetLatestRelease_FullMethodName         = "/containarium.v1.ContainerService/GetLatestRelease"
 	ContainerService_ValidateGPU_FullMethodName              = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName           = "/containarium.v1.ContainerService/TriggerUpgrade"
@@ -175,6 +181,38 @@ type ContainerServiceClient interface {
 	// /v1/backends HTTP handler with the proto-first, gateway-generated
 	// contract (proto-first convention; #354).
 	ListBackends(ctx context.Context, in *ListBackendsRequest, opts ...grpc.CallOption) (*ListBackendsResponse, error)
+	// AdvertiseCapacity publishes this backend's spare scheduling headroom to
+	// the control plane, bounded by a local policy (time window, excluded
+	// workload classes, safety reservation). A box that would scale down can
+	// instead offer its freed headroom for control-plane-directed scheduling.
+	// The advertisement is surfaced through ListBackends. Admin-only. See #680.
+	AdvertiseCapacity(ctx context.Context, in *AdvertiseCapacityRequest, opts ...grpc.CallOption) (*AdvertiseCapacityResponse, error)
+	// WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
+	// withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
+	// See #680.
+	WithdrawCapacity(ctx context.Context, in *WithdrawCapacityRequest, opts ...grpc.CallOption) (*WithdrawCapacityResponse, error)
+	// GetCapacityHeadroom reads this backend's current advertisement and the
+	// freshly recomputed spare figures without changing advertise/withdraw
+	// state. Admin-only. See #680.
+	GetCapacityHeadroom(ctx context.Context, in *GetCapacityHeadroomRequest, opts ...grpc.CallOption) (*GetCapacityHeadroomResponse, error)
+	// ProfileBackend records a backend's hardware capability profile: it reads
+	// system info, runs the GPU passthrough probe and a bounded CPU/memory
+	// micro-benchmark, derives the measured hardware class, reconciles it
+	// against the self-reported class, and persists the profile. The profile is
+	// surfaced through ListBackends. Admin-only; runs a short-lived benchmark and
+	// (unless skipped) a throwaway GPU probe LXC. See #681.
+	ProfileBackend(ctx context.Context, in *ProfileBackendRequest, opts ...grpc.CallOption) (*ProfileBackendResponse, error)
+	// GetCapabilityProfile reads a backend's last-recorded capability profile
+	// without re-running the benchmark/probe. Admin-only. See #681.
+	GetCapabilityProfile(ctx context.Context, in *GetCapabilityProfileRequest, opts ...grpc.CallOption) (*GetCapabilityProfileResponse, error)
+	// GetSelfMeasurement computes and signs a fresh integrity self-measurement
+	// for a backend: digests of the running daemon binary, the loaded in-kernel
+	// network-policy program object(s), and the canonical policy/config state,
+	// signed with the node's identity key (the sentinel-issued peer leaf reused
+	// from the peer-PKI plumbing; TPM-backed when present). The daemon also emits
+	// this on its heartbeat; this RPC exposes the same measurement on demand. The
+	// control plane verifies it to detect tampering. Admin-only. See #683.
+	GetSelfMeasurement(ctx context.Context, in *GetSelfMeasurementRequest, opts ...grpc.CallOption) (*GetSelfMeasurementResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -497,6 +535,66 @@ func (c *containerServiceClient) ListBackends(ctx context.Context, in *ListBacke
 	return out, nil
 }
 
+func (c *containerServiceClient) AdvertiseCapacity(ctx context.Context, in *AdvertiseCapacityRequest, opts ...grpc.CallOption) (*AdvertiseCapacityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdvertiseCapacityResponse)
+	err := c.cc.Invoke(ctx, ContainerService_AdvertiseCapacity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) WithdrawCapacity(ctx context.Context, in *WithdrawCapacityRequest, opts ...grpc.CallOption) (*WithdrawCapacityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WithdrawCapacityResponse)
+	err := c.cc.Invoke(ctx, ContainerService_WithdrawCapacity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetCapacityHeadroom(ctx context.Context, in *GetCapacityHeadroomRequest, opts ...grpc.CallOption) (*GetCapacityHeadroomResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCapacityHeadroomResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetCapacityHeadroom_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ProfileBackend(ctx context.Context, in *ProfileBackendRequest, opts ...grpc.CallOption) (*ProfileBackendResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProfileBackendResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ProfileBackend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetCapabilityProfile(ctx context.Context, in *GetCapabilityProfileRequest, opts ...grpc.CallOption) (*GetCapabilityProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCapabilityProfileResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetCapabilityProfile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetSelfMeasurement(ctx context.Context, in *GetSelfMeasurementRequest, opts ...grpc.CallOption) (*GetSelfMeasurementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSelfMeasurementResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetSelfMeasurement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetLatestReleaseResponse)
@@ -806,6 +904,38 @@ type ContainerServiceServer interface {
 	// /v1/backends HTTP handler with the proto-first, gateway-generated
 	// contract (proto-first convention; #354).
 	ListBackends(context.Context, *ListBackendsRequest) (*ListBackendsResponse, error)
+	// AdvertiseCapacity publishes this backend's spare scheduling headroom to
+	// the control plane, bounded by a local policy (time window, excluded
+	// workload classes, safety reservation). A box that would scale down can
+	// instead offer its freed headroom for control-plane-directed scheduling.
+	// The advertisement is surfaced through ListBackends. Admin-only. See #680.
+	AdvertiseCapacity(context.Context, *AdvertiseCapacityRequest) (*AdvertiseCapacityResponse, error)
+	// WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
+	// withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
+	// See #680.
+	WithdrawCapacity(context.Context, *WithdrawCapacityRequest) (*WithdrawCapacityResponse, error)
+	// GetCapacityHeadroom reads this backend's current advertisement and the
+	// freshly recomputed spare figures without changing advertise/withdraw
+	// state. Admin-only. See #680.
+	GetCapacityHeadroom(context.Context, *GetCapacityHeadroomRequest) (*GetCapacityHeadroomResponse, error)
+	// ProfileBackend records a backend's hardware capability profile: it reads
+	// system info, runs the GPU passthrough probe and a bounded CPU/memory
+	// micro-benchmark, derives the measured hardware class, reconciles it
+	// against the self-reported class, and persists the profile. The profile is
+	// surfaced through ListBackends. Admin-only; runs a short-lived benchmark and
+	// (unless skipped) a throwaway GPU probe LXC. See #681.
+	ProfileBackend(context.Context, *ProfileBackendRequest) (*ProfileBackendResponse, error)
+	// GetCapabilityProfile reads a backend's last-recorded capability profile
+	// without re-running the benchmark/probe. Admin-only. See #681.
+	GetCapabilityProfile(context.Context, *GetCapabilityProfileRequest) (*GetCapabilityProfileResponse, error)
+	// GetSelfMeasurement computes and signs a fresh integrity self-measurement
+	// for a backend: digests of the running daemon binary, the loaded in-kernel
+	// network-policy program object(s), and the canonical policy/config state,
+	// signed with the node's identity key (the sentinel-issued peer leaf reused
+	// from the peer-PKI plumbing; TPM-backed when present). The daemon also emits
+	// this on its heartbeat; this RPC exposes the same measurement on demand. The
+	// control plane verifies it to detect tampering. Admin-only. See #683.
+	GetSelfMeasurement(context.Context, *GetSelfMeasurementRequest) (*GetSelfMeasurementResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -952,6 +1082,24 @@ func (UnimplementedContainerServiceServer) GetSystemInfo(context.Context, *GetSy
 }
 func (UnimplementedContainerServiceServer) ListBackends(context.Context, *ListBackendsRequest) (*ListBackendsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListBackends not implemented")
+}
+func (UnimplementedContainerServiceServer) AdvertiseCapacity(context.Context, *AdvertiseCapacityRequest) (*AdvertiseCapacityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdvertiseCapacity not implemented")
+}
+func (UnimplementedContainerServiceServer) WithdrawCapacity(context.Context, *WithdrawCapacityRequest) (*WithdrawCapacityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WithdrawCapacity not implemented")
+}
+func (UnimplementedContainerServiceServer) GetCapacityHeadroom(context.Context, *GetCapacityHeadroomRequest) (*GetCapacityHeadroomResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCapacityHeadroom not implemented")
+}
+func (UnimplementedContainerServiceServer) ProfileBackend(context.Context, *ProfileBackendRequest) (*ProfileBackendResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProfileBackend not implemented")
+}
+func (UnimplementedContainerServiceServer) GetCapabilityProfile(context.Context, *GetCapabilityProfileRequest) (*GetCapabilityProfileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCapabilityProfile not implemented")
+}
+func (UnimplementedContainerServiceServer) GetSelfMeasurement(context.Context, *GetSelfMeasurementRequest) (*GetSelfMeasurementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSelfMeasurement not implemented")
 }
 func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLatestRelease not implemented")
@@ -1484,6 +1632,114 @@ func _ContainerService_ListBackends_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_AdvertiseCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdvertiseCapacityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).AdvertiseCapacity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_AdvertiseCapacity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).AdvertiseCapacity(ctx, req.(*AdvertiseCapacityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_WithdrawCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WithdrawCapacityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).WithdrawCapacity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_WithdrawCapacity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).WithdrawCapacity(ctx, req.(*WithdrawCapacityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetCapacityHeadroom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCapacityHeadroomRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetCapacityHeadroom(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetCapacityHeadroom_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetCapacityHeadroom(ctx, req.(*GetCapacityHeadroomRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ProfileBackend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProfileBackendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ProfileBackend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ProfileBackend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ProfileBackend(ctx, req.(*ProfileBackendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetCapabilityProfile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCapabilityProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetCapabilityProfile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetCapabilityProfile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetCapabilityProfile(ctx, req.(*GetCapabilityProfileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetSelfMeasurement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSelfMeasurementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetSelfMeasurement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetSelfMeasurement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetSelfMeasurement(ctx, req.(*GetSelfMeasurementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetLatestRelease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetLatestReleaseRequest)
 	if err := dec(in); err != nil {
@@ -1950,6 +2206,30 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListBackends",
 			Handler:    _ContainerService_ListBackends_Handler,
+		},
+		{
+			MethodName: "AdvertiseCapacity",
+			Handler:    _ContainerService_AdvertiseCapacity_Handler,
+		},
+		{
+			MethodName: "WithdrawCapacity",
+			Handler:    _ContainerService_WithdrawCapacity_Handler,
+		},
+		{
+			MethodName: "GetCapacityHeadroom",
+			Handler:    _ContainerService_GetCapacityHeadroom_Handler,
+		},
+		{
+			MethodName: "ProfileBackend",
+			Handler:    _ContainerService_ProfileBackend_Handler,
+		},
+		{
+			MethodName: "GetCapabilityProfile",
+			Handler:    _ContainerService_GetCapabilityProfile_Handler,
+		},
+		{
+			MethodName: "GetSelfMeasurement",
+			Handler:    _ContainerService_GetSelfMeasurement_Handler,
 		},
 		{
 			MethodName: "GetLatestRelease",

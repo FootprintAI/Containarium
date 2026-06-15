@@ -1076,6 +1076,168 @@
         ]
       }
     },
+    "/v1/capabilities/profile": {
+      "get": {
+        "summary": "Get a backend's capability profile",
+        "description": "Returns a backend's last-recorded capability profile (hardware class, GPU probe, micro-benchmark, region) without re-running it. Admin-only.",
+        "operationId": "ContainerService_GetCapabilityProfile",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCapabilityProfileResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backendId",
+            "description": "Backend to read. Empty = the local/primary daemon's own host.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      },
+      "post": {
+        "summary": "Profile a backend's hardware capability",
+        "description": "Records a backend's capability profile (hardware class, GPU probe, bounded CPU/memory micro-benchmark, region) and reconciles measured vs self-reported class. Surfaced through ListBackends. Admin-only.",
+        "operationId": "ContainerService_ProfileBackend",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ProfileBackendResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ProfileBackendRequest asks a backend to (re)record its capability profile:\nread system info, run the GPU passthrough probe and the bounded\nCPU/memory micro-benchmark, derive the measured class, and persist it. See\n#681.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ProfileBackendRequest"
+            }
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/v1/capacity/headroom": {
+      "get": {
+        "summary": "Get spare scheduling capacity",
+        "description": "Returns this backend's current headroom advertisement and recomputed spare figures. Admin-only.",
+        "operationId": "ContainerService_GetCapacityHeadroom",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCapacityHeadroomResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      },
+      "delete": {
+        "summary": "Withdraw spare scheduling capacity",
+        "description": "Withdraws this backend's headroom advertisement. Idempotent — succeeds even when nothing is currently advertised. Admin-only.",
+        "operationId": "ContainerService_WithdrawCapacity",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/WithdrawCapacityResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "drain",
+            "description": "When true the backend also reclaims the guest workloads it had implicitly\noffered, draining them gracefully within a bounded window instead of\nhard-killing them. Each drained workload is stopped through the normal\nstop path so the control plane observes a stop event and can reschedule.\nWhen false (default) withdraw only flips the advertisement off and leaves\nrunning guests untouched. See #682.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "drainWindowSeconds",
+            "description": "Bounded wall-clock budget (seconds) for the graceful drain. Once exhausted\nany still-running candidate is force-stopped so the host is reliably\nreclaimed (no wedge on repeated advertise/withdraw cycles). 0 applies the\nbackend default (120s). Only honored when drain is true.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      },
+      "post": {
+        "summary": "Advertise spare scheduling capacity",
+        "description": "Publishes this backend's spare scheduling headroom (spare CPU/memory/disk + host idle fraction) to the control plane, bounded by a local policy. Surfaced through ListBackends. Admin-only.",
+        "operationId": "ContainerService_AdvertiseCapacity",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AdvertiseCapacityResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "AdvertiseCapacityRequest publishes (or republishes) this backend's spare\nscheduling headroom to the control plane, bounded by the supplied policy.\nSee #680.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AdvertiseCapacityRequest"
+            }
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/containers": {
       "get": {
         "summary": "List all containers",
@@ -2432,6 +2594,39 @@
         ],
         "tags": [
           "Events"
+        ]
+      }
+    },
+    "/v1/integrity/self-measurement": {
+      "get": {
+        "summary": "Get a backend's signed integrity self-measurement",
+        "description": "Computes and signs a fresh integrity self-measurement (daemon binary digest, loaded in-kernel program object digests, policy/config-state digest) with the node's identity key. The daemon also emits this on its heartbeat. Admin-only.",
+        "operationId": "ContainerService_GetSelfMeasurement",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSelfMeasurementResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backendId",
+            "description": "Backend to measure. Empty = the local/primary daemon's own host; a peer id\nforwards to that peer (which measures itself).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "System"
         ]
       }
     },
@@ -5440,6 +5635,25 @@
       },
       "description": "AdoptMigratedContainerResponse confirms the destination registered\nthe container and returns its IP for the source's route swap."
     },
+    "AdvertiseCapacityRequest": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/CapacityPolicy",
+          "description": "The local policy that bounds the advertisement. When omitted the backend\napplies its current/default policy (always-open window, no exclusions, no\nreservation)."
+        }
+      },
+      "description": "AdvertiseCapacityRequest publishes (or republishes) this backend's spare\nscheduling headroom to the control plane, bounded by the supplied policy.\nSee #680."
+    },
+    "AdvertiseCapacityResponse": {
+      "type": "object",
+      "properties": {
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom"
+        }
+      },
+      "description": "AdvertiseCapacityResponse returns the headroom the backend computed and is\nnow advertising. When the policy window is closed, advertised is true but\nthe spare figures are zero."
+    },
     "AgentArtifact": {
       "type": "object",
       "properties": {
@@ -5863,6 +6077,14 @@
             "$ref": "#/definitions/BackendGPU"
           },
           "description": "GPUs present on this backend."
+        },
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom",
+          "description": "Spare scheduling capacity this backend currently advertises to the\ncontrol plane, or null when nothing is advertised (withdrawn or never\npublished). Lets the control plane direct scheduling at hosts that have\nexplicitly offered freed headroom. See #680."
+        },
+        "capabilityProfile": {
+          "$ref": "#/definitions/CapabilityProfile",
+          "description": "The backend's hardware capability profile recorded at join (hardware\nclass, a bounded CPU/memory micro-benchmark, and region), or null when no\nprofile has been recorded yet. Lets the control plane place work by\nmeasured class rather than self-reported class alone. See #681."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
@@ -5945,6 +6167,154 @@
         }
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
+    },
+    "CapabilityBenchmark": {
+      "type": "object",
+      "properties": {
+        "cpuOpsPerSec": {
+          "type": "string",
+          "format": "int64",
+          "description": "CPU score: integer-work iterations completed per second during the bounded\nrun (higher is faster). Single-threaded."
+        },
+        "memBytesPerSec": {
+          "type": "string",
+          "format": "int64",
+          "description": "Memory score: bytes per second moved through a bounded buffer copy/sum\nloop (higher is faster)."
+        },
+        "durationMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Wall-clock duration of the benchmark in milliseconds (bounded; the runner\ncaps each phase)."
+        }
+      },
+      "description": "CapabilityBenchmark is a lightweight, time-bounded CPU/memory micro-benchmark\nrun when the profile is recorded. The scores are relative integrity/capacity\nsignals, not absolute hardware specs — they let the control plane confirm a\nbackend's self-reported class is plausible. See #681."
+    },
+    "CapabilityProfile": {
+      "type": "object",
+      "properties": {
+        "cpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Total physical CPU cores on the host (from SystemInfo.total_cpus)."
+        },
+        "cpuModel": {
+          "type": "string",
+          "description": "Best-effort CPU model/generation string (e.g. \"AMD EPYC 7B13\"), empty when\nthe host doesn't expose one."
+        },
+        "totalMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total RAM in bytes (from SystemInfo.total_memory_bytes)."
+        },
+        "totalDiskBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total disk in bytes (from SystemInfo.total_disk_bytes)."
+        },
+        "gpuModel": {
+          "type": "string",
+          "description": "GPU model name from the existing nvidia.runtime passthrough probe\n(ValidateGPU), empty on a CPU-only backend."
+        },
+        "gpuDriverVersion": {
+          "type": "string",
+          "description": "GPU driver version from the same probe, empty on a CPU-only backend."
+        },
+        "gpuAvailable": {
+          "type": "boolean",
+          "description": "Whether the GPU passthrough probe saw a usable GPU."
+        },
+        "region": {
+          "type": "string",
+          "description": "Region the backend serves (operator-set via --region; falls back to the\npool name). Empty when unset."
+        },
+        "reportedClass": {
+          "type": "string",
+          "description": "Self-reported hardware class the operator assigned the backend (e.g. the\npool name / declared tier), if any."
+        },
+        "measuredClass": {
+          "type": "string",
+          "description": "Measured hardware class derived from the profile (e.g. \"gpu\", \"cpu-large\",\n\"cpu-small\"). Coarse buckets; the control plane refines placement from the\nraw figures."
+        },
+        "classConsistent": {
+          "type": "boolean",
+          "description": "True when measured_class matches reported_class (or reported_class is\nempty, treated as consistent). False flags a drift the control plane and\noperator should reconcile."
+        },
+        "benchmark": {
+          "$ref": "#/definitions/CapabilityBenchmark",
+          "description": "The bounded micro-benchmark result. See CapabilityBenchmark."
+        },
+        "profiledAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp the profile was recorded."
+        }
+      },
+      "description": "CapabilityProfile is a backend's hardware capability snapshot recorded at\njoin (and refreshable on demand): the hardware class derived from the host's\nsystem info + GPU probe, a lightweight bounded CPU/memory micro-benchmark,\nand the region. The control plane reads it through the backend surface to\nplace work by measured capability rather than by the self-reported class\nalone, and to detect a backend whose measured class drifts from what it\nreports. See #681."
+    },
+    "CapacityHeadroom": {
+      "type": "object",
+      "properties": {
+        "advertised": {
+          "type": "boolean",
+          "description": "Whether an advertisement is currently active. False means the backend has\nwithdrawn (or never published) — the rest of the fields are then a stale\nsnapshot the control plane must ignore."
+        },
+        "spareCpus": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Spare CPU cores the backend offers for control-plane-directed scheduling."
+        },
+        "spareMemoryBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Spare memory in bytes (derived from SystemInfo.available_memory_bytes,\nbounded by policy headroom reservation)."
+        },
+        "spareDiskBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Spare disk in bytes (derived from SystemInfo.available_disk_bytes,\nbounded by policy headroom reservation)."
+        },
+        "idleFraction": {
+          "type": "number",
+          "format": "double",
+          "description": "Host-level idle fraction in [0,1]: the share of running user containers\ncurrently idle (a host aggregate over the per-container idle signal). A\nhigh value indicates a box that would scale down and can instead offer\nits headroom. 0 when no signal is available."
+        },
+        "advertisedAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp the advertisement was last (re)published."
+        },
+        "policy": {
+          "$ref": "#/definitions/CapacityPolicy",
+          "description": "The local policy that bounds this advertisement."
+        }
+      },
+      "description": "CapacityHeadroom is a backend's explicit, policy-bounded offer of spare\nscheduling capacity to the control plane. Today a backend's capacity is\nimplicit (derived from system info); a box that would otherwise scale down\ncan instead publish its freed headroom here so the control plane can direct\nwork at it. Surfaced through BackendInfo (ListBackends). See #680."
+    },
+    "CapacityPolicy": {
+      "type": "object",
+      "properties": {
+        "windowStartHour": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Local-clock hour the advertisement window opens (0-23). When\nwindow_start_hour == window_end_hour the window is always open."
+        },
+        "windowEndHour": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Local-clock hour the advertisement window closes (0-23, exclusive). May be\nless than window_start_hour to express an overnight window (e.g. 22..6)."
+        },
+        "excludedWorkloadClasses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Workload classes that must NOT be displaced or co-scheduled — running\ncontainers carrying any of these classes are excluded from the idle/spare\ncomputation, so a host running protected work never advertises it as free.\nMatched against the container's \"user.containarium.workload_class\" label."
+        },
+        "reserveFraction": {
+          "type": "number",
+          "format": "double",
+          "description": "Fraction of host resources to hold back as a safety reservation, in\n[0,1). Spare = available * (1 - reserve_fraction). 0 means offer all\navailable headroom."
+        }
+      },
+      "description": "CapacityPolicy bounds what a backend is willing to advertise. The\nadvertisement only computes spare capacity when the current time falls\ninside the allowed window and respects the excluded workload classes.\nOperator-set per backend. See #680."
     },
     "ClamavContainerSummary": {
       "type": "object",
@@ -7489,6 +7859,28 @@
         }
       }
     },
+    "GetCapabilityProfileResponse": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "$ref": "#/definitions/CapabilityProfile"
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Echoes the backend (\"\" = local)."
+        }
+      },
+      "description": "GetCapabilityProfileResponse returns the last-recorded profile, or null when\nnothing has been profiled yet."
+    },
+    "GetCapacityHeadroomResponse": {
+      "type": "object",
+      "properties": {
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom"
+        }
+      },
+      "description": "GetCapacityHeadroomResponse returns the current headroom snapshot."
+    },
     "GetClamavSummaryResponse": {
       "type": "object",
       "properties": {
@@ -7789,6 +8181,19 @@
           "description": "The decrypted plaintext value. Caller's responsibility to keep\nsafe — once it's on the wire, the daemon's encryption guarantee\nends."
         }
       }
+    },
+    "GetSelfMeasurementResponse": {
+      "type": "object",
+      "properties": {
+        "measurement": {
+          "$ref": "#/definitions/SelfMeasurement"
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Echoes the measured backend (\"\" = local)."
+        }
+      },
+      "description": "GetSelfMeasurementResponse returns the freshly computed signed measurement."
     },
     "GetSystemInfoResponse": {
       "type": "object",
@@ -9069,6 +9474,47 @@
       },
       "description": "PgConnection carries the connection parameters pg_dump / pg_restore use\n*inside the container*. Defaults target a per-container local Postgres\nreached over loopback. db_password is never logged and is passed to the\nchild process via the PGPASSWORD environment variable, not argv."
     },
+    "ProfileBackendRequest": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Backend to profile. Empty = the local/primary daemon's own host; a peer id\nforwards to that peer (which profiles itself)."
+        },
+        "skipGpu": {
+          "type": "boolean",
+          "description": "Skip the GPU passthrough probe (which creates+deletes a throwaway LXC and\ncan take ~30s). The profile then records gpu_available=false. Useful on a\nbackend known to be CPU-only."
+        }
+      },
+      "description": "ProfileBackendRequest asks a backend to (re)record its capability profile:\nread system info, run the GPU passthrough probe and the bounded\nCPU/memory micro-benchmark, derive the measured class, and persist it. See\n#681."
+    },
+    "ProfileBackendResponse": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "$ref": "#/definitions/CapabilityProfile"
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Echoes the profiled backend (\"\" = local)."
+        }
+      },
+      "description": "ProfileBackendResponse returns the freshly recorded capability profile."
+    },
+    "ProgramDigest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Stable name/path identifying the program object (e.g. the configured BPF\nobject path)."
+        },
+        "digest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the program object bytes."
+        }
+      },
+      "description": "ProgramDigest is one loaded in-kernel program object's identity + digest."
+    },
     "Protocol": {
       "type": "string",
       "enum": [
@@ -9742,6 +10188,64 @@
         }
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
+    },
+    "SelfMeasurement": {
+      "type": "object",
+      "properties": {
+        "hashAlgorithm": {
+          "type": "string",
+          "description": "Hash algorithm used for every component digest below (e.g. \"sha256\")."
+        },
+        "binaryDigest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the running daemon binary on disk."
+        },
+        "programDigests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ProgramDigest"
+          },
+          "description": "Hex-encoded digests of the loaded in-kernel network-policy program\nobject(s), in stable (sorted) order. Empty when no program object is\nconfigured on this backend."
+        },
+        "configDigest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the canonicalized policy/config state (the\nintegrity-relevant daemon configuration + active network-policy posture)."
+        },
+        "measurementDigest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the canonical measurement bytes that were signed\n(binds all components together). The signature below covers exactly these\nbytes."
+        },
+        "signature": {
+          "type": "string",
+          "description": "Signature over the canonical measurement bytes, base64-encoded."
+        },
+        "signatureAlgorithm": {
+          "type": "string",
+          "description": "Signature scheme used (e.g. \"ecdsa-p256-sha256\"). Empty when the daemon had\nno identity key available and the measurement is unsigned (signature empty)."
+        },
+        "tpmBacked": {
+          "type": "boolean",
+          "description": "Whether the signature was produced by a TPM-backed key. False = the\nsoftware identity key (sentinel-issued peer leaf) signed it."
+        },
+        "signed": {
+          "type": "boolean",
+          "description": "Whether an identity key was available to sign. False means the measurement\nis present but unsigned (no peer PKI bootstrapped yet); the control plane\ntreats an unsigned measurement as unverifiable, not as tamper."
+        },
+        "signingCertPem": {
+          "type": "string",
+          "description": "PEM of the signing certificate (the peer leaf), so the control plane can\nverify the signature against the sentinel CA chain without a side lookup.\nEmpty when unsigned."
+        },
+        "measuredAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp the measurement was taken."
+        },
+        "daemonVersion": {
+          "type": "string",
+          "description": "Daemon version that produced the measurement."
+        }
+      },
+      "description": "SelfMeasurement is a backend's signed integrity attestation, emitted by the\ndaemon on its heartbeat. It hashes the daemon's own binary, the loaded\nin-kernel network-policy program object(s), and the policy/config state, then\nsigns the canonical measurement with the node's identity key (the\nsentinel-issued peer leaf key reused from the peer-PKI plumbing; TPM-backed\nwhen a TPM is present, software-signed otherwise). The control plane reads\nthis through the backend surface to detect tampering of a backend's control\nplane out of band of the backend's own reporting. The node-side half only:\nthe control plane's verification/quarantine logic lives elsewhere. See #683."
     },
     "SendAgentTaskBody": {
       "type": "object",
@@ -10787,6 +11291,41 @@
         }
       },
       "title": "WebhookDelivery represents a single webhook delivery attempt"
+    },
+    "WithdrawCapacityResponse": {
+      "type": "object",
+      "properties": {
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom",
+          "description": "The post-withdraw headroom (advertised=false)."
+        },
+        "drained": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container names that drained gracefully within the window. Empty unless\nthe request set drain. See #682."
+        },
+        "forceStopped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container names that were force-stopped because the bounded window was\nexhausted before they stopped gracefully."
+        },
+        "drainWindowExceeded": {
+          "type": "boolean",
+          "description": "True when the graceful budget was exhausted and the backend fell back to\nforce-stopping the remaining workloads."
+        },
+        "failed": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Container name → error for guests that could NOT be stopped even after the\nforce fallback. A non-empty map means the host is NOT fully reclaimed —\nthe control plane must not treat those guests' resources as freed."
+        }
+      },
+      "description": "WithdrawCapacityResponse confirms the backend is no longer advertising."
     },
     "ZapAlert": {
       "type": "object",

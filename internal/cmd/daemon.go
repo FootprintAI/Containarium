@@ -54,6 +54,7 @@ var (
 	peerAddrs          []string
 	localBackendID     string
 	pool               string
+	region             string
 	publicHostname     string
 	publicAliases      []string
 	publicBaseDomains  []string
@@ -143,6 +144,7 @@ func init() {
 	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses (e.g., 10.128.0.5:18001)")
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
+	daemonCmd.Flags().StringVar(&region, "region", "", "Region this backend serves; recorded in its capability profile (containarium backends profile). Empty falls back to the --pool name.")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
 	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
@@ -487,6 +489,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		Peers:                peerAddrs,
 		LocalBackendID:       resolveBackendID(localBackendID),
 		Pool:                 pool,
+		Region:               region,
 		PublicHostname:       publicHostname,
 		PublicAliases:        publicAliases,
 		PublicBaseDomains:    resolvePublicBaseDomains(publicBaseDomains, baseDomain),

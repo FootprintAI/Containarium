@@ -101,6 +101,7 @@ type DualServerConfig struct {
 	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
+	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
@@ -1542,6 +1543,53 @@ func (ds *DualServer) runRevocationCleanup(ctx context.Context) {
 	}
 }
 
+// startIntegrityHeartbeat launches the integrity self-measurement heartbeat
+// (#683). On a fixed cadence the daemon computes + signs a measurement of its
+// own binary, loaded in-kernel program object(s), and policy/config state, and
+// emits the signed digest to the log. The control plane reads the same
+// measurement on demand (GET /v1/integrity/self-measurement) and verifies it
+// to detect tampering of a backend's control plane; that verification half is
+// out of scope here — this is the node-side emission only.
+//
+// The measurement is the same one GetSelfMeasurement returns; the heartbeat
+// exists so a measurement is produced even when no operator/control plane is
+// polling, giving a continuous integrity trail in the daemon log.
+func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
+	if ds.containerServer == nil {
+		return
+	}
+	const interval = 5 * time.Minute
+
+	emit := func() {
+		m, err := ds.containerServer.computeSelfMeasurement()
+		if err != nil {
+			log.Printf("[integrity] self-measurement failed: %v", err)
+			return
+		}
+		signed := "UNSIGNED (no peer identity key)"
+		if m.Signed {
+			signed = fmt.Sprintf("signed %s tpm=%v", m.SignatureAlgorithm, m.TPMBacked)
+		}
+		log.Printf("[integrity] self-measurement digest=%s programs=%d %s",
+			m.MeasurementDigest, len(m.ProgramDigests), signed)
+	}
+
+	go func() {
+		// One initial emission once the daemon is up, then on the cadence.
+		emit()
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				emit()
+			}
+		}
+	}()
+}
+
 // handleBackendSystemInfo returns system info for a specific backend.
 // For the local backend, it returns the local system info.
 // For peer backends, it forwards the request to the peer.
@@ -1619,6 +1667,33 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
+		// Capability-profile identity (#681): region from --region, falling
+		// back to the pool name; self-reported class from the pool name. Both
+		// may be empty. Wired unconditionally — profiling works on a
+		// single-backend daemon with no peer pool.
+		region := ds.config.Region
+		if region == "" {
+			region = ds.config.Pool
+		}
+		ds.containerServer.SetCapabilityIdentity(region, ds.config.Pool)
+
+		// Integrity self-measurement posture (#683): the policy/config state the
+		// daemon folds into its signed self-measurement so the control plane can
+		// detect tampering of a backend's control plane. Generic, integrity-
+		// relevant config only — base domain + network-policy enforcement posture.
+		netPolicyEnforce := "0"
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))) {
+		case "1", "true", "yes", "on":
+			netPolicyEnforce = "1"
+		}
+		netPolicyObj := strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT"))
+		ds.containerServer.SetIntegrityConfig(map[string]string{
+			"base_domain":            ds.config.BaseDomain,
+			"pool":                   ds.config.Pool,
+			"backend_id":             ds.config.LocalBackendID,
+			"network_policy_object":  netPolicyObj,
+			"network_policy_enforce": netPolicyEnforce,
+		})
 	}
 
 	// Start peer discovery for multi-backend support
@@ -1636,6 +1711,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		ds.peerPool.StartDiscovery(ctx)
 		ds.containerServer.SetPeerPool(ds.peerPool)
+
+		// Integrity self-measurement heartbeat (#683): on a fixed cadence the
+		// daemon computes + signs a measurement of its own binary, loaded
+		// in-kernel program object(s), and policy/config state, and emits it
+		// (logs the signed digest now; the control plane reads the same
+		// measurement on demand via GET /v1/integrity/self-measurement and
+		// verifies it to detect tampering — the verification half is out of
+		// scope here). SetPeerPool above wired the signer.
+		ds.startIntegrityHeartbeat(ctx)
 		// Local-backend uptime for ListBackends (GET /v1/backends).
 		ds.containerServer.SetStartTime(ds.startTime)
 
