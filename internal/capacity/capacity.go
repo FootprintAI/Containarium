@@ -49,12 +49,15 @@ func (p Policy) WindowOpen(now time.Time) bool {
 	if p.WindowStartHour == p.WindowEndHour {
 		return true
 	}
-	h := int32(now.Hour())
-	if p.WindowStartHour < p.WindowEndHour {
-		return h >= p.WindowStartHour && h < p.WindowEndHour
+	// Compare in int space — now.Hour() is already int (0–23), and widening
+	// the int32 bounds to int avoids a narrowing int→int32 conversion (G115).
+	h := now.Hour()
+	start, end := int(p.WindowStartHour), int(p.WindowEndHour)
+	if start < end {
+		return h >= start && h < end
 	}
 	// Overnight window wraps midnight, e.g. 22..6.
-	return h >= p.WindowStartHour || h < p.WindowEndHour
+	return h >= start || h < end
 }
 
 // excludes reports whether the policy excludes the given workload class.

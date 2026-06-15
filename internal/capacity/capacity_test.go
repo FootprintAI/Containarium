@@ -13,10 +13,10 @@ func at(hour int) time.Time {
 
 func TestPolicyWindowOpen(t *testing.T) {
 	cases := []struct {
-		name  string
-		p     Policy
-		hour  int
-		open  bool
+		name string
+		p    Policy
+		hour int
+		open bool
 	}{
 		{"always open (equal)", Policy{}, 3, true},
 		{"day window in", Policy{WindowStartHour: 9, WindowEndHour: 17}, 12, true},
