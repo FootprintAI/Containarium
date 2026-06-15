@@ -781,12 +781,38 @@ message AdvertiseCapacityResponse {
 
 // WithdrawCapacityRequest withdraws any active advertisement. Idempotent —
 // withdrawing when nothing is advertised succeeds and is a no-op.
-message WithdrawCapacityRequest {}
+message WithdrawCapacityRequest {
+  // When true the backend also reclaims the guest workloads it had implicitly
+  // offered, draining them gracefully within a bounded window instead of
+  // hard-killing them. Each drained workload is stopped through the normal
+  // stop path so the control plane observes a stop event and can reschedule.
+  // When false (default) withdraw only flips the advertisement off and leaves
+  // running guests untouched. See #682.
+  bool drain = 1;
+
+  // Bounded wall-clock budget (seconds) for the graceful drain. Once exhausted
+  // any still-running candidate is force-stopped so the host is reliably
+  // reclaimed (no wedge on repeated advertise/withdraw cycles). 0 applies the
+  // backend default (120s). Only honored when drain is true.
+  int32 drain_window_seconds = 2;
+}
 
 // WithdrawCapacityResponse confirms the backend is no longer advertising.
 message WithdrawCapacityResponse {
   // The post-withdraw headroom (advertised=false).
   CapacityHeadroom headroom = 1;
+
+  // Container names that drained gracefully within the window. Empty unless
+  // the request set drain. See #682.
+  repeated string drained = 2;
+
+  // Container names that were force-stopped because the bounded window was
+  // exhausted before they stopped gracefully.
+  repeated string force_stopped = 3;
+
+  // True when the graceful budget was exhausted and the backend fell back to
+  // force-stopping the remaining workloads.
+  bool drain_window_exceeded = 4;
 }
 
 // GetCapacityHeadroomRequest reads the backend's current advertisement and the

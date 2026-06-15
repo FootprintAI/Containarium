@@ -3701,9 +3701,21 @@ func (x *AdvertiseCapacityResponse) GetHeadroom() *CapacityHeadroom {
 // WithdrawCapacityRequest withdraws any active advertisement. Idempotent —
 // withdrawing when nothing is advertised succeeds and is a no-op.
 type WithdrawCapacityRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// When true the backend also reclaims the guest workloads it had implicitly
+	// offered, draining them gracefully within a bounded window instead of
+	// hard-killing them. Each drained workload is stopped through the normal
+	// stop path so the control plane observes a stop event and can reschedule.
+	// When false (default) withdraw only flips the advertisement off and leaves
+	// running guests untouched. See #682.
+	Drain bool `protobuf:"varint,1,opt,name=drain,proto3" json:"drain,omitempty"`
+	// Bounded wall-clock budget (seconds) for the graceful drain. Once exhausted
+	// any still-running candidate is force-stopped so the host is reliably
+	// reclaimed (no wedge on repeated advertise/withdraw cycles). 0 applies the
+	// backend default (120s). Only honored when drain is true.
+	DrainWindowSeconds int32 `protobuf:"varint,2,opt,name=drain_window_seconds,json=drainWindowSeconds,proto3" json:"drain_window_seconds,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *WithdrawCapacityRequest) Reset() {
@@ -3736,13 +3748,36 @@ func (*WithdrawCapacityRequest) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_config_proto_rawDescGZIP(), []int{49}
 }
 
+func (x *WithdrawCapacityRequest) GetDrain() bool {
+	if x != nil {
+		return x.Drain
+	}
+	return false
+}
+
+func (x *WithdrawCapacityRequest) GetDrainWindowSeconds() int32 {
+	if x != nil {
+		return x.DrainWindowSeconds
+	}
+	return 0
+}
+
 // WithdrawCapacityResponse confirms the backend is no longer advertising.
 type WithdrawCapacityResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The post-withdraw headroom (advertised=false).
-	Headroom      *CapacityHeadroom `protobuf:"bytes,1,opt,name=headroom,proto3" json:"headroom,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Headroom *CapacityHeadroom `protobuf:"bytes,1,opt,name=headroom,proto3" json:"headroom,omitempty"`
+	// Container names that drained gracefully within the window. Empty unless
+	// the request set drain. See #682.
+	Drained []string `protobuf:"bytes,2,rep,name=drained,proto3" json:"drained,omitempty"`
+	// Container names that were force-stopped because the bounded window was
+	// exhausted before they stopped gracefully.
+	ForceStopped []string `protobuf:"bytes,3,rep,name=force_stopped,json=forceStopped,proto3" json:"force_stopped,omitempty"`
+	// True when the graceful budget was exhausted and the backend fell back to
+	// force-stopping the remaining workloads.
+	DrainWindowExceeded bool `protobuf:"varint,4,opt,name=drain_window_exceeded,json=drainWindowExceeded,proto3" json:"drain_window_exceeded,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *WithdrawCapacityResponse) Reset() {
@@ -3780,6 +3815,27 @@ func (x *WithdrawCapacityResponse) GetHeadroom() *CapacityHeadroom {
 		return x.Headroom
 	}
 	return nil
+}
+
+func (x *WithdrawCapacityResponse) GetDrained() []string {
+	if x != nil {
+		return x.Drained
+	}
+	return nil
+}
+
+func (x *WithdrawCapacityResponse) GetForceStopped() []string {
+	if x != nil {
+		return x.ForceStopped
+	}
+	return nil
+}
+
+func (x *WithdrawCapacityResponse) GetDrainWindowExceeded() bool {
+	if x != nil {
+		return x.DrainWindowExceeded
+	}
+	return false
 }
 
 // GetCapacityHeadroomRequest reads the backend's current advertisement and the
@@ -4334,10 +4390,15 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x18AdvertiseCapacityRequest\x127\n" +
 	"\x06policy\x18\x01 \x01(\v2\x1f.containarium.v1.CapacityPolicyR\x06policy\"Z\n" +
 	"\x19AdvertiseCapacityResponse\x12=\n" +
-	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"\x19\n" +
-	"\x17WithdrawCapacityRequest\"Y\n" +
+	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"a\n" +
+	"\x17WithdrawCapacityRequest\x12\x14\n" +
+	"\x05drain\x18\x01 \x01(\bR\x05drain\x120\n" +
+	"\x14drain_window_seconds\x18\x02 \x01(\x05R\x12drainWindowSeconds\"\xcc\x01\n" +
 	"\x18WithdrawCapacityResponse\x12=\n" +
-	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"\x1c\n" +
+	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\x12\x18\n" +
+	"\adrained\x18\x02 \x03(\tR\adrained\x12#\n" +
+	"\rforce_stopped\x18\x03 \x03(\tR\fforceStopped\x122\n" +
+	"\x15drain_window_exceeded\x18\x04 \x01(\bR\x13drainWindowExceeded\"\x1c\n" +
 	"\x1aGetCapacityHeadroomRequest\"\\\n" +
 	"\x1bGetCapacityHeadroomResponse\x12=\n" +
 	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"Q\n" +

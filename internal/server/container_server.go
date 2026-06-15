@@ -75,6 +75,12 @@ type ContainerServer struct {
 	// server (tests) answers GetCapabilityProfile with "not profiled yet".
 	capabilityStore     *capabilities.Store
 	capabilityStoreOnce sync.Once
+	// drainer performs the bounded graceful reclaim of guest workloads when a
+	// backend withdraws headroom (#682). Lazily initialized; a single in-flight
+	// drain at a time guards against repeated advertise/withdraw cycles wedging
+	// the host.
+	drainer     *capacity.Drainer
+	drainerOnce sync.Once
 	// region is the region this backend serves, wired from --region (falling
 	// back to the pool name). Recorded into the capability profile. Empty when
 	// unset.
@@ -2240,6 +2246,32 @@ func (s *ContainerServer) capStore() *capacity.Store {
 	return s.capacityStore
 }
 
+// drainHandle returns the lazily-initialized per-daemon drainer. A single
+// drainer instance is reused across withdraw calls so its in-flight guard
+// coalesces overlapping drains — repeated advertise/withdraw cycles can't stack
+// concurrent stop storms and wedge the host (#682). The drainer routes each
+// stop back through StopWorkload, which reuses StopContainer's plumbing.
+func (s *ContainerServer) drainHandle() *capacity.Drainer {
+	s.drainerOnce.Do(func() {
+		if s.drainer == nil {
+			s.drainer = capacity.NewDrainer(s)
+		}
+	})
+	return s.drainer
+}
+
+// StopWorkload stops the workload owned by username, satisfying
+// capacity.DrainStopper. It routes through StopContainer so a drained workload
+// emits the same stop event a manual stop does and the control plane can
+// reschedule it — there is no drain-only side door. The daemon context is
+// promoted to the system identity (the drain is daemon-internal, triggered by a
+// headroom withdraw, not by an end-user request).
+func (s *ContainerServer) StopWorkload(ctx context.Context, username string, force bool) error {
+	ctx = auth.ContextWithSystemIdentity(ctx)
+	_, err := s.StopContainer(ctx, &pb.StopContainerRequest{Username: username, Force: force})
+	return err
+}
+
 // hostStateSnapshot gathers the current host-level resource + container
 // snapshot the headroom computation consumes. It reuses the same Incus
 // system-resources call GetSystemInfo uses and the manager's container list,
@@ -2323,13 +2355,53 @@ func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.Adverti
 
 // WithdrawCapacity withdraws any active headroom advertisement. Idempotent:
 // withdrawing when nothing is advertised succeeds as a no-op. Admin-only.
-// See #680.
-func (s *ContainerServer) WithdrawCapacity(ctx context.Context, _ *pb.WithdrawCapacityRequest) (*pb.WithdrawCapacityResponse, error) {
+//
+// When req.Drain is set the backend also reclaims the guest workloads it had
+// implicitly offered: it snapshots the host, selects the same candidate set the
+// headroom computation considered free, and drains them gracefully within a
+// bounded window (req.DrainWindowSeconds, default 120s) instead of hard-killing
+// them. Each drained workload is stopped through the normal StopContainer path
+// so the control plane observes a stop event and can reschedule it. Any
+// candidate still running when the window expires is force-stopped so the host
+// is reliably reclaimed — no wedge on repeated advertise/withdraw cycles, since
+// the drainer coalesces an overlapping drain rather than stacking a second one.
+// See #680, #682.
+func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.WithdrawCapacityRequest) (*pb.WithdrawCapacityResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
+
+	// Flip the advertisement off first so no new work is directed here while we
+	// drain. Withdraw is idempotent, so the order is safe even if the drain
+	// fails partway.
 	h := s.capStore().Withdraw()
-	return &pb.WithdrawCapacityResponse{Headroom: headroomToProto(h)}, nil
+	resp := &pb.WithdrawCapacityResponse{Headroom: headroomToProto(h)}
+
+	if !req.GetDrain() {
+		return resp, nil
+	}
+
+	st := s.hostStateSnapshot()
+	candidates := capacity.DrainCandidates(s.capStore().Policy(), st)
+	if len(candidates) == 0 {
+		return resp, nil
+	}
+
+	window := time.Duration(req.GetDrainWindowSeconds()) * time.Second
+	result, skipped := s.drainHandle().Drain(ctx, candidates, window)
+	if skipped {
+		// A drain was already in flight (e.g. a rapid second withdraw). The
+		// advertisement is already off; the running drain reclaims the host.
+		log.Printf("[drain] withdraw coalesced: a drain is already in flight")
+		return resp, nil
+	}
+
+	resp.Drained = result.Drained
+	resp.ForceStopped = result.ForceStopped
+	resp.DrainWindowExceeded = result.WindowExceeded
+	log.Printf("[drain] withdraw drained=%d force_stopped=%d failed=%d window_exceeded=%t elapsed=%s",
+		len(result.Drained), len(result.ForceStopped), len(result.Failed), result.WindowExceeded, result.Elapsed)
+	return resp, nil
 }
 
 // GetCapacityHeadroom returns this backend's current advertisement with spare

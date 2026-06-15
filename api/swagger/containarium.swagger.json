@@ -1183,6 +1183,23 @@
             }
           }
         },
+        "parameters": [
+          {
+            "name": "drain",
+            "description": "When true the backend also reclaims the guest workloads it had implicitly\noffered, draining them gracefully within a bounded window instead of\nhard-killing them. Each drained workload is stopped through the normal\nstop path so the control plane observes a stop event and can reschedule.\nWhen false (default) withdraw only flips the advertisement off and leaves\nrunning guests untouched. See #682.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "drainWindowSeconds",
+            "description": "Bounded wall-clock budget (seconds) for the graceful drain. Once exhausted\nany still-running candidate is force-stopped so the host is reliably\nreclaimed (no wedge on repeated advertise/withdraw cycles). 0 applies the\nbackend default (120s). Only honored when drain is true.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
         "tags": [
           "System"
         ]
@@ -11163,6 +11180,24 @@
         "headroom": {
           "$ref": "#/definitions/CapacityHeadroom",
           "description": "The post-withdraw headroom (advertised=false)."
+        },
+        "drained": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container names that drained gracefully within the window. Empty unless\nthe request set drain. See #682."
+        },
+        "forceStopped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container names that were force-stopped because the bounded window was\nexhausted before they stopped gracefully."
+        },
+        "drainWindowExceeded": {
+          "type": "boolean",
+          "description": "True when the graceful budget was exhausted and the backend fell back to\nforce-stopping the remaining workloads."
         }
       },
       "description": "WithdrawCapacityResponse confirms the backend is no longer advertising."

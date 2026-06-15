@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -36,15 +37,23 @@ Examples:
   # Withdraw (idempotent)
   containarium capacity withdraw --server <host:port>
 
+  # Withdraw and gracefully reclaim the offered workloads within 120s
+  containarium capacity withdraw --drain --server <host:port>
+
+  # Withdraw and drain within a 30s bounded window
+  containarium capacity withdraw --drain --drain-window 30 --server <host:port>
+
   # Read the current advertisement
   containarium capacity get --server <host:port>`,
 }
 
 var (
-	capWindow   string
-	capReserve  float64
-	capExclude  []string
-	capFormat   string
+	capWindow      string
+	capReserve     float64
+	capExclude     []string
+	capFormat      string
+	capDrain       bool
+	capDrainWindow int32
 )
 
 type capacityPolicyJSON struct {
@@ -66,6 +75,11 @@ type capacityHeadroomJSON struct {
 
 type capacityHeadroomResponse struct {
 	Headroom *capacityHeadroomJSON `json:"headroom"`
+	// Drain fields are only populated by the withdraw response when --drain was
+	// requested (#682). Empty/false otherwise.
+	Drained             []string `json:"drained,omitempty"`
+	ForceStopped        []string `json:"forceStopped,omitempty"`
+	DrainWindowExceeded bool     `json:"drainWindowExceeded,omitempty"`
 }
 
 func init() {
@@ -91,6 +105,10 @@ func init() {
 		RunE:  runCapacityWithdraw,
 	}
 	withdrawCmd.Flags().StringVarP(&capFormat, "format", "f", "table", "Output format: table, json")
+	withdrawCmd.Flags().BoolVar(&capDrain, "drain", false,
+		"Also reclaim the guest workloads this backend offered, draining them gracefully within a bounded window")
+	withdrawCmd.Flags().Int32Var(&capDrainWindow, "drain-window", 0,
+		"Bounded wall-clock budget in seconds for the graceful drain (0 = backend default, 120s). Only honored with --drain")
 	capacityCmd.AddCommand(withdrawCmd)
 
 	getCmd := &cobra.Command{
@@ -154,7 +172,21 @@ func runCapacityWithdraw(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return fmt.Errorf("--server is required (the daemon's HTTP address, e.g. http://host:8080)")
 	}
-	return capacityCall("DELETE", "/v1/capacity/headroom", nil)
+	if capDrainWindow < 0 {
+		return fmt.Errorf("--drain-window must be >= 0, got %d", capDrainWindow)
+	}
+	// The withdraw RPC maps to DELETE; its drain knobs travel as query
+	// parameters (grpc-gateway populates the request from the query string).
+	path := "/v1/capacity/headroom"
+	if capDrain {
+		q := url.Values{}
+		q.Set("drain", "true")
+		if capDrainWindow > 0 {
+			q.Set("drainWindowSeconds", fmt.Sprintf("%d", capDrainWindow))
+		}
+		path += "?" + q.Encode()
+	}
+	return capacityCall("DELETE", path, nil)
 }
 
 func runCapacityGet(cmd *cobra.Command, args []string) error {
@@ -207,6 +239,13 @@ func capacityCall(method, path string, reqBody []byte) error {
 		fmt.Println(string(out))
 	default:
 		printHeadroom(parsed.Headroom)
+		if len(parsed.Drained) > 0 || len(parsed.ForceStopped) > 0 {
+			fmt.Printf("Drained gracefully: %d %v\n", len(parsed.Drained), parsed.Drained)
+			fmt.Printf("Force-stopped:      %d %v\n", len(parsed.ForceStopped), parsed.ForceStopped)
+			if parsed.DrainWindowExceeded {
+				fmt.Println("Note: drain window exceeded; remaining workloads were force-stopped.")
+			}
+		}
 	}
 	return nil
 }
