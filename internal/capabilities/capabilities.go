@@ -97,9 +97,7 @@ func MeasuredClass(f HostFacts) string {
 
 // classConsistent reports whether the measured class is consistent with the
 // self-reported one. An empty reported class is treated as consistent (the
-// operator declared nothing to reconcile against). The comparison is
-// case-insensitive and substring-tolerant so a reported "gpu-pool" reconciles
-// against measured "gpu".
+// operator declared nothing to reconcile against). Case-insensitive.
 func classConsistent(reported, measured string) bool {
 	r := strings.ToLower(strings.TrimSpace(reported))
 	if r == "" {
@@ -109,9 +107,23 @@ func classConsistent(reported, measured string) bool {
 	if r == m {
 		return true
 	}
-	// A reported class that names the measured bucket (e.g. "gpu-spot" vs
-	// "gpu", "cpu-large-pool" vs "cpu-large") is consistent.
-	return strings.Contains(r, m) || strings.Contains(m, r)
+	// Compare on hyphen segments, NOT arbitrary substrings: the old
+	// bidirectional strings.Contains made "cpu" consistent with BOTH
+	// "cpu-small" and "cpu-large", hiding the exact size drift this reconcile
+	// exists to surface. Rule:
+	//   - the FAMILY (first segment, e.g. cpu/gpu) must match;
+	//   - if BOTH name a sub-class (size/model), the sub-classes must agree;
+	//   - a coarse class on one side (no sub-segment) is a consistent
+	//     refinement of the other ("gpu" vs "gpu-a10").
+	rSeg := strings.SplitN(r, "-", 2)
+	mSeg := strings.SplitN(m, "-", 2)
+	if rSeg[0] != mSeg[0] {
+		return false // different family → drift
+	}
+	if len(rSeg) == 2 && len(mSeg) == 2 {
+		return rSeg[1] == mSeg[1] // both specified a sub-class → must match
+	}
+	return true
 }
 
 // Compute derives the profile from a HostFacts snapshot. Pure: no I/O.

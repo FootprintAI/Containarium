@@ -3776,8 +3776,12 @@ type WithdrawCapacityResponse struct {
 	// True when the graceful budget was exhausted and the backend fell back to
 	// force-stopping the remaining workloads.
 	DrainWindowExceeded bool `protobuf:"varint,4,opt,name=drain_window_exceeded,json=drainWindowExceeded,proto3" json:"drain_window_exceeded,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Container name → error for guests that could NOT be stopped even after the
+	// force fallback. A non-empty map means the host is NOT fully reclaimed —
+	// the control plane must not treat those guests' resources as freed.
+	Failed        map[string]string `protobuf:"bytes,5,rep,name=failed,proto3" json:"failed,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WithdrawCapacityResponse) Reset() {
@@ -3836,6 +3840,13 @@ func (x *WithdrawCapacityResponse) GetDrainWindowExceeded() bool {
 		return x.DrainWindowExceeded
 	}
 	return false
+}
+
+func (x *WithdrawCapacityResponse) GetFailed() map[string]string {
+	if x != nil {
+		return x.Failed
+	}
+	return nil
 }
 
 // GetCapacityHeadroomRequest reads the backend's current advertisement and the
@@ -4715,12 +4726,16 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"a\n" +
 	"\x17WithdrawCapacityRequest\x12\x14\n" +
 	"\x05drain\x18\x01 \x01(\bR\x05drain\x120\n" +
-	"\x14drain_window_seconds\x18\x02 \x01(\x05R\x12drainWindowSeconds\"\xcc\x01\n" +
+	"\x14drain_window_seconds\x18\x02 \x01(\x05R\x12drainWindowSeconds\"\xd6\x02\n" +
 	"\x18WithdrawCapacityResponse\x12=\n" +
 	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\x12\x18\n" +
 	"\adrained\x18\x02 \x03(\tR\adrained\x12#\n" +
 	"\rforce_stopped\x18\x03 \x03(\tR\fforceStopped\x122\n" +
-	"\x15drain_window_exceeded\x18\x04 \x01(\bR\x13drainWindowExceeded\"\x1c\n" +
+	"\x15drain_window_exceeded\x18\x04 \x01(\bR\x13drainWindowExceeded\x12M\n" +
+	"\x06failed\x18\x05 \x03(\v25.containarium.v1.WithdrawCapacityResponse.FailedEntryR\x06failed\x1a9\n" +
+	"\vFailedEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1c\n" +
 	"\x1aGetCapacityHeadroomRequest\"\\\n" +
 	"\x1bGetCapacityHeadroomResponse\x12=\n" +
 	"\bheadroom\x18\x01 \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\"Q\n" +
@@ -4818,7 +4833,7 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                               // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                                // 1: containarium.v1.GPUModel
@@ -4886,16 +4901,17 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*ProgramDigest)(nil),                        // 63: containarium.v1.ProgramDigest
 	(*GetSelfMeasurementRequest)(nil),            // 64: containarium.v1.GetSelfMeasurementRequest
 	(*GetSelfMeasurementResponse)(nil),           // 65: containarium.v1.GetSelfMeasurementResponse
-	(*ResourceLimits)(nil),                       // 66: containarium.v1.ResourceLimits
-	(OSType)(0),                                  // 67: containarium.v1.OSType
+	nil,                                          // 66: containarium.v1.WithdrawCapacityResponse.FailedEntry
+	(*ResourceLimits)(nil),                       // 67: containarium.v1.ResourceLimits
+	(OSType)(0),                                  // 68: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	66, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	67, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	67, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	68, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -4924,16 +4940,17 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	48, // 31: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
 	47, // 32: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
 	47, // 33: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	47, // 34: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	45, // 35: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	45, // 36: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	63, // 37: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
-	62, // 38: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
-	39, // [39:39] is the sub-list for method output_type
-	39, // [39:39] is the sub-list for method input_type
-	39, // [39:39] is the sub-list for extension type_name
-	39, // [39:39] is the sub-list for extension extendee
-	0,  // [0:39] is the sub-list for field type_name
+	66, // 34: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
+	47, // 35: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	45, // 36: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	45, // 37: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	63, // 38: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
+	62, // 39: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
+	40, // [40:40] is the sub-list for method output_type
+	40, // [40:40] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -4948,7 +4965,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   61,
+			NumMessages:   62,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

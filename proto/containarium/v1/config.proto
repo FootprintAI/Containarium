@@ -813,6 +813,11 @@ message WithdrawCapacityResponse {
   // True when the graceful budget was exhausted and the backend fell back to
   // force-stopping the remaining workloads.
   bool drain_window_exceeded = 4;
+
+  // Container name → error for guests that could NOT be stopped even after the
+  // force fallback. A non-empty map means the host is NOT fully reclaimed —
+  // the control plane must not treat those guests' resources as freed.
+  map<string, string> failed = 5;
 }
 
 // GetCapacityHeadroomRequest reads the backend's current advertisement and the

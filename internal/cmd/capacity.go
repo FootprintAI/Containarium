@@ -77,9 +77,10 @@ type capacityHeadroomResponse struct {
 	Headroom *capacityHeadroomJSON `json:"headroom"`
 	// Drain fields are only populated by the withdraw response when --drain was
 	// requested (#682). Empty/false otherwise.
-	Drained             []string `json:"drained,omitempty"`
-	ForceStopped        []string `json:"forceStopped,omitempty"`
-	DrainWindowExceeded bool     `json:"drainWindowExceeded,omitempty"`
+	Drained             []string          `json:"drained,omitempty"`
+	ForceStopped        []string          `json:"forceStopped,omitempty"`
+	DrainWindowExceeded bool              `json:"drainWindowExceeded,omitempty"`
+	Failed              map[string]string `json:"failed,omitempty"`
 }
 
 func init() {
@@ -239,11 +240,19 @@ func capacityCall(method, path string, reqBody []byte) error {
 		fmt.Println(string(out))
 	default:
 		printHeadroom(parsed.Headroom)
-		if len(parsed.Drained) > 0 || len(parsed.ForceStopped) > 0 {
+		if len(parsed.Drained) > 0 || len(parsed.ForceStopped) > 0 || len(parsed.Failed) > 0 || parsed.DrainWindowExceeded {
 			fmt.Printf("Drained gracefully: %d %v\n", len(parsed.Drained), parsed.Drained)
 			fmt.Printf("Force-stopped:      %d %v\n", len(parsed.ForceStopped), parsed.ForceStopped)
 			if parsed.DrainWindowExceeded {
 				fmt.Println("Note: drain window exceeded; remaining workloads were force-stopped.")
+			}
+			if len(parsed.Failed) > 0 {
+				// Surface failures prominently — these guests are still running,
+				// so the host is NOT fully reclaimed.
+				fmt.Printf("FAILED to stop:     %d (host NOT fully reclaimed)\n", len(parsed.Failed))
+				for name, msg := range parsed.Failed {
+					fmt.Printf("  - %s: %s\n", name, msg)
+				}
 			}
 		}
 	}

@@ -2,12 +2,21 @@ package capacity
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
+
+// forceStopBudget bounds a single force-stop attempt so even the fallback
+// can't hang the drain indefinitely on a wedged stop.
+const forceStopBudget = 15 * time.Second
+
+// errStopTimedOut marks a stop that outlived its per-attempt budget. Treated
+// like a stop failure so the drain moves on (and force-retries a graceful one).
+var errStopTimedOut = errors.New("capacity: stop exceeded its budget")
 
 // DefaultDrainWindow is the bounded wall-clock budget a drain gets to evict the
 // guest workloads a backend had implicitly offered as headroom. Picked to be
@@ -168,19 +177,29 @@ func (d *Drainer) Drain(ctx context.Context, candidates []DrainCandidate, window
 
 	for _, c := range candidates {
 		// Past the window: force-stop the remainder so the host is reclaimed
-		// promptly. force=true skips the graceful shutdown wait, bounding the
-		// total time the drain can consume.
-		forced := !d.now().Before(deadline)
+		// promptly. force=true skips the graceful shutdown wait.
+		remaining := deadline.Sub(d.now())
+		forced := remaining <= 0
 		if forced {
 			res.WindowExceeded = true
 		}
 
-		if err := d.stopper.StopWorkload(ctx, c.Username, forced); err != nil {
-			// Graceful attempt failed and we still have window left: try once
-			// more with force before giving up, so a guest that ignores
-			// SIGTERM is still reclaimed rather than left running.
+		// Bound EACH attempt: StopWorkload (StopContainer) ignores ctx and can
+		// block for the backend's graceful timeout, so without a per-stop budget
+		// one stubborn guest makes the whole drain blow past `window`. A graceful
+		// stop gets the time left in the window; a forced stop gets forceStopBudget.
+		var err error
+		if forced {
+			err = d.stopWithBudget(ctx, c.Username, true, forceStopBudget)
+		} else {
+			err = d.stopWithBudget(ctx, c.Username, false, remaining)
+		}
+		if err != nil {
+			// Graceful attempt failed/timed out with window left: try once more
+			// with force before giving up, so a guest that ignores SIGTERM (or
+			// outlasts the graceful budget) is still reclaimed.
 			if !forced {
-				if ferr := d.stopper.StopWorkload(ctx, c.Username, true); ferr != nil {
+				if ferr := d.stopWithBudget(ctx, c.Username, true, forceStopBudget); ferr != nil {
 					res.Failed[c.ContainerName] = ferr.Error()
 					log.Printf("[drain] force-stop %s failed: %v", c.ContainerName, ferr)
 					continue
@@ -209,6 +228,25 @@ func (d *Drainer) Drain(ctx context.Context, candidates []DrainCandidate, window
 
 	res.Elapsed = d.now().Sub(start)
 	return res, false
+}
+
+// stopWithBudget runs a stop but returns once `budget` elapses even if the
+// underlying StopWorkload (which may ignore ctx) is still blocking — so a guest
+// that ignores SIGTERM can't push the drain past its window. The orphaned stop
+// keeps running in the background (the goroutine sends to a buffered channel
+// and exits, so it never leaks) and the daemon reconciles it on a later pass.
+func (d *Drainer) stopWithBudget(ctx context.Context, username string, force bool, budget time.Duration) error {
+	if budget <= 0 {
+		budget = forceStopBudget
+	}
+	done := make(chan error, 1)
+	go func() { done <- d.stopper.StopWorkload(ctx, username, force) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(budget):
+		return errStopTimedOut
+	}
 }
 
 // now returns the drainer's clock (injectable for tests).

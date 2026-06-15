@@ -11316,6 +11316,13 @@
         "drainWindowExceeded": {
           "type": "boolean",
           "description": "True when the graceful budget was exhausted and the backend fell back to\nforce-stopping the remaining workloads."
+        },
+        "failed": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Container name → error for guests that could NOT be stopped even after the\nforce fallback. A non-empty map means the host is NOT fully reclaimed —\nthe control plane must not treat those guests' resources as freed."
         }
       },
       "description": "WithdrawCapacityResponse confirms the backend is no longer advertising."

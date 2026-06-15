@@ -83,6 +83,10 @@ type ContainerServer struct {
 	// the host.
 	drainer     *capacity.Drainer
 	drainerOnce sync.Once
+	// profileMu serializes ProfileBackend: each profile spins a throwaway
+	// GPU-probe LXC + a benchmark on the host, so concurrent/repeated calls
+	// must coalesce rather than stack a probe storm that can wedge the runtime.
+	profileMu sync.Mutex
 	// region is the region this backend serves, wired from --region (falling
 	// back to the pool name). Recorded into the capability profile. Empty when
 	// unset.
@@ -2313,10 +2317,18 @@ func (s *ContainerServer) hostStateSnapshot() capacity.HostState {
 	st.AvailableMemoryBytes = res.TotalMemoryBytes - res.UsedMemoryBytes
 	st.AvailableDiskBytes = res.TotalDiskBytes - res.UsedDiskBytes
 	// Available CPU cores ≈ total cores minus the 1-minute load average,
-	// clamped at zero. A coarse but honest host-level idle-CPU proxy.
+	// clamped to [0, TotalCPUs]. This is a COARSE, burstable hint only: load
+	// average counts runnable+uninterruptible tasks (I/O wait can inflate it
+	// without the CPU being busy), so it neither equals idle cores nor is the
+	// binding constraint — RAM and disk are the hard limits on how many guests
+	// a host can take. The upper clamp guards against a bogus/negative load
+	// reading reporting more spare cores than exist.
 	avail := float64(res.TotalCPUs) - res.CPULoad1Min
 	if avail < 0 {
 		avail = 0
+	}
+	if avail > float64(res.TotalCPUs) {
+		avail = float64(res.TotalCPUs)
 	}
 	st.AvailableCPUs = int32(avail)
 	return st
@@ -2443,6 +2455,12 @@ func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.Withdraw
 	resp.Drained = result.Drained
 	resp.ForceStopped = result.ForceStopped
 	resp.DrainWindowExceeded = result.WindowExceeded
+	// Surface guests that couldn't be stopped even after force — a non-empty
+	// map means the host is NOT fully reclaimed, so the control plane must not
+	// treat their resources as freed.
+	if len(result.Failed) > 0 {
+		resp.Failed = result.Failed
+	}
 	log.Printf("[drain] withdraw drained=%d force_stopped=%d failed=%d window_exceeded=%t elapsed=%s",
 		len(result.Drained), len(result.ForceStopped), len(result.Failed), result.WindowExceeded, result.Elapsed)
 	return resp, nil
@@ -2577,7 +2595,13 @@ func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBac
 		return &resp, nil
 	}
 
-	// Local backend.
+	// Local backend. Serialize against concurrent profiles: gatherHostFacts
+	// spins a throwaway GPU-probe LXC + runs a benchmark, so a second caller
+	// (retry, multi-replica control plane) must not stack a second probe.
+	if !s.profileMu.TryLock() {
+		return nil, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	}
+	defer s.profileMu.Unlock()
 	p := s.capabStore().Record(s.gatherHostFacts(req.SkipGpu))
 	return &pb.ProfileBackendResponse{
 		Profile:   profileToProto(p),

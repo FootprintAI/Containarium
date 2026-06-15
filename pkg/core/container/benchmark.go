@@ -57,7 +57,8 @@ func RunBenchmark() BenchmarkResult {
 // integer arithmetic so the score tracks raw single-thread CPU throughput and
 // is comparable across runs on the same host.
 func benchCPU(budget time.Duration) int64 {
-	deadline := time.Now().Add(budget)
+	start := time.Now()
+	deadline := start.Add(budget)
 	// Check the clock only every checkEvery iterations — time.Now() per
 	// iteration would dominate the measurement.
 	const checkEvery = 1 << 16
@@ -78,7 +79,11 @@ func benchCPU(budget time.Duration) int64 {
 	if acc == 0 {
 		iters++
 	}
-	elapsed := budget.Seconds()
+	// Divide by the ACTUAL elapsed time, not the nominal budget: the loop
+	// overruns the deadline by up to one checkEvery batch, and on a slow/noisy
+	// host that overrun is significant — using budget.Seconds() would overstate
+	// throughput exactly where accuracy matters for class-drift detection.
+	elapsed := time.Since(start).Seconds()
 	if elapsed <= 0 {
 		return 0
 	}
@@ -97,7 +102,8 @@ func benchMem(budget time.Duration, bufBytes int) int64 {
 	for i := range src {
 		src[i] = byte(i)
 	}
-	deadline := time.Now().Add(budget)
+	start := time.Now()
+	deadline := start.Add(budget)
 	var moved int64
 	var sum uint64
 	for {
@@ -114,7 +120,9 @@ func benchMem(budget time.Duration, bufBytes int) int64 {
 	if sum == 0 {
 		moved++
 	}
-	elapsed := budget.Seconds()
+	// Actual elapsed, not the nominal budget — the final pass overruns the
+	// deadline (a whole buffer of work), which budget.Seconds() would ignore.
+	elapsed := time.Since(start).Seconds()
 	if elapsed <= 0 {
 		return 0
 	}
