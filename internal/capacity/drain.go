@@ -109,6 +109,18 @@ func DrainCandidates(p Policy, st HostState) []DrainCandidate {
 		if p.excludes(c.Labels[WorkloadClassLabel]) {
 			continue
 		}
+		// Only the IDLE guests are part of the spare the backend implicitly
+		// offered; a busy, non-idle workload was never advertised, so a routine
+		// headroom withdraw must NOT reclaim it. This mirrors hostIdle's idle
+		// gate (capacity.go) exactly — the two must stay in sync or the set
+		// drained diverges from the set advertised.
+		threshold := time.Duration(c.IdleThresholdMinutes) * time.Minute
+		if threshold <= 0 {
+			threshold = 15 * time.Minute
+		}
+		if c.LastStartedAt.IsZero() || st.Now.Sub(c.LastStartedAt) < threshold {
+			continue
+		}
 		// Username is the daemon's stop-routing key; fall back to the container
 		// name when the host doesn't report one (the name-convention case).
 		username := c.Username

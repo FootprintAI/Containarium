@@ -233,19 +233,25 @@ func TestDrainWindowDefaults(t *testing.T) {
 }
 
 func TestDrainCandidatesFiltersAndMapsUsername(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-time.Hour) // idle past the default 15m threshold
 	st := HostState{
-		Now: time.Now(),
+		Now: now,
 		Containers: []incus.ContainerInfo{
-			{Name: "guest-container", Username: "guest", State: "Running"},
-			{Name: "stopped-container", Username: "stopped", State: "Stopped"},
-			{Name: "core", State: "Running", Role: incus.RolePostgres},
+			{Name: "guest-container", Username: "guest", State: "Running", LastStartedAt: old},
+			{Name: "stopped-container", Username: "stopped", State: "Stopped", LastStartedAt: old},
+			{Name: "core", State: "Running", Role: incus.RolePostgres, LastStartedAt: old},
 			{
-				Name:   "protected-container",
-				State:  "Running",
-				Labels: map[string]string{WorkloadClassLabel: "critical"},
+				Name:          "protected-container",
+				State:         "Running",
+				Labels:        map[string]string{WorkloadClassLabel: "critical"},
+				LastStartedAt: old,
 			},
+			// Running but only just started → still busy, not part of the idle
+			// spare the backend offered → must NOT be drained.
+			{Name: "busy-container", Username: "busy", State: "Running", LastStartedAt: now},
 			// No Username reported: candidate falls back to the name.
-			{Name: "noname-container", State: "Running"},
+			{Name: "noname-container", State: "Running", LastStartedAt: old},
 		},
 	}
 	p := Policy{ExcludedWorkloadClasses: []string{"critical"}}
@@ -263,5 +269,8 @@ func TestDrainCandidatesFiltersAndMapsUsername(t *testing.T) {
 	}
 	if c, ok := byName["noname-container"]; !ok || c.Username != "noname-container" {
 		t.Fatalf("noname candidate = %+v, want username fallback to name", c)
+	}
+	if _, ok := byName["busy-container"]; ok {
+		t.Fatalf("busy (non-idle) container must not be a drain candidate")
 	}
 }

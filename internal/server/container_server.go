@@ -2254,6 +2254,14 @@ func (s *ContainerServer) capStore() *capacity.Store {
 	return s.capacityStore
 }
 
+// maxDrainWindow caps a caller-supplied drain window so an absurd value can't
+// pin the host (and the drainer's in-flight guard) for an unreasonable time.
+// drainCtxGrace is extra headroom past the window for the final force-stop.
+const (
+	maxDrainWindow = 10 * time.Minute
+	drainCtxGrace  = 30 * time.Second
+)
+
 // drainHandle returns the lazily-initialized per-daemon drainer. A single
 // drainer instance is reused across withdraw calls so its in-flight guard
 // coalesces overlapping drains — repeated advertise/withdraw cycles can't stack
@@ -2356,6 +2364,19 @@ func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.Adverti
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
+	// Validate the policy server-side — the CLI checks these, but a direct
+	// gRPC/REST caller must not be trusted. A negative reserve_fraction would
+	// otherwise clamp to a ZERO reservation (advertising 100% of the host as
+	// spare — the opposite of intent); an out-of-range window hour would make
+	// the window silently never open.
+	if pol := req.GetPolicy(); pol != nil {
+		if rf := pol.GetReserveFraction(); rf < 0 || rf >= 1 {
+			return nil, status.Errorf(codes.InvalidArgument, "reserve_fraction must be in [0,1), got %v", rf)
+		}
+		if hs, he := pol.GetWindowStartHour(), pol.GetWindowEndHour(); hs < 0 || hs > 23 || he < 0 || he > 23 {
+			return nil, status.Errorf(codes.InvalidArgument, "window hours must be in [0,23], got start=%d end=%d", hs, he)
+		}
+	}
 	p := policyFromProto(req.GetPolicy())
 	h := s.capStore().Advertise(p, s.hostStateSnapshot())
 	return &pb.AdvertiseCapacityResponse{Headroom: headroomToProto(h)}, nil
@@ -2396,7 +2417,22 @@ func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.Withdraw
 	}
 
 	window := time.Duration(req.GetDrainWindowSeconds()) * time.Second
-	result, skipped := s.drainHandle().Drain(ctx, candidates, window)
+	if window > maxDrainWindow {
+		window = maxDrainWindow // clamp an absurd request so the drain can't pin the host for ages
+	}
+	// Detach the drain from the request context and bound it by the window: a
+	// graceful drain can take the full window (default 120s), far longer than a
+	// typical CLI / grpc-gateway HTTP timeout — we must NOT abandon a
+	// half-finished reclaim just because the caller disconnected. (Same posture
+	// as the upgrade path's context.WithoutCancel.) The +grace covers the final
+	// force-stop after the window elapses.
+	effectiveWindow := window
+	if effectiveWindow <= 0 {
+		effectiveWindow = capacity.DefaultDrainWindow
+	}
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveWindow+drainCtxGrace)
+	defer cancel()
+	result, skipped := s.drainHandle().Drain(drainCtx, candidates, window)
 	if skipped {
 		// A drain was already in flight (e.g. a rapid second withdraw). The
 		// advertisement is already off; the running drain reclaims the host.
@@ -2694,8 +2730,12 @@ func measurementToProto(m integrity.Measurement) *pb.SelfMeasurement {
 		TpmBacked:          m.TPMBacked,
 		Signed:             m.Signed,
 		SigningCertPem:     m.SigningCertPEM,
-		MeasuredAt:         m.MeasuredAt.UTC().Format(time.RFC3339),
-		DaemonVersion:      m.DaemonVersion,
+		// RFC3339Nano (not RFC3339): the signed canonical form uses nanosecond
+		// precision, so the wire MUST carry the same precision or a verifier
+		// reconstructing the canonical bytes computes a different digest and
+		// the signature never verifies.
+		MeasuredAt:    m.MeasuredAt.UTC().Format(time.RFC3339Nano),
+		DaemonVersion: m.DaemonVersion,
 	}
 	for _, p := range m.ProgramDigests {
 		out.ProgramDigests = append(out.ProgramDigests, &pb.ProgramDigest{
