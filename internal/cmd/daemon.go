@@ -157,6 +157,11 @@ func init() {
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
+	// Capability self-check (deploy-contract #69): surface the capability
+	// trap at boot — not on the first container create, hours later. Runs
+	// under this process's (the unit's) real caps. Non-fatal.
+	logStartupSelfCheck()
+
 	// Check Incus version before starting daemon
 	incusClient, err := incus.New()
 	if err != nil {

@@ -213,6 +213,18 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("systemctl enable --now containarium-tunnel: %w", err)
 	}
 
+	// 5. Capability self-check (deploy-contract): refuse to report "joined" if
+	// this host can't actually run the daemon's user management. NOTE: run
+	// from this (root) process, so it catches missing paths / incus / useradd
+	// / non-root — but NOT the daemon-unit capability trap (this shell has
+	// full caps). The daemon's own startup self-check is the definitive
+	// unit-constrained check.
+	fmt.Println()
+	fmt.Println("Host capability self-check (containarium doctor):")
+	if failed := printDoctor(hostDoctorChecks()); failed > 0 {
+		return fmt.Errorf("pool join: %d required capability check(s) FAILED — units were installed but this host is NOT a healthy pool member yet; fix the above and re-run", failed)
+	}
+
 	fmt.Println()
 	fmt.Printf("Joined pool %q via sentinel %s (spot-id %s).\n", poolJoinPool, poolJoinSentinel, spotID)
 	fmt.Println()
@@ -220,7 +232,6 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	fmt.Println("  Tunnel:  sudo systemctl status containarium-tunnel")
 	fmt.Println("  Verify:  containarium pool list --server http://localhost:8080")
 	fmt.Println()
-	fmt.Println("NOTE (MVP): the capability self-check ('doctor'), scoped-token minting, and")
-	fmt.Println("binary fetch are not yet wired — confirm the daemon came up before relying on it.")
+	fmt.Println("NOTE (MVP): scoped-token minting and binary fetch are not yet wired.")
 	return nil
 }
