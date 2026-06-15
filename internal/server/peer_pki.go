@@ -2,9 +2,11 @@ package server
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -64,6 +66,28 @@ func (p *peerPKI) ClientCertificate() tls.Certificate {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.tlsCert
+}
+
+// IdentitySigner returns the daemon's leaf private key as a
+// crypto.Signer (the sentinel-issued ECDSA peer leaf) plus the PEM
+// of the leaf cert, for callers that need to sign with the node's
+// identity key — e.g. the integrity self-measurement (#683). Returns
+// (nil, "") when no PKI is configured or the leaf key doesn't
+// implement crypto.Signer.
+func (p *peerPKI) IdentitySigner() (crypto.Signer, string) {
+	if p == nil {
+		return nil, ""
+	}
+	p.mu.RLock()
+	cert := p.tlsCert
+	p.mu.RUnlock()
+
+	signer, ok := cert.PrivateKey.(crypto.Signer)
+	if !ok || len(cert.Certificate) == 0 {
+		return nil, ""
+	}
+	leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	return signer, string(leafPEM)
 }
 
 // CACertPEM returns the PEM bytes of the trusted CA, for callers

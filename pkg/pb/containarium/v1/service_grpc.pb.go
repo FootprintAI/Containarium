@@ -49,6 +49,7 @@ const (
 	ContainerService_GetCapacityHeadroom_FullMethodName      = "/containarium.v1.ContainerService/GetCapacityHeadroom"
 	ContainerService_ProfileBackend_FullMethodName           = "/containarium.v1.ContainerService/ProfileBackend"
 	ContainerService_GetCapabilityProfile_FullMethodName     = "/containarium.v1.ContainerService/GetCapabilityProfile"
+	ContainerService_GetSelfMeasurement_FullMethodName       = "/containarium.v1.ContainerService/GetSelfMeasurement"
 	ContainerService_GetLatestRelease_FullMethodName         = "/containarium.v1.ContainerService/GetLatestRelease"
 	ContainerService_ValidateGPU_FullMethodName              = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName           = "/containarium.v1.ContainerService/TriggerUpgrade"
@@ -204,6 +205,14 @@ type ContainerServiceClient interface {
 	// GetCapabilityProfile reads a backend's last-recorded capability profile
 	// without re-running the benchmark/probe. Admin-only. See #681.
 	GetCapabilityProfile(ctx context.Context, in *GetCapabilityProfileRequest, opts ...grpc.CallOption) (*GetCapabilityProfileResponse, error)
+	// GetSelfMeasurement computes and signs a fresh integrity self-measurement
+	// for a backend: digests of the running daemon binary, the loaded in-kernel
+	// network-policy program object(s), and the canonical policy/config state,
+	// signed with the node's identity key (the sentinel-issued peer leaf reused
+	// from the peer-PKI plumbing; TPM-backed when present). The daemon also emits
+	// this on its heartbeat; this RPC exposes the same measurement on demand. The
+	// control plane verifies it to detect tampering. Admin-only. See #683.
+	GetSelfMeasurement(ctx context.Context, in *GetSelfMeasurementRequest, opts ...grpc.CallOption) (*GetSelfMeasurementResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -576,6 +585,16 @@ func (c *containerServiceClient) GetCapabilityProfile(ctx context.Context, in *G
 	return out, nil
 }
 
+func (c *containerServiceClient) GetSelfMeasurement(ctx context.Context, in *GetSelfMeasurementRequest, opts ...grpc.CallOption) (*GetSelfMeasurementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSelfMeasurementResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetSelfMeasurement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetLatestRelease(ctx context.Context, in *GetLatestReleaseRequest, opts ...grpc.CallOption) (*GetLatestReleaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetLatestReleaseResponse)
@@ -909,6 +928,14 @@ type ContainerServiceServer interface {
 	// GetCapabilityProfile reads a backend's last-recorded capability profile
 	// without re-running the benchmark/probe. Admin-only. See #681.
 	GetCapabilityProfile(context.Context, *GetCapabilityProfileRequest) (*GetCapabilityProfileResponse, error)
+	// GetSelfMeasurement computes and signs a fresh integrity self-measurement
+	// for a backend: digests of the running daemon binary, the loaded in-kernel
+	// network-policy program object(s), and the canonical policy/config state,
+	// signed with the node's identity key (the sentinel-issued peer leaf reused
+	// from the peer-PKI plumbing; TPM-backed when present). The daemon also emits
+	// this on its heartbeat; this RPC exposes the same measurement on demand. The
+	// control plane verifies it to detect tampering. Admin-only. See #683.
+	GetSelfMeasurement(context.Context, *GetSelfMeasurementRequest) (*GetSelfMeasurementResponse, error)
 	// GetLatestRelease reports the latest Containarium release on GitHub vs the
 	// running version, so operators see "update available" without SSHing in.
 	// The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.
@@ -1070,6 +1097,9 @@ func (UnimplementedContainerServiceServer) ProfileBackend(context.Context, *Prof
 }
 func (UnimplementedContainerServiceServer) GetCapabilityProfile(context.Context, *GetCapabilityProfileRequest) (*GetCapabilityProfileResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCapabilityProfile not implemented")
+}
+func (UnimplementedContainerServiceServer) GetSelfMeasurement(context.Context, *GetSelfMeasurementRequest) (*GetSelfMeasurementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSelfMeasurement not implemented")
 }
 func (UnimplementedContainerServiceServer) GetLatestRelease(context.Context, *GetLatestReleaseRequest) (*GetLatestReleaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLatestRelease not implemented")
@@ -1692,6 +1722,24 @@ func _ContainerService_GetCapabilityProfile_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_GetSelfMeasurement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSelfMeasurementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetSelfMeasurement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetSelfMeasurement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetSelfMeasurement(ctx, req.(*GetSelfMeasurementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetLatestRelease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetLatestReleaseRequest)
 	if err := dec(in); err != nil {
@@ -2178,6 +2226,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapabilityProfile",
 			Handler:    _ContainerService_GetCapabilityProfile_Handler,
+		},
+		{
+			MethodName: "GetSelfMeasurement",
+			Handler:    _ContainerService_GetSelfMeasurement_Handler,
 		},
 		{
 			MethodName: "GetLatestRelease",

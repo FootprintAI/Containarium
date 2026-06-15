@@ -2597,6 +2597,39 @@
         ]
       }
     },
+    "/v1/integrity/self-measurement": {
+      "get": {
+        "summary": "Get a backend's signed integrity self-measurement",
+        "description": "Computes and signs a fresh integrity self-measurement (daemon binary digest, loaded in-kernel program object digests, policy/config-state digest) with the node's identity key. The daemon also emits this on its heartbeat. Admin-only.",
+        "operationId": "ContainerService_GetSelfMeasurement",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSelfMeasurementResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backendId",
+            "description": "Backend to measure. Empty = the local/primary daemon's own host; a peer id\nforwards to that peer (which measures itself).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/kms/envelope-coverage": {
       "get": {
         "summary": "Count secrets by encryption mode (legacy vs envelope)",
@@ -8149,6 +8182,19 @@
         }
       }
     },
+    "GetSelfMeasurementResponse": {
+      "type": "object",
+      "properties": {
+        "measurement": {
+          "$ref": "#/definitions/SelfMeasurement"
+        },
+        "backendId": {
+          "type": "string",
+          "description": "Echoes the measured backend (\"\" = local)."
+        }
+      },
+      "description": "GetSelfMeasurementResponse returns the freshly computed signed measurement."
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -9455,6 +9501,20 @@
       },
       "description": "ProfileBackendResponse returns the freshly recorded capability profile."
     },
+    "ProgramDigest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Stable name/path identifying the program object (e.g. the configured BPF\nobject path)."
+        },
+        "digest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the program object bytes."
+        }
+      },
+      "description": "ProgramDigest is one loaded in-kernel program object's identity + digest."
+    },
     "Protocol": {
       "type": "string",
       "enum": [
@@ -10128,6 +10188,64 @@
         }
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
+    },
+    "SelfMeasurement": {
+      "type": "object",
+      "properties": {
+        "hashAlgorithm": {
+          "type": "string",
+          "description": "Hash algorithm used for every component digest below (e.g. \"sha256\")."
+        },
+        "binaryDigest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the running daemon binary on disk."
+        },
+        "programDigests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ProgramDigest"
+          },
+          "description": "Hex-encoded digests of the loaded in-kernel network-policy program\nobject(s), in stable (sorted) order. Empty when no program object is\nconfigured on this backend."
+        },
+        "configDigest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the canonicalized policy/config state (the\nintegrity-relevant daemon configuration + active network-policy posture)."
+        },
+        "measurementDigest": {
+          "type": "string",
+          "description": "Hex-encoded digest of the canonical measurement bytes that were signed\n(binds all components together). The signature below covers exactly these\nbytes."
+        },
+        "signature": {
+          "type": "string",
+          "description": "Signature over the canonical measurement bytes, base64-encoded."
+        },
+        "signatureAlgorithm": {
+          "type": "string",
+          "description": "Signature scheme used (e.g. \"ecdsa-p256-sha256\"). Empty when the daemon had\nno identity key available and the measurement is unsigned (signature empty)."
+        },
+        "tpmBacked": {
+          "type": "boolean",
+          "description": "Whether the signature was produced by a TPM-backed key. False = the\nsoftware identity key (sentinel-issued peer leaf) signed it."
+        },
+        "signed": {
+          "type": "boolean",
+          "description": "Whether an identity key was available to sign. False means the measurement\nis present but unsigned (no peer PKI bootstrapped yet); the control plane\ntreats an unsigned measurement as unverifiable, not as tamper."
+        },
+        "signingCertPem": {
+          "type": "string",
+          "description": "PEM of the signing certificate (the peer leaf), so the control plane can\nverify the signature against the sentinel CA chain without a side lookup.\nEmpty when unsigned."
+        },
+        "measuredAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp the measurement was taken."
+        },
+        "daemonVersion": {
+          "type": "string",
+          "description": "Daemon version that produced the measurement."
+        }
+      },
+      "description": "SelfMeasurement is a backend's signed integrity attestation, emitted by the\ndaemon on its heartbeat. It hashes the daemon's own binary, the loaded\nin-kernel network-policy program object(s), and the policy/config state, then\nsigns the canonical measurement with the node's identity key (the\nsentinel-issued peer leaf key reused from the peer-PKI plumbing; TPM-backed\nwhen a TPM is present, software-signed otherwise). The control plane reads\nthis through the backend surface to detect tampering of a backend's control\nplane out of band of the backend's own reporting. The node-side half only:\nthe control plane's verification/quarantine logic lives elsewhere. See #683."
     },
     "SendAgentTaskBody": {
       "type": "object",

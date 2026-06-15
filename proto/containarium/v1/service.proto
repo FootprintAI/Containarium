@@ -498,6 +498,24 @@ service ContainerService {
     };
   }
 
+  // GetSelfMeasurement computes and signs a fresh integrity self-measurement
+  // for a backend: digests of the running daemon binary, the loaded in-kernel
+  // network-policy program object(s), and the canonical policy/config state,
+  // signed with the node's identity key (the sentinel-issued peer leaf reused
+  // from the peer-PKI plumbing; TPM-backed when present). The daemon also emits
+  // this on its heartbeat; this RPC exposes the same measurement on demand. The
+  // control plane verifies it to detect tampering. Admin-only. See #683.
+  rpc GetSelfMeasurement(GetSelfMeasurementRequest) returns (GetSelfMeasurementResponse) {
+    option (google.api.http) = {
+      get: "/v1/integrity/self-measurement"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a backend's signed integrity self-measurement";
+      description: "Computes and signs a fresh integrity self-measurement (daemon binary digest, loaded in-kernel program object digests, policy/config-state digest) with the node's identity key. The daemon also emits this on its heartbeat. Admin-only.";
+      tags: "System";
+    };
+  }
+
   // GetLatestRelease reports the latest Containarium release on GitHub vs the
   // running version, so operators see "update available" without SSHing in.
   // The GitHub lookup is cached server-side (1h) to spare the rate limit. #354.

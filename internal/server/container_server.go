@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/internal/capacity"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/integrity"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
@@ -85,6 +87,12 @@ type ContainerServer struct {
 	// back to the pool name). Recorded into the capability profile. Empty when
 	// unset.
 	region string
+	// integrityConfigState is the integrity-relevant policy/config posture this
+	// backend folds into its signed self-measurement (#683): base domain,
+	// network-policy enforcement posture, and any other config the control plane
+	// verifies hasn't been tampered with. Wired once via SetIntegrityConfig;
+	// nil/empty on an unwired server still yields a (config-empty) measurement.
+	integrityConfigState map[string]string
 	// reportedClass is the self-reported hardware class the operator assigned
 	// this backend (defaults to the pool name). Reconciled against the measured
 	// class in the capability profile. Empty when unset.
@@ -2578,6 +2586,124 @@ func (s *ContainerServer) GetCapabilityProfile(ctx context.Context, req *pb.GetC
 		resp.Profile = profileToProto(p)
 	}
 	return resp, nil
+}
+
+// GetSelfMeasurement computes and signs a fresh integrity self-measurement for
+// a backend: digests of the running daemon binary, the loaded in-kernel
+// network-policy program object(s), and the canonical policy/config state,
+// signed with the node's identity key (the sentinel-issued peer leaf reused
+// from the peer-PKI plumbing). The daemon also emits the same measurement on
+// its heartbeat. A peer backend_id forwards to that peer (which measures
+// itself). Admin-only. The control plane verifies the measurement to detect
+// tampering; the verification half lives elsewhere. See #683.
+func (s *ContainerServer) GetSelfMeasurement(ctx context.Context, req *pb.GetSelfMeasurementRequest) (*pb.GetSelfMeasurementResponse, error) {
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+
+	// Remote backend → forward to the owning peer (it measures its own host).
+	if req.BackendId != "" && req.BackendId != s.localBackendID() {
+		if s.peerPool == nil {
+			return nil, status.Errorf(codes.Unavailable, "backend %q: no peer pool configured on this daemon", req.BackendId)
+		}
+		peer := s.peerPool.Get(req.BackendId)
+		if peer == nil {
+			return nil, status.Errorf(codes.NotFound, "backend %q not found (see 'containarium backends list')", req.BackendId)
+		}
+		respBody, st, err := peer.ForwardRequest("GET", "/v1/integrity/self-measurement", extractAuthToken(ctx), nil)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "forward self-measurement to %s: %v", req.BackendId, err)
+		}
+		if st >= 400 {
+			return nil, status.Errorf(codes.Internal, "peer %s returned status %d for self-measurement", req.BackendId, st)
+		}
+		var resp pb.GetSelfMeasurementResponse
+		if err := protojson.Unmarshal(respBody, &resp); err != nil {
+			return nil, status.Errorf(codes.Internal, "parse peer %s self-measurement response: %v", req.BackendId, err)
+		}
+		resp.BackendId = req.BackendId
+		return &resp, nil
+	}
+
+	// Local backend.
+	m, err := s.computeSelfMeasurement()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "compute self-measurement: %v", err)
+	}
+	return &pb.GetSelfMeasurementResponse{
+		Measurement: measurementToProto(m),
+		BackendId:   req.BackendId,
+	}, nil
+}
+
+// computeSelfMeasurement gathers this backend's integrity inputs (running
+// binary path, loaded in-kernel network-policy program object(s), policy/config
+// state, node identity signer) and computes the signed measurement. The signer
+// is the sentinel-issued peer leaf from the peer pool; when no PKI has been
+// bootstrapped the measurement is produced unsigned.
+func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error) {
+	in := integrity.Inputs{
+		ConfigState:   s.integrityConfigState,
+		DaemonVersion: version.Version,
+		Now:           time.Now(),
+	}
+
+	// Running daemon binary on disk. Best-effort: a path we can't resolve
+	// leaves the binary digest empty rather than failing the measurement.
+	if exe, err := os.Executable(); err == nil {
+		in.BinaryPath = exe
+	}
+
+	// Loaded in-kernel network-policy program object(s). The daemon arms the
+	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
+	// at an object on disk; that object's bytes are exactly what we attest.
+	if bpfObj := strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT")); bpfObj != "" {
+		in.Programs = append(in.Programs, integrity.ProgramObject{Name: bpfObj, Path: bpfObj})
+	}
+
+	// Node identity signer: the sentinel-issued peer leaf key.
+	if s.peerPool != nil {
+		signer, certPEM := s.peerPool.IdentitySigner()
+		in.Signer = signer
+		in.SigningCertPEM = certPEM
+		// TPM-backed signing is a future hook; the software peer key signs today.
+		in.TPMBacked = false
+	}
+
+	return integrity.Compute(in)
+}
+
+// SetIntegrityConfig wires the integrity-relevant policy/config posture this
+// backend folds into its signed self-measurement (#683): base domain and the
+// network-policy enforcement posture. Called once from DualServer setup with
+// the resolved config; either field may be empty. The map is canonicalized
+// (sorted keys) before hashing, so caller ordering is irrelevant.
+func (s *ContainerServer) SetIntegrityConfig(state map[string]string) {
+	s.integrityConfigState = state
+}
+
+// measurementToProto maps the internal integrity measurement onto the wire type.
+func measurementToProto(m integrity.Measurement) *pb.SelfMeasurement {
+	out := &pb.SelfMeasurement{
+		HashAlgorithm:      m.HashAlgorithm,
+		BinaryDigest:       m.BinaryDigest,
+		ConfigDigest:       m.ConfigDigest,
+		MeasurementDigest:  m.MeasurementDigest,
+		Signature:          m.Signature,
+		SignatureAlgorithm: m.SignatureAlgorithm,
+		TpmBacked:          m.TPMBacked,
+		Signed:             m.Signed,
+		SigningCertPem:     m.SigningCertPEM,
+		MeasuredAt:         m.MeasuredAt.UTC().Format(time.RFC3339),
+		DaemonVersion:      m.DaemonVersion,
+	}
+	for _, p := range m.ProgramDigests {
+		out.ProgramDigests = append(out.ProgramDigests, &pb.ProgramDigest{
+			Name:   p.Name,
+			Digest: p.Digest,
+		})
+	}
+	return out
 }
 
 // backendGPUsFromSystemInfo projects a SystemInfo's GPU list onto the

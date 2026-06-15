@@ -4138,6 +4138,328 @@ func (x *GetCapabilityProfileResponse) GetBackendId() string {
 	return ""
 }
 
+// SelfMeasurement is a backend's signed integrity attestation, emitted by the
+// daemon on its heartbeat. It hashes the daemon's own binary, the loaded
+// in-kernel network-policy program object(s), and the policy/config state, then
+// signs the canonical measurement with the node's identity key (the
+// sentinel-issued peer leaf key reused from the peer-PKI plumbing; TPM-backed
+// when a TPM is present, software-signed otherwise). The control plane reads
+// this through the backend surface to detect tampering of a backend's control
+// plane out of band of the backend's own reporting. The node-side half only:
+// the control plane's verification/quarantine logic lives elsewhere. See #683.
+type SelfMeasurement struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Hash algorithm used for every component digest below (e.g. "sha256").
+	HashAlgorithm string `protobuf:"bytes,1,opt,name=hash_algorithm,json=hashAlgorithm,proto3" json:"hash_algorithm,omitempty"`
+	// Hex-encoded digest of the running daemon binary on disk.
+	BinaryDigest string `protobuf:"bytes,2,opt,name=binary_digest,json=binaryDigest,proto3" json:"binary_digest,omitempty"`
+	// Hex-encoded digests of the loaded in-kernel network-policy program
+	// object(s), in stable (sorted) order. Empty when no program object is
+	// configured on this backend.
+	ProgramDigests []*ProgramDigest `protobuf:"bytes,3,rep,name=program_digests,json=programDigests,proto3" json:"program_digests,omitempty"`
+	// Hex-encoded digest of the canonicalized policy/config state (the
+	// integrity-relevant daemon configuration + active network-policy posture).
+	ConfigDigest string `protobuf:"bytes,4,opt,name=config_digest,json=configDigest,proto3" json:"config_digest,omitempty"`
+	// Hex-encoded digest of the canonical measurement bytes that were signed
+	// (binds all components together). The signature below covers exactly these
+	// bytes.
+	MeasurementDigest string `protobuf:"bytes,5,opt,name=measurement_digest,json=measurementDigest,proto3" json:"measurement_digest,omitempty"`
+	// Signature over the canonical measurement bytes, base64-encoded.
+	Signature string `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
+	// Signature scheme used (e.g. "ecdsa-p256-sha256"). Empty when the daemon had
+	// no identity key available and the measurement is unsigned (signature empty).
+	SignatureAlgorithm string `protobuf:"bytes,7,opt,name=signature_algorithm,json=signatureAlgorithm,proto3" json:"signature_algorithm,omitempty"`
+	// Whether the signature was produced by a TPM-backed key. False = the
+	// software identity key (sentinel-issued peer leaf) signed it.
+	TpmBacked bool `protobuf:"varint,8,opt,name=tpm_backed,json=tpmBacked,proto3" json:"tpm_backed,omitempty"`
+	// Whether an identity key was available to sign. False means the measurement
+	// is present but unsigned (no peer PKI bootstrapped yet); the control plane
+	// treats an unsigned measurement as unverifiable, not as tamper.
+	Signed bool `protobuf:"varint,9,opt,name=signed,proto3" json:"signed,omitempty"`
+	// PEM of the signing certificate (the peer leaf), so the control plane can
+	// verify the signature against the sentinel CA chain without a side lookup.
+	// Empty when unsigned.
+	SigningCertPem string `protobuf:"bytes,10,opt,name=signing_cert_pem,json=signingCertPem,proto3" json:"signing_cert_pem,omitempty"`
+	// RFC3339 timestamp the measurement was taken.
+	MeasuredAt string `protobuf:"bytes,11,opt,name=measured_at,json=measuredAt,proto3" json:"measured_at,omitempty"`
+	// Daemon version that produced the measurement.
+	DaemonVersion string `protobuf:"bytes,12,opt,name=daemon_version,json=daemonVersion,proto3" json:"daemon_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SelfMeasurement) Reset() {
+	*x = SelfMeasurement{}
+	mi := &file_containarium_v1_config_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SelfMeasurement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SelfMeasurement) ProtoMessage() {}
+
+func (x *SelfMeasurement) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SelfMeasurement.ProtoReflect.Descriptor instead.
+func (*SelfMeasurement) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *SelfMeasurement) GetHashAlgorithm() string {
+	if x != nil {
+		return x.HashAlgorithm
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetBinaryDigest() string {
+	if x != nil {
+		return x.BinaryDigest
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetProgramDigests() []*ProgramDigest {
+	if x != nil {
+		return x.ProgramDigests
+	}
+	return nil
+}
+
+func (x *SelfMeasurement) GetConfigDigest() string {
+	if x != nil {
+		return x.ConfigDigest
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetMeasurementDigest() string {
+	if x != nil {
+		return x.MeasurementDigest
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetSignature() string {
+	if x != nil {
+		return x.Signature
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetSignatureAlgorithm() string {
+	if x != nil {
+		return x.SignatureAlgorithm
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetTpmBacked() bool {
+	if x != nil {
+		return x.TpmBacked
+	}
+	return false
+}
+
+func (x *SelfMeasurement) GetSigned() bool {
+	if x != nil {
+		return x.Signed
+	}
+	return false
+}
+
+func (x *SelfMeasurement) GetSigningCertPem() string {
+	if x != nil {
+		return x.SigningCertPem
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetMeasuredAt() string {
+	if x != nil {
+		return x.MeasuredAt
+	}
+	return ""
+}
+
+func (x *SelfMeasurement) GetDaemonVersion() string {
+	if x != nil {
+		return x.DaemonVersion
+	}
+	return ""
+}
+
+// ProgramDigest is one loaded in-kernel program object's identity + digest.
+type ProgramDigest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Stable name/path identifying the program object (e.g. the configured BPF
+	// object path).
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Hex-encoded digest of the program object bytes.
+	Digest        string `protobuf:"bytes,2,opt,name=digest,proto3" json:"digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProgramDigest) Reset() {
+	*x = ProgramDigest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProgramDigest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProgramDigest) ProtoMessage() {}
+
+func (x *ProgramDigest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProgramDigest.ProtoReflect.Descriptor instead.
+func (*ProgramDigest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ProgramDigest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ProgramDigest) GetDigest() string {
+	if x != nil {
+		return x.Digest
+	}
+	return ""
+}
+
+// GetSelfMeasurementRequest asks a backend to compute and sign a fresh self
+// measurement. See #683.
+type GetSelfMeasurementRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Backend to measure. Empty = the local/primary daemon's own host; a peer id
+	// forwards to that peer (which measures itself).
+	BackendId     string `protobuf:"bytes,1,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSelfMeasurementRequest) Reset() {
+	*x = GetSelfMeasurementRequest{}
+	mi := &file_containarium_v1_config_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSelfMeasurementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSelfMeasurementRequest) ProtoMessage() {}
+
+func (x *GetSelfMeasurementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSelfMeasurementRequest.ProtoReflect.Descriptor instead.
+func (*GetSelfMeasurementRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *GetSelfMeasurementRequest) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
+// GetSelfMeasurementResponse returns the freshly computed signed measurement.
+type GetSelfMeasurementResponse struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Measurement *SelfMeasurement       `protobuf:"bytes,1,opt,name=measurement,proto3" json:"measurement,omitempty"`
+	// Echoes the measured backend ("" = local).
+	BackendId     string `protobuf:"bytes,2,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSelfMeasurementResponse) Reset() {
+	*x = GetSelfMeasurementResponse{}
+	mi := &file_containarium_v1_config_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSelfMeasurementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSelfMeasurementResponse) ProtoMessage() {}
+
+func (x *GetSelfMeasurementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSelfMeasurementResponse.ProtoReflect.Descriptor instead.
+func (*GetSelfMeasurementResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *GetSelfMeasurementResponse) GetMeasurement() *SelfMeasurement {
+	if x != nil {
+		return x.Measurement
+	}
+	return nil
+}
+
+func (x *GetSelfMeasurementResponse) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
 var File_containarium_v1_config_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_config_proto_rawDesc = "" +
@@ -4416,6 +4738,32 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x1cGetCapabilityProfileResponse\x12<\n" +
 	"\aprofile\x18\x01 \x01(\v2\".containarium.v1.CapabilityProfileR\aprofile\x12\x1d\n" +
 	"\n" +
+	"backend_id\x18\x02 \x01(\tR\tbackendId\"\xf2\x03\n" +
+	"\x0fSelfMeasurement\x12%\n" +
+	"\x0ehash_algorithm\x18\x01 \x01(\tR\rhashAlgorithm\x12#\n" +
+	"\rbinary_digest\x18\x02 \x01(\tR\fbinaryDigest\x12G\n" +
+	"\x0fprogram_digests\x18\x03 \x03(\v2\x1e.containarium.v1.ProgramDigestR\x0eprogramDigests\x12#\n" +
+	"\rconfig_digest\x18\x04 \x01(\tR\fconfigDigest\x12-\n" +
+	"\x12measurement_digest\x18\x05 \x01(\tR\x11measurementDigest\x12\x1c\n" +
+	"\tsignature\x18\x06 \x01(\tR\tsignature\x12/\n" +
+	"\x13signature_algorithm\x18\a \x01(\tR\x12signatureAlgorithm\x12\x1d\n" +
+	"\n" +
+	"tpm_backed\x18\b \x01(\bR\ttpmBacked\x12\x16\n" +
+	"\x06signed\x18\t \x01(\bR\x06signed\x12(\n" +
+	"\x10signing_cert_pem\x18\n" +
+	" \x01(\tR\x0esigningCertPem\x12\x1f\n" +
+	"\vmeasured_at\x18\v \x01(\tR\n" +
+	"measuredAt\x12%\n" +
+	"\x0edaemon_version\x18\f \x01(\tR\rdaemonVersion\";\n" +
+	"\rProgramDigest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06digest\x18\x02 \x01(\tR\x06digest\":\n" +
+	"\x19GetSelfMeasurementRequest\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x01 \x01(\tR\tbackendId\"\x7f\n" +
+	"\x1aGetSelfMeasurementResponse\x12B\n" +
+	"\vmeasurement\x18\x01 \x01(\v2 .containarium.v1.SelfMeasurementR\vmeasurement\x12\x1d\n" +
+	"\n" +
 	"backend_id\x18\x02 \x01(\tR\tbackendId*h\n" +
 	"\tGPUVendor\x12\x1a\n" +
 	"\x16GPU_VENDOR_UNSPECIFIED\x10\x00\x12\x15\n" +
@@ -4470,7 +4818,7 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                               // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                                // 1: containarium.v1.GPUModel
@@ -4534,16 +4882,20 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*ProfileBackendResponse)(nil),               // 59: containarium.v1.ProfileBackendResponse
 	(*GetCapabilityProfileRequest)(nil),          // 60: containarium.v1.GetCapabilityProfileRequest
 	(*GetCapabilityProfileResponse)(nil),         // 61: containarium.v1.GetCapabilityProfileResponse
-	(*ResourceLimits)(nil),                       // 62: containarium.v1.ResourceLimits
-	(OSType)(0),                                  // 63: containarium.v1.OSType
+	(*SelfMeasurement)(nil),                      // 62: containarium.v1.SelfMeasurement
+	(*ProgramDigest)(nil),                        // 63: containarium.v1.ProgramDigest
+	(*GetSelfMeasurementRequest)(nil),            // 64: containarium.v1.GetSelfMeasurementRequest
+	(*GetSelfMeasurementResponse)(nil),           // 65: containarium.v1.GetSelfMeasurementResponse
+	(*ResourceLimits)(nil),                       // 66: containarium.v1.ResourceLimits
+	(OSType)(0),                                  // 67: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	62, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	66, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	63, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	67, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -4575,11 +4927,13 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	47, // 34: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
 	45, // 35: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
 	45, // 36: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	37, // [37:37] is the sub-list for method output_type
-	37, // [37:37] is the sub-list for method input_type
-	37, // [37:37] is the sub-list for extension type_name
-	37, // [37:37] is the sub-list for extension extendee
-	0,  // [0:37] is the sub-list for field type_name
+	63, // 37: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
+	62, // 38: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
+	39, // [39:39] is the sub-list for method output_type
+	39, // [39:39] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -4594,7 +4948,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   57,
+			NumMessages:   61,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

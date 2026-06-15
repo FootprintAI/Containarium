@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -420,6 +421,18 @@ func (p *PeerPool) discover() {
 // LocalBackendID returns this daemon's backend ID.
 func (p *PeerPool) LocalBackendID() string {
 	return p.localBackendID
+}
+
+// IdentitySigner returns the daemon's node identity key (the
+// sentinel-issued peer leaf) as a crypto.Signer plus the leaf cert
+// PEM, for signing the integrity self-measurement (#683). Returns
+// (nil, "") when no peer PKI has been bootstrapped — the measurement
+// is then produced unsigned.
+func (p *PeerPool) IdentitySigner() (crypto.Signer, string) {
+	p.mu.RLock()
+	pki := p.pki
+	p.mu.RUnlock()
+	return pki.IdentitySigner()
 }
 
 // LocalPool returns the pool tag this daemon's PeerPool was configured

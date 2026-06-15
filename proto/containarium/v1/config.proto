@@ -862,3 +862,87 @@ message GetCapabilityProfileResponse {
   // Echoes the backend ("" = local).
   string backend_id = 2;
 }
+
+// SelfMeasurement is a backend's signed integrity attestation, emitted by the
+// daemon on its heartbeat. It hashes the daemon's own binary, the loaded
+// in-kernel network-policy program object(s), and the policy/config state, then
+// signs the canonical measurement with the node's identity key (the
+// sentinel-issued peer leaf key reused from the peer-PKI plumbing; TPM-backed
+// when a TPM is present, software-signed otherwise). The control plane reads
+// this through the backend surface to detect tampering of a backend's control
+// plane out of band of the backend's own reporting. The node-side half only:
+// the control plane's verification/quarantine logic lives elsewhere. See #683.
+message SelfMeasurement {
+  // Hash algorithm used for every component digest below (e.g. "sha256").
+  string hash_algorithm = 1;
+
+  // Hex-encoded digest of the running daemon binary on disk.
+  string binary_digest = 2;
+
+  // Hex-encoded digests of the loaded in-kernel network-policy program
+  // object(s), in stable (sorted) order. Empty when no program object is
+  // configured on this backend.
+  repeated ProgramDigest program_digests = 3;
+
+  // Hex-encoded digest of the canonicalized policy/config state (the
+  // integrity-relevant daemon configuration + active network-policy posture).
+  string config_digest = 4;
+
+  // Hex-encoded digest of the canonical measurement bytes that were signed
+  // (binds all components together). The signature below covers exactly these
+  // bytes.
+  string measurement_digest = 5;
+
+  // Signature over the canonical measurement bytes, base64-encoded.
+  string signature = 6;
+
+  // Signature scheme used (e.g. "ecdsa-p256-sha256"). Empty when the daemon had
+  // no identity key available and the measurement is unsigned (signature empty).
+  string signature_algorithm = 7;
+
+  // Whether the signature was produced by a TPM-backed key. False = the
+  // software identity key (sentinel-issued peer leaf) signed it.
+  bool tpm_backed = 8;
+
+  // Whether an identity key was available to sign. False means the measurement
+  // is present but unsigned (no peer PKI bootstrapped yet); the control plane
+  // treats an unsigned measurement as unverifiable, not as tamper.
+  bool signed = 9;
+
+  // PEM of the signing certificate (the peer leaf), so the control plane can
+  // verify the signature against the sentinel CA chain without a side lookup.
+  // Empty when unsigned.
+  string signing_cert_pem = 10;
+
+  // RFC3339 timestamp the measurement was taken.
+  string measured_at = 11;
+
+  // Daemon version that produced the measurement.
+  string daemon_version = 12;
+}
+
+// ProgramDigest is one loaded in-kernel program object's identity + digest.
+message ProgramDigest {
+  // Stable name/path identifying the program object (e.g. the configured BPF
+  // object path).
+  string name = 1;
+
+  // Hex-encoded digest of the program object bytes.
+  string digest = 2;
+}
+
+// GetSelfMeasurementRequest asks a backend to compute and sign a fresh self
+// measurement. See #683.
+message GetSelfMeasurementRequest {
+  // Backend to measure. Empty = the local/primary daemon's own host; a peer id
+  // forwards to that peer (which measures itself).
+  string backend_id = 1;
+}
+
+// GetSelfMeasurementResponse returns the freshly computed signed measurement.
+message GetSelfMeasurementResponse {
+  SelfMeasurement measurement = 1;
+
+  // Echoes the measured backend ("" = local).
+  string backend_id = 2;
+}
