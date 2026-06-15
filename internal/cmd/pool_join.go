@@ -187,24 +187,30 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// 2. --pool drop-in on the daemon unit.
+	// #nosec G301 -- systemd drop-in dir, world-readable config by convention (no secrets)
 	if err := os.MkdirAll(daemonDropInDir, 0755); err != nil {
 		return fmt.Errorf("create drop-in dir: %w", err)
 	}
+	// #nosec G306 -- systemd unit/drop-in, world-readable config by convention (matches `service install`); no secrets
 	if err := os.WriteFile(daemonDropIn, []byte(dropIn), 0644); err != nil {
 		return fmt.Errorf("write pool drop-in: %w", err)
 	}
 	// 3. Tunnel unit (dials the sentinel; this is what joins the pool).
+	// #nosec G306 -- systemd unit, world-readable config by convention; no secrets (the token lives in the unit but is operator-scoped, same as the manual install)
 	if err := os.WriteFile(tunnelUnitPath, []byte(tunnel), 0644); err != nil {
 		return fmt.Errorf("write tunnel unit: %w", err)
 	}
-	// 4. Reload + enable --now both, idempotently.
+	// 4. Reload + enable --now both, idempotently. Unit names are fixed
+	// literals (not user input), kept as separate calls so the args are
+	// constant.
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
-	for _, unit := range []string{"containarium", "containarium-tunnel"} {
-		if err := exec.Command("systemctl", "enable", "--now", unit).Run(); err != nil {
-			return fmt.Errorf("systemctl enable --now %s: %w", unit, err)
-		}
+	if err := exec.Command("systemctl", "enable", "--now", "containarium").Run(); err != nil {
+		return fmt.Errorf("systemctl enable --now containarium: %w", err)
+	}
+	if err := exec.Command("systemctl", "enable", "--now", "containarium-tunnel").Run(); err != nil {
+		return fmt.Errorf("systemctl enable --now containarium-tunnel: %w", err)
 	}
 
 	fmt.Println()

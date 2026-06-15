@@ -141,6 +141,7 @@ func ensureDaemonUnitAndSecret() error {
 	} else {
 		log.Printf("JWT secret already exists: %s", jwtPath)
 	}
+	// #nosec G306 -- systemd unit, world-readable config by convention; no secrets
 	if err := os.WriteFile(systemdServicePath, []byte(systemdServiceTemplate), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
