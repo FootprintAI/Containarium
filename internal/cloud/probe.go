@@ -14,14 +14,15 @@ import (
 )
 
 // DefaultStatusProbe is the daemon's host-capability probe: it self-measures
-// hardware (CPU cores, total + available RAM), reports the running agent
-// version, and runs the `doctor` capability self-check (the DEGRADED signal —
-// running-as-root / caps / useradd probe). It satisfies StatusProbe so the
-// actuation client's status loop pushes it to the cloud, making the BYO fleet
-// view show real specs + headroom + health.
+// hardware (CPU cores, RAM, disk, GPU), reports the running agent version, and
+// runs the `doctor` capability self-check (the DEGRADED signal — running-as-
+// root / caps / useradd probe). It satisfies StatusProbe so the actuation
+// client's status loop pushes it to the cloud, making the BYO fleet view show
+// real specs + headroom + health.
 //
-// Disk + GPU are still left for a follow-up (0 = not reported), since they
-// need Incus/storage introspection.
+// Introspection is intentionally lightweight (runtime + /proc + statfs +
+// /dev/nvidia* + nvidia-smi) so it's cheap enough to run every report cycle —
+// distinct from the daemon's one-shot nvidia.runtime LXC GPU validation.
 type DefaultStatusProbe struct{}
 
 // Probe gathers the current capability snapshot. Best-effort: a field it can't
@@ -30,19 +31,28 @@ type DefaultStatusProbe struct{}
 // in-process; for an accurate caps/useradd result the daemon must run under
 // its hardened systemd unit (same caveat as `containarium doctor`).
 func (DefaultStatusProbe) Probe(_ context.Context) (HostStatus, error) {
-	total, avail := readMemInfoMB()
+	totalRAM, availRAM := readMemInfoMB()
+	totalDisk, availDisk := diskGB()
+	gpuCount, gpuSpec := gpuInfo()
 	raw := hostcheck.Run()
 	checks := make([]HostCheck, 0, len(raw))
 	for _, c := range raw {
 		checks = append(checks, HostCheck{Name: c.Name, OK: c.OK, Detail: c.Detail})
 	}
 	return HostStatus{
-		AgentVersion: version.GetVersion(),
-		CPUCores:     safecast.I32(runtime.NumCPU()),
-		TotalRAMMB:   total,
-		AvailRAMMB:   avail,
-		SelfCheckOK:  hostcheck.AllRequiredPass(raw),
-		Checks:       checks,
+		AgentVersion:  version.GetVersion(),
+		CPUCores:      safecast.I32(runtime.NumCPU()),
+		TotalRAMMB:    totalRAM,
+		AvailRAMMB:    availRAM,
+		TotalDiskGB:   totalDisk,
+		AvailDiskGB:   availDisk,
+		TotalGPUCount: gpuCount,
+		// No host-local in-use tracking; the cloud scheduler accounts for
+		// assigned GPUs. Report all detected GPUs as available headroom.
+		AvailGPUCount: gpuCount,
+		GPUSpec:       gpuSpec,
+		SelfCheckOK:   hostcheck.AllRequiredPass(raw),
+		Checks:        checks,
 	}, nil
 }
 
