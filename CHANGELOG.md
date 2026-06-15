@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-06-15
+
+Per-tenant BYO-compute: turn your own spare hosts into a pool and schedule your
+own workloads across them — no cross-tenant sharing, data stays on your hosts.
+
+### Added
+
+- **`containarium pool` commands.** `pool list` (pool members + health),
+  `pool join` (turnkey one-command host onboarding — writes the canonical
+  hardened daemon unit + a `--pool` drop-in + the tunnel unit and starts them;
+  idempotent, root-gated, `--dry-run`), and `pool leave` (stop the tunnel /
+  deregister from the sentinel, remove the pool config, return the daemon to
+  standalone). Replaces the manual `install-lab-*.sh` ritual. (#690, #692)
+- **`containarium doctor` capability self-check.** The deploy-contract preflight
+  that catches the "capability trap" — a systemd unit that looks fine but whose
+  caps/`ReadWritePaths` silently break `useradd`, so the daemon only fails on the
+  first container create. Checks uid, effective caps, writable paths (incl.
+  `/var/log`), and a live `useradd`/`userdel` probe. Runs at daemon startup
+  (loud, non-fatal warning) and gates `pool join`. (#691)
+- **Backend capacity primitives.** Advertise/withdraw a backend's spare
+  scheduling headroom, a capability profile + micro-benchmark recorded at join,
+  a bounded graceful drain when headroom is withdrawn, and a signed
+  self-measurement emitted on a heartbeat for control-plane integrity. (#684)
+
+### Changed
+
+- Dependency bumps: `actions/setup-node` 4→6; `golang.org/x/{term,sys,crypto}`;
+  `google.golang.org/api`. (#685–#689)
+
 ## [0.28.0] - 2026-06-14
 
 Multi-GPU passthrough per container, and **target-aware clients** — the MCP and
