@@ -48,6 +48,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	ActuationService_EnrollHost_FullMethodName           = "/containarium.cloud.v1.ActuationService/EnrollHost"
+	ActuationService_ReportHostStatus_FullMethodName     = "/containarium.cloud.v1.ActuationService/ReportHostStatus"
 	ActuationService_Heartbeat_FullMethodName            = "/containarium.cloud.v1.ActuationService/Heartbeat"
 	ActuationService_ReportContainerState_FullMethodName = "/containarium.cloud.v1.ActuationService/ReportContainerState"
 	ActuationService_WatchAssignments_FullMethodName     = "/containarium.cloud.v1.ActuationService/WatchAssignments"
@@ -57,6 +59,14 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ActuationServiceClient interface {
+	// EnrollHost redeems a single-use join token and registers the BYO host.
+	// Self-authenticating via the token in the body (NOT host-bearer — the row
+	// doesn't exist yet).
+	EnrollHost(ctx context.Context, in *EnrollHostRequest, opts ...grpc.CallOption) (*EnrollHostResponse, error)
+	// ReportHostStatus upserts the calling host's capability profile +
+	// `doctor` self-check and bumps its heartbeat. Requires a valid
+	// `host-bearer` header. Idempotent.
+	ReportHostStatus(ctx context.Context, in *ReportHostStatusRequest, opts ...grpc.CallOption) (*ReportHostStatusResponse, error)
 	// Heartbeat updates hosts.last_heartbeat_at for the calling host.
 	// A stale gap (>2 × the host's expected interval) marks the host
 	// for the HostSweeper, which reassigns its containers. Hosts are
@@ -107,6 +117,26 @@ func NewActuationServiceClient(cc grpc.ClientConnInterface) ActuationServiceClie
 	return &actuationServiceClient{cc}
 }
 
+func (c *actuationServiceClient) EnrollHost(ctx context.Context, in *EnrollHostRequest, opts ...grpc.CallOption) (*EnrollHostResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollHostResponse)
+	err := c.cc.Invoke(ctx, ActuationService_EnrollHost_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *actuationServiceClient) ReportHostStatus(ctx context.Context, in *ReportHostStatusRequest, opts ...grpc.CallOption) (*ReportHostStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportHostStatusResponse)
+	err := c.cc.Invoke(ctx, ActuationService_ReportHostStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *actuationServiceClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HeartbeatResponse)
@@ -150,6 +180,14 @@ type ActuationService_WatchAssignmentsClient = grpc.ServerStreamingClient[Assign
 // All implementations must embed UnimplementedActuationServiceServer
 // for forward compatibility.
 type ActuationServiceServer interface {
+	// EnrollHost redeems a single-use join token and registers the BYO host.
+	// Self-authenticating via the token in the body (NOT host-bearer — the row
+	// doesn't exist yet).
+	EnrollHost(context.Context, *EnrollHostRequest) (*EnrollHostResponse, error)
+	// ReportHostStatus upserts the calling host's capability profile +
+	// `doctor` self-check and bumps its heartbeat. Requires a valid
+	// `host-bearer` header. Idempotent.
+	ReportHostStatus(context.Context, *ReportHostStatusRequest) (*ReportHostStatusResponse, error)
 	// Heartbeat updates hosts.last_heartbeat_at for the calling host.
 	// A stale gap (>2 × the host's expected interval) marks the host
 	// for the HostSweeper, which reassigns its containers. Hosts are
@@ -200,6 +238,12 @@ type ActuationServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedActuationServiceServer struct{}
 
+func (UnimplementedActuationServiceServer) EnrollHost(context.Context, *EnrollHostRequest) (*EnrollHostResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnrollHost not implemented")
+}
+func (UnimplementedActuationServiceServer) ReportHostStatus(context.Context, *ReportHostStatusRequest) (*ReportHostStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportHostStatus not implemented")
+}
 func (UnimplementedActuationServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
 }
@@ -228,6 +272,42 @@ func RegisterActuationServiceServer(s grpc.ServiceRegistrar, srv ActuationServic
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&ActuationService_ServiceDesc, srv)
+}
+
+func _ActuationService_EnrollHost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollHostRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ActuationServiceServer).EnrollHost(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ActuationService_EnrollHost_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ActuationServiceServer).EnrollHost(ctx, req.(*EnrollHostRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ActuationService_ReportHostStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportHostStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ActuationServiceServer).ReportHostStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ActuationService_ReportHostStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ActuationServiceServer).ReportHostStatus(ctx, req.(*ReportHostStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _ActuationService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -284,6 +364,14 @@ var ActuationService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.cloud.v1.ActuationService",
 	HandlerType: (*ActuationServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "EnrollHost",
+			Handler:    _ActuationService_EnrollHost_Handler,
+		},
+		{
+			MethodName: "ReportHostStatus",
+			Handler:    _ActuationService_ReportHostStatus_Handler,
+		},
 		{
 			MethodName: "Heartbeat",
 			Handler:    _ActuationService_Heartbeat_Handler,

@@ -902,7 +902,12 @@ skipAppHosting:
 	if cloudCfg, cerr := cloud.Load(cloudCfgPath); cerr != nil {
 		log.Printf("Warning: failed to read cloud-actuation config %s: %v (running single-tenant)", cloudCfgPath, cerr)
 	} else if cloudCfg != nil {
-		cloudDeps := cloud.Deps{Policies: newCloudPolicySink(npServer)}
+		cloudDeps := cloud.Deps{
+			Policies: newCloudPolicySink(npServer),
+			// Report this host's capability profile (hardware + headroom +
+			// version) so the BYO fleet view goes live (#528).
+			Status: cloud.DefaultStatusProbe{},
+		}
 		if cloudActuator, actErr := newCloudContainerActuator(routeStore); actErr != nil {
 			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
 		} else {

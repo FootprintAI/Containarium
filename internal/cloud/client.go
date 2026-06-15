@@ -76,12 +76,48 @@ type ContainerActuator interface {
 	EnsureDeleted(ctx context.Context, localName string) error
 }
 
-// Deps are the daemon-provided collaborators. Both are optional: nil Policies
-// skips network-policy sync, nil Containers skips container reconcile. With both
-// nil the client is heartbeat-only.
+// HostCheck is one line of the host's `doctor` self-check — mirrors the
+// proto HostCapabilityCheck so callers (the daemon's probe) don't depend on
+// generated types.
+type HostCheck struct {
+	Name   string
+	OK     bool
+	Detail string
+}
+
+// HostStatus is the host's self-measured capability profile + `doctor`
+// self-check, reported to the cloud so the BYO fleet view goes live.
+type HostStatus struct {
+	AgentVersion  string
+	CPUCores      int32
+	TotalRAMMB    int32
+	TotalDiskGB   int32
+	TotalGPUCount int32
+	GPUSpec       string
+	// Spare headroom — currently-available, self-measured.
+	AvailRAMMB    int32
+	AvailDiskGB   int32
+	AvailGPUCount int32
+	SelfCheckOK   bool
+	Checks        []HostCheck
+}
+
+// StatusProbe gathers the host's current capability profile + self-check.
+// The daemon implements it (hardware introspection + `containarium doctor`);
+// the interface keeps internal/cloud free of those deps and lets the report
+// loop be tested with a fake.
+type StatusProbe interface {
+	Probe(ctx context.Context) (HostStatus, error)
+}
+
+// Deps are the daemon-provided collaborators. All optional: nil Policies
+// skips network-policy sync, nil Containers skips container reconcile, nil
+// Status skips capability reporting. With all nil the client is
+// heartbeat-only.
 type Deps struct {
 	Policies   PolicySink
 	Containers ContainerActuator
+	Status     StatusProbe
 }
 
 // Client is the host-side cloud-actuation client. Slice 3 implements the
@@ -94,6 +130,8 @@ type Client struct {
 	interval   time.Duration
 	sink       PolicySink        // optional; nil = no policy reconcile
 	containers ContainerActuator // optional; nil = no container reconcile
+
+	status StatusProbe // optional; nil = no capability reporting
 
 	conn *grpc.ClientConn
 	ac   cloudv1.ActuationServiceClient
@@ -112,7 +150,7 @@ func New(cfg *Config, deps Deps) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Client{cfg: cfg, interval: defaultHeartbeatInterval, sink: deps.Policies, containers: deps.Containers}, nil
+	return &Client{cfg: cfg, interval: defaultHeartbeatInterval, sink: deps.Policies, containers: deps.Containers, status: deps.Status}, nil
 }
 
 // Start dials the control plane and launches the heartbeat loop. A dial error is
@@ -134,8 +172,12 @@ func (c *Client) Start(ctx context.Context) error {
 		c.wg.Add(1)
 		go c.watchLoop()
 	}
-	log.Printf("[cloud] actuation client started: host=%s control-plane=%s (heartbeat %s, watch=%v)",
-		c.cfg.HostID, c.cfg.ControlPlane, c.interval, watch)
+	if c.status != nil {
+		c.wg.Add(1)
+		go c.statusLoop()
+	}
+	log.Printf("[cloud] actuation client started: host=%s control-plane=%s (heartbeat %s, watch=%v, status=%v)",
+		c.cfg.HostID, c.cfg.ControlPlane, c.interval, watch, c.status != nil)
 	return nil
 }
 
@@ -151,13 +193,88 @@ func (c *Client) Stop() {
 }
 
 func (c *Client) dial() (*grpc.ClientConn, error) {
+	return dialControlPlane(c.cfg.ControlPlane, c.cfg.Insecure)
+}
+
+// dialControlPlane builds a gRPC client connection to the control plane.
+// Shared by the running Client and the one-shot Enroll helper.
+func dialControlPlane(addr string, insecureTLS bool) (*grpc.ClientConn, error) {
 	var creds credentials.TransportCredentials
-	if c.cfg.Insecure {
+	if insecureTLS {
 		creds = insecure.NewCredentials()
 	} else {
 		creds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	}
-	return grpc.NewClient(c.cfg.ControlPlane, grpc.WithTransportCredentials(creds))
+	return grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
+}
+
+// Enroll redeems a single-use join token against the control plane and returns
+// the registered host id. One-shot (no running client / host bearer yet — the
+// token authenticates itself in the body). Used by `containarium cloud enroll`
+// for the BYO self-service flow; after this, the same token is the host's
+// durable bearer (the cloud reuses the token secret as the host bearer).
+func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool) (string, error) {
+	conn, err := dialControlPlane(controlPlane, insecureTLS)
+	if err != nil {
+		return "", fmt.Errorf("cloud: dial control plane %s: %w", controlPlane, err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := cloudv1.NewActuationServiceClient(conn).EnrollHost(ctx, &cloudv1.EnrollHostRequest{
+		JoinToken: joinToken,
+	})
+	if err != nil {
+		return "", fmt.Errorf("cloud: enroll: %w", err)
+	}
+	return resp.GetHostId(), nil
+}
+
+// statusLoop reports the host's capability profile + self-check on the same
+// cadence as the heartbeat. Best-effort: a failed probe or RPC is logged and
+// retried next tick — capability staleness must never crash the daemon.
+func (c *Client) statusLoop() {
+	defer c.wg.Done()
+	t := time.NewTicker(c.interval)
+	defer t.Stop()
+	c.reportStatusOnce() // immediate first report so the fleet row goes live fast
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			c.reportStatusOnce()
+		}
+	}
+}
+
+func (c *Client) reportStatusOnce() {
+	st, err := c.status.Probe(c.ctx)
+	if err != nil {
+		log.Printf("[cloud] status probe failed: %v", err)
+		return
+	}
+	checks := make([]*cloudv1.HostCapabilityCheck, 0, len(st.Checks))
+	for _, ck := range st.Checks {
+		checks = append(checks, &cloudv1.HostCapabilityCheck{Name: ck.Name, Ok: ck.OK, Detail: ck.Detail})
+	}
+	ctx, cancel := context.WithTimeout(c.authContext(c.ctx), 10*time.Second)
+	defer cancel()
+	if _, err := c.ac.ReportHostStatus(ctx, &cloudv1.ReportHostStatusRequest{
+		AgentVersion:  st.AgentVersion,
+		CpuCores:      st.CPUCores,
+		TotalRamMb:    st.TotalRAMMB,
+		TotalDiskGb:   st.TotalDiskGB,
+		TotalGpuCount: st.TotalGPUCount,
+		GpuSpec:       st.GPUSpec,
+		AvailRamMb:    st.AvailRAMMB,
+		AvailDiskGb:   st.AvailDiskGB,
+		AvailGpuCount: st.AvailGPUCount,
+		SelfCheckOk:   st.SelfCheckOK,
+		Checks:        checks,
+	}); err != nil {
+		log.Printf("[cloud] report host status: %v", err)
+	}
 }
 
 func (c *Client) heartbeatLoop() {

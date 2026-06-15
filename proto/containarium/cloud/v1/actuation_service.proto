@@ -202,7 +202,74 @@ message AssignmentBatch {
   repeated NetworkPolicy network_policies = 3;
 }
 
+// EnrollHostRequest carries the single-use join token a BYO host redeems to
+// register itself with the cloud (BYO-compute report path). Unlike every other
+// ActuationService RPC this one is NOT host-bearer authed — the host row
+// doesn't exist yet; the cloud validates + single-use-redeems the token.
+message EnrollHostRequest {
+  // The join token, format "<host_id>.<secret>", from the cloud's
+  // `pool join` / `cloud enroll` one-liner.
+  string join_token = 1;
+}
+
+message EnrollHostResponse {
+  // The enrolled host's id. The host keeps using its join token as its
+  // durable host-bearer for Heartbeat / ReportHostStatus.
+  string host_id = 1;
+}
+
+// HostCapabilityCheck is one line of the `doctor` self-check: a named probe
+// with a pass/fail + human-readable detail. Defined locally here (same field
+// numbers as the cloud's host.proto message) so the vendored actuation proto
+// stays self-contained — wire-compatible without vendoring host.proto.
+message HostCapabilityCheck {
+  string name = 1;
+  bool ok = 2;
+  string detail = 3;
+}
+
+// ReportHostStatusRequest is a BYO host's push of its self-measured
+// capability profile + `doctor` self-check. Host-bearer authed; the host id
+// comes from the bearer, never the body.
+message ReportHostStatusRequest {
+  string agent_version = 1;
+  int32 cpu_cores = 2;
+  int32 total_ram_mb = 3;
+  int32 total_disk_gb = 4;
+  int32 total_gpu_count = 5;
+  string gpu_spec = 6;
+  int32 avail_ram_mb = 7;
+  int32 avail_disk_gb = 8;
+  int32 avail_gpu_count = 9;
+  bool self_check_ok = 10;
+  repeated HostCapabilityCheck checks = 11;
+}
+
+message ReportHostStatusResponse {
+  google.protobuf.Timestamp received_at = 1;
+}
+
 service ActuationService {
+  // EnrollHost redeems a single-use join token and registers the BYO host.
+  // Self-authenticating via the token in the body (NOT host-bearer — the row
+  // doesn't exist yet).
+  rpc EnrollHost(EnrollHostRequest) returns (EnrollHostResponse) {
+    option (google.api.http) = {
+      post: "/v1/actuation/enroll"
+      body: "*"
+    };
+  }
+
+  // ReportHostStatus upserts the calling host's capability profile +
+  // `doctor` self-check and bumps its heartbeat. Requires a valid
+  // `host-bearer` header. Idempotent.
+  rpc ReportHostStatus(ReportHostStatusRequest) returns (ReportHostStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/actuation/status"
+      body: "*"
+    };
+  }
+
   // Heartbeat updates hosts.last_heartbeat_at for the calling host.
   // A stale gap (>2 × the host's expected interval) marks the host
   // for the HostSweeper, which reassigns its containers. Hosts are

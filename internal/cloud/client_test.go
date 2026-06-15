@@ -22,6 +22,48 @@ type fakeActuation struct {
 	beats         int
 	reportedID    string
 	reportedState string
+	enrollToken   string
+	enrollHostID  string
+	statusBearer  string
+	statusReq     *cloudv1.ReportHostStatusRequest
+	statusReports int
+}
+
+// EnrollHost echoes back the host id embedded in the join token (first
+// dotted segment) so the client's Enroll returns it.
+func (f *fakeActuation) EnrollHost(_ context.Context, req *cloudv1.EnrollHostRequest) (*cloudv1.EnrollHostResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enrollToken = req.GetJoinToken()
+	id := req.GetJoinToken()
+	if i := indexByte(id, '.'); i >= 0 {
+		id = id[:i]
+	}
+	f.enrollHostID = id
+	return &cloudv1.EnrollHostResponse{HostId: id}, nil
+}
+
+// ReportHostStatus records the capability report + the bearer it arrived with.
+func (f *fakeActuation) ReportHostStatus(ctx context.Context, req *cloudv1.ReportHostStatusRequest) (*cloudv1.ReportHostStatusResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statusReports++
+	f.statusReq = req
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if v := md.Get(hostBearerMetadataKey); len(v) > 0 {
+			f.statusBearer = v[0]
+		}
+	}
+	return &cloudv1.ReportHostStatusResponse{}, nil
+}
+
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
 }
 
 func (f *fakeActuation) Heartbeat(ctx context.Context, _ *cloudv1.HeartbeatRequest) (*cloudv1.HeartbeatResponse, error) {
@@ -238,5 +280,85 @@ func TestLocalContainerName(t *testing.T) {
 		if got := localContainerName(in); got != want {
 			t.Errorf("localContainerName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// fakeProbe is a canned StatusProbe for the report-loop test.
+type fakeProbe struct{ st HostStatus }
+
+func (p fakeProbe) Probe(context.Context) (HostStatus, error) { return p.st, nil }
+
+func TestReportStatusOnce_SendsCapabilityWithBearer(t *testing.T) {
+	c, fake := newTestClient(t, &Config{
+		ControlPlane: "bufnet", HostID: "h1", Token: "h1.secret", Insecure: true,
+	})
+	c.status = fakeProbe{st: HostStatus{
+		AgentVersion: "v0.29.0", CPUCores: 8, TotalRAMMB: 32768, AvailRAMMB: 30000,
+		SelfCheckOK: false,
+		Checks:      []HostCheck{{Name: "useradd", OK: false, Detail: "blocked"}},
+	}}
+
+	c.reportStatusOnce()
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.statusReports != 1 {
+		t.Fatalf("want 1 status report, got %d", fake.statusReports)
+	}
+	if fake.statusBearer != "h1.secret" {
+		t.Errorf("status report missing host bearer: got %q", fake.statusBearer)
+	}
+	req := fake.statusReq
+	if req.GetAgentVersion() != "v0.29.0" || req.GetCpuCores() != 8 || req.GetTotalRamMb() != 32768 {
+		t.Errorf("capability fields not mapped: %+v", req)
+	}
+	if req.GetSelfCheckOk() {
+		t.Error("self_check_ok should be false")
+	}
+	if len(req.GetChecks()) != 1 || req.GetChecks()[0].GetName() != "useradd" || req.GetChecks()[0].GetOk() {
+		t.Errorf("self-check breakdown not mapped: %+v", req.GetChecks())
+	}
+}
+
+func TestEnroll_RedeemsTokenAndReturnsHostID(t *testing.T) {
+	// Enroll dials its own connection, so use a real loopback TCP server
+	// (bufconn isn't reachable by grpc.NewClient(addr)).
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := grpc.NewServer()
+	fake := &fakeActuation{}
+	cloudv1.RegisterActuationServiceServer(srv, fake)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	hostID, err := Enroll(context.Background(), lis.Addr().String(), "host-uuid.secret", true)
+	if err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+	if hostID != "host-uuid" {
+		t.Errorf("want host id host-uuid, got %q", hostID)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.enrollToken != "host-uuid.secret" {
+		t.Errorf("server saw token %q", fake.enrollToken)
+	}
+}
+
+func TestDefaultStatusProbe_ReportsVersionAndCPU(t *testing.T) {
+	st, err := DefaultStatusProbe{}.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if st.AgentVersion == "" {
+		t.Error("agent version should be set")
+	}
+	if st.CPUCores <= 0 {
+		t.Errorf("cpu cores should be positive, got %d", st.CPUCores)
+	}
+	if !st.SelfCheckOK {
+		t.Error("default probe reports self_check_ok=true until doctor integration lands")
 	}
 }

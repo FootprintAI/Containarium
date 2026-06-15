@@ -121,6 +121,40 @@
         ]
       }
     },
+    "/v1/actuation/enroll": {
+      "post": {
+        "summary": "EnrollHost redeems a single-use join token and registers the BYO host.\nSelf-authenticating via the token in the body (NOT host-bearer — the row\ndoesn't exist yet).",
+        "operationId": "ActuationService_EnrollHost",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/EnrollHostResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "EnrollHostRequest carries the single-use join token a BYO host redeems to\nregister itself with the cloud (BYO-compute report path). Unlike every other\nActuationService RPC this one is NOT host-bearer authed — the host row\ndoesn't exist yet; the cloud validates + single-use-redeems the token.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/EnrollHostRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ActuationService"
+        ]
+      }
+    },
     "/v1/actuation/heartbeat": {
       "post": {
         "summary": "Heartbeat updates hosts.last_heartbeat_at for the calling host.\nA stale gap (\u003e2 × the host's expected interval) marks the host\nfor the HostSweeper, which reassigns its containers. Hosts are\nexpected to call this every N seconds with N \u003c\u003c the staleness\nthreshold.",
@@ -148,6 +182,40 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/HeartbeatRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ActuationService"
+        ]
+      }
+    },
+    "/v1/actuation/status": {
+      "post": {
+        "summary": "ReportHostStatus upserts the calling host's capability profile +\n`doctor` self-check and bumps its heartbeat. Requires a valid\n`host-bearer` header. Idempotent.",
+        "operationId": "ActuationService_ReportHostStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ReportHostStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ReportHostStatusRequest"
             }
           }
         ],
@@ -7617,6 +7685,25 @@
         }
       }
     },
+    "EnrollHostRequest": {
+      "type": "object",
+      "properties": {
+        "joinToken": {
+          "type": "string",
+          "description": "The join token, format \"\u003chost_id\u003e.\u003csecret\u003e\", from the cloud's\n`pool join` / `cloud enroll` one-liner."
+        }
+      },
+      "description": "EnrollHostRequest carries the single-use join token a BYO host redeems to\nregister itself with the cloud (BYO-compute report path). Unlike every other\nActuationService RPC this one is NOT host-bearer authed — the host row\ndoesn't exist yet; the cloud validates + single-use-redeems the token."
+    },
+    "EnrollHostResponse": {
+      "type": "object",
+      "properties": {
+        "hostId": {
+          "type": "string",
+          "description": "The enrolled host's id. The host keeps using its join token as its\ndurable host-bearer for Heartbeat / ReportHostStatus."
+        }
+      }
+    },
     "Event": {
       "type": "object",
       "properties": {
@@ -8368,6 +8455,21 @@
         }
       },
       "title": "HistoricalConnection represents a persisted connection record"
+    },
+    "HostCapabilityCheck": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "description": "HostCapabilityCheck is one line of the `doctor` self-check: a named probe\nwith a pass/fail + human-readable detail. Defined locally here (same field\nnumbers as the cloud's host.proto message) so the vendored actuation proto\nstays self-contained — wire-compatible without vendoring host.proto."
     },
     "InstallPentestToolRequest": {
       "type": "object",
@@ -9863,6 +9965,65 @@
           "type": "string",
           "format": "date-time",
           "description": "Server time when the report was recorded."
+        }
+      }
+    },
+    "ReportHostStatusRequest": {
+      "type": "object",
+      "properties": {
+        "agentVersion": {
+          "type": "string"
+        },
+        "cpuCores": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalRamMb": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalDiskGb": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalGpuCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "gpuSpec": {
+          "type": "string"
+        },
+        "availRamMb": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "availDiskGb": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "availGpuCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "selfCheckOk": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/HostCapabilityCheck"
+          }
+        }
+      },
+      "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body."
+    },
+    "ReportHostStatusResponse": {
+      "type": "object",
+      "properties": {
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time"
         }
       }
     },

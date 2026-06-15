@@ -763,6 +763,337 @@ func (x *AssignmentBatch) GetNetworkPolicies() []*NetworkPolicy {
 	return nil
 }
 
+// EnrollHostRequest carries the single-use join token a BYO host redeems to
+// register itself with the cloud (BYO-compute report path). Unlike every other
+// ActuationService RPC this one is NOT host-bearer authed — the host row
+// doesn't exist yet; the cloud validates + single-use-redeems the token.
+type EnrollHostRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The join token, format "<host_id>.<secret>", from the cloud's
+	// `pool join` / `cloud enroll` one-liner.
+	JoinToken     string `protobuf:"bytes,1,opt,name=join_token,json=joinToken,proto3" json:"join_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnrollHostRequest) Reset() {
+	*x = EnrollHostRequest{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnrollHostRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnrollHostRequest) ProtoMessage() {}
+
+func (x *EnrollHostRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnrollHostRequest.ProtoReflect.Descriptor instead.
+func (*EnrollHostRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *EnrollHostRequest) GetJoinToken() string {
+	if x != nil {
+		return x.JoinToken
+	}
+	return ""
+}
+
+type EnrollHostResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The enrolled host's id. The host keeps using its join token as its
+	// durable host-bearer for Heartbeat / ReportHostStatus.
+	HostId        string `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnrollHostResponse) Reset() {
+	*x = EnrollHostResponse{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnrollHostResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnrollHostResponse) ProtoMessage() {}
+
+func (x *EnrollHostResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnrollHostResponse.ProtoReflect.Descriptor instead.
+func (*EnrollHostResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *EnrollHostResponse) GetHostId() string {
+	if x != nil {
+		return x.HostId
+	}
+	return ""
+}
+
+// HostCapabilityCheck is one line of the `doctor` self-check: a named probe
+// with a pass/fail + human-readable detail. Defined locally here (same field
+// numbers as the cloud's host.proto message) so the vendored actuation proto
+// stays self-contained — wire-compatible without vendoring host.proto.
+type HostCapabilityCheck struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Ok            bool                   `protobuf:"varint,2,opt,name=ok,proto3" json:"ok,omitempty"`
+	Detail        string                 `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostCapabilityCheck) Reset() {
+	*x = HostCapabilityCheck{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostCapabilityCheck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostCapabilityCheck) ProtoMessage() {}
+
+func (x *HostCapabilityCheck) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostCapabilityCheck.ProtoReflect.Descriptor instead.
+func (*HostCapabilityCheck) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *HostCapabilityCheck) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *HostCapabilityCheck) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *HostCapabilityCheck) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+// ReportHostStatusRequest is a BYO host's push of its self-measured
+// capability profile + `doctor` self-check. Host-bearer authed; the host id
+// comes from the bearer, never the body.
+type ReportHostStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AgentVersion  string                 `protobuf:"bytes,1,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
+	CpuCores      int32                  `protobuf:"varint,2,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
+	TotalRamMb    int32                  `protobuf:"varint,3,opt,name=total_ram_mb,json=totalRamMb,proto3" json:"total_ram_mb,omitempty"`
+	TotalDiskGb   int32                  `protobuf:"varint,4,opt,name=total_disk_gb,json=totalDiskGb,proto3" json:"total_disk_gb,omitempty"`
+	TotalGpuCount int32                  `protobuf:"varint,5,opt,name=total_gpu_count,json=totalGpuCount,proto3" json:"total_gpu_count,omitempty"`
+	GpuSpec       string                 `protobuf:"bytes,6,opt,name=gpu_spec,json=gpuSpec,proto3" json:"gpu_spec,omitempty"`
+	AvailRamMb    int32                  `protobuf:"varint,7,opt,name=avail_ram_mb,json=availRamMb,proto3" json:"avail_ram_mb,omitempty"`
+	AvailDiskGb   int32                  `protobuf:"varint,8,opt,name=avail_disk_gb,json=availDiskGb,proto3" json:"avail_disk_gb,omitempty"`
+	AvailGpuCount int32                  `protobuf:"varint,9,opt,name=avail_gpu_count,json=availGpuCount,proto3" json:"avail_gpu_count,omitempty"`
+	SelfCheckOk   bool                   `protobuf:"varint,10,opt,name=self_check_ok,json=selfCheckOk,proto3" json:"self_check_ok,omitempty"`
+	Checks        []*HostCapabilityCheck `protobuf:"bytes,11,rep,name=checks,proto3" json:"checks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportHostStatusRequest) Reset() {
+	*x = ReportHostStatusRequest{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportHostStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportHostStatusRequest) ProtoMessage() {}
+
+func (x *ReportHostStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportHostStatusRequest.ProtoReflect.Descriptor instead.
+func (*ReportHostStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ReportHostStatusRequest) GetAgentVersion() string {
+	if x != nil {
+		return x.AgentVersion
+	}
+	return ""
+}
+
+func (x *ReportHostStatusRequest) GetCpuCores() int32 {
+	if x != nil {
+		return x.CpuCores
+	}
+	return 0
+}
+
+func (x *ReportHostStatusRequest) GetTotalRamMb() int32 {
+	if x != nil {
+		return x.TotalRamMb
+	}
+	return 0
+}
+
+func (x *ReportHostStatusRequest) GetTotalDiskGb() int32 {
+	if x != nil {
+		return x.TotalDiskGb
+	}
+	return 0
+}
+
+func (x *ReportHostStatusRequest) GetTotalGpuCount() int32 {
+	if x != nil {
+		return x.TotalGpuCount
+	}
+	return 0
+}
+
+func (x *ReportHostStatusRequest) GetGpuSpec() string {
+	if x != nil {
+		return x.GpuSpec
+	}
+	return ""
+}
+
+func (x *ReportHostStatusRequest) GetAvailRamMb() int32 {
+	if x != nil {
+		return x.AvailRamMb
+	}
+	return 0
+}
+
+func (x *ReportHostStatusRequest) GetAvailDiskGb() int32 {
+	if x != nil {
+		return x.AvailDiskGb
+	}
+	return 0
+}
+
+func (x *ReportHostStatusRequest) GetAvailGpuCount() int32 {
+	if x != nil {
+		return x.AvailGpuCount
+	}
+	return 0
+}
+
+func (x *ReportHostStatusRequest) GetSelfCheckOk() bool {
+	if x != nil {
+		return x.SelfCheckOk
+	}
+	return false
+}
+
+func (x *ReportHostStatusRequest) GetChecks() []*HostCapabilityCheck {
+	if x != nil {
+		return x.Checks
+	}
+	return nil
+}
+
+type ReportHostStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ReceivedAt    *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportHostStatusResponse) Reset() {
+	*x = ReportHostStatusResponse{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportHostStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportHostStatusResponse) ProtoMessage() {}
+
+func (x *ReportHostStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportHostStatusResponse.ProtoReflect.Descriptor instead.
+func (*ReportHostStatusResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ReportHostStatusResponse) GetReceivedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ReceivedAt
+	}
+	return nil
+}
+
 var File_containarium_cloud_v1_actuation_service_proto protoreflect.FileDescriptor
 
 const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
@@ -817,12 +1148,42 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x0fAssignmentBatch\x12C\n" +
 	"\vassignments\x18\x01 \x03(\v2!.containarium.cloud.v1.AssignmentR\vassignments\x12=\n" +
 	"\fgenerated_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt\x12O\n" +
-	"\x10network_policies\x18\x03 \x03(\v2$.containarium.cloud.v1.NetworkPolicyR\x0fnetworkPolicies*{\n" +
+	"\x10network_policies\x18\x03 \x03(\v2$.containarium.cloud.v1.NetworkPolicyR\x0fnetworkPolicies\"2\n" +
+	"\x11EnrollHostRequest\x12\x1d\n" +
+	"\n" +
+	"join_token\x18\x01 \x01(\tR\tjoinToken\"-\n" +
+	"\x12EnrollHostResponse\x12\x17\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\"Q\n" +
+	"\x13HostCapabilityCheck\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x0e\n" +
+	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x16\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xba\x03\n" +
+	"\x17ReportHostStatusRequest\x12#\n" +
+	"\ragent_version\x18\x01 \x01(\tR\fagentVersion\x12\x1b\n" +
+	"\tcpu_cores\x18\x02 \x01(\x05R\bcpuCores\x12 \n" +
+	"\ftotal_ram_mb\x18\x03 \x01(\x05R\n" +
+	"totalRamMb\x12\"\n" +
+	"\rtotal_disk_gb\x18\x04 \x01(\x05R\vtotalDiskGb\x12&\n" +
+	"\x0ftotal_gpu_count\x18\x05 \x01(\x05R\rtotalGpuCount\x12\x19\n" +
+	"\bgpu_spec\x18\x06 \x01(\tR\agpuSpec\x12 \n" +
+	"\favail_ram_mb\x18\a \x01(\x05R\n" +
+	"availRamMb\x12\"\n" +
+	"\ravail_disk_gb\x18\b \x01(\x05R\vavailDiskGb\x12&\n" +
+	"\x0favail_gpu_count\x18\t \x01(\x05R\ravailGpuCount\x12\"\n" +
+	"\rself_check_ok\x18\n" +
+	" \x01(\bR\vselfCheckOk\x12B\n" +
+	"\x06checks\x18\v \x03(\v2*.containarium.cloud.v1.HostCapabilityCheckR\x06checks\"W\n" +
+	"\x18ReportHostStatusResponse\x12;\n" +
+	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"receivedAt*{\n" +
 	"\x11NetworkPolicyMode\x12#\n" +
 	"\x1fNETWORK_POLICY_MODE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cNETWORK_POLICY_MODE_LOG_ONLY\x10\x01\x12\x1f\n" +
-	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x022\xc1\x03\n" +
+	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x022\xdd\x05\n" +
 	"\x10ActuationService\x12\x82\x01\n" +
+	"\n" +
+	"EnrollHost\x12(.containarium.cloud.v1.EnrollHostRequest\x1a).containarium.cloud.v1.EnrollHostResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/actuation/enroll\x12\x94\x01\n" +
+	"\x10ReportHostStatus\x12..containarium.cloud.v1.ReportHostStatusRequest\x1a/.containarium.cloud.v1.ReportHostStatusResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/actuation/status\x12\x82\x01\n" +
 	"\tHeartbeat\x12'.containarium.cloud.v1.HeartbeatRequest\x1a(.containarium.cloud.v1.HeartbeatResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/actuation/heartbeat\x12\xb9\x01\n" +
 	"\x14ReportContainerState\x122.containarium.cloud.v1.ReportContainerStateRequest\x1a3.containarium.cloud.v1.ReportContainerStateResponse\"8\x82\xd3\xe4\x93\x022:\x01*\"-/v1/actuation/containers/{container_id}/state\x12l\n" +
 	"\x10WatchAssignments\x12..containarium.cloud.v1.WatchAssignmentsRequest\x1a&.containarium.cloud.v1.AssignmentBatch0\x01BJZHgithub.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1b\x06proto3"
@@ -840,7 +1201,7 @@ func file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_cloud_v1_actuation_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_cloud_v1_actuation_service_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_containarium_cloud_v1_actuation_service_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_containarium_cloud_v1_actuation_service_proto_goTypes = []any{
 	(NetworkPolicyMode)(0),               // 0: containarium.cloud.v1.NetworkPolicyMode
 	(*HeartbeatRequest)(nil),             // 1: containarium.cloud.v1.HeartbeatRequest
@@ -852,31 +1213,42 @@ var file_containarium_cloud_v1_actuation_service_proto_goTypes = []any{
 	(*PortRoute)(nil),                    // 7: containarium.cloud.v1.PortRoute
 	(*NetworkPolicy)(nil),                // 8: containarium.cloud.v1.NetworkPolicy
 	(*AssignmentBatch)(nil),              // 9: containarium.cloud.v1.AssignmentBatch
-	nil,                                  // 10: containarium.cloud.v1.Assignment.SecretEnvEntry
-	(*timestamppb.Timestamp)(nil),        // 11: google.protobuf.Timestamp
+	(*EnrollHostRequest)(nil),            // 10: containarium.cloud.v1.EnrollHostRequest
+	(*EnrollHostResponse)(nil),           // 11: containarium.cloud.v1.EnrollHostResponse
+	(*HostCapabilityCheck)(nil),          // 12: containarium.cloud.v1.HostCapabilityCheck
+	(*ReportHostStatusRequest)(nil),      // 13: containarium.cloud.v1.ReportHostStatusRequest
+	(*ReportHostStatusResponse)(nil),     // 14: containarium.cloud.v1.ReportHostStatusResponse
+	nil,                                  // 15: containarium.cloud.v1.Assignment.SecretEnvEntry
+	(*timestamppb.Timestamp)(nil),        // 16: google.protobuf.Timestamp
 }
 var file_containarium_cloud_v1_actuation_service_proto_depIdxs = []int32{
-	11, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
-	11, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
-	11, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
+	16, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
+	16, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
+	16, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
 	7,  // 3: containarium.cloud.v1.Assignment.routes:type_name -> containarium.cloud.v1.PortRoute
-	10, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
-	11, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
+	15, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
+	16, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 6: containarium.cloud.v1.NetworkPolicy.mode:type_name -> containarium.cloud.v1.NetworkPolicyMode
 	6,  // 7: containarium.cloud.v1.AssignmentBatch.assignments:type_name -> containarium.cloud.v1.Assignment
-	11, // 8: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
+	16, // 8: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
 	8,  // 9: containarium.cloud.v1.AssignmentBatch.network_policies:type_name -> containarium.cloud.v1.NetworkPolicy
-	1,  // 10: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
-	3,  // 11: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
-	5,  // 12: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
-	2,  // 13: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
-	4,  // 14: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
-	9,  // 15: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
-	13, // [13:16] is the sub-list for method output_type
-	10, // [10:13] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	12, // 10: containarium.cloud.v1.ReportHostStatusRequest.checks:type_name -> containarium.cloud.v1.HostCapabilityCheck
+	16, // 11: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
+	10, // 12: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
+	13, // 13: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
+	1,  // 14: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
+	3,  // 15: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
+	5,  // 16: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
+	11, // 17: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
+	14, // 18: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
+	2,  // 19: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
+	4,  // 20: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
+	9,  // 21: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_containarium_cloud_v1_actuation_service_proto_init() }
@@ -890,7 +1262,7 @@ func file_containarium_cloud_v1_actuation_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_cloud_v1_actuation_service_proto_rawDesc), len(file_containarium_cloud_v1_actuation_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
