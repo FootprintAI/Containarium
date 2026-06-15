@@ -8,35 +8,41 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/version"
 )
 
 // DefaultStatusProbe is the daemon's host-capability probe: it self-measures
-// hardware (CPU cores, total + available RAM) and reports the running agent
-// version. It satisfies StatusProbe so the actuation client's status loop can
-// push it to the cloud, making the BYO fleet view show real specs + headroom.
+// hardware (CPU cores, total + available RAM), reports the running agent
+// version, and runs the `doctor` capability self-check (the DEGRADED signal —
+// running-as-root / caps / useradd probe). It satisfies StatusProbe so the
+// actuation client's status loop pushes it to the cloud, making the BYO fleet
+// view show real specs + headroom + health.
 //
-// NOTE: the `doctor` capability self-check (the DEGRADED signal — running-as-
-// root / caps / useradd probe) is NOT yet reported here. Those checks live in
-// internal/cmd/doctor.go and can't be imported from the daemon layer without a
-// shared-package extraction; that's a fast follow-up. Until then the probe
-// reports SelfCheckOK=true with no checks, so a reporting host shows CONNECTED
-// with its hardware. Disk + GPU are likewise left for a follow-up (0 = not
-// reported), since they need Incus/storage introspection.
+// Disk + GPU are still left for a follow-up (0 = not reported), since they
+// need Incus/storage introspection.
 type DefaultStatusProbe struct{}
 
 // Probe gathers the current capability snapshot. Best-effort: a field it can't
 // measure on this platform is reported as zero rather than failing the whole
-// report (the cloud treats zero as "not reported").
+// report (the cloud treats zero as "not reported"). The self-check is run
+// in-process; for an accurate caps/useradd result the daemon must run under
+// its hardened systemd unit (same caveat as `containarium doctor`).
 func (DefaultStatusProbe) Probe(_ context.Context) (HostStatus, error) {
 	total, avail := readMemInfoMB()
+	raw := hostcheck.Run()
+	checks := make([]HostCheck, 0, len(raw))
+	for _, c := range raw {
+		checks = append(checks, HostCheck{Name: c.Name, OK: c.OK, Detail: c.Detail})
+	}
 	return HostStatus{
 		AgentVersion: version.GetVersion(),
 		CPUCores:     safecast.I32(runtime.NumCPU()),
 		TotalRAMMB:   total,
 		AvailRAMMB:   avail,
-		SelfCheckOK:  true, // doctor self-check reporting is a follow-up
+		SelfCheckOK:  hostcheck.AllRequiredPass(raw),
+		Checks:       checks,
 	}, nil
 }
 

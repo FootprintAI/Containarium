@@ -358,7 +358,10 @@ func TestDefaultStatusProbe_ReportsVersionAndCPU(t *testing.T) {
 	if st.CPUCores <= 0 {
 		t.Errorf("cpu cores should be positive, got %d", st.CPUCores)
 	}
-	if !st.SelfCheckOK {
-		t.Error("default probe reports self_check_ok=true until doctor integration lands")
+	// SelfCheckOK / Checks are environment-dependent (root + useradd needed to
+	// pass), so we don't assert their values — only that the self-check ran and
+	// populated the breakdown on this (non-windows) platform.
+	if len(st.Checks) == 0 {
+		t.Error("doctor self-check should populate at least one check on non-windows")
 	}
 }
