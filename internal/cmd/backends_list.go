@@ -60,15 +60,18 @@ type backendsListResponse struct {
 	Backends []backendInfo `json:"backends"`
 }
 
-func runBackendsList(cmd *cobra.Command, args []string) error {
+// fetchBackends GETs /v1/backends from the platform daemon and returns the
+// decoded backend list. Shared by `backends list` and `pool list` (a pool is
+// the set of backends a daemon sees) so they can't drift.
+func fetchBackends() ([]backendInfo, error) {
 	if serverAddr == "" {
-		return fmt.Errorf("--server is required (the platform daemon's HTTP address, e.g. http://host:8080)")
+		return nil, fmt.Errorf("--server is required (the platform daemon's HTTP address, e.g. http://host:8080)")
 	}
 	url := strings.TrimSuffix(serverAddr, "/") + "/v1/backends"
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	if authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+authToken)
@@ -77,32 +80,40 @@ func runBackendsList(cmd *cobra.Command, args []string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("request %s: %w", url, err)
+		return nil, fmt.Errorf("request %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("read response: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("api error (status %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("api error (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	var parsed backendsListResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return parsed.Backends, nil
+}
+
+func runBackendsList(cmd *cobra.Command, args []string) error {
+	backends, err := fetchBackends()
+	if err != nil {
+		return err
 	}
 
 	switch backendsListFormat {
 	case "json":
-		out, err := json.MarshalIndent(parsed, "", "  ")
+		out, err := json.MarshalIndent(backendsListResponse{Backends: backends}, "", "  ")
 		if err != nil {
 			return err
 		}
 		fmt.Println(string(out))
 	case "table":
-		printBackendsTable(parsed.Backends)
+		printBackendsTable(backends)
 	default:
 		return fmt.Errorf("unknown format: %s (use: table, json)", backendsListFormat)
 	}

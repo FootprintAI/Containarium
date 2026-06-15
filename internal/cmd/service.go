@@ -91,27 +91,9 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("this command requires root privileges (use sudo)")
 	}
 
-	// Ensure JWT secret file exists
-	jwtPath := "/etc/containarium/jwt.secret"
-	if _, err := os.Stat(jwtPath); os.IsNotExist(err) {
-		// Create directory and generate a secret
-		if err := os.MkdirAll("/etc/containarium", 0700); err != nil {
-			return fmt.Errorf("failed to create config directory: %w", err)
-		}
-		secret := generateRandomSecret()
-		if err := os.WriteFile(jwtPath, []byte(secret), 0600); err != nil {
-			return fmt.Errorf("failed to write JWT secret: %w", err)
-		}
-		log.Printf("Generated JWT secret: %s", jwtPath)
-	} else {
-		log.Printf("JWT secret already exists: %s", jwtPath)
+	if err := ensureDaemonUnitAndSecret(); err != nil {
+		return err
 	}
-
-	// Write service file
-	if err := os.WriteFile(systemdServicePath, []byte(systemdServiceTemplate), 0644); err != nil {
-		return fmt.Errorf("failed to write service file: %w", err)
-	}
-	log.Printf("Service file written: %s", systemdServicePath)
 
 	// Reload systemd
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
@@ -138,6 +120,31 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 	fmt.Println("  Stop:    sudo systemctl stop containarium")
 	fmt.Println("  Restart: sudo systemctl restart containarium")
 
+	return nil
+}
+
+// ensureDaemonUnitAndSecret makes the daemon's JWT secret and the canonical
+// hardened systemd unit exist (idempotent). Shared by `service install` and
+// `pool join` so the daemon unit is authored in exactly ONE place
+// (correct-by-construction caps/ReadWritePaths — the capability trap the
+// byo-compute-pool-join PRD calls out). Does NOT reload/enable/start.
+func ensureDaemonUnitAndSecret() error {
+	jwtPath := "/etc/containarium/jwt.secret"
+	if _, err := os.Stat(jwtPath); os.IsNotExist(err) {
+		if err := os.MkdirAll("/etc/containarium", 0700); err != nil {
+			return fmt.Errorf("failed to create config directory: %w", err)
+		}
+		if err := os.WriteFile(jwtPath, []byte(generateRandomSecret()), 0600); err != nil {
+			return fmt.Errorf("failed to write JWT secret: %w", err)
+		}
+		log.Printf("Generated JWT secret: %s", jwtPath)
+	} else {
+		log.Printf("JWT secret already exists: %s", jwtPath)
+	}
+	if err := os.WriteFile(systemdServicePath, []byte(systemdServiceTemplate), 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+	log.Printf("Service file written: %s", systemdServicePath)
 	return nil
 }
 
