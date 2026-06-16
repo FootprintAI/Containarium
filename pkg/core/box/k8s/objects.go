@@ -42,10 +42,12 @@ const (
 	// Per-box stable host key (so the gateway can pin it). The entrypoint reads
 	// the private key here; the daemon stores it (+ the public half) in the
 	// host-key Secret.
-	hostKeyField    = "host_key"
-	hostKeyPubField = "host_key.pub"
-	hostKeyMount    = "/etc/agent-box-hostkey"
-	hostKeyVolume   = "host-key"
+	hostKeyField       = "host_key"     // ed25519 private (OpenSSH PEM)
+	hostKeyPubField    = "host_key.pub" // ed25519 public (authorized-key)
+	hostKeyRSAField    = "host_key_rsa" // RSA private — dropbear needs an RSA host key (rsa-sha2)
+	hostKeyRSAPubField = "host_key_rsa.pub"
+	hostKeyMount       = "/etc/agent-box-hostkey"
+	hostKeyVolume      = "host-key"
 )
 
 func hostKeySecretName(tenant string) string { return tenant + "-host-key" }

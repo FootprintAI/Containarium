@@ -86,8 +86,12 @@ func TestCreateProgramsPipe(t *testing.T) {
 		t.Fatal("Pipe should pin the box host key via known_hosts_data")
 	}
 	raw, _ := base64.StdEncoding.DecodeString(khd)
-	if !strings.HasPrefix(string(raw), "[box-0.boxes.tenant-alice.svc.cluster.local]:2222 ssh-ed25519 ") {
-		t.Errorf("known_hosts line wrong format: %q", raw)
+	// Both host keys pinned (sshpiper may negotiate either), bracketed [host]:port.
+	if !strings.Contains(string(raw), "[box-0.boxes.tenant-alice.svc.cluster.local]:2222 ssh-ed25519 ") {
+		t.Errorf("known_hosts missing ed25519 line: %q", raw)
+	}
+	if !strings.Contains(string(raw), "[box-0.boxes.tenant-alice.svc.cluster.local]:2222 ssh-rsa ") {
+		t.Errorf("known_hosts missing rsa line: %q", raw)
 	}
 }
 

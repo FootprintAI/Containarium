@@ -36,7 +36,14 @@ if [ -f /etc/agent-box-hostkey/host_key ]; then
 elif [ ! -f "$ED_HOSTKEY" ]; then
   dropbearkey -t ed25519 -f "$ED_HOSTKEY" >/dev/null 2>&1
 fi
-[ -f "$RSA_HOSTKEY" ] || dropbearkey -t rsa -s 3072 -f "$RSA_HOSTKEY" >/dev/null 2>&1
+# Same for the RSA host key (both are mounted + pinned, since the sshpiper
+# gateway may negotiate either).
+if [ -f /etc/agent-box-hostkey/host_key_rsa ]; then
+  dropbearconvert openssh dropbear /etc/agent-box-hostkey/host_key_rsa "$RSA_HOSTKEY" >/dev/null 2>&1 \
+    || dropbearkey -t rsa -s 3072 -f "$RSA_HOSTKEY" >/dev/null 2>&1
+elif [ ! -f "$RSA_HOSTKEY" ]; then
+  dropbearkey -t rsa -s 3072 -f "$RSA_HOSTKEY" >/dev/null 2>&1
+fi
 
 # dropbear flags:
 #   -F  foreground (PID 1)            -E  log to stderr
