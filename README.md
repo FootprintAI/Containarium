@@ -721,6 +721,11 @@ Demoed Containarium somewhere? Open a PR and add it here.
 
 ## Roadmap
 
+- **Shipped (2026-06)**: experimental **[Kubernetes backend](#kubernetes-backend-experimental)**
+  — run a box as a pod in a cluster you operate, reached over SSH like an LXC
+  box, with the sshpiper gateway, default-deny NetworkPolicy, and host-key
+  pinning. End-to-end validated on `kind`; behind the `k8s` build tag. See
+  [docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md](docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md).
 - **Q2 2026 (in flight)**: `agent-box` MCP, `ssh-config` CLI,
   `expose-port` CLI, demo recording.
 - **Q3 2026**: `agent-box` tier-2 (MCP Roots, background process
