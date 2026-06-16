@@ -1,0 +1,63 @@
+name: K8s agent-box e2e
+
+# Exercises the Kubernetes box backend (//go:build k8s). Two jobs:
+#  - build-unit: fast gate — compiles the k8s variant and runs the reconciler's
+#    fake-clientset unit tests. No cluster, always runs.
+#  - kind-e2e: spins up a throwaway kind cluster and drives the real reconciler
+#    against its apiserver (scripts/k8s-e2e.sh).
+on:
+  pull_request:
+    paths:
+      - 'pkg/core/box/**'
+      - 'internal/server/boxbackend_k8s.go'
+      - 'scripts/k8s-e2e.sh'
+      - '.github/workflows/k8s-e2e.yml'
+      - 'go.mod'
+      - 'go.sum'
+  push:
+    branches: [main]
+    paths:
+      - 'pkg/core/box/**'
+      - 'internal/server/boxbackend_k8s.go'
+      - 'scripts/k8s-e2e.sh'
+      - '.github/workflows/k8s-e2e.yml'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-unit:
+    name: build + unit (-tags k8s)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.11'
+      - name: Build k8s variant
+        run: go build -tags k8s ./...
+      - name: Reconciler unit tests (fake clientset, no cluster)
+        run: go test -tags k8s ./pkg/core/box/k8s/
+
+  kind-e2e:
+    name: kind e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.11'
+      - name: Install kind
+        run: |
+          curl -fsSL -o ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+      - name: Run k8s agent-box e2e
+        run: bash scripts/k8s-e2e.sh
