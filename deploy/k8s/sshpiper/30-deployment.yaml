@@ -43,4 +43,6 @@ spec:
         - name: server-key
           secret:
             secretName: sshpiper-server-key
-            defaultMode: 0400
+            # 0444 (not 0400): the sshpiperd image runs non-root, so an
+            # owner-only key it can't read crashes it ("permission denied").
+            defaultMode: 0444

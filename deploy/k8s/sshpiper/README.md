@@ -39,8 +39,10 @@ ssh-keygen -t ed25519 -N '' -f ./sshpiper_upstream -C sshpiper-upstream
 kubectl apply -f 00-namespace.yaml
 kubectl -n agent-gateway create secret generic sshpiper-server-key \
   --from-file=server_key=./sshpiper_server
+# The data key MUST be `ssh-privatekey` — sshpiper's kubernetes plugin reads
+# spec.to.private_key_secret from that key (verified live).
 kubectl -n agent-gateway create secret generic sshpiper-upstream-key \
-  --from-file=privatekey=./sshpiper_upstream
+  --from-file=ssh-privatekey=./sshpiper_upstream
 ```
 
 ## 3. Point the daemon at the gateway
