@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-06-16
+
+BYO-compute, end to end: an enrolled host now reports itself to the cloud, so
+it shows up live in the cloud fleet view with real specs + health. The OSS half
+of the host→cloud report path (pairs with Containarium-cloud's actuation RPCs).
+
+### Added
+
+- **`containarium cloud enroll`.** Self-service host enrollment for BYO-compute:
+  redeems a single-use join token against the control plane (`EnrollHost`),
+  registers the host, and writes `~/.containarium/cloud.yaml`. Distinct from the
+  sysadmin `cloud login` flow — the token from the cloud's "Add compute"
+  one-liner doubles as the host's durable bearer. (#694)
+- **Actuation status-report loop.** When enrolled, the daemon's actuation client
+  periodically reports its self-measured capability profile + `doctor`
+  self-check to the cloud (`ReportHostStatus`), so the fleet view shows live
+  CONNECTED/DEGRADED status. The profile covers agent version, CPU cores,
+  total/available RAM (`/proc/meminfo`), disk (`statfs`), and GPU (count +
+  `nvidia-smi` model). (#694, #697)
+- **`doctor` self-check in the report.** The capability checks (running-as-root,
+  caps, writable paths, live `useradd` probe) were extracted to a shared
+  `internal/hostcheck` package so the daemon's report includes them — surfacing
+  a capability-trapped host as DEGRADED in the fleet view, not just at first
+  container create. (#695)
+
 ## [0.29.0] - 2026-06-15
 
 Per-tenant BYO-compute: turn your own spare hosts into a pool and schedule your
