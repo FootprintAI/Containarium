@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental Kubernetes backend (`//go:build k8s`).** Run an agent box as a
+  pod in a Kubernetes cluster you operate, reached over SSH exactly like an LXC
+  box — same `agent-box` stdio MCP contract, no kube-apiserver token in the
+  agent's hands. The daemon reconciles a per-tenant namespace + StatefulSet +
+  headless Service + default-deny NetworkPolicy, runs the box as a non-root,
+  drop-ALL, seccomp-`RuntimeDefault` (`restricted` Pod Security) pod, and
+  programs the sshpiper gateway (the `Pipe` CRD) so `ssh <tenant>@<gateway>`
+  routes to the right box. Both SSH hops are key-authenticated (client→gateway
+  by the agent's key, gateway→box by an upstream key) and the box's host keys
+  are pinned via `known_hosts_data`. `client-go` is isolated behind the `k8s`
+  build tag, so the default daemon links none of it. Ships the
+  `ghcr.io/footprintai/containarium-agent-box` image (rootless dropbear +
+  agent-box) plus `deploy/k8s/sshpiper/` manifests + runbook. Validated
+  end-to-end on `kind`. See `docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md`. (#704–#715)
+
 ## [0.30.0] - 2026-06-16
 
 BYO-compute, end to end: an enrolled host now reports itself to the cloud, so
