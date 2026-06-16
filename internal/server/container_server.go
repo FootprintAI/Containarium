@@ -200,9 +200,13 @@ func NewContainerServer() (*ContainerServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container manager: %w", err)
 	}
+	bb, err := newBoxBackend(mgr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select box backend: %w", err)
+	}
 	return &ContainerServer{
 		manager:          mgr,
-		boxBackend:       boxlxc.New(mgr),
+		boxBackend:       bb,
 		emitter:          events.NewEmitter(events.GetBus()),
 		pendingCreations: make(map[string]*PendingCreation),
 	}, nil
