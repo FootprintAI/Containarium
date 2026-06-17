@@ -17,18 +17,18 @@ import (
 // fakeActuation records the host-bearer metadata it saw on Heartbeat.
 type fakeActuation struct {
 	cloudv1.UnimplementedActuationServiceServer
-	mu            sync.Mutex
-	bearer        string
-	beats         int
-	reportedID    string
-	reportedState string
+	mu              sync.Mutex
+	bearer          string
+	beats           int
+	reportedID      string
+	reportedState   string
 	enrollToken     string
 	enrollHostID    string
 	enrollDriverTok string
 	enrollBackendID string
-	statusBearer  string
-	statusReq     *cloudv1.ReportHostStatusRequest
-	statusReports int
+	statusBearer    string
+	statusReq       *cloudv1.ReportHostStatusRequest
+	statusReports   int
 }
 
 // EnrollHost echoes back the host id embedded in the join token (first
