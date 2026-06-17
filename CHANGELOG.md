@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-06-17
+
+### Added
+
+- **`containarium cloud enroll` mints + sends a BYOC driver token.** The
+  self-service BYO-compute flow now hands the cloud everything it needs to place
+  tenant workloads on this host: the host mints an admin JWT with its OWN
+  `/etc/containarium/jwt.secret` (`--jwt-secret-file`, default
+  `/etc/containarium/jwt.secret`) and sends it as `EnrollHostRequest.driver_token`,
+  plus its `pool join` spot-id as `oss_backend_id` (`--oss-backend-id`). The
+  cloud seals the token and replays it to drive this host through the sentinel
+  peer-proxy. Best-effort: an unreadable secret warns and enrolls without a
+  token (`--no-driver-token` to skip); the token is short-lived (re-run to
+  rotate). Companion to Containarium-cloud's BYOC stack. (cloud #554)
+
 ## [0.31.0] - 2026-06-17
 
 An experimental **Kubernetes backend**: run an agent box as a pod in a cluster
