@@ -162,7 +162,8 @@ func newTestClient(t *testing.T, cfg *Config) (*Client, *fakeActuation) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	c := &Client{cfg: cfg, interval: defaultHeartbeatInterval, ac: cloudv1.NewActuationServiceClient(conn)}
+	gc := cloudv1.NewActuationServiceClient(conn)
+	c := &Client{cfg: cfg, interval: defaultHeartbeatInterval, ac: gc, watchAC: gc}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	t.Cleanup(c.cancel)
 	return c, fake

@@ -120,6 +120,15 @@ type Deps struct {
 	Status     StatusProbe
 }
 
+// unaryActuation is the subset of the actuation API the client drives over a
+// unary transport (heartbeat + capability report). Both the gRPC
+// ActuationServiceClient and the REST transport (#722) satisfy it; the
+// CallOption args are part of the gRPC signature and ignored by REST.
+type unaryActuation interface {
+	Heartbeat(context.Context, *cloudv1.HeartbeatRequest, ...grpc.CallOption) (*cloudv1.HeartbeatResponse, error)
+	ReportHostStatus(context.Context, *cloudv1.ReportHostStatusRequest, ...grpc.CallOption) (*cloudv1.ReportHostStatusResponse, error)
+}
+
 // Client is the host-side cloud-actuation client. Slice 3 implements the
 // heartbeat; WatchAssignments + the reconciler land in slice 4. The actuation
 // proto is vendored (proto/containarium/cloud/v1), so this builds in the default
@@ -134,7 +143,12 @@ type Client struct {
 	status StatusProbe // optional; nil = no capability reporting
 
 	conn *grpc.ClientConn
-	ac   cloudv1.ActuationServiceClient
+	// ac handles the unary actuation RPCs (heartbeat + status); it is either the
+	// gRPC client or the REST transport (#722). watchAC is the gRPC client used
+	// for the WatchAssignments stream — nil in REST mode, where a (push-driven)
+	// BYOC host pulls no assignments and the watch loop is not started.
+	ac      unaryActuation
+	watchAC cloudv1.ActuationServiceClient
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -157,17 +171,30 @@ func New(cfg *Config, deps Deps) (*Client, error) {
 // returned; per-beat errors are logged and retried (a control-plane outage must
 // not crash the daemon or stop local containers).
 func (c *Client) Start(ctx context.Context) error {
-	conn, err := c.dial()
-	if err != nil {
-		return fmt.Errorf("cloud: dial control plane %s: %w", c.cfg.ControlPlane, err)
+	if isRESTControlPlane(c.cfg.ControlPlane) {
+		// REST transport (#722): no gRPC dial. WatchAssignments (streaming) is
+		// unavailable over REST, so the watch loop is skipped — a BYOC host on a
+		// REST-only control plane is push-driven (the cloud drives it via the
+		// sentinel peer-proxy) and pulls no assignments.
+		c.ac = newRESTActuation(c.cfg.ControlPlane, c.cfg.Token)
+	} else {
+		conn, err := c.dial()
+		if err != nil {
+			return fmt.Errorf("cloud: dial control plane %s: %w", c.cfg.ControlPlane, err)
+		}
+		c.conn = conn
+		gc := cloudv1.NewActuationServiceClient(conn)
+		c.ac, c.watchAC = gc, gc
 	}
-	c.conn = conn
-	c.ac = cloudv1.NewActuationServiceClient(conn)
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
 	c.wg.Add(1)
 	go c.heartbeatLoop()
-	watch := c.sink != nil || c.containers != nil
+	wantWatch := c.sink != nil || c.containers != nil
+	watch := wantWatch && c.watchAC != nil
+	if wantWatch && c.watchAC == nil {
+		log.Printf("[cloud] REST transport: assignment-watch disabled (push-driven host; policy/container pull is gRPC-only)")
+	}
 	if watch {
 		c.wg.Add(1)
 		go c.watchLoop()
@@ -230,6 +257,10 @@ type EnrollOptions struct {
 // opts optionally carries the BYOC driver token + backend id (cloud #554) so a
 // tunnel-joined host becomes cloud-drivable in the same round-trip.
 func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool, opts EnrollOptions) (string, error) {
+	// REST control plane (#722): redeem over grpc-gateway instead of gRPC.
+	if isRESTControlPlane(controlPlane) {
+		return enrollREST(ctx, controlPlane, joinToken, opts)
+	}
 	conn, err := dialControlPlane(controlPlane, insecureTLS)
 	if err != nil {
 		return "", fmt.Errorf("cloud: dial control plane %s: %w", controlPlane, err)
@@ -383,7 +414,7 @@ func (c *Client) watchLoop() {
 // only via a successful reconnect cycle (kept simple: any return re-enters the
 // loop). Returns the stream error (nil on a clean server close).
 func (c *Client) watchOnce() error {
-	stream, err := c.ac.WatchAssignments(c.authContext(c.ctx), &cloudv1.WatchAssignmentsRequest{})
+	stream, err := c.watchAC.WatchAssignments(c.authContext(c.ctx), &cloudv1.WatchAssignmentsRequest{})
 	if err != nil {
 		return err
 	}
@@ -449,11 +480,16 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 	}
 }
 
-// report sends observed container state back to the cloud (best-effort).
+// report sends observed container state back to the cloud (best-effort). Part
+// of the pull/reconcile path, so it only runs in gRPC mode (the REST transport
+// runs no watch loop); watchAC is nil otherwise.
 func (c *Client) report(containerID, state string) {
+	if c.watchAC == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.authContext(c.ctx), 10*time.Second)
 	defer cancel()
-	if _, err := c.ac.ReportContainerState(ctx, &cloudv1.ReportContainerStateRequest{
+	if _, err := c.watchAC.ReportContainerState(ctx, &cloudv1.ReportContainerStateRequest{
 		ContainerId: containerID, State: state,
 	}); err != nil {
 		log.Printf("[cloud] report state %s=%s: %v", containerID, state, err)
