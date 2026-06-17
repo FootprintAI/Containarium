@@ -870,7 +870,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/var/lib/incus /etc /home /var/lock /run/lock
+ReadWritePaths=/var/lib/incus /etc/containarium /etc /home /var/lock /run/lock /opt/containarium /var/log
 
 StandardOutput=journal
 StandardError=journal

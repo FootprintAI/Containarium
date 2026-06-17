@@ -23,7 +23,11 @@ ProtectHome=false
 # /home - for creating user home directories and SSH keys
 # /var/lib/incus - for container management
 # /var/lock, /run/lock - for useradd flock serialization
-ReadWritePaths=/var/lib/incus /etc/containarium /etc /home /var/lock /run/lock
+# /var/log - useradd touches /var/log/lastlog (the "second capability trap")
+# /opt/containarium - runtime state/assets
+# This set MUST match internal/hostcheck.DaemonWritablePaths; a path the doctor
+# requires but ProtectSystem=strict denies makes the host boot DEGRADED.
+ReadWritePaths=/var/lib/incus /etc/containarium /etc /home /var/lock /run/lock /var/log /opt/containarium
 
 StandardOutput=journal
 StandardError=journal

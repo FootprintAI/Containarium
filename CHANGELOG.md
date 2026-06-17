@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Daemon unit `ReadWritePaths` now covers the doctor's required-writable set,
+  so a freshly-installed host no longer boots DEGRADED.** With
+  `ProtectSystem=strict`, every path the daemon's capability self-check
+  (`hostcheck.DaemonWritablePaths`) requires writable must be in the unit's
+  `ReadWritePaths` — otherwise the path is read-only to the daemon and the
+  self-check fails. The shipped units omitted `/var/log` (which `useradd`
+  touches via `/var/log/lastlog` — the "second capability trap") and, in the
+  Terraform startup scripts, `/etc/containarium` + `/opt/containarium`. Fixed in
+  all four unit sources (`containarium service install`, `scripts/containarium.service`,
+  and both `terraform/.../startup-spot.sh`); a new test ties the generated unit's
+  `ReadWritePaths` to `hostcheck.DaemonWritablePaths` so they can't drift again.
+  Existing hosts heal on the next unit redeploy (or a drop-in adding the missing
+  paths + `daemon-reload` + daemon restart).
+
 ## [0.31.2] - 2026-06-17
 
 ### Added
