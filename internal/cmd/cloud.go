@@ -15,7 +15,7 @@ import (
 // defaultDaemonJWTSecretFile is where the daemon's JWT signing secret lives on
 // a standard host install — the same secret `cloud enroll` mints the BYOC
 // driver token against so the host's own daemon will accept it.
-const defaultDaemonJWTSecretFile = "/etc/containarium/jwt.secret"
+const defaultDaemonJWTSecretFile = "/etc/containarium/jwt.secret" // #nosec G101 -- a file PATH, not a credential
 
 // cloudCmd is the parent for `containarium cloud <verb>` — host enrollment with
 // a cloud control plane (#354, docs/CLOUD-ACTUATION-CLIENT-DESIGN.md). This is
