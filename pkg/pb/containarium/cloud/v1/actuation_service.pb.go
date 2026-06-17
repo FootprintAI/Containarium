@@ -771,7 +771,20 @@ type EnrollHostRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The join token, format "<host_id>.<secret>", from the cloud's
 	// `pool join` / `cloud enroll` one-liner.
-	JoinToken     string `protobuf:"bytes,1,opt,name=join_token,json=joinToken,proto3" json:"join_token,omitempty"`
+	JoinToken string `protobuf:"bytes,1,opt,name=join_token,json=joinToken,proto3" json:"join_token,omitempty"`
+	// driver_token is an admin JWT this host minted with its OWN daemon
+	// jwt.secret (`containarium token generate --roles admin --secret-file
+	// /etc/containarium/jwt.secret`). The cloud stores it sealed and replays
+	// it to drive this host's daemon through the sentinel peer-proxy (BYOC
+	// Option β, cloud #554). Optional: empty leaves the host enrolled but
+	// not cloud-drivable. The host stays sovereign — it signs with its own
+	// secret and rotates by re-enrolling.
+	DriverToken string `protobuf:"bytes,2,opt,name=driver_token,json=driverToken,proto3" json:"driver_token,omitempty"`
+	// oss_backend_id is the id this host's tunnel registered under at the
+	// sentinel (its `pool join` spot-id) — what the sentinel `/peer/<id>/`
+	// proxy keys on. The cloud records it to map a container's backend id
+	// back to this host. Empty if not (yet) a peer-proxy-routed BYOC backend.
+	OssBackendId  string `protobuf:"bytes,3,opt,name=oss_backend_id,json=ossBackendId,proto3" json:"oss_backend_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -809,6 +822,20 @@ func (*EnrollHostRequest) Descriptor() ([]byte, []int) {
 func (x *EnrollHostRequest) GetJoinToken() string {
 	if x != nil {
 		return x.JoinToken
+	}
+	return ""
+}
+
+func (x *EnrollHostRequest) GetDriverToken() string {
+	if x != nil {
+		return x.DriverToken
+	}
+	return ""
+}
+
+func (x *EnrollHostRequest) GetOssBackendId() string {
+	if x != nil {
+		return x.OssBackendId
 	}
 	return ""
 }
@@ -1148,10 +1175,12 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x0fAssignmentBatch\x12C\n" +
 	"\vassignments\x18\x01 \x03(\v2!.containarium.cloud.v1.AssignmentR\vassignments\x12=\n" +
 	"\fgenerated_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt\x12O\n" +
-	"\x10network_policies\x18\x03 \x03(\v2$.containarium.cloud.v1.NetworkPolicyR\x0fnetworkPolicies\"2\n" +
+	"\x10network_policies\x18\x03 \x03(\v2$.containarium.cloud.v1.NetworkPolicyR\x0fnetworkPolicies\"{\n" +
 	"\x11EnrollHostRequest\x12\x1d\n" +
 	"\n" +
-	"join_token\x18\x01 \x01(\tR\tjoinToken\"-\n" +
+	"join_token\x18\x01 \x01(\tR\tjoinToken\x12!\n" +
+	"\fdriver_token\x18\x02 \x01(\tR\vdriverToken\x12$\n" +
+	"\x0eoss_backend_id\x18\x03 \x01(\tR\fossBackendId\"-\n" +
 	"\x12EnrollHostResponse\x12\x17\n" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\"Q\n" +
 	"\x13HostCapabilityCheck\x12\x12\n" +

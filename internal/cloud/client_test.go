@@ -22,8 +22,10 @@ type fakeActuation struct {
 	beats         int
 	reportedID    string
 	reportedState string
-	enrollToken   string
-	enrollHostID  string
+	enrollToken     string
+	enrollHostID    string
+	enrollDriverTok string
+	enrollBackendID string
 	statusBearer  string
 	statusReq     *cloudv1.ReportHostStatusRequest
 	statusReports int
@@ -35,6 +37,8 @@ func (f *fakeActuation) EnrollHost(_ context.Context, req *cloudv1.EnrollHostReq
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.enrollToken = req.GetJoinToken()
+	f.enrollDriverTok = req.GetDriverToken()
+	f.enrollBackendID = req.GetOssBackendId()
 	id := req.GetJoinToken()
 	if i := indexByte(id, '.'); i >= 0 {
 		id = id[:i]
@@ -333,7 +337,8 @@ func TestEnroll_RedeemsTokenAndReturnsHostID(t *testing.T) {
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
-	hostID, err := Enroll(context.Background(), lis.Addr().String(), "host-uuid.secret", true)
+	hostID, err := Enroll(context.Background(), lis.Addr().String(), "host-uuid.secret", true,
+		EnrollOptions{DriverToken: "admin.jwt.tok", OSSBackendID: "tunnel-gpu-1"})
 	if err != nil {
 		t.Fatalf("Enroll: %v", err)
 	}
@@ -344,6 +349,12 @@ func TestEnroll_RedeemsTokenAndReturnsHostID(t *testing.T) {
 	defer fake.mu.Unlock()
 	if fake.enrollToken != "host-uuid.secret" {
 		t.Errorf("server saw token %q", fake.enrollToken)
+	}
+	if fake.enrollDriverTok != "admin.jwt.tok" {
+		t.Errorf("server saw driver token %q", fake.enrollDriverTok)
+	}
+	if fake.enrollBackendID != "tunnel-gpu-1" {
+		t.Errorf("server saw backend id %q", fake.enrollBackendID)
 	}
 }
 

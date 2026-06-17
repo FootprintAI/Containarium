@@ -7691,6 +7691,14 @@
         "joinToken": {
           "type": "string",
           "description": "The join token, format \"\u003chost_id\u003e.\u003csecret\u003e\", from the cloud's\n`pool join` / `cloud enroll` one-liner."
+        },
+        "driverToken": {
+          "type": "string",
+          "description": "driver_token is an admin JWT this host minted with its OWN daemon\njwt.secret (`containarium token generate --roles admin --secret-file\n/etc/containarium/jwt.secret`). The cloud stores it sealed and replays\nit to drive this host's daemon through the sentinel peer-proxy (BYOC\nOption β, cloud #554). Optional: empty leaves the host enrolled but\nnot cloud-drivable. The host stays sovereign — it signs with its own\nsecret and rotates by re-enrolling."
+        },
+        "ossBackendId": {
+          "type": "string",
+          "description": "oss_backend_id is the id this host's tunnel registered under at the\nsentinel (its `pool join` spot-id) — what the sentinel `/peer/\u003cid\u003e/`\nproxy keys on. The cloud records it to map a container's backend id\nback to this host. Empty if not (yet) a peer-proxy-routed BYOC backend."
         }
       },
       "description": "EnrollHostRequest carries the single-use join token a BYO host redeems to\nregister itself with the cloud (BYO-compute report path). Unlike every other\nActuationService RPC this one is NOT host-bearer authed — the host row\ndoesn't exist yet; the cloud validates + single-use-redeems the token."

@@ -210,6 +210,21 @@ message EnrollHostRequest {
   // The join token, format "<host_id>.<secret>", from the cloud's
   // `pool join` / `cloud enroll` one-liner.
   string join_token = 1;
+
+  // driver_token is an admin JWT this host minted with its OWN daemon
+  // jwt.secret (`containarium token generate --roles admin --secret-file
+  // /etc/containarium/jwt.secret`). The cloud stores it sealed and replays
+  // it to drive this host's daemon through the sentinel peer-proxy (BYOC
+  // Option β, cloud #554). Optional: empty leaves the host enrolled but
+  // not cloud-drivable. The host stays sovereign — it signs with its own
+  // secret and rotates by re-enrolling.
+  string driver_token = 2;
+
+  // oss_backend_id is the id this host's tunnel registered under at the
+  // sentinel (its `pool join` spot-id) — what the sentinel `/peer/<id>/`
+  // proxy keys on. The cloud records it to map a container's backend id
+  // back to this host. Empty if not (yet) a peer-proxy-routed BYOC backend.
+  string oss_backend_id = 3;
 }
 
 message EnrollHostResponse {

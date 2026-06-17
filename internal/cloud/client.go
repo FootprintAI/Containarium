@@ -208,12 +208,28 @@ func dialControlPlane(addr string, insecureTLS bool) (*grpc.ClientConn, error) {
 	return grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 }
 
+// EnrollOptions carries the optional BYOC driver-routing fields of EnrollHost
+// (cloud #554). Both empty = a plain enroll (host registered + heartbeating but
+// not cloud-drivable).
+type EnrollOptions struct {
+	// DriverToken is an admin JWT this host minted with its own jwt.secret;
+	// the cloud seals + replays it to drive this host through the sentinel
+	// peer-proxy.
+	DriverToken string
+	// OSSBackendID is this host's tunnel/`pool join` spot-id — what the
+	// sentinel `/peer/<id>/` proxy keys on.
+	OSSBackendID string
+}
+
 // Enroll redeems a single-use join token against the control plane and returns
 // the registered host id. One-shot (no running client / host bearer yet — the
 // token authenticates itself in the body). Used by `containarium cloud enroll`
 // for the BYO self-service flow; after this, the same token is the host's
 // durable bearer (the cloud reuses the token secret as the host bearer).
-func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool) (string, error) {
+//
+// opts optionally carries the BYOC driver token + backend id (cloud #554) so a
+// tunnel-joined host becomes cloud-drivable in the same round-trip.
+func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool, opts EnrollOptions) (string, error) {
 	conn, err := dialControlPlane(controlPlane, insecureTLS)
 	if err != nil {
 		return "", fmt.Errorf("cloud: dial control plane %s: %w", controlPlane, err)
@@ -222,7 +238,9 @@ func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS boo
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	resp, err := cloudv1.NewActuationServiceClient(conn).EnrollHost(ctx, &cloudv1.EnrollHostRequest{
-		JoinToken: joinToken,
+		JoinToken:    joinToken,
+		DriverToken:  opts.DriverToken,
+		OssBackendId: opts.OSSBackendID,
 	})
 	if err != nil {
 		return "", fmt.Errorf("cloud: enroll: %w", err)

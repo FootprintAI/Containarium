@@ -4,11 +4,18 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/cloud"
 )
+
+// defaultDaemonJWTSecretFile is where the daemon's JWT signing secret lives on
+// a standard host install — the same secret `cloud enroll` mints the BYOC
+// driver token against so the host's own daemon will accept it.
+const defaultDaemonJWTSecretFile = "/etc/containarium/jwt.secret"
 
 // cloudCmd is the parent for `containarium cloud <verb>` — host enrollment with
 // a cloud control plane (#354, docs/CLOUD-ACTUATION-CLIENT-DESIGN.md). This is
@@ -50,9 +57,13 @@ history. Writes the enrollment to ~/.containarium/cloud.yaml at mode 0600.`,
 }
 
 var (
-	cloudEnrollControlPlane string
-	cloudEnrollTokenFile    string
-	cloudEnrollInsecure     bool
+	cloudEnrollControlPlane  string
+	cloudEnrollTokenFile     string
+	cloudEnrollInsecure      bool
+	cloudEnrollJWTSecretFile string
+	cloudEnrollBackendID     string
+	cloudEnrollNoDriverToken bool
+	cloudEnrollDriverTTL     time.Duration
 )
 
 var cloudEnrollCmd = &cobra.Command{
@@ -99,6 +110,10 @@ func init() {
 	cloudEnrollCmd.Flags().StringVar(&cloudEnrollControlPlane, "control-plane", "", "cloud control-plane gRPC address (host:port) (required)")
 	cloudEnrollCmd.Flags().StringVar(&cloudEnrollTokenFile, "token-file", "", "file containing the single-use join token (required)")
 	cloudEnrollCmd.Flags().BoolVar(&cloudEnrollInsecure, "insecure", false, "dial the control plane without TLS (local dev only)")
+	cloudEnrollCmd.Flags().StringVar(&cloudEnrollJWTSecretFile, "jwt-secret-file", defaultDaemonJWTSecretFile, "path to this daemon's JWT secret; used to mint the BYOC driver token the cloud replays to drive this host")
+	cloudEnrollCmd.Flags().StringVar(&cloudEnrollBackendID, "oss-backend-id", "", "this host's tunnel/`pool join` spot-id (what the sentinel peer-proxy keys on); enables the cloud to route container ops to this host")
+	cloudEnrollCmd.Flags().BoolVar(&cloudEnrollNoDriverToken, "no-driver-token", false, "enroll without minting a driver token (host registers + heartbeats but the cloud cannot place workloads on it)")
+	cloudEnrollCmd.Flags().DurationVar(&cloudEnrollDriverTTL, "driver-token-ttl", 30*24*time.Hour, "driver token lifetime (capped at the daemon max, 30d); re-run `cloud enroll` before it expires to rotate")
 	_ = cloudEnrollCmd.MarkFlagRequired("control-plane")
 	_ = cloudEnrollCmd.MarkFlagRequired("token-file")
 }
@@ -143,10 +158,33 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 	}
 	controlPlane := strings.TrimSpace(cloudEnrollControlPlane)
 
+	// Mint the BYOC driver token (cloud #554) — an admin JWT signed with THIS
+	// host's own jwt.secret, which the cloud seals and replays to drive this
+	// host's daemon through the sentinel peer-proxy. Best-effort: if the secret
+	// isn't readable (e.g. not running as root, or a non-BYOC host), we warn and
+	// enroll without it — the host still registers + heartbeats, it just isn't
+	// cloud-drivable. --no-driver-token skips minting entirely.
+	opts := cloud.EnrollOptions{OSSBackendID: strings.TrimSpace(cloudEnrollBackendID)}
+	if !cloudEnrollNoDriverToken {
+		driverTok, mintErr := mintDriverToken(cloudEnrollJWTSecretFile, cloudEnrollDriverTTL)
+		switch {
+		case mintErr != nil:
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"⚠ no driver token minted (%v)\n  host will enroll but the cloud can't place workloads on it; fix the jwt secret and re-run, or pass --no-driver-token to silence this\n",
+				mintErr)
+		case opts.OSSBackendID == "":
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"⚠ minted a driver token but --oss-backend-id is empty\n  the cloud can't route to this host until it knows the backend id; re-run with --oss-backend-id <spot-id>\n")
+			opts.DriverToken = driverTok
+		default:
+			opts.DriverToken = driverTok
+		}
+	}
+
 	// Redeem the join token against the control plane. On success the cloud
 	// has created the host row and returns its id; the same token is now this
 	// host's durable bearer (the cloud reuses the token secret).
-	hostID, err := cloud.Enroll(cmd.Context(), controlPlane, token, cloudEnrollInsecure)
+	hostID, err := cloud.Enroll(cmd.Context(), controlPlane, token, cloudEnrollInsecure, opts)
 	if err != nil {
 		return err
 	}
@@ -200,6 +238,38 @@ func runCloudLogout(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "✓ removed cloud enrollment (%s)\n", path)
 	return nil
+}
+
+// mintDriverToken reads this daemon's JWT secret and mints a short-lived admin
+// access token (cloud #554). The cloud seals + replays it to drive this host's
+// daemon through the sentinel peer-proxy; because it's signed with the host's
+// OWN secret, the host's daemon accepts it without the cloud ever learning the
+// secret. ttl is capped at the daemon max (30d) by the token manager, so the
+// cloud-stored token expires — re-run `cloud enroll` to rotate.
+func mintDriverToken(secretFile string, ttl time.Duration) (string, error) {
+	secretFile = strings.TrimSpace(secretFile)
+	if secretFile == "" {
+		return "", fmt.Errorf("no --jwt-secret-file")
+	}
+	secretBytes, err := os.ReadFile(secretFile) // #nosec G304 -- operator-provided daemon secret path
+	if err != nil {
+		return "", fmt.Errorf("read jwt secret %s: %w", secretFile, err)
+	}
+	secret := strings.TrimSpace(string(secretBytes))
+	if secret == "" {
+		return "", fmt.Errorf("jwt secret %s is empty", secretFile)
+	}
+	tm, err := auth.NewTokenManager(secret, "containarium")
+	if err != nil {
+		return "", fmt.Errorf("token manager: %w", err)
+	}
+	// admin role: the cloud drives container CRUD on this host through the
+	// driver — same privilege the region-primary driver token carries.
+	tok, err := tm.GenerateToken("cloud-byoc-driver", []string{"admin"}, ttl)
+	if err != nil {
+		return "", fmt.Errorf("mint driver token: %w", err)
+	}
+	return tok, nil
 }
 
 // redactToken shows only enough to recognize which token is stored, never the
