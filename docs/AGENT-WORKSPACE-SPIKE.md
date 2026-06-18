@@ -77,9 +77,15 @@ Stood the engine up in a throwaway box (`oh-spike`, Ubuntu 24.04 + Podman
   `X-Frame-Options` and no `Content-Security-Policy`**, so the UI can be embedded
   cross-origin without stripping headers at the proxy — good news for the
   deferred "embed in the webui" goal.
+- **Auth lives in the box, not at the edge.** OpenHands is rebound to
+  `127.0.0.1:8000` and an in-box Caddy basic-auth proxy fronts it on `:8080`.
+  Validated: no creds → **401**, wrong creds → **401**, correct creds → **200**,
+  and OpenHands is not directly reachable. The box self-protects, so the
+  platform edge just forwards plain HTTP to `:8080` (and terminates TLS) — no
+  auth logic at core-caddy. This is now baked into the recipe (required
+  `auth_password` parameter, bcrypt-hashed at deploy).
 - **Still pending:** a real model call (needs an Anthropic key — set in the
-  OpenHands settings UI, none available this session) and the expose+auth path
-  (core-caddy is out of scope for the assistant; operator runs it).
+  OpenHands settings UI, none available this session).
 
 ## What is proven in-tree (this spike)
 
@@ -101,9 +107,9 @@ needs:
 
 1. **A real model call** — set an Anthropic key in the OpenHands settings UI and
    confirm an end-to-end conversation that edits files and runs commands.
-2. **Expose + auth** — put the `:8000` UI behind a managed subdomain + TLS with
-   platform auth in front (it is a full coding agent with a shell; must not be
-   world-open). This touches core-caddy and is the operator's step.
+2. **Edge forward** — point a managed subdomain + TLS at the box's `:8080`
+   (a plain reverse-proxy forward; auth already lives in the box, so the edge
+   carries no auth logic). Operator's step (touches core-caddy).
 3. **Persistence across recreate** — confirm conversations under
    `/opt/openhands-state` survive a container restart and a second conversation.
 4. **Preview reachability** — that a dev server the agent starts is previewable

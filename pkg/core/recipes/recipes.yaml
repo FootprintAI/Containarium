@@ -139,15 +139,22 @@ recipes:
   # and serves the chat UI; bind mounts need Podman's `:U` so the non-root
   # `openhands` user can write its SQLite DB.
   #
+  # Auth lives IN the box, not at the edge: OpenHands binds to 127.0.0.1 and an
+  # in-box Caddy basic-auth proxy fronts it on the exposed port (:8080). So the
+  # box self-protects — the platform edge just forwards plain HTTP to :8080 and
+  # terminates TLS — and a box is never reachable without credentials. The
+  # auth_password parameter is required for exactly that reason. Validated live
+  # (2026-06-18): no/wrong creds → 401, correct creds → 200; OpenHands itself is
+  # not directly reachable. Auth + transport flow validated end to end in-box.
+  #
   # The Anthropic key/model are set in the OpenHands settings UI on first visit
   # (the run command takes no LLM env). Production hardening: seed credentials
-  # via the tenant secrets mechanism once the env contract is confirmed, and put
-  # platform auth in front of the exposed UI (it is a full coding agent with a
-  # shell). Still pending live acceptance: a real model call (needs a key) and
-  # the expose+auth path. Resource sizing is generous; trim after profiling.
+  # via the tenant secrets mechanism once the env contract is confirmed. Still
+  # pending live acceptance: a real model call (needs a key). Resource sizing is
+  # generous; trim after profiling.
   - id: agent-workspace
     name: Agent Workspace
-    description: Web chat workspace (chat + live preview + multiple persisted sessions) running OpenHands inside an always-on box; co-work with a coding agent in the browser, then ship to a box.
+    description: Web chat workspace (chat + live preview + multiple persisted sessions) running OpenHands inside an always-on box, behind in-box basic auth; co-work with a coding agent in the browser, then ship to a box.
     image: images:ubuntu/24.04
     requires_gpu: false
     resources:
@@ -155,23 +162,56 @@ recipes:
       memory: 8GB
       disk: 60GB
     ports:
-      # The OpenHands web UI — chat, preview, and the conversation list.
-      - container_port: 8000
+      # The in-box auth proxy — fronts the OpenHands UI (chat + preview +
+      # conversation list). OpenHands itself stays on 127.0.0.1.
+      - container_port: 8080
         subdomain: workspace
     parameters:
+      - name: auth_password
+        label: Workspace password
+        description: Password for the in-box basic-auth proxy in front of the workspace UI. Required — the box is never exposed without it.
+        type: password
+        required: true
+      - name: auth_user
+        label: Workspace username
+        description: Username for the in-box basic-auth proxy.
+        type: string
+        default: admin
       - name: openhands_version
         label: OpenHands version
         description: OpenHands Agent Canvas image tag to run (pin for reproducibility).
         type: string
         default: 1.0.0-rc.11
     post_start:
-      - mkdir -p /opt/openhands-state /opt/openhands-projects
-      # Run the OpenHands web app: chat + preview + persisted conversations on
-      # :8000. `:U` chowns the bind mounts to the container's non-root user so
-      # it can write its SQLite state (validated 2026-06-18).
+      - mkdir -p /opt/openhands-state /opt/openhands-projects /opt/wsauth
+      - podman pull docker.io/library/caddy:2 >/dev/null
+      # Run the OpenHands web app bound to localhost: chat + preview + persisted
+      # conversations. `:U` chowns the bind mounts to the container's non-root
+      # user so it can write its SQLite state (validated 2026-06-18).
       - |
         podman run -d --name openhands --restart=always \
-          -p 8000:8000 \
+          -p 127.0.0.1:8000:8000 \
           -v /opt/openhands-state:/home/openhands/.openhands:U \
           -v /opt/openhands-projects:/projects:U \
           "ghcr.io/openhands/agent-canvas:${CONTAINARIUM_PARAM_OPENHANDS_VERSION}"
+      # In-box basic-auth proxy on :8080 → 127.0.0.1:8000. The password is
+      # bcrypt-hashed at deploy; the hash's '$' come from variable expansion and
+      # are not re-expanded by the heredoc. auto_https off: the edge terminates
+      # TLS, the in-box proxy speaks plain HTTP.
+      - |
+        WS_HASH=$(podman run --rm docker.io/library/caddy:2 caddy hash-password --plaintext "$CONTAINARIUM_PARAM_AUTH_PASSWORD")
+        cat > /opt/wsauth/Caddyfile <<EOF
+        {
+          auto_https off
+        }
+        :8080 {
+          basic_auth {
+            $CONTAINARIUM_PARAM_AUTH_USER $WS_HASH
+          }
+          reverse_proxy 127.0.0.1:8000
+        }
+        EOF
+      - |
+        podman run -d --name wsauth --restart=always --network host \
+          -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \
+          docker.io/library/caddy:2
