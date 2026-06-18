@@ -57,6 +57,30 @@ Contrast with `agent-runtime`: same box-as-agent substrate, but that recipe is
 headless/one-shot (seeded task → `artifact.json`); this one is the interactive,
 human-in-the-loop chat workspace.
 
+## Live validation (2026-06-18, fts-13700k)
+
+Stood the engine up in a throwaway box (`oh-spike`, Ubuntu 24.04 + Podman
+4.9.3) to settle the integration unknowns. Findings updated the recipe:
+
+- **OpenHands has been rewritten as "Agent Canvas."** The current image is
+  `ghcr.io/openhands/agent-canvas:1.0.0-rc.11` on port **8000** — not the old
+  `all-hands-ai/openhands:0.x` on 3000. The recipe was corrected.
+- **No container-engine socket needed (biggest risk eliminated).** Agent Canvas
+  runs the coding agent in the app container itself (box = sandbox); the run
+  command takes no `DOCKER_HOST` / `SANDBOX_RUNTIME_CONTAINER_IMAGE`. The
+  Podman-socket wiring was removed from the recipe.
+- **Bind mounts need Podman `:U`.** First run crashed with SQLite "unable to
+  open database file" — the non-root `openhands` user couldn't write the
+  root-owned mount. `:U` (chown source to the container user) fixed it; the app
+  then served **HTTP 200** with `<title>OpenHands</title>`.
+- **Iframe headers are absent.** The root response sets **no
+  `X-Frame-Options` and no `Content-Security-Policy`**, so the UI can be embedded
+  cross-origin without stripping headers at the proxy — good news for the
+  deferred "embed in the webui" goal.
+- **Still pending:** a real model call (needs an Anthropic key — set in the
+  OpenHands settings UI, none available this session) and the expose+auth path
+  (core-caddy is out of scope for the assistant; operator runs it).
+
 ## What is proven in-tree (this spike)
 
 - `go build ./pkg/core/recipes/... ./internal/server/...` — clean.
@@ -70,28 +94,25 @@ human-in-the-loop chat workspace.
   agent-workspace <name>` and the `deploy_recipe` MCP tool work from the catalog
   entry alone.
 
-## What MUST be confirmed on a live box (this spike does NOT prove)
+## Remaining live-acceptance items (NOT yet proven)
 
-This `post_start` is a **first-draft integration**, written from OpenHands' docs,
-not run. Before it ships, a live deploy on a backend must confirm:
+The engine + wiring are validated (above). What a fuller live acceptance still
+needs:
 
-1. **OpenHands image tag** (`openhands_version`, default `0.39`) and the matching
-   `…/runtime:<ver>-nikolaik` sandbox image — confirm the current tags.
-2. **Podman-socket wiring** — that OpenHands can spawn its runtime sandbox via
-   `DOCKER_HOST=unix:///run/podman/podman.sock` inside the LXC. Fallback if not:
-   OpenHands "local/CLI runtime" mode (the box *is* the sandbox, no nested
-   engine). This is the single biggest integration risk.
-3. **LiteLLM model id** (`llm_model`, default `anthropic/claude-sonnet-4-6`) —
-   confirm OpenHands/LiteLLM accepts it; operator-overridable.
-4. **Resource sizing** — OpenHands + the runtime image are heavy; confirm
-   4c/8GB/60GB is enough for a smooth first conversation.
-5. **Preview reachability** — that a dev server the agent starts is previewable
-   (via OpenHands' built-in browser, and/or a second exposed port).
+1. **A real model call** — set an Anthropic key in the OpenHands settings UI and
+   confirm an end-to-end conversation that edits files and runs commands.
+2. **Expose + auth** — put the `:8000` UI behind a managed subdomain + TLS with
+   platform auth in front (it is a full coding agent with a shell; must not be
+   world-open). This touches core-caddy and is the operator's step.
+3. **Persistence across recreate** — confirm conversations under
+   `/opt/openhands-state` survive a container restart and a second conversation.
+4. **Preview reachability** — that a dev server the agent starts is previewable
+   (OpenHands' built-in browser, and/or a second exposed port).
+5. **Resource right-sizing** — 4c/8GB/60GB is generous; trim after profiling.
 
-Live-acceptance steps: `containarium recipe deploy agent-workspace ws1 --param
-anthropic_api_key=… --server <host>`, open `https://ws1-workspace.<base-domain>`,
-start a conversation, have the agent scaffold + run a small site, confirm the
-preview renders, open a second conversation, reload, confirm both persist.
+Via the recipe (once a daemon carrying it is deployed): `containarium recipe
+deploy agent-workspace ws1 --server <host>`, then expose `:8000` behind auth and
+open the workspace.
 
 ## Required hardening before this is a product (NOT spike scope)
 

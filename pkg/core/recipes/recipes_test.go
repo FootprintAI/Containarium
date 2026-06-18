@@ -43,41 +43,35 @@ func TestAgentWorkspaceRecipe(t *testing.T) {
 		t.Error("agent-workspace should not require a GPU")
 	}
 	// The web chat UI must be exposed as a subdomain so chat + preview are
-	// reachable in the browser.
-	if len(r.Ports) != 1 || r.Ports[0].ContainerPort != 3000 {
-		t.Errorf("agent-workspace should expose the OpenHands web UI on :3000; got %+v", r.Ports)
+	// reachable in the browser (OpenHands Agent Canvas serves on :8000).
+	if len(r.Ports) != 1 || r.Ports[0].ContainerPort != 8000 {
+		t.Errorf("agent-workspace should expose the OpenHands web UI on :8000; got %+v", r.Ports)
 	}
-	// post_start must run OpenHands, persist sessions in the box, and wire the
-	// container engine socket for its runtime sandbox.
+	// post_start must run OpenHands Agent Canvas, persist conversations inside
+	// the box, and chown the bind mounts to the container user (validated live).
 	joined := strings.Join(r.PostStart, "\n")
 	for _, want := range []string{
-		"all-hands-ai/openhands",
+		"openhands/agent-canvas",
 		"/opt/openhands-state", // conversations stored inside the box
-		"podman.socket",
-		"-p 3000:3000",
+		":U",                   // bind mount chowned to the non-root container user
+		"-p 8000:8000",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("agent-workspace post_start missing %q", want)
 		}
 	}
-	// The API key is an optional, password-typed parameter (spike delivery);
-	// the model is operator-overridable.
-	params := map[string]*pb.RecipeParam{}
+	// The image tag is a pinned, overridable parameter.
+	var ver *pb.RecipeParam
 	for _, p := range r.Parameters {
-		params[p.Name] = p
+		if p.Name == "openhands_version" {
+			ver = p
+		}
 	}
-	key := params["anthropic_api_key"]
-	if key == nil {
-		t.Fatal("agent-workspace should declare an anthropic_api_key parameter")
+	if ver == nil {
+		t.Fatal("agent-workspace should declare an openhands_version parameter")
 	}
-	if key.Required {
-		t.Error("anthropic_api_key should be optional (blank → set in OpenHands UI)")
-	}
-	if key.Type != "password" {
-		t.Errorf("anthropic_api_key type: got %q want password", key.Type)
-	}
-	if params["llm_model"] == nil {
-		t.Error("agent-workspace should declare an llm_model parameter")
+	if ver.Default == "" {
+		t.Error("openhands_version should be pinned to a default tag")
 	}
 }
 
