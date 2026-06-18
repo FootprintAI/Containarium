@@ -185,12 +185,30 @@ container, to prove the production path differs from the rootless hand-repro:
 - `/opt/wsauth/token` written (what `GetWorkspaceAccess` reads); in-box auth
   `401 / 200 / 302` (basic + zero-click bootstrap). Throwaway torn down after.
 
-Not run: the **full daemon path** (`deploy_recipe agent-workspace` + the
-`GetWorkspaceAccess` RPC against a live daemon). A second daemon on a shared lab
-box is **not isolatable** — it auto-discovers the existing core services and
-loads config from the live PostgreSQL (e.g. `app-hosting=true`), so it becomes a
-second instance of the live deployment's brain. The RPC/CLI are unit-tested; a
-clean host (fresh VM) is the right place to exercise the end-to-end daemon path.
+## Full daemon-path validation on a clean VM (2026-06-18)
+
+Exercised end-to-end on a throwaway GCP VM (Ubuntu 24.04 + incus 7.1, fresh
+host — no existing deployment to auto-join), running the branch daemon:
+
+- `recipe list` shows **agent-workspace** in the daemon's catalog (binary
+  carries the recipe + `GetWorkspaceAccess`).
+- `recipe deploy agent-workspace ws1` → **`✓ deployed as ws1-container`**: the
+  daemon ran `CreateContainer` (EnablePodman) + `post_start` **as root**;
+  `openhands` + `wsauth` came up (root, persistent), `/opt/wsauth/token` written.
+- `recipe workspace-access ws1` → the **`GetWorkspaceAccess` RPC** read the token
+  via `ExecWithOutput` and returned the bootstrap URL.
+- In-box auth `401 / 200 / 302` on the recipe-deployed box. VM deleted after.
+
+Finding folded back in: in standalone mode (no app-hosting) `network.baseDomain`
+is unset, so the RPC returned a **domain-less** URL (`https://ws1-workspace/…`).
+Guarded `GetWorkspaceAccess` to only compose a URL when a base domain is
+configured (same precondition as `exposePorts`) — otherwise it returns just the
+token and the caller surfaces the "no route" hint. A real app-hosting deployment
+has the base domain set, so the URL is complete there (as seen on the cloud).
+
+Note: a second daemon on a *shared* box is still **not isolatable** (it
+auto-discovers the live core services + loads config from the live PostgreSQL),
+which is why this ran on a dedicated fresh VM.
 
 ## Remaining live-acceptance items (NOT yet proven)
 

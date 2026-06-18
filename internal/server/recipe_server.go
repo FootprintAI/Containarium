@@ -92,7 +92,10 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 	}
 
 	resp := &pb.GetWorkspaceAccessResponse{Token: token}
-	if s.network != nil {
+	// Only compose a URL when routing is actually configured (same precondition
+	// as exposePorts): without a base domain the URL would be domain-less and
+	// unusable, so return just the token and let the caller surface that.
+	if s.network != nil && s.network.baseDomain != "" {
 		// Mirror exposePorts' subdomain scheme: "<name>-workspace".
 		subdomain := req.Name + "-workspace"
 		resp.Url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain) +
