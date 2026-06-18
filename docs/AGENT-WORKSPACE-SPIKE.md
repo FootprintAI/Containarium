@@ -134,6 +134,23 @@ per-box secret returned only to a `containers:read`-authorized caller, and the
 cookie takes over immediately after the redirect. Acceptable for v1; a POST-based
 handoff would remove it from URLs as a follow-up.
 
+## Model provider + key (multi-provider, set in the UI)
+
+The workspace is **provider-agnostic** — the recipe pins no model. Users choose
+their provider and key in the UI: the Workspace tab has a **"Model setup"** view
+that deep-links the iframe to OpenHands' own **Settings → LLM** (`/settings/llm`),
+which supports **Anthropic, OpenAI / Codex, Google Gemini, Mistral, and any
+LiteLLM model**, with saved profiles and mid-conversation switching. The
+bootstrap cookie from the Chat view authenticates that page too.
+
+Why deep-link instead of a form in our chrome: OpenHands' settings API is
+internal, session-key-gated (a per-box `X-Session-API-Key`), and schema-
+versioned (`agent_settings.llm`, model as a LiteLLM string) — reimplementing it
+in the console would be cross-origin (CORS) and would drift every OpenHands
+release. Deep-linking reuses their robust multi-provider form with ~zero
+coupling. (A pre-seed-at-launch-via-secrets path remains the option if we later
+want the console to own provider/key input centrally.)
+
 ## Operational notes — exposing via the cloud control plane
 
 Validated live by standing the workspace up on a cloud-managed box and exposing

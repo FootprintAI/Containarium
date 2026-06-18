@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Bot, ExternalLink, RefreshCw, Loader2 } from 'lucide-react';
+import { Bot, ExternalLink, RefreshCw, Loader2, MessagesSquare, SlidersHorizontal } from 'lucide-react';
 import { ProxyRoute } from '@/src/types/app';
 import { Server } from '@/src/types/server';
 import { getClient } from '@/src/lib/api/client';
@@ -15,11 +15,16 @@ import { getClient } from '@/src/lib/api/client';
  * container port 8080); we discover those routes from the network route list.
  *
  * Zero-click auth: the daemon's GetWorkspaceAccess returns a bootstrap URL
- * (https://<box>-workspace.<domain>/__ws_login?t=<token>). Loading it in the
- * iframe sets the in-box SameSite=None session cookie and redirects to the
- * workspace UI, so no sign-in prompt is ever shown. If that lookup fails (older
- * box, no route), we fall back to the plain workspace URL and surface the
- * "Open in new tab to sign in" path.
+ * (https://<box>-workspace.<domain>/__ws_login?t=<token>) that sets the in-box
+ * SameSite=None session cookie and redirects to the workspace UI, so no sign-in
+ * prompt is shown.
+ *
+ * Model provider + key: rather than reimplement OpenHands' (internal, fast-
+ * moving, session-key-gated) settings API in our chrome, the "Model setup"
+ * view deep-links the iframe to OpenHands' own Settings → LLM page
+ * (/settings/llm), which already supports Anthropic, OpenAI/Codex, Gemini,
+ * Mistral, and any LiteLLM provider, plus saved profiles. The bootstrap cookie
+ * set by the chat view authenticates that page too.
  */
 export default function WorkspaceView({ server, routes }: { server: Server; routes: ProxyRoute[] }) {
   const workspaces = useMemo(
@@ -35,9 +40,10 @@ export default function WorkspaceView({ server, routes }: { server: Server; rout
   const activeDomain = active?.fullDomain;
   const activeName = active?.username;
 
-  const [src, setSrc] = useState<string>('');
+  const [bootstrapSrc, setBootstrapSrc] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [needsSignin, setNeedsSignin] = useState(false);
+  const [tab, setTab] = useState<'chat' | 'settings'>('chat');
   const [reloadKey, setReloadKey] = useState(0);
 
   const loadAccess = useCallback(async () => {
@@ -46,17 +52,15 @@ export default function WorkspaceView({ server, routes }: { server: Server; rout
     setLoading(true);
     setNeedsSignin(false);
     try {
-      // Prefer the zero-click bootstrap URL from the daemon.
       const access = activeName ? await getClient(server).getWorkspaceAccess(activeName) : null;
       if (access?.url) {
-        setSrc(access.url);
+        setBootstrapSrc(access.url);
       } else {
-        setSrc(fallback);
+        setBootstrapSrc(fallback);
         setNeedsSignin(true);
       }
     } catch {
-      // Older box / no token endpoint — fall back to manual sign-in.
-      setSrc(fallback);
+      setBootstrapSrc(fallback);
       setNeedsSignin(true);
     } finally {
       setLoading(false);
@@ -82,9 +86,28 @@ export default function WorkspaceView({ server, routes }: { server: Server; rout
     );
   }
 
+  // Chat view loads the bootstrap URL (sets the cookie, lands on the app).
+  // Model setup deep-links to OpenHands' own LLM settings; the cookie set by the
+  // chat view's bootstrap load authenticates it.
+  const iframeSrc = tab === 'settings' ? `https://${activeDomain}/settings/llm` : bootstrapSrc;
+
+  const tabBtn = (id: 'chat' | 'settings', label: string, Icon: typeof MessagesSquare) => (
+    <button
+      onClick={() => setTab(id)}
+      className={[
+        'flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors',
+        tab === id
+          ? 'bg-[var(--surface-2)] text-[var(--text)]'
+          : 'text-[var(--text-secondary)] hover:bg-[var(--surface-2)]',
+      ].join(' ')}
+    >
+      <Icon size={13} /> {label}
+    </button>
+  );
+
   return (
     <div className="flex h-[calc(100vh-150px)] flex-col">
-      <div className="flex items-center gap-3 border-b border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-2 shrink-0">
+      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-2 shrink-0">
         <Bot size={14} className="text-[var(--accent)]" />
         {workspaces.length > 1 ? (
           <select
@@ -101,6 +124,10 @@ export default function WorkspaceView({ server, routes }: { server: Server; rout
         ) : (
           <span className="text-xs font-medium text-[var(--text)]">{activeDomain}</span>
         )}
+        <div className="ml-2 flex items-center gap-1">
+          {tabBtn('chat', 'Chat', MessagesSquare)}
+          {tabBtn('settings', 'Model setup', SlidersHorizontal)}
+        </div>
         {needsSignin && (
           <span className="text-xs text-[var(--c-amber)]">sign in once in a new tab →</span>
         )}
@@ -113,7 +140,7 @@ export default function WorkspaceView({ server, routes }: { server: Server; rout
             <RefreshCw size={13} />
           </button>
           <a
-            href={src || `https://${activeDomain}`}
+            href={iframeSrc || `https://${activeDomain}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)]"
@@ -122,15 +149,20 @@ export default function WorkspaceView({ server, routes }: { server: Server; rout
           </a>
         </div>
       </div>
+      {tab === 'settings' && (
+        <div className="border-b border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-1.5 text-xs text-[var(--text-muted)]">
+          Pick your provider and paste an API key — Anthropic, OpenAI / Codex, Google Gemini, Mistral, or any LiteLLM model. Saved per box; you can keep multiple profiles.
+        </div>
+      )}
       <div className="relative flex-1">
-        {loading || !src ? (
+        {loading || !iframeSrc ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 size={22} className="animate-spin text-[var(--text-secondary)]" />
           </div>
         ) : (
           <iframe
-            key={`${src}-${reloadKey}`}
-            src={src}
+            key={`${tab}-${activeDomain}-${reloadKey}`}
+            src={iframeSrc}
             className="absolute inset-0 h-full w-full border-0"
             title={`Agent workspace — ${activeDomain}`}
           />
