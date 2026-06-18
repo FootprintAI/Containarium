@@ -3843,6 +3843,39 @@
         ]
       }
     },
+    "/v1/recipes/workspace/{name}/access": {
+      "get": {
+        "summary": "Get workspace access URL",
+        "description": "Returns a zero-click bootstrap URL for an agent-workspace box, embeddable in the console to authenticate the in-box workspace UI seamlessly.",
+        "operationId": "RecipeService_GetWorkspaceAccess",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetWorkspaceAccessResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "The box identity (the container is named \"\u003cname\u003e-container\"), same scheme\nas DeployRecipeRequest.name.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Recipes"
+        ]
+      }
+    },
     "/v1/recipes/{id}": {
       "get": {
         "summary": "Get recipe",
@@ -8350,6 +8383,20 @@
           "$ref": "#/definitions/Volume"
         }
       }
+    },
+    "GetWorkspaceAccessResponse": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "The in-box auth proxy's per-box session token."
+        },
+        "url": {
+          "type": "string",
+          "description": "Ready-to-embed bootstrap URL (https://\u003cworkspace-domain\u003e/__ws_login?t=...);\nloading it sets the session cookie and redirects to the workspace UI."
+        }
+      },
+      "description": "GetWorkspaceAccessResponse carries a bootstrap URL the console can load in an\niframe to sign the user into the in-box workspace proxy without a prompt."
     },
     "GetZapAlertSummaryResponse": {
       "type": "object",

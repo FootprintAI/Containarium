@@ -59,6 +59,8 @@ func TestAgentWorkspaceRecipe(t *testing.T) {
 		"basic_auth",           // in-box auth proxy
 		"ws_auth=",             // session-cookie handoff for seamless iframe auth
 		"SameSite=None",        // cookie sent cross-origin from the embedded iframe
+		"/opt/wsauth/token",    // token persisted for the daemon to vend
+		"/__ws_login",          // zero-click bootstrap route
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("agent-workspace post_start missing %q", want)

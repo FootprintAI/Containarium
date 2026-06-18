@@ -1,7 +1,7 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerResponse, ListContainersResponse, MetricsResponse, SystemInfo, Collaborator, AddCollaboratorRequest, BackendInfo, Stack } from '@/src/types/container';
 import { Server } from '@/src/types/server';
-import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute } from '@/src/types/app';
+import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute, WorkspaceAccess } from '@/src/types/app';
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
 import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse, PentestScanRunsResponse, PentestFindingsResponse, PentestFindingSummaryResponse, PentestConfigResponse, TriggerPentestScanResponse, ListPentestFindingsParams, InstallPentestToolResponse, ZapScanRunsResponse, ZapAlertsResponse, ZapAlertSummaryResponse, ZapConfigResponse, TriggerZapScanResponse, ZapReportResponse, InstallZapResponse, ListZapAlertsParams } from '@/src/types/security';
 import { AuditLogsResponse, AuditLogsParams } from '@/src/types/audit';
@@ -507,6 +507,16 @@ export class ContaineriumClient {
     const params = username ? { username } : {};
     const response = await this.client.get<{ routes?: ProxyRoute[] }>('/network/routes', { params });
     return response.data.routes || [];
+  }
+
+  /**
+   * Get the zero-click bootstrap URL for an agent-workspace box.
+   */
+  async getWorkspaceAccess(name: string): Promise<WorkspaceAccess> {
+    const response = await this.client.get<{ token?: string; url?: string }>(
+      `/recipes/workspace/${encodeURIComponent(name)}/access`
+    );
+    return { token: response.data.token || '', url: response.data.url || '' };
   }
 
   /**

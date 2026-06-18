@@ -207,15 +207,34 @@ recipes:
       - |
         WS_HASH=$(podman run --rm docker.io/library/caddy:2 caddy hash-password --plaintext "$CONTAINARIUM_PARAM_AUTH_PASSWORD")
         WS_TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        # Persist the token (mode 0600) so the daemon can read it and hand the
+        # console a zero-click bootstrap URL (RecipeService.GetWorkspaceAccess).
+        printf '%s' "$WS_TOKEN" > /opt/wsauth/token
+        chmod 600 /opt/wsauth/token
         cat > /opt/wsauth/Caddyfile <<EOF
         {
           auto_https off
         }
         :8080 {
+          # Zero-click bootstrap: the console opens /__ws_login?t=<token>; the
+          # proxy sets the SameSite=None cookie and redirects to the app, so no
+          # sign-in prompt is ever shown in the embedded iframe.
+          @login {
+            path /__ws_login
+            query t=$WS_TOKEN
+          }
+          handle @login {
+            header +Set-Cookie "ws_auth=$WS_TOKEN; Path=/; HttpOnly; Secure; SameSite=None"
+            # `redir * / 302`: the explicit `*` matcher keeps Caddy from reading
+            # the leading `/` as a path matcher (which makes the redirect a no-op).
+            redir * / 302
+          }
+          # Cookie path: seamless once the cookie is set.
           @authed header_regexp Cookie "ws_auth=$WS_TOKEN"
           handle @authed {
             reverse_proxy 127.0.0.1:8000
           }
+          # Fallback: HTTP basic auth, which also issues the cookie.
           handle {
             basic_auth {
               $CONTAINARIUM_PARAM_AUTH_USER $WS_HASH

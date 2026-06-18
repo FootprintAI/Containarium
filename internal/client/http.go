@@ -1034,6 +1034,30 @@ func (c *HTTPClient) GetRecipe(id string) (*pb.Recipe, error) {
 	return out.Recipe, nil
 }
 
+// GetWorkspaceAccess fetches the zero-click bootstrap URL for an
+// agent-workspace box via HTTP.
+func (c *HTTPClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/recipes/workspace/%s/access", url.PathEscape(name))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get workspace access: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get workspace access")
+	}
+	out := &pb.GetWorkspaceAccessResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // DeployRecipe provisions a new dedicated container from a recipe via HTTP.
 func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time

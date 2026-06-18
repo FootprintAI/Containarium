@@ -108,18 +108,31 @@ routes from the network route list and renders the box's UI in an iframe
 (typechecks + lints clean). Embedding works because the OpenHands root response
 carries no `X-Frame-Options`/`CSP` (validated above).
 
-Seamless auth via a session-cookie handoff (validated 2026-06-18): browsers
-suppress the basic-auth prompt inside a cross-origin iframe, so the in-box proxy
-**issues a `SameSite=None` cookie on a successful basic-auth response and also
-accepts that cookie** in lieu of basic auth. The user signs in once at
-top-level (the panel's "Open in new tab to sign in" bootstrap); the browser then
-sends the cookie to the box even from the embedded iframe, so every load
-afterward is promptless. The cookie value is a per-box random token, so the
-console needs no secret. Validated on the box: no creds → 401, basic auth → 200
-+ `Set-Cookie`, valid cookie alone → 200, wrong cookie → 401.
+**Zero-click auth (implemented).** The in-box proxy supports three ways in,
+all validated live on the box (2026-06-18):
 
-Fully zero-click (no first sign-in) would require the daemon to vend the box's
-token to the console so it can bootstrap the cookie itself — a later follow-up.
+- a **`/__ws_login?t=<token>` bootstrap** route → sets the `SameSite=None`
+  session cookie and `302`-redirects to the app;
+- the **cookie** itself, accepted in lieu of auth;
+- **HTTP basic auth** as the fallback, which also issues the cookie.
+
+The console gets zero-click by asking the daemon for a bootstrap URL:
+`RecipeService.GetWorkspaceAccess(name)` (`GET
+/v1/recipes/workspace/{name}/access`, scope `containers:read` + tenant authz)
+reads the box's token via `ExecWithOutput cat /opt/wsauth/token` and returns
+`https://<box>-workspace.<domain>/__ws_login?t=<token>`. `WorkspaceView` fetches
+that and uses it as the iframe `src`, so the embedded workspace authenticates
+with **no prompt and no first sign-in**. CLI parity:
+`containarium recipe workspace-access <name>`. If the lookup fails (older box,
+no route), the panel falls back to the plain URL + the "Open in new tab" path.
+
+Validated on the box: bootstrap `/__ws_login?t=TOKEN` → `302` + `Location: /` +
+`Set-Cookie`; cookie alone → `200`; no creds → `401`; basic auth → `200`.
+
+Security note: the bootstrap token rides in a URL query (iframe `src`); it is a
+per-box secret returned only to a `containers:read`-authorized caller, and the
+cookie takes over immediately after the redirect. Acceptable for v1; a POST-based
+handoff would remove it from URLs as a follow-up.
 
 ## Remaining live-acceptance items (NOT yet proven)
 

@@ -163,9 +163,42 @@ message DeployRecipeResponse {
   string message = 3;
 }
 
+// GetWorkspaceAccessRequest fetches a zero-click access URL for an
+// agent-workspace box.
+message GetWorkspaceAccessRequest {
+  // The box identity (the container is named "<name>-container"), same scheme
+  // as DeployRecipeRequest.name.
+  string name = 1;
+}
+
+// GetWorkspaceAccessResponse carries a bootstrap URL the console can load in an
+// iframe to sign the user into the in-box workspace proxy without a prompt.
+message GetWorkspaceAccessResponse {
+  // The in-box auth proxy's per-box session token.
+  string token = 1;
+
+  // Ready-to-embed bootstrap URL (https://<workspace-domain>/__ws_login?t=...);
+  // loading it sets the session cookie and redirects to the workspace UI.
+  string url = 2;
+}
+
 // RecipeService provides one-command deployment of declarative GPU/app
 // recipes onto Containarium backends.
 service RecipeService {
+  // GetWorkspaceAccess returns a zero-click bootstrap URL for an
+  // agent-workspace box: it reads the box's in-box auth token and composes the
+  // URL the console embeds to sign the user in without a prompt.
+  rpc GetWorkspaceAccess(GetWorkspaceAccessRequest) returns (GetWorkspaceAccessResponse) {
+    option (google.api.http) = {
+      get: "/v1/recipes/workspace/{name}/access"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get workspace access URL";
+      description: "Returns a zero-click bootstrap URL for an agent-workspace box, embeddable in the console to authenticate the in-box workspace UI seamlessly.";
+      tags: "Recipes";
+    };
+  }
+
   // ListRecipes returns all available built-in recipes.
   rpc ListRecipes(ListRecipesRequest) returns (ListRecipesResponse) {
     option (google.api.http) = {

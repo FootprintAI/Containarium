@@ -58,6 +58,16 @@ export interface AppResources {
 }
 
 /**
+ * Zero-click access info for an agent-workspace box. `url` is a bootstrap URL
+ * (/__ws_login?t=...) that sets the in-box session cookie and redirects to the
+ * workspace UI, so the embedded iframe authenticates without a prompt.
+ */
+export interface WorkspaceAccess {
+  token: string;
+  url: string;
+}
+
+/**
  * Proxy route configuration
  */
 export interface ProxyRoute {

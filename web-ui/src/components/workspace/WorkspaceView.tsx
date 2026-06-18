@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useMemo } from 'react';
-import { Bot, ExternalLink, RefreshCw } from 'lucide-react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import { Bot, ExternalLink, RefreshCw, Loader2 } from 'lucide-react';
 import { ProxyRoute } from '@/src/types/app';
+import { Server } from '@/src/types/server';
+import { getClient } from '@/src/lib/api/client';
 
 /**
  * WorkspaceView embeds an agent-workspace box's web chat UI (OpenHands,
@@ -10,18 +12,16 @@ import { ProxyRoute } from '@/src/types/app';
  * co-work with a coding agent without leaving the console.
  *
  * The box exposes its in-box auth proxy on the `workspace` subdomain (recipe
- * container port 8080). We discover those routes from the network route list
- * rather than calling a new endpoint.
+ * container port 8080); we discover those routes from the network route list.
  *
- * Auth nuance: the workspace is protected by an in-box auth proxy, and
- * browsers suppress the basic-auth prompt inside a cross-origin iframe. So the
- * flow is: sign in ONCE in a new tab — the in-box proxy then issues a
- * SameSite=None session cookie, which the browser sends to the box even from
- * this embedded iframe, so every load afterward is seamless (no prompt). The
- * "Open in new tab to sign in" action is the one-time bootstrap; "Reload"
- * re-renders the iframe once the cookie is set.
+ * Zero-click auth: the daemon's GetWorkspaceAccess returns a bootstrap URL
+ * (https://<box>-workspace.<domain>/__ws_login?t=<token>). Loading it in the
+ * iframe sets the in-box SameSite=None session cookie and redirects to the
+ * workspace UI, so no sign-in prompt is ever shown. If that lookup fails (older
+ * box, no route), we fall back to the plain workspace URL and surface the
+ * "Open in new tab to sign in" path.
  */
-export default function WorkspaceView({ routes }: { routes: ProxyRoute[] }) {
+export default function WorkspaceView({ server, routes }: { server: Server; routes: ProxyRoute[] }) {
   const workspaces = useMemo(
     () =>
       (routes || []).filter(
@@ -32,7 +32,40 @@ export default function WorkspaceView({ routes }: { routes: ProxyRoute[] }) {
 
   const [selected, setSelected] = useState<string>('');
   const active = workspaces.find((w) => w.fullDomain === selected) ?? workspaces[0];
+  const activeDomain = active?.fullDomain;
+  const activeName = active?.username;
+
+  const [src, setSrc] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [needsSignin, setNeedsSignin] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+
+  const loadAccess = useCallback(async () => {
+    if (!activeDomain) return;
+    const fallback = `https://${activeDomain}`;
+    setLoading(true);
+    setNeedsSignin(false);
+    try {
+      // Prefer the zero-click bootstrap URL from the daemon.
+      const access = activeName ? await getClient(server).getWorkspaceAccess(activeName) : null;
+      if (access?.url) {
+        setSrc(access.url);
+      } else {
+        setSrc(fallback);
+        setNeedsSignin(true);
+      }
+    } catch {
+      // Older box / no token endpoint — fall back to manual sign-in.
+      setSrc(fallback);
+      setNeedsSignin(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [server, activeDomain, activeName]);
+
+  useEffect(() => {
+    loadAccess();
+  }, [loadAccess]);
 
   if (workspaces.length === 0) {
     return (
@@ -49,15 +82,13 @@ export default function WorkspaceView({ routes }: { routes: ProxyRoute[] }) {
     );
   }
 
-  const src = `https://${active.fullDomain}`;
-
   return (
     <div className="flex h-[calc(100vh-150px)] flex-col">
       <div className="flex items-center gap-3 border-b border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-2 shrink-0">
         <Bot size={14} className="text-[var(--accent)]" />
         {workspaces.length > 1 ? (
           <select
-            value={active.fullDomain}
+            value={active?.fullDomain ?? ''}
             onChange={(e) => setSelected(e.target.value)}
             className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--text)]"
           >
@@ -68,33 +99,42 @@ export default function WorkspaceView({ routes }: { routes: ProxyRoute[] }) {
             ))}
           </select>
         ) : (
-          <span className="text-xs font-medium text-[var(--text)]">{active.fullDomain}</span>
+          <span className="text-xs font-medium text-[var(--text)]">{activeDomain}</span>
+        )}
+        {needsSignin && (
+          <span className="text-xs text-[var(--c-amber)]">sign in once in a new tab →</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
           <button
-            onClick={() => setReloadKey((k) => k + 1)}
+            onClick={() => { setReloadKey((k) => k + 1); loadAccess(); }}
             title="Reload"
             className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-2)]"
           >
             <RefreshCw size={13} />
           </button>
           <a
-            href={src}
+            href={src || `https://${activeDomain}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)]"
           >
-            <ExternalLink size={13} /> Open in new tab to sign in
+            <ExternalLink size={13} /> Open in new tab
           </a>
         </div>
       </div>
       <div className="relative flex-1">
-        <iframe
-          key={reloadKey}
-          src={src}
-          className="absolute inset-0 h-full w-full border-0"
-          title={`Agent workspace — ${active.fullDomain}`}
-        />
+        {loading || !src ? (
+          <div className="flex h-full items-center justify-center">
+            <Loader2 size={22} className="animate-spin text-[var(--text-secondary)]" />
+          </div>
+        ) : (
+          <iframe
+            key={`${src}-${reloadKey}`}
+            src={src}
+            className="absolute inset-0 h-full w-full border-0"
+            title={`Agent workspace — ${activeDomain}`}
+          />
+        )}
       </div>
     </div>
   );

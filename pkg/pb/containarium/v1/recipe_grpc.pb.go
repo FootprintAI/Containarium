@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RecipeService_ListRecipes_FullMethodName  = "/containarium.v1.RecipeService/ListRecipes"
-	RecipeService_GetRecipe_FullMethodName    = "/containarium.v1.RecipeService/GetRecipe"
-	RecipeService_DeployRecipe_FullMethodName = "/containarium.v1.RecipeService/DeployRecipe"
+	RecipeService_GetWorkspaceAccess_FullMethodName = "/containarium.v1.RecipeService/GetWorkspaceAccess"
+	RecipeService_ListRecipes_FullMethodName        = "/containarium.v1.RecipeService/ListRecipes"
+	RecipeService_GetRecipe_FullMethodName          = "/containarium.v1.RecipeService/GetRecipe"
+	RecipeService_DeployRecipe_FullMethodName       = "/containarium.v1.RecipeService/DeployRecipe"
 )
 
 // RecipeServiceClient is the client API for RecipeService service.
@@ -31,6 +32,10 @@ const (
 // RecipeService provides one-command deployment of declarative GPU/app
 // recipes onto Containarium backends.
 type RecipeServiceClient interface {
+	// GetWorkspaceAccess returns a zero-click bootstrap URL for an
+	// agent-workspace box: it reads the box's in-box auth token and composes the
+	// URL the console embeds to sign the user in without a prompt.
+	GetWorkspaceAccess(ctx context.Context, in *GetWorkspaceAccessRequest, opts ...grpc.CallOption) (*GetWorkspaceAccessResponse, error)
 	// ListRecipes returns all available built-in recipes.
 	ListRecipes(ctx context.Context, in *ListRecipesRequest, opts ...grpc.CallOption) (*ListRecipesResponse, error)
 	// GetRecipe returns a single recipe definition by ID.
@@ -45,6 +50,16 @@ type recipeServiceClient struct {
 
 func NewRecipeServiceClient(cc grpc.ClientConnInterface) RecipeServiceClient {
 	return &recipeServiceClient{cc}
+}
+
+func (c *recipeServiceClient) GetWorkspaceAccess(ctx context.Context, in *GetWorkspaceAccessRequest, opts ...grpc.CallOption) (*GetWorkspaceAccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetWorkspaceAccessResponse)
+	err := c.cc.Invoke(ctx, RecipeService_GetWorkspaceAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *recipeServiceClient) ListRecipes(ctx context.Context, in *ListRecipesRequest, opts ...grpc.CallOption) (*ListRecipesResponse, error) {
@@ -84,6 +99,10 @@ func (c *recipeServiceClient) DeployRecipe(ctx context.Context, in *DeployRecipe
 // RecipeService provides one-command deployment of declarative GPU/app
 // recipes onto Containarium backends.
 type RecipeServiceServer interface {
+	// GetWorkspaceAccess returns a zero-click bootstrap URL for an
+	// agent-workspace box: it reads the box's in-box auth token and composes the
+	// URL the console embeds to sign the user in without a prompt.
+	GetWorkspaceAccess(context.Context, *GetWorkspaceAccessRequest) (*GetWorkspaceAccessResponse, error)
 	// ListRecipes returns all available built-in recipes.
 	ListRecipes(context.Context, *ListRecipesRequest) (*ListRecipesResponse, error)
 	// GetRecipe returns a single recipe definition by ID.
@@ -100,6 +119,9 @@ type RecipeServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedRecipeServiceServer struct{}
 
+func (UnimplementedRecipeServiceServer) GetWorkspaceAccess(context.Context, *GetWorkspaceAccessRequest) (*GetWorkspaceAccessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetWorkspaceAccess not implemented")
+}
 func (UnimplementedRecipeServiceServer) ListRecipes(context.Context, *ListRecipesRequest) (*ListRecipesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRecipes not implemented")
 }
@@ -128,6 +150,24 @@ func RegisterRecipeServiceServer(s grpc.ServiceRegistrar, srv RecipeServiceServe
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&RecipeService_ServiceDesc, srv)
+}
+
+func _RecipeService_GetWorkspaceAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetWorkspaceAccessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RecipeServiceServer).GetWorkspaceAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RecipeService_GetWorkspaceAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RecipeServiceServer).GetWorkspaceAccess(ctx, req.(*GetWorkspaceAccessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _RecipeService_ListRecipes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -191,6 +231,10 @@ var RecipeService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.v1.RecipeService",
 	HandlerType: (*RecipeServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetWorkspaceAccess",
+			Handler:    _RecipeService_GetWorkspaceAccess_Handler,
+		},
 		{
 			MethodName: "ListRecipes",
 			Handler:    _RecipeService_ListRecipes_Handler,

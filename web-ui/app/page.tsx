@@ -324,7 +324,7 @@ export default function Home() {
             {viewTab === 6 && <AuditView server={activeServer} />}
             {viewTab === 7 && <AlertsView server={activeServer} />}
             {viewTab === 8 && <VersionsView server={activeServer} />}
-            {viewTab === 9 && <WorkspaceView routes={routes} />}
+            {viewTab === 9 && <WorkspaceView server={activeServer} routes={routes} />}
           </div>
         </>
       ) : (
