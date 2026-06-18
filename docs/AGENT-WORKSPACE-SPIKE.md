@@ -1,10 +1,13 @@
 # Spike — web chat workspace via OpenHands-in-a-box (`agent-workspace` recipe)
 
-> Status: **Spike / proof-of-path, NOT live-validated.** Goal: prove that a
+> Status: **Spike / proof-of-path, live-validated.** Goal: prove that a
 > hosted web chat workspace — Claude/ChatGPT-style chat + live preview +
 > multiple persisted conversations, all stored inside one always-on box — is
 > buildable mostly by *packaging an existing OSS engine* rather than building a
-> chat UI + agent loop + session store from scratch.
+> chat UI + agent loop + session store from scratch. The recipe, in-box auth,
+> zero-click handoff, and the full daemon deploy path are all validated on a
+> backend (see the validation sections below); the one functional item still
+> pending is a real model call (needs a provider API key).
 
 ## The idea in one line
 
@@ -39,28 +42,29 @@ safe, persistent host; OpenHands is the cockpit.
 
 The `agent-workspace` recipe (`pkg/core/recipes/recipes.yaml`):
 
-- `post_start` runs the OpenHands web app via **Podman** (the box already runs
-  OCI workloads via Podman — same as `ollama`/`llamacpp`), persisting
-  conversations under **`/opt/openhands-state`** in the box — so "all sessions
-  stored inside a box" holds.
-- OpenHands spawns a per-conversation runtime sandbox; it drives the box's
-  **Podman socket** (`DOCKER_HOST=unix:///run/podman/podman.sock`), so there is
-  no docker-in-docker nesting beyond what the GPU recipes already do.
-- The recipe's `ports` block exposes OpenHands' `:3000` as the `workspace`
-  subdomain, so the whole **chat + preview + conversation-list** surface is
-  reachable at `https://<name>-workspace.<base-domain>` over the platform's
-  existing route + managed-TLS path.
-- The Anthropic key + model are seeded via parameters into a root-only env-file
-  the app reads (spike delivery — see hardening below).
+- `post_start` runs the OpenHands "Agent Canvas" web app via **Podman** (the box
+  already runs OCI workloads via Podman — same as `ollama`/`llamacpp`),
+  persisting conversations under **`/opt/openhands-state`** in the box — so "all
+  sessions stored inside a box" holds. Agent Canvas runs the coding agent **in
+  the app container itself** (box = sandbox), so it needs **no container-engine
+  socket** — the app is bound to `127.0.0.1:8000`.
+- An **in-box Caddy auth proxy** fronts it on **`:8080`**, which the recipe's
+  `ports` block exposes as the `workspace` subdomain — so the whole **chat +
+  preview + conversation-list** surface is reachable at
+  `https://<name>-workspace.<base-domain>` over the platform's existing route +
+  managed-TLS path, with auth living in the box (see "Auth lives in the box").
+- The **model provider + API key are set in the OpenHands UI** (Settings → LLM;
+  the recipe pins no provider — see "Model provider + key"). The recipe's only
+  required parameter is `auth_password` for the in-box proxy.
 
 Contrast with `agent-runtime`: same box-as-agent substrate, but that recipe is
 headless/one-shot (seeded task → `artifact.json`); this one is the interactive,
 human-in-the-loop chat workspace.
 
-## Live validation (2026-06-18, fts-13700k)
+## Live validation (2026-06-18, a GPU backend)
 
-Stood the engine up in a throwaway box (`oh-spike`, Ubuntu 24.04 + Podman
-4.9.3) to settle the integration unknowns. Findings updated the recipe:
+Stood the engine up in a throwaway box (Ubuntu 24.04 + Podman 4.9.3) on a
+backend host to settle the integration unknowns. Findings updated the recipe:
 
 - **OpenHands has been rewritten as "Agent Canvas."** The current image is
   `ghcr.io/openhands/agent-canvas:1.0.0-rc.11` on port **8000** — not the old
@@ -91,14 +95,15 @@ Stood the engine up in a throwaway box (`oh-spike`, Ubuntu 24.04 + Podman
 
 - `go build ./pkg/core/recipes/... ./internal/server/...` — clean.
 - `go test ./pkg/core/recipes/...` green, including `TestAgentWorkspaceRecipe`
-  (catalog loads the recipe; GPU-free; exposes `:3000`; post_start runs
-  OpenHands, persists to `/opt/openhands-state`, wires the Podman socket; the
-  key is an optional `password` param; a model param exists).
+  (catalog loads the recipe; GPU-free; exposes the in-box auth proxy on `:8080`;
+  post_start runs OpenHands bound to `127.0.0.1:8000`, persists to
+  `/opt/openhands-state`, chowns mounts with `:U`, and stands up the basic-auth
+  proxy; `auth_password` is a required `password` param).
 - Deploy + routing are **inherited, not new**: `DeployRecipe` provisions the box
   and runs `post_start`; the `ports` block reuses the standard expose/route +
-  managed-cert path. No server/proto/CLI/MCP change — `recipe deploy
-  agent-workspace <name>` and the `deploy_recipe` MCP tool work from the catalog
-  entry alone.
+  managed-cert path. The one bit of new platform code is the `GetWorkspaceAccess`
+  RPC + `recipe workspace-access` CLI verb (for the zero-click bootstrap URL); an
+  MCP tool is a deliberate follow-up (CLI-first; CLI-without-MCP is allowed).
 
 ## Web UI embedding (shipped)
 
@@ -226,18 +231,19 @@ needs:
    (OpenHands' built-in browser, and/or a second exposed port).
 5. **Resource right-sizing** — 4c/8GB/60GB is generous; trim after profiling.
 
-Via the recipe (once a daemon carrying it is deployed): `containarium recipe
-deploy agent-workspace ws1 --server <host>`, then expose `:8000` behind auth and
-open the workspace.
+Via the recipe: `containarium recipe deploy agent-workspace ws1 --param
+auth_password=… --server <host>`; the `:8080` proxy is exposed as the
+`workspace` subdomain, then open the workspace.
 
 ## Required hardening before this is a product (NOT spike scope)
 
-- **Key delivery** — replace the recipe parameter with the **tenant secrets
-  mechanism** (AES-256-GCM, mode 0400). Parameters can land in audit logs /
-  process args.
-- **Auth in front of the UI** — OpenHands' `:3000` exposed on a subdomain needs
-  the platform's auth in front of it (it is a full coding agent with shell). The
-  route must require the tenant's session, not be world-open.
+- **Auth-password delivery** — replace the `auth_password` **recipe parameter**
+  with the **tenant secrets mechanism** (AES-256-GCM, mode 0400). Parameters can
+  land in audit logs / process args. (Auth itself already lives in the box — see
+  "Auth lives in the box"; this is about how the password is delivered.)
+- **Bootstrap token in URL** — the zero-click handoff puts the token in a query
+  string; move to a POST/short-TTL-nonce handoff so it doesn't land in logs or
+  `Referer`. The cookie itself has no rotation/expiry today.
 - **Cost / idle** — an always-on keyed agent is a spend risk; apply auto-sleep /
   idle-TTL (shipped scale-down primitives) and, at scale, the model gateway.
 - **Native UI (v2)** — embedding OpenHands proves demand fast; owning the UX
@@ -247,6 +253,7 @@ open the workspace.
 
 The path holds and is light: a hosted chat+preview+multi-session workspace is
 **one recipe** packaging OpenHands on top of shipped box/route/TLS
-infrastructure. This spike proves the wiring loads and deploys through existing
-machinery; the integration details (above) need one live box to lock down. The
-PRD (`PRD-HOSTED-AGENT-WORKSPACE.md`) is written against this mechanism.
+infrastructure. Validated end-to-end on a backend — recipe deploy as root,
+persistence, in-box auth, zero-click handoff, and the full daemon CLI path — with
+only a real model call (provider key) still pending. The PRD
+(`PRD-HOSTED-AGENT-WORKSPACE.md`) is written against this mechanism.

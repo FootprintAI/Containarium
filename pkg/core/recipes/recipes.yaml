@@ -185,6 +185,9 @@ recipes:
     post_start:
       - mkdir -p /opt/openhands-state /opt/openhands-projects /opt/wsauth
       - podman pull docker.io/library/caddy:2 >/dev/null
+      # Idempotent: drop any prior containers so a re-run of post_start (retry,
+      # re-deploy) doesn't abort under `set -e` on "name already in use".
+      - podman rm -f openhands wsauth 2>/dev/null || true
       # Run the OpenHands web app bound to localhost: chat + preview + persisted
       # conversations. `:U` chowns the bind mounts to the container's non-root
       # user so it can write its SQLite state (validated 2026-06-18).
@@ -207,6 +210,9 @@ recipes:
       - |
         WS_HASH=$(podman run --rm docker.io/library/caddy:2 caddy hash-password --plaintext "$CONTAINARIUM_PARAM_AUTH_PASSWORD")
         WS_TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        # Fail loudly rather than write a malformed auth config (empty hash →
+        # a degenerate basic_auth entry, empty token → no cookie gate).
+        [ -n "$WS_HASH" ] && [ -n "$WS_TOKEN" ] || { echo "agent-workspace: empty auth hash/token; aborting" >&2; exit 1; }
         # Persist the token (mode 0600) so the daemon can read it and hand the
         # console a zero-click bootstrap URL (RecipeService.GetWorkspaceAccess).
         printf '%s' "$WS_TOKEN" > /opt/wsauth/token
@@ -229,8 +235,10 @@ recipes:
             # the leading `/` as a path matcher (which makes the redirect a no-op).
             redir * / 302
           }
-          # Cookie path: seamless once the cookie is set.
-          @authed header_regexp Cookie "ws_auth=$WS_TOKEN"
+          # Cookie path: seamless once the cookie is set. Anchored to the
+          # cookie name=value boundary so a crafted cookie can't slip the token
+          # in as a substring of another value.
+          @authed header_regexp Cookie "(^|;\s*)ws_auth=$WS_TOKEN($|;)"
           handle @authed {
             reverse_proxy 127.0.0.1:8000
           }

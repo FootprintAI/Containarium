@@ -70,7 +70,10 @@ func (s *RecipeServer) GetRecipe(ctx context.Context, req *pb.GetRecipeRequest) 
 // /__ws_login URL the console embeds in an iframe to authenticate the
 // workspace UI without showing a sign-in prompt.
 func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorkspaceAccessRequest) (*pb.GetWorkspaceAccessResponse, error) {
-	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+	// containers:write, not read: this mints an interactive-access credential
+	// (the in-box session token + a zero-click /__ws_login URL), so it is a
+	// write-class operation — a read-only token must not be able to obtain it.
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
 		return nil, err
 	}
 	if req.Name == "" {

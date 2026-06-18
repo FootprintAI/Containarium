@@ -27,11 +27,11 @@ import { getClient } from '@/src/lib/api/client';
  * set by the chat view authenticates that page too.
  */
 export default function WorkspaceView({ server, routes }: { server: Server; routes: ProxyRoute[] }) {
+  // Identify agent-workspace boxes by the recipe's `workspace` subdomain, not by
+  // a generic port (8080 is a common app port — matching it would misclassify
+  // unrelated apps as workspaces).
   const workspaces = useMemo(
-    () =>
-      (routes || []).filter(
-        (r) => r.active && (r.subdomain?.includes('workspace') || r.port === 8080)
-      ),
+    () => (routes || []).filter((r) => r.active && !!r.subdomain?.includes('workspace')),
     [routes]
   );
 

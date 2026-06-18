@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`agent-workspace` recipe — a hosted web chat workspace in a box.** A new
+  built-in recipe runs OpenHands ("Agent Canvas") inside an always-on box: a
+  browser chat UI with live preview and multiple persisted conversations, all
+  stored in the box (`/opt/openhands-state`). The model provider + API key are
+  set in the workspace UI (Anthropic, OpenAI/Codex, Gemini, or any LiteLLM
+  model). Auth lives in the box — an in-box reverse proxy fronts the app with
+  HTTP basic auth plus a `SameSite=None` session cookie it issues, so the
+  console can embed the workspace in an iframe and authenticate it without a
+  prompt. New `RecipeService.GetWorkspaceAccess` RPC
+  (`GET /v1/recipes/workspace/{name}/access`) + `containarium recipe
+  workspace-access` CLI return the zero-click bootstrap URL, and a `web-ui`
+  "Workspace" tab embeds the workspace (with a "Model setup" deep-link to the
+  provider settings). The recipe takes a required `auth_password` parameter
+  (secrets-based delivery is a tracked follow-up). See
+  `docs/AGENT-WORKSPACE-SPIKE.md` and `docs/PRD-HOSTED-AGENT-WORKSPACE.md`.
+
 ### Fixed
 
 - **Daemon unit `ReadWritePaths` now covers the doctor's required-writable set,
