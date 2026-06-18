@@ -134,6 +134,26 @@ per-box secret returned only to a `containers:read`-authorized caller, and the
 cookie takes over immediately after the redirect. Acceptable for v1; a POST-based
 handoff would remove it from URLs as a follow-up.
 
+## Operational notes — exposing via the cloud control plane
+
+Validated live by standing the workspace up on a cloud-managed box and exposing
+it on a public managed subdomain (auth + the zero-click bootstrap both confirmed
+end-to-end over HTTPS). Two gotchas worth recording:
+
+- **`expose_port` auto-appends the org zone suffix.** Pass the **bare
+  subdomain** (e.g. `agentws`), not a full hostname. The cloud CP appends
+  `-<org>.<zone>` itself, so passing a full domain doubles it
+  (`<name>-<org>-<org>.<zone>`). The recipe's `ports.subdomain` is already a
+  bare label, so a recipe-driven deploy is unaffected — this only bites manual
+  `expose_port` calls that pass a full domain.
+
+- **Rootless Podman needs persistence handling.** Containers set up by hand as
+  the **non-root tenant** user die on SSH logout (the user session is torn down
+  and `loginctl enable-linger` is denied to tenants). The `agent-workspace`
+  recipe avoids this entirely: its `post_start` runs as **root**, so the
+  containers live under the box's init with `--restart=always`. Only a
+  by-hand, non-root setup needs linger enabled (by root) to survive logout.
+
 ## Remaining live-acceptance items (NOT yet proven)
 
 The engine + wiring are validated (above). What a fuller live acceptance still
