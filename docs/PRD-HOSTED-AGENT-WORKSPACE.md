@@ -97,7 +97,7 @@ browser, without my laptop being involved."*
 | R3 | Multiple conversations persist in the box and survive disconnect/reload. | **OpenHands built-in**; live-acceptance pending. |
 | R4 | The exposed agent UI sits behind platform auth. | **New** — route/auth work. |
 | R5 | The Anthropic key is delivered via the secrets mechanism, not a parameter. | **New**. |
-| R6 | A WebUI affordance launches + opens a workspace. | **New** (small). |
+| R6 | A WebUI affordance opens a workspace. | **Shipped (embed)** — `web-ui` "Workspace" tab embeds the box's UI in an iframe; launch-from-UI still to do. |
 | R7 | Workspace lifecycle is audit-logged + scope-gated; build ships to a box. | **Shipped** (inherited). |
 
 **Read of the gap:** the *experience* (R1–R3) is reuse + wiring, proven to load

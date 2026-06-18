@@ -100,6 +100,21 @@ Stood the engine up in a throwaway box (`oh-spike`, Ubuntu 24.04 + Podman
   agent-workspace <name>` and the `deploy_recipe` MCP tool work from the catalog
   entry alone.
 
+## Web UI embedding (shipped)
+
+The console embeds the workspace directly: a **"Workspace" tab** in `web-ui`
+(`src/components/workspace/WorkspaceView.tsx`) discovers `workspace`-subdomain
+routes from the network route list and renders the box's UI in an iframe
+(typechecks + lints clean). Embedding works because the OpenHands root response
+carries no `X-Frame-Options`/`CSP` (validated above).
+
+Auth nuance carried into the UI: browsers usually suppress the in-box
+basic-auth prompt inside a cross-origin iframe, so the panel keeps an "Open in
+new tab to sign in" action prominent — sign in once at top-level, the browser
+caches the credentials for that origin, and the iframe then loads
+authenticated. A cookie/token handoff (like the monitoring tab's session
+cookie) is the follow-up to make it seamless.
+
 ## Remaining live-acceptance items (NOT yet proven)
 
 The engine + wiring are validated (above). What a fuller live acceptance still

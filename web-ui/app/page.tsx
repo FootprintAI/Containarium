@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { usePathname } from 'next/navigation';
 import {
   Server as ServerIcon, LayoutGrid, Network, Activity, BarChart2,
-  Shield, ClipboardList, Bell, Loader2, RefreshCw
+  Shield, ClipboardList, Bell, Loader2, RefreshCw, Bot
 } from 'lucide-react';
 import AppBar from '@/src/components/layout/AppBar';
 import ServerTabs from '@/src/components/layout/ServerTabs';
@@ -26,6 +26,7 @@ import SecurityView from '@/src/components/security/SecurityView';
 import AuditView from '@/src/components/audit/AuditView';
 import AlertsView from '@/src/components/alerts/AlertsView';
 import VersionsView from '@/src/components/versions/VersionsView';
+import WorkspaceView from '@/src/components/workspace/WorkspaceView';
 import { useServers } from '@/src/lib/hooks/useServers';
 import { useContainers, CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 import { useMetrics } from '@/src/lib/hooks/useMetrics';
@@ -41,7 +42,7 @@ const TerminalDialog = dynamic(
   { ssr: false }
 );
 
-const TAB_PATHS = ['/containers/', '/apps/', '/network/', '/traffic/', '/monitoring/', '/security/', '/audit/', '/alerts/', '/versions/'] as const;
+const TAB_PATHS = ['/containers/', '/apps/', '/network/', '/traffic/', '/monitoring/', '/security/', '/audit/', '/alerts/', '/versions/', '/workspace/'] as const;
 const TAB_INDICES: Record<string, number> = {
   '/': 0,
   '/containers/': 0,
@@ -53,6 +54,7 @@ const TAB_INDICES: Record<string, number> = {
   '/audit/': 6,
   '/alerts/': 7,
   '/versions/': 8,
+  '/workspace/': 9,
 };
 
 const TABS = [
@@ -65,6 +67,7 @@ const TABS = [
   { label: 'Audit',      icon: ClipboardList },
   { label: 'Alerts',     icon: Bell },
   { label: 'Versions',   icon: RefreshCw },
+  { label: 'Workspace',  icon: Bot },
 ] as const;
 
 export default function Home() {
@@ -321,6 +324,7 @@ export default function Home() {
             {viewTab === 6 && <AuditView server={activeServer} />}
             {viewTab === 7 && <AlertsView server={activeServer} />}
             {viewTab === 8 && <VersionsView server={activeServer} />}
+            {viewTab === 9 && <WorkspaceView routes={routes} />}
           </div>
         </>
       ) : (
