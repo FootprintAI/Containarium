@@ -774,6 +774,111 @@ func (x *DeployRecipeResponse) GetMessage() string {
 	return ""
 }
 
+// GetWorkspaceAccessRequest fetches a zero-click access URL for an
+// agent-workspace box.
+type GetWorkspaceAccessRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The box identity (the container is named "<name>-container"), same scheme
+	// as DeployRecipeRequest.name.
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkspaceAccessRequest) Reset() {
+	*x = GetWorkspaceAccessRequest{}
+	mi := &file_containarium_v1_recipe_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkspaceAccessRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkspaceAccessRequest) ProtoMessage() {}
+
+func (x *GetWorkspaceAccessRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_recipe_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkspaceAccessRequest.ProtoReflect.Descriptor instead.
+func (*GetWorkspaceAccessRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_recipe_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetWorkspaceAccessRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+// GetWorkspaceAccessResponse carries a bootstrap URL the console can load in an
+// iframe to sign the user into the in-box workspace proxy without a prompt.
+type GetWorkspaceAccessResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The in-box auth proxy's per-box session token.
+	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	// Ready-to-embed bootstrap URL (https://<workspace-domain>/__ws_login?t=...);
+	// loading it sets the session cookie and redirects to the workspace UI.
+	Url           string `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkspaceAccessResponse) Reset() {
+	*x = GetWorkspaceAccessResponse{}
+	mi := &file_containarium_v1_recipe_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkspaceAccessResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkspaceAccessResponse) ProtoMessage() {}
+
+func (x *GetWorkspaceAccessResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_recipe_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkspaceAccessResponse.ProtoReflect.Descriptor instead.
+func (*GetWorkspaceAccessResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_recipe_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *GetWorkspaceAccessResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *GetWorkspaceAccessResponse) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
 var File_containarium_v1_recipe_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_recipe_proto_rawDesc = "" +
@@ -840,8 +945,15 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x14DeployRecipeResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage2\x86\x06\n" +
-	"\rRecipeService\x12\xd3\x01\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"/\n" +
+	"\x19GetWorkspaceAccessRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"D\n" +
+	"\x1aGetWorkspaceAccessResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x10\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url2\xda\b\n" +
+	"\rRecipeService\x12\xd1\x02\n" +
+	"\x12GetWorkspaceAccess\x12*.containarium.v1.GetWorkspaceAccessRequest\x1a+.containarium.v1.GetWorkspaceAccessResponse\"\xe1\x01\x92A\xb2\x01\n" +
+	"\aRecipes\x12\x18Get workspace access URL\x1a\x8c\x01Returns a zero-click bootstrap URL for an agent-workspace box, embeddable in the console to authenticate the in-box workspace UI seamlessly.\x82\xd3\xe4\x93\x02%\x12#/v1/recipes/workspace/{name}/access\x12\xd3\x01\n" +
 	"\vListRecipes\x12#.containarium.v1.ListRecipesRequest\x1a$.containarium.v1.ListRecipesResponse\"y\x92Ac\n" +
 	"\aRecipes\x12\fList recipes\x1aJReturns all built-in recipes that can be deployed as dedicated containers.\x82\xd3\xe4\x93\x02\r\x12\v/v1/recipes\x12\xe9\x01\n" +
 	"\tGetRecipe\x12!.containarium.v1.GetRecipeRequest\x1a\".containarium.v1.GetRecipeResponse\"\x94\x01\x92Ay\n" +
@@ -862,42 +974,46 @@ func file_containarium_v1_recipe_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_recipe_proto_rawDescData
 }
 
-var file_containarium_v1_recipe_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_containarium_v1_recipe_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_containarium_v1_recipe_proto_goTypes = []any{
-	(*RecipeResources)(nil),      // 0: containarium.v1.RecipeResources
-	(*RecipePort)(nil),           // 1: containarium.v1.RecipePort
-	(*RecipeVolume)(nil),         // 2: containarium.v1.RecipeVolume
-	(*RecipeParam)(nil),          // 3: containarium.v1.RecipeParam
-	(*Recipe)(nil),               // 4: containarium.v1.Recipe
-	(*ListRecipesRequest)(nil),   // 5: containarium.v1.ListRecipesRequest
-	(*ListRecipesResponse)(nil),  // 6: containarium.v1.ListRecipesResponse
-	(*GetRecipeRequest)(nil),     // 7: containarium.v1.GetRecipeRequest
-	(*GetRecipeResponse)(nil),    // 8: containarium.v1.GetRecipeResponse
-	(*DeployRecipeRequest)(nil),  // 9: containarium.v1.DeployRecipeRequest
-	(*DeployRecipeResponse)(nil), // 10: containarium.v1.DeployRecipeResponse
-	nil,                          // 11: containarium.v1.Recipe.EnvEntry
-	nil,                          // 12: containarium.v1.DeployRecipeRequest.ParametersEntry
-	(*Container)(nil),            // 13: containarium.v1.Container
+	(*RecipeResources)(nil),            // 0: containarium.v1.RecipeResources
+	(*RecipePort)(nil),                 // 1: containarium.v1.RecipePort
+	(*RecipeVolume)(nil),               // 2: containarium.v1.RecipeVolume
+	(*RecipeParam)(nil),                // 3: containarium.v1.RecipeParam
+	(*Recipe)(nil),                     // 4: containarium.v1.Recipe
+	(*ListRecipesRequest)(nil),         // 5: containarium.v1.ListRecipesRequest
+	(*ListRecipesResponse)(nil),        // 6: containarium.v1.ListRecipesResponse
+	(*GetRecipeRequest)(nil),           // 7: containarium.v1.GetRecipeRequest
+	(*GetRecipeResponse)(nil),          // 8: containarium.v1.GetRecipeResponse
+	(*DeployRecipeRequest)(nil),        // 9: containarium.v1.DeployRecipeRequest
+	(*DeployRecipeResponse)(nil),       // 10: containarium.v1.DeployRecipeResponse
+	(*GetWorkspaceAccessRequest)(nil),  // 11: containarium.v1.GetWorkspaceAccessRequest
+	(*GetWorkspaceAccessResponse)(nil), // 12: containarium.v1.GetWorkspaceAccessResponse
+	nil,                                // 13: containarium.v1.Recipe.EnvEntry
+	nil,                                // 14: containarium.v1.DeployRecipeRequest.ParametersEntry
+	(*Container)(nil),                  // 15: containarium.v1.Container
 }
 var file_containarium_v1_recipe_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.Recipe.resources:type_name -> containarium.v1.RecipeResources
 	1,  // 1: containarium.v1.Recipe.ports:type_name -> containarium.v1.RecipePort
 	2,  // 2: containarium.v1.Recipe.volumes:type_name -> containarium.v1.RecipeVolume
-	11, // 3: containarium.v1.Recipe.env:type_name -> containarium.v1.Recipe.EnvEntry
+	13, // 3: containarium.v1.Recipe.env:type_name -> containarium.v1.Recipe.EnvEntry
 	3,  // 4: containarium.v1.Recipe.parameters:type_name -> containarium.v1.RecipeParam
 	4,  // 5: containarium.v1.ListRecipesResponse.recipes:type_name -> containarium.v1.Recipe
 	4,  // 6: containarium.v1.GetRecipeResponse.recipe:type_name -> containarium.v1.Recipe
-	12, // 7: containarium.v1.DeployRecipeRequest.parameters:type_name -> containarium.v1.DeployRecipeRequest.ParametersEntry
+	14, // 7: containarium.v1.DeployRecipeRequest.parameters:type_name -> containarium.v1.DeployRecipeRequest.ParametersEntry
 	0,  // 8: containarium.v1.DeployRecipeRequest.resource_overrides:type_name -> containarium.v1.RecipeResources
-	13, // 9: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
-	5,  // 10: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
-	7,  // 11: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
-	9,  // 12: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
-	6,  // 13: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
-	8,  // 14: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
-	10, // 15: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
-	13, // [13:16] is the sub-list for method output_type
-	10, // [10:13] is the sub-list for method input_type
+	15, // 9: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
+	11, // 10: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
+	5,  // 11: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
+	7,  // 12: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
+	9,  // 13: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
+	12, // 14: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
+	6,  // 15: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
+	8,  // 16: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
+	10, // 17: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
+	14, // [14:18] is the sub-list for method output_type
+	10, // [10:14] is the sub-list for method input_type
 	10, // [10:10] is the sub-list for extension type_name
 	10, // [10:10] is the sub-list for extension extendee
 	0,  // [0:10] is the sub-list for field type_name
@@ -915,7 +1031,7 @@ func file_containarium_v1_recipe_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_recipe_proto_rawDesc), len(file_containarium_v1_recipe_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -113,3 +113,147 @@ recipes:
       # Best-effort assembly: never fail provisioning if the release lacks the
       # artifacts (|| echo keeps the line green under `set -e`).
       - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
+
+  # agent-workspace is the HUMAN-IN-THE-LOOP chat workspace: a web chat UI
+  # (Claude/ChatGPT-style) with a live preview pane and multiple persisted
+  # conversations, all running inside one always-on box. Where agent-runtime is
+  # headless (seeded task → artifact.json), this is a place a user sits and
+  # co-works with a coding agent, then ships what they build to a separate box.
+  #
+  # Rather than build a chat UI + agent loop + session store from scratch, this
+  # recipe packages OpenHands (https://github.com/All-Hands-AI/OpenHands, MIT)
+  # as the in-box engine. OpenHands already gives us: a web chat UI, a coding
+  # agent, an in-container workspace + browser/preview, multiple conversations
+  # persisted to disk, and bring-your-own Anthropic key. Containarium's value is
+  # the wrapper: an isolated always-on box, eBPF/audit/secrets trust fabric, and
+  # one-click ship-to-box via the platform MCP. OpenHands' web port is exposed
+  # as a subdomain (the `ports` block) so the whole chat+preview surface is
+  # reachable in the browser; conversations live under /opt/openhands-state in
+  # the box, so "all sessions stored inside a box" holds.
+  #
+  # The OpenHands "Agent Canvas" build runs the coding agent IN the app
+  # container (the box is the sandbox) — no docker/podman socket, no separate
+  # runtime image. Conversations persist to the mounted state dir, so "all
+  # sessions stored inside a box" holds. Validated live on a backend
+  # (2026-06-18, see docs/AGENT-WORKSPACE-SPIKE.md): the app comes up on :8000
+  # and serves the chat UI; bind mounts need Podman's `:U` so the non-root
+  # `openhands` user can write its SQLite DB.
+  #
+  # Auth lives IN the box, not at the edge: OpenHands binds to 127.0.0.1 and an
+  # in-box Caddy basic-auth proxy fronts it on the exposed port (:8080). So the
+  # box self-protects — the platform edge just forwards plain HTTP to :8080 and
+  # terminates TLS — and a box is never reachable without credentials. The
+  # auth_password parameter is required for exactly that reason. Validated live
+  # (2026-06-18): no/wrong creds → 401, correct creds → 200; OpenHands itself is
+  # not directly reachable. Auth + transport flow validated end to end in-box.
+  #
+  # The Anthropic key/model are set in the OpenHands settings UI on first visit
+  # (the run command takes no LLM env). Production hardening: seed credentials
+  # via the tenant secrets mechanism once the env contract is confirmed. Still
+  # pending live acceptance: a real model call (needs a key). Resource sizing is
+  # generous; trim after profiling.
+  - id: agent-workspace
+    name: Agent Workspace
+    description: Web chat workspace (chat + live preview + multiple persisted sessions) running OpenHands inside an always-on box, behind in-box basic auth; co-work with a coding agent in the browser, then ship to a box.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 8GB
+      disk: 60GB
+    ports:
+      # The in-box auth proxy — fronts the OpenHands UI (chat + preview +
+      # conversation list). OpenHands itself stays on 127.0.0.1.
+      - container_port: 8080
+        subdomain: workspace
+    parameters:
+      - name: auth_password
+        label: Workspace password
+        description: Password for the in-box basic-auth proxy in front of the workspace UI. Required — the box is never exposed without it.
+        type: password
+        required: true
+      - name: auth_user
+        label: Workspace username
+        description: Username for the in-box basic-auth proxy.
+        type: string
+        default: admin
+      - name: openhands_version
+        label: OpenHands version
+        description: OpenHands Agent Canvas image tag to run (pin for reproducibility).
+        type: string
+        default: 1.0.0-rc.11
+    post_start:
+      - mkdir -p /opt/openhands-state /opt/openhands-projects /opt/wsauth
+      - podman pull docker.io/library/caddy:2 >/dev/null
+      # Idempotent: drop any prior containers so a re-run of post_start (retry,
+      # re-deploy) doesn't abort under `set -e` on "name already in use".
+      - podman rm -f openhands wsauth 2>/dev/null || true
+      # Run the OpenHands web app bound to localhost: chat + preview + persisted
+      # conversations. `:U` chowns the bind mounts to the container's non-root
+      # user so it can write its SQLite state (validated 2026-06-18).
+      - |
+        podman run -d --name openhands --restart=always \
+          -p 127.0.0.1:8000:8000 \
+          -v /opt/openhands-state:/home/openhands/.openhands:U \
+          -v /opt/openhands-projects:/projects:U \
+          "ghcr.io/openhands/agent-canvas:${CONTAINARIUM_PARAM_OPENHANDS_VERSION}"
+      # In-box auth proxy on :8080 → 127.0.0.1:8000. Two ways in: HTTP basic
+      # auth, OR a session cookie the proxy itself issues on a successful
+      # basic-auth response. The cookie is SameSite=None so the browser sends it
+      # to this box even from an iframe embedded in the console on another
+      # origin — so after one top-level sign-in the embedded workspace loads with
+      # no prompt (browsers suppress basic-auth prompts in cross-origin iframes).
+      # The cookie value is a per-box random token; the console needs no secret.
+      # The password is bcrypt-hashed at deploy; the hash's '$' come from
+      # variable expansion and are not re-expanded by the heredoc. auto_https
+      # off: the edge terminates TLS, the in-box proxy speaks plain HTTP.
+      - |
+        WS_HASH=$(podman run --rm docker.io/library/caddy:2 caddy hash-password --plaintext "$CONTAINARIUM_PARAM_AUTH_PASSWORD")
+        WS_TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        # Fail loudly rather than write a malformed auth config (empty hash →
+        # a degenerate basic_auth entry, empty token → no cookie gate).
+        [ -n "$WS_HASH" ] && [ -n "$WS_TOKEN" ] || { echo "agent-workspace: empty auth hash/token; aborting" >&2; exit 1; }
+        # Persist the token (mode 0600) so the daemon can read it and hand the
+        # console a zero-click bootstrap URL (RecipeService.GetWorkspaceAccess).
+        printf '%s' "$WS_TOKEN" > /opt/wsauth/token
+        chmod 600 /opt/wsauth/token
+        cat > /opt/wsauth/Caddyfile <<EOF
+        {
+          auto_https off
+        }
+        :8080 {
+          # Zero-click bootstrap: the console opens /__ws_login?t=<token>; the
+          # proxy sets the SameSite=None cookie and redirects to the app, so no
+          # sign-in prompt is ever shown in the embedded iframe.
+          @login {
+            path /__ws_login
+            query t=$WS_TOKEN
+          }
+          handle @login {
+            header +Set-Cookie "ws_auth=$WS_TOKEN; Path=/; HttpOnly; Secure; SameSite=None"
+            # `redir * / 302`: the explicit `*` matcher keeps Caddy from reading
+            # the leading `/` as a path matcher (which makes the redirect a no-op).
+            redir * / 302
+          }
+          # Cookie path: seamless once the cookie is set. Anchored to the
+          # cookie name=value boundary so a crafted cookie can't slip the token
+          # in as a substring of another value.
+          @authed header_regexp Cookie "(^|;\s*)ws_auth=$WS_TOKEN($|;)"
+          handle @authed {
+            reverse_proxy 127.0.0.1:8000
+          }
+          # Fallback: HTTP basic auth, which also issues the cookie.
+          handle {
+            basic_auth {
+              $CONTAINARIUM_PARAM_AUTH_USER $WS_HASH
+            }
+            reverse_proxy 127.0.0.1:8000 {
+              header_down +Set-Cookie "ws_auth=$WS_TOKEN; Path=/; HttpOnly; Secure; SameSite=None"
+            }
+          }
+        }
+        EOF
+      - |
+        podman run -d --name wsauth --restart=always --network host \
+          -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \
+          docker.io/library/caddy:2

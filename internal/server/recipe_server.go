@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -61,6 +62,49 @@ func (s *RecipeServer) GetRecipe(ctx context.Context, req *pb.GetRecipeRequest) 
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 	return &pb.GetRecipeResponse{Recipe: r}, nil
+}
+
+// GetWorkspaceAccess returns a zero-click bootstrap URL for an agent-workspace
+// box: it reads the box's in-box auth proxy token (written to
+// /opt/wsauth/token by the agent-workspace recipe) and composes the
+// /__ws_login URL the console embeds in an iframe to authenticate the
+// workspace UI without showing a sign-in prompt.
+func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorkspaceAccessRequest) (*pb.GetWorkspaceAccessResponse, error) {
+	// containers:write, not read: this mints an interactive-access credential
+	// (the in-box session token + a zero-click /__ws_login URL), so it is a
+	// write-class operation — a read-only token must not be able to obtain it.
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
+	if req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Name); err != nil {
+		return nil, err
+	}
+
+	containerName := req.Name + "-container"
+	stdout, _, err := s.containers.manager.ExecWithOutput(containerName, []string{"cat", "/opt/wsauth/token"})
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound,
+			"no workspace token on %s (is this an agent-workspace box?): %v", containerName, err)
+	}
+	token := strings.TrimSpace(stdout)
+	if token == "" {
+		return nil, status.Errorf(codes.NotFound, "empty workspace token on %s", containerName)
+	}
+
+	resp := &pb.GetWorkspaceAccessResponse{Token: token}
+	// Only compose a URL when routing is actually configured (same precondition
+	// as exposePorts): without a base domain the URL would be domain-less and
+	// unusable, so return just the token and let the caller surface that.
+	if s.network != nil && s.network.baseDomain != "" {
+		// Mirror exposePorts' subdomain scheme: "<name>-workspace".
+		subdomain := req.Name + "-workspace"
+		resp.Url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain) +
+			"/__ws_login?t=" + url.QueryEscape(token)
+	}
+	return resp, nil
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe, runs the

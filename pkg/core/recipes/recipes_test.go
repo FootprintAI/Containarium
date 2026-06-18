@@ -1,6 +1,7 @@
 package recipes
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -26,6 +27,62 @@ func TestEmbeddedCatalogLoads(t *testing.T) {
 		if !r.RequiresGpu {
 			t.Errorf("recipe %q expected requires_gpu=true", id)
 		}
+	}
+}
+
+func TestAgentWorkspaceRecipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("agent-workspace")
+	if err != nil {
+		t.Fatalf("expected built-in recipe agent-workspace: %v", err)
+	}
+	if r.RequiresGpu {
+		t.Error("agent-workspace should not require a GPU")
+	}
+	// The exposed port is the in-box auth proxy (:8080), not OpenHands directly.
+	if len(r.Ports) != 1 || r.Ports[0].ContainerPort != 8080 {
+		t.Errorf("agent-workspace should expose the in-box auth proxy on :8080; got %+v", r.Ports)
+	}
+	// post_start must run OpenHands Agent Canvas bound to localhost, persist
+	// conversations in the box, chown the bind mounts, and stand up the in-box
+	// basic-auth proxy (all validated live 2026-06-18).
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"openhands/agent-canvas",
+		"/opt/openhands-state", // conversations stored inside the box
+		":U",                   // bind mount chowned to the non-root container user
+		"127.0.0.1:8000:8000",  // OpenHands not directly reachable
+		"caddy hash-password",  // password bcrypt-hashed at deploy
+		"basic_auth",           // in-box auth proxy
+		"ws_auth=",             // session-cookie handoff for seamless iframe auth
+		"SameSite=None",        // cookie sent cross-origin from the embedded iframe
+		"/opt/wsauth/token",    // token persisted for the daemon to vend
+		"/__ws_login",          // zero-click bootstrap route
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("agent-workspace post_start missing %q", want)
+		}
+	}
+	// The auth password is required (a box is never exposed without it).
+	params := map[string]*pb.RecipeParam{}
+	for _, p := range r.Parameters {
+		params[p.Name] = p
+	}
+	if pw := params["auth_password"]; pw == nil {
+		t.Fatal("agent-workspace should declare an auth_password parameter")
+	} else {
+		if !pw.Required {
+			t.Error("auth_password must be required (box never exposed without auth)")
+		}
+		if pw.Type != "password" {
+			t.Errorf("auth_password type: got %q want password", pw.Type)
+		}
+	}
+	if params["openhands_version"] == nil || params["openhands_version"].Default == "" {
+		t.Error("agent-workspace should pin openhands_version to a default tag")
 	}
 }
 

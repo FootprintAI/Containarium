@@ -579,6 +579,19 @@ func (c *GRPCClient) GetRecipe(id string) (*pb.Recipe, error) {
 	return resp.Recipe, nil
 }
 
+// GetWorkspaceAccess fetches the zero-click bootstrap URL for an
+// agent-workspace box via gRPC.
+func (c *GRPCClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.recipeClient.GetWorkspaceAccess(ctx, &pb.GetWorkspaceAccessRequest{Name: name})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workspace access: %w", err)
+	}
+	return resp, nil
+}
+
 // DeployRecipe provisions a new dedicated container from a recipe via gRPC.
 func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
