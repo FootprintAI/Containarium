@@ -113,3 +113,82 @@ recipes:
       # Best-effort assembly: never fail provisioning if the release lacks the
       # artifacts (|| echo keeps the line green under `set -e`).
       - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
+
+  # agent-workspace is the HUMAN-IN-THE-LOOP chat workspace: a web chat UI
+  # (Claude/ChatGPT-style) with a live preview pane and multiple persisted
+  # conversations, all running inside one always-on box. Where agent-runtime is
+  # headless (seeded task → artifact.json), this is a place a user sits and
+  # co-works with a coding agent, then ships what they build to a separate box.
+  #
+  # Rather than build a chat UI + agent loop + session store from scratch, this
+  # recipe packages OpenHands (https://github.com/All-Hands-AI/OpenHands, MIT)
+  # as the in-box engine. OpenHands already gives us: a web chat UI, a coding
+  # agent, an in-container workspace + browser/preview, multiple conversations
+  # persisted to disk, and bring-your-own Anthropic key. Containarium's value is
+  # the wrapper: an isolated always-on box, eBPF/audit/secrets trust fabric, and
+  # one-click ship-to-box via the platform MCP. OpenHands' web port is exposed
+  # as a subdomain (the `ports` block) so the whole chat+preview surface is
+  # reachable in the browser; conversations live under /opt/openhands-state in
+  # the box, so "all sessions stored inside a box" holds.
+  #
+  # OpenHands drives a container engine to spawn its per-conversation runtime
+  # sandbox; here it talks to the box's Podman socket (the box already runs OCI
+  # workloads via Podman, same as the ollama/llamacpp recipes), so no
+  # docker-in-docker nesting beyond what those recipes already do.
+  #
+  # SPIKE CAVEAT — this is a first-draft integration, NOT live-validated. Three
+  # things MUST be confirmed on a real box before it ships (see
+  # docs/AGENT-WORKSPACE-SPIKE.md): the OpenHands image tag, the Podman-socket
+  # wiring, and the LiteLLM model id. The Anthropic key is taken as a parameter
+  # for proof-of-path; production must seed it via the secrets mechanism
+  # (AES-256-GCM, mode 0400), never as a deploy-time parameter.
+  - id: agent-workspace
+    name: Agent Workspace
+    description: Web chat workspace (chat + live preview + multiple persisted sessions) running OpenHands inside an always-on box; co-work with a coding agent in the browser, then ship to a box.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 8GB
+      disk: 60GB
+    ports:
+      # The OpenHands web UI — chat, preview, and the conversation list.
+      - container_port: 3000
+        subdomain: workspace
+    parameters:
+      # Optional: blank → OpenHands prompts for the key in its own settings UI
+      # on first visit. SPIKE-only delivery path; production uses secrets.
+      - name: anthropic_api_key
+        label: Anthropic API key
+        description: API key for the in-box coding agent. Leave blank to set it in the OpenHands UI on first visit. SPIKE-only — production seeds this via the secrets mechanism.
+        type: password
+      - name: llm_model
+        label: LLM model
+        description: LiteLLM model id OpenHands passes to the provider (operator-overridable; confirm the current id at live acceptance).
+        type: string
+        default: anthropic/claude-sonnet-4-6
+      - name: openhands_version
+        label: OpenHands version
+        description: OpenHands image tag to run (pin for reproducibility; confirm the latest tag at live acceptance).
+        type: string
+        default: "0.39"
+    post_start:
+      - mkdir -p /etc/containarium /opt/openhands-state
+      # Seed the agent's LLM config into a root-only env-file the app reads.
+      - 'install -m 0600 /dev/null /etc/containarium/agent-workspace.env'
+      - 'printf "LLM_MODEL=%s\n" "$CONTAINARIUM_PARAM_LLM_MODEL" >> /etc/containarium/agent-workspace.env'
+      - 'if [ -n "$CONTAINARIUM_PARAM_ANTHROPIC_API_KEY" ]; then printf "LLM_API_KEY=%s\n" "$CONTAINARIUM_PARAM_ANTHROPIC_API_KEY" >> /etc/containarium/agent-workspace.env; fi'
+      # Expose the box's Podman socket so OpenHands can spawn its runtime sandbox.
+      - systemctl enable --now podman.socket
+      # Run the OpenHands web app: chat + preview + persisted conversations on
+      # :3000, sessions under /opt/openhands-state, talking to Podman for its
+      # per-conversation sandbox.
+      - |
+        podman run -d --name openhands --restart=always \
+          -e SANDBOX_RUNTIME_CONTAINER_IMAGE="docker.all-hands.dev/all-hands-ai/runtime:${CONTAINARIUM_PARAM_OPENHANDS_VERSION}-nikolaik" \
+          -e DOCKER_HOST=unix:///run/podman/podman.sock \
+          --env-file /etc/containarium/agent-workspace.env \
+          -v /run/podman/podman.sock:/run/podman/podman.sock \
+          -v /opt/openhands-state:/.openhands \
+          -p 3000:3000 \
+          "docker.all-hands.dev/all-hands-ai/openhands:${CONTAINARIUM_PARAM_OPENHANDS_VERSION}"
