@@ -171,6 +171,27 @@ end-to-end over HTTPS). Two gotchas worth recording:
   containers live under the box's init with `--restart=always`. Only a
   by-hand, non-root setup needs linger enabled (by root) to survive logout.
 
+## Recipe-as-root validation (2026-06-18)
+
+The recipe's `post_start` was run **as root** (exactly as `DeployRecipe` execs
+it — params substituted, `set -euo pipefail`) in an isolated throwaway incus
+container, to prove the production path differs from the rootless hand-repro:
+
+- The committed `post_start` script completed cleanly (`POST_START DONE`).
+- **Root Podman containers persist across session close** — confirmed `Up` from
+  multiple fresh SSH sessions after the launching session had exited (uptime grew
+  16s → 58s). No `linger` needed: root containers run under the box's init with
+  `--restart=always`. This is the gap the rootless tenant setup couldn't cross.
+- `/opt/wsauth/token` written (what `GetWorkspaceAccess` reads); in-box auth
+  `401 / 200 / 302` (basic + zero-click bootstrap). Throwaway torn down after.
+
+Not run: the **full daemon path** (`deploy_recipe agent-workspace` + the
+`GetWorkspaceAccess` RPC against a live daemon). A second daemon on a shared lab
+box is **not isolatable** — it auto-discovers the existing core services and
+loads config from the live PostgreSQL (e.g. `app-hosting=true`), so it becomes a
+second instance of the live deployment's brain. The RPC/CLI are unit-tested; a
+clean host (fresh VM) is the right place to exercise the end-to-end daemon path.
+
 ## Remaining live-acceptance items (NOT yet proven)
 
 The engine + wiring are validated (above). What a fuller live acceptance still
