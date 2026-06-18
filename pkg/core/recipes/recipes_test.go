@@ -1,6 +1,7 @@
 package recipes
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -26,6 +27,53 @@ func TestEmbeddedCatalogLoads(t *testing.T) {
 		if !r.RequiresGpu {
 			t.Errorf("recipe %q expected requires_gpu=true", id)
 		}
+	}
+}
+
+func TestAgentWorkspaceRecipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("agent-workspace")
+	if err != nil {
+		t.Fatalf("expected built-in recipe agent-workspace: %v", err)
+	}
+	if r.RequiresGpu {
+		t.Error("agent-workspace should not require a GPU")
+	}
+	if len(r.Ports) != 0 {
+		t.Errorf("agent-workspace exposes no ports (co-work via web terminal); got %d", len(r.Ports))
+	}
+	// The interactive proof: post_start must install the agent, install tmux,
+	// and drop the auto-attach profile hook that lands a web-terminal login in
+	// a durable tmux session.
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"@anthropic-ai/claude-code",
+		"tmux",
+		"/etc/profile.d/zz-agent-workspace.sh",
+		"new-session -A -s agent",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("agent-workspace post_start missing %q", want)
+		}
+	}
+	// The API key is an optional, password-typed parameter (spike delivery).
+	var key *pb.RecipeParam
+	for _, p := range r.Parameters {
+		if p.Name == "anthropic_api_key" {
+			key = p
+		}
+	}
+	if key == nil {
+		t.Fatal("agent-workspace should declare an anthropic_api_key parameter")
+	}
+	if key.Required {
+		t.Error("anthropic_api_key should be optional (blank → interactive /login)")
+	}
+	if key.Type != "password" {
+		t.Errorf("anthropic_api_key type: got %q want password", key.Type)
 	}
 }
 

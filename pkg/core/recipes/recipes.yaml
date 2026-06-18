@@ -113,3 +113,69 @@ recipes:
       # Best-effort assembly: never fail provisioning if the release lacks the
       # artifacts (|| echo keeps the line green under `set -e`).
       - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
+
+  # agent-workspace is the INTERACTIVE sibling of agent-runtime. Where
+  # agent-runtime runs a one-shot, headless AgentSkill loop (seeded task in →
+  # artifact.json out), agent-workspace is a persistent, human-in-the-loop
+  # coding agent you co-work with: an always-on Claude Code session living in a
+  # tmux session inside the box.
+  #
+  # The thesis (SPIKE — see docs/AGENT-WORKSPACE-SPIKE.md): a coding agent in a
+  # laptop tmux dies when the laptop sleeps. Move it into an always-on box and
+  # attach over the existing web terminal (internal/gateway/terminal.go execs
+  # `su - <user>`, a login shell). The profile.d hook below `exec`s every such
+  # login into ONE durable tmux session named `agent` — so each browser attach
+  # reconnects to the same running agent, exactly like re-attaching to a server
+  # tmux. Detaching (or the websocket dropping) leaves the agent running.
+  #
+  # No GPU, no exposed ports — co-working happens through the web terminal, and
+  # whatever the agent builds is shipped to a separate box via the platform MCP
+  # (create/expose), keeping this box the workshop and the shipped box the
+  # product.
+  #
+  # SPIKE CAVEAT: the Anthropic key is taken as a recipe parameter and written
+  # to a root-owned profile fragment for speed of proof. Production must seed it
+  # via the tenant secrets mechanism (AES-256-GCM, mode 0400) per
+  # AGENT-RUNTIME-INBOX-LOOP-DESIGN.md, not as a deploy-time parameter.
+  - id: agent-workspace
+    name: Agent Workspace
+    description: Always-on coding agent — a persistent Claude Code session in a tmux inside the box; attach over the web terminal to co-work, then ship what you build to a box.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 8GB
+      disk: 40GB
+    parameters:
+      # Optional: when empty, Claude Code starts unauthenticated and prompts
+      # the user to /login on first attach. SPIKE-only delivery path; see the
+      # caveat above.
+      - name: anthropic_api_key
+        label: Anthropic API key
+        description: API key for the in-box Claude Code agent. Leave blank to /login interactively on first attach. SPIKE-only — production seeds this via the secrets mechanism.
+        type: password
+    post_start:
+      - DEBIAN_FRONTEND=noninteractive apt-get update
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y tmux git curl ca-certificates
+      - 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash -'
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+      - npm install -g @anthropic-ai/claude-code
+      # Stash the optional key in a root-only file the profile fragment sources.
+      - mkdir -p /etc/containarium
+      - 'install -m 0600 /dev/null /etc/containarium/agent-workspace.env'
+      - 'if [ -n "$CONTAINARIUM_PARAM_ANTHROPIC_API_KEY" ]; then printf "export ANTHROPIC_API_KEY=%s\n" "$CONTAINARIUM_PARAM_ANTHROPIC_API_KEY" > /etc/containarium/agent-workspace.env; fi'
+      # The auto-attach hook. On an interactive login shell that is not already
+      # inside tmux, replace the shell with a durable session named `agent`
+      # running Claude Code. `new-session -A` attaches if it exists, else
+      # creates it; `claude; exec bash` keeps the pane (and session) alive if
+      # the agent exits or needs /login, so re-attach always works.
+      - |
+        cat > /etc/profile.d/zz-agent-workspace.sh <<'EOF'
+        # Containarium agent-workspace: co-work with a persistent Claude Code agent.
+        case "$-" in *i*) ;; *) return ;; esac
+        [ -n "$TMUX" ] && return
+        [ -r /etc/containarium/agent-workspace.env ] && . /etc/containarium/agent-workspace.env
+        command -v tmux >/dev/null 2>&1 || return
+        exec tmux new-session -A -s agent "claude || true; exec bash"
+        EOF
+      - chmod 0644 /etc/profile.d/zz-agent-workspace.sh
