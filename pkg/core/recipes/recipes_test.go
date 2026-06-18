@@ -57,6 +57,8 @@ func TestAgentWorkspaceRecipe(t *testing.T) {
 		"127.0.0.1:8000:8000",  // OpenHands not directly reachable
 		"caddy hash-password",  // password bcrypt-hashed at deploy
 		"basic_auth",           // in-box auth proxy
+		"ws_auth=",             // session-cookie handoff for seamless iframe auth
+		"SameSite=None",        // cookie sent cross-origin from the embedded iframe
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("agent-workspace post_start missing %q", want)

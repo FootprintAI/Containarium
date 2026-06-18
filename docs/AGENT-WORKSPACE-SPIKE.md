@@ -108,12 +108,18 @@ routes from the network route list and renders the box's UI in an iframe
 (typechecks + lints clean). Embedding works because the OpenHands root response
 carries no `X-Frame-Options`/`CSP` (validated above).
 
-Auth nuance carried into the UI: browsers usually suppress the in-box
-basic-auth prompt inside a cross-origin iframe, so the panel keeps an "Open in
-new tab to sign in" action prominent — sign in once at top-level, the browser
-caches the credentials for that origin, and the iframe then loads
-authenticated. A cookie/token handoff (like the monitoring tab's session
-cookie) is the follow-up to make it seamless.
+Seamless auth via a session-cookie handoff (validated 2026-06-18): browsers
+suppress the basic-auth prompt inside a cross-origin iframe, so the in-box proxy
+**issues a `SameSite=None` cookie on a successful basic-auth response and also
+accepts that cookie** in lieu of basic auth. The user signs in once at
+top-level (the panel's "Open in new tab to sign in" bootstrap); the browser then
+sends the cookie to the box even from the embedded iframe, so every load
+afterward is promptless. The cookie value is a per-box random token, so the
+console needs no secret. Validated on the box: no creds → 401, basic auth → 200
++ `Set-Cookie`, valid cookie alone → 200, wrong cookie → 401.
+
+Fully zero-click (no first sign-in) would require the daemon to vend the box's
+token to the console so it can bootstrap the cookie itself — a later follow-up.
 
 ## Remaining live-acceptance items (NOT yet proven)
 

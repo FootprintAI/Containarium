@@ -13,12 +13,13 @@ import { ProxyRoute } from '@/src/types/app';
  * container port 8080). We discover those routes from the network route list
  * rather than calling a new endpoint.
  *
- * Auth nuance: the workspace is protected by in-box HTTP basic auth, and
- * browsers usually suppress the basic-auth prompt inside a cross-origin
- * iframe. So the flow is: open the workspace once in a new tab to sign in
- * (the browser then caches the credentials for that origin), after which the
- * embedded iframe loads authenticated. The "Open in new tab" action is kept
- * prominent for exactly that reason.
+ * Auth nuance: the workspace is protected by an in-box auth proxy, and
+ * browsers suppress the basic-auth prompt inside a cross-origin iframe. So the
+ * flow is: sign in ONCE in a new tab — the in-box proxy then issues a
+ * SameSite=None session cookie, which the browser sends to the box even from
+ * this embedded iframe, so every load afterward is seamless (no prompt). The
+ * "Open in new tab to sign in" action is the one-time bootstrap; "Reload"
+ * re-renders the iframe once the cookie is set.
  */
 export default function WorkspaceView({ routes }: { routes: ProxyRoute[] }) {
   const workspaces = useMemo(
