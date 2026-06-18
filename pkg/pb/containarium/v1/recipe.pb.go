@@ -627,8 +627,14 @@ type DeployRecipeRequest struct {
 	Parameters map[string]string `protobuf:"bytes,6,rep,name=parameters,proto3" json:"parameters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Optional overrides for the recipe's default resource limits.
 	ResourceOverrides *RecipeResources `protobuf:"bytes,7,opt,name=resource_overrides,json=resourceOverrides,proto3" json:"resource_overrides,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Custom labels stamped on the provisioned container (forwarded to
+	// CreateContainer). Lets a control plane attribute a recipe-deployed box to
+	// a tenant/org the same way it does for a plain CreateContainer — without
+	// labels, a cloud front-end that filters containers by label can't see a
+	// recipe-deployed box. Same key/value rules as CreateContainerRequest.labels.
+	Labels        map[string]string `protobuf:"bytes,8,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeployRecipeRequest) Reset() {
@@ -706,6 +712,13 @@ func (x *DeployRecipeRequest) GetParameters() map[string]string {
 func (x *DeployRecipeRequest) GetResourceOverrides() *RecipeResources {
 	if x != nil {
 		return x.ResourceOverrides
+	}
+	return nil
+}
+
+func (x *DeployRecipeRequest) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
 	}
 	return nil
 }
@@ -927,7 +940,7 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x10GetRecipeRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"D\n" +
 	"\x11GetRecipeResponse\x12/\n" +
-	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xf1\x02\n" +
+	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xf6\x03\n" +
 	"\x13DeployRecipeRequest\x12\x1b\n" +
 	"\trecipe_id\x18\x01 \x01(\tR\brecipeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
@@ -938,8 +951,12 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\n" +
 	"parameters\x18\x06 \x03(\v24.containarium.v1.DeployRecipeRequest.ParametersEntryR\n" +
 	"parameters\x12O\n" +
-	"\x12resource_overrides\x18\a \x01(\v2 .containarium.v1.RecipeResourcesR\x11resourceOverrides\x1a=\n" +
+	"\x12resource_overrides\x18\a \x01(\v2 .containarium.v1.RecipeResourcesR\x11resourceOverrides\x12H\n" +
+	"\x06labels\x18\b \x03(\v20.containarium.v1.DeployRecipeRequest.LabelsEntryR\x06labels\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"|\n" +
 	"\x14DeployRecipeResponse\x128\n" +
@@ -974,7 +991,7 @@ func file_containarium_v1_recipe_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_recipe_proto_rawDescData
 }
 
-var file_containarium_v1_recipe_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_containarium_v1_recipe_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_containarium_v1_recipe_proto_goTypes = []any{
 	(*RecipeResources)(nil),            // 0: containarium.v1.RecipeResources
 	(*RecipePort)(nil),                 // 1: containarium.v1.RecipePort
@@ -991,7 +1008,8 @@ var file_containarium_v1_recipe_proto_goTypes = []any{
 	(*GetWorkspaceAccessResponse)(nil), // 12: containarium.v1.GetWorkspaceAccessResponse
 	nil,                                // 13: containarium.v1.Recipe.EnvEntry
 	nil,                                // 14: containarium.v1.DeployRecipeRequest.ParametersEntry
-	(*Container)(nil),                  // 15: containarium.v1.Container
+	nil,                                // 15: containarium.v1.DeployRecipeRequest.LabelsEntry
+	(*Container)(nil),                  // 16: containarium.v1.Container
 }
 var file_containarium_v1_recipe_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.Recipe.resources:type_name -> containarium.v1.RecipeResources
@@ -1003,20 +1021,21 @@ var file_containarium_v1_recipe_proto_depIdxs = []int32{
 	4,  // 6: containarium.v1.GetRecipeResponse.recipe:type_name -> containarium.v1.Recipe
 	14, // 7: containarium.v1.DeployRecipeRequest.parameters:type_name -> containarium.v1.DeployRecipeRequest.ParametersEntry
 	0,  // 8: containarium.v1.DeployRecipeRequest.resource_overrides:type_name -> containarium.v1.RecipeResources
-	15, // 9: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
-	11, // 10: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
-	5,  // 11: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
-	7,  // 12: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
-	9,  // 13: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
-	12, // 14: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
-	6,  // 15: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
-	8,  // 16: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
-	10, // 17: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
-	14, // [14:18] is the sub-list for method output_type
-	10, // [10:14] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	15, // 9: containarium.v1.DeployRecipeRequest.labels:type_name -> containarium.v1.DeployRecipeRequest.LabelsEntry
+	16, // 10: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
+	11, // 11: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
+	5,  // 12: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
+	7,  // 13: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
+	9,  // 14: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
+	12, // 15: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
+	6,  // 16: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
+	8,  // 17: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
+	10, // 18: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
+	15, // [15:19] is the sub-list for method output_type
+	11, // [11:15] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_recipe_proto_init() }
@@ -1031,7 +1050,7 @@ func file_containarium_v1_recipe_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_recipe_proto_rawDesc), len(file_containarium_v1_recipe_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

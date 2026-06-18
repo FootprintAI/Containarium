@@ -7541,6 +7541,13 @@
         "resourceOverrides": {
           "$ref": "#/definitions/RecipeResources",
           "description": "Optional overrides for the recipe's default resource limits."
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Custom labels stamped on the provisioned container (forwarded to\nCreateContainer). Lets a control plane attribute a recipe-deployed box to\na tenant/org the same way it does for a plain CreateContainer — without\nlabels, a cloud front-end that filters containers by label can't see a\nrecipe-deployed box. Same key/value rules as CreateContainerRequest.labels."
         }
       },
       "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."

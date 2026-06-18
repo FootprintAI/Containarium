@@ -149,6 +149,13 @@ message DeployRecipeRequest {
 
   // Optional overrides for the recipe's default resource limits.
   RecipeResources resource_overrides = 7;
+
+  // Custom labels stamped on the provisioned container (forwarded to
+  // CreateContainer). Lets a control plane attribute a recipe-deployed box to
+  // a tenant/org the same way it does for a plain CreateContainer — without
+  // labels, a cloud front-end that filters containers by label can't see a
+  // recipe-deployed box. Same key/value rules as CreateContainerRequest.labels.
+  map<string, string> labels = 8;
 }
 
 // DeployRecipeResponse is the result of a recipe deployment.

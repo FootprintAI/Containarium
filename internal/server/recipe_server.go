@@ -168,11 +168,15 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 
 	// 1. Provision the dedicated container locally (reuses all of
 	//    CreateContainer's validation, image allowlist, GPU wiring, etc.).
+	//    Caller labels (e.g. a control plane's tenant-attribution labels) are
+	//    forwarded so a recipe-deployed box is labeled the same as a plain
+	//    CreateContainer — otherwise a label-filtering front-end can't see it.
 	createReq := &pb.CreateContainerRequest{
 		Username:     req.Name,
 		Image:        recipeBaseImage,
 		EnablePodman: true,
 		Resources:    resourceLimits(recipe, req.ResourceOverrides),
+		Labels:       req.Labels,
 	}
 	// A recipe requests a single GPU device; map it onto the container's
 	// repeated `gpus` (the singular `gpu` is no longer honored — #673).

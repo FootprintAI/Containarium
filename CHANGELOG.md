@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`DeployRecipeRequest` now carries `labels`, forwarded to the provisioned
+  container.** A recipe-deployed box is now labeled like a plain
+  `CreateContainer` (the `deploy()` body forwards `req.Labels` into the inner
+  `CreateContainerRequest`). Without this, a control plane that attributes
+  containers to a tenant/org by label (e.g. the cloud's `cloud_org_id`
+  filter) could not see a recipe-deployed box — so it couldn't front
+  `deploy_recipe` for the `agent-workspace` recipe. Additive proto field
+  (`labels = 8`); existing callers are unaffected.
+
 - **`agent-workspace` recipe — a hosted web chat workspace in a box.** A new
   built-in recipe runs OpenHands ("Agent Canvas") inside an always-on box: a
   browser chat UI with live preview and multiple persisted conversations, all
