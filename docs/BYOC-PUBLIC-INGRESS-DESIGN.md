@@ -133,6 +133,51 @@ ensuring the workspace subdomain flows through the same path.
 - **Isolation unchanged.** The box's own in-box auth proxy (basic-auth +
   cookie) still gates access; ingress only carries traffic to it.
 
+## Phase 1 findings (validated on the lab BYOC host)
+
+Walking the path on a real BYOC host confirmed the transport and isolated the
+one hard problem to **certs**:
+
+- **host `:443` → box Caddy**: trivial. The host-side box Caddy
+  (`core-caddy`) listens on an internal bridge IP, not the host loopback the
+  tunnel forwards; an `incus` proxy device (`listen 127.0.0.1:443 → core-caddy`)
+  bridges it. Reversible, no other-tenant impact.
+- **tunnel carries `:443`**: already true (same mechanism as the working
+  peer-proxy on `:8080`).
+- **TLS on the host: FAILS.** `core-caddy` has the box's route but **no cert**
+  for `*.example.com` — a standalone BYOC host has no DNS-01 token and no
+  public `:80` for HTTP-01, so the TLS handshake aborts (`tlsv1 alert internal
+  error`). The box's own HTTP works locally; only the public TLS terminator is
+  missing.
+
+**Consequence — the cert decision is the design, and it flips the model.**
+Terminating TLS *on the host* would require shipping a `*.example.com` cert (or
+the DNS provider token) to every BYOC host — fine for an operator-owned host,
+a **credential leak for a true third-party host**. So:
+
+> **Primary model: the sentinel terminates TLS** (it already holds the wildcard)
+> **and forwards plaintext to the box's port over the tunnel.** The BYOC host
+> needs **no cert**. (`8080` is already tunnel-forwarded, so the plaintext hop
+> is available today.)
+
+The host-terminate / SNI-passthrough variant remains valid **only** for
+operator-owned hosts (deliver the cert) and is the quickest way to finish an
+end-to-end demo on the lab host — but it is **not** the product model. The real
+work item is the sentinel HTTP layer below.
+
+### Revised primary data path
+
+```
+client ──TLS──> sentinel:443  (terminates with the *.example.com wildcard it holds)
+                  │ route by HTTP Host = <box>-<org>.example.com
+                  │ lookup → BYOC host spotID   (cloud-pushed map)
+                  ▼
+            DialTunnel(spotID, 8080-or-box-port)  ──yamux──> box wsauth:8080  (plaintext)
+```
+
+The sentinel gaining an HTTP reverse-proxy for tenant subdomains (it does raw
+TCP/SNI today) is the main new piece; the host stays cert-free and unchanged.
+
 ## Phases
 
 1. **Path-only validation (operator host).** Phase-1 cert on the BYOC host +
