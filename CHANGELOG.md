@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pool join` no longer drops a host's existing daemon flags (#702).** It used
+  to reset the daemon `ExecStart` to a minimal command (`--rest
+  --jwt-secret-file` + `--pool`), silently dropping any extra flags
+  (e.g. `--app-hosting`, `--network-subnet <cidr>`) on the next restart — the
+  worst case being a bring-your-own-compute host already running workloads on a
+  custom bridge. `pool join` now reads the effective `ExecStart` (`systemctl
+  show`), preserves those flags, re-sets only the managed `--pool` /
+  `--base-domain` (idempotent on re-run), and warns + falls back to the minimal
+  baseline when it can't read an existing unit. New repeatable `--daemon-flag`
+  passes extra daemon flags through explicitly (preserve override / fresh-host
+  use).
+
 ### Added
 
 - **Gemini engine for the in-box agent loop (`agent-runtime`).** A third
