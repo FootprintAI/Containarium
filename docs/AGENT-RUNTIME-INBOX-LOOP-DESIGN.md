@@ -4,6 +4,12 @@
 > box image's in-box loop — the one seam carried across Phases 0–3 of the
 > agent-skills mechanism (see `docs/AGENT-SKILLS-CREWS-DESIGN.md`). Nothing
 > here is built yet.
+>
+> **Superseding direction:** `docs/AGENT-DATA-PLANE-SEPARATION-DESIGN.md` records
+> the target where the loop runs *outside* the data box (box = data + tools only;
+> skill + credential held by the agent, never in the box). This in-box note
+> remains accurate for the *shipped* implementation and self-host single-principal
+> use; read it together with the separation note for where this is headed.
 
 ## What this closes
 
