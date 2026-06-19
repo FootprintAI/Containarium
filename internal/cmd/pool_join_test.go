@@ -53,9 +53,9 @@ func TestRenderTunnelUnit_PublicPrimary(t *testing.T) {
 }
 
 func TestRenderPoolDropIn(t *testing.T) {
-	// ExecStart must be cleared then re-set (systemd override semantics) and
-	// carry --pool; empty base-domain is omitted.
-	d := renderPoolDropIn("prod", "")
+	// ExecStart must be cleared then re-set (systemd override semantics).
+	argv := resolvePoolDaemonArgv(nil, false, "prod", "", nil)
+	d := renderPoolDropIn(argv)
 	if !strings.Contains(d, "ExecStart=\nExecStart=/usr/local/bin/containarium daemon") {
 		t.Errorf("drop-in must clear+reset ExecStart:\n%s", d)
 	}
@@ -65,9 +65,102 @@ func TestRenderPoolDropIn(t *testing.T) {
 	if strings.Contains(d, "--base-domain") {
 		t.Errorf("drop-in should omit --base-domain when empty:\n%s", d)
 	}
-	// With a base domain it's included.
-	d2 := renderPoolDropIn("prod", "boxes.example.com")
+	d2 := renderPoolDropIn(resolvePoolDaemonArgv(nil, false, "prod", "boxes.example.com", nil))
 	if !strings.Contains(d2, "--base-domain boxes.example.com") {
 		t.Errorf("drop-in missing --base-domain when set:\n%s", d2)
+	}
+}
+
+func TestResolvePoolDaemonArgv_FreshHostUsesMinimal(t *testing.T) {
+	argv := resolvePoolDaemonArgv(nil, false, "prod", "", nil)
+	got := strings.Join(argv, " ")
+	want := "/usr/local/bin/containarium daemon --rest --jwt-secret-file /etc/containarium/jwt.secret --pool prod"
+	if got != want {
+		t.Errorf("fresh host argv = %q, want %q", got, want)
+	}
+}
+
+func TestResolvePoolDaemonArgv_PreservesExistingFlags(t *testing.T) {
+	// The #702 case: a host already running with extra flags must keep them.
+	current := []string{
+		"/usr/local/bin/containarium", "daemon", "--rest",
+		"--jwt-secret-file", "/etc/containarium/jwt.secret",
+		"--app-hosting", "--network-subnet", "10.0.5.0/24",
+	}
+	argv := resolvePoolDaemonArgv(current, true, "prod", "boxes.example.com", nil)
+	got := strings.Join(argv, " ")
+	for _, want := range []string{"--app-hosting", "--network-subnet 10.0.5.0/24", "--pool prod", "--base-domain boxes.example.com"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preserved argv missing %q\n got: %s", want, got)
+		}
+	}
+}
+
+func TestResolvePoolDaemonArgv_ReRunDoesNotDuplicateManagedFlags(t *testing.T) {
+	// Re-running join (pool.conf already in effect) must re-set, not duplicate,
+	// the managed flags — and must pick up a changed --base-domain / --pool.
+	current := []string{
+		"/usr/local/bin/containarium", "daemon", "--rest",
+		"--jwt-secret-file", "/etc/containarium/jwt.secret",
+		"--app-hosting", "--pool", "old", "--base-domain", "old.example.com",
+	}
+	argv := resolvePoolDaemonArgv(current, true, "new", "new.example.com", nil)
+	got := strings.Join(argv, " ")
+	if strings.Count(got, "--pool ") != 1 || strings.Count(got, "--base-domain ") != 1 {
+		t.Errorf("managed flags must appear exactly once: %s", got)
+	}
+	if !strings.Contains(got, "--pool new") || !strings.Contains(got, "--base-domain new.example.com") {
+		t.Errorf("managed flags must update to new values: %s", got)
+	}
+	if strings.Contains(got, "old") {
+		t.Errorf("stale managed values must be stripped: %s", got)
+	}
+	if !strings.Contains(got, "--app-hosting") {
+		t.Errorf("non-managed flag must survive: %s", got)
+	}
+}
+
+func TestResolvePoolDaemonArgv_DaemonFlagOverride(t *testing.T) {
+	argv := resolvePoolDaemonArgv(nil, false, "prod", "", []string{"--app-hosting", "--network-subnet=10.1.0.0/24"})
+	got := strings.Join(argv, " ")
+	if !strings.Contains(got, "--app-hosting") || !strings.Contains(got, "--network-subnet=10.1.0.0/24") {
+		t.Errorf("operator --daemon-flag values must be appended: %s", got)
+	}
+}
+
+func TestStripValuedFlag(t *testing.T) {
+	cases := []struct {
+		in   []string
+		flag string
+		want string
+	}{
+		{[]string{"daemon", "--pool", "prod", "--rest"}, "--pool", "daemon --rest"},
+		{[]string{"daemon", "--pool=prod", "--rest"}, "--pool", "daemon --rest"},
+		{[]string{"daemon", "--rest"}, "--pool", "daemon --rest"},
+		{[]string{"daemon", "--base-domain", "x", "--base-domain", "y"}, "--base-domain", "daemon"},
+	}
+	for _, c := range cases {
+		if got := strings.Join(stripValuedFlag(c.in, c.flag), " "); got != c.want {
+			t.Errorf("stripValuedFlag(%v, %q) = %q, want %q", c.in, c.flag, got, c.want)
+		}
+	}
+}
+
+func TestParseExecStartArgv(t *testing.T) {
+	out := "{ path=/usr/local/bin/containarium ; argv[]=/usr/local/bin/containarium daemon --rest --jwt-secret-file /etc/containarium/jwt.secret --app-hosting ; ignore_errors=no ; start_time=[n/a] }"
+	argv, ok := parseExecStartArgv(out)
+	if !ok {
+		t.Fatalf("expected to parse argv from %q", out)
+	}
+	got := strings.Join(argv, " ")
+	want := "/usr/local/bin/containarium daemon --rest --jwt-secret-file /etc/containarium/jwt.secret --app-hosting"
+	if got != want {
+		t.Errorf("parsed argv = %q, want %q", got, want)
+	}
+	// Empty / unrecognized values yield (nil, false).
+	for _, bad := range []string{"", "{ path=/x ; argv[]= ; ignore_errors=no }", "{ argv[]=/usr/bin/other thing ; }"} {
+		if _, ok := parseExecStartArgv(bad); ok {
+			t.Errorf("parseExecStartArgv(%q) should be false", bad)
+		}
 	}
 }

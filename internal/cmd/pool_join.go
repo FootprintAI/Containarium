@@ -27,7 +27,15 @@ const (
 	tunnelUnitPath  = "/etc/systemd/system/containarium-tunnel.service"
 	daemonDropInDir = "/etc/systemd/system/containarium.service.d"
 	daemonDropIn    = daemonDropInDir + "/pool.conf"
+	daemonBinPath   = "/usr/local/bin/containarium"
 )
+
+// minimalDaemonArgv is the baseline daemon command used when no existing
+// ExecStart can be read (a fresh host). On a host that already runs the daemon
+// with extra flags, those flags are preserved instead (see resolvePoolDaemonArgv).
+func minimalDaemonArgv() []string {
+	return []string{daemonBinPath, "daemon", "--rest", "--jwt-secret-file", "/etc/containarium/jwt.secret"}
+}
 
 var (
 	poolJoinSentinel       string
@@ -39,6 +47,7 @@ var (
 	poolJoinPublicPort     int
 	poolJoinBaseDomain     string
 	poolJoinDryRun         bool
+	poolJoinDaemonFlags    []string
 )
 
 var poolJoinCmd = &cobra.Command{
@@ -72,6 +81,7 @@ func init() {
 	poolJoinCmd.Flags().IntVar(&poolJoinPublicPort, "public-port", 0, "Public TLS port the sentinel forwards via this tunnel (typically 443; required with --public-hostname)")
 	poolJoinCmd.Flags().StringVar(&poolJoinBaseDomain, "base-domain", "", "Base domain the daemon's Caddy auto-provisions HTTPS for (optional)")
 	poolJoinCmd.Flags().BoolVar(&poolJoinDryRun, "dry-run", false, "Print the unit files that would be written, then exit (no changes)")
+	poolJoinCmd.Flags().StringArrayVar(&poolJoinDaemonFlags, "daemon-flag", nil, "Extra daemon flag to carry into the unit (repeatable), e.g. --daemon-flag=--app-hosting --daemon-flag=--network-subnet=10.0.0.0/24. Use to add/override flags on top of the preserved/baseline set")
 }
 
 // tunnelUnitParams are the inputs to the tunnel systemd unit.
@@ -120,24 +130,101 @@ func renderTunnelUnit(p tunnelUnitParams) string {
 	return b.String()
 }
 
-// renderPoolDropIn renders the daemon drop-in that adds --pool (and an
-// optional --base-domain) on top of the canonical unit's ExecStart. Pure.
-func renderPoolDropIn(pool, baseDomain string) string {
+// renderPoolDropIn renders the daemon drop-in that sets ExecStart to the
+// resolved argv (which already carries the preserved/baseline flags + --pool /
+// --base-domain). Pure. systemd override semantics: clear then re-set.
+func renderPoolDropIn(argv []string) string {
 	var b strings.Builder
 	b.WriteString("[Service]\n")
-	// Clear then re-set ExecStart (systemd override semantics).
 	b.WriteString("ExecStart=\n")
-	b.WriteString("ExecStart=/usr/local/bin/containarium daemon \\\n")
-	b.WriteString("  --rest \\\n")
-	b.WriteString("  --jwt-secret-file /etc/containarium/jwt.secret")
+	b.WriteString("ExecStart=" + strings.Join(argv, " ") + "\n")
+	return b.String()
+}
+
+// parseExecStartArgv extracts the daemon argv from `systemctl show -p ExecStart
+// --value containarium` output, whose value looks like:
+//
+//	{ path=/usr/local/bin/containarium ; argv[]=/usr/local/bin/containarium daemon --rest … ; ignore_errors=no ; … }
+//
+// Returns (argv, true) only when the value clearly is the containarium daemon
+// command; (nil, false) otherwise (no unit, empty, or unrecognized). Pure.
+// Note: values containing spaces aren't recovered (systemd doesn't re-quote
+// them here) — daemon flag values (CIDRs, file paths, domains) don't have spaces.
+func parseExecStartArgv(showOutput string) ([]string, bool) {
+	i := strings.Index(showOutput, "argv[]=")
+	if i < 0 {
+		return nil, false
+	}
+	rest := showOutput[i+len("argv[]="):]
+	if j := strings.Index(rest, " ; "); j >= 0 {
+		rest = rest[:j]
+	}
+	fields := strings.Fields(rest)
+	if len(fields) < 2 || !strings.HasSuffix(fields[0], "containarium") || fields[1] != "daemon" {
+		return nil, false
+	}
+	return fields, true
+}
+
+// stripValuedFlag removes occurrences of a value-taking flag from argv, in both
+// `--flag value` and `--flag=value` forms, so a managed flag (--pool /
+// --base-domain) can be re-set to the current invocation's value without
+// duplicating it. Pure.
+func stripValuedFlag(argv []string, flag string) []string {
+	out := make([]string, 0, len(argv))
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		if a == flag {
+			// Skip the following value token too, if present and not itself a flag.
+			if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(a, flag+"=") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// resolvePoolDaemonArgv builds the daemon ExecStart argv for the pool drop-in.
+// It PRESERVES the host's existing daemon flags (#702) — so onboarding a host
+// that already runs e.g. `--app-hosting --network-subnet <cidr>` doesn't
+// silently drop them — then re-sets the managed flags (--pool, --base-domain)
+// to this invocation's values, and finally appends any operator --daemon-flag
+// overrides. When no existing ExecStart is readable (fresh host), the minimal
+// baseline is used. Pure.
+func resolvePoolDaemonArgv(current []string, found bool, pool, baseDomain string, extra []string) []string {
+	var argv []string
+	if found && len(current) >= 2 {
+		argv = append(argv, current...)
+	} else {
+		argv = append(argv, minimalDaemonArgv()...)
+	}
+	// Re-set the flags we own so re-running is idempotent and value-updates take.
+	argv = stripValuedFlag(argv, "--pool")
+	argv = stripValuedFlag(argv, "--base-domain")
 	if pool != "" {
-		fmt.Fprintf(&b, " \\\n  --pool %s", pool)
+		argv = append(argv, "--pool", pool)
 	}
 	if baseDomain != "" {
-		fmt.Fprintf(&b, " \\\n  --base-domain %s", baseDomain)
+		argv = append(argv, "--base-domain", baseDomain)
 	}
-	b.WriteString("\n")
-	return b.String()
+	argv = append(argv, extra...)
+	return argv
+}
+
+// currentDaemonArgv reads the effective daemon ExecStart via systemctl. Returns
+// (nil, false) when the unit doesn't exist / isn't readable / isn't recognized
+// — the caller then falls back to the minimal baseline (and warns).
+func currentDaemonArgv() ([]string, bool) {
+	out, err := exec.Command("systemctl", "show", "-p", "ExecStart", "--value", "containarium").Output()
+	if err != nil {
+		return nil, false
+	}
+	return parseExecStartArgv(string(out))
 }
 
 func runPoolJoin(cmd *cobra.Command, args []string) error {
@@ -159,7 +246,20 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		spotID = h
 	}
 
-	dropIn := renderPoolDropIn(poolJoinPool, poolJoinBaseDomain)
+	// Preserve the host's existing daemon flags (#702): read the effective
+	// ExecStart and carry its flags forward, rather than resetting to a minimal
+	// command and silently dropping e.g. --app-hosting / --network-subnet.
+	current, found := currentDaemonArgv()
+	daemonArgv := resolvePoolDaemonArgv(current, found, poolJoinPool, poolJoinBaseDomain, poolJoinDaemonFlags)
+	dropIn := renderPoolDropIn(daemonArgv)
+	if !found {
+		fmt.Println("# WARNING: could not read an existing daemon ExecStart.")
+		fmt.Println("#   Using the minimal baseline (--rest --jwt-secret-file). If this host")
+		fmt.Println("#   already ran the daemon with extra flags (e.g. --app-hosting,")
+		fmt.Println("#   --network-subnet), pass them via --daemon-flag to preserve them.")
+	} else {
+		fmt.Printf("# Preserving existing daemon ExecStart flags; resulting command:\n#   %s\n", strings.Join(daemonArgv, " "))
+	}
 	tunnel := renderTunnelUnit(tunnelUnitParams{
 		SentinelAddr:   poolJoinSentinel,
 		Token:          poolJoinToken,
