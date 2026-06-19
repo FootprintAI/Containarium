@@ -632,7 +632,18 @@ type DeployRecipeRequest struct {
 	// a tenant/org the same way it does for a plain CreateContainer — without
 	// labels, a cloud front-end that filters containers by label can't see a
 	// recipe-deployed box. Same key/value rules as CreateContainerRequest.labels.
-	Labels        map[string]string `protobuf:"bytes,8,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Labels map[string]string `protobuf:"bytes,8,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// async runs the recipe's post_start in the background: the RPC returns as
+	// soon as the container is created (state CREATING) instead of blocking until
+	// post_start finishes. Set this when the deploy is driven over a connection
+	// with a request/idle timeout shorter than the post_start (e.g. a control
+	// plane reaching a BYOC host through a peer-proxy): a recipe that pulls a
+	// multi-GB image can exceed that timeout, which would otherwise abort the
+	// deploy mid-pull. The CLI leaves this false so a human sees post_start's
+	// result inline. The box becomes fully functional once the background
+	// post_start completes; poll the container / its workspace access to detect
+	// readiness.
+	Async         bool `protobuf:"varint,9,opt,name=async,proto3" json:"async,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -721,6 +732,13 @@ func (x *DeployRecipeRequest) GetLabels() map[string]string {
 		return x.Labels
 	}
 	return nil
+}
+
+func (x *DeployRecipeRequest) GetAsync() bool {
+	if x != nil {
+		return x.Async
+	}
+	return false
 }
 
 // DeployRecipeResponse is the result of a recipe deployment.
@@ -940,7 +958,7 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x10GetRecipeRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"D\n" +
 	"\x11GetRecipeResponse\x12/\n" +
-	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xf6\x03\n" +
+	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\x8c\x04\n" +
 	"\x13DeployRecipeRequest\x12\x1b\n" +
 	"\trecipe_id\x18\x01 \x01(\tR\brecipeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
@@ -952,7 +970,8 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"parameters\x18\x06 \x03(\v24.containarium.v1.DeployRecipeRequest.ParametersEntryR\n" +
 	"parameters\x12O\n" +
 	"\x12resource_overrides\x18\a \x01(\v2 .containarium.v1.RecipeResourcesR\x11resourceOverrides\x12H\n" +
-	"\x06labels\x18\b \x03(\v20.containarium.v1.DeployRecipeRequest.LabelsEntryR\x06labels\x1a=\n" +
+	"\x06labels\x18\b \x03(\v20.containarium.v1.DeployRecipeRequest.LabelsEntryR\x06labels\x12\x14\n" +
+	"\x05async\x18\t \x01(\bR\x05async\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +

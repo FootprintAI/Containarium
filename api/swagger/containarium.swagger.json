@@ -7548,6 +7548,10 @@
             "type": "string"
           },
           "description": "Custom labels stamped on the provisioned container (forwarded to\nCreateContainer). Lets a control plane attribute a recipe-deployed box to\na tenant/org the same way it does for a plain CreateContainer — without\nlabels, a cloud front-end that filters containers by label can't see a\nrecipe-deployed box. Same key/value rules as CreateContainerRequest.labels."
+        },
+        "async": {
+          "type": "boolean",
+          "description": "async runs the recipe's post_start in the background: the RPC returns as\nsoon as the container is created (state CREATING) instead of blocking until\npost_start finishes. Set this when the deploy is driven over a connection\nwith a request/idle timeout shorter than the post_start (e.g. a control\nplane reaching a BYOC host through a peer-proxy): a recipe that pulls a\nmulti-GB image can exceed that timeout, which would otherwise abort the\ndeploy mid-pull. The CLI leaves this false so a human sees post_start's\nresult inline. The box becomes fully functional once the background\npost_start completes; poll the container / its workspace access to detect\nreadiness."
         }
       },
       "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."

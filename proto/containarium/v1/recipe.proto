@@ -156,6 +156,18 @@ message DeployRecipeRequest {
   // labels, a cloud front-end that filters containers by label can't see a
   // recipe-deployed box. Same key/value rules as CreateContainerRequest.labels.
   map<string, string> labels = 8;
+
+  // async runs the recipe's post_start in the background: the RPC returns as
+  // soon as the container is created (state CREATING) instead of blocking until
+  // post_start finishes. Set this when the deploy is driven over a connection
+  // with a request/idle timeout shorter than the post_start (e.g. a control
+  // plane reaching a BYOC host through a peer-proxy): a recipe that pulls a
+  // multi-GB image can exceed that timeout, which would otherwise abort the
+  // deploy mid-pull. The CLI leaves this false so a human sees post_start's
+  // result inline. The box becomes fully functional once the background
+  // post_start completes; poll the container / its workspace access to detect
+  // readiness.
+  bool async = 9;
 }
 
 // DeployRecipeResponse is the result of a recipe deployment.

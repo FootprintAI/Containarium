@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 
@@ -188,6 +189,39 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	}
 
 	containerName := req.Name + "-container"
+
+	// Async path: decouple post_start from the RPC. A recipe's post_start can
+	// pull multi-GB images (e.g. agent-workspace), taking longer than the
+	// request/idle timeout of a caller reaching this daemon through a peer-proxy
+	// — holding the call open would get it cut mid-pull, aborting the deploy.
+	// Run post_start (and the port expose) in the background on a detached
+	// context and return the freshly-created box now (state CREATING). The box
+	// becomes fully functional once post_start completes; the caller polls.
+	if req.Async {
+		go func() {
+			bg := context.WithoutCancel(ctx)
+			if len(recipe.PostStart) > 0 {
+				script := buildPostStartScript(recipe, params)
+				if err := s.containers.manager.Exec(containerName, []string{"bash", "-c", script}); err != nil {
+					log.Printf("[recipe] async post_start failed on %s (recipe %q): %v", containerName, recipe.Id, err)
+					return
+				}
+			}
+			if _, warnings := s.exposePorts(bg, recipe, req.Name); len(warnings) > 0 {
+				log.Printf("[recipe] async expose warnings on %s: %s", containerName, strings.Join(warnings, "; "))
+			}
+		}()
+		info, _ := s.containers.manager.Get(req.Name)
+		var container *pb.Container
+		if info != nil {
+			st := boxlxc.StatusFromInfo(info)
+			container = toProtoContainer(&st)
+		}
+		return &pb.DeployRecipeResponse{
+			Container: container,
+			Message:   fmt.Sprintf("Recipe %q deploying as %s (post_start running in background)", recipe.Id, containerName),
+		}, nil
+	}
 
 	// 2. Run the recipe's post_start commands inside the container, with env
 	//    and parameters exported. Same trust level as a stack's post_install.

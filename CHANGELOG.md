@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-06-19
+
+### Added
+
+- **`DeployRecipeRequest.async` — run a recipe's `post_start` in the background.**
+  When set, `DeployRecipe` returns as soon as the container is created (state
+  `CREATING`) instead of blocking until `post_start` finishes, then runs
+  `post_start` + the port expose on a detached context. This is needed when a
+  recipe is deployed over a connection with a request/idle timeout shorter than
+  the work — e.g. a control plane reaching a BYOC host through the sentinel
+  peer-proxy: a recipe that pulls a multi-GB image (like `agent-workspace`'s
+  OpenHands) can exceed that timeout, and a synchronous deploy would be cut
+  mid-pull (`EOF`), leaving the box half-provisioned. The CLI leaves `async`
+  false so a human still sees `post_start`'s result inline. The box becomes
+  fully functional once the background `post_start` completes; poll the
+  container / its workspace access for readiness. Additive proto field
+  (`async = 9`); existing callers are unaffected.
+
 ## [0.32.0] - 2026-06-18
 
 ### Added
