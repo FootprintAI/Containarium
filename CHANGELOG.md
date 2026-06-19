@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Skill-box egress pinned to the model-gateway (#674).** When the daemon serves
+  the model-gateway, a skill box's eBPF egress policy now allows only the gateway
+  host (the LXC bridge gateway — also the daemon API + DNS) plus its allowed
+  peers, and the direct provider domains (`api.anthropic.com`, …) are **dropped**
+  — so a box can't bypass the gateway to reach a provider with a key it doesn't
+  hold. Key-custody becomes enforced, not just convention. Pinning applies even
+  to a skill with no `allowed_peers`. Observe-only by default (LOG_ONLY); it
+  blocks only once eBPF enforcement is armed (`CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE=1`).
+  Direct mode (no gateway) is unchanged — provider domains are served as before.
+
 - **Pull-based agent run-queue + poll-mode workers (#674).** An orthogonal
   delivery model to push: a producer `EnqueueAgentTask`s; long-lived worker
   boxes `LeaseAgentTask` (SQS-style visibility-timeout lease → at-most-one

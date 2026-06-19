@@ -1321,7 +1321,7 @@ skipAppHosting:
 			})
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			primary := gatewayPrimaryProvider(keys)
-			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret))
+			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP)
 			provs := make([]string, 0, len(keys))
 			for p := range keys {
 				provs = append(provs, p)

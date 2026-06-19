@@ -66,9 +66,15 @@ func (s *AgentSkillServer) SetAuditStore(store *audit.Store) { s.audit = store }
 // its model calls route through the daemon-served gateway (key custody +
 // metering). Wired from dual_server when a provider key is configured; nil-safe
 // (no call ⇒ direct mode). provider is the gateway's configured provider,
-// httpPort the daemon HTTP port the box dials, secret the shared jwt secret.
-func (s *AgentSkillServer) SetGatewayProvisioning(provider string, httpPort int, secret []byte) {
-	s.gateway = &gatewayProvisioning{provider: provider, httpPort: httpPort, secret: secret}
+// httpPort the daemon HTTP port the box dials, secret the shared jwt secret,
+// hostIP the bridge gateway IP the box reaches the gateway/daemon/DNS on (used
+// to pin skill-box egress to the gateway, #674 inc 4; empty disables pinning).
+func (s *AgentSkillServer) SetGatewayProvisioning(provider string, httpPort int, secret []byte, hostIP string) {
+	g := &gatewayProvisioning{provider: provider, httpPort: httpPort, secret: secret}
+	if hostIP = strings.TrimSpace(hostIP); hostIP != "" {
+		g.egressCIDR = hostIP + "/32"
+	}
+	s.gateway = g
 }
 
 // NewAgentSkillServer wires the agent-skill service to the recipe server (for
@@ -345,20 +351,29 @@ func parseArtifactOutput(raw []byte) (string, error) {
 // needs (daemon API, DNS) — a peer-only allowlist would otherwise strand the
 // agent. Tracked in #574.
 func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant string, skill *pb.AgentSkill) {
-	if s.netpolicy == nil || len(skill.AllowedPeers) == 0 {
+	// Gateway pinning (#674 inc 4): when the model-gateway is enabled, every
+	// skill box is pinned to it — even one with no allowed_peers — so model
+	// calls can ONLY go through the gateway. Without a gateway, only skills that
+	// declare allowed_peers get a policy (unchanged).
+	gatewayCIDR := ""
+	if s.gateway != nil {
+		gatewayCIDR = s.gateway.egressCIDR
+	}
+	if s.netpolicy == nil || (len(skill.AllowedPeers) == 0 && gatewayCIDR == "") {
 		return
 	}
 	extraCIDRs, extraDomains, enforce := agentNetworkPolicyConfig()
-	policy := compileAllowedPeersPolicy(tenant, skill.AllowedPeers, s.resolvePeerIP, extraCIDRs, extraDomains, enforce)
+	policy := compileAllowedPeersPolicy(tenant, skill.AllowedPeers, s.resolvePeerIP, extraCIDRs, extraDomains, gatewayCIDR, enforce)
 	if len(policy.EgressCidrs) == 0 && len(policy.EgressDomains) == 0 {
 		// Nothing to allow at all. Skip rather than install an empty allowlist
 		// (which, under ENFORCE, denies everything).
 		return
 	}
-	if enforce && len(policy.EgressDomains) == 0 {
+	if enforce && len(policy.EgressDomains) == 0 && gatewayCIDR == "" {
 		// #611: an armed agent with no model-provider egress is stranded — it
 		// can reach its peers but not the Claude/OpenAI API. Default domains
-		// prevent this; warn loudly if an operator cleared them.
+		// prevent this; warn loudly if an operator cleared them. (In gateway
+		// mode model egress is the gatewayCIDR, so this doesn't apply.)
 		log.Printf("[agent-skill] WARNING: ENFORCE armed for %q with no model egress (CONTAINARIUM_AGENT_EGRESS_DOMAINS empty) — the agent loop may be unable to reach its provider API", tenant)
 	}
 	// Compile (validate + normalize) before storing — same path the
@@ -458,7 +473,13 @@ func (s *AgentSkillServer) resolvePeerIP(peerID string) (string, bool) {
 // allowed_peers: each currently-running peer's box IP becomes an egress /32.
 // Pure (resolution is injected) so it is unit-testable without a daemon. The
 // policy is LOG_ONLY — observe, never drop — until Phase 2 enforcement is armed.
-func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool), extraCIDRs, extraDomains []string, enforce bool) *pb.NetworkPolicy {
+// compileAllowedPeersPolicy builds a skill box's egress policy. gatewayCIDR
+// pins the box to the model-gateway (#674 inc 4): when set, the box's model
+// egress is the gateway host (gatewayCIDR — also the daemon API + DNS) and the
+// direct provider domains are DROPPED, so a box can't bypass the gateway to
+// reach a provider with a key it doesn't hold. When empty (direct mode) the
+// box gets the provider domains directly, as before.
+func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool), extraCIDRs, extraDomains []string, gatewayCIDR string, enforce bool) *pb.NetworkPolicy {
 	var cidrs []string
 	for _, peer := range allowedPeers {
 		if ip, ok := resolve(peer); ok {
@@ -469,6 +490,15 @@ func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve fun
 	// armed ENFORCE policy doesn't strand the agent.
 	cidrs = append(cidrs, extraCIDRs...)
 
+	// Gateway pinning: allow the gateway host (model calls go here) and serve no
+	// direct provider domains. Without a gateway, fall back to direct provider
+	// egress.
+	domains := extraDomains
+	if gatewayCIDR != "" {
+		cidrs = append(cidrs, gatewayCIDR)
+		domains = nil
+	}
+
 	mode := pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY
 	if enforce {
 		mode = pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE
@@ -477,9 +507,10 @@ func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve fun
 		Tenant:           tenant,
 		AllowIntraTenant: false,
 		EgressCidrs:      cidrs,
-		// Model-provider egress (resolved to IPs by the enforcer's domain
-		// resolver) so the in-box loop can reach the Claude/OpenAI API (#611).
-		EgressDomains: extraDomains,
+		// Direct model-provider egress (resolved to IPs by the enforcer's domain
+		// resolver) so the in-box loop can reach the Claude/OpenAI API (#611) —
+		// EMPTY in gateway mode, where model calls go through gatewayCIDR instead.
+		EgressDomains: domains,
 		Mode:          mode,
 		AllowMetadata: false,
 		Source:        "agent-skill",
