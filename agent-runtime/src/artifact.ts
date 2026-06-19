@@ -8,7 +8,7 @@ export interface Artifact {
   // The agent's final output (JSON string, ideally matching the skill's
   // agent_card.output_schema_json).
   outputJson: string;
-  // Which engine produced it (claude | codex) and the model used — for audit.
+  // Which engine produced it (claude | codex | gemini) and the model used — for audit.
   engine: string;
   model: string;
   // Best-effort usage/cost metadata, engine-shaped.

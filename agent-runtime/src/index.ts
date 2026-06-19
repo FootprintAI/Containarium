@@ -6,15 +6,16 @@ import { writeArtifact } from "./artifact.js";
 import type { Engine, EngineConfig } from "./engine.js";
 import { ClaudeEngine } from "./engines/claude.js";
 import { CodexEngine } from "./engines/codex.js";
+import { GeminiEngine } from "./engines/gemini.js";
 import { DEFAULT_SEED_DIR, loadSeed } from "./seed.js";
 
 // The in-box loop entrypoint (Phase 4a). Reads the seed the daemon planted,
-// runs one task to completion through the selected engine (Claude Agent SDK or
-// OpenAI Codex SDK) — both mounting agent-box as their MCP tool surface — and
-// writes artifact.json back for the daemon to return.
+// runs one task to completion through the selected engine (Claude Agent SDK,
+// OpenAI Codex SDK, or Google Gen AI SDK) — all mounting agent-box as their MCP
+// tool surface — and writes artifact.json back for the daemon to return.
 //
-// Engine selection: CONTAINARIUM_AGENT_ENGINE (claude | codex), default claude.
-// (A later phase moves this onto the skill manifest as an `engine` field.)
+// Engine selection: CONTAINARIUM_AGENT_ENGINE (claude | codex | gemini), default
+// claude. (A later phase moves this onto the skill manifest as an `engine` field.)
 
 const seedDir = process.env.AGENT_SEED_DIR ?? DEFAULT_SEED_DIR;
 const engineName = (process.env.CONTAINARIUM_AGENT_ENGINE ?? "claude").toLowerCase();
@@ -33,8 +34,10 @@ function pickEngine(name: string): Engine {
       return new ClaudeEngine();
     case "codex":
       return new CodexEngine();
+    case "gemini":
+      return new GeminiEngine();
     default:
-      throw new Error(`unknown engine ${name} (want: claude | codex)`);
+      throw new Error(`unknown engine ${name} (want: claude | codex | gemini)`);
   }
 }
 
