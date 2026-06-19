@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Gemini engine for the in-box agent loop (`agent-runtime`).** A third
+  pluggable engine alongside Claude and Codex, selected with
+  `CONTAINARIUM_AGENT_ENGINE=gemini`. It drives the loop with the Google Gen AI
+  SDK (`@google/genai`): `agent-box` is spawned as an MCP stdio server and
+  handed to the SDK via `mcpToTool()`, with automatic function calling running
+  the tool-use loop (capped at `maxTurns`). Auth via `GEMINI_API_KEY` /
+  `GOOGLE_API_KEY`; default model `gemini-2.5-flash` — a cheap, fast model that
+  makes it a budget-friendly way to exercise the agent mechanism end-to-end. The
+  daemon's default agent egress now also allows
+  `generativelanguage.googleapis.com` so an armed (ENFORCE) network policy
+  doesn't strand a Gemini agent.
+
 ## [0.33.0] - 2026-06-19
 
 ### Added
