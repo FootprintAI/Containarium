@@ -19,10 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentSkillService_ListAgentSkills_FullMethodName = "/containarium.v1.AgentSkillService/ListAgentSkills"
-	AgentSkillService_GetAgentSkill_FullMethodName   = "/containarium.v1.AgentSkillService/GetAgentSkill"
-	AgentSkillService_RunAgentSkill_FullMethodName   = "/containarium.v1.AgentSkillService/RunAgentSkill"
-	AgentSkillService_SendAgentTask_FullMethodName   = "/containarium.v1.AgentSkillService/SendAgentTask"
+	AgentSkillService_ListAgentSkills_FullMethodName   = "/containarium.v1.AgentSkillService/ListAgentSkills"
+	AgentSkillService_GetAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/GetAgentSkill"
+	AgentSkillService_RunAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/RunAgentSkill"
+	AgentSkillService_SendAgentTask_FullMethodName     = "/containarium.v1.AgentSkillService/SendAgentTask"
+	AgentSkillService_EnqueueAgentTask_FullMethodName  = "/containarium.v1.AgentSkillService/EnqueueAgentTask"
+	AgentSkillService_LeaseAgentTask_FullMethodName    = "/containarium.v1.AgentSkillService/LeaseAgentTask"
+	AgentSkillService_CompleteAgentTask_FullMethodName = "/containarium.v1.AgentSkillService/CompleteAgentTask"
+	AgentSkillService_StartAgentWorker_FullMethodName  = "/containarium.v1.AgentSkillService/StartAgentWorker"
 )
 
 // AgentSkillServiceClient is the client API for AgentSkillService service.
@@ -42,6 +46,25 @@ type AgentSkillServiceClient interface {
 	// the peer's artifact. Phase 1 establishes the transport; Phase 2 adds the
 	// allowed_peers / network-policy enforcement around it. (Server impl: #569.)
 	SendAgentTask(ctx context.Context, in *SendAgentTaskRequest, opts ...grpc.CallOption) (*SendAgentTaskResponse, error)
+	// EnqueueAgentTask places a task on the queue for the given skill and returns
+	// its id. Producer side of the pull model.
+	EnqueueAgentTask(ctx context.Context, in *EnqueueAgentTaskRequest, opts ...grpc.CallOption) (*EnqueueAgentTaskResponse, error)
+	// LeaseAgentTask hands the caller the next visible task (optionally filtered
+	// to one skill), making it invisible for lease_seconds. Returns has_task=false
+	// when the queue is empty. Worker poll side of the pull model.
+	LeaseAgentTask(ctx context.Context, in *LeaseAgentTaskRequest, opts ...grpc.CallOption) (*LeaseAgentTaskResponse, error)
+	// CompleteAgentTask reports a leased task's result (artifact or error) and
+	// removes it from the queue. Rejected (accepted=false) if the lease token is
+	// stale — i.e. the lease already expired and the task was redelivered.
+	CompleteAgentTask(ctx context.Context, in *CompleteAgentTaskRequest, opts ...grpc.CallOption) (*CompleteAgentTaskResponse, error)
+	// StartAgentWorker provisions (or reuses) a skill's box and launches the
+	// in-box runtime in poll mode: a long-lived worker that leases tasks for the
+	// skill, runs them, and reports back — the consumer side of the pull model.
+	// The daemon mints a SEPARATE queue credential (a JWT scoped to agents:run,
+	// distinct from the skill's in-box token) and seeds it so the box can reach
+	// the queue endpoints; the worker resolves the daemon URL from its default
+	// route (the backend host) at launch.
+	StartAgentWorker(ctx context.Context, in *StartAgentWorkerRequest, opts ...grpc.CallOption) (*StartAgentWorkerResponse, error)
 }
 
 type agentSkillServiceClient struct {
@@ -92,6 +115,46 @@ func (c *agentSkillServiceClient) SendAgentTask(ctx context.Context, in *SendAge
 	return out, nil
 }
 
+func (c *agentSkillServiceClient) EnqueueAgentTask(ctx context.Context, in *EnqueueAgentTaskRequest, opts ...grpc.CallOption) (*EnqueueAgentTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnqueueAgentTaskResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_EnqueueAgentTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentSkillServiceClient) LeaseAgentTask(ctx context.Context, in *LeaseAgentTaskRequest, opts ...grpc.CallOption) (*LeaseAgentTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaseAgentTaskResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_LeaseAgentTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentSkillServiceClient) CompleteAgentTask(ctx context.Context, in *CompleteAgentTaskRequest, opts ...grpc.CallOption) (*CompleteAgentTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompleteAgentTaskResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_CompleteAgentTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentSkillServiceClient) StartAgentWorker(ctx context.Context, in *StartAgentWorkerRequest, opts ...grpc.CallOption) (*StartAgentWorkerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartAgentWorkerResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_StartAgentWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentSkillServiceServer is the server API for AgentSkillService service.
 // All implementations must embed UnimplementedAgentSkillServiceServer
 // for forward compatibility.
@@ -109,6 +172,25 @@ type AgentSkillServiceServer interface {
 	// the peer's artifact. Phase 1 establishes the transport; Phase 2 adds the
 	// allowed_peers / network-policy enforcement around it. (Server impl: #569.)
 	SendAgentTask(context.Context, *SendAgentTaskRequest) (*SendAgentTaskResponse, error)
+	// EnqueueAgentTask places a task on the queue for the given skill and returns
+	// its id. Producer side of the pull model.
+	EnqueueAgentTask(context.Context, *EnqueueAgentTaskRequest) (*EnqueueAgentTaskResponse, error)
+	// LeaseAgentTask hands the caller the next visible task (optionally filtered
+	// to one skill), making it invisible for lease_seconds. Returns has_task=false
+	// when the queue is empty. Worker poll side of the pull model.
+	LeaseAgentTask(context.Context, *LeaseAgentTaskRequest) (*LeaseAgentTaskResponse, error)
+	// CompleteAgentTask reports a leased task's result (artifact or error) and
+	// removes it from the queue. Rejected (accepted=false) if the lease token is
+	// stale — i.e. the lease already expired and the task was redelivered.
+	CompleteAgentTask(context.Context, *CompleteAgentTaskRequest) (*CompleteAgentTaskResponse, error)
+	// StartAgentWorker provisions (or reuses) a skill's box and launches the
+	// in-box runtime in poll mode: a long-lived worker that leases tasks for the
+	// skill, runs them, and reports back — the consumer side of the pull model.
+	// The daemon mints a SEPARATE queue credential (a JWT scoped to agents:run,
+	// distinct from the skill's in-box token) and seeds it so the box can reach
+	// the queue endpoints; the worker resolves the daemon URL from its default
+	// route (the backend host) at launch.
+	StartAgentWorker(context.Context, *StartAgentWorkerRequest) (*StartAgentWorkerResponse, error)
 	mustEmbedUnimplementedAgentSkillServiceServer()
 }
 
@@ -130,6 +212,18 @@ func (UnimplementedAgentSkillServiceServer) RunAgentSkill(context.Context, *RunA
 }
 func (UnimplementedAgentSkillServiceServer) SendAgentTask(context.Context, *SendAgentTaskRequest) (*SendAgentTaskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SendAgentTask not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) EnqueueAgentTask(context.Context, *EnqueueAgentTaskRequest) (*EnqueueAgentTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnqueueAgentTask not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) LeaseAgentTask(context.Context, *LeaseAgentTaskRequest) (*LeaseAgentTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LeaseAgentTask not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) CompleteAgentTask(context.Context, *CompleteAgentTaskRequest) (*CompleteAgentTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompleteAgentTask not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) StartAgentWorker(context.Context, *StartAgentWorkerRequest) (*StartAgentWorkerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartAgentWorker not implemented")
 }
 func (UnimplementedAgentSkillServiceServer) mustEmbedUnimplementedAgentSkillServiceServer() {}
 func (UnimplementedAgentSkillServiceServer) testEmbeddedByValue()                           {}
@@ -224,6 +318,78 @@ func _AgentSkillService_SendAgentTask_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentSkillService_EnqueueAgentTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnqueueAgentTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).EnqueueAgentTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_EnqueueAgentTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).EnqueueAgentTask(ctx, req.(*EnqueueAgentTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentSkillService_LeaseAgentTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaseAgentTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).LeaseAgentTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_LeaseAgentTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).LeaseAgentTask(ctx, req.(*LeaseAgentTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentSkillService_CompleteAgentTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompleteAgentTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).CompleteAgentTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_CompleteAgentTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).CompleteAgentTask(ctx, req.(*CompleteAgentTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentSkillService_StartAgentWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartAgentWorkerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).StartAgentWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_StartAgentWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).StartAgentWorker(ctx, req.(*StartAgentWorkerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentSkillService_ServiceDesc is the grpc.ServiceDesc for AgentSkillService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -246,6 +412,22 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SendAgentTask",
 			Handler:    _AgentSkillService_SendAgentTask_Handler,
+		},
+		{
+			MethodName: "EnqueueAgentTask",
+			Handler:    _AgentSkillService_EnqueueAgentTask_Handler,
+		},
+		{
+			MethodName: "LeaseAgentTask",
+			Handler:    _AgentSkillService_LeaseAgentTask_Handler,
+		},
+		{
+			MethodName: "CompleteAgentTask",
+			Handler:    _AgentSkillService_CompleteAgentTask_Handler,
+		},
+		{
+			MethodName: "StartAgentWorker",
+			Handler:    _AgentSkillService_StartAgentWorker_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

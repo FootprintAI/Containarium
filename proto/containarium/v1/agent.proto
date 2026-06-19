@@ -246,6 +246,154 @@ service AgentSkillService {
       tags: "Agents";
     };
   }
+
+  // ===========================================================================
+  // Pull-based run queue (prototype). The push path (RunAgentSkill) provisions
+  // a box and execs the run synchronously. The pull path inverts it: a producer
+  // ENQUEUES a task; long-lived worker boxes LEASE tasks (outbound-only, so no
+  // inbound exec is needed — NAT/tunnel-friendly), run them locally, and report
+  // back with COMPLETE. Lease = an SQS-style visibility timeout: a leased task
+  // is invisible to other workers until completed or the lease expires (then it
+  // is redelivered), giving at-most-one active worker per task with crash
+  // recovery. Phase 0 is an in-memory queue; durability is a follow-up.
+  // See the pull-queue section of docs/AGENT-MODEL-GATEWAY-DESIGN.md.
+  // ===========================================================================
+
+  // EnqueueAgentTask places a task on the queue for the given skill and returns
+  // its id. Producer side of the pull model.
+  rpc EnqueueAgentTask(EnqueueAgentTaskRequest) returns (EnqueueAgentTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-tasks"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Enqueue an agent task (pull queue)";
+      description: "Places a task on the pull queue for a skill; worker boxes lease and run it.";
+      tags: "Agents";
+    };
+  }
+
+  // LeaseAgentTask hands the caller the next visible task (optionally filtered
+  // to one skill), making it invisible for lease_seconds. Returns has_task=false
+  // when the queue is empty. Worker poll side of the pull model.
+  rpc LeaseAgentTask(LeaseAgentTaskRequest) returns (LeaseAgentTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-tasks/lease"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Lease the next agent task (pull queue)";
+      description: "Worker boxes poll this to lease the next task; the task is hidden from other workers until completed or the lease expires.";
+      tags: "Agents";
+    };
+  }
+
+  // CompleteAgentTask reports a leased task's result (artifact or error) and
+  // removes it from the queue. Rejected (accepted=false) if the lease token is
+  // stale — i.e. the lease already expired and the task was redelivered.
+  rpc CompleteAgentTask(CompleteAgentTaskRequest) returns (CompleteAgentTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-tasks/{task_id}/complete"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Complete a leased agent task (pull queue)";
+      description: "Worker boxes report a leased task's artifact/error here; a stale lease is rejected.";
+      tags: "Agents";
+    };
+  }
+
+  // StartAgentWorker provisions (or reuses) a skill's box and launches the
+  // in-box runtime in poll mode: a long-lived worker that leases tasks for the
+  // skill, runs them, and reports back — the consumer side of the pull model.
+  // The daemon mints a SEPARATE queue credential (a JWT scoped to agents:run,
+  // distinct from the skill's in-box token) and seeds it so the box can reach
+  // the queue endpoints; the worker resolves the daemon URL from its default
+  // route (the backend host) at launch.
+  rpc StartAgentWorker(StartAgentWorkerRequest) returns (StartAgentWorkerResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-skills/{skill_id}/worker"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Start a pull-queue worker for a skill";
+      description: "Provisions the skill's box, mints an agents:run queue credential, and launches the in-box runtime in poll mode to lease and run queued tasks.";
+      tags: "Agents";
+    };
+  }
+}
+
+// EnqueueAgentTaskRequest places one task on the pull queue.
+message EnqueueAgentTaskRequest {
+  // Skill this task is for (workers may filter their lease by it).
+  string skill_id = 1;
+  // Task input as JSON (the same shape RunAgentSkill takes as input_json).
+  string input_json = 2;
+}
+
+message EnqueueAgentTaskResponse {
+  // Server-assigned task id, used later to correlate the completion.
+  string task_id = 1;
+}
+
+// LeaseAgentTaskRequest asks for the next runnable task.
+message LeaseAgentTaskRequest {
+  // Stable id of the polling worker (audit/debug; not a security boundary).
+  string worker_id = 1;
+  // Optional: lease only tasks for this skill. Empty = any skill.
+  string skill_id = 2;
+  // How long the lease is held before the task becomes visible again. 0 = a
+  // server default. Keep it longer than the worst-case run time.
+  int32 lease_seconds = 3;
+}
+
+message LeaseAgentTaskResponse {
+  // False when the queue had nothing visible — the worker should back off.
+  bool has_task = 1;
+  string task_id = 2;
+  string skill_id = 3;
+  string input_json = 4;
+  // Opaque token proving this worker holds the current lease; must be presented
+  // to CompleteAgentTask. A new lease (after expiry) mints a new token, so a
+  // slow worker's stale completion is rejected rather than clobbering a retry.
+  string lease_token = 5;
+}
+
+// CompleteAgentTaskRequest reports a leased task's outcome.
+message CompleteAgentTaskRequest {
+  string task_id = 1;
+  string lease_token = 2;
+  // The run artifact as JSON; empty when error is set.
+  string artifact_json = 3;
+  // Non-empty when the run failed; the task is removed (no auto-retry in the
+  // prototype) and the error is recorded.
+  string error = 4;
+}
+
+message CompleteAgentTaskResponse {
+  // False when the lease was stale (expired + redelivered); the worker should
+  // drop its result — another lease owns the task now.
+  bool accepted = 1;
+}
+
+// StartAgentWorkerRequest launches a poll-mode worker for a skill.
+message StartAgentWorkerRequest {
+  // Skill whose box runs as the worker (its persona is the worker's; the
+  // worker leases only this skill's tasks).
+  string skill_id = 1;
+  // Target backend (must be local in the prototype).
+  string backend_id = 2;
+  // Target pool (unsupported in the prototype).
+  string pool = 3;
+  // Optional stable worker id for audit/debug; defaults to the box name.
+  string worker_id = 4;
+}
+
+message StartAgentWorkerResponse {
+  // The worker box.
+  Container container = 1;
+  // The worker id the daemon used.
+  string worker_id = 2;
 }
 
 // =============================================================================

@@ -7,6 +7,7 @@ import type { Engine, EngineConfig } from "./engine.js";
 import { ClaudeEngine } from "./engines/claude.js";
 import { CodexEngine } from "./engines/codex.js";
 import { GeminiEngine } from "./engines/gemini.js";
+import { pollConfigFromEnv, runPollLoop } from "./poll.js";
 import { DEFAULT_SEED_DIR, loadSeed } from "./seed.js";
 
 // The in-box loop entrypoint (Phase 4a). Reads the seed the daemon planted,
@@ -60,8 +61,10 @@ function writeCodexConfig(cfg: EngineConfig): void {
 }
 
 // mode: "run" (one-shot — read input.json, run once, write artifact.json; the
-// 4a path `agent run` uses) or "serve" (start the A2A server so peers/crews can
-// delegate tasks; the 4b path SendAgentTask reaches). Default "run".
+// 4a path `agent run` uses), "serve" (start the A2A server so peers/crews can
+// delegate tasks; the 4b path SendAgentTask reaches), or "poll" (pull-queue
+// worker: lease → run → complete in a loop, outbound-only; prototype). Default
+// "run".
 const mode = (process.env.CONTAINARIUM_AGENT_MODE ?? "run").toLowerCase();
 
 async function main(): Promise<void> {
@@ -80,6 +83,14 @@ async function main(): Promise<void> {
   if (mode === "serve") {
     // Long-running: serve /agent-card + /tasks until the box stops.
     startA2AServer(seed, engine, cfg);
+    return;
+  }
+
+  if (mode === "poll") {
+    // Long-running pull-queue worker: lease → run → complete, outbound-only.
+    // The seed's system prompt is the worker's persona; the leased task's
+    // input_json is the per-run input.
+    await runPollLoop(pollConfigFromEnv(), engine, cfg);
     return;
   }
 

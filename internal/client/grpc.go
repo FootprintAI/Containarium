@@ -655,6 +655,38 @@ func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON string) (
 	return resp, nil
 }
 
+// EnqueueAgentTask places a task on the pull queue for a skill (prototype).
+func (c *GRPCClient) EnqueueAgentTask(skillID, inputJSON string) (*pb.EnqueueAgentTaskResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.EnqueueAgentTask(ctx, &pb.EnqueueAgentTaskRequest{
+		SkillId:   skillID,
+		InputJson: inputJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to enqueue agent task: %w", err)
+	}
+	return resp, nil
+}
+
+// StartAgentWorker launches a poll-mode worker box for a skill (prototype).
+func (c *GRPCClient) StartAgentWorker(skillID, backendID, pool, workerID string) (*pb.StartAgentWorkerResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
+	defer cancel()
+
+	resp, err := c.agentClient.StartAgentWorker(ctx, &pb.StartAgentWorkerRequest{
+		SkillId:   skillID,
+		BackendId: backendID,
+		Pool:      pool,
+		WorkerId:  workerID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to start agent worker: %w", err)
+	}
+	return resp, nil
+}
+
 // SendAgentTask delegates a task to a running peer agent over A2A via gRPC.
 func (c *GRPCClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb.AgentArtifact, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

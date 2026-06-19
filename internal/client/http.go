@@ -1164,6 +1164,61 @@ func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON string) (
 	return out, nil
 }
 
+// EnqueueAgentTask places a task on the pull queue for a skill (prototype).
+func (c *HTTPClient) EnqueueAgentTask(skillID, inputJSON string) (*pb.EnqueueAgentTaskResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	body := map[string]interface{}{
+		"skill_id":   skillID,
+		"input_json": inputJSON,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/agent-tasks", body)
+	if err != nil {
+		return nil, fmt.Errorf("enqueue agent task: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "enqueue agent task")
+	}
+	out := &pb.EnqueueAgentTaskResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// StartAgentWorker launches a poll-mode worker box for a skill (prototype).
+func (c *HTTPClient) StartAgentWorker(skillID, backendID, pool, workerID string) (*pb.StartAgentWorkerResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s/worker", url.PathEscape(skillID))
+	body := map[string]interface{}{
+		"skill_id":   skillID,
+		"backend_id": backendID,
+		"pool":       pool,
+		"worker_id":  workerID,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("start agent worker: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "start agent worker")
+	}
+	out := &pb.StartAgentWorkerResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // SendAgentTask delegates a task to a running peer agent over A2A via HTTP.
 func (c *HTTPClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb.AgentArtifact, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

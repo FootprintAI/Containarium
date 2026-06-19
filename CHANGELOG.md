@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pull-based agent run-queue + poll-mode workers (#674).** An orthogonal
+  delivery model to push: a producer `EnqueueAgentTask`s; long-lived worker
+  boxes `LeaseAgentTask` (SQS-style visibility-timeout lease → at-most-one
+  active worker per task, redelivery on expiry, stale-token completion
+  rejected), run locally, and `CompleteAgentTask`. The queue core
+  (`internal/server/agent_task_queue.go`) is an in-memory, lock-guarded FIFO
+  with an injectable clock (unit-tested, race-clean). New CLI `containarium
+  agent enqueue` (producer) and `StartAgentWorker` which provisions/reuses a
+  skill box and mints a **queue credential** — a JWT scoped to `agents:run`
+  only, separate from the skill's in-box token. The `agent-runtime` gains a
+  `poll` mode (`CONTAINARIUM_AGENT_MODE=poll`): lease → run → complete in a
+  loop, outbound-only, reusing the A2A `runTask`. Ships alongside the
+  model-gateway design note (`docs/AGENT-MODEL-GATEWAY-DESIGN.md`).
 - **Model-gateway usage → metering/billing pipeline (#674).** The gateway gains a
   pluggable `UsageSink` (kept free of an OTel dependency); the daemon wires an
   OTLP sink that emits per-tenant/skill/provider/model token counters

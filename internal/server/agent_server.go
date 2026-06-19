@@ -54,6 +54,7 @@ type AgentSkillServer struct {
 	netpolicy *NetworkPolicyServer // compiles allowed_peers into a per-box egress policy (Phase 2)
 	audit     *audit.Store         // records A2A hops under a trace id (Phase 2); set once the pool is ready
 	gateway   *gatewayProvisioning // model-gateway provisioning (#674); nil ⇒ boxes run in direct mode
+	queue     *agentTaskQueue      // pull-based run queue (#674) — Enqueue/Lease/Complete
 }
 
 // SetAuditStore wires the audit store once the Postgres pool exists (it isn't
@@ -80,6 +81,7 @@ func NewAgentSkillServer(recipes *RecipeServer, tokens *auth.TokenManager, netpo
 		recipes:   recipes,
 		tokens:    tokens,
 		netpolicy: netpolicy,
+		queue:     newAgentTaskQueue(),
 	}
 }
 
