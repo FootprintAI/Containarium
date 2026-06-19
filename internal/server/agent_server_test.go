@@ -80,8 +80,11 @@ func TestAgentNetworkPolicyConfigDomains(t *testing.T) {
 	t.Run("defaults to the model providers when unset", func(t *testing.T) {
 		_ = os.Unsetenv("CONTAINARIUM_AGENT_EGRESS_DOMAINS")
 		_, domains, _ := agentNetworkPolicyConfig()
-		if len(domains) != 2 || domains[0] != "api.anthropic.com" {
-			t.Errorf("default domains = %v, want the provider defaults", domains)
+		// The provider defaults: Anthropic, OpenAI, and Gemini (the Gemini engine
+		// added generativelanguage.googleapis.com so an ENFORCE policy doesn't
+		// strand a Gemini agent). Assert against the source-of-truth slice.
+		if len(domains) != len(defaultAgentEgressDomains) || domains[0] != "api.anthropic.com" {
+			t.Errorf("default domains = %v, want %v", domains, defaultAgentEgressDomains)
 		}
 	})
 	t.Run("operator override wins", func(t *testing.T) {
