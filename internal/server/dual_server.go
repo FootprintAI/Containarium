@@ -1303,10 +1303,21 @@ skipAppHosting:
 		// boxes to route model calls through it (key custody + per-tenant
 		// metering). Inert when no provider key is set — boxes run in direct mode.
 		if keys := gatewayProviderKeysFromEnv(); len(keys) > 0 {
+			// Metering→billing (#674 increment 3): forward per-tenant token usage
+			// to the OTel pipeline (→ VictoriaMetrics → billing) on top of the
+			// in-memory /__gateway/usage readout. Uses the global meter — a no-op
+			// when monitoring is off, so it's always safe to wire.
+			var gwSink modelgateway.UsageSink
+			if sink, serr := newGatewayOTLPSink(); serr != nil {
+				log.Printf("Warning: model-gateway OTLP usage sink unavailable (%v); usage is in-memory only", serr)
+			} else {
+				gwSink = sink
+			}
 			gw := modelgateway.New(modelgateway.Config{
 				Secret:       []byte(config.JWTSecret),
 				Providers:    modelgateway.DefaultProviders(),
 				ProviderKeys: keys,
+				Sink:         gwSink,
 			})
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			primary := gatewayPrimaryProvider(keys)

@@ -12,11 +12,22 @@ import (
 	"strings"
 )
 
+// UsageSink receives every metered model call so token usage can be forwarded
+// to a durable/billing plane, in ADDITION to the in-memory Meter (which backs
+// /__gateway/usage). The daemon wires an OTLP sink that emits per-tenant counters
+// into the metrics pipeline (→ VictoriaMetrics → billing); standalone/test runs
+// leave it nil. Kept an interface here so modelgateway stays free of an OTel
+// dependency (the design's "metering plane writer", decoupled).
+type UsageSink interface {
+	RecordUsage(tenant, skill, provider string, u Usage)
+}
+
 // Config configures a Gateway.
 type Config struct {
 	Secret       []byte               // shared HMAC secret (the daemon's jwt.secret)
 	Providers    map[string]*Provider // provider registry (see DefaultProviders)
 	ProviderKeys map[string]string    // provider name -> REAL API key, held here only
+	Sink         UsageSink            // optional: durable/billing usage writer (nil = in-memory only)
 	Logger       *log.Logger
 }
 
@@ -159,6 +170,9 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			if json.Unmarshal(body, &decoded) == nil {
 				u := prov.parseUsage(decoded, pathModel)
 				g.meter.record(claims.Tenant, claims.SkillID, provName, u)
+				if g.cfg.Sink != nil {
+					g.cfg.Sink.RecordUsage(claims.Tenant, claims.SkillID, provName, u)
+				}
 				g.cfg.Logger.Printf("model-gateway: tenant=%s skill=%s provider=%s model=%s in=%d out=%d cached=%d",
 					claims.Tenant, claims.SkillID, provName, u.Model, u.InputTokens, u.OutputTokens, u.CachedTokens)
 			}

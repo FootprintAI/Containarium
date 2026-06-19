@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Model-gateway usage → metering/billing pipeline (#674).** The gateway gains a
+  pluggable `UsageSink` (kept free of an OTel dependency); the daemon wires an
+  OTLP sink that emits per-tenant/skill/provider/model token counters
+  (`model_gateway.calls`, `.input_tokens`, `.output_tokens`, `.cached_tokens`)
+  through the existing metrics pipeline (→ VictoriaMetrics → dashboards/billing),
+  on top of the in-memory `/__gateway/usage` readout. So model-call usage is now
+  durable + aggregatable per tenant, not just a live snapshot. Uses the global
+  meter — a no-op when monitoring is off, so it's always safe to wire; a nil sink
+  (standalone) keeps the in-memory meter working.
 - **Daemon-served model-gateway for skill boxes (#674, productionizing #737).**
   When the daemon holds a provider API key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
   / `GEMINI_API_KEY` — `GOOGLE_API_KEY` also works for Gemini), it now serves the

@@ -77,6 +77,86 @@ func TestGateway_Anthropic_KeyInjected_TokenStripped_Metered(t *testing.T) {
 	}
 }
 
+// captureSink records the usage the gateway forwards to a UsageSink (#674
+// increment 3 — the metering→billing writer).
+type captureSink struct {
+	tenant, skill, provider string
+	u                       Usage
+	calls                   int
+}
+
+func (c *captureSink) RecordUsage(tenant, skill, provider string, u Usage) {
+	c.tenant, c.skill, c.provider, c.u = tenant, skill, provider, u
+	c.calls++
+}
+
+func TestGateway_ForwardsUsageToSink(t *testing.T) {
+	secret := []byte("shared-secret")
+	up := fakeUpstream(t, func(*http.Request) {},
+		`{"model":"claude-test","usage":{"input_tokens":12,"output_tokens":4,"cache_read_input_tokens":2}}`)
+	defer up.Close()
+
+	providers := DefaultProviders()
+	providers["anthropic"].UpstreamURL = up.URL
+	sink := &captureSink{}
+	gw := New(Config{Secret: secret, Providers: providers, ProviderKeys: map[string]string{"anthropic": "REAL-KEY"}, Sink: sink})
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+
+	tok, err := MintToken(secret, GatewayClaims{Tenant: "acme", SkillID: "s1", Provider: "anthropic"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/anthropic/v1/messages", strings.NewReader(`{"model":"claude-test"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+
+	// The sink receives the same attribution + token counts as the in-memory meter.
+	if sink.calls != 1 {
+		t.Fatalf("sink calls = %d, want 1", sink.calls)
+	}
+	if sink.tenant != "acme" || sink.skill != "s1" || sink.provider != "anthropic" || sink.u.Model != "claude-test" {
+		t.Errorf("sink attribution wrong: %+v", sink)
+	}
+	if sink.u.InputTokens != 12 || sink.u.OutputTokens != 4 || sink.u.CachedTokens != 2 {
+		t.Errorf("sink token counts wrong: %+v", sink.u)
+	}
+}
+
+func TestGateway_NilSinkIsSafe(t *testing.T) {
+	// No sink configured (standalone / OSS default) — metering still works,
+	// nothing panics.
+	secret := []byte("s")
+	up := fakeUpstream(t, func(*http.Request) {}, `{"model":"m","usage":{"input_tokens":1}}`)
+	defer up.Close()
+	providers := DefaultProviders()
+	providers["anthropic"].UpstreamURL = up.URL
+	gw := New(Config{Secret: secret, Providers: providers, ProviderKeys: map[string]string{"anthropic": "K"}}) // Sink nil
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+	tok, _ := MintToken(secret, GatewayClaims{Tenant: "t", Provider: "anthropic"}, time.Minute)
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/anthropic/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if len(gw.Meter().Snapshot()) != 1 {
+		t.Error("in-memory meter should still record with a nil sink")
+	}
+}
+
 func TestGateway_Gemini_PathModel_AllowedModelsEnforced(t *testing.T) {
 	secret := []byte("s")
 	var gKey string
