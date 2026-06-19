@@ -26,6 +26,7 @@ import (
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/metrics"
+	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/pentest"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
@@ -1296,6 +1297,27 @@ skipAppHosting:
 			certsDir,
 			config.CaddyCertDir,
 		)
+
+		// Model-gateway (#674 productionization of #737): when the daemon holds a
+		// provider API key, serve the gateway on the HTTP port and provision skill
+		// boxes to route model calls through it (key custody + per-tenant
+		// metering). Inert when no provider key is set — boxes run in direct mode.
+		if keys := gatewayProviderKeysFromEnv(); len(keys) > 0 {
+			gw := modelgateway.New(modelgateway.Config{
+				Secret:       []byte(config.JWTSecret),
+				Providers:    modelgateway.DefaultProviders(),
+				ProviderKeys: keys,
+			})
+			gatewayServer.SetModelGatewayHandler(gw.Handler())
+			primary := gatewayPrimaryProvider(keys)
+			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret))
+			provs := make([]string, 0, len(keys))
+			for p := range keys {
+				provs = append(provs, p)
+			}
+			log.Printf("Model-gateway enabled (providers=%v, skill-box primary=%s) — agent boxes route model calls through the daemon; provider keys never leave the host",
+				provs, primary)
+		}
 
 		// Sentinel-facing HMAC secret for /certs, /authorized-keys,
 		// /authorized-keys/sentinel. If unset (or shorter than the

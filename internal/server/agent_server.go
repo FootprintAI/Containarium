@@ -53,11 +53,22 @@ type AgentSkillServer struct {
 	tokens    *auth.TokenManager   // mints the skill's scoped in-box token
 	netpolicy *NetworkPolicyServer // compiles allowed_peers into a per-box egress policy (Phase 2)
 	audit     *audit.Store         // records A2A hops under a trace id (Phase 2); set once the pool is ready
+	gateway   *gatewayProvisioning // model-gateway provisioning (#674); nil ⇒ boxes run in direct mode
 }
 
 // SetAuditStore wires the audit store once the Postgres pool exists (it isn't
 // available at construction). A2A hop logging no-ops until then.
 func (s *AgentSkillServer) SetAuditStore(store *audit.Store) { s.audit = store }
+
+// SetGatewayProvisioning enables model-gateway provisioning for skill boxes:
+// each provisioned box gets a per-skill gateway token + the SDK base-URL env so
+// its model calls route through the daemon-served gateway (key custody +
+// metering). Wired from dual_server when a provider key is configured; nil-safe
+// (no call ⇒ direct mode). provider is the gateway's configured provider,
+// httpPort the daemon HTTP port the box dials, secret the shared jwt secret.
+func (s *AgentSkillServer) SetGatewayProvisioning(provider string, httpPort int, secret []byte) {
+	s.gateway = &gatewayProvisioning{provider: provider, httpPort: httpPort, secret: secret}
+}
 
 // NewAgentSkillServer wires the agent-skill service to the recipe server (for
 // box provisioning), the token manager (for minting scoped in-box tokens), and
@@ -227,8 +238,23 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		}
 	}
 	containerName := name + "-container"
+	seedScript := buildAgentSeedScript(skill.SystemPrompt, token, inputJSON, cardJSON)
+	// Model-gateway provisioning (#674): when the daemon serves a gateway, mint a
+	// per-skill gateway token and append the env-seeding to the same exec, so the
+	// box's engine routes model calls through the gateway (real key never enters
+	// the box). Best-effort: a mint/script error logs and falls back to direct
+	// mode rather than failing provisioning.
+	if s.gateway != nil {
+		if gwTok, gerr := s.gateway.mintGatewayToken(name, skill.Id); gerr != nil {
+			log.Printf("[agent-skill] gateway token mint failed for %s (box runs direct mode): %v", name, gerr)
+		} else if envScript, eerr := gatewayEnvScript(s.gateway.provider, s.gateway.httpPort, gwTok, agentSeedDir); eerr != nil {
+			log.Printf("[agent-skill] gateway env script failed for %s (box runs direct mode): %v", name, eerr)
+		} else {
+			seedScript += "\n" + envScript
+		}
+	}
 	if err := s.recipes.containers.manager.Exec(containerName,
-		[]string{"bash", "-c", buildAgentSeedScript(skill.SystemPrompt, token, inputJSON, cardJSON)}); err != nil {
+		[]string{"bash", "-c", seedScript}); err != nil {
 		return "", nil, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
 	}
 
@@ -246,7 +272,7 @@ func (s *AgentSkillServer) startServeMode(containerName string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
-	cmd := "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + agentSeedDir +
+	cmd := sourceGatewayEnvPrefix(agentSeedDir) + "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + agentSeedDir +
 		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
@@ -268,7 +294,7 @@ func (s *AgentSkillServer) runInBoxAgent(containerName string) string {
 	mgr := s.recipes.containers.manager
 
 	if _, stderr, err := mgr.ExecWithOutput(containerName,
-		[]string{"bash", "-lc", "AGENT_SEED_DIR=" + agentSeedDir + " agent-runtime"}); err != nil {
+		[]string{"bash", "-lc", sourceGatewayEnvPrefix(agentSeedDir) + "AGENT_SEED_DIR=" + agentSeedDir + " agent-runtime"}); err != nil {
 		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
 		return ""

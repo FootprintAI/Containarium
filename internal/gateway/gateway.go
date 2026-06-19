@@ -55,6 +55,12 @@ type GatewayServer struct {
 	// Backends handler (for multi-backend support, set externally)
 	backendsHandler http.HandlerFunc
 
+	// Model-gateway handler (#674). Set externally from dual_server when the
+	// daemon holds a provider API key. Mounted at /v1/model/ and NOT wrapped by
+	// the JWT auth middleware — it authenticates boxes with its OWN scoped
+	// gateway token (modelgateway.VerifyToken) and injects the real provider key.
+	modelGatewayHandler http.Handler
+
 	// sentinelAuthSecret is the shared HMAC secret used by the
 	// sentinel to authenticate calls to /authorized-keys and /certs.
 	// Set via CONTAINARIUM_SENTINEL_AUTH_SECRET. Nil/short means the
@@ -183,6 +189,14 @@ func (gs *GatewayServer) SetBackendsHandler(handler http.HandlerFunc) {
 // for API callers, not for incoming user requests).
 func (gs *GatewayServer) SetWakeHandler(handler http.Handler) {
 	gs.wakeHandler = handler
+}
+
+// SetModelGatewayHandler sets the model-gateway handler mounted at /v1/model/
+// (#674). Unauthenticated by the JWT middleware — the handler verifies the
+// box's scoped gateway token itself and injects the real provider key. Set
+// from dual_server only when a provider key is configured.
+func (gs *GatewayServer) SetModelGatewayHandler(handler http.Handler) {
+	gs.modelGatewayHandler = handler
 }
 
 // SetTerminalPeerProxy configures the terminal handler to proxy WebSocket
@@ -566,6 +580,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if gs.wakeHandler != nil {
 		httpMux.Handle("/wake/", gs.wakeHandler)
 		httpMux.Handle("/wake", gs.wakeHandler)
+	}
+
+	// Model-gateway (#674): the agent model egress. Mounted at /v1/model/ —
+	// more specific than the /v1/ gateway catch-all (http.ServeMux longest-prefix
+	// wins) — and deliberately UNWRAPPED by the JWT auth middleware: a box
+	// presents its scoped gateway token (verified inside the handler), not the
+	// platform JWT. The handler injects the real provider key and proxies.
+	if gs.modelGatewayHandler != nil {
+		httpMux.Handle("/v1/model/", gs.modelGatewayHandler)
 	}
 
 	// Core services endpoint (with authentication via CORS handler)

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Daemon-served model-gateway for skill boxes (#674, productionizing #737).**
+  When the daemon holds a provider API key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
+  / `GEMINI_API_KEY` — `GOOGLE_API_KEY` also works for Gemini), it now serves the
+  model-gateway at `/v1/model/` and provisions every skill box to route its model
+  calls through it: `provisionSkillBox` mints a short-lived, per-skill **gateway
+  token** and seeds the box's SDK base-URL env (`gateway.env`, resolving the
+  host from the box's default route in-box), which the in-box runtime sources
+  before launch. The real provider key never enters a box, and every call is
+  metered per tenant/skill. It's an **env change, not a code change** — the
+  agent-runtime engines already honor these vars (Claude/OpenAI base-URL;
+  Gemini via `CONTAINARIUM_MODEL_GATEWAY_URL`). Inert when no provider key is
+  set — boxes run in direct mode (the OSS/self-hosted default). The `/v1/model/`
+  mount is unauthenticated by the platform JWT middleware; it verifies the box's
+  scoped gateway token itself.
+
 ### Fixed
 
 - **`pool join` no longer drops a host's existing daemon flags (#702).** It used
