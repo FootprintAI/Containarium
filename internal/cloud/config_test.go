@@ -9,7 +9,7 @@ import (
 
 func TestConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "cloud.yaml")
-	in := &Config{ControlPlane: "cloud.example:443", HostID: "11111111-1111-1111-1111-111111111111", Token: "secret-bearer"}
+	in := &Config{ControlPlane: "cloud.example:443", HostID: "11111111-1111-1111-1111-111111111111", Token: "secret-bearer", JWTSecretFile: "/etc/containarium/jwt.secret"}
 	if err := Save(path, in); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

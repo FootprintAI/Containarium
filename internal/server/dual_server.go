@@ -913,6 +913,15 @@ skipAppHosting:
 		} else {
 			cloudDeps.Containers = cloudActuator // only set when non-nil (avoid nil-iface trap)
 		}
+		// Driver-token auto-refresh (#557): if cloud.yaml has a JWTSecretFile,
+		// provide a minter so the actuation client keeps the cloud-stored
+		// driver credential from reaching the 30-day OSS cap.
+		if cloudCfg.JWTSecretFile != "" {
+			secretFile := cloudCfg.JWTSecretFile // capture for closure
+			cloudDeps.Driver = func() (string, error) {
+				return cloud.MintDriverToken(secretFile, 30*24*time.Hour)
+			}
+		}
 		if cc, nerr := cloud.New(cloudCfg, cloudDeps); nerr != nil {
 			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
 		} else {

@@ -258,6 +258,10 @@ message ReportHostStatusRequest {
   int32 avail_gpu_count = 9;
   bool self_check_ok = 10;
   repeated HostCapabilityCheck checks = 11;
+  // driver_token is a freshly-minted admin JWT from this host's own jwt.secret
+  // (#557). If non-empty the cloud reseals it and overwrites the stored driver
+  // token, keeping the cloud-stored credential from expiring after 30 days.
+  string driver_token = 12;
 }
 
 message ReportHostStatusResponse {

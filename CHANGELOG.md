@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **BYOC driver-token auto-refresh (#557).** A host enrolled with `cloud enroll`
+  now keeps itself cloud-drivable past the 30-day token-expiry cap with no manual
+  re-enroll. `cloud enroll` records the JWT-secret path in `cloud.yaml`
+  (`jwt_secret_file`); the daemon's actuation client then re-mints a fresh admin
+  driver token every ~20 days (⅔ of the cap) and pushes it to the cloud over the
+  existing `ReportHostStatus` channel (new optional `driver_token` field). The
+  cloud reseals and overwrites its stored credential, so it never expires.
+  Best-effort: a missed cycle leaves ~10 days of runway. Hosts enrolled with
+  `--no-driver-token` are unaffected.
 - **Gemini engine for the in-box agent loop (`agent-runtime`).** A third
   pluggable engine alongside Claude and Codex, selected with
   `CONTAINARIUM_AGENT_ENGINE=gemini`. It drives the loop with the Google Gen AI

@@ -325,6 +325,54 @@ func TestReportStatusOnce_SendsCapabilityWithBearer(t *testing.T) {
 	}
 }
 
+// TestRefreshDriverTokenOnce_PushesMintedToken covers #557: the refresh loop
+// mints a fresh driver token and pushes it via ReportHostStatus with the host
+// bearer attached, so the cloud can reseal + overwrite the stored credential.
+func TestRefreshDriverTokenOnce_PushesMintedToken(t *testing.T) {
+	c, fake := newTestClient(t, &Config{
+		ControlPlane: "bufnet", HostID: "h1", Token: "h1.secret", Insecure: true,
+	})
+	c.driver = func() (string, error) { return "fresh.minted.jwt", nil }
+
+	c.refreshDriverTokenOnce()
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.statusReports != 1 {
+		t.Fatalf("want 1 status report, got %d", fake.statusReports)
+	}
+	if fake.statusBearer != "h1.secret" {
+		t.Errorf("driver-token refresh missing host bearer: got %q", fake.statusBearer)
+	}
+	if got := fake.statusReq.GetDriverToken(); got != "fresh.minted.jwt" {
+		t.Errorf("driver token not pushed: got %q", got)
+	}
+}
+
+// TestRefreshDriverTokenOnce_MintFailureSkipsPush confirms a mint error is
+// swallowed (logged) and no RPC is sent — the old token stays valid until the
+// next cycle.
+func TestRefreshDriverTokenOnce_MintFailureSkipsPush(t *testing.T) {
+	c, fake := newTestClient(t, &Config{
+		ControlPlane: "bufnet", HostID: "h1", Token: "h1.secret", Insecure: true,
+	})
+	c.driver = func() (string, error) { return "", errMintFailed }
+
+	c.refreshDriverTokenOnce()
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.statusReports != 0 {
+		t.Fatalf("mint failure must not push a status report, got %d", fake.statusReports)
+	}
+}
+
+var errMintFailed = errorString("mint failed")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
+
 func TestEnroll_RedeemsTokenAndReturnsHostID(t *testing.T) {
 	// Enroll dials its own connection, so use a real loopback TCP server
 	// (bufconn isn't reachable by grpc.NewClient(addr)).

@@ -28,6 +28,11 @@ const hostBearerMetadataKey = "host-bearer"
 // staleness threshold is ~3 missed beats; see the cloud container-actuation PRD.
 const defaultHeartbeatInterval = 30 * time.Second
 
+// driverRefreshInterval is how often the daemon re-mints and pushes a fresh
+// driver token (#557). Set to ⅔ of the 30-day OSS cap so there is always at
+// least 10 days of runway before expiry, even if one refresh cycle fails.
+const driverRefreshInterval = 20 * 24 * time.Hour
+
 // PolicySink receives each AssignmentBatch's per-org network policies so the
 // daemon can converge its NetworkPolicyStore (where the eBPF enforcer applies
 // them). The daemon implements this; keeping it an interface lets the client be
@@ -110,6 +115,12 @@ type StatusProbe interface {
 	Probe(ctx context.Context) (HostStatus, error)
 }
 
+// DriverMinter mints a fresh BYOC driver token (an admin JWT signed with this
+// host's own jwt.secret). Called by the driver-refresh loop (#557) ~every 20
+// days to keep the cloud-stored credential from reaching the 30-day expiry cap.
+// Returns the raw JWT string. The function is optional in Deps; nil = no refresh.
+type DriverMinter func() (string, error)
+
 // Deps are the daemon-provided collaborators. All optional: nil Policies
 // skips network-policy sync, nil Containers skips container reconcile, nil
 // Status skips capability reporting. With all nil the client is
@@ -118,6 +129,10 @@ type Deps struct {
 	Policies   PolicySink
 	Containers ContainerActuator
 	Status     StatusProbe
+	// Driver, when non-nil, enables autonomous driver-token refresh (#557).
+	// The daemon provides this when cloud.yaml has a JWTSecretFile set (i.e.
+	// the host enrolled as a BYOC backend with a driver token).
+	Driver DriverMinter
 }
 
 // unaryActuation is the subset of the actuation API the client drives over a
@@ -140,7 +155,8 @@ type Client struct {
 	sink       PolicySink        // optional; nil = no policy reconcile
 	containers ContainerActuator // optional; nil = no container reconcile
 
-	status StatusProbe // optional; nil = no capability reporting
+	status StatusProbe  // optional; nil = no capability reporting
+	driver DriverMinter // optional; nil = no driver-token refresh (#557)
 
 	conn *grpc.ClientConn
 	// ac handles the unary actuation RPCs (heartbeat + status); it is either the
@@ -164,7 +180,11 @@ func New(cfg *Config, deps Deps) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Client{cfg: cfg, interval: defaultHeartbeatInterval, sink: deps.Policies, containers: deps.Containers, status: deps.Status}, nil
+	return &Client{
+		cfg: cfg, interval: defaultHeartbeatInterval,
+		sink: deps.Policies, containers: deps.Containers,
+		status: deps.Status, driver: deps.Driver,
+	}, nil
 }
 
 // Start dials the control plane and launches the heartbeat loop. A dial error is
@@ -203,8 +223,12 @@ func (c *Client) Start(ctx context.Context) error {
 		c.wg.Add(1)
 		go c.statusLoop()
 	}
-	log.Printf("[cloud] actuation client started: host=%s control-plane=%s (heartbeat %s, watch=%v, status=%v)",
-		c.cfg.HostID, c.cfg.ControlPlane, c.interval, watch, c.status != nil)
+	if c.driver != nil {
+		c.wg.Add(1)
+		go c.driverRefreshLoop()
+	}
+	log.Printf("[cloud] actuation client started: host=%s control-plane=%s (heartbeat %s, watch=%v, status=%v, driver-refresh=%v)",
+		c.cfg.HostID, c.cfg.ControlPlane, c.interval, watch, c.status != nil, c.driver != nil)
 	return nil
 }
 
@@ -324,6 +348,44 @@ func (c *Client) reportStatusOnce() {
 	}); err != nil {
 		log.Printf("[cloud] report host status: %v", err)
 	}
+}
+
+// driverRefreshLoop re-mints the BYOC driver token on a ~20-day cycle so the
+// cloud-stored credential never reaches the 30-day cap (#557). Fires once
+// immediately on startup so a freshly-enrolled daemon pushes a token right
+// away, then sleeps for driverRefreshInterval between rounds. Best-effort:
+// mint/RPC failures are logged and retried on the next cycle — one missed
+// refresh leaves ~10 days of runway before the old token expires.
+func (c *Client) driverRefreshLoop() {
+	defer c.wg.Done()
+	c.refreshDriverTokenOnce()
+	t := time.NewTicker(driverRefreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			c.refreshDriverTokenOnce()
+		}
+	}
+}
+
+func (c *Client) refreshDriverTokenOnce() {
+	tok, err := c.driver()
+	if err != nil {
+		log.Printf("[cloud] driver-token refresh: mint failed: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.authContext(c.ctx), 10*time.Second)
+	defer cancel()
+	if _, err := c.ac.ReportHostStatus(ctx, &cloudv1.ReportHostStatusRequest{
+		DriverToken: tok,
+	}); err != nil {
+		log.Printf("[cloud] driver-token refresh: push failed: %v", err)
+		return
+	}
+	log.Printf("[cloud] driver-token refreshed (next in %s)", driverRefreshInterval)
 }
 
 func (c *Client) heartbeatLoop() {

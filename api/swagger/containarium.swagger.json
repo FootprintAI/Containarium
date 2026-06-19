@@ -10080,6 +10080,10 @@
             "type": "object",
             "$ref": "#/definitions/HostCapabilityCheck"
           }
+        },
+        "driverToken": {
+          "type": "string",
+          "description": "driver_token is a freshly-minted admin JWT from this host's own jwt.secret\n(#557). If non-empty the cloud reseals it and overwrites the stored driver\ntoken, keeping the cloud-stored credential from expiring after 30 days."
         }
       },
       "description": "ReportHostStatusRequest is a BYO host's push of its self-measured\ncapability profile + `doctor` self-check. Host-bearer authed; the host id\ncomes from the bearer, never the body."

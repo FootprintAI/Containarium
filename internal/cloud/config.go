@@ -40,6 +40,12 @@ type Config struct {
 	// for a self-hosted plaintext control plane or local dev — never for a
 	// public cloud endpoint.
 	Insecure bool `yaml:"insecure,omitempty"`
+	// JWTSecretFile is the path to this daemon's JWT signing secret (#557).
+	// When set, the daemon's cloud actuation client re-mints a fresh driver
+	// token every ~⅔ of the 30-day cap and pushes it to the cloud via
+	// ReportHostStatus so the cloud-stored credential never expires.
+	// Written by `containarium cloud enroll`; empty disables auto-refresh.
+	JWTSecretFile string `yaml:"jwt_secret_file,omitempty"`
 }
 
 // DefaultPath resolves $HOME/.containarium/cloud.yaml.

@@ -966,6 +966,10 @@ type ReportHostStatusRequest struct {
 	AvailGpuCount int32                  `protobuf:"varint,9,opt,name=avail_gpu_count,json=availGpuCount,proto3" json:"avail_gpu_count,omitempty"`
 	SelfCheckOk   bool                   `protobuf:"varint,10,opt,name=self_check_ok,json=selfCheckOk,proto3" json:"self_check_ok,omitempty"`
 	Checks        []*HostCapabilityCheck `protobuf:"bytes,11,rep,name=checks,proto3" json:"checks,omitempty"`
+	// driver_token is a freshly-minted admin JWT from this host's own jwt.secret
+	// (#557). If non-empty the cloud reseals it and overwrites the stored driver
+	// token, keeping the cloud-stored credential from expiring after 30 days.
+	DriverToken   string `protobuf:"bytes,12,opt,name=driver_token,json=driverToken,proto3" json:"driver_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1077,6 +1081,13 @@ func (x *ReportHostStatusRequest) GetChecks() []*HostCapabilityCheck {
 	return nil
 }
 
+func (x *ReportHostStatusRequest) GetDriverToken() string {
+	if x != nil {
+		return x.DriverToken
+	}
+	return ""
+}
+
 type ReportHostStatusResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ReceivedAt    *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
@@ -1186,7 +1197,7 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x13HostCapabilityCheck\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x0e\n" +
 	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xba\x03\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xdd\x03\n" +
 	"\x17ReportHostStatusRequest\x12#\n" +
 	"\ragent_version\x18\x01 \x01(\tR\fagentVersion\x12\x1b\n" +
 	"\tcpu_cores\x18\x02 \x01(\x05R\bcpuCores\x12 \n" +
@@ -1201,7 +1212,8 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x0favail_gpu_count\x18\t \x01(\x05R\ravailGpuCount\x12\"\n" +
 	"\rself_check_ok\x18\n" +
 	" \x01(\bR\vselfCheckOk\x12B\n" +
-	"\x06checks\x18\v \x03(\v2*.containarium.cloud.v1.HostCapabilityCheckR\x06checks\"W\n" +
+	"\x06checks\x18\v \x03(\v2*.containarium.cloud.v1.HostCapabilityCheckR\x06checks\x12!\n" +
+	"\fdriver_token\x18\f \x01(\tR\vdriverToken\"W\n" +
 	"\x18ReportHostStatusResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"receivedAt*{\n" +

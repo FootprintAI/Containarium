@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/cloud"
 )
 
@@ -193,6 +192,15 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 		HostID:       hostID,
 		Token:        token,
 		Insecure:     cloudEnrollInsecure,
+		// Persist the JWT secret path so the daemon can re-mint the driver
+		// token autonomously before it expires (#557). Only set when the
+		// enroll actually minted a driver token (no-driver-token = no refresh).
+		JWTSecretFile: func() string {
+			if cloudEnrollNoDriverToken || opts.DriverToken == "" {
+				return ""
+			}
+			return cloudEnrollJWTSecretFile
+		}(),
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -240,36 +248,10 @@ func runCloudLogout(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// mintDriverToken reads this daemon's JWT secret and mints a short-lived admin
-// access token (cloud #554). The cloud seals + replays it to drive this host's
-// daemon through the sentinel peer-proxy; because it's signed with the host's
-// OWN secret, the host's daemon accepts it without the cloud ever learning the
-// secret. ttl is capped at the daemon max (30d) by the token manager, so the
-// cloud-stored token expires — re-run `cloud enroll` to rotate.
+// mintDriverToken is a thin wrapper around cloud.MintDriverToken kept for the
+// cmd package tests. See internal/cloud/token.go for the shared implementation.
 func mintDriverToken(secretFile string, ttl time.Duration) (string, error) {
-	secretFile = strings.TrimSpace(secretFile)
-	if secretFile == "" {
-		return "", fmt.Errorf("no --jwt-secret-file")
-	}
-	secretBytes, err := os.ReadFile(secretFile) // #nosec G304 -- operator-provided daemon secret path
-	if err != nil {
-		return "", fmt.Errorf("read jwt secret %s: %w", secretFile, err)
-	}
-	secret := strings.TrimSpace(string(secretBytes))
-	if secret == "" {
-		return "", fmt.Errorf("jwt secret %s is empty", secretFile)
-	}
-	tm, err := auth.NewTokenManager(secret, "containarium")
-	if err != nil {
-		return "", fmt.Errorf("token manager: %w", err)
-	}
-	// admin role: the cloud drives container CRUD on this host through the
-	// driver — same privilege the region-primary driver token carries.
-	tok, err := tm.GenerateToken("cloud-byoc-driver", []string{"admin"}, ttl)
-	if err != nil {
-		return "", fmt.Errorf("mint driver token: %w", err)
-	}
-	return tok, nil
+	return cloud.MintDriverToken(secretFile, ttl)
 }
 
 // redactToken shows only enough to recognize which token is stored, never the
