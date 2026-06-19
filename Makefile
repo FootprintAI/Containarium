@@ -1,9 +1,10 @@
-.PHONY: help proto build build-bpf clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all
+.PHONY: help proto build build-bpf clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
 
 # Variables
 BINARY_NAME=containarium
 MCP_BINARY_NAME=mcp-server
 AGENTBOX_BINARY_NAME=agent-box
+GATEWAY_BINARY_NAME=model-gateway
 GIT_COMMIT?=$(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 BUILD_DIR=bin
@@ -173,6 +174,18 @@ install-agent-box: build-agent-box ## Install agent-box to /usr/local/bin (requi
 	@echo "==> Installing $(AGENTBOX_BINARY_NAME) to /usr/local/bin..."
 	@sudo cp $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME) /usr/local/bin/
 	@echo "==> Installed. Wire it into Claude Code/Cursor with: ssh user@box agent-box"
+
+build-model-gateway-linux: ## Build model-gateway for Linux (the typical deploy target — runs on the platform host)
+	@echo "==> Building model-gateway for Linux..."
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(GATEWAY_BINARY_NAME)-linux-amd64 cmd/model-gateway/main.go
+	@echo "==> model-gateway built: $(BUILD_DIR)/$(GATEWAY_BINARY_NAME)-linux-amd64"
+
+build-model-gateway: ## Build model-gateway for the current platform
+	@echo "==> Building model-gateway..."
+	@mkdir -p $(BUILD_DIR)
+	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(GATEWAY_BINARY_NAME) cmd/model-gateway/main.go
+	@echo "==> model-gateway built: $(BUILD_DIR)/$(GATEWAY_BINARY_NAME)"
 
 # Sidecar image build. Per docs/PLATFORM-SIDECAR-DESIGN.md, sidecar
 # images live at ghcr.io/footprintai/containarium-*-sidecar; on

@@ -17,9 +17,19 @@ export class GeminiEngine implements Engine {
   readonly name = "gemini";
 
   async run(task: string, cfg: EngineConfig): Promise<EngineResult> {
-    const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+    // Gateway mode: CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN
+    // route calls through the platform's model-gateway so the real Gemini key
+    // never lives in the box. Direct mode: GEMINI_API_KEY / GOOGLE_API_KEY hits
+    // the provider directly (OSS / self-hosted use case).
+    const gatewayUrl = process.env.CONTAINARIUM_MODEL_GATEWAY_URL;
+    const gatewayToken = process.env.CONTAINARIUM_GATEWAY_TOKEN;
+    const useGateway = !!(gatewayUrl && gatewayToken);
+
+    const apiKey = useGateway
+      ? gatewayToken!
+      : (process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY);
     if (!apiKey) {
-      throw new Error("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set");
+      throw new Error("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set — for hosted use, set CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN");
     }
 
     // Spawn agent-box as an MCP stdio server — the same tool surface the other
@@ -32,7 +42,15 @@ export class GeminiEngine implements Engine {
     await mcpClient.connect(transport);
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      // When routing through the gateway the SDK sends x-goog-api-key (the
+      // gateway token) to `<gatewayUrl>/v1/model/gemini/<upstream-path>`.
+      // The gateway verifies the token, injects the real Gemini key, and
+      // proxies to generativelanguage.googleapis.com — so the key never leaves
+      // the gateway process.
+      const ai = new GoogleGenAI({
+        apiKey,
+        ...(useGateway ? { httpOptions: { baseUrl: `${gatewayUrl}/v1/model/gemini` } } : {}),
+      });
       const response = await ai.models.generateContent({
         model: cfg.model || "gemini-2.5-flash",
         contents: task,
