@@ -25,6 +25,11 @@ type gatewayProvisioning struct {
 	httpPort      int    // the daemon HTTP port the box dials (resolved to the host's default-route IP in-box)
 	secret        []byte // shared HMAC secret (daemon jwt.secret) — signs the gateway token
 	allowedModels []string
+	// egressCIDR is the host the box reaches the gateway on, as a /32 (the LXC
+	// bridge gateway IP — also the daemon API + DNS). When set, the skill box's
+	// egress policy allows ONLY this host (+ peers) for model calls and DROPS the
+	// direct provider domains — so a box can't bypass the gateway (#674 inc 4).
+	egressCIDR string
 }
 
 // gatewayProviderEnv is the per-provider env contract the agent-runtime engines

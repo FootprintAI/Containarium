@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -99,9 +100,55 @@ func TestAgentNetworkPolicyConfigDomains(t *testing.T) {
 func TestCompileAllowedPeersPolicySetsDomains(t *testing.T) {
 	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"},
 		func(string) (string, bool) { return "10.0.0.5", true },
-		nil, []string{"api.anthropic.com"}, true)
+		nil, []string{"api.anthropic.com"}, "", true)
 	if len(p.EgressDomains) != 1 || p.EgressDomains[0] != "api.anthropic.com" {
 		t.Errorf("egress_domains = %v, want [api.anthropic.com]", p.EgressDomains)
+	}
+}
+
+func TestCompileAllowedPeersPolicy_GatewayPinning(t *testing.T) {
+	// #674 inc 4: with a gatewayCIDR set, the box's model egress is the gateway
+	// host and the direct provider domains are DROPPED — so it can't bypass the
+	// gateway. Peers + platform CIDRs are still allowed.
+	resolve := func(string) (string, bool) { return "10.0.0.5", true }
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve,
+		nil, []string{"api.anthropic.com", "api.openai.com"}, "10.100.0.1/32", true)
+
+	if len(p.EgressDomains) != 0 {
+		t.Errorf("gateway mode must drop direct provider domains, got %v", p.EgressDomains)
+	}
+	if !slices.Contains(p.EgressCidrs, "10.100.0.1/32") {
+		t.Errorf("gateway host must be in egress cidrs, got %v", p.EgressCidrs)
+	}
+	if !slices.Contains(p.EgressCidrs, "10.0.0.5/32") {
+		t.Errorf("peer must still be allowed, got %v", p.EgressCidrs)
+	}
+}
+
+func TestCompileAllowedPeersPolicy_NoGatewayKeepsDomains(t *testing.T) {
+	// Direct mode (no gatewayCIDR): provider domains are served as before, and
+	// the gateway host is NOT injected.
+	resolve := func(string) (string, bool) { return "10.0.0.5", true }
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve,
+		nil, []string{"api.anthropic.com"}, "", false)
+	if len(p.EgressDomains) != 1 || p.EgressDomains[0] != "api.anthropic.com" {
+		t.Errorf("direct mode must keep provider domains, got %v", p.EgressDomains)
+	}
+	if slices.Contains(p.EgressCidrs, "10.100.0.1/32") {
+		t.Errorf("no gateway host should be injected in direct mode, got %v", p.EgressCidrs)
+	}
+}
+
+func TestSetGatewayProvisioning_EgressCIDR(t *testing.T) {
+	s := &AgentSkillServer{}
+	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "10.100.0.1")
+	if s.gateway.egressCIDR != "10.100.0.1/32" {
+		t.Errorf("egressCIDR = %q, want 10.100.0.1/32", s.gateway.egressCIDR)
+	}
+	// Empty host IP → no pinning CIDR (direct provider egress retained).
+	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "")
+	if s.gateway.egressCIDR != "" {
+		t.Errorf("empty hostIP must yield no egressCIDR, got %q", s.gateway.egressCIDR)
 	}
 }
 
@@ -172,7 +219,7 @@ func TestCompileAllowedPeersPolicy(t *testing.T) {
 	resolve := func(id string) (string, bool) { ip, ok := running[id]; return ip, ok }
 
 	// peer-c is not running, so it must be omitted from the allowlist.
-	p := compileAllowedPeersPolicy("agent-caller", []string{"peer-a", "peer-b", "peer-c"}, resolve, nil, nil, false)
+	p := compileAllowedPeersPolicy("agent-caller", []string{"peer-a", "peer-b", "peer-c"}, resolve, nil, nil, "", false)
 
 	if p.Tenant != "agent-caller" {
 		t.Errorf("tenant = %q, want agent-caller", p.Tenant)
@@ -200,7 +247,7 @@ func TestCompileAllowedPeersPolicy(t *testing.T) {
 func TestCompileAllowedPeersPolicyNoneRunning(t *testing.T) {
 	// No peer is running -> empty allowlist (the caller skips installing it
 	// rather than denying all egress under a future ENFORCE).
-	p := compileAllowedPeersPolicy("t", []string{"x", "y"}, func(string) (string, bool) { return "", false }, nil, nil, false)
+	p := compileAllowedPeersPolicy("t", []string{"x", "y"}, func(string) (string, bool) { return "", false }, nil, nil, "", false)
 	if len(p.EgressCidrs) != 0 {
 		t.Errorf("expected no egress cidrs when no peers run, got %v", p.EgressCidrs)
 	}
@@ -216,7 +263,7 @@ func TestCompileAllowedPeersPolicyEnforceAndExtraCIDRs(t *testing.T) {
 	// Armed ENFORCE + platform egress (e.g. daemon + DNS) so the agent isn't
 	// stranded by a peer-only allowlist.
 	extra := []string{"10.0.1.1/32", "10.0.1.2/32"}
-	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve, extra, nil, true)
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve, extra, nil, "", true)
 
 	if p.Mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE {
 		t.Errorf("mode = %v, want ENFORCE when armed", p.Mode)
