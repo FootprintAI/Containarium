@@ -23,10 +23,15 @@ const agentBoxCommand = process.env.AGENT_BOX_BIN ?? "agent-box";
 const maxTurns = Number(process.env.CONTAINARIUM_AGENT_MAX_TURNS ?? "12");
 
 // Model default is engine-specific. Claude → claude-opus-4-8 (per the Claude
-// API guidance). Codex → empty, i.e. let Codex use its own configured default
-// (we don't hard-code an OpenAI model id). Override either with
-// CONTAINARIUM_AGENT_MODEL.
-const model = process.env.CONTAINARIUM_AGENT_MODEL ?? (engineName === "claude" ? "claude-opus-4-8" : "");
+// API guidance). Gemini → gemini-2.5-flash (so the effective model is recorded
+// in the artifact for audit, not just defaulted inside the engine). Codex →
+// empty, i.e. let Codex use its own configured default (we don't hard-code an
+// OpenAI model id). Override any with CONTAINARIUM_AGENT_MODEL.
+const engineModelDefaults: Record<string, string> = {
+  claude: "claude-opus-4-8",
+  gemini: "gemini-2.5-flash",
+};
+const model = process.env.CONTAINARIUM_AGENT_MODEL ?? (engineModelDefaults[engineName] ?? "");
 
 function pickEngine(name: string): Engine {
   switch (name) {
