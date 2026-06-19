@@ -357,9 +357,10 @@ func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant s
 // ENFORCE additionally requires the daemon-wide eBPF enforcer to be armed
 // (CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT + CONTAINARIUM_NETWORK_POLICY_ENFORCE).
 // defaultAgentEgressDomains is the model-provider egress every agent box needs
-// so an armed (ENFORCE) policy doesn't strand the loop (#611). Both providers
-// are allowed since a box may run either engine (Claude or Codex).
-var defaultAgentEgressDomains = []string{"api.anthropic.com", "api.openai.com"}
+// so an armed (ENFORCE) policy doesn't strand the loop (#611). All supported
+// providers are allowed since a box may run any engine (Claude, Codex, or
+// Gemini); the Gemini engine reaches the Gemini API at generativelanguage.googleapis.com.
+var defaultAgentEgressDomains = []string{"api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com"}
 
 func agentNetworkPolicyConfig() (extraCIDRs, extraDomains []string, enforce bool) {
 	enforce = os.Getenv("CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE") == "1"

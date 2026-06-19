@@ -2,7 +2,7 @@
   "name": "@containarium/agent-runtime",
   "version": "0.1.0",
   "private": true,
-  "description": "In-box agent loop for Containarium agent-skills (Phase 4a). Engine-pluggable: Claude Agent SDK or OpenAI Codex SDK, driving the in-box agent-box MCP server.",
+  "description": "In-box agent loop for Containarium agent-skills (Phase 4a). Engine-pluggable: Claude Agent SDK, OpenAI Codex SDK, or Google Gen AI SDK (Gemini), driving the in-box agent-box MCP server.",
   "type": "module",
   "bin": {
     "agent-runtime": "dist/index.js"
@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.169",
+    "@google/genai": "^2.8.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.138.0"
   },
   "devDependencies": {

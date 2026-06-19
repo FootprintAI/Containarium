@@ -12,20 +12,24 @@ This is a Node/TypeScript component (not Go) because the in-box loop uses an
 ## Engine-pluggable
 
 The loop is harness-agnostic behind a small `Engine` interface
-(`src/engine.ts`), and ships with two engines:
+(`src/engine.ts`), and ships with three engines:
 
 | Engine | SDK | Model default | Auth env |
 | --- | --- | --- | --- |
 | `claude` (default) | `@anthropic-ai/claude-agent-sdk` (powers Claude Code) | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
 | `codex` | `@openai/codex-sdk` | engine default (set `CONTAINARIUM_AGENT_MODEL`) | `OPENAI_API_KEY` / `CODEX_API_KEY` |
+| `gemini` | `@google/genai` (Google Gen AI SDK) | `gemini-2.5-flash` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 
-Both mount the in-box **`agent-box`** binary as their MCP server, so agent-box's
+All mount the in-box **`agent-box`** binary as their MCP server, so agent-box's
 tools (shell, files, process) are the agent's tool surface. The Claude engine
 takes the MCP config inline (`mcpServers`); the Codex engine writes a
-`~/.codex/config.toml` registering the same server.
+`~/.codex/config.toml` registering the same server; the Gemini engine connects an
+MCP stdio client (`@modelcontextprotocol/sdk`) and hands it to the SDK via
+`mcpToTool()`, with automatic function calling running the tool-use loop.
 
-Select with `CONTAINARIUM_AGENT_ENGINE=claude|codex` (a later phase moves this
-onto the skill manifest as an `engine` field).
+Select with `CONTAINARIUM_AGENT_ENGINE=claude|codex|gemini` (a later phase moves
+this onto the skill manifest as an `engine` field). The `gemini` engine's cheap
+default model makes it a budget-friendly way to exercise the mechanism end-to-end.
 
 ## Two modes
 
@@ -58,8 +62,8 @@ mode 0600) for the daemon to return.
 
 ## Two credentials, never interchangeable
 
-- **Anthropic / OpenAI key** → drives the model. Seeded via the tenant
-  **secrets** store (never in the prompt/input/artifact).
+- **Model-provider key** (Anthropic / OpenAI / Gemini) → drives the model.
+  Seeded via the tenant **secrets** store (never in the prompt/input/artifact).
 - **Scoped platform JWT** (`token`) → only for the Containarium **platform
   MCP**, bounded by the skill's `allowed_scopes`. Never sent to the model
   provider.
@@ -67,9 +71,10 @@ mode 0600) for the daemon to return.
 ## Egress (interacts with the Phase-2 trust fabric)
 
 The loop must reach the model provider API (`api.anthropic.com` /
-`api.openai.com`) + DNS. Under `LOG_ONLY` this just shows in the audit log;
-**before ENFORCE is armed** the provider API must be in the agent box's egress
-allowlist or the agent is stranded (issue #611).
+`api.openai.com` / `generativelanguage.googleapis.com`) + DNS. Under `LOG_ONLY`
+this just shows in the audit log; **before ENFORCE is armed** the provider API
+must be in the agent box's egress allowlist or the agent is stranded (issue
+#611). The daemon's `defaultAgentEgressDomains` covers all three providers.
 
 ## Build
 
@@ -79,14 +84,15 @@ npm run typecheck   # tsc --noEmit
 npm run build       # -> dist/
 ```
 
-Verified: `tsc --noEmit` passes against the installed types of both SDKs
-(`@anthropic-ai/claude-agent-sdk` 0.3.x, `@openai/codex-sdk` 0.138.x).
+Verified: `tsc --noEmit` passes against the installed types of all three SDKs
+(`@anthropic-ai/claude-agent-sdk` 0.3.x, `@openai/codex-sdk` 0.138.x,
+`@google/genai` 2.8.x + `@modelcontextprotocol/sdk` 1.29.x).
 
 ## Status / remaining 4a work
 
-- ✅ The component: engine interface + Claude + Codex engines + seed/artifact +
-  one-shot runner (4a) + the A2A server / serve mode (4b). Typechecks against
-  real SDK types.
+- ✅ The component: engine interface + Claude + Codex + Gemini engines +
+  seed/artifact + one-shot runner (4a) + the A2A server / serve mode (4b).
+  Typechecks against real SDK types.
 - ✅ **Daemon invoke + read-back** (4a) — `RunAgentSkill` execs the runtime and
   reads `artifact.json` into `RunAgentSkillResponse.artifact_json` (#614).
 - ✅ **Box image assembly** — `make bundle-agent-runtime` packages this

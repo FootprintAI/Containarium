@@ -1,7 +1,8 @@
-// Engine is the pluggable in-box agent loop. Both the Claude Agent SDK and the
-// OpenAI Codex SDK are wrapped behind this interface so the agent-runtime is
-// harness-agnostic: a skill picks its engine, the rest of the runtime (seed
-// loading, artifact writing, the A2A server in 4b) stays identical.
+// Engine is the pluggable in-box agent loop. The Claude Agent SDK, the OpenAI
+// Codex SDK, and the Google Gen AI SDK (Gemini) are each wrapped behind this
+// interface so the agent-runtime is harness-agnostic: a skill picks its engine,
+// the rest of the runtime (seed loading, artifact writing, the A2A server in 4b)
+// stays identical.
 export interface EngineConfig {
   // Model id. Engine-specific: Claude → claude-opus-4-8; Codex → an OpenAI
   // model. Empty means "use the engine's own default".
