@@ -44,7 +44,7 @@ func usage() {
 }
 
 func readSecret(path string) []byte {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 — path is an operator-supplied CLI flag, not user input
 	if err != nil {
 		log.Fatalf("read secret %s: %v", path, err)
 	}
@@ -80,7 +80,14 @@ func serve(args []string) {
 
 	gw := modelgateway.New(modelgateway.Config{Secret: secret, Providers: providers, ProviderKeys: keys})
 	log.Printf("model-gateway: listening on %s, providers=%s (provider keys held in the gateway only)", *addr, strings.Join(loaded, ","))
-	log.Fatal(http.ListenAndServe(*addr, gw.Handler()))
+	srv := &http.Server{
+		Addr:         *addr,
+		Handler:      gw.Handler(),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 120 * time.Second, // model calls can take tens of seconds
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 func mint(args []string) {

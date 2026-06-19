@@ -20,9 +20,9 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// gatewayTokenIssuer scopes the token to this gateway so a platform JWT minted
-// for another purpose can't be replayed against the model egress.
-const gatewayTokenIssuer = "containarium-model-gateway"
+// gatewayIssuer scopes the JWT to this gateway so a platform JWT minted for
+// another purpose can't be replayed against the model egress.
+const gatewayIssuer = "containarium-model-gateway"
 
 // GatewayClaims is the model-gateway token: a scoped, short-lived credential a
 // box presents instead of a raw provider key. It is signed HS256 with the
@@ -57,7 +57,7 @@ func MintToken(secret []byte, c GatewayClaims, ttl time.Duration) (string, error
 	}
 	now := time.Now()
 	c.RegisteredClaims = jwt.RegisteredClaims{
-		Issuer:    gatewayTokenIssuer,
+		Issuer:    gatewayIssuer,
 		Subject:   c.Tenant,
 		ID:        hex.EncodeToString(jti),
 		IssuedAt:  jwt.NewNumericDate(now),
@@ -74,7 +74,7 @@ func VerifyToken(secret []byte, tokenString string) (*GatewayClaims, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return secret, nil
-	}, jwt.WithIssuer(gatewayTokenIssuer), jwt.WithValidMethods([]string{"HS256"}))
+	}, jwt.WithIssuer(gatewayIssuer), jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil {
 		return nil, err
 	}
