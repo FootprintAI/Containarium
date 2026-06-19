@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`pool join --region auto` — latency-based sentinel selection (#699).** A host
+  joining a multi-region pool can now pass several candidate sentinels
+  (`--sentinel region=host:port`, repeatable) and `--region auto`; the host
+  probes each (median of TCP-connect RTTs) and self-selects the closest before
+  writing the tunnel unit — latency can only be measured from the host, not the
+  control plane. Fallbacks are explicit: one candidate skips probing, a
+  candidate that fails to probe is excluded, and all-failed errors (never
+  silently picks none). `--region <name>` picks a labeled candidate; a single
+  `--sentinel` is unchanged (back-compatible). New `containarium pool regions
+  --probe` prints the region/RTT table without joining. Pairs with the control
+  plane returning the candidate list (cloud #538).
 - **BYOC driver-token auto-refresh (#557).** A host enrolled with `cloud enroll`
   now keeps itself cloud-drivable past the 30-day token-expiry cap with no manual
   re-enroll. `cloud enroll` records the JWT-secret path in `cloud.yaml`

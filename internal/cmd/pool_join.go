@@ -38,7 +38,8 @@ func minimalDaemonArgv() []string {
 }
 
 var (
-	poolJoinSentinel       string
+	poolJoinSentinels      []string
+	poolJoinRegion         string
 	poolJoinToken          string
 	poolJoinPool           string
 	poolJoinSpotID         string
@@ -66,13 +67,20 @@ Example:
     --sentinel sentinel.example.com:443 \
     --pool prod \
     --token <scoped-join-token> \
-    --public-hostname node1.example.com --public-port 443`,
+    --public-hostname node1.example.com --public-port 443
+
+Multi-region (probe + pick the closest sentinel from the host):
+  sudo containarium pool join --region auto \
+    --sentinel us=us.sentinel.example.com:443 \
+    --sentinel eu=eu.sentinel.example.com:443 \
+    --pool prod --token <scoped-join-token>`,
 	RunE: runPoolJoin,
 }
 
 func init() {
 	poolCmd.AddCommand(poolJoinCmd)
-	poolJoinCmd.Flags().StringVar(&poolJoinSentinel, "sentinel", "", "Sentinel address host:port this host dials (required)")
+	poolJoinCmd.Flags().StringArrayVar(&poolJoinSentinels, "sentinel", nil, "Sentinel this host dials, as host:port or region=host:port (repeatable). Pass several with --region auto to probe-and-select the closest (required)")
+	poolJoinCmd.Flags().StringVar(&poolJoinRegion, "region", "", "With multiple --sentinel candidates: 'auto' probes RTT and picks the closest, or a region name picks that one. Single --sentinel ignores this")
 	poolJoinCmd.Flags().StringVar(&poolJoinToken, "token", "", "Scoped join token for the tunnel handshake (required)")
 	poolJoinCmd.Flags().StringVar(&poolJoinPool, "pool", "", "Pool to join (scopes daemon discovery + tunnel registration)")
 	poolJoinCmd.Flags().StringVar(&poolJoinSpotID, "spot-id", "", "Unique id for this host in the pool (default: hostname)")
@@ -228,8 +236,8 @@ func currentDaemonArgv() ([]string, bool) {
 }
 
 func runPoolJoin(cmd *cobra.Command, args []string) error {
-	if poolJoinSentinel == "" {
-		return fmt.Errorf("--sentinel is required (the sentinel host:port this host dials)")
+	if len(poolJoinSentinels) == 0 {
+		return fmt.Errorf("--sentinel is required (the sentinel host:port this host dials; repeatable with --region auto)")
 	}
 	if poolJoinToken == "" {
 		return fmt.Errorf("--token is required (the scoped join token)")
@@ -246,6 +254,25 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		spotID = h
 	}
 
+	// Resolve which sentinel to dial (#699). With one candidate this is a no-op;
+	// with several + --region auto the host probes RTT and self-selects the
+	// closest (latency can only be measured from here, not the control plane).
+	cands, err := parseSentinelCandidates(poolJoinSentinels)
+	if err != nil {
+		return err
+	}
+	chosen, rows, err := resolveSentinel(cands, poolJoinRegion, nil)
+	if err != nil {
+		return err
+	}
+	if len(rows) > 0 { // probed (--region auto with >1 candidate)
+		fmt.Printf("# Sentinel RTT probe:\n%s", formatRTTTable(rows))
+	}
+	if len(cands) > 1 {
+		fmt.Printf("# Selected sentinel %s (region %q)\n", chosen.Addr, chosen.Region)
+	}
+	sentinelAddr := chosen.Addr
+
 	// Preserve the host's existing daemon flags (#702): read the effective
 	// ExecStart and carry its flags forward, rather than resetting to a minimal
 	// command and silently dropping e.g. --app-hosting / --network-subnet.
@@ -261,7 +288,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		fmt.Printf("# Preserving existing daemon ExecStart flags; resulting command:\n#   %s\n", strings.Join(daemonArgv, " "))
 	}
 	tunnel := renderTunnelUnit(tunnelUnitParams{
-		SentinelAddr:   poolJoinSentinel,
+		SentinelAddr:   sentinelAddr,
 		Token:          poolJoinToken,
 		SpotID:         spotID,
 		Ports:          poolJoinPorts,
@@ -326,7 +353,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("Joined pool %q via sentinel %s (spot-id %s).\n", poolJoinPool, poolJoinSentinel, spotID)
+	fmt.Printf("Joined pool %q via sentinel %s (spot-id %s).\n", poolJoinPool, sentinelAddr, spotID)
 	fmt.Println()
 	fmt.Println("  Daemon:  sudo systemctl status containarium")
 	fmt.Println("  Tunnel:  sudo systemctl status containarium-tunnel")
