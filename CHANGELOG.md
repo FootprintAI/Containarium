@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Agent-skill box: default-deny egress for every box (#750).** `RunAgentSkill`
+  now installs a network policy for **every** provisioned box, including leaf
+  skills (`allowed_peers: []`) in direct mode — previously such a box got no
+  policy at all, so under ENFORCE it had no eBPF program and unrestricted egress.
+  A leaf box's egress is now just the provider domains (+ operator CIDRs), with
+  metadata and intra-tenant denied. (Behaviour is observe-only until ENFORCE is
+  armed, as before; this ensures the box is actually covered once it is.)
+- **Agent-skill box: pin the engine to the gateway provider (#748).** When the
+  daemon serves a model-gateway it now sets `CONTAINARIUM_AGENT_ENGINE` to the
+  engine matching the gateway's provider (anthropic→claude, gemini→gemini,
+  openai→codex) on the in-box exec. Without this, a gemini/openai gateway run
+  fell back to the default claude engine and failed (`Not logged in`) because the
+  default engine reads the wrong gateway env vars.
+
 ### Added
 
 - **Post-hoc container attribution endpoint (#746).** New

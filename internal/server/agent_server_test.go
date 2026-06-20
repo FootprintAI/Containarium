@@ -279,6 +279,56 @@ func TestCompileAllowedPeersPolicyEnforceAndExtraCIDRs(t *testing.T) {
 	}
 }
 
+func TestCompileAllowedPeersPolicyLeafIsDefaultDeny(t *testing.T) {
+	// #750: a leaf skill (no allowed_peers) in direct mode (no gateway) still
+	// gets a restrictive policy — provider domains only, with metadata and
+	// intra-tenant denied. applyAllowedPeersPolicy now installs this for every
+	// box (it no longer short-circuits on "no peers"), so under ENFORCE a leaf
+	// box is locked down instead of left with no eBPF program.
+	p := compileAllowedPeersPolicy("agent-x", nil, func(string) (string, bool) { return "", false },
+		nil, defaultAgentEgressDomains, "", false)
+	if len(p.EgressCidrs) != 0 {
+		t.Errorf("leaf: expected no egress cidrs, got %v", p.EgressCidrs)
+	}
+	if len(p.EgressDomains) != len(defaultAgentEgressDomains) {
+		t.Errorf("leaf: expected the provider domains as the only egress, got %v", p.EgressDomains)
+	}
+	if p.AllowIntraTenant {
+		t.Error("leaf: intra-tenant must be denied")
+	}
+	if p.AllowMetadata {
+		t.Error("leaf: metadata must be denied")
+	}
+}
+
+func TestEngineForProvider(t *testing.T) {
+	cases := map[string]string{
+		"anthropic": "claude",
+		"gemini":    "gemini",
+		"openai":    "codex",
+		"":          "",
+		"bogus":     "",
+	}
+	for provider, want := range cases {
+		if got := engineForProvider(provider); got != want {
+			t.Errorf("engineForProvider(%q) = %q, want %q", provider, got, want)
+		}
+	}
+}
+
+func TestEngineEnvPrefix(t *testing.T) {
+	// No gateway (direct mode): no engine pin — the box's own default decides.
+	if got := (&AgentSkillServer{}).engineEnvPrefix(); got != "" {
+		t.Errorf("no gateway: prefix = %q, want empty", got)
+	}
+	// Gateway with a known provider: pin the matching engine (#748) so the box
+	// doesn't fall back to claude on a gemini gateway.
+	s := &AgentSkillServer{gateway: &gatewayProvisioning{provider: "gemini"}}
+	if got := s.engineEnvPrefix(); got != "CONTAINARIUM_AGENT_ENGINE=gemini " {
+		t.Errorf("gemini gateway: prefix = %q, want CONTAINARIUM_AGENT_ENGINE=gemini ", got)
+	}
+}
+
 func TestPeerAllowed(t *testing.T) {
 	s := &AgentSkillServer{catalog: skills.GetDefault()}
 

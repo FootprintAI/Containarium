@@ -272,6 +272,39 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	return containerName, container, nil
 }
 
+// engineForProvider maps a gateway provider to the agent-runtime engine that
+// speaks it. Empty for an unknown provider (caller then leaves the engine
+// unset, so the box falls back to its own default).
+func engineForProvider(provider string) string {
+	switch provider {
+	case "anthropic":
+		return "claude"
+	case "gemini":
+		return "gemini"
+	case "openai":
+		return "codex"
+	default:
+		return ""
+	}
+}
+
+// engineEnvPrefix returns a `CONTAINARIUM_AGENT_ENGINE=<engine> ` command prefix
+// pinning the box to the engine that matches the gateway provider (#748). When
+// the daemon serves a gateway it knows the provider, so it must tell the box
+// which engine to run — otherwise the box uses its default (claude) and a
+// gemini/openai gateway run fails ("Not logged in") because the default engine
+// looks for the wrong gateway env vars. Empty in direct mode (no gateway): the
+// box's own env/default decides.
+func (s *AgentSkillServer) engineEnvPrefix() string {
+	if s.gateway == nil {
+		return ""
+	}
+	if eng := engineForProvider(s.gateway.provider); eng != "" {
+		return "CONTAINARIUM_AGENT_ENGINE=" + eng + " "
+	}
+	return ""
+}
+
 // startServeMode launches the in-box agent-runtime in serve mode (the A2A
 // server on :8674) as a background process, so peers/crews can delegate tasks
 // to this box. Best-effort: until the box image ships agent-runtime this is a
@@ -280,7 +313,7 @@ func (s *AgentSkillServer) startServeMode(containerName string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
-	cmd := sourceGatewayEnvPrefix(agentSeedDir) + "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + agentSeedDir +
+	cmd := sourceGatewayEnvPrefix(agentSeedDir) + s.engineEnvPrefix() + "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + agentSeedDir +
 		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
@@ -302,7 +335,7 @@ func (s *AgentSkillServer) runInBoxAgent(containerName string) string {
 	mgr := s.recipes.containers.manager
 
 	if _, stderr, err := mgr.ExecWithOutput(containerName,
-		[]string{"bash", "-lc", sourceGatewayEnvPrefix(agentSeedDir) + "AGENT_SEED_DIR=" + agentSeedDir + " agent-runtime"}); err != nil {
+		[]string{"bash", "-lc", sourceGatewayEnvPrefix(agentSeedDir) + s.engineEnvPrefix() + "AGENT_SEED_DIR=" + agentSeedDir + " agent-runtime"}); err != nil {
 		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
 		return ""
@@ -353,13 +386,19 @@ func parseArtifactOutput(raw []byte) (string, error) {
 func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant string, skill *pb.AgentSkill) {
 	// Gateway pinning (#674 inc 4): when the model-gateway is enabled, every
 	// skill box is pinned to it — even one with no allowed_peers — so model
-	// calls can ONLY go through the gateway. Without a gateway, only skills that
-	// declare allowed_peers get a policy (unchanged).
+	// calls can ONLY go through the gateway.
 	gatewayCIDR := ""
 	if s.gateway != nil {
 		gatewayCIDR = s.gateway.egressCIDR
 	}
-	if s.netpolicy == nil || (len(skill.AllowedPeers) == 0 && gatewayCIDR == "") {
+	// Default-deny (#750): install a policy for EVERY skill box, not only ones
+	// that declare allowed_peers or run under a gateway. A leaf skill
+	// (allowed_peers: []) in direct mode still gets a policy whose egress is just
+	// the provider domains (+ operator CIDRs), with metadata and intra-tenant
+	// denied — so under ENFORCE the box is locked down rather than left with no
+	// eBPF program (i.e. unrestricted egress). The empty-allowlist guard below
+	// still skips the degenerate "nothing allowed" case.
+	if s.netpolicy == nil {
 		return
 	}
 	extraCIDRs, extraDomains, enforce := agentNetworkPolicyConfig()
