@@ -10106,6 +10106,10 @@
             "type": "string"
           },
           "description": "Shell commands run inside the container after it is up (e.g. the\n`podman run ...` that starts the app, plus model warm-up). Same trust\nlevel as a stack's post_install: these ship in-tree and are reviewed."
+        },
+        "modelGatewayProvider": {
+          "type": "string",
+          "description": "When non-empty, the daemon brokers this recipe's model calls through the\nmanaged model-gateway for the named provider (e.g. \"gemini-openai\"): it\nmints a scoped, revocable gateway token and exports\nCONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN into post_start,\nso the box uses the platform key (metered, never leaked) instead of one the\nuser supplies. Inert when the daemon holds no key for the provider — the\nbox then comes up unconfigured (self-hosted default)."
         }
       },
       "description": "Recipe is a declarative definition of a GPU/app workload that Containarium\ncan provision as a new dedicated container. The container is an LXC system\ncontainer; the recipe's image runs inside it via Podman (post_start),\nmirroring how the kubeflow stack runs k3s inside an LXC."

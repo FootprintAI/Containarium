@@ -85,6 +85,23 @@ func gatewayEnvScript(provider string, httpPort int, token, seedDir string) (str
 	return b.String(), nil
 }
 
+// gatewayRecipeEnvExports returns shell lines that resolve the daemon host from
+// the box's default route and EXPORT the managed model-gateway contract into the
+// post_start environment (not a file): CONTAINARIUM_MODEL_GATEWAY_URL, pointing
+// at the gateway's per-provider base (/v1/model/<provider>), and
+// CONTAINARIUM_GATEWAY_TOKEN. A recipe's post_start reads these to point its
+// in-box app at the gateway, appending any upstream sub-path. The URL is
+// resolved IN-BOX so it works regardless of the bridge subnet (same approach as
+// gatewayEnvScript). Pure: returns the snippet for the given provider/port/token.
+func gatewayRecipeEnvExports(provider string, httpPort int, token string) string {
+	var b strings.Builder
+	b.WriteString("__ctn_host=\"$(ip route show default 2>/dev/null | awk '/default/ {print $3; exit}')\"\n")
+	b.WriteString("if [ -z \"$__ctn_host\" ]; then echo 'model-gateway: could not resolve host from default route' >&2; fi\n")
+	fmt.Fprintf(&b, "export CONTAINARIUM_MODEL_GATEWAY_URL=\"http://$__ctn_host:%d/v1/model/%s\"\n", httpPort, provider)
+	fmt.Fprintf(&b, "export CONTAINARIUM_GATEWAY_TOKEN=%s\n", shellSingleQuote(token))
+	return b.String()
+}
+
 // gatewayProviderKeysFromEnv reads provider API keys from the daemon env, one
 // per provider that has a key set. These keys are held ONLY in the daemon's
 // gateway process; a box never sees them. Gemini accepts GEMINI_API_KEY or
@@ -101,6 +118,12 @@ func gatewayProviderKeysFromEnv() map[string]string {
 		out["gemini"] = v
 	} else if v := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")); v != "" {
 		out["gemini"] = v
+	}
+	// The Gemini key also backs the OpenAI-compatible Gemini provider
+	// (gemini-openai), which the hosted OpenHands canvas routes through. Same
+	// real key, different upstream protocol + auth header (see DefaultProviders).
+	if v := out["gemini"]; v != "" {
+		out["gemini-openai"] = v
 	}
 	return out
 }

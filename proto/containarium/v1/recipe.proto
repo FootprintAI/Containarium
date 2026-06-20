@@ -105,6 +105,15 @@ message Recipe {
   // `podman run ...` that starts the app, plus model warm-up). Same trust
   // level as a stack's post_install: these ship in-tree and are reviewed.
   repeated string post_start = 11;
+
+  // When non-empty, the daemon brokers this recipe's model calls through the
+  // managed model-gateway for the named provider (e.g. "gemini-openai"): it
+  // mints a scoped, revocable gateway token and exports
+  // CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN into post_start,
+  // so the box uses the platform key (metered, never leaked) instead of one the
+  // user supplies. Inert when the daemon holds no key for the provider — the
+  // box then comes up unconfigured (self-hosted default).
+  string model_gateway_provider = 12;
 }
 
 // ListRecipesRequest is the request to list available recipes.

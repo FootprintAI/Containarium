@@ -1,9 +1,11 @@
 package server
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -90,4 +92,75 @@ func TestRecipeServer_DeployRecipe_RemoteBackendUnsupported(t *testing.T) {
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("got %v want Unimplemented", err)
 	}
+}
+
+// A recipe that doesn't opt into the gateway (or whose provider the daemon
+// can't broker) seeds no gateway env — the box runs unmanaged.
+func TestRecipeServer_GatewayEnv_OptOutAndUnavailable(t *testing.T) {
+	s := newTestRecipeServer()
+	// No gateway configured at all.
+	if got := s.gatewayEnvForRecipe(&pb.Recipe{Id: "r", ModelGatewayProvider: "gemini-openai"}, "box1"); got != "" {
+		t.Fatalf("no gateway set: want empty, got %q", got)
+	}
+	// Gateway set, but recipe doesn't opt in.
+	s.SetGatewayProvisioning(8080, []byte("secret"), []string{"gemini-openai"})
+	if got := s.gatewayEnvForRecipe(&pb.Recipe{Id: "r"}, "box1"); got != "" {
+		t.Fatalf("recipe opted out: want empty, got %q", got)
+	}
+	// Gateway set, recipe opts into a provider the daemon doesn't broker.
+	if got := s.gatewayEnvForRecipe(&pb.Recipe{Id: "r", ModelGatewayProvider: "anthropic"}, "box1"); got != "" {
+		t.Fatalf("provider unavailable: want empty, got %q", got)
+	}
+}
+
+// An opted-in recipe whose provider the daemon brokers gets a gateway env that
+// exports the per-provider base URL + a valid scoped token, and that env is
+// prepended into the post_start script.
+func TestRecipeServer_GatewayEnv_SeedsTokenAndURL(t *testing.T) {
+	s := newTestRecipeServer()
+	secret := []byte("secret")
+	s.SetGatewayProvisioning(8080, secret, []string{"gemini", "gemini-openai"})
+
+	recipe := &pb.Recipe{Id: "agent-workspace", ModelGatewayProvider: "gemini-openai"}
+	env := s.gatewayEnvForRecipe(recipe, "box1")
+	if env == "" {
+		t.Fatal("want gateway env, got empty")
+	}
+	if !strings.Contains(env, "/v1/model/gemini-openai") {
+		t.Errorf("env missing per-provider base URL: %q", env)
+	}
+	if !strings.Contains(env, "CONTAINARIUM_MODEL_GATEWAY_URL=") ||
+		!strings.Contains(env, "CONTAINARIUM_GATEWAY_TOKEN=") {
+		t.Errorf("env missing gateway contract vars: %q", env)
+	}
+	// The exported token must verify against the gateway secret, scoped to the
+	// box + provider.
+	tok := extractExport(env, "CONTAINARIUM_GATEWAY_TOKEN")
+	claims, err := modelgateway.VerifyToken(secret, tok)
+	if err != nil {
+		t.Fatalf("seeded token does not verify: %v", err)
+	}
+	if claims.Provider != "gemini-openai" || claims.Tenant != "box1" {
+		t.Errorf("token claims wrong: provider=%q tenant=%q", claims.Provider, claims.Tenant)
+	}
+
+	// The env is prepended into the post_start script.
+	script := buildPostStartScript(recipe, map[string]string{}, env)
+	if !strings.Contains(script, "CONTAINARIUM_MODEL_GATEWAY_URL=") {
+		t.Errorf("post_start script missing gateway env:\n%s", script)
+	}
+}
+
+// extractExport pulls the value of `export NAME=<value>` from a shell snippet,
+// stripping one layer of single quotes.
+func extractExport(script, name string) string {
+	for _, line := range strings.Split(script, "\n") {
+		prefix := "export " + name + "="
+		if strings.HasPrefix(line, prefix) {
+			v := strings.TrimPrefix(line, prefix)
+			v = strings.TrimSuffix(strings.TrimPrefix(v, "'"), "'")
+			return v
+		}
+	}
+	return ""
 }

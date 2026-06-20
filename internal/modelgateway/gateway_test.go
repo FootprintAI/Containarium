@@ -205,6 +205,58 @@ func TestGateway_Gemini_PathModel_AllowedModelsEnforced(t *testing.T) {
 	}
 }
 
+// gemini-openai is the OpenAI-compatible Gemini route the hosted OpenHands
+// canvas uses: a Bearer-authenticated /chat/completions call, proxied to
+// Google's compat endpoint with the real key injected as Bearer and metered
+// from the OpenAI-shaped usage block.
+func TestGateway_GeminiOpenAI_BearerInjected_Metered(t *testing.T) {
+	secret := []byte("s")
+	var auth, upstreamPath string
+	up := fakeUpstream(t, func(r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		upstreamPath = r.URL.Path
+	}, `{"model":"gemini-2.5-flash","usage":{"prompt_tokens":100,"completion_tokens":20}}`)
+	defer up.Close()
+
+	providers := DefaultProviders()
+	providers["gemini-openai"].UpstreamURL = up.URL
+	gw := New(Config{Secret: secret, Providers: providers, ProviderKeys: map[string]string{"gemini-openai": "GKEY"}})
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+
+	tok, err := MintToken(secret, GatewayClaims{Tenant: "acme", SkillID: "ws", Provider: "gemini-openai"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// LiteLLM's openai provider posts /chat/completions relative to the profile
+	// base URL (…/v1/model/gemini-openai/v1beta/openai), Bearer-authenticated.
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/gemini-openai/v1beta/openai/chat/completions", strings.NewReader(`{"model":"gemini-2.5-flash"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	if auth != "Bearer GKEY" {
+		t.Errorf("real gemini key not injected as Bearer upstream: Authorization=%q", auth)
+	}
+	if upstreamPath != "/v1beta/openai/chat/completions" {
+		t.Errorf("upstream path not preserved: got %q", upstreamPath)
+	}
+	rows := gw.Meter().Snapshot()
+	if len(rows) != 1 || rows[0].Provider != "gemini-openai" || rows[0].Model != "gemini-2.5-flash" {
+		t.Fatalf("metering/attribution wrong: %+v", rows)
+	}
+	if rows[0].InputTokens != 100 || rows[0].OutputTokens != 20 {
+		t.Errorf("token counts wrong: %+v", rows[0])
+	}
+}
+
 func TestGateway_RejectsBadTokens(t *testing.T) {
 	secret := []byte("s")
 	gw := New(Config{Secret: secret, Providers: DefaultProviders(), ProviderKeys: map[string]string{"anthropic": "k"}})

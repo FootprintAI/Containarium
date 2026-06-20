@@ -1326,6 +1326,10 @@ skipAppHosting:
 			for p := range keys {
 				provs = append(provs, p)
 			}
+			// Recipes that opt in (recipe.ModelGatewayProvider, e.g. the
+			// agent-workspace canvas) route their model calls through the same
+			// gateway — seed their post_start with a scoped token + base URL.
+			recipeServer.SetGatewayProvisioning(config.HTTPPort, []byte(config.JWTSecret), provs)
 			log.Printf("Model-gateway enabled (providers=%v, skill-box primary=%s) — agent boxes route model calls through the daemon; provider keys never leave the host",
 				provs, primary)
 		}

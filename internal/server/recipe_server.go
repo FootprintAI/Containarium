@@ -6,11 +6,13 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/modelgateway"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -21,6 +23,22 @@ import (
 // mirroring how the kubeflow stack runs k3s inside an LXC.
 const recipeBaseImage = "images:ubuntu/24.04"
 
+// recipeGatewayTokenTTL bounds a workspace recipe's gateway token. Unlike a
+// skill run (minutes), a recipe box like agent-workspace is long-lived, so the
+// token must outlive a session — here a year. The kill-switch is revocation
+// (#752), not expiry; refreshing a live box's token is a follow-up.
+const recipeGatewayTokenTTL = 365 * 24 * time.Hour
+
+// recipeGateway is what RecipeServer needs to broker a recipe's model calls
+// through the daemon's model-gateway: the daemon HTTP port the box dials, the
+// HMAC secret that signs the scoped token, and the set of providers the gateway
+// actually brokers (has a key for). nil ⇒ no gateway ⇒ recipes run unmanaged.
+type recipeGateway struct {
+	httpPort  int
+	secret    []byte
+	providers map[string]bool
+}
+
 // RecipeServer implements the gRPC RecipeService. It is pure orchestration:
 // DeployRecipe composes the existing CreateContainer + in-container exec +
 // route-expose primitives. It lives in package server so it can reuse the
@@ -30,6 +48,45 @@ type RecipeServer struct {
 	catalog    *recipes.Manager
 	containers *ContainerServer
 	network    *NetworkServer // may be nil when app hosting / routing is off
+	gateway    *recipeGateway // nil unless the daemon serves the model-gateway
+}
+
+// SetGatewayProvisioning enables managed model-gateway seeding for recipes that
+// opt in (recipe.ModelGatewayProvider). Called by the daemon when it holds a
+// provider key; mirrors AgentSkillServer.SetGatewayProvisioning for the skill
+// path. providers is the set the gateway brokers.
+func (s *RecipeServer) SetGatewayProvisioning(httpPort int, secret []byte, providers []string) {
+	set := make(map[string]bool, len(providers))
+	for _, p := range providers {
+		set[p] = true
+	}
+	s.gateway = &recipeGateway{httpPort: httpPort, secret: secret, providers: set}
+}
+
+// gatewayEnvForRecipe returns the shell snippet that exports the managed
+// model-gateway env into a recipe's post_start, or "" when the recipe doesn't
+// opt in / the daemon can't broker its provider. It mints a long-lived scoped
+// token bound to this box + recipe + provider. Best-effort: a mint failure logs
+// and degrades to unmanaged (the box still comes up, just unconfigured).
+func (s *RecipeServer) gatewayEnvForRecipe(recipe *pb.Recipe, boxName string) string {
+	prov := recipe.ModelGatewayProvider
+	if prov == "" || s.gateway == nil {
+		return ""
+	}
+	if !s.gateway.providers[prov] {
+		log.Printf("[recipe] %q requests model-gateway provider %q but the daemon holds no key for it; box comes up unconfigured", recipe.Id, prov)
+		return ""
+	}
+	tok, err := modelgateway.MintToken(s.gateway.secret, modelgateway.GatewayClaims{
+		Tenant:   boxName,
+		SkillID:  recipe.Id,
+		Provider: prov,
+	}, recipeGatewayTokenTTL)
+	if err != nil {
+		log.Printf("[recipe] mint gateway token for %s failed (box runs unmanaged): %v", boxName, err)
+		return ""
+	}
+	return gatewayRecipeEnvExports(prov, s.gateway.httpPort, tok)
 }
 
 // NewRecipeServer wires the recipe service to the existing container and
@@ -190,6 +247,11 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 
 	containerName := req.Name + "-container"
 
+	// Managed model-gateway: if the recipe opts in and the daemon brokers its
+	// provider, mint a scoped token + env exports to prepend to post_start (so
+	// the box uses the platform key, metered, never leaked). "" otherwise.
+	gatewayEnv := s.gatewayEnvForRecipe(recipe, req.Name)
+
 	// Async path: decouple post_start from the RPC. A recipe's post_start can
 	// pull multi-GB images (e.g. agent-workspace), taking longer than the
 	// request/idle timeout of a caller reaching this daemon through a peer-proxy
@@ -201,7 +263,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		go func() {
 			bg := context.WithoutCancel(ctx)
 			if len(recipe.PostStart) > 0 {
-				script := buildPostStartScript(recipe, params)
+				script := buildPostStartScript(recipe, params, gatewayEnv)
 				if err := s.containers.manager.Exec(containerName, []string{"bash", "-c", script}); err != nil {
 					log.Printf("[recipe] async post_start failed on %s (recipe %q): %v", containerName, recipe.Id, err)
 					return
@@ -226,7 +288,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	// 2. Run the recipe's post_start commands inside the container, with env
 	//    and parameters exported. Same trust level as a stack's post_install.
 	if len(recipe.PostStart) > 0 {
-		script := buildPostStartScript(recipe, params)
+		script := buildPostStartScript(recipe, params, gatewayEnv)
 		if err := s.containers.manager.Exec(containerName, []string{"bash", "-c", script}); err != nil {
 			return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v", containerName, err)
 		}
@@ -275,9 +337,15 @@ func resourceLimits(recipe *pb.Recipe, override *pb.RecipeResources) *pb.Resourc
 // buildPostStartScript assembles a single bash script that exports the
 // recipe's static env and resolved parameters, then runs each post_start line.
 // Values are single-quote escaped to prevent shell injection from parameters.
-func buildPostStartScript(recipe *pb.Recipe, params map[string]string) string {
+// gatewayEnv, when non-empty, is the managed model-gateway export snippet
+// (gatewayEnvForRecipe) prepended before the recipe's own env so post_start
+// sees CONTAINARIUM_MODEL_GATEWAY_URL/_TOKEN.
+func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEnv string) string {
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\n")
+	if gatewayEnv != "" {
+		b.WriteString(gatewayEnv)
+	}
 	for k, v := range recipe.Env {
 		fmt.Fprintf(&b, "export %s=%s\n", k, shellSingleQuote(v))
 	}
