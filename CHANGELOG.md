@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Post-hoc container attribution endpoint (#746).** New
+  `SetContainerAttribution` RPC (`POST /v1/containers/{name}/attribution`) merges
+  labels onto an EXISTING container's config (merge, not replace — labels not
+  named are left intact). The daemon stamps cloud attribution
+  (`cloud_org_id` / `cloud_container_id` / `managed_by`) only at create today;
+  this lets the hosted control plane stamp them after the fact, which its adopt
+  flow (cloud #539) needs to bring a host's pre-existing (orphan) container under
+  org management. Backed by `manager.AddLabel` (writes under
+  `user.containarium.label.`); rejects core containers; 404 when the name
+  doesn't resolve. Cloud→daemon plumbing (like `/authorized-keys/sentinel`) — no
+  CLI verb. Typed clients gain `SetContainerAttribution` (gRPC + HTTP, the latter
+  mapping a 404 to `Unimplemented` for old daemons).
 - **Skill-box egress pinned to the model-gateway (#674).** When the daemon serves
   the model-gateway, a skill box's eBPF egress policy now allows only the gateway
   host (the LXC bridge gateway — also the daemon API + DNS) plus its allowed

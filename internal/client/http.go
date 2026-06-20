@@ -465,6 +465,44 @@ func (c *HTTPClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	return out, nil
 }
 
+// SetContainerAttribution merges labels onto an existing container via the REST
+// shim (cloud #746) — the daemon-side primitive the hosted control plane's
+// adopt flow (cloud #539) uses to stamp attribution on a pre-existing box. A
+// 404 (daemon too old to expose the endpoint) maps to codes.Unimplemented, so a
+// caller can soft-path it the same way as SetContainerDeletePolicy.
+func (c *HTTPClient) SetContainerAttribution(username string, labels map[string]string) (*pb.SetContainerAttributionResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/attribution", url.PathEscape(username))
+	body := map[string]interface{}{"labels": labels}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("set attribution: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerAttribution (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("set attribution: status %d", resp.StatusCode)
+	}
+
+	out := &pb.SetContainerAttributionResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // StartContainer starts a stopped container via HTTP. When
 // waitForReady is true the daemon blocks until the container's
 // primary TCP port accepts (or readyTimeoutSeconds elapses).

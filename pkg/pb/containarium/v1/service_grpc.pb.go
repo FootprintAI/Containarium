@@ -33,6 +33,7 @@ const (
 	ContainerService_ToggleAutoSleep_FullMethodName          = "/containarium.v1.ContainerService/ToggleAutoSleep"
 	ContainerService_SetContainerTTL_FullMethodName          = "/containarium.v1.ContainerService/SetContainerTTL"
 	ContainerService_SetContainerDeletePolicy_FullMethodName = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
+	ContainerService_SetContainerAttribution_FullMethodName  = "/containarium.v1.ContainerService/SetContainerAttribution"
 	ContainerService_AddSSHKey_FullMethodName                = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_RemoveSSHKey_FullMethodName             = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_AddCollaborator_FullMethodName          = "/containarium.v1.ContainerService/AddCollaborator"
@@ -151,6 +152,15 @@ type ContainerServiceClient interface {
 	// the Incus config under user.containarium.delete_policy, so it survives
 	// daemon restart with no separate store — read back on list/get.
 	SetContainerDeletePolicy(ctx context.Context, in *SetContainerDeletePolicyRequest, opts ...grpc.CallOption) (*SetContainerDeletePolicyResponse, error)
+	// SetContainerAttribution merges labels onto an EXISTING container's config
+	// (cloud #746). The hosted control plane stamps attribution labels
+	// (cloud_org_id / cloud_container_id / managed_by) at create time today; this
+	// endpoint lets it stamp them AFTER the fact, which the cloud's adopt flow
+	// (cloud #539) needs to bring a host's pre-existing (orphan) container under
+	// org management. Merge semantics: each provided label is set; labels not
+	// named are left intact. Cloud→daemon plumbing (like /authorized-keys/sentinel),
+	// not a standalone operator action — no CLI verb.
+	SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -419,6 +429,16 @@ func (c *containerServiceClient) SetContainerDeletePolicy(ctx context.Context, i
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetContainerDeletePolicyResponse)
 	err := c.cc.Invoke(ctx, ContainerService_SetContainerDeletePolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetContainerAttributionResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetContainerAttribution_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -874,6 +894,15 @@ type ContainerServiceServer interface {
 	// the Incus config under user.containarium.delete_policy, so it survives
 	// daemon restart with no separate store — read back on list/get.
 	SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error)
+	// SetContainerAttribution merges labels onto an EXISTING container's config
+	// (cloud #746). The hosted control plane stamps attribution labels
+	// (cloud_org_id / cloud_container_id / managed_by) at create time today; this
+	// endpoint lets it stamp them AFTER the fact, which the cloud's adopt flow
+	// (cloud #539) needs to bring a host's pre-existing (orphan) container under
+	// org management. Merge semantics: each provided label is set; labels not
+	// named are left intact. Cloud→daemon plumbing (like /authorized-keys/sentinel),
+	// not a standalone operator action — no CLI verb.
+	SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
@@ -1049,6 +1078,9 @@ func (UnimplementedContainerServiceServer) SetContainerTTL(context.Context, *Set
 }
 func (UnimplementedContainerServiceServer) SetContainerDeletePolicy(context.Context, *SetContainerDeletePolicyRequest) (*SetContainerDeletePolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerDeletePolicy not implemented")
+}
+func (UnimplementedContainerServiceServer) SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetContainerAttribution not implemented")
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
@@ -1430,6 +1462,24 @@ func _ContainerService_SetContainerDeletePolicy_Handler(srv interface{}, ctx con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).SetContainerDeletePolicy(ctx, req.(*SetContainerDeletePolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_SetContainerAttribution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetContainerAttributionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetContainerAttribution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetContainerAttribution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetContainerAttribution(ctx, req.(*SetContainerAttributionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2162,6 +2212,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetContainerDeletePolicy",
 			Handler:    _ContainerService_SetContainerDeletePolicy_Handler,
+		},
+		{
+			MethodName: "SetContainerAttribution",
+			Handler:    _ContainerService_SetContainerAttribution_Handler,
 		},
 		{
 			MethodName: "AddSSHKey",

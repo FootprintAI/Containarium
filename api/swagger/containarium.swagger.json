@@ -1799,6 +1799,47 @@
         ]
       }
     },
+    "/v1/containers/{name}/attribution": {
+      "post": {
+        "summary": "Merge attribution labels onto an existing container",
+        "description": "Sets the given labels on a live container's config, leaving other labels intact (cloud #746). Lets the hosted control plane stamp cloud attribution (cloud_org_id / cloud_container_id / managed_by) on a pre-existing box so its adopt flow can bring it under management (cloud #539). 404 when the container doesn't resolve.",
+        "operationId": "ContainerService_SetContainerAttribution",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetContainerAttributionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "Container name — the bare username, matching the per-container RPC\nconvention (the handler resolves \u003cusername\u003e-container; see SetContainerTTL).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetContainerAttributionBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{name}/delete-policy": {
       "post": {
         "summary": "Protect or unprotect a container from automated deletion",
@@ -10749,6 +10790,32 @@
         }
       },
       "description": "SendAgentTaskResponse returns the peer's artifact."
+    },
+    "SetContainerAttributionBody": {
+      "type": "object",
+      "properties": {
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Labels to merge onto the container. Each entry is set; labels not named\nhere are left intact (merge, not replace). An empty map is rejected."
+        }
+      },
+      "description": "SetContainerAttributionRequest merges labels onto an existing container\n(cloud #746). Used by the hosted control plane's adopt flow (cloud #539) to\nstamp attribution (cloud_org_id / cloud_container_id / managed_by) on a\npre-existing box after the fact."
+    },
+    "SetContainerAttributionResponse": {
+      "type": "object",
+      "properties": {
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Every label currently on the container after the merge."
+        }
+      },
+      "description": "SetContainerAttributionResponse reports the full label set now on the box."
     },
     "SetContainerDeletePolicyBody": {
       "type": "object",

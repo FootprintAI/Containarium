@@ -275,6 +275,26 @@ service ContainerService {
     };
   }
 
+  // SetContainerAttribution merges labels onto an EXISTING container's config
+  // (cloud #746). The hosted control plane stamps attribution labels
+  // (cloud_org_id / cloud_container_id / managed_by) at create time today; this
+  // endpoint lets it stamp them AFTER the fact, which the cloud's adopt flow
+  // (cloud #539) needs to bring a host's pre-existing (orphan) container under
+  // org management. Merge semantics: each provided label is set; labels not
+  // named are left intact. Cloud→daemon plumbing (like /authorized-keys/sentinel),
+  // not a standalone operator action — no CLI verb.
+  rpc SetContainerAttribution(SetContainerAttributionRequest) returns (SetContainerAttributionResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{name}/attribution"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Merge attribution labels onto an existing container";
+      description: "Sets the given labels on a live container's config, leaving other labels intact (cloud #746). Lets the hosted control plane stamp cloud attribution (cloud_org_id / cloud_container_id / managed_by) on a pre-existing box so its adopt flow can bring it under management (cloud #539). 404 when the container doesn't resolve.";
+      tags: "Container Operations";
+    };
+  }
+
   // AddSSHKey adds an SSH public key to a container
   rpc AddSSHKey(AddSSHKeyRequest) returns (AddSSHKeyResponse) {
     option (google.api.http) = {

@@ -294,6 +294,20 @@ func (c *GRPCClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	})
 }
 
+// SetContainerAttribution merges labels onto an existing container (cloud #746)
+// — the daemon-side primitive the hosted control plane's adopt flow (cloud
+// #539) uses to stamp attribution on a pre-existing box. Cloud→daemon plumbing;
+// no CLI verb.
+func (c *GRPCClient) SetContainerAttribution(username string, labels map[string]string) (*pb.SetContainerAttributionResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return c.client.SetContainerAttribution(ctx, &pb.SetContainerAttributionRequest{
+		Name:   username,
+		Labels: labels,
+	})
+}
+
 // StartContainer starts a stopped container via gRPC. When
 // waitForReady is true the server blocks until the container's
 // primary TCP port accepts or readyTimeoutSeconds elapses (0 falls

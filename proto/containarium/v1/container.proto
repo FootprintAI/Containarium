@@ -673,6 +673,26 @@ message SetContainerDeletePolicyResponse {
   DeletePolicy delete_policy = 1;
 }
 
+// SetContainerAttributionRequest merges labels onto an existing container
+// (cloud #746). Used by the hosted control plane's adopt flow (cloud #539) to
+// stamp attribution (cloud_org_id / cloud_container_id / managed_by) on a
+// pre-existing box after the fact.
+message SetContainerAttributionRequest {
+  // Container name — the bare username, matching the per-container RPC
+  // convention (the handler resolves <username>-container; see SetContainerTTL).
+  string name = 1;
+
+  // Labels to merge onto the container. Each entry is set; labels not named
+  // here are left intact (merge, not replace). An empty map is rejected.
+  map<string, string> labels = 2;
+}
+
+// SetContainerAttributionResponse reports the full label set now on the box.
+message SetContainerAttributionResponse {
+  // Every label currently on the container after the merge.
+  map<string, string> labels = 1;
+}
+
 // AddSSHKeyRequest is the request to add an SSH key to a container
 message AddSSHKeyRequest {
   // Username of the container
