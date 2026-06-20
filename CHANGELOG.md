@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fell back to the default claude engine and failed (`Not logged in`) because the
   default engine reads the wrong gateway env vars.
 
+### Changed
+
+- **Release bundle verifies it ships every engine (#748).** `make
+  bundle-agent-runtime` (and the release workflow) now runs
+  `scripts/verify-agent-runtime-bundle.sh`, which fails the build unless the
+  packaged `agent-runtime-bundle` contains a compiled `dist/engines/<name>.js`
+  for every `src/engines/<name>.ts` **and** declares each runtime SDK
+  (`@google/genai`, etc.) as a non-dev dependency. This prevents the silent
+  engine-drop that left the gemini engine out of v0.33.0 (the tag predated the
+  engine merge) — a future cut can no longer ship a bundle missing an engine.
+
 ### Added
 
 - **Post-hoc container attribution endpoint (#746).** New
