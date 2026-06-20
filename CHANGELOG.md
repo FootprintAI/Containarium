@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Model-gateway: in-box gateway tokens are now revocable (#750).** The gateway
+  validates each box's token against the platform revocation list (the same
+  `jwt_revocations` store the daemon already wires), so a leaked gateway token
+  can be killed before its 30-min TTL via `containarium token revoke --jti <id>`
+  — the store is issuer-agnostic, so the existing CLI/RPC covers gateway jtis
+  with no new surface. Fail-open on a lookup error (the list is a kill-switch,
+  not the primary gate), matching `auth.TokenManager`. No revocation store
+  configured (no postgres) ⇒ no check, as before.
+
 - **Agent-skill box: default-deny egress for every box (#750).** `RunAgentSkill`
   now installs a network policy for **every** provisioned box, including leaf
   skills (`allowed_peers: []`) in direct mode — previously such a box got no

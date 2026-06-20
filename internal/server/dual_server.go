@@ -1313,11 +1313,21 @@ skipAppHosting:
 			} else {
 				gwSink = sink
 			}
+			// #750: same kill-switch as platform JWTs — `token revoke --jti`
+			// covers gateway tokens too (the revocation store is issuer-agnostic).
+			// Keep the interface nil when there's no store (no audit pool /
+			// postgres) — assigning a typed-nil *PgRevocationStore would make a
+			// non-nil interface wrapping a nil pointer and panic on use.
+			var gwRevocations modelgateway.RevocationChecker
+			if revocationStoreLocal != nil {
+				gwRevocations = revocationStoreLocal
+			}
 			gw := modelgateway.New(modelgateway.Config{
 				Secret:       []byte(config.JWTSecret),
 				Providers:    modelgateway.DefaultProviders(),
 				ProviderKeys: keys,
 				Sink:         gwSink,
+				Revocations:  gwRevocations,
 			})
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			primary := gatewayPrimaryProvider(keys)

@@ -2,6 +2,7 @@ package modelgateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -10,7 +11,16 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// RevocationChecker is the kill-switch the gateway consults: a revoked gateway
+// token (by jti) is rejected even before its TTL expires. Satisfied by the
+// platform's *auth.PgRevocationStore (issuer-agnostic, keyed on jti) — a narrow
+// local interface keeps modelgateway free of an auth dependency.
+type RevocationChecker interface {
+	IsRevoked(ctx context.Context, jti string) (bool, error)
+}
 
 // UsageSink receives every metered model call so token usage can be forwarded
 // to a durable/billing plane, in ADDITION to the in-memory Meter (which backs
@@ -29,6 +39,7 @@ type Config struct {
 	ProviderKeys map[string]string    // provider name -> REAL API key, held here only
 	Sink         UsageSink            // optional: durable/billing usage writer (nil = in-memory only)
 	Logger       *log.Logger
+	Revocations  RevocationChecker // optional jti kill-switch (nil = no revocation check)
 }
 
 // Gateway brokers every agent box's model calls: it authenticates the box's
@@ -114,6 +125,21 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	if claims.Provider != provName {
 		http.Error(w, "token not valid for provider "+provName, http.StatusForbidden)
 		return
+	}
+	// Revocation kill-switch (#750): reject a revoked gateway token before its
+	// TTL. Fail-open on a lookup error — the revocation list is the kill-switch,
+	// not the primary gate (signature/issuer/expiry/provider above are), matching
+	// auth.TokenManager.ValidateToken. Revoke via `containarium token revoke
+	// --jti <claims.ID>` (the store is issuer-agnostic, so it covers gateway jtis).
+	if g.cfg.Revocations != nil && claims.ID != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		defer cancel()
+		if revoked, rerr := g.cfg.Revocations.IsRevoked(ctx, claims.ID); rerr != nil {
+			g.cfg.Logger.Printf("WARNING: gateway revocation lookup failed for jti=%s: %v (allowing token; revocation is the kill-switch, not the primary gate)", claims.ID, rerr)
+		} else if revoked {
+			http.Error(w, "gateway token revoked", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	key := g.cfg.ProviderKeys[provName]

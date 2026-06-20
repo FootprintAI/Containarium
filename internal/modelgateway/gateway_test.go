@@ -1,6 +1,8 @@
 package modelgateway
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +10,20 @@ import (
 	"testing"
 	"time"
 )
+
+// fakeRevocations is a test RevocationChecker: revoked[jti]=true marks a jti
+// revoked; a non-nil err simulates a store/DB failure (to exercise fail-open).
+type fakeRevocations struct {
+	revoked map[string]bool
+	err     error
+}
+
+func (f *fakeRevocations) IsRevoked(_ context.Context, jti string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.revoked[jti], nil
+}
 
 // fakeUpstream stands in for the real provider API; it records the auth headers
 // it received and returns a canned usage body.
@@ -259,5 +275,82 @@ func TestMintVerify_RoundTrip(t *testing.T) {
 	}
 	if _, err := VerifyToken([]byte("nope"), tok); err == nil {
 		t.Error("verify with wrong secret should fail")
+	}
+}
+
+// TestGateway_RevokedTokenRejected: a gateway token whose jti is on the
+// revocation list is rejected with 401, and never reaches the provider (#750).
+func TestGateway_RevokedTokenRejected(t *testing.T) {
+	secret := []byte("shared-secret")
+	hit := false
+	up := fakeUpstream(t, func(*http.Request) { hit = true }, `{}`)
+	defer up.Close()
+	providers := DefaultProviders()
+	providers["anthropic"].UpstreamURL = up.URL
+
+	tok, err := MintToken(secret, GatewayClaims{Tenant: "acme", Provider: "anthropic"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := VerifyToken(secret, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gw := New(Config{
+		Secret: secret, Providers: providers,
+		ProviderKeys: map[string]string{"anthropic": "REAL-KEY"},
+		Revocations:  &fakeRevocations{revoked: map[string]bool{claims.ID: true}},
+	})
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/anthropic/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, want 401 for a revoked token: %s", resp.StatusCode, b)
+	}
+	if hit {
+		t.Error("revoked token reached the provider upstream")
+	}
+}
+
+// TestGateway_RevocationLookupErrorFailsOpen: a revocation-store error must not
+// block traffic — the list is a kill-switch, not the primary gate (#750).
+func TestGateway_RevocationLookupErrorFailsOpen(t *testing.T) {
+	secret := []byte("shared-secret")
+	up := fakeUpstream(t, func(*http.Request) {}, `{"model":"m","usage":{"input_tokens":1,"output_tokens":1}}`)
+	defer up.Close()
+	providers := DefaultProviders()
+	providers["anthropic"].UpstreamURL = up.URL
+
+	tok, err := MintToken(secret, GatewayClaims{Tenant: "acme", Provider: "anthropic"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := New(Config{
+		Secret: secret, Providers: providers,
+		ProviderKeys: map[string]string{"anthropic": "REAL-KEY"},
+		Revocations:  &fakeRevocations{err: errors.New("revocation db down")},
+	})
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/anthropic/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("fail-open expected 200 on revocation lookup error, got %d: %s", resp.StatusCode, b)
 	}
 }
