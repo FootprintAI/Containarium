@@ -112,6 +112,61 @@ agent↔box edges), and — hosted — never holds the raw key (gateway token on
 revocable). The net blast radius of a hijack is then: one tenant's data boxes +
 a revocable scoped token, never the provider key or another tenant.
 
+## Validated: gateway key-custody on the RunAgentSkill path
+
+The credential-custody invariant ("a data box never holds the key") is
+independent of *where the agent loop runs*, and the **model-gateway** half is
+already shipped and validated. Below is the live `RunAgentSkill` flow with the
+daemon serving the gateway (provider keys held only in the daemon; each box gets
+a scoped, revocable token + the gateway URL).
+
+> Scope note: in this validation the agent loop still runs **in-box** (the
+> shipped in-box loop) — only the model call is externalized to the gateway. That
+> already establishes the credential invariant. Relocating the loop *out* of the
+> data box (the rest of this note) is the remaining step; it does not change the
+> custody mechanism shown here.
+
+```
+  ┌────────────┐  containarium agent run <skill> --input '{...}'   (HTTP + JWT)
+  │  operator  │───────────────────────────────────────────────────────────────┐
+  └────────────┘                                                                 ▼
+                                  ┌──────────────────────────────────────────────────┐
+                                  │  DAEMON  (model-gateway enabled; holds provider key)│
+   POST /v1/agent-skills/<id>/run │  ┌────────────────────────────────────────────────┐│
+  ───────────────────────────────┼─▶│ RunAgentSkill                                    ││
+                                  │  │  1. resolve manifest (CONTAINARIUM_SKILLS_DIR)   ││
+                                  │  │  2. provision / REUSE box  agent-<id>-container  ││
+                                  │  │  3. mint scoped JWT (= skill.allowed_scopes)     ││
+                                  │  │  4. mint GATEWAY token (bound to tenant+skill)   ││
+                                  │  │  5. seed: system_prompt.txt · input.json ·       ││
+                                  │  │           token · gateway.env                    ││
+                                  │  └───────────────┬──────────────────────────────────┘│
+                                  │                  │ exec: bash -lc agent-runtime        │
+                                  │                  ▼                                     │
+                                  │  ┌────────────────────────────────────────────────┐  │
+                                  │  │ agent box (LXC) — DATA / TOOL plane              │  │
+                                  │  │  • engine + agent-box (in-box MCP tool surface) │  │
+                                  │  │  • NO provider key in the box                   │  │
+                                  │  │  • gateway.env → MODEL_GATEWAY_URL + token      │  │
+                                  │  └───────────────┬──────────────────────────────────┘  │
+                                  │   model call     │ Authorization: Bearer <gateway-token>│
+                                  │   ◀──────────────┘                                      │
+                                  │  ┌────────────────────────────────────────────────┐  │
+                                  │  │ MODEL GATEWAY: verify token → inject REAL key → │──┼──▶ provider API
+                                  │  │ proxy → meter per-tenant usage                  │  │   (e.g. Anthropic /
+                                  │  └────────────────────────────────────────────────┘  │    Gemini / OpenAI)
+                                  └──────────────────────────────────────────────────────┘
+                                                     │ artifact.json (outputJson)
+   ◀──────────────────────────────────────────────────┘   ← RunAgentSkill returns the artifact
+```
+
+What this demonstrates, observed end-to-end: the box's env carries **no**
+provider key — only `CONTAINARIUM_MODEL_GATEWAY_URL` + a scoped
+`CONTAINARIUM_GATEWAY_TOKEN` — yet the run produces a real artifact. Every model
+call therefore crosses `box → gateway → provider`; a compromised box yields a
+revocable token, never the key. This is the credential half of the two
+invariants above, on the real `RunAgentSkill` path.
+
 ## See also
 
 - `docs/AGENT-RUNTIME-INBOX-LOOP-DESIGN.md` — the in-box loop this evolves.
