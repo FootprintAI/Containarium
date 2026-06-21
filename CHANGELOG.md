@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Workspace agent gets a system prompt.** The pre-created `librechat` agent had
+  no `instructions`, so the model inferred its whole role from its tool names and
+  deflected everything else with "I can only manage containers". It now ships with
+  a system prompt making it a helpful workspace assistant that *also* has the
+  platform tools, set via a PATCH after create (LibreChat's agent CREATE can drop
+  fields; PATCH persists `instructions` + `tools` reliably).
+
 ## [0.38.0] - 2026-06-21
 
 ### Added
