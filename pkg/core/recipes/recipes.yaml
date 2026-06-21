@@ -350,7 +350,7 @@ recipes:
             chmod +x /opt/lc/mcp-server
             printf '%s' "$CONTAINARIUM_PARAM_MCP_TOKEN" > /opt/lc/ctn-token
             chmod 600 /opt/lc/ctn-token
-            printf 'mcpServers:\n  containarium:\n    command: /usr/local/bin/mcp-server\n    env:\n      CONTAINARIUM_SERVER_URL: "%s"\n      CONTAINARIUM_JWT_TOKEN_FILE: "/opt/lc/ctn-token"\n' "$CONTAINARIUM_PARAM_MCP_SERVER_URL" >> /opt/lc/librechat.yaml
+            printf 'mcpServers:\n  containarium:\n    type: stdio\n    command: /usr/local/bin/mcp-server\n    args: []\n    env:\n      CONTAINARIUM_SERVER_URL: "%s"\n      CONTAINARIUM_JWT_TOKEN_FILE: "/opt/lc/ctn-token"\n' "$CONTAINARIUM_PARAM_MCP_SERVER_URL" >> /opt/lc/librechat.yaml
             LC_MCP_MOUNTS="-v /opt/lc/mcp-server:/usr/local/bin/mcp-server:ro -v /opt/lc/ctn-token:/opt/lc/ctn-token:ro"
           else
             echo 'librechat: mcp-server download failed; skipping MCP injection' >&2

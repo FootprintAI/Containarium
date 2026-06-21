@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-06-21
+
+### Fixed
+
+- **LibreChat crash-looped when the MCP was injected.** The `librechat` recipe
+  wrote an `mcpServers.containarium` block with only `command` + `env`, but
+  LibreChat's config schema requires the stdio MCP variant to carry `type: stdio`
+  and an `args` array. Without them the discriminated union fell through to the
+  URL-based variants and validation failed (`ZodError: args/url Required`), so
+  LibreChat exited on every boot and the box served 502. The block now emits
+  `type: stdio` and `args: []`. (Existing boxes need a redeploy or a one-line
+  config patch; new boxes are correct.)
+
 ## [0.36.0] - 2026-06-21
 
 ### Added
