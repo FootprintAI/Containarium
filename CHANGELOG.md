@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **LibreChat workspace opens straight into a tool-equipped assistant.** The
+  `librechat` recipe now pre-creates a default LibreChat **agent** (gemini via the
+  model-gateway + the in-box Containarium MCP tools, attached by the
+  `<tool>_mcp_containarium` keys for exactly the scoped/invoke-only set) and
+  enforces it as the only model-spec. So the chat opens on a working, tool-aware
+  assistant instead of LibreChat's empty Agents builder — fixing the
+  `agent_id is required` error — with the endpoint/model pickers hidden (curated,
+  locked). (Agent + auth calls send a User-Agent; LibreChat's agents API rejects
+  requests without one.)
+
+### Changed
+
+- **Workspace owner is the real user, not "admin".** New `auth_name` param; the
+  owner login is created with that name and a username derived from the email.
+  The cloud injects the deploying user's identity at deploy.
+- **Chat-only embed.** The in-box helper now serves the SPA shell at `/` with an
+  injected stylesheet that hides LibreChat's left nav, so the embedded iframe
+  shows only the chat pane (the console's Manage drawer is the single sidebar).
+
 ## [0.37.0] - 2026-06-21
 
 ### Added

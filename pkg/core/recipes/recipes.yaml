@@ -299,13 +299,18 @@ recipes:
         subdomain: chat
     parameters:
       - name: auth_email
-        label: Admin email
-        description: Email for the workspace admin login (created at deploy; self-registration is then disabled).
+        label: Owner email
+        description: Email for the workspace owner login (created at deploy; self-registration is then disabled). The cloud sets this to the deploying user's email.
         type: string
         default: admin@workspace.local
+      - name: auth_name
+        label: Owner name
+        description: Display name for the workspace owner (and derived username). The cloud sets this to the deploying user's name; falls back to "Admin".
+        type: string
+        default: Admin
       - name: auth_password
-        label: Admin password
-        description: Password for the workspace admin login. Required — the box is never left open.
+        label: Owner password
+        description: Password for the workspace owner login. Required — the box is never left open.
         type: password
         required: true
       - name: librechat_version
@@ -386,19 +391,51 @@ recipes:
       - podman rm -f mongo librechat 2>/dev/null || true
       - podman run -d --name mongo --restart=always --network host -v /opt/lc/mongo:/data/db docker.io/library/mongo:7 >/dev/null
       - 'podman run -d --name librechat --restart=always --network host --env-file /opt/lc/.env -v /opt/lc/librechat.yaml:/app/librechat.yaml:ro ${LC_MCP_MOUNTS:-} "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
-      # Wait for the API, create the admin from params (first user = admin), then
-      # lock self-registration off and restart so only the admin can sign in.
+      # Wait for the API, create the OWNER from params (first user = owner), named
+      # after the deploying user (the cloud passes auth_name/auth_email). NOTE: the
+      # agents API rejects requests with no User-Agent ("Illegal request"), so all
+      # agent/auth calls below send one.
       - |
+        UA="Mozilla/5.0 (X11; Linux x86_64) Chrome/120 Safari/537.36"
         for i in $(seq 1 60); do
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/ 2>/dev/null || echo 000)
           if [ "$code" = "200" ]; then break; fi
           sleep 3
         done
-        curl -fsS -X POST http://127.0.0.1:3080/api/auth/register -H 'Content-Type: application/json' \
-          -d "{\"name\":\"Admin\",\"username\":\"admin\",\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\",\"confirm_password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
-          >/dev/null 2>&1 || echo 'librechat: admin register failed (may already exist)' >&2
-        sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
-        podman restart librechat >/dev/null 2>&1 || true
+        # Username derived from the email local-part (sanitized to a valid handle).
+        LC_USER=$(printf '%s' "${CONTAINARIUM_PARAM_AUTH_EMAIL%%@*}" | tr -cd 'a-zA-Z0-9._-' | cut -c1-40)
+        [ -n "$LC_USER" ] || LC_USER=owner
+        curl -fsS -A "$UA" -X POST http://127.0.0.1:3080/api/auth/register -H 'Content-Type: application/json' \
+          -d "{\"name\":\"$CONTAINARIUM_PARAM_AUTH_NAME\",\"username\":\"$LC_USER\",\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\",\"confirm_password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
+          >/dev/null 2>&1 || echo 'librechat: owner register failed (may already exist)' >&2
+      # Pre-create a default agent (gemini via the gateway + the in-box MCP tools)
+      # and enforce it as the only model-spec, so the chat opens straight into a
+      # tool-equipped assistant — no empty "Agents" screen (the "agent_id required"
+      # error) and no model/endpoint pickers. MCP tools attach via the agent's
+      # `tools` array keyed "<tool>_mcp_containarium"; we attach only what the
+      # scoped token permits (containers:read + recipes:deploy + routes:read +
+      # agents:run). Needs the gateway (the gemini endpoint); skipped without it.
+      - |
+        UA="Mozilla/5.0 (X11; Linux x86_64) Chrome/120 Safari/537.36"
+        if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
+          T=$(curl -s -A "$UA" -X POST http://127.0.0.1:3080/api/auth/login -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
+            | sed -E 's/.*"token":"([^"]+)".*/\1/')
+          TOOLS='[]'
+          if [ -n "${CONTAINARIUM_PARAM_MCP_SERVER_URL:-}" ] && [ -n "${CONTAINARIUM_PARAM_MCP_TOKEN:-}" ]; then
+            TOOLS='["list_containers_mcp_containarium","get_container_mcp_containarium","get_metrics_mcp_containarium","list_recipes_mcp_containarium","deploy_recipe_mcp_containarium","list_routes_mcp_containarium","run_agent_skill_mcp_containarium","call_agent_mcp_containarium","run_crew_mcp_containarium"]'
+          fi
+          AID=$(curl -s -A "$UA" -X POST http://127.0.0.1:3080/api/agents -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+            -d "{\"name\":\"Containarium Assistant\",\"provider\":\"Containarium (Gemini)\",\"model\":\"gemini-2.5-flash\",\"tools\":$TOOLS}" \
+            | sed -E 's/.*"id":"(agent_[^"]+)".*/\1/')
+          if printf '%s' "$AID" | grep -q '^agent_'; then
+            printf 'modelSpecs:\n  enforce: true\n  prioritize: true\n  list:\n    - name: "containarium-workspace"\n      label: "Containarium Workspace"\n      default: true\n      preset:\n        endpoint: "agents"\n        agent_id: "%s"\n' "$AID" >> /opt/lc/librechat.yaml
+          else
+            echo 'librechat: agent pre-create failed; leaving default endpoints' >&2
+          fi
+        fi
+      - sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
+      - podman restart librechat >/dev/null 2>&1 || true
       # --- Zero-click iframe access ---------------------------------------
       # LibreChat has its own login (JWT + refreshToken cookie) and rotates the
       # refresh token on use, so a pre-stored session can't be replayed — the
@@ -463,6 +500,13 @@ recipes:
                     _tokens[t] = time.time() + TTL
                     self._raw(200, t.encode(), "text/plain")
                     return
+                if u.path in ("/", ""):
+                    # Chat-only: serve LibreChat's SPA shell with a <style> that
+                    # hides the left nav so the embedded iframe shows only the chat
+                    # pane (our Manage drawer is the single sidebar). Purely
+                    # additive — if a selector misses, the nav just stays visible.
+                    self._shell()
+                    return
                 if u.path == "/__ws_login":
                     _gc()
                     t = (parse_qs(u.query).get("t") or [""])[0]
@@ -480,6 +524,24 @@ recipes:
                     self.end_headers()
                     return
                 self._raw(404, b"not found", "text/plain")
+
+            def _shell(self):
+                try:
+                    with urllib.request.urlopen(LC + "/", timeout=10) as r:
+                        html = r.read().decode("utf-8", "replace")
+                        ct = r.headers.get("Content-Type", "text/html; charset=utf-8")
+                except Exception:
+                    self._redirect("/login")
+                    return
+                css = ("<style>/* Containarium chat-only */"
+                       "nav,aside.nav,[data-testid=\"nav\"],#nav{display:none!important}"
+                       "main,[role=\"main\"]{margin-left:0!important;width:100%!important}"
+                       "</style>")
+                if "</head>" in html:
+                    html = html.replace("</head>", css + "</head>", 1)
+                else:
+                    html = css + html
+                self._raw(200, html.encode("utf-8"), ct)
 
             def _login(self):
                 try:
@@ -529,6 +591,13 @@ recipes:
         }
         :8080 {
           handle /__ws_login* {
+            reverse_proxy 127.0.0.1:9099
+          }
+          # The SPA shell (exact "/") is served by the helper, which injects the
+          # chat-only CSS. Assets, /api, websockets, and all other paths go
+          # straight to LibreChat with the SameSite cookie rewrite.
+          @root path /
+          handle @root {
             reverse_proxy 127.0.0.1:9099
           }
           handle {
