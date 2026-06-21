@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-06-21
+
+### Fixed
+
+- **In-box MCP never connected in a LibreChat workspace.** Two bugs, both in the
+  `librechat` recipe path:
+  - **`mcp-server` couldn't execute in the LibreChat container.** It was built
+    natively on a linux/amd64 runner with CGO enabled → a glibc-dynamic binary
+    (needs `/lib64/ld-linux-x86-64.so.2`), but LibreChat's image is Alpine/musl,
+    so the spawn failed with `exec: No such file or directory` and the MCP loaded
+    0 tools. `mcp-server` is a pure-Go REST/gRPC client; it's now built with
+    `CGO_ENABLED=0` (fully static, runs on any libc).
+  - **The MCP token was unreadable.** The recipe wrote `ctn-token` as `0600`
+    owned by root, but LibreChat (and the `mcp-server` it spawns) run as the
+    `node` user (uid 1000) and the token is bind-mounted read-only → permission
+    denied. The recipe now writes it `0644` (single-tenant box; the token is a
+    scoped, revocable, least-privilege credential).
+
 ## [0.36.1] - 2026-06-21
 
 ### Fixed

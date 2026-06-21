@@ -114,24 +114,29 @@ build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger 
 	@GOOS=windows GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/containarium/main.go
 	@echo "==> Binaries built in $(BUILD_DIR)/"
 
+# NOTE: mcp-server is a pure-Go REST/gRPC client and is dropped into arbitrary
+# containers (e.g. LibreChat's Alpine/musl image as a stdio MCP). A native
+# linux/amd64 build leaves CGO enabled → a glibc-dynamic binary that fails with
+# "exec: No such file or directory" on musl (no /lib64/ld-linux-x86-64.so.2).
+# Force CGO_ENABLED=0 so the binary is fully static and runs on any libc.
 build-mcp: ## Build the MCP server binary
 	@echo "==> Building MCP server..."
 	@mkdir -p $(BUILD_DIR)
-	@go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME) cmd/mcp-server/main.go
+	@CGO_ENABLED=0 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME) cmd/mcp-server/main.go
 	@echo "==> MCP server built: $(BUILD_DIR)/$(MCP_BINARY_NAME)"
 
 build-mcp-linux: ## Build MCP server for Linux (for deployment)
 	@echo "==> Building MCP server for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64 cmd/mcp-server/main.go
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64 cmd/mcp-server/main.go
 	@echo "==> MCP server built: $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64"
 
 build-mcp-all: ## Build MCP server for all platforms
 	@echo "==> Building MCP server for all platforms..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64 cmd/mcp-server/main.go
-	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-darwin-amd64 cmd/mcp-server/main.go
-	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-darwin-arm64 cmd/mcp-server/main.go
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-linux-amd64 cmd/mcp-server/main.go
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-darwin-amd64 cmd/mcp-server/main.go
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(MCP_BINARY_NAME)-darwin-arm64 cmd/mcp-server/main.go
 	@echo "==> MCP server binaries built in $(BUILD_DIR)/"
 
 install-mcp: build-mcp ## Install the MCP server binary to /usr/local/bin (requires sudo)
