@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-06-21
+
+### Added
+
+- **LibreChat workspace can run the Containarium MCP (#758).** The `librechat`
+  recipe gains optional `mcp_server_url` + `mcp_token` params: when both are set,
+  post_start installs the `mcp-server` binary (stdio) and wires it into
+  LibreChat's `mcpServers`, so the chat agent can operate the platform from the
+  conversation (list / deploy boxes, expose ports, run skills). The token is the
+  only credential in the box; scope enforcement is server-side. Empty params →
+  no MCP (the self-hosted default). Pairs with the cloud's scoped-token mint.
+
 ## [0.35.0] - 2026-06-21
 
 ### Added
