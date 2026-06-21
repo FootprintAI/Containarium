@@ -408,40 +408,29 @@ recipes:
         curl -fsS -A "$UA" -X POST http://127.0.0.1:3080/api/auth/register -H 'Content-Type: application/json' \
           -d "{\"name\":\"$CONTAINARIUM_PARAM_AUTH_NAME\",\"username\":\"$LC_USER\",\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\",\"confirm_password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
           >/dev/null 2>&1 || echo 'librechat: owner register failed (may already exist)' >&2
-      # Pre-create a default agent (gemini via the gateway + the in-box MCP tools)
-      # and enforce it as the only model-spec, so the chat opens straight into a
-      # tool-equipped assistant — no empty "Agents" screen (the "agent_id required"
-      # error) and no model/endpoint pickers. MCP tools attach via the agent's
-      # `tools` array keyed "<tool>_mcp_containarium"; we attach only what the
-      # scoped token permits (containers:read + recipes:deploy + routes:read +
-      # agents:run). Needs the gateway (the gemini endpoint); skipped without it.
+      # Enforce a single model-spec so the chat opens straight into the gemini
+      # endpoint — no model/endpoint pickers, no empty "Agents" screen. The spec
+      # targets the CUSTOM endpoint directly: LibreChat's frontend always posts
+      # chat turns to the custom endpoint ("Containarium (Gemini)", endpointType
+      # custom), so a spec with `endpoint: "agents"` would never match and EVERY
+      # turn would fail "Model spec mismatch" (buildEndpointOption.js) — the SSE
+      # error is swallowed by the UI, which then spins on "thinking" forever with
+      # zero tokens. The assistant persona is carried via promptPrefix (the agent
+      # `instructions` equivalent for a custom endpoint). Needs the gateway (the
+      # gemini endpoint); skipped without it.
+      #
+      # NOTE: this intentionally does NOT pre-create a tool-equipped agent. MCP
+      # tools in LibreChat attach to an agent, but an `endpoint: "agents"` spec
+      # does not reliably drive the frontend (above), so the tools never reached
+      # the chat anyway. The MCP servers are still injected into librechat.yaml
+      # (above) and are togglable per-conversation. Auto-attaching the platform
+      # MCP to the enforced default is tracked as a follow-up.
       - |
-        UA="Mozilla/5.0 (X11; Linux x86_64) Chrome/120 Safari/537.36"
         if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
-          T=$(curl -s -A "$UA" -X POST http://127.0.0.1:3080/api/auth/login -H 'Content-Type: application/json' \
-            -d "{\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
-            | sed -E 's/.*"token":"([^"]+)".*/\1/')
-          TOOLS='[]'
-          if [ -n "${CONTAINARIUM_PARAM_MCP_SERVER_URL:-}" ] && [ -n "${CONTAINARIUM_PARAM_MCP_TOKEN:-}" ]; then
-            TOOLS='["list_containers_mcp_containarium","get_container_mcp_containarium","get_metrics_mcp_containarium","list_recipes_mcp_containarium","deploy_recipe_mcp_containarium","list_routes_mcp_containarium","run_agent_skill_mcp_containarium","call_agent_mcp_containarium","run_crew_mcp_containarium"]'
-          fi
-          # System prompt — without it the model infers its whole role from the
-          # tool names and deflects everything else with "I can only manage
-          # containers". This makes it a helpful workspace assistant that ALSO
-          # has platform tools. (Single line, no double quotes → safe in JSON.)
-          INSTR="You are the Containarium workspace assistant. Help the user with software development, DevOps, and general technical questions, and operate their Containarium platform when asked using your tools (list and deploy boxes, expose ports, run agent skills). Be concise and helpful. If you genuinely should not do something, say why on the merits — do not claim you can only manage containers."
-          AID=$(curl -s -A "$UA" -X POST http://127.0.0.1:3080/api/agents -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
-            -d "{\"name\":\"Containarium Assistant\",\"provider\":\"Containarium (Gemini)\",\"model\":\"gemini-2.5-flash\",\"instructions\":\"$INSTR\",\"tools\":$TOOLS}" \
-            | sed -E 's/.*"id":"(agent_[^"]+)".*/\1/')
-          if printf '%s' "$AID" | grep -q '^agent_'; then
-            # Re-assert instructions + tools via PATCH: LibreChat's agent CREATE
-            # can drop some fields, and PATCH reliably persists them.
-            curl -s -A "$UA" -X PATCH "http://127.0.0.1:3080/api/agents/$AID" -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
-              -d "{\"instructions\":\"$INSTR\",\"tools\":$TOOLS}" >/dev/null 2>&1 || true
-            printf 'modelSpecs:\n  enforce: true\n  prioritize: true\n  list:\n    - name: "containarium-workspace"\n      label: "Containarium Workspace"\n      default: true\n      preset:\n        endpoint: "agents"\n        agent_id: "%s"\n' "$AID" >> /opt/lc/librechat.yaml
-          else
-            echo 'librechat: agent pre-create failed; leaving default endpoints' >&2
-          fi
+          # System prompt. Single line, no double quotes → safe inside the
+          # double-quoted YAML scalar below.
+          INSTR="You are the Containarium workspace assistant. Help the user with software development, DevOps, system design, and general technical questions. Be concise and helpful. If you genuinely should not do something, explain why on the merits."
+          printf 'modelSpecs:\n  enforce: true\n  prioritize: true\n  list:\n    - name: "containarium-workspace"\n      label: "Containarium Workspace"\n      default: true\n      preset:\n        endpoint: "Containarium (Gemini)"\n        endpointType: "custom"\n        model: "gemini-2.5-flash"\n        promptPrefix: "%s"\n' "$INSTR" >> /opt/lc/librechat.yaml
         fi
       - sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
       - podman restart librechat >/dev/null 2>&1 || true

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **LibreChat workspace chat hung forever ("thinking", zero tokens).** The
+  `librechat` recipe enforced a model-spec with `preset.endpoint: "agents"`, but
+  LibreChat's frontend always posts chat turns to the **custom** endpoint
+  (`Containarium (Gemini)`, `endpointType: custom`). With `enforce: true`,
+  `buildEndpointOption.js` rejected every turn as `"Model spec mismatch"` before
+  it ever reached the model; the UI swallowed the SSE error and span on
+  "thinking" indefinitely (the request never hit gemini/the gateway). The spec
+  now targets the custom endpoint directly and carries the assistant persona via
+  `promptPrefix`, so chat turns stream normally. The recipe no longer pre-creates
+  a tool-equipped agent (an `endpoint: "agents"` spec never drove the frontend, so
+  the MCP tools never reached the chat anyway); the in-box MCP servers are still
+  injected and togglable per-conversation, with auto-attach tracked as a
+  follow-up.
+
 ## [0.39.0] - 2026-06-21
 
 ### Changed
