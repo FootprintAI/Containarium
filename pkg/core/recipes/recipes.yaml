@@ -306,6 +306,21 @@ recipes:
         description: LibreChat image tag to run (pin for reproducibility).
         type: string
         default: latest
+      # Optional: inject the Containarium MCP so the chat agent can operate the
+      # platform from the conversation (list/deploy boxes, expose ports, run
+      # skills). Both must be set to enable it. The TOKEN must be scoped +
+      # revocable and LEAST-PRIVILEGE — a chat agent is prompt-injectable, so it
+      # should carry only read + recipes:deploy + agents:run scopes, never
+      # delete / secrets / route-write. Scoping is the minter's job (the cloud
+      # mints an org-scoped token at deploy); the recipe wires what it's handed.
+      - name: mcp_server_url
+        label: MCP target API URL
+        description: Containarium API URL the in-box MCP targets (e.g. https://cloud.containarium.dev). Empty disables MCP injection.
+        type: string
+      - name: mcp_token
+        label: MCP scoped token
+        description: Scoped, revocable least-privilege Containarium token for the in-box MCP. Empty disables MCP injection.
+        type: password
     post_start:
       - mkdir -p /opt/lc /opt/lc/mongo
       - command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl openssl >/dev/null; }
@@ -321,6 +336,25 @@ recipes:
         else
           printf 'version: 1.2.1\ncache: true\n' > /opt/lc/librechat.yaml
           echo 'librechat: no managed gateway seeded; configure a provider in LibreChat' >&2
+        fi
+      # Optional MCP injection: when mcp_server_url + mcp_token are set, install
+      # the Containarium MCP (stdio) and wire it into LibreChat so the chat agent
+      # can operate the platform (list/deploy boxes, expose ports, run skills),
+      # scoped to whatever the token allows (enforced server-side). LibreChat
+      # spawns the MCP command INSIDE its own container, so the binary + token are
+      # mounted in via $LC_MCP_MOUNTS (added to the librechat run below).
+      - |
+        LC_MCP_MOUNTS=""
+        if [ -n "${CONTAINARIUM_PARAM_MCP_SERVER_URL:-}" ] && [ -n "${CONTAINARIUM_PARAM_MCP_TOKEN:-}" ]; then
+          if curl -fsSL https://github.com/FootprintAI/Containarium/releases/latest/download/mcp-server-linux-amd64 -o /opt/lc/mcp-server 2>/dev/null; then
+            chmod +x /opt/lc/mcp-server
+            printf '%s' "$CONTAINARIUM_PARAM_MCP_TOKEN" > /opt/lc/ctn-token
+            chmod 600 /opt/lc/ctn-token
+            printf 'mcpServers:\n  containarium:\n    command: /usr/local/bin/mcp-server\n    env:\n      CONTAINARIUM_SERVER_URL: "%s"\n      CONTAINARIUM_JWT_TOKEN_FILE: "/opt/lc/ctn-token"\n' "$CONTAINARIUM_PARAM_MCP_SERVER_URL" >> /opt/lc/librechat.yaml
+            LC_MCP_MOUNTS="-v /opt/lc/mcp-server:/usr/local/bin/mcp-server:ro -v /opt/lc/ctn-token:/opt/lc/ctn-token:ro"
+          else
+            echo 'librechat: mcp-server download failed; skipping MCP injection' >&2
+          fi
         fi
       - |
         {
@@ -339,7 +373,7 @@ recipes:
         } > /opt/lc/.env
       - podman rm -f mongo librechat 2>/dev/null || true
       - podman run -d --name mongo --restart=always --network host -v /opt/lc/mongo:/data/db docker.io/library/mongo:7 >/dev/null
-      - 'podman run -d --name librechat --restart=always --network host --env-file /opt/lc/.env -v /opt/lc/librechat.yaml:/app/librechat.yaml:ro "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
+      - 'podman run -d --name librechat --restart=always --network host --env-file /opt/lc/.env -v /opt/lc/librechat.yaml:/app/librechat.yaml:ro ${LC_MCP_MOUNTS:-} "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
       # Wait for the API, create the admin from params (first user = admin), then
       # lock self-registration off and restart so only the admin can sign in.
       - |
