@@ -113,6 +113,26 @@ func TestEmbeddedCatalogLoads(t *testing.T) {
 	if len(hello.AllowedScopes) == 0 {
 		t.Error("hello-agent declares no allowed_scopes")
 	}
+
+	// The generic code-review skill ships in OSS and must be well-formed.
+	cr, err := m.Get("code-review")
+	if err != nil {
+		t.Fatalf("code-review skill missing: %v", err)
+	}
+	if cr.GetRecipeId() != "agent-runtime" {
+		t.Errorf("code-review recipe_id = %q, want agent-runtime", cr.GetRecipeId())
+	}
+	if cr.SystemPrompt == "" {
+		t.Error("code-review has empty system_prompt")
+	}
+	if len(cr.AllowedScopes) == 0 {
+		t.Error("code-review declares no allowed_scopes")
+	}
+	// Provider-agnostic: no model pinned, so it runs on whatever engine the
+	// box's gateway provider selects.
+	if cr.Model != "" {
+		t.Errorf("code-review should not pin a model (provider-agnostic), got %q", cr.Model)
+	}
 }
 
 func TestValidateRejectsBadManifests(t *testing.T) {

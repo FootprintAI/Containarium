@@ -5,10 +5,13 @@
 # allowed_scopes, seeds the system prompt + token + task input under
 # /etc/containarium/agent, and the in-box agent loop takes it from there.
 #
-# This catalog is the GENERIC MECHANISM only. The single entry below is a
-# deliberately task-agnostic reference skill that proves the runtime
-# end-to-end. Opinionated/domain skills (compliance packs, research crews,
-# etc.) are built on this mechanism and ship OUTSIDE this repo.
+# This catalog ships the GENERIC MECHANISM plus a small set of broadly-useful,
+# task-AGNOSTIC skills that work for any user (a neutral reference skill and a
+# code reviewer). OPINIONATED / DOMAIN catalogs — product-management packs,
+# compliance packs (ISO 27001, …), research crews, customer-specific
+# workflows — are built on this same mechanism and ship as EXTERNAL packs,
+# loaded at runtime via CONTAINARIUM_SKILLS_DIR (and, for the curated set,
+# Containarium Cloud). Keep this file generic; domain skills do not belong here.
 #
 # Invariants enforced at load (see skills.go validate):
 #   - recipe_id, system_prompt, and >=1 allowed_scope are required.
@@ -57,3 +60,35 @@ skills:
       description: A neutral reference agent that relays a task to a peer.
       capabilities:
         - relay
+
+  # code-review is a generic, broadly-useful developer skill — the first
+  # "does real work" skill in OSS. It's deliberately domain-AGNOSTIC (any
+  # codebase, any language) so it belongs in the open catalog, unlike the
+  # opinionated PM / compliance packs that ship as external/Cloud packs.
+  # No `model` is pinned: it runs on whatever engine the box's gateway
+  # provider selects, so the same manifest works through any provider.
+  - id: code-review
+    name: Code Review
+    description: Reviews code or a diff for correctness bugs, security issues, and high-value improvements; returns a structured JSON review.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are a precise, senior code reviewer. Read the task input — a diff, a
+      file, or a description of code — and review it for correctness bugs,
+      security vulnerabilities, and concrete, high-value improvements. Prefer
+      actionable findings over style nits, and cite the specific location.
+      Return ONLY a JSON artifact of the form: {"summary": "<one paragraph>",
+      "findings": [{"file": "<path>", "line": <int>, "severity":
+      "high|medium|low", "issue": "<what is wrong and why>", "suggestion":
+      "<concrete fix>"}]}. If the input contains no reviewable code, say so in
+      "summary" and return an empty "findings" array.
+    allowed_scopes:
+      - containers:read
+    allowed_peers: []
+    agent_card:
+      id: code-review
+      name: Code Review
+      description: Reviews code/diffs for bugs, security issues, and improvements; returns structured findings.
+      capabilities:
+        - code-review
+        - bug-detection
+        - security-review
