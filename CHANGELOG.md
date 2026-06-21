@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-06-21
+
+### Added
+
+- **LibreChat command-workspace recipe (#755).** A new `librechat` recipe
+  packages LibreChat + MongoDB in a box, wired to the managed model-gateway: the
+  chat endpoint takes its key from the seeded gateway token (no real provider key
+  in the box), users switch among curated models but cannot supply their own key,
+  the admin is created from params, and self-registration is then locked.
+  `containarium recipe deploy librechat …`.
+- **Generic `code-review` agent skill (#756).** The first does-real-work skill in
+  the OSS catalog — domain-agnostic, returns a structured JSON review
+  (file / line / severity / issue / suggestion). Plus
+  `docs/demos/agent-box-gateway-demo.sh`, a recordable CLI demo of the
+  isolated-box + model-gateway flow.
+
+### Changed
+
+- **Model-gateway: OpenAI-compatible Gemini provider (#755).** New
+  `gemini-openai` provider brokers Gemini via Google's OpenAI-compatible surface
+  (`/v1beta/openai`, Bearer auth), so OpenAI-compatible clients (LibreChat /
+  LiteLLM) can route through the gateway. Backed by the same `GEMINI_API_KEY`.
+- **Recipes can opt into the managed gateway (#755).** New
+  `Recipe.model_gateway_provider`: when set and the daemon brokers that provider,
+  the daemon mints a scoped, revocable token and seeds
+  `CONTAINARIUM_MODEL_GATEWAY_URL` / `_TOKEN` into the recipe's post_start — so a
+  recipe app uses the platform key (metered, never in the box). Inert on a
+  keyless self-hosted daemon.
+
 ## [0.34.0] - 2026-06-20
 
 ### Security
