@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Zero-click iframe access for the LibreChat workspace.** The `librechat`
+  recipe now fronts LibreChat with an in-box Caddy proxy (the exposed port is the
+  proxy, 8080, not LibreChat's 3080) plus a tiny stdlib auth helper. The helper
+  mints a single-use, 120-second handoff token (`/__mint`, reachable only in-box)
+  and a `/__ws_login?t=` bootstrap that does one fresh LibreChat login and
+  re-emits the session cookies as `SameSite=None; Secure` so they survive a
+  cross-site iframe; the proxy rewrites LibreChat's `SameSite=Strict` cookies to
+  `None` so refresh rotation keeps working embedded. `GetWorkspaceAccess` now
+  supports librechat (mints via the helper; falls back to the static
+  agent-workspace token), so the console can embed the workspace with no
+  re-login. LibreChat's own `/login` still works through the proxy as a fallback.
+
 ## [0.36.2] - 2026-06-21
 
 ### Fixed

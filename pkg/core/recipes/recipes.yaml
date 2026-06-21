@@ -288,7 +288,14 @@ recipes:
       disk: 20GB
     model_gateway_provider: gemini-openai
     ports:
-      - container_port: 3080
+      # The exposed port is the in-box zero-click proxy (lcproxy / Caddy), NOT
+      # LibreChat directly. The proxy fronts LibreChat on 127.0.0.1:3080: it adds
+      # a /__ws_login?t= bootstrap (one-time login → SameSite=None session cookie)
+      # so the console can embed the workspace in an iframe with no re-login, and
+      # rewrites LibreChat's SameSite=Strict session cookies to None so they
+      # survive the cross-site iframe. LibreChat's own /login still works through
+      # the proxy as a fallback.
+      - container_port: 8080
         subdomain: chat
     parameters:
       - name: auth_email
@@ -323,7 +330,7 @@ recipes:
         type: password
     post_start:
       - mkdir -p /opt/lc /opt/lc/mongo
-      - command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl openssl >/dev/null; }
+      - command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl openssl python3 >/dev/null; }
       - podman pull docker.io/library/mongo:7 >/dev/null
       - 'podman pull "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
       # LibreChat config: one custom endpoint at the platform gateway. apiKey is
@@ -392,3 +399,147 @@ recipes:
           >/dev/null 2>&1 || echo 'librechat: admin register failed (may already exist)' >&2
         sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
         podman restart librechat >/dev/null 2>&1 || true
+      # --- Zero-click iframe access ---------------------------------------
+      # LibreChat has its own login (JWT + refreshToken cookie) and rotates the
+      # refresh token on use, so a pre-stored session can't be replayed — the
+      # console must establish a FRESH session each time it embeds the workspace.
+      # Two in-box pieces do that, both on the box's host network:
+      #   * bootstrap.py (127.0.0.1:9099): /__mint issues a single-use, 120s
+      #     handoff token (only reachable in-box — the daemon's GetWorkspaceAccess
+      #     curls it); /__ws_login?t= validates+consumes the token, logs into
+      #     LibreChat once with the admin creds, and re-emits the session cookies
+      #     as SameSite=None;Secure so they survive a cross-site iframe.
+      #   * lcproxy (Caddy :8080, the EXPOSED port): routes /__ws_login* to the
+      #     helper and everything else to LibreChat :3080, rewriting LibreChat's
+      #     SameSite=Strict session cookies to None so rotation keeps working in
+      #     the iframe. /login still works through the proxy as a fallback.
+      - mkdir -p /opt/wsauth
+      - podman pull docker.io/library/caddy:2 >/dev/null
+      # Admin creds for the helper's server-side login. 0600: only root reads it;
+      # the user owns the box anyway (they set this password), and it never leaves
+      # the box. Written via python3 so any special chars in the password survive.
+      - |
+        python3 - <<'PYEOF'
+        import json, os
+        json.dump({"email": os.environ["CONTAINARIUM_PARAM_AUTH_EMAIL"],
+                   "password": os.environ["CONTAINARIUM_PARAM_AUTH_PASSWORD"]},
+                  open("/opt/wsauth/lc-creds", "w"))
+        PYEOF
+      - chmod 600 /opt/wsauth/lc-creds
+      - |
+        cat > /opt/wsauth/bootstrap.py <<'PYEOF'
+        # Zero-click auth bootstrap for the LibreChat workspace (stdlib only).
+        # /__mint        -> single-use, short-lived handoff token (in-box only)
+        # /__ws_login?t= -> consume token, fresh LibreChat login, set the session
+        #                   cookies rewritten to SameSite=None;Secure, redirect to /
+        import http.server, urllib.request, json, secrets, time, re
+        from urllib.parse import urlparse, parse_qs
+
+        LC = "http://127.0.0.1:3080"
+        CREDS = "/opt/wsauth/lc-creds"
+        TTL = 120
+        _tokens = {}  # token -> expiry epoch
+
+        def _gc():
+            now = time.time()
+            for k in [k for k, v in _tokens.items() if v < now]:
+                _tokens.pop(k, None)
+
+        def _samesite_none(c):
+            c = re.sub(r';\s*SameSite=\w+', '', c, flags=re.I)
+            if 'secure' not in c.lower():
+                c += '; Secure'
+            return c + '; SameSite=None'
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                u = urlparse(self.path)
+                if u.path == "/__mint":
+                    _gc()
+                    t = secrets.token_urlsafe(24)
+                    _tokens[t] = time.time() + TTL
+                    self._raw(200, t.encode(), "text/plain")
+                    return
+                if u.path == "/__ws_login":
+                    _gc()
+                    t = (parse_qs(u.query).get("t") or [""])[0]
+                    if not t or _tokens.pop(t, None) is None:  # missing/expired/used
+                        self._redirect("/login")
+                        return
+                    cookies = self._login()
+                    if not cookies:
+                        self._redirect("/login")
+                        return
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    for c in cookies:
+                        self.send_header("Set-Cookie", c)
+                    self.end_headers()
+                    return
+                self._raw(404, b"not found", "text/plain")
+
+            def _login(self):
+                try:
+                    creds = json.load(open(CREDS))
+                    body = json.dumps({"email": creds["email"],
+                                       "password": creds["password"]}).encode()
+                    req = urllib.request.Request(
+                        LC + "/api/auth/login", data=body,
+                        headers={"Content-Type": "application/json"}, method="POST")
+                    with urllib.request.urlopen(req, timeout=10) as r:
+                        return [_samesite_none(c) for c in (r.headers.get_all("Set-Cookie") or [])]
+                except Exception:
+                    return None
+
+            def _raw(self, code, body, ctype):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _redirect(self, loc):
+                self.send_response(302)
+                self.send_header("Location", loc)
+                self.end_headers()
+
+        if __name__ == "__main__":
+            http.server.HTTPServer(("127.0.0.1", 9099), H).serve_forever()
+        PYEOF
+      - |
+        cat > /etc/systemd/system/wsauth-bootstrap.service <<'EOF'
+        [Unit]
+        Description=LibreChat zero-click auth bootstrap
+        After=network.target
+        [Service]
+        ExecStart=/usr/bin/python3 /opt/wsauth/bootstrap.py
+        Restart=always
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+        systemctl daemon-reload
+        systemctl enable --now wsauth-bootstrap.service >/dev/null 2>&1 || true
+      - |
+        cat > /opt/wsauth/Caddyfile <<'EOF'
+        {
+          auto_https off
+        }
+        :8080 {
+          handle /__ws_login* {
+            reverse_proxy 127.0.0.1:9099
+          }
+          handle {
+            reverse_proxy 127.0.0.1:3080 {
+              header_down Set-Cookie "SameSite=Strict" "SameSite=None"
+            }
+          }
+        }
+        EOF
+      - podman rm -f lcproxy 2>/dev/null || true
+      - |
+        podman run -d --name lcproxy --restart=always --network host \
+          -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \
+          docker.io/library/caddy:2 >/dev/null

@@ -122,11 +122,12 @@ func (s *RecipeServer) GetRecipe(ctx context.Context, req *pb.GetRecipeRequest) 
 	return &pb.GetRecipeResponse{Recipe: r}, nil
 }
 
-// GetWorkspaceAccess returns a zero-click bootstrap URL for an agent-workspace
-// box: it reads the box's in-box auth proxy token (written to
-// /opt/wsauth/token by the agent-workspace recipe) and composes the
-// /__ws_login URL the console embeds in an iframe to authenticate the
-// workspace UI without showing a sign-in prompt.
+// GetWorkspaceAccess returns a zero-click bootstrap URL for a workspace box
+// (librechat or agent-workspace): it obtains the box's in-box auth token —
+// minted single-use by the librechat helper, or read from the static
+// /opt/wsauth/token for agent-workspace — and composes the /__ws_login URL the
+// console embeds in an iframe to authenticate the workspace UI without showing a
+// sign-in prompt.
 func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorkspaceAccessRequest) (*pb.GetWorkspaceAccessResponse, error) {
 	// containers:write, not read: this mints an interactive-access credential
 	// (the in-box session token + a zero-click /__ws_login URL), so it is a
@@ -142,12 +143,32 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 	}
 
 	containerName := req.Name + "-container"
-	stdout, _, err := s.containers.manager.ExecWithOutput(containerName, []string{"cat", "/opt/wsauth/token"})
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound,
-			"no workspace token on %s (is this an agent-workspace box?): %v", containerName, err)
+
+	// Two workspace flavours expose a /__ws_login bootstrap, with different
+	// token semantics:
+	//   * librechat: an in-box helper mints a SINGLE-USE, short-lived token on
+	//     127.0.0.1:9099/__mint and does a fresh LibreChat login per access
+	//     (LibreChat rotates its refresh token, so a session can't be replayed).
+	//     Its exposed subdomain is "<name>-chat".
+	//   * agent-workspace: a STATIC per-box token in /opt/wsauth/token (the
+	//     proxy IS the auth). Its subdomain is "<name>-workspace".
+	// Probe the helper first (preferred, single-use); fall back to the static
+	// token so both recipe shapes work without the daemon tracking the recipe.
+	var token, subdomain string
+	if out, _, err := s.containers.manager.ExecWithOutput(containerName,
+		[]string{"curl", "-s", "--max-time", "3", "http://127.0.0.1:9099/__mint"}); err == nil {
+		if t := strings.TrimSpace(out); t != "" {
+			token, subdomain = t, req.Name+"-chat"
+		}
 	}
-	token := strings.TrimSpace(stdout)
+	if token == "" {
+		out, _, err := s.containers.manager.ExecWithOutput(containerName, []string{"cat", "/opt/wsauth/token"})
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound,
+				"no workspace access on %s (is this a workspace box?): %v", containerName, err)
+		}
+		token, subdomain = strings.TrimSpace(out), req.Name+"-workspace"
+	}
 	if token == "" {
 		return nil, status.Errorf(codes.NotFound, "empty workspace token on %s", containerName)
 	}
@@ -155,10 +176,10 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 	resp := &pb.GetWorkspaceAccessResponse{Token: token}
 	// Only compose a URL when routing is actually configured (same precondition
 	// as exposePorts): without a base domain the URL would be domain-less and
-	// unusable, so return just the token and let the caller surface that.
+	// unusable, so return just the token and let the caller surface that. (On the
+	// cloud the ossshim passthrough rebuilds the URL with the box's managed
+	// subdomain; this URL is for self-hosted OSS.)
 	if s.network != nil && s.network.baseDomain != "" {
-		// Mirror exposePorts' subdomain scheme: "<name>-workspace".
-		subdomain := req.Name + "-workspace"
 		resp.Url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain) +
 			"/__ws_login?t=" + url.QueryEscape(token)
 	}
