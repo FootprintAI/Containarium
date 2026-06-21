@@ -349,7 +349,12 @@ recipes:
           if curl -fsSL https://github.com/FootprintAI/Containarium/releases/latest/download/mcp-server-linux-amd64 -o /opt/lc/mcp-server 2>/dev/null; then
             chmod +x /opt/lc/mcp-server
             printf '%s' "$CONTAINARIUM_PARAM_MCP_TOKEN" > /opt/lc/ctn-token
-            chmod 600 /opt/lc/ctn-token
+            # 0644, not 0600: LibreChat (and the mcp-server it spawns) run as the
+            # in-image 'node' user (uid 1000), and the token is bind-mounted in
+            # read-only — a root-only 0600 file is unreadable by node and the MCP
+            # silently fails to start. The box is single-tenant and the token is
+            # already a scoped, revocable, least-privilege credential.
+            chmod 644 /opt/lc/ctn-token
             printf 'mcpServers:\n  containarium:\n    type: stdio\n    command: /usr/local/bin/mcp-server\n    args: []\n    env:\n      CONTAINARIUM_SERVER_URL: "%s"\n      CONTAINARIUM_JWT_TOKEN_FILE: "/opt/lc/ctn-token"\n' "$CONTAINARIUM_PARAM_MCP_SERVER_URL" >> /opt/lc/librechat.yaml
             LC_MCP_MOUNTS="-v /opt/lc/mcp-server:/usr/local/bin/mcp-server:ro -v /opt/lc/ctn-token:/opt/lc/ctn-token:ro"
           else
