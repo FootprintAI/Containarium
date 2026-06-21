@@ -257,3 +257,99 @@ recipes:
         podman run -d --name wsauth --restart=always --network host \
           -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \
           docker.io/library/caddy:2
+
+  # librechat is the MANAGED CHAT WORKSPACE: LibreChat (github.com/danny-avila/
+  # LibreChat, MIT) packaged in a box and wired to the platform model-gateway.
+  # Where agent-workspace (OpenHands) is a bring-your-own-key coding canvas, this
+  # is the command-center surface: the OPERATOR picks the models, the box talks
+  # to them through the daemon's gateway (provider key on the HOST, never in the
+  # box, metered), and a user can SWITCH among the curated models but cannot
+  # supply their own key — LibreChat's custom endpoint takes its key from the
+  # box env (the seeded gateway token), so there is no user-key field to lock.
+  #
+  # The gateway wiring is automatic via `model_gateway_provider: gemini-openai`:
+  # the daemon seeds CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN
+  # into post_start (internal/server/recipe_server.go gatewayEnvForRecipe). On a
+  # self-hosted daemon with no provider key those are absent and the box comes up
+  # with an empty endpoint set (LibreChat then uses its own config — OSS fallback).
+  #
+  # LibreChat + MongoDB run via Podman on the box's host network; the web UI
+  # (:3080) is exposed as a subdomain. The admin user is created from the
+  # auth_email/auth_password params (first user = admin), then self-registration
+  # is locked off so only that admin can sign in.
+  - id: librechat
+    name: LibreChat Workspace
+    description: Managed chat workspace — LibreChat wired to the platform model-gateway (curated models, no user keys) in an isolated always-on box.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 4GB
+      disk: 20GB
+    model_gateway_provider: gemini-openai
+    ports:
+      - container_port: 3080
+        subdomain: chat
+    parameters:
+      - name: auth_email
+        label: Admin email
+        description: Email for the workspace admin login (created at deploy; self-registration is then disabled).
+        type: string
+        default: admin@workspace.local
+      - name: auth_password
+        label: Admin password
+        description: Password for the workspace admin login. Required — the box is never left open.
+        type: password
+        required: true
+      - name: librechat_version
+        label: LibreChat image tag
+        description: LibreChat image tag to run (pin for reproducibility).
+        type: string
+        default: latest
+    post_start:
+      - mkdir -p /opt/lc /opt/lc/mongo
+      - command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl openssl >/dev/null; }
+      - podman pull docker.io/library/mongo:7 >/dev/null
+      - 'podman pull "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
+      # LibreChat config: one custom endpoint at the platform gateway. apiKey is
+      # the seeded gateway token (LibreChat env-expands ${CTN_GATEWAY_TOKEN}), so
+      # the box holds no real provider key and users can't supply their own. No
+      # gateway seeded → empty config, LibreChat falls back to its own provider.
+      - |
+        if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
+          printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-2.5-flash", "gemini-2.5-pro"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-2.5-flash"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
+        else
+          printf 'version: 1.2.1\ncache: true\n' > /opt/lc/librechat.yaml
+          echo 'librechat: no managed gateway seeded; configure a provider in LibreChat' >&2
+        fi
+      - |
+        {
+          echo "HOST=0.0.0.0"
+          echo "PORT=3080"
+          echo "MONGO_URI=mongodb://127.0.0.1:27017/LibreChat"
+          echo "CONFIG_PATH=/app/librechat.yaml"
+          echo "ALLOW_REGISTRATION=true"
+          echo "ALLOW_EMAIL_LOGIN=true"
+          echo "SEARCH=false"
+          echo "JWT_SECRET=$(openssl rand -hex 32)"
+          echo "JWT_REFRESH_SECRET=$(openssl rand -hex 32)"
+          echo "CREDS_KEY=$(openssl rand -hex 32)"
+          echo "CREDS_IV=$(openssl rand -hex 16)"
+          echo "CTN_GATEWAY_TOKEN=${CONTAINARIUM_GATEWAY_TOKEN:-}"
+        } > /opt/lc/.env
+      - podman rm -f mongo librechat 2>/dev/null || true
+      - podman run -d --name mongo --restart=always --network host -v /opt/lc/mongo:/data/db docker.io/library/mongo:7 >/dev/null
+      - 'podman run -d --name librechat --restart=always --network host --env-file /opt/lc/.env -v /opt/lc/librechat.yaml:/app/librechat.yaml:ro "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
+      # Wait for the API, create the admin from params (first user = admin), then
+      # lock self-registration off and restart so only the admin can sign in.
+      - |
+        for i in $(seq 1 60); do
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/ 2>/dev/null || echo 000)
+          if [ "$code" = "200" ]; then break; fi
+          sleep 3
+        done
+        curl -fsS -X POST http://127.0.0.1:3080/api/auth/register -H 'Content-Type: application/json' \
+          -d "{\"name\":\"Admin\",\"username\":\"admin\",\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\",\"confirm_password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
+          >/dev/null 2>&1 || echo 'librechat: admin register failed (may already exist)' >&2
+        sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
+        podman restart librechat >/dev/null 2>&1 || true

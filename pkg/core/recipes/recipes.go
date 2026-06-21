@@ -61,6 +61,9 @@ type recipeDef struct {
 	Env         map[string]string `yaml:"env,omitempty"`
 	Parameters  []paramDef        `yaml:"parameters,omitempty"`
 	PostStart   []string          `yaml:"post_start,omitempty"`
+	// ModelGatewayProvider opts the recipe into the managed model-gateway for the
+	// named provider (e.g. "gemini-openai"); see the proto field for semantics.
+	ModelGatewayProvider string `yaml:"model_gateway_provider,omitempty"`
 }
 
 // ToProto converts a recipeDef to its pb.Recipe representation.
@@ -73,6 +76,8 @@ func (r *recipeDef) ToProto() *pb.Recipe {
 		RequiresGpu: r.RequiresGPU,
 		Env:         r.Env,
 		PostStart:   r.PostStart,
+
+		ModelGatewayProvider: r.ModelGatewayProvider,
 	}
 	if r.Resources != nil {
 		out.Resources = &pb.RecipeResources{

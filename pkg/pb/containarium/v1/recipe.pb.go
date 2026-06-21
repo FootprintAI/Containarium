@@ -324,9 +324,17 @@ type Recipe struct {
 	// Shell commands run inside the container after it is up (e.g. the
 	// `podman run ...` that starts the app, plus model warm-up). Same trust
 	// level as a stack's post_install: these ship in-tree and are reviewed.
-	PostStart     []string `protobuf:"bytes,11,rep,name=post_start,json=postStart,proto3" json:"post_start,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	PostStart []string `protobuf:"bytes,11,rep,name=post_start,json=postStart,proto3" json:"post_start,omitempty"`
+	// When non-empty, the daemon brokers this recipe's model calls through the
+	// managed model-gateway for the named provider (e.g. "gemini-openai"): it
+	// mints a scoped, revocable gateway token and exports
+	// CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN into post_start,
+	// so the box uses the platform key (metered, never leaked) instead of one the
+	// user supplies. Inert when the daemon holds no key for the provider — the
+	// box then comes up unconfigured (self-hosted default).
+	ModelGatewayProvider string `protobuf:"bytes,12,opt,name=model_gateway_provider,json=modelGatewayProvider,proto3" json:"model_gateway_provider,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Recipe) Reset() {
@@ -434,6 +442,13 @@ func (x *Recipe) GetPostStart() []string {
 		return x.PostStart
 	}
 	return nil
+}
+
+func (x *Recipe) GetModelGatewayProvider() string {
+	if x != nil {
+		return x.ModelGatewayProvider
+	}
+	return ""
 }
 
 // ListRecipesRequest is the request to list available recipes.
@@ -932,7 +947,7 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x12\n" +
 	"\x04type\x18\x04 \x01(\tR\x04type\x12\x18\n" +
 	"\adefault\x18\x05 \x01(\tR\adefault\x12\x1a\n" +
-	"\brequired\x18\x06 \x01(\bR\brequired\"\xfc\x03\n" +
+	"\brequired\x18\x06 \x01(\bR\brequired\"\xb2\x04\n" +
 	"\x06Recipe\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -948,7 +963,8 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	" \x03(\v2\x1c.containarium.v1.RecipeParamR\n" +
 	"parameters\x12\x1d\n" +
 	"\n" +
-	"post_start\x18\v \x03(\tR\tpostStart\x1a6\n" +
+	"post_start\x18\v \x03(\tR\tpostStart\x124\n" +
+	"\x16model_gateway_provider\x18\f \x01(\tR\x14modelGatewayProvider\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x14\n" +

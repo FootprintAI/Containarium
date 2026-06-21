@@ -109,6 +109,35 @@ func DefaultProviders() map[string]*Provider {
 				}
 			},
 		},
+		// gemini-openai brokers Gemini through Google's *OpenAI-compatible*
+		// surface (/v1beta/openai/...), not the native generateContent API. It
+		// exists for clients that speak OpenAI's chat-completions protocol and
+		// authenticate with `Authorization: Bearer` — notably the hosted
+		// OpenHands canvas (via LiteLLM's openai provider), which can't drive the
+		// native gemini provider's `x-goog-api-key` path. Same real key
+		// (GEMINI_API_KEY); a box still only ever holds the scoped gateway token.
+		// The model is in the request body (not the path), so the token's
+		// AllowedModels ceiling is not enforced here — a follow-up once
+		// body-model parsing lands.
+		"gemini-openai": {
+			Name:        "gemini-openai",
+			UpstreamURL: "https://generativelanguage.googleapis.com",
+			KeyEnv:      "GEMINI_API_KEY",
+			inject: func(h http.Header, key string) {
+				stripGatewayAuth(h)
+				h.Set("Authorization", "Bearer "+key)
+			},
+			parseUsage: func(b map[string]any, _ string) Usage {
+				// OpenAI-shaped usage block (Google's compat endpoint mirrors it).
+				u := subMap(b, "usage")
+				model, _ := b["model"].(string)
+				return Usage{
+					Model:        model,
+					InputTokens:  num(u, "prompt_tokens"),
+					OutputTokens: num(u, "completion_tokens"),
+				}
+			},
+		},
 	}
 }
 
