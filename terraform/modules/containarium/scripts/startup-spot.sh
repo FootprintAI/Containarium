@@ -830,15 +830,23 @@ ALL ALL=(root) NOPASSWD: /usr/bin/incus exec *, /usr/bin/incus info *
 SUDOEOF
 chmod 0440 /etc/sudoers.d/containarium-incus
 
-# Suppress host MOTD for container users (admin users keep theirs).
+# Suppress host MOTD / last-login banner.
+# NOTE: PrintMotd and PrintLastLog are NOT valid inside a `Match` block — sshd
+# rejects the entire config and FAILS TO START on the next restart/reboot (it
+# only re-validates drop-ins on (re)start, so a bad one is latent until then,
+# then bricks SSH). Set them globally, and validate with `sshd -t` before
+# reloading so a malformed drop-in can never silently take sshd down.
 SSHD_DROPIN=/etc/ssh/sshd_config.d/containarium-motd.conf
 if [ -d /etc/ssh/sshd_config.d ]; then
     cat > "$SSHD_DROPIN" <<'SSHDEOF'
-Match User *,!ubuntu,!root
-    PrintMotd no
-    PrintLastLog no
+PrintMotd no
+PrintLastLog no
 SSHDEOF
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    if sshd -t 2>/dev/null; then
+        systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    else
+        rm -f "$SSHD_DROPIN"
+    fi
 fi
 echo "✓ containarium-shell wrapper installed"
 
