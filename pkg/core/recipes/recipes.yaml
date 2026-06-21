@@ -157,12 +157,6 @@ recipes:
     description: Web chat workspace (chat + live preview + multiple persisted sessions) running OpenHands inside an always-on box, behind in-box basic auth; co-work with a coding agent in the browser, then ship to a box.
     image: images:ubuntu/24.04
     requires_gpu: false
-    # Route the canvas's model calls through the managed model-gateway (Gemini
-    # via Google's OpenAI-compatible surface). When the daemon holds the key,
-    # post_start seeds OpenHands with gateway-backed profiles (no user key) and
-    # the in-box proxy locks the model-config UI to switching only. Inert on a
-    # self-hosted daemon with no key — the canvas then comes up for manual config.
-    model_gateway_provider: gemini-openai
     resources:
       cpu: "4"
       memory: 8GB
@@ -203,52 +197,6 @@ recipes:
           -v /opt/openhands-state:/home/openhands/.openhands:U \
           -v /opt/openhands-projects:/projects:U \
           "ghcr.io/openhands/agent-canvas:${CONTAINARIUM_PARAM_OPENHANDS_VERSION}"
-      # Seed the model config from the managed gateway, so the canvas uses the
-      # platform key (metered, never in the box) and the user never enters one.
-      # The daemon exports CONTAINARIUM_MODEL_GATEWAY_URL/_TOKEN here only for a
-      # recipe with model_gateway_provider set and a daemon that holds the key;
-      # absent (self-hosted, no key) this whole step is skipped and OpenHands
-      # comes up for manual BYO-key config. We talk to OpenHands' OWN API on
-      # 127.0.0.1:8000 (unauthenticated in OSS mode) — self-validating, and it
-      # bypasses the in-box lock below (which guards the public :8080 only).
-      - |
-        if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
-          if ! command -v curl >/dev/null 2>&1; then
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq curl >/dev/null 2>&1 || true
-          fi
-          if ! command -v curl >/dev/null 2>&1; then
-            echo 'agent-workspace: curl unavailable; skipped model-gateway seed' >&2
-          else
-            OH=http://127.0.0.1:8000
-            # Google's OpenAI-compatible surface sits under /v1beta/openai of the
-            # gateway's per-provider base; LiteLLM's openai handler appends
-            # /chat/completions and Bearer-authenticates with the scoped token.
-            BASE="${CONTAINARIUM_MODEL_GATEWAY_URL}/v1beta/openai"
-            TOK="$CONTAINARIUM_GATEWAY_TOKEN"
-            # Wait for the freshly-started OpenHands API to accept requests
-            # (if/then, not `[ ] && break`, so `set -e` doesn't abort the wait).
-            for i in $(seq 1 90); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' "$OH/api/v1/settings" || echo 000)
-              if [ "$code" != "000" ]; then break; fi
-              sleep 2
-            done
-            # 1. Create the base settings doc + set the active LLM (deep-merged).
-            curl -fsS -X POST "$OH/api/v1/settings" -H 'Content-Type: application/json' \
-              -d "{\"agent_settings_diff\":{\"llm\":{\"model\":\"openai/gemini-2.5-flash\",\"base_url\":\"$BASE\",\"api_key\":\"$TOK\"}}}" \
-              >/dev/null || echo 'agent-workspace: base settings POST failed' >&2
-            # 2. Seed the switchable Gemini profiles (all gateway-backed, same token).
-            for nm in gemini-flash:gemini-2.5-flash gemini-pro:gemini-2.5-pro; do
-              name="${nm%%:*}"; model="${nm##*:}"
-              curl -fsS -X POST "$OH/api/v1/settings/profiles/$name" -H 'Content-Type: application/json' \
-                -d "{\"llm\":{\"model\":\"openai/$model\",\"base_url\":\"$BASE\",\"api_key\":\"$TOK\"},\"include_secrets\":true}" \
-                >/dev/null || echo "agent-workspace: profile $name POST failed" >&2
-            done
-            # 3. Activate the default profile (points active + agent_settings.llm at it).
-            curl -fsS -X POST "$OH/api/v1/settings/profiles/gemini-flash/activate" \
-              >/dev/null || echo 'agent-workspace: activate failed' >&2
-          fi
-        fi
       # In-box auth proxy on :8080 → 127.0.0.1:8000. Two ways in: HTTP basic
       # auth, OR a session cookie the proxy itself issues on a successful
       # basic-auth response. The cookie is SameSite=None so the browser sends it
@@ -274,28 +222,6 @@ recipes:
           auto_https off
         }
         :8080 {
-          # Lock the model config to the platform-managed profiles: switching the
-          # active model (activate) and reading settings stay open, but creating
-          # or editing a profile, the generic settings write, and provider-secret
-          # writes are denied — so the canvas can only use the managed gateway and
-          # a user can't paste their own key or point it elsewhere. These deny
-          # handles run before the auth/proxy handles below; denying pre-auth is
-          # safe (never a downgrade). Seeding bypasses this (it hits :8000).
-          # Only the bare /profiles/{name} (one segment) is a save — */activate
-          # and */rename have an extra segment, matched precisely with path_regexp.
-          @settings_write { method POST; path /api/v1/settings }
-          @profile_save { method POST; path_regexp ^/api/v1/settings/profiles/[^/]+$ }
-          @profile_rename { method POST; path_regexp ^/api/v1/settings/profiles/[^/]+/rename$ }
-          @profile_delete { method DELETE; path /api/v1/settings/profiles/* }
-          @secrets_write {
-            method POST PUT DELETE
-            path /api/v1/secrets /api/v1/secrets/*
-          }
-          handle @settings_write { respond "model configuration is managed by the platform" 403 }
-          handle @profile_save { respond "model configuration is managed by the platform" 403 }
-          handle @profile_rename { respond "model configuration is managed by the platform" 403 }
-          handle @profile_delete { respond "model configuration is managed by the platform" 403 }
-          handle @secrets_write { respond "model configuration is managed by the platform" 403 }
           # Zero-click bootstrap: the console opens /__ws_login?t=<token>; the
           # proxy sets the SameSite=None cookie and redirects to the app, so no
           # sign-in prompt is ever shown in the embedded iframe.
@@ -331,3 +257,99 @@ recipes:
         podman run -d --name wsauth --restart=always --network host \
           -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \
           docker.io/library/caddy:2
+
+  # librechat is the MANAGED CHAT WORKSPACE: LibreChat (github.com/danny-avila/
+  # LibreChat, MIT) packaged in a box and wired to the platform model-gateway.
+  # Where agent-workspace (OpenHands) is a bring-your-own-key coding canvas, this
+  # is the command-center surface: the OPERATOR picks the models, the box talks
+  # to them through the daemon's gateway (provider key on the HOST, never in the
+  # box, metered), and a user can SWITCH among the curated models but cannot
+  # supply their own key — LibreChat's custom endpoint takes its key from the
+  # box env (the seeded gateway token), so there is no user-key field to lock.
+  #
+  # The gateway wiring is automatic via `model_gateway_provider: gemini-openai`:
+  # the daemon seeds CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN
+  # into post_start (internal/server/recipe_server.go gatewayEnvForRecipe). On a
+  # self-hosted daemon with no provider key those are absent and the box comes up
+  # with an empty endpoint set (LibreChat then uses its own config — OSS fallback).
+  #
+  # LibreChat + MongoDB run via Podman on the box's host network; the web UI
+  # (:3080) is exposed as a subdomain. The admin user is created from the
+  # auth_email/auth_password params (first user = admin), then self-registration
+  # is locked off so only that admin can sign in.
+  - id: librechat
+    name: LibreChat Workspace
+    description: Managed chat workspace — LibreChat wired to the platform model-gateway (curated models, no user keys) in an isolated always-on box.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 4GB
+      disk: 20GB
+    model_gateway_provider: gemini-openai
+    ports:
+      - container_port: 3080
+        subdomain: chat
+    parameters:
+      - name: auth_email
+        label: Admin email
+        description: Email for the workspace admin login (created at deploy; self-registration is then disabled).
+        type: string
+        default: admin@workspace.local
+      - name: auth_password
+        label: Admin password
+        description: Password for the workspace admin login. Required — the box is never left open.
+        type: password
+        required: true
+      - name: librechat_version
+        label: LibreChat image tag
+        description: LibreChat image tag to run (pin for reproducibility).
+        type: string
+        default: latest
+    post_start:
+      - mkdir -p /opt/lc /opt/lc/mongo
+      - command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl openssl >/dev/null; }
+      - podman pull docker.io/library/mongo:7 >/dev/null
+      - 'podman pull "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
+      # LibreChat config: one custom endpoint at the platform gateway. apiKey is
+      # the seeded gateway token (LibreChat env-expands ${CTN_GATEWAY_TOKEN}), so
+      # the box holds no real provider key and users can't supply their own. No
+      # gateway seeded → empty config, LibreChat falls back to its own provider.
+      - |
+        if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
+          printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-2.5-flash", "gemini-2.5-pro"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-2.5-flash"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
+        else
+          printf 'version: 1.2.1\ncache: true\n' > /opt/lc/librechat.yaml
+          echo 'librechat: no managed gateway seeded; configure a provider in LibreChat' >&2
+        fi
+      - |
+        {
+          echo "HOST=0.0.0.0"
+          echo "PORT=3080"
+          echo "MONGO_URI=mongodb://127.0.0.1:27017/LibreChat"
+          echo "CONFIG_PATH=/app/librechat.yaml"
+          echo "ALLOW_REGISTRATION=true"
+          echo "ALLOW_EMAIL_LOGIN=true"
+          echo "SEARCH=false"
+          echo "JWT_SECRET=$(openssl rand -hex 32)"
+          echo "JWT_REFRESH_SECRET=$(openssl rand -hex 32)"
+          echo "CREDS_KEY=$(openssl rand -hex 32)"
+          echo "CREDS_IV=$(openssl rand -hex 16)"
+          echo "CTN_GATEWAY_TOKEN=${CONTAINARIUM_GATEWAY_TOKEN:-}"
+        } > /opt/lc/.env
+      - podman rm -f mongo librechat 2>/dev/null || true
+      - podman run -d --name mongo --restart=always --network host -v /opt/lc/mongo:/data/db docker.io/library/mongo:7 >/dev/null
+      - 'podman run -d --name librechat --restart=always --network host --env-file /opt/lc/.env -v /opt/lc/librechat.yaml:/app/librechat.yaml:ro "ghcr.io/danny-avila/librechat:${CONTAINARIUM_PARAM_LIBRECHAT_VERSION}" >/dev/null'
+      # Wait for the API, create the admin from params (first user = admin), then
+      # lock self-registration off and restart so only the admin can sign in.
+      - |
+        for i in $(seq 1 60); do
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/ 2>/dev/null || echo 000)
+          if [ "$code" = "200" ]; then break; fi
+          sleep 3
+        done
+        curl -fsS -X POST http://127.0.0.1:3080/api/auth/register -H 'Content-Type: application/json' \
+          -d "{\"name\":\"Admin\",\"username\":\"admin\",\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\",\"confirm_password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
+          >/dev/null 2>&1 || echo 'librechat: admin register failed (may already exist)' >&2
+        sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
+        podman restart librechat >/dev/null 2>&1 || true
