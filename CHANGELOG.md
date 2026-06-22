@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **In-box MCP now actually works (HTTPS + token perms).** The v0.42.0
+  reachability fix routed the in-box MCP over `http://core-caddy`, but the
+  `mcp-server` client refuses plaintext base URLs (security guard) — so the MCP
+  was reachable but rejected. core-caddy already serves the apex's **valid
+  wildcard cert** and accepts a bridge client's plain TLS (its `:443`
+  proxy-protocol wrapper only *requires* PROXY from the sentinel subnet), so the
+  recipe now keeps `https://` for the `/etc/hosts → core-caddy` route — same
+  scheme + valid TLS as an external client, only the name resolution is internal.
+  Also: the in-box token is now owned by the image's `node` user (uid 1000) with
+  `0600` (was world-readable `0644`) — the MCP refuses insecure token perms, and
+  a root-owned `0600` would be unreadable by `node`; uid-1000-owned `0600`
+  satisfies both. Verified: the real `mcp-server` lists the org's containers and
+  LibreChat reports `[MCP] Initialized with … 54 tools`.
+
 ## [0.43.1] - 2026-06-22
 
 ### Fixed

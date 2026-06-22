@@ -382,26 +382,33 @@ recipes:
           if curl -fsSL https://github.com/FootprintAI/Containarium/releases/latest/download/mcp-server-linux-amd64 -o /opt/lc/mcp-server 2>/dev/null; then
             chmod +x /opt/lc/mcp-server
             printf '%s' "$CONTAINARIUM_PARAM_MCP_TOKEN" > /opt/lc/ctn-token
-            # 0644, not 0600: LibreChat (and the mcp-server it spawns) run as the
-            # in-image 'node' user (uid 1000), and the token is bind-mounted in
-            # read-only — a root-only 0600 file is unreadable by node and the MCP
-            # silently fails to start. The box is single-tenant and the token is
-            # already a scoped, revocable, least-privilege credential.
-            chmod 644 /opt/lc/ctn-token
+            # Owned by the in-image 'node' user (uid 1000) with 0600. The
+            # mcp-server runs as node and REFUSES a token file with any non-owner
+            # r/w bit (insecure-perms guard) — so 0644 is rejected — but a
+            # root-owned 0600 is unreadable by node. uid-1000-owned 0600 satisfies
+            # both (rootful podman maps container uid 1000 → host uid 1000). The
+            # token is bind-mounted read-only; it's a scoped, revocable,
+            # least-privilege credential.
+            chown 1000:1000 /opt/lc/ctn-token
+            chmod 600 /opt/lc/ctn-token
             # Box→cloud reachability: a box on the workhorse host CAN'T reach the
             # public cloud apex — it hairpins back to the same host (so both the
             # in-box MCP and the skill live-sync would get connection failures).
             # But core-caddy — the host reverse proxy that already serves the apex
-            # vhost — is reachable on the container bridge BY NAME. So point the
-            # apex hostname at core-caddy via /etc/hosts and use http:// (core-caddy
-            # :443 requires PROXY-protocol, which a box can't send; :80 is open and
-            # routes by Host header). Falls back to the original URL when core-caddy
-            # isn't resolvable (standalone / non-cloud deploys reach the apex directly).
+            # vhost (with the valid wildcard cert) — is reachable on the container
+            # bridge BY NAME. So point the apex hostname at core-caddy via
+            # /etc/hosts and keep using https:// — core-caddy's :443 proxy_protocol
+            # wrapper only REQUIRES a PROXY header from the sentinel subnet; a
+            # bridge client's plain TLS is accepted and matched to the wildcard
+            # cert by SNI. Same scheme + valid TLS as an external client; the only
+            # change is the internal name resolution. Falls back to the original
+            # URL when core-caddy isn't resolvable (standalone / non-cloud deploys
+            # reach the apex directly).
             APEX_HOST=$(printf '%s' "$CONTAINARIUM_PARAM_MCP_SERVER_URL" | sed -E 's#^[a-z]+://##; s#/.*##; s#:.*##')
             CADDY_IP=$(getent hosts containarium-core-caddy 2>/dev/null | awk '{print $1}' | head -1)
             if [ -n "$CADDY_IP" ] && [ -n "$APEX_HOST" ]; then
               grep -q " $APEX_HOST\$" /etc/hosts 2>/dev/null || echo "$CADDY_IP $APEX_HOST" >> /etc/hosts
-              MCP_URL="http://$APEX_HOST"
+              MCP_URL="https://$APEX_HOST"
             else
               MCP_URL="$CONTAINARIUM_PARAM_MCP_SERVER_URL"
             fi
