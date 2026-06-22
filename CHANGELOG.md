@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-06-22
+
 ### Added
 
 - **Workspace skills are hidden personas in the chat (`skills` param).** A skill
