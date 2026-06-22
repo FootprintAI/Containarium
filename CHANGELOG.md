@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.2] - 2026-06-22
+
 ### Fixed
 
 - **In-box MCP now actually works (HTTPS + token perms).** The v0.42.0
