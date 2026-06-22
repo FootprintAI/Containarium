@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **LibreChat workspace embeds the full UI by default (`librechat_ui` param).**
+  The managed `librechat` workspace previously hid LibreChat's left nav so the
+  iframe showed only the chat pane. It now embeds the **whole** LibreChat UI by
+  default — nav, conversation history, the agents builder, the tools/MCP menu,
+  presets — so installed MCP tools and agents are discoverable in LibreChat's own
+  surface. Set `librechat_ui: chat` to keep the chat-only view (the old
+  behaviour). Implemented in the in-box Caddy proxy: `full` lets `/` fall through
+  to LibreChat; `chat` routes `/` to the bootstrap helper's nav-hiding shell.
+  Zero-click login and the enforced model-spec are unchanged in both modes.
+
 ### Fixed
 
 - **LibreChat workspace chat hung forever ("thinking", zero tokens).** The

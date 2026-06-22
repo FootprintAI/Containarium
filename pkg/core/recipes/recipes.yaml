@@ -318,6 +318,16 @@ recipes:
         description: LibreChat image tag to run (pin for reproducibility).
         type: string
         default: latest
+      - name: librechat_ui
+        label: Embedded UI mode
+        description: >-
+          How much of LibreChat the embedded iframe shows. "full" (default)
+          embeds the whole LibreChat UI — left nav, conversation history, agents
+          builder, the tools/MCP menu, presets. "chat" hides the left nav so the
+          iframe shows only the chat pane. Either way the enforced model-spec
+          still pins the assistant, and zero-click login is unchanged.
+        type: string
+        default: full
       # Optional: inject the Containarium MCP so the chat agent can operate the
       # platform from the conversation (list/deploy boxes, expose ports, run
       # skills). Both must be set to enable it. The TOKEN must be scoped +
@@ -583,28 +593,33 @@ recipes:
         systemctl daemon-reload
         systemctl enable --now wsauth-bootstrap.service >/dev/null 2>&1 || true
       - |
-        cat > /opt/wsauth/Caddyfile <<'EOF'
+        # Built with echo (not a fixed heredoc) so the chat-only "/" route is
+        # conditional on librechat_ui. In "full" mode (default) "/" falls through
+        # to LibreChat → the whole UI (nav, history, agents, tools menu) embeds.
+        # In "chat" mode the helper serves "/" with nav-hiding CSS so only the
+        # chat pane shows. /__ws_login (zero-click) + the SameSite rewrite are the
+        # same either way.
         {
-          auto_https off
-        }
-        :8080 {
-          handle /__ws_login* {
-            reverse_proxy 127.0.0.1:9099
-          }
-          # The SPA shell (exact "/") is served by the helper, which injects the
-          # chat-only CSS. Assets, /api, websockets, and all other paths go
-          # straight to LibreChat with the SameSite cookie rewrite.
-          @root path /
-          handle @root {
-            reverse_proxy 127.0.0.1:9099
-          }
-          handle {
-            reverse_proxy 127.0.0.1:3080 {
-              header_down Set-Cookie "SameSite=Strict" "SameSite=None"
-            }
-          }
-        }
-        EOF
+          echo '{'
+          echo '  auto_https off'
+          echo '}'
+          echo ':8080 {'
+          echo '  handle /__ws_login* {'
+          echo '    reverse_proxy 127.0.0.1:9099'
+          echo '  }'
+          if [ "${CONTAINARIUM_PARAM_LIBRECHAT_UI:-full}" = "chat" ]; then
+            echo '  @root path /'
+            echo '  handle @root {'
+            echo '    reverse_proxy 127.0.0.1:9099'
+            echo '  }'
+          fi
+          echo '  handle {'
+          echo '    reverse_proxy 127.0.0.1:3080 {'
+          echo '      header_down Set-Cookie "SameSite=Strict" "SameSite=None"'
+          echo '    }'
+          echo '  }'
+          echo '}'
+        } > /opt/wsauth/Caddyfile
       - podman rm -f lcproxy 2>/dev/null || true
       - |
         podman run -d --name lcproxy --restart=always --network host \
