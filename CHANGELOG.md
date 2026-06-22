@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Model-gateway meters the streaming chat path (input/output tokens).**
+  Previously only non-streaming JSON responses were metered; the SSE streaming
+  chat (the workspace default) passed through unmetered. The gateway now
+  intercepts `text/event-stream` responses — injecting
+  `stream_options.include_usage` so the provider emits a final usage event — and
+  records per-tenant **input and output** tokens (the streaming half of the
+  metering plane). Always on, fail-open.
+
+- **Streaming output filter — redacts system-prompt (skill persona) leakage
+  (#670 layer 2).** On the streaming chat path the gateway runs a hold-back
+  window over the assembled assistant text; if the model echoes a verbatim run
+  of its hidden system prompt (a prompt-injection exfiltration attempt), the
+  leak is caught *before* it reaches the client and replaced with a refusal.
+  Default on (`CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0` to disable); fail-open — any
+  unrecognized stream shape passes through unfiltered rather than breaking chat.
+
 ## [0.42.0] - 2026-06-22
 
 ### Fixed

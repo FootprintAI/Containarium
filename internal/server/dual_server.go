@@ -1318,6 +1318,11 @@ skipAppHosting:
 				Providers:    modelgateway.DefaultProviders(),
 				ProviderKeys: keys,
 				Sink:         gwSink,
+				// Redact system-prompt (skill persona) leakage on the streaming
+				// chat path (#670 layer 2). Default on; set
+				// CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0 to disable. Streaming token
+				// metering is independent and always on.
+				OutputFilter: os.Getenv("CONTAINARIUM_GATEWAY_OUTPUT_FILTER") != "0",
 			})
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			primary := gatewayPrimaryProvider(keys)

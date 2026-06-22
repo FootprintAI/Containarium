@@ -29,6 +29,10 @@ type Config struct {
 	ProviderKeys map[string]string    // provider name -> REAL API key, held here only
 	Sink         UsageSink            // optional: durable/billing usage writer (nil = in-memory only)
 	Logger       *log.Logger
+	// OutputFilter enables prompt-exfiltration redaction on the streaming chat
+	// path (a hold-back window over the assistant text; #670 layer 2). Streaming
+	// token metering is independent and always on. Fail-open regardless.
+	OutputFilter bool
 }
 
 // Gateway brokers every agent box's model calls: it authenticates the box's
@@ -139,7 +143,29 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For OpenAI-shaped providers, buffer the request body so we can (a) extract
+	// the system prompt (skill persona) for streaming output-filtering and (b)
+	// enable a final usage event so the SSE path is metered. Fail-open: any read
+	// error leaves the original body in place.
+	sysPrompt, reqModel := "", ""
+	if provName == "openai" || provName == "gemini-openai" {
+		if raw, rerr := io.ReadAll(r.Body); rerr == nil {
+			_ = r.Body.Close()
+			sysPrompt = extractSystemPrompt(raw)
+			reqModel = requestModel(raw)
+			body, _ := ensureStreamUsage(raw)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
+			r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		}
+	}
+	if !g.cfg.OutputFilter {
+		sysPrompt = "" // redaction disabled → meter-only (filterSSEStream skips it)
+	}
+
 	proxy := &httputil.ReverseProxy{
+		// Flush streamed (SSE) responses promptly so chat tokens aren't buffered.
+		FlushInterval: -1,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = upstream.Scheme
 			req.URL.Host = upstream.Host
@@ -148,9 +174,33 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			prov.inject(req.Header, key) // strip gateway token, inject real key
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			// Metering (Phase 1): best-effort on non-streaming, uncompressed
-			// JSON. Streaming (SSE) and compressed bodies pass through
-			// unmetered in the prototype.
+			// Streaming (SSE): intercept to meter usage + redact prompt leakage.
+			if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+				meterModel := reqModel
+				if meterModel == "" {
+					meterModel = pathModel
+				}
+				onUsage := func(u Usage) {
+					if u.Model == "" {
+						u.Model = meterModel
+					}
+					g.meter.record(claims.Tenant, claims.SkillID, provName, u)
+					if g.cfg.Sink != nil {
+						g.cfg.Sink.RecordUsage(claims.Tenant, claims.SkillID, provName, u)
+					}
+					g.cfg.Logger.Printf("model-gateway: tenant=%s skill=%s provider=%s model=%s in=%d out=%d cached=%d stream=1",
+						claims.Tenant, claims.SkillID, provName, u.Model, u.InputTokens, u.OutputTokens, u.CachedTokens)
+				}
+				pr, pw := io.Pipe()
+				go filterSSEStream(pw, resp.Body, sysPrompt,
+					func(b map[string]any) Usage { return prov.parseUsage(b, meterModel) }, onUsage)
+				resp.Body = pr
+				resp.Header.Del("Content-Length")
+				resp.ContentLength = -1
+				return nil
+			}
+			// Metering on non-streaming, uncompressed JSON. Compressed bodies
+			// pass through unmetered.
 			if resp.Header.Get("Content-Encoding") != "" {
 				return nil
 			}
