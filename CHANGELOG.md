@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace box can now reach the cloud API (fixes in-box MCP + skill
+  live-sync).** A box on the workhorse host can't reach the public cloud apex —
+  it hairpins back to the same host — so the in-box MCP (`CONTAINARIUM_SERVER_URL`)
+  and the skill live-sync poll both got connection failures. The `librechat`
+  recipe now resolves **core-caddy** (the host reverse proxy that already serves
+  the apex vhost, reachable on the container bridge by name), adds an `/etc/hosts`
+  entry mapping the apex hostname to it, and uses `http://` (core-caddy `:443`
+  needs PROXY-protocol; `:80` is open and routes by `Host`). Both the MCP server
+  URL and the live-sync `SKILLS_URL` use this internal route; the sync script
+  self-heals the `/etc/hosts` entry each run. Falls back to the original URL when
+  core-caddy isn't resolvable (standalone / non-cloud deploys reach the apex
+  directly). Refs the cloud hairpin issue.
+
 ## [0.41.0] - 2026-06-22
 
 ### Added
