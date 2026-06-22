@@ -328,6 +328,17 @@ recipes:
           still pins the assistant, and zero-click login is unchanged.
         type: string
         default: full
+      - name: skills
+        label: Installed skills (hidden personas)
+        description: >-
+          JSON array of the workspace's installed skills, as
+          [{"name":"...","instructions":"..."}]. Each becomes a hidden model-spec
+          the user picks BY NAME in LibreChat's selector — the conversation then
+          runs under that skill's instructions, which are never shown in the UI
+          (they live server-side in librechat.yaml, so they stay hidden even with
+          the full UI embedded). The cloud injects the org's installed set; empty
+          leaves only the default general assistant.
+        type: string
       # Optional: inject the Containarium MCP so the chat agent can operate the
       # platform from the conversation (list/deploy boxes, expose ports, run
       # skills). Both must be set to enable it. The TOKEN must be scoped +
@@ -418,30 +429,70 @@ recipes:
         curl -fsS -A "$UA" -X POST http://127.0.0.1:3080/api/auth/register -H 'Content-Type: application/json' \
           -d "{\"name\":\"$CONTAINARIUM_PARAM_AUTH_NAME\",\"username\":\"$LC_USER\",\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\",\"confirm_password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
           >/dev/null 2>&1 || echo 'librechat: owner register failed (may already exist)' >&2
-      # Enforce a single model-spec so the chat opens straight into the gemini
-      # endpoint — no model/endpoint pickers, no empty "Agents" screen. The spec
-      # targets the CUSTOM endpoint directly: LibreChat's frontend always posts
-      # chat turns to the custom endpoint ("Containarium (Gemini)", endpointType
-      # custom), so a spec with `endpoint: "agents"` would never match and EVERY
-      # turn would fail "Model spec mismatch" (buildEndpointOption.js) — the SSE
-      # error is swallowed by the UI, which then spins on "thinking" forever with
-      # zero tokens. The assistant persona is carried via promptPrefix (the agent
-      # `instructions` equivalent for a custom endpoint). Needs the gateway (the
-      # gemini endpoint); skipped without it.
+      # Model-specs = SKILLS as hidden personas. Each installed skill becomes a
+      # model-spec the user picks BY NAME in LibreChat's selector; the whole
+      # conversation then runs under that skill's `promptPrefix` (its hidden
+      # instructions). The prompt is NEVER shown in the UI — it lives here in
+      # librechat.yaml, server-side, so it stays hidden even with the full UI
+      # embedded (a LibreChat "agent" would expose its instructions in the agents
+      # builder; a model-spec promptPrefix does not). A default "Containarium
+      # Workspace" general assistant is always present and is the default pick.
       #
-      # NOTE: this intentionally does NOT pre-create a tool-equipped agent. MCP
-      # tools in LibreChat attach to an agent, but an `endpoint: "agents"` spec
-      # does not reliably drive the frontend (above), so the tools never reached
-      # the chat anyway. The MCP servers are still injected into librechat.yaml
-      # (above) and are togglable per-conversation. Auto-attaching the platform
-      # MCP to the enforced default is tracked as a follow-up.
+      # The spec targets the CUSTOM endpoint directly: LibreChat's frontend posts
+      # chat turns to the custom endpoint ("Containarium (Gemini)", endpointType
+      # custom), so a spec with `endpoint: "agents"` would never match and every
+      # turn would fail "Model spec mismatch" (buildEndpointOption.js) → the UI
+      # spins forever. Skills come from the `skills` param (JSON, the cloud
+      # injects the org's installed set). Built with python3 so multi-line
+      # SKILL.md prompts serialize safely (json.dumps → valid YAML scalars).
+      # Needs the gateway; emits nothing without it (LibreChat falls back).
       - |
-        if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
-          # System prompt. Single line, no double quotes → safe inside the
-          # double-quoted YAML scalar below.
-          INSTR="You are the Containarium workspace assistant. Help the user with software development, DevOps, system design, and general technical questions. Be concise and helpful. If you genuinely should not do something, explain why on the merits."
-          printf 'modelSpecs:\n  enforce: true\n  prioritize: true\n  list:\n    - name: "containarium-workspace"\n      label: "Containarium Workspace"\n      default: true\n      preset:\n        endpoint: "Containarium (Gemini)"\n        endpointType: "custom"\n        model: "gemini-2.5-flash"\n        promptPrefix: "%s"\n' "$INSTR" >> /opt/lc/librechat.yaml
-        fi
+        python3 - >> /opt/lc/librechat.yaml <<'PYEOF'
+        import json, os
+        if not (os.environ.get("CONTAINARIUM_MODEL_GATEWAY_URL") and os.environ.get("CONTAINARIUM_GATEWAY_TOKEN")):
+            raise SystemExit(0)  # no managed gateway → no specs; LibreChat falls back
+        DEFAULT = ("You are the Containarium workspace assistant. Help the user with "
+                   "software development, DevOps, system design, and general technical "
+                   "questions. Be concise and helpful. If you genuinely should not do "
+                   "something, explain why on the merits.")
+        try:
+            skills = json.loads(os.environ.get("CONTAINARIUM_PARAM_SKILLS", "").strip() or "[]")
+            if not isinstance(skills, list):
+                skills = []
+        except Exception:
+            skills = []
+        def slug(name):
+            s = "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
+            while "--" in s:
+                s = s.replace("--", "-")
+            return ("skill-" + s)[:60] if s else "skill"
+        specs, seen = [], set()
+        for sk in skills:
+            if not isinstance(sk, dict):
+                continue
+            name = (sk.get("name") or sk.get("label") or "").strip()
+            instr = (sk.get("instructions") or sk.get("prompt") or "").strip()
+            if not name or not instr:
+                continue
+            nm = slug(name)
+            if nm in seen:
+                continue
+            seen.add(nm)
+            specs.append((nm, name, instr, False))
+        # The general assistant is always present and is the default pick.
+        specs.append(("containarium-workspace", "Containarium Workspace", DEFAULT, True))
+        out = ["modelSpecs:", "  enforce: true", "  prioritize: true", "  list:"]
+        for nm, label, instr, dflt in specs:
+            out.append("    - name: " + json.dumps(nm))
+            out.append("      label: " + json.dumps(label))
+            out.append("      default: " + ("true" if dflt else "false"))
+            out.append("      preset:")
+            out.append('        endpoint: "Containarium (Gemini)"')
+            out.append('        endpointType: "custom"')
+            out.append('        model: "gemini-2.5-flash"')
+            out.append("        promptPrefix: " + json.dumps(instr))
+        print("\n".join(out))
+        PYEOF
       - sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
       - podman restart librechat >/dev/null 2>&1 || true
       # --- Zero-click iframe access ---------------------------------------

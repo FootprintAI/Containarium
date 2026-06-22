@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workspace skills are hidden personas in the chat (`skills` param).** A skill
+  is no longer a separate job you dispatch — it's a hidden system prompt the chat
+  runs under. Each installed skill becomes a LibreChat **model-spec** the user
+  picks BY NAME in the selector; the whole conversation then runs under that
+  skill's instructions, which are **never shown in the UI** (they live in
+  `librechat.yaml` server-side, so they stay hidden even with the full UI
+  embedded — unlike a LibreChat "agent", whose instructions are visible in the
+  builder). All inference goes through the model-gateway. The skills come from
+  the `skills` param (JSON `[{"name","instructions"}]`, injected by the cloud
+  from the org's installed set); a default general assistant is always present.
+  Multi-line `SKILL.md` prompts serialize safely (generated via python3 →
+  `json.dumps` YAML scalars).
+
 - **LibreChat workspace embeds the full UI by default (`librechat_ui` param).**
   The managed `librechat` workspace previously hid LibreChat's left nav so the
   iframe showed only the chat pane. It now embeds the **whole** LibreChat UI by
