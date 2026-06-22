@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-06-22
+
 ### Added
 
 - **LibreChat workspace skills live-sync (no redeploy needed).** Installing or
