@@ -140,3 +140,27 @@ func TestExtractSystemPrompt(t *testing.T) {
 		t.Fatal("requestModel failed")
 	}
 }
+
+// TestSSE_UsageRecordedOnceFinal: usage arrives cumulatively across chunks; the
+// meter must fire ONCE with the final value (not once per usage event).
+func TestSSE_UsageRecordedOnceFinal(t *testing.T) {
+	sse := chunk("hi", "stop") +
+		`data: {"choices":[],"usage":{"prompt_tokens":64,"completion_tokens":13}}` + "\n\n" +
+		`data: {"choices":[],"usage":{"prompt_tokens":64,"completion_tokens":20}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	parse := func(b map[string]any) Usage {
+		u := subMap(b, "usage")
+		return Usage{InputTokens: num(u, "prompt_tokens"), OutputTokens: num(u, "completion_tokens")}
+	}
+	var calls int
+	var last Usage
+	pr, pw := io.Pipe()
+	go filterSSEStream(pw, io.NopCloser(strings.NewReader(sse)), "", parse, func(u Usage) { calls++; last = u })
+	_, _ = io.ReadAll(pr)
+	if calls != 1 {
+		t.Fatalf("onUsage called %d times, want 1 (no double-count)", calls)
+	}
+	if last.OutputTokens != 20 || last.InputTokens != 64 {
+		t.Fatalf("final usage = in:%d out:%d, want in:64 out:20", last.InputTokens, last.OutputTokens)
+	}
+}

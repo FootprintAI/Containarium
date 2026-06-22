@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Streaming token metering double-counted usage.** The provider emits usage
+  cumulatively across multiple SSE chunks; the gateway recorded *each* usage
+  event, inflating the metered total (a single turn logged twice — `out=13` then
+  `out=20`). It now records usage **once**, with the final cumulative value.
+  (Regression in the v0.43.0 streaming metering.)
+
 ## [0.43.0] - 2026-06-22
 
 ### Added

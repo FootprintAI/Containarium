@@ -166,6 +166,10 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 	var pending strings.Builder // assembled, not-yet-emitted content
 	var emitted strings.Builder // already emitted content (for leak context)
 	redacted := false
+	// Usage arrives cumulatively across one or more events; record only the
+	// FINAL value once (recording each event would double-count).
+	var lastUsage Usage
+	haveUsage := false
 
 	writeContent := func(s string) error {
 		if s == "" {
@@ -203,8 +207,9 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 			}
 			continue
 		}
-		if ch.Usage != nil && onUsage != nil {
-			onUsage(parse(map[string]any{"usage": ch.Usage}))
+		if ch.Usage != nil {
+			lastUsage = parse(map[string]any{"usage": ch.Usage})
+			haveUsage = true
 		}
 
 		// Metering-only (no system prompt / filter disabled): pass the original
@@ -273,6 +278,11 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 	}
 	if loopErr == nil {
 		_, _ = dst.Write([]byte("data: [DONE]\n\n"))
+	}
+	// Meter once, with the final cumulative usage (recording each usage event
+	// would double-count — usage arrives cumulatively across chunks).
+	if haveUsage && onUsage != nil {
+		onUsage(lastUsage)
 	}
 	_ = dst.CloseWithError(loopErr)
 }
