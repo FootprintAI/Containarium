@@ -390,6 +390,12 @@ recipes:
             chmod 644 /opt/lc/ctn-token
             printf 'mcpServers:\n  containarium:\n    type: stdio\n    command: /usr/local/bin/mcp-server\n    args: []\n    env:\n      CONTAINARIUM_SERVER_URL: "%s"\n      CONTAINARIUM_JWT_TOKEN_FILE: "/opt/lc/ctn-token"\n' "$CONTAINARIUM_PARAM_MCP_SERVER_URL" >> /opt/lc/librechat.yaml
             LC_MCP_MOUNTS="-v /opt/lc/mcp-server:/usr/local/bin/mcp-server:ro -v /opt/lc/ctn-token:/opt/lc/ctn-token:ro"
+            # Drop the live-sync config (URL + token path). The same MCP token
+            # lets the box poll the cloud's installed-skill set and re-render
+            # personas without a redeploy. This file's PRESENCE later arms the
+            # timer (the units are written + enabled further down, after they
+            # exist — this MCP step runs before them).
+            printf 'SKILLS_URL=%s/v1/recipes/workspace/skills\nTOKEN_FILE=/opt/lc/ctn-token\n' "$CONTAINARIUM_PARAM_MCP_SERVER_URL" > /opt/lc/skills-sync.env
           else
             echo 'librechat: mcp-server download failed; skipping MCP injection' >&2
           fi
@@ -446,17 +452,22 @@ recipes:
       # injects the org's installed set). Built with python3 so multi-line
       # SKILL.md prompts serialize safely (json.dumps → valid YAML scalars).
       # Needs the gateway; emits nothing without it (LibreChat falls back).
+      # The model-spec generator is written to a FILE (not run inline) so the
+      # live-sync timer below can re-run it on the same logic. It reads a skills
+      # JSON on stdin — either a bare array or a {"skills":[...]} object (the
+      # cloud's /v1/recipes/workspace/skills shape) — and emits the modelSpecs
+      # YAML (json.dumps → safe scalars for multi-line SKILL.md prompts).
       - |
-        python3 - >> /opt/lc/librechat.yaml <<'PYEOF'
-        import json, os
-        if not (os.environ.get("CONTAINARIUM_MODEL_GATEWAY_URL") and os.environ.get("CONTAINARIUM_GATEWAY_TOKEN")):
-            raise SystemExit(0)  # no managed gateway → no specs; LibreChat falls back
+        cat > /opt/lc/gen_modelspecs.py <<'PYEOF'
+        import json, sys
         DEFAULT = ("You are the Containarium workspace assistant. Help the user with "
                    "software development, DevOps, system design, and general technical "
                    "questions. Be concise and helpful. If you genuinely should not do "
                    "something, explain why on the merits.")
+        raw = sys.stdin.read().strip() or "[]"
         try:
-            skills = json.loads(os.environ.get("CONTAINARIUM_PARAM_SKILLS", "").strip() or "[]")
+            data = json.loads(raw)
+            skills = data.get("skills", []) if isinstance(data, dict) else data
             if not isinstance(skills, list):
                 skills = []
         except Exception:
@@ -493,6 +504,45 @@ recipes:
             out.append("        promptPrefix: " + json.dumps(instr))
         print("\n".join(out))
         PYEOF
+      # Render the initial specs from the injected `skills` param. Gated on the
+      # gateway (no gateway → no specs; LibreChat falls back to its own provider).
+      - |
+        if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
+          printf '%s' "${CONTAINARIUM_PARAM_SKILLS:-}" | python3 /opt/lc/gen_modelspecs.py >> /opt/lc/librechat.yaml
+        fi
+      # Live-sync script: re-render the personas from the cloud's current
+      # installed-skill set WITHOUT a redeploy. Pulls /v1/recipes/workspace/skills
+      # with the in-box MCP token, regenerates modelSpecs, and restarts LibreChat
+      # ONLY when the rendered file actually changed (rare — admin installs /
+      # uninstalls). Inert unless the timer is enabled (only when MCP is wired).
+      - |
+        cat > /opt/lc/sync-skills.sh <<'SH'
+        #!/bin/sh
+        set -eu
+        [ -f /opt/lc/skills-sync.env ] || exit 0
+        . /opt/lc/skills-sync.env
+        [ -f /opt/lc/gen_modelspecs.py ] || exit 0
+        TOK=$(cat "${TOKEN_FILE:-/opt/lc/ctn-token}" 2>/dev/null) || exit 0
+        [ -n "$TOK" ] || exit 0
+        JSON=$(curl -fsS -m 10 -H "Authorization: Bearer $TOK" "$SKILLS_URL" 2>/dev/null) || exit 0
+        NEW=$(printf '%s' "$JSON" | python3 /opt/lc/gen_modelspecs.py) || exit 0
+        [ -n "$NEW" ] || exit 0
+        sed '/^modelSpecs:/,$d' /opt/lc/librechat.yaml > /opt/lc/librechat.yaml.new
+        printf '%s\n' "$NEW" >> /opt/lc/librechat.yaml.new
+        if cmp -s /opt/lc/librechat.yaml.new /opt/lc/librechat.yaml; then
+          rm -f /opt/lc/librechat.yaml.new
+        else
+          mv /opt/lc/librechat.yaml.new /opt/lc/librechat.yaml
+          podman restart librechat >/dev/null 2>&1 || true
+        fi
+        SH
+        chmod +x /opt/lc/sync-skills.sh
+        printf '[Unit]\nDescription=LibreChat workspace skill live-sync\n[Service]\nType=oneshot\nExecStart=/bin/sh /opt/lc/sync-skills.sh\n' > /etc/systemd/system/lc-skills-sync.service
+        printf '[Unit]\nDescription=Poll cloud for installed skills + re-render LibreChat personas\n[Timer]\nOnBootSec=90\nOnUnitActiveSec=60\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/lc-skills-sync.timer
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        # Arm the timer only when MCP was wired (skills-sync.env present → the box
+        # has the token + URL to poll). Without it the script stays inert.
+        [ -f /opt/lc/skills-sync.env ] && systemctl enable --now lc-skills-sync.timer >/dev/null 2>&1 || true
       - sed -i 's/^ALLOW_REGISTRATION=true/ALLOW_REGISTRATION=false/' /opt/lc/.env
       - podman restart librechat >/dev/null 2>&1 || true
       # --- Zero-click iframe access ---------------------------------------

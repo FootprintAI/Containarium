@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **LibreChat workspace skills live-sync (no redeploy needed).** Installing or
+  uninstalling a skill in the Workspace panel now reflects in a running box's
+  persona selector within ~60s, instead of only on the next redeploy. The recipe
+  writes a `sync-skills.sh` + systemd timer that polls the cloud's
+  `/v1/recipes/workspace/skills` (with the in-box MCP token), re-renders the
+  modelSpecs via the now-file-based `gen_modelspecs.py`, and restarts LibreChat
+  ONLY when the rendered config actually changed. The timer is armed only when
+  MCP is wired (it reuses that token + server URL); without it the box keeps its
+  deploy-time skills. Pairs with the cloud read endpoint (Containarium-cloud).
+
 ## [0.40.0] - 2026-06-22
 
 ### Added
