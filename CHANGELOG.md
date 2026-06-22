@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-06-22
+
 ### Fixed
 
 - **Workspace box can now reach the cloud API (fixes in-box MCP + skill
