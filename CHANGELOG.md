@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-06-23
+
+### Added
+
+- **Asymmetric (ed25519) sentinel→daemon authentication (#688).** The
+  sentinel↔daemon shared secret (`CONTAINARIUM_SENTINEL_AUTH_SECRET`) is
+  symmetric and deployment-wide: every daemon that must *verify* a sentinel
+  request also holds the key to *forge* one. On a multi-tenant deployment a
+  BYO-compute host — which only needs to accept the sentinel's keysync/certsync —
+  could forge a request the shared host accepts and push attacker-controlled SSH
+  keys into other tenants' boxes (`/authorized-keys/sentinel`). This adds an
+  ed25519 scheme for the sentinel→daemon direction (keysync, certsync, the
+  `/sentinel/peers` response): the sentinel holds the PRIVATE key
+  (`CONTAINARIUM_SENTINEL_SIGNING_KEY`), every daemon gets only the PUBLIC key
+  (`CONTAINARIUM_SENTINEL_PUBLIC_KEY`). A daemon can verify but cannot forge, so
+  the public key is safe to distribute to any host including BYOC. The verifier
+  is dual-accept (ed25519 preferred, HMAC legacy) so a mixed fleet interoperates
+  during migration, and `containarium sentinel keygen` emits the keypair. Safe
+  by default — with no ed25519 env set, behavior is identical to the HMAC scheme.
+  Rollout is sequenced: distribute the public key to all daemons first, then set
+  the signing key on the sentinel, then drop the shared secret → ed25519-only,
+  no forge-capable secret on any host. The daemon→sentinel PKI bootstrap
+  (`/sentinel/ca`, `/sentinel/peer-cert`) is a separate trust direction and is
+  unchanged.
+
 ## [0.44.0] - 2026-06-23
 
 ### Added
