@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **create/list/delete container output now shows the resolved backend + pool.**
+  The MCP container ops never displayed *where* a box landed, so a `backend_id`
+  that matched no host (and silently fell back to the default pool) was invisible
+  until a side effect — e.g. an egress-IP test — exposed it. Now `list_containers`
+  and `create_container` print `Backend:`/`Pool:`, `delete_container` reports the
+  backend it removed the box from (best-effort pre-fetch), and `create_container`
+  emits an explicit ⚠️ warning when the box lands on a backend other than the
+  one requested. Surfaces the silent-fallback footgun at the tool layer (cloud
+  #685/#686).
+
 - **`delete_route` MCP tool (unexpose).** The MCP server had `expose_port` +
   `list_routes` but no way to *remove* a route, so an agent that exposed an app
   (or hit its subdomain quota on the cloud) couldn't take one down. Adds a

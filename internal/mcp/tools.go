@@ -1359,6 +1359,20 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 	result += fmt.Sprintf("Name: %s\n", resp.Container.Name)
 	result += fmt.Sprintf("Username: %s\n", resp.Container.Username)
 	result += fmt.Sprintf("State: %s\n", resp.Container.State)
+	// Surface the RESOLVED backend/pool the box actually landed on. If a
+	// requested backend_id didn't match any host, placement silently falls back
+	// to the default (cloud #686) — showing where it really landed makes that
+	// immediately visible instead of discovering it later via an egress test.
+	if resp.Container.BackendID != "" {
+		result += fmt.Sprintf("Backend: %s\n", resp.Container.BackendID)
+	}
+	if resp.Container.Pool != "" {
+		result += fmt.Sprintf("Pool: %s\n", resp.Container.Pool)
+	}
+	if reqBackend := getStringArg(args, "backend_id", ""); reqBackend != "" && resp.Container.BackendID != "" && resp.Container.BackendID != reqBackend {
+		result += fmt.Sprintf("⚠️  Requested backend_id %q but the box landed on %q (the requested id matched no host; placement used the default).\n",
+			reqBackend, resp.Container.BackendID)
+	}
 	if resp.Container.Network != nil && resp.Container.Network.IPAddress != "" {
 		result += fmt.Sprintf("IP Address: %s\n", resp.Container.Network.IPAddress)
 	}
@@ -1461,6 +1475,15 @@ func handleListContainers(client API, args map[string]interface{}) (string, erro
 		result += fmt.Sprintf("📦 %s\n", container.Name)
 		result += fmt.Sprintf("   Username: %s\n", container.Username)
 		result += fmt.Sprintf("   State: %s\n", container.State)
+		// Show WHERE the box actually runs. A wrong/typo'd backend_id silently
+		// falls back to the default pool, so surfacing the resolved backend is
+		// the fastest way to catch a misplacement (see cloud #686).
+		if container.BackendID != "" {
+			result += fmt.Sprintf("   Backend: %s\n", container.BackendID)
+		}
+		if container.Pool != "" {
+			result += fmt.Sprintf("   Pool: %s\n", container.Pool)
+		}
 		if container.Network != nil && container.Network.IPAddress != "" {
 			result += fmt.Sprintf("   IP: %s\n", container.Network.IPAddress)
 		}
@@ -1641,12 +1664,28 @@ func handleDeleteContainer(client API, args map[string]interface{}) (string, err
 
 	force := getBoolArg(args, "force", false)
 
+	// Best-effort: capture WHERE the box ran before deleting, so the
+	// confirmation states which backend/pool it was removed from. The delete
+	// response doesn't carry placement, and a lookup failure is non-fatal — the
+	// delete still proceeds.
+	var backend, pool string
+	if info, gerr := client.GetContainer(username); gerr == nil && info != nil {
+		backend, pool = info.Container.BackendID, info.Container.Pool
+	}
+
 	resp, err := client.DeleteContainer(username, force)
 	if err != nil {
 		return "", fmt.Errorf("failed to delete container: %w", err)
 	}
 
-	return fmt.Sprintf("✅ %s", resp.Message), nil
+	out := fmt.Sprintf("✅ %s", resp.Message)
+	if backend != "" {
+		out += fmt.Sprintf("\n   Backend: %s", backend)
+	}
+	if pool != "" {
+		out += fmt.Sprintf("\n   Pool: %s", pool)
+	}
+	return out, nil
 }
 
 func handleStartContainer(client API, args map[string]interface{}) (string, error) {
