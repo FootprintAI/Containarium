@@ -15,11 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chat (the UI streams nothing until reasoning finishes), and a pinned
   point-version can be retired by the provider out from under us (Google has
   already decommissioned `gemini-2.0-flash`, which 404s — and a 404 on the
-  streaming path hangs the client). The workspace now offers only
+  streaming path hangs the client). The workspace now defaults to
   `gemini-flash-latest` (auto-tracks the current flash, so it never points at a
-  retired model) for the model list, `titleModel`, and every skill-persona
-  modelSpec. Existing boxes are unaffected until redeployed; the two live
-  workspaces were patched out-of-band.
+  retired model) for `titleModel` and every skill-persona modelSpec, and offers
+  `["gemini-flash-latest", "gemini-2.5-flash"]` in the model list — keeping
+  `gemini-2.5-flash` available so conversations already pinned to it don't break
+  with "model not available". Only `gemini-2.5-pro` is dropped. Existing boxes
+  are unaffected until redeployed; the two live workspaces were patched
+  out-of-band.
 
 ## [0.43.2] - 2026-06-22
 
