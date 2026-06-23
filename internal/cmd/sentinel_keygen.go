@@ -1,3 +1,10 @@
+//go:build !windows
+
+// The sentinel command tree (sentinelCmd, defined in sentinel.go) is
+// !windows-only — the Windows build ships only the remote-client commands. This
+// subcommand attaches to sentinelCmd, so it must carry the same constraint or
+// the Windows cross-compile fails with "undefined: sentinelCmd".
+
 package cmd
 
 import (
