@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Model-gateway request-lifecycle observability.** The gateway emitted only a
+  single metering log on completion — and only for *non-streaming* responses —
+  so for a streaming chat there was no way to tell whether a request was still
+  generating, finished, or hung. Every accepted request now logs a `START` and a
+  matching `END` line keyed by a monotonic request id, with status (ok/error),
+  HTTP code, stream flag, duration, and token usage; a streaming response that
+  ends without a usage event is flagged `warn=stream-ended-without-usage` (the
+  classic "looks hung" case). A new `GET /__gateway/status` endpoint exposes the
+  live gauge — `{inflight, completed, failed}` — so `inflight` stuck above zero
+  with no new completions is a directly observable "hung request" signal. The
+  per-usage metering log is folded into `END`; billing via the OTel sink is
+  unchanged.
+
 ### Changed
 
 - **LibreChat workspace recipe pins `gemini-flash-latest` and drops the `pro`

@@ -10,6 +10,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // UsageSink receives every metered model call so token usage can be forwarded
@@ -41,6 +44,16 @@ type Config struct {
 type Gateway struct {
 	cfg   Config
 	meter *Meter
+
+	// Request-lifecycle observability: a monotonic request id, a live
+	// in-flight gauge, and lifetime completed/failed counters. These make
+	// "did the gateway finish this request or is it still running/hung?"
+	// answerable — from the START/END log pair per request and the live
+	// counts on /__gateway/status.
+	reqSeq    atomic.Uint64
+	inflight  atomic.Int64
+	completed atomic.Uint64
+	failed    atomic.Uint64
 }
 
 // New builds a Gateway.
@@ -68,6 +81,18 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/__gateway/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	// Live request-lifecycle gauge: how many model calls are in flight right
+	// now, and how many have completed/failed over the gateway's lifetime.
+	// `inflight` stuck above zero with no new completions is the "hung request"
+	// signal the per-request START/END logs let you drill into.
+	mux.HandleFunc("/__gateway/status", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"inflight":  g.inflight.Load(),
+			"completed": g.completed.Load(),
+			"failed":    g.failed.Load(),
+		})
 	})
 	return mux
 }
@@ -163,6 +188,22 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		sysPrompt = "" // redaction disabled → meter-only (filterSSEStream skips it)
 	}
 
+	logModel := reqModel
+	if logModel == "" {
+		logModel = pathModel
+	}
+	// Request-lifecycle capture, read after ServeHTTP returns. Mutex-guarded
+	// because the streaming usage callback runs in filterSSEStream's goroutine
+	// (the non-streaming path sets them inline in ModifyResponse).
+	var (
+		mu       sync.Mutex
+		streamed bool
+		metered  bool
+		lastU    Usage
+	)
+	markStreamed := func() { mu.Lock(); streamed = true; mu.Unlock() }
+	captureUsage := func(u Usage) { mu.Lock(); metered = true; lastU = u; mu.Unlock() }
+
 	proxy := &httputil.ReverseProxy{
 		// Flush streamed (SSE) responses promptly so chat tokens aren't buffered.
 		FlushInterval: -1,
@@ -180,6 +221,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 				if meterModel == "" {
 					meterModel = pathModel
 				}
+				markStreamed()
 				onUsage := func(u Usage) {
 					if u.Model == "" {
 						u.Model = meterModel
@@ -188,8 +230,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 					if g.cfg.Sink != nil {
 						g.cfg.Sink.RecordUsage(claims.Tenant, claims.SkillID, provName, u)
 					}
-					g.cfg.Logger.Printf("model-gateway: tenant=%s skill=%s provider=%s model=%s in=%d out=%d cached=%d stream=1",
-						claims.Tenant, claims.SkillID, provName, u.Model, u.InputTokens, u.OutputTokens, u.CachedTokens)
+					captureUsage(u) // folded into the END lifecycle log
 				}
 				pr, pw := io.Pipe()
 				go filterSSEStream(pw, resp.Body, sysPrompt,
@@ -223,8 +264,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 				if g.cfg.Sink != nil {
 					g.cfg.Sink.RecordUsage(claims.Tenant, claims.SkillID, provName, u)
 				}
-				g.cfg.Logger.Printf("model-gateway: tenant=%s skill=%s provider=%s model=%s in=%d out=%d cached=%d",
-					claims.Tenant, claims.SkillID, provName, u.Model, u.InputTokens, u.OutputTokens, u.CachedTokens)
+				captureUsage(u) // folded into the END lifecycle log
 			}
 			return nil
 		},
@@ -232,7 +272,69 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		},
 	}
-	proxy.ServeHTTP(w, r)
+
+	// --- request lifecycle: START → serve → END ---
+	// Every accepted request gets a START and a matching END line keyed by a
+	// monotonic req id, plus the live inflight gauge. For a streaming response
+	// ServeHTTP blocks until the piped SSE stream is fully drained, so END marks
+	// the true end of generation — turning "is it done or hung?" into a fact.
+	reqID := g.reqSeq.Add(1)
+	start := time.Now()
+	inflight := g.inflight.Add(1)
+	g.cfg.Logger.Printf("model-gateway: req=%d START tenant=%s skill=%s provider=%s model=%s inflight=%d",
+		reqID, claims.Tenant, claims.SkillID, provName, logModel, inflight)
+
+	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	proxy.ServeHTTP(sw, r)
+
+	mu.Lock()
+	st, md, lu := streamed, metered, lastU
+	mu.Unlock()
+	dur := time.Since(start)
+	status := "ok"
+	if sw.status >= 400 {
+		status = "error"
+		g.failed.Add(1)
+	} else {
+		g.completed.Add(1)
+	}
+	warn := ""
+	if st && !md {
+		// A streaming response that ended without ever emitting a usage event:
+		// the upstream stream was cut/abandoned — the classic "looks hung" case.
+		warn = " warn=stream-ended-without-usage"
+	}
+	g.cfg.Logger.Printf("model-gateway: req=%d END status=%s http=%d stream=%t dur=%s in=%d out=%d cached=%d inflight=%d%s",
+		reqID, status, sw.status, st, dur.Round(time.Millisecond),
+		lu.InputTokens, lu.OutputTokens, lu.CachedTokens, g.inflight.Add(-1), warn)
+}
+
+// statusWriter wraps http.ResponseWriter to capture the response status code for
+// the END lifecycle log while preserving http.Flusher, so streamed (SSE)
+// responses still flush each chunk promptly.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if !s.wrote {
+		s.status = code
+		s.wrote = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	s.wrote = true // an implicit 200 if WriteHeader was never called
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func contains(s []string, v string) bool {

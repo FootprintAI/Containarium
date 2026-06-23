@@ -1,13 +1,64 @@
 package modelgateway
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// syncBuffer is a concurrency-safe io.Writer for capturing logger output: the
+// gateway writes the END line from its handler goroutine while the test reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitFor polls cond up to ~1s. The END log + lifecycle counters are written
+// AFTER the response is flushed to the client (correct: END marks the server
+// finishing), so a test that inspects them right after the HTTP call must wait.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func gatewayStatus(t *testing.T, base string) (inflight, completed, failed int64) {
+	t.Helper()
+	resp, err := http.Get(base + "/__gateway/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var st struct{ Inflight, Completed, Failed int64 }
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	return st.Inflight, st.Completed, st.Failed
+}
 
 // fakeUpstream stands in for the real provider API; it records the auth headers
 // it received and returns a canned usage body.
@@ -255,6 +306,88 @@ func TestGateway_GeminiOpenAI_BearerInjected_Metered(t *testing.T) {
 	if rows[0].InputTokens != 100 || rows[0].OutputTokens != 20 {
 		t.Errorf("token counts wrong: %+v", rows[0])
 	}
+}
+
+// TestGateway_RequestLifecycleObservability pins the "did it finish?" signal:
+// every accepted request emits a START + matching END log, and the live
+// /__gateway/status gauge returns to inflight=0 with completed incremented.
+func TestGateway_RequestLifecycleObservability(t *testing.T) {
+	secret := []byte("s")
+	up := fakeUpstream(t, func(*http.Request) {},
+		`{"model":"gemini-2.5-flash","usage":{"prompt_tokens":7,"completion_tokens":3}}`)
+	defer up.Close()
+
+	providers := DefaultProviders()
+	providers["gemini-openai"].UpstreamURL = up.URL
+	logbuf := &syncBuffer{}
+	gw := New(Config{
+		Secret: secret, Providers: providers,
+		ProviderKeys: map[string]string{"gemini-openai": "GKEY"},
+		Logger:       log.New(logbuf, "", 0),
+	})
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+
+	tok, _ := MintToken(secret, GatewayClaims{Tenant: "acme", SkillID: "ws", Provider: "gemini-openai"}, time.Minute)
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/gemini-openai/v1beta/openai/chat/completions", strings.NewReader(`{"model":"gemini-2.5-flash"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	waitFor(t, "END lifecycle log", func() bool { return strings.Contains(logbuf.String(), "req=1 END") })
+	logs := logbuf.String()
+	if !strings.Contains(logs, "req=1 START") {
+		t.Errorf("missing START lifecycle log:\n%s", logs)
+	}
+	if !strings.Contains(logs, "req=1 END status=ok") {
+		t.Errorf("missing END status=ok lifecycle log:\n%s", logs)
+	}
+	if !strings.Contains(logs, "out=3") {
+		t.Errorf("END log should carry token usage (out=3):\n%s", logs)
+	}
+
+	waitFor(t, "completed=1", func() bool {
+		inflight, completed, _ := gatewayStatus(t, srv.URL)
+		return inflight == 0 && completed == 1
+	})
+	if _, _, failed := gatewayStatus(t, srv.URL); failed != 0 {
+		t.Errorf("failed = %d, want 0", failed)
+	}
+}
+
+// TestGateway_LifecycleFailedCounter asserts an upstream error response is
+// counted as failed (not completed) and clears in-flight.
+func TestGateway_LifecycleFailedCounter(t *testing.T) {
+	secret := []byte("s")
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer up.Close()
+
+	providers := DefaultProviders()
+	providers["gemini-openai"].UpstreamURL = up.URL
+	gw := New(Config{Secret: secret, Providers: providers, ProviderKeys: map[string]string{"gemini-openai": "K"}})
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+
+	tok, _ := MintToken(secret, GatewayClaims{Tenant: "t", Provider: "gemini-openai"}, time.Minute)
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/gemini-openai/v1beta/openai/chat/completions", strings.NewReader(`{"model":"m"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	waitFor(t, "failed=1", func() bool {
+		inflight, _, failed := gatewayStatus(t, srv.URL)
+		return inflight == 0 && failed == 1
+	})
 }
 
 func TestGateway_RejectsBadTokens(t *testing.T) {
