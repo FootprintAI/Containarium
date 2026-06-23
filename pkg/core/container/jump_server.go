@@ -141,26 +141,33 @@ func EnsureJumpServerAccount(username string) error {
 		// Ensure shell is containarium-shell
 		// #nosec G204 -- username validated by isValidUsername above (alphanumeric, dash, underscore only)
 		_ = exec.Command("usermod", "-s", shellPath, username).Run()
-		return nil
+	} else {
+		// Create user with containarium-shell
+		// #nosec G204 -- username validated by isValidUsername above
+		if err := exec.Command("useradd", "-m", "-s", shellPath,
+			"-c", fmt.Sprintf("Containarium user - %s", username),
+			username).Run(); err != nil {
+			return fmt.Errorf("useradd failed: %w", err)
+		}
 	}
 
-	// Create user with containarium-shell
-	// #nosec G204 -- username validated by isValidUsername above
-	if err := exec.Command("useradd", "-m", "-s", shellPath,
-		"-c", fmt.Sprintf("Containarium user - %s", username),
-		username).Run(); err != nil {
-		return fmt.Errorf("useradd failed: %w", err)
+	// Everything below is idempotent and runs on BOTH the freshly-created and
+	// the already-exists paths. The already-exists path previously only fixed
+	// the shell and returned — so an account left in a bad state (most
+	// importantly: locked) never self-healed. Ensuring full state every call
+	// makes a misprovisioned account recover on the next create/reconcile.
+	return ensureJumpAccountState(username)
+}
+
+// ensureJumpAccountState applies the idempotent host-side state a jump account
+// needs to be reachable through sshpiper: unlocked, world-readable home,
+// owned .ssh dir, and the incus sudoers entry. Safe to re-run.
+func ensureJumpAccountState(username string) error {
+	if err := ensureAccountUnlocked(username); err != nil {
+		return err
 	}
 
-	// Unlock account (useradd creates locked accounts, sshd rejects them).
-	// Set password to '*' which means "no valid password" but account is not
-	// locked. This allows public key auth while preventing password login.
-	// Note: passwd -d sets an empty password which some distros reject;
-	// usermod -p '*' is the portable approach.
-	// #nosec G204 -- username validated by isValidUsername above
-	_ = exec.Command("usermod", "-p", "*", username).Run()
-
-	// Set home dir permissions (sshd requires 755 or stricter)
+	// Set home dir permissions (sshd requires 755 or stricter).
 	_ = os.Chmod(fmt.Sprintf("/home/%s", username), 0755) // #nosec G302 -- sshd requires home dir to be world-readable
 
 	// Create .ssh dir
@@ -168,7 +175,7 @@ func EnsureJumpServerAccount(username string) error {
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
 		return fmt.Errorf("failed to create .ssh dir: %w", err)
 	}
-	// #nosec G204 -- username validated by isValidUsername above
+	// #nosec G204 -- username validated by isValidUsername (callers)
 	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
 
 	// Sudoers entry for incus access (containarium-shell needs it)
@@ -179,6 +186,54 @@ func EnsureJumpServerAccount(username string) error {
 	}
 
 	return nil
+}
+
+// ensureAccountUnlocked guarantees the account's password is disabled but the
+// account is NOT locked (shadow state "NP"/"P", never "L").
+//
+// useradd creates accounts locked ("!" password). With `UsePAM no` — the
+// hardened setting on jump/BYOC hosts — OpenSSH performs its OWN locked-account
+// check and refuses a locked account *even for public-key auth*. The box still
+// accepts the client key downstream, but the sshpiper→host upstream hop dies
+// with "User <u> not allowed because account is locked", which surfaces on the
+// client as a confusing "authenticated with partial success" loop ending in
+// Permission denied. So the unlock is load-bearing, must run on every ensure
+// (a single earlier failure must not strand the box), and its result must be
+// verified rather than swallowed.
+//
+// `usermod -p '*'` sets "no valid password" without the lock prefix; it is
+// idempotent and safe to re-run, and (unlike `passwd -d`'s empty password)
+// portable across distros.
+func ensureAccountUnlocked(username string) error {
+	// #nosec G204 -- callers validate username via isValidUsername
+	if out, err := exec.Command("usermod", "-p", "*", username).CombinedOutput(); err != nil {
+		return fmt.Errorf("unlock account %s: %w (output: %s)", username, err, strings.TrimSpace(string(out)))
+	}
+
+	// Verify the account is no longer locked. `passwd -S` prints
+	// "<user> <L|P|NP> <date> ...". A lingering "L" means SSH will keep
+	// failing, so surface it instead of reporting success.
+	// #nosec G204 -- callers validate username via isValidUsername
+	out, err := exec.Command("passwd", "-S", username).Output()
+	if err != nil {
+		// passwd -S unavailable / not permitted in this environment: the
+		// usermod above already succeeded, so don't fail the whole ensure on
+		// a verification gap.
+		return nil
+	}
+	if passwdStatusLocked(string(out)) {
+		return fmt.Errorf("account %s still locked after unlock attempt (passwd -S: %q)", username, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// passwdStatusLocked reports whether `passwd -S` output indicates a locked
+// account. The status is the second whitespace field: "L" (locked), "P"
+// (usable password), or "NP" (no password). Anything we can't parse is treated
+// as not-locked so a quirky passwd implementation can't wedge provisioning.
+func passwdStatusLocked(passwdSOutput string) bool {
+	fields := strings.Fields(passwdSOutput)
+	return len(fields) >= 2 && fields[1] == "L"
 }
 
 // isValidUsername checks if username contains only allowed characters

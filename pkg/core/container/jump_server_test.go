@@ -7,6 +7,31 @@ import (
 	"time"
 )
 
+func TestPasswdStatusLocked(t *testing.T) {
+	// Inputs are real `passwd -S` lines observed on a BYOC host: the broken
+	// jump account was "L" while working siblings were "NP".
+	tests := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"locked account (the bug)", "cld-9c09f73a L 2026-06-23 0 99999 7 -1", true},
+		{"no-password sibling", "apibox-dev-3090 NP 2026-04-02 0 99999 7 -1", false},
+		{"usable password", "alice P 2026-01-01 0 99999 7 -1", false},
+		{"empty output", "", false},
+		{"single field", "weird", false},
+		{"trailing newline locked", "bob L 2026-06-23\n", true},
+		{"locked-substring not status", "Llama NP 2026-01-01", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := passwdStatusLocked(tt.out); got != tt.want {
+				t.Errorf("passwdStatusLocked(%q) = %v, want %v", tt.out, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsValidUsername(t *testing.T) {
 	tests := []struct {
 		name     string
