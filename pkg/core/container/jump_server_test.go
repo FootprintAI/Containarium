@@ -7,26 +7,30 @@ import (
 	"time"
 )
 
-func TestPasswdStatusLocked(t *testing.T) {
-	// Inputs are real `passwd -S` lines observed on a BYOC host: the broken
-	// jump account was "L" while working siblings were "NP".
+func TestShadowAccountLocked(t *testing.T) {
+	// Inputs are real getent-shadow shapes seen on a BYOC host. The crux:
+	// "*" (what our unlock sets) and "" (NP sibling) are NOT locked and SSH
+	// works; only "!"-prefixed is locked. `passwd -S` cannot tell "*" from "!"
+	// (reports both as "L"), which is exactly why we parse the field directly.
 	tests := []struct {
 		name string
-		out  string
+		line string
 		want bool
 	}{
-		{"locked account (the bug)", "cld-9c09f73a L 2026-06-23 0 99999 7 -1", true},
-		{"no-password sibling", "apibox-dev-3090 NP 2026-04-02 0 99999 7 -1", false},
-		{"usable password", "alice P 2026-01-01 0 99999 7 -1", false},
-		{"empty output", "", false},
-		{"single field", "weird", false},
-		{"trailing newline locked", "bob L 2026-06-23\n", true},
-		{"locked-substring not status", "Llama NP 2026-01-01", false},
+		{"locked bang (the bug)", "cld-9c09f73a:!:20000:0:99999:7:::", true},
+		{"locked bangbang", "u:!!:20000:0:99999:7:::", true},
+		{"locked bang+hash", "u:!$6$abc$def:20000:0:99999:7:::", true},
+		{"star = disabled not locked (works)", "cld-9c09f73a:*:20000:0:99999:7:::", false},
+		{"empty NP sibling (works)", "apibox-dev-3090::20000:0:99999:7:::", false},
+		{"real password not locked", "alice:$6$salt$hash:20000:0:99999:7:::", false},
+		{"trailing newline locked", "bob:!:20000\n", true},
+		{"empty input", "", false},
+		{"no colon", "garbage", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := passwdStatusLocked(tt.out); got != tt.want {
-				t.Errorf("passwdStatusLocked(%q) = %v, want %v", tt.out, got, tt.want)
+			if got := shadowAccountLocked(tt.line); got != tt.want {
+				t.Errorf("shadowAccountLocked(%q) = %v, want %v", tt.line, got, tt.want)
 			}
 		})
 	}

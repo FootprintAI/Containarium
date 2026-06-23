@@ -189,7 +189,8 @@ func ensureJumpAccountState(username string) error {
 }
 
 // ensureAccountUnlocked guarantees the account's password is disabled but the
-// account is NOT locked (shadow state "NP"/"P", never "L").
+// account is NOT locked from sshd's perspective (shadow password must not start
+// with "!").
 //
 // useradd creates accounts locked ("!" password). With `UsePAM no` — the
 // hardened setting on jump/BYOC hosts — OpenSSH performs its OWN locked-account
@@ -201,39 +202,47 @@ func ensureJumpAccountState(username string) error {
 // (a single earlier failure must not strand the box), and its result must be
 // verified rather than swallowed.
 //
-// `usermod -p '*'` sets "no valid password" without the lock prefix; it is
-// idempotent and safe to re-run, and (unlike `passwd -d`'s empty password)
-// portable across distros.
+// `usermod -p '*'` sets the password field to "*" — "no valid password" but NOT
+// the "!" lock prefix; it is idempotent, safe to re-run, and (unlike
+// `passwd -d`'s empty password) portable across distros. OpenSSH accepts "*"
+// (and an empty field) for public-key auth; it rejects only "!"-prefixed.
 func ensureAccountUnlocked(username string) error {
 	// #nosec G204 -- callers validate username via isValidUsername
 	if out, err := exec.Command("usermod", "-p", "*", username).CombinedOutput(); err != nil {
 		return fmt.Errorf("unlock account %s: %w (output: %s)", username, err, strings.TrimSpace(string(out)))
 	}
 
-	// Verify the account is no longer locked. `passwd -S` prints
-	// "<user> <L|P|NP> <date> ...". A lingering "L" means SSH will keep
-	// failing, so surface it instead of reporting success.
+	// Verify the account is no longer locked. We must read the shadow password
+	// field directly, NOT `passwd -S`: that tool reports both "!" (truly locked,
+	// sshd rejects) and "*" (the value we just set, which sshd accepts) as "L",
+	// so it cannot tell a working account from a broken one. sshd's locked check
+	// keys off the "!" prefix, so we do the same.
 	// #nosec G204 -- callers validate username via isValidUsername
-	out, err := exec.Command("passwd", "-S", username).Output()
+	out, err := exec.Command("getent", "shadow", username).Output()
 	if err != nil {
-		// passwd -S unavailable / not permitted in this environment: the
-		// usermod above already succeeded, so don't fail the whole ensure on
-		// a verification gap.
+		// getent/shadow unavailable or not permitted: the usermod above already
+		// succeeded, so don't fail the whole ensure on a verification gap.
 		return nil
 	}
-	if passwdStatusLocked(string(out)) {
-		return fmt.Errorf("account %s still locked after unlock attempt (passwd -S: %q)", username, strings.TrimSpace(string(out)))
+	if shadowAccountLocked(string(out)) {
+		// Deliberately does NOT echo the shadow line (it carries the hash).
+		return fmt.Errorf("account %s still locked after unlock attempt", username)
 	}
 	return nil
 }
 
-// passwdStatusLocked reports whether `passwd -S` output indicates a locked
-// account. The status is the second whitespace field: "L" (locked), "P"
-// (usable password), or "NP" (no password). Anything we can't parse is treated
-// as not-locked so a quirky passwd implementation can't wedge provisioning.
-func passwdStatusLocked(passwdSOutput string) bool {
-	fields := strings.Fields(passwdSOutput)
-	return len(fields) >= 2 && fields[1] == "L"
+// shadowAccountLocked reports whether a getent-shadow line shows an account
+// OpenSSH treats as locked: the password field (2nd colon-separated field)
+// starts with "!". An empty field ("NP") or "*" ("disabled, not locked") is NOT
+// locked — both permit public-key auth under `UsePAM no`. A line we can't parse
+// is treated as not-locked so a quirky environment can't wedge provisioning.
+func shadowAccountLocked(getentShadowLine string) bool {
+	line := strings.TrimRight(getentShadowLine, "\r\n")
+	parts := strings.SplitN(line, ":", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	return strings.HasPrefix(parts[1], "!")
 }
 
 // isValidUsername checks if username contains only allowed characters
