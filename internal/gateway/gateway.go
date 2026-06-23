@@ -606,6 +606,20 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// platform JWT. The handler injects the real provider key and proxies.
 	if gs.modelGatewayHandler != nil {
 		httpMux.Handle("/v1/model/", gs.modelGatewayHandler)
+		// The gateway's own mux also serves /__gateway/* diagnostics, but
+		// mounting it only under /v1/model/ left those paths unreachable when
+		// embedded in the daemon: /__gateway/status fell through to the wake
+		// catch-all, and /v1/model/__gateway/status was parsed as a provider
+		// ("unknown provider: __gateway"). #794's live gauge was therefore
+		// invisible in the production (embedded) deployment. Route the
+		// non-sensitive diagnostics to the gateway handler at root so an
+		// operator can `curl localhost:<http-port>/__gateway/status`.
+		//
+		// /__gateway/usage is deliberately NOT exposed here — it carries
+		// per-tenant token counts and this handler is unwrapped by JWT auth;
+		// usage already flows to the metrics/billing pipeline via the OTLP sink.
+		httpMux.Handle("/__gateway/status", gs.modelGatewayHandler)
+		httpMux.Handle("/__gateway/healthz", gs.modelGatewayHandler)
 	}
 
 	// Core services endpoint (with authentication via CORS handler)
