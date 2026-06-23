@@ -64,6 +64,7 @@ type API interface {
 	// Routes / backends.
 	AddRoute(req AddRouteRequest) (*AddRouteResponse, error)
 	ListRoutes(username string, activeOnly bool) (*ListRoutesResponse, error)
+	DeleteRoute(domain string) error
 	ListBackends() (*ListBackendsResponse, error)
 	GetBackend(id string) (*Backend, error)
 	ValidateGPU(backendID, pci string) (*ValidateGPUResult, error)

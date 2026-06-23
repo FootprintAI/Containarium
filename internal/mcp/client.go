@@ -1020,6 +1020,16 @@ func (c *Client) AddRoute(req AddRouteRequest) (*AddRouteResponse, error) {
 	return &resp, nil
 }
 
+// DeleteRoute removes a proxy route by its domain — the unexpose counterpart
+// of AddRoute. Mirrors DELETE /v1/network/routes/{domain}; idempotent
+// server-side (a missing route is a no-op success), so the caller need not
+// pre-check existence. Used by the delete_route tool to free a hostname (and,
+// on the cloud, its subdomain-quota slot).
+func (c *Client) DeleteRoute(domain string) error {
+	_, err := c.doRequest("DELETE", "/v1/network/routes/"+url.PathEscape(domain), nil)
+	return err
+}
+
 // ListRoutes returns all proxy routes the sentinel currently serves. Both
 // filter params are optional — empty `username` or `activeOnly=false`
 // means "no filter on that dimension". Mirrors GET /v1/network/routes.

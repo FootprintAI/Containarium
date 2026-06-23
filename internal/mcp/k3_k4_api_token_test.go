@@ -79,3 +79,37 @@ func TestMCPClient_K4_ExposePortAcceptsAPIToken(t *testing.T) {
 		"expose_port should target the routes endpoint (got %q)", sawPath)
 	assert.Equal(t, http.MethodPost, sawMethod, "expose_port creates a route → POST")
 }
+
+// TestMCPClient_DeleteRoute — the unexpose flow: client.DeleteRoute →
+// DELETE /v1/network/routes/{domain}, with the bearer forwarded and the
+// domain path-escaped into the URL.
+func TestMCPClient_DeleteRoute(t *testing.T) {
+	const apiToken = "ctnr_del123.0011223344556677"
+
+	var sawHeader, sawPath, sawMethod string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHeader = r.Header.Get("Authorization")
+		sawPath = r.URL.Path
+		sawMethod = r.Method
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, apiToken)
+	err := c.DeleteRoute("alice-myapp.example.dev")
+	require.NoError(t, err)
+
+	assert.Equal(t, "Bearer "+apiToken, sawHeader,
+		"delete_route must forward the API token verbatim")
+	assert.Equal(t, http.MethodDelete, sawMethod, "delete_route removes a route → DELETE")
+	assert.Equal(t, "/v1/network/routes/alice-myapp.example.dev", sawPath,
+		"delete_route should target /v1/network/routes/{domain} (got %q)", sawPath)
+}
+
+// TestHandleDeleteRoute_RequiresDomain — the handler rejects a missing domain
+// before hitting the client.
+func TestHandleDeleteRoute_RequiresDomain(t *testing.T) {
+	_, err := handleDeleteRoute(nil, map[string]interface{}{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "domain is required")
+}

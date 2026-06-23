@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`delete_route` MCP tool (unexpose).** The MCP server had `expose_port` +
+  `list_routes` but no way to *remove* a route, so an agent that exposed an app
+  (or hit its subdomain quota on the cloud) couldn't take one down. Adds a
+  `delete_route` tool (domain → `DELETE /v1/network/routes/{domain}`, scoped to
+  `routes:write`, idempotent) and the backing `Client.DeleteRoute`. Pairs with
+  the cloud's `delete_route` REST verb so the in-chat workspace agent can wire
+  *and* unwire HTTP. (55 tools now.)
+
 - **Model-gateway request-lifecycle observability.** The gateway emitted only a
   single metering log on completion — and only for *non-streaming* responses —
   so for a streaming chat there was no way to tell whether a request was still

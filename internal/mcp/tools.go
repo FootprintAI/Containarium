@@ -954,6 +954,30 @@ func (s *Server) registerTools() {
 			Handler: handleListRoutes,
 		},
 		{
+			Name: "delete_route",
+			Description: "Remove a proxy route by its domain — the unexpose counterpart of " +
+				"`expose_port`. After this, https://<domain>/ no longer reaches any container, " +
+				"and (on the cloud) the subdomain's quota slot is freed for reuse.\n\n" +
+				"Use this to:\n" +
+				"  - Take an app offline / retire a public hostname.\n" +
+				"  - Clean up a stale route left by a deleted container.\n" +
+				"  - Free a subdomain slot when you've hit your route quota and need to " +
+				"    expose something else.\n\n" +
+				"Idempotent: deleting an already-gone route succeeds (no error). Pass the " +
+				"full domain as shown by `list_routes` (`fullDomain`).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"domain": map[string]interface{}{
+						"type":        "string",
+						"description": "The route's domain to remove, e.g. 'blog-acme.containarium.dev' (the `fullDomain` from list_routes).",
+					},
+				},
+				"required": []string{"domain"},
+			},
+			Handler: handleDeleteRoute,
+		},
+		{
 			Name: "expose_port",
 			Description: "Expose a container's port on a public hostname. Resolves the " +
 				"container's IP, then registers a domain → container:port route in the " +
@@ -1230,8 +1254,9 @@ func toolScopeAssignments() map[string]string {
 		"get_secret":      auth.ScopeSecretsRead,
 		"list_secrets":    auth.ScopeSecretsRead,
 		// routes / network exposure
-		"list_routes": auth.ScopeRoutesRead,
-		"expose_port": auth.ScopeRoutesWrite,
+		"list_routes":  auth.ScopeRoutesRead,
+		"expose_port":  auth.ScopeRoutesWrite,
+		"delete_route": auth.ScopeRoutesWrite,
 		// recipes — declarative GPU/app deploys
 		"list_recipes":  auth.ScopeContainersRead,
 		"deploy_recipe": auth.ScopeContainersWrite,
@@ -1938,6 +1963,17 @@ func handleListRoutes(client API, args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("failed to marshal response: %w", err)
 	}
 	return string(out), nil
+}
+
+func handleDeleteRoute(client API, args map[string]interface{}) (string, error) {
+	domain := getStringArg(args, "domain", "")
+	if domain == "" {
+		return "", fmt.Errorf("domain is required")
+	}
+	if err := client.DeleteRoute(domain); err != nil {
+		return "", fmt.Errorf("failed to delete route %s: %w", domain, err)
+	}
+	return fmt.Sprintf("✅ Deleted route %s — it no longer reaches any container.", domain), nil
 }
 
 func handleExposePort(client API, args map[string]interface{}) (string, error) {
