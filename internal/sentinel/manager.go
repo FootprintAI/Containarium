@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -386,14 +387,19 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 			return
 		}
 
-		// HMAC-sign the response so a compromised network path (or
-		// future sentinel-impersonator) can't inject attacker peer
-		// URLs. The daemon verifies before trusting any peer entry.
-		// When the secret is unset, no headers are written and the
-		// daemon's verifier will fail-closed — operators see the
-		// peer-discovery failure rather than silently trusting an
-		// unsigned list. See finding C-CRIT-2.
-		auth.SignSentinelResponse(w, m.hmacSecret, body)
+		// Sign the response so a compromised network path (or future
+		// sentinel-impersonator) can't inject attacker peer URLs. The
+		// daemon verifies before trusting any peer entry. Prefer ed25519
+		// (#688) when a signing key is configured; else fall back to the
+		// shared-secret HMAC. When neither is set, no headers are written
+		// and the daemon's verifier fails closed — operators see the
+		// peer-discovery failure rather than silently trusting an unsigned
+		// list. See finding C-CRIT-2.
+		if priv := loadSentinelSigningKey(); len(priv) == ed25519.PrivateKeySize {
+			auth.SignSentinelResponseEd25519(w, priv, body)
+		} else {
+			auth.SignSentinelResponse(w, m.hmacSecret, body)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)

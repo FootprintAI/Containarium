@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -291,6 +292,27 @@ func loadSentinelHMACSecret() []byte {
 	return sentinelHMACSecret
 }
 
+// sentinelPubKey caches the sentinel's ed25519 public key
+// (CONTAINARIUM_SENTINEL_PUBLIC_KEY, #688) used to verify the signed
+// /sentinel/peers response. Nil when unset or invalid.
+var (
+	sentinelPubKeyOnce sync.Once
+	sentinelPubKey     ed25519.PublicKey
+)
+
+func loadSentinelPublicKey() ed25519.PublicKey {
+	sentinelPubKeyOnce.Do(func() {
+		if raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_PUBLIC_KEY")); raw != "" {
+			if pub, err := auth.ParseSentinelPublicKey(raw); err != nil {
+				log.Printf("[peers] CONTAINARIUM_SENTINEL_PUBLIC_KEY invalid (%v) — falling back to HMAC for discovery verification", err)
+			} else {
+				sentinelPubKey = pub
+			}
+		}
+	})
+	return sentinelPubKey
+}
+
 // discover fetches peer list from sentinel's /sentinel/peers endpoint.
 // When p.pool is non-empty, ?pool=<name> is appended so the sentinel returns
 // only peers tagged with that pool.
@@ -332,16 +354,19 @@ func (p *PeerPool) discover() {
 	// Verify the sentinel signed the response. Fail-closed: an
 	// unsigned or tampered response leaves the peer map unchanged
 	// rather than silently trusting unauthenticated discovery data.
-	if secret := loadSentinelHMACSecret(); len(secret) >= auth.SentinelMinSecretLen {
-		if err := auth.VerifySentinelResponse(resp, secret, body, time.Now()); err != nil {
-			log.Printf("[peers] discovery signature verify failed; refusing to update peer map (set CONTAINARIUM_SENTINEL_AUTH_SECRET on the sentinel to match the daemon's): %v", err)
+	// Dual-accept (#688): ed25519 (CONTAINARIUM_SENTINEL_PUBLIC_KEY) and/or
+	// the legacy HMAC (CONTAINARIUM_SENTINEL_AUTH_SECRET).
+	verifier := auth.NewSentinelVerifier(loadSentinelPublicKey(), loadSentinelHMACSecret())
+	if verifier.Configured() {
+		if err := verifier.VerifyResponse(resp, body, time.Now()); err != nil {
+			log.Printf("[peers] discovery signature verify failed; refusing to update peer map (set CONTAINARIUM_SENTINEL_PUBLIC_KEY or _AUTH_SECRET to match the sentinel): %v", err)
 			return
 		}
 	} else {
 		// Loud warning, but stay backwards-compatible while operators
-		// roll out the env var on both ends. Once 100% of fleets carry
-		// the secret this branch should become an unconditional return.
-		log.Printf("[peers] CONTAINARIUM_SENTINEL_AUTH_SECRET is unset on this daemon — accepting unsigned discovery response (vulnerable to C-CRIT-2 until configured)")
+		// roll out the keys on both ends. Once 100% of fleets carry a
+		// sentinel key this branch should become an unconditional return.
+		log.Printf("[peers] no sentinel verifier configured (set CONTAINARIUM_SENTINEL_PUBLIC_KEY or _AUTH_SECRET) — accepting unsigned discovery response (vulnerable to C-CRIT-2 until configured)")
 	}
 
 	var result struct {

@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -68,6 +69,13 @@ type GatewayServer struct {
 	// acceptable default for these endpoints (see audit C-CRIT-4 and
 	// A-CRIT-4).
 	sentinelAuthSecret []byte
+
+	// sentinelPubKey is the sentinel's ed25519 PUBLIC key (#688). When
+	// set (CONTAINARIUM_SENTINEL_PUBLIC_KEY) the sentinel endpoints
+	// accept ed25519-signed requests in addition to (or instead of) the
+	// legacy HMAC. A daemon holding only this public key can verify the
+	// sentinel but cannot forge a request — the BYOC-safe configuration.
+	sentinelPubKey ed25519.PublicKey
 
 	// containerExistsFn is the orphan filter used by
 	// /authorized-keys (#343). When set, the handler drops users
@@ -168,6 +176,15 @@ func (gs *GatewayServer) SetRecordDeliveryFn(fn func(ctx context.Context, alertN
 // the daemon and the sentinel.
 func (gs *GatewayServer) SetSentinelAuthSecret(secret []byte) {
 	gs.sentinelAuthSecret = secret
+}
+
+// SetSentinelPublicKey configures the sentinel's ed25519 public key (#688).
+// When set, the sentinel endpoints additionally accept ed25519-signed requests
+// (dual-accept with any configured HMAC secret). Source is
+// CONTAINARIUM_SENTINEL_PUBLIC_KEY; the key is safe to distribute to any host,
+// including BYOC, since a verifier cannot forge requests.
+func (gs *GatewayServer) SetSentinelPublicKey(pub ed25519.PublicKey) {
+	gs.sentinelPubKey = pub
 }
 
 // SetContainerExistsFn wires the orphan filter for /authorized-keys.
@@ -705,13 +722,14 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 
 	// Sentinel-facing endpoints: /certs and /authorized-keys[/sentinel].
 	// Previously "no auth — VPC-internal only"; that comment never
-	// stopped a firewall misconfiguration. Now gated by HMAC over
-	// CONTAINARIUM_SENTINEL_AUTH_SECRET (auth.SentinelHMACMiddleware).
-	// Fail-closed: if the secret isn't configured, all requests get
-	// 401. See findings A-CRIT-4 and A-HIGH-2.
-	httpMux.Handle("/certs", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeCerts(gs.caddyCertDir)))
-	httpMux.Handle("/authorized-keys", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeAuthorizedKeys("", gs.containerExistsFn)))
-	httpMux.Handle("/authorized-keys/sentinel", auth.SentinelHMACMiddleware(gs.sentinelAuthSecret, ServeSentinelKey()))
+	// stopped a firewall misconfiguration. Now gated by a SentinelVerifier
+	// that accepts ed25519 (CONTAINARIUM_SENTINEL_PUBLIC_KEY, #688) and/or
+	// the legacy HMAC (CONTAINARIUM_SENTINEL_AUTH_SECRET). Fail-closed: if
+	// neither is configured, all requests get 401. See A-CRIT-4 / A-HIGH-2.
+	sentinelVerifier := auth.NewSentinelVerifier(gs.sentinelPubKey, gs.sentinelAuthSecret)
+	httpMux.Handle("/certs", sentinelVerifier.Middleware(ServeCerts(gs.caddyCertDir)))
+	httpMux.Handle("/authorized-keys", sentinelVerifier.Middleware(ServeAuthorizedKeys("", gs.containerExistsFn)))
+	httpMux.Handle("/authorized-keys/sentinel", sentinelVerifier.Middleware(ServeSentinelKey()))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is

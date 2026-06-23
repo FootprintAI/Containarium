@@ -1354,6 +1354,21 @@ skipAppHosting:
 			log.Printf("WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset — /certs, /authorized-keys, /authorized-keys/sentinel will return 401 until configured")
 		}
 
+		// Sentinel ed25519 public key (#688). When set, the sentinel
+		// endpoints additionally accept ed25519-signed requests — the
+		// asymmetric successor to the shared HMAC. A daemon (incl. BYOC)
+		// holding only this public key can verify the sentinel but cannot
+		// forge a request, so it's safe to distribute everywhere. Optional:
+		// when unset the daemon stays on HMAC-only (no behavior change).
+		if pubB64 := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_PUBLIC_KEY")); pubB64 != "" {
+			if pub, err := auth.ParseSentinelPublicKey(pubB64); err != nil {
+				log.Printf("WARNING: CONTAINARIUM_SENTINEL_PUBLIC_KEY is set but invalid (%v) — falling back to HMAC-only for sentinel endpoints", err)
+			} else {
+				gatewayServer.SetSentinelPublicKey(pub)
+				log.Printf("Sentinel ed25519 public key configured — /certs, /authorized-keys[/sentinel] accept ed25519-signed requests")
+			}
+		}
+
 		// Orphan filter for /authorized-keys (#343). When a container
 		// is deleted but its host user / home dir survives (userdel
 		// failed under lock contention, or the user was provisioned

@@ -1,10 +1,12 @@
 package sentinel
 
 import (
+	"crypto/ed25519"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,11 +37,35 @@ var (
 	sentinelSecretOnce sync.Once
 	sentinelSecret     []byte
 
+	// sentinelSigningKey is the sentinel's ed25519 PRIVATE key (#688),
+	// loaded once from CONTAINARIUM_SENTINEL_SIGNING_KEY. When present it
+	// is preferred over the HMAC secret for signing outbound requests +
+	// responses — daemons verify with only the matching public key and so
+	// cannot forge. Nil when unset/invalid (→ HMAC fallback).
+	sentinelSigningKeyOnce sync.Once
+	sentinelSigningKey     ed25519.PrivateKey
+
 	// lastMisconfigLogNs is the unix-nanos of the last per-call
 	// WARNING. atomic.Int64 so concurrent keysync + certsync calls
 	// don't double-log every minute.
 	lastMisconfigLogNs atomic.Int64
 )
+
+// loadSentinelSigningKey returns the sentinel's ed25519 private key
+// (CONTAINARIUM_SENTINEL_SIGNING_KEY), or nil when unset/invalid.
+func loadSentinelSigningKey() ed25519.PrivateKey {
+	sentinelSigningKeyOnce.Do(func() {
+		if raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_SIGNING_KEY")); raw != "" {
+			if priv, err := auth.ParseSentinelSigningKey(raw); err != nil {
+				log.Printf("[sentinel-auth] WARNING: CONTAINARIUM_SENTINEL_SIGNING_KEY is set but invalid (%v) — falling back to HMAC signing", err)
+			} else {
+				sentinelSigningKey = priv
+				log.Printf("[sentinel-auth] ed25519 signing key configured — outbound sentinel→daemon requests/responses are ed25519-signed")
+			}
+		}
+	})
+	return sentinelSigningKey
+}
 
 func loadSentinelSecret() []byte {
 	sentinelSecretOnce.Do(func() {
@@ -70,7 +96,11 @@ func newSignedRequest(method, url string, body io.Reader) (*http.Request, error)
 	if err != nil {
 		return nil, err
 	}
-	if secret := loadSentinelSecret(); len(secret) >= auth.SentinelMinSecretLen {
+	// Prefer ed25519 (#688) when a signing key is configured; else fall
+	// back to the legacy shared-secret HMAC.
+	if priv := loadSentinelSigningKey(); len(priv) == ed25519.PrivateKeySize {
+		auth.SignSentinelRequestEd25519(req, priv)
+	} else if secret := loadSentinelSecret(); len(secret) >= auth.SentinelMinSecretLen {
 		auth.SignSentinelRequest(req, secret)
 	} else {
 		logSentinelMisconfigOncePerInterval()
