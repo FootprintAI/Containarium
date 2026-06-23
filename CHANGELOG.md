@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-06-23
+
+### Fixed
+
+- **Model-gateway `/__gateway/status` reachable in the embedded daemon (#794).**
+  The live gauge (`{inflight, completed, failed}`) added in #794 was only
+  reachable in the standalone `cmd/model-gateway`: when the gateway is embedded
+  in the daemon it is mounted under `/v1/model/`, so `/__gateway/status` at the
+  daemon root fell through to the wake catch-all and `/v1/model/__gateway/status`
+  was parsed as a provider name. The daemon now routes `/__gateway/status` and
+  `/__gateway/healthz` to the gateway handler at the root so operators can
+  `curl localhost:<http-port>/__gateway/status`. `/__gateway/usage` is
+  intentionally not exposed there (per-tenant token counts, unauthenticated
+  handler); usage continues to flow to the metrics/billing pipeline. The
+  per-request START/END lifecycle logging from #794 was already working.
+
 ## [0.45.0] - 2026-06-23
 
 ### Added
