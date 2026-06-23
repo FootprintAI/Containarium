@@ -678,4 +678,67 @@ service NetworkService {
       tags: "Network";
     };
   }
+
+  // StartEgressProxy starts a source-restricted relay that lets a box egress
+  // through an operator-reachable SOCKS — "egress via client" (#808). The
+  // operator first opens `ssh -R 127.0.0.1:<upstream_port>:localhost:<socks>`
+  // to expose their SOCKS on the host loopback; this RPC then bridges that
+  // host-netns listener into the box's netns, scoped to the box's source IP.
+  rpc StartEgressProxy(StartEgressProxyRequest) returns (StartEgressProxyResponse) {
+    option (google.api.http) = {
+      post: "/v1/network/egress-proxy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Start egress-via-client proxy";
+      description: "Bridges a host-loopback SOCKS (exposed by the caller via ssh -R) into a box's network namespace via a source-restricted relay, so the box egresses with the operator's IP.";
+      tags: "Network";
+    };
+  }
+
+  // StopEgressProxy stops the egress-via-client relay for a box.
+  rpc StopEgressProxy(StopEgressProxyRequest) returns (StopEgressProxyResponse) {
+    option (google.api.http) = {
+      delete: "/v1/network/egress-proxy/{container_name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Stop egress-via-client proxy";
+      description: "Tears down the source-restricted egress relay for the named box.";
+      tags: "Network";
+    };
+  }
+}
+
+// StartEgressProxyRequest asks the daemon to bridge a host-loopback SOCKS into
+// a box's netns (#808 egress-via-client).
+message StartEgressProxyRequest {
+  // Box (container) whose egress should be routed.
+  string container_name = 1;
+
+  // Host-loopback port where the caller has exposed their SOCKS proxy via
+  // `ssh -R 127.0.0.1:<upstream_port>:localhost:<local-socks>`. The daemon's
+  // relay forwards box connections to 127.0.0.1:<upstream_port>.
+  int32 upstream_port = 2;
+
+  // Optional bridge-gateway port the in-box relay should listen on. 0 = the
+  // daemon picks a free port.
+  int32 proxy_port = 3;
+}
+
+// StartEgressProxyResponse returns the in-box SOCKS address to point apps at.
+message StartEgressProxyResponse {
+  // SOCKS address reachable from inside the box, e.g. "10.100.0.1:18080".
+  // Point the box's apps at socks5://<socks_address> (Chrome:
+  // --proxy-server=socks5://<socks_address>).
+  string socks_address = 1;
+}
+
+// StopEgressProxyRequest tears down the egress relay for a box.
+message StopEgressProxyRequest {
+  string container_name = 1;
+}
+
+// StopEgressProxyResponse is the (empty) ack for a teardown.
+message StopEgressProxyResponse {
+  bool stopped = 1;
 }

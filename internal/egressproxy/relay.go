@@ -95,7 +95,7 @@ func (r *Relay) sourceAllowed(src netip.Addr) bool {
 	return false
 }
 
-// Serve listens and forwards until ctx is cancelled or a fatal accept error
+// Serve binds and forwards until ctx is cancelled or a fatal accept error
 // occurs. Close (or ctx cancel) makes it return.
 func (r *Relay) Serve(ctx context.Context) error {
 	ln, err := net.Listen("tcp", r.listen)
@@ -105,7 +105,37 @@ func (r *Relay) Serve(ctx context.Context) error {
 	r.mu.Lock()
 	r.ln = ln
 	r.mu.Unlock()
-	r.logf("egress-relay %s -> %s (allow %v)", r.listen, r.upstream, r.allow)
+	return r.serveListener(ctx, ln)
+}
+
+// StartBackground binds synchronously — returning any bind error to the caller
+// (so a "port in use" surfaces at start time, not silently) — then serves in a
+// background goroutine until ctx is cancelled. Use Addr afterwards to read the
+// actually-bound address (e.g. when the listen port was 0).
+func (r *Relay) StartBackground(ctx context.Context) error {
+	ln, err := net.Listen("tcp", r.listen)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", r.listen, err)
+	}
+	r.mu.Lock()
+	r.ln = ln
+	r.mu.Unlock()
+	go func() { _ = r.serveListener(ctx, ln) }()
+	return nil
+}
+
+// Addr returns the actually-bound listen address, or "" if not yet bound.
+func (r *Relay) Addr() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ln != nil {
+		return r.ln.Addr().String()
+	}
+	return ""
+}
+
+func (r *Relay) serveListener(ctx context.Context, ln net.Listener) error {
+	r.logf("egress-relay %s -> %s (allow %v)", ln.Addr(), r.upstream, r.allow)
 
 	go func() {
 		<-ctx.Done()
