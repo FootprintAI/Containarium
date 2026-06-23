@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **LibreChat workspace recipe pins `gemini-flash-latest` and drops the `pro`
+  pick.** The recipe offered `["gemini-2.5-flash", "gemini-2.5-pro"]`; the `pro`
+  option is a reasoning model whose long pre-token think phase reads as a hung
+  chat (the UI streams nothing until reasoning finishes), and a pinned
+  point-version can be retired by the provider out from under us (Google has
+  already decommissioned `gemini-2.0-flash`, which 404s — and a 404 on the
+  streaming path hangs the client). The workspace now offers only
+  `gemini-flash-latest` (auto-tracks the current flash, so it never points at a
+  retired model) for the model list, `titleModel`, and every skill-persona
+  modelSpec. Existing boxes are unaffected until redeployed; the two live
+  workspaces were patched out-of-band.
+
 ## [0.43.2] - 2026-06-22
 
 ### Fixed

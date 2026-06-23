@@ -365,7 +365,7 @@ recipes:
       # gateway seeded → empty config, LibreChat falls back to its own provider.
       - |
         if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
-          printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-2.5-flash", "gemini-2.5-pro"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-2.5-flash"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
+          printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-flash-latest"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-flash-latest"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
         else
           printf 'version: 1.2.1\ncache: true\n' > /opt/lc/librechat.yaml
           echo 'librechat: no managed gateway seeded; configure a provider in LibreChat' >&2
@@ -523,7 +523,7 @@ recipes:
             out.append("      preset:")
             out.append('        endpoint: "Containarium (Gemini)"')
             out.append('        endpointType: "custom"')
-            out.append('        model: "gemini-2.5-flash"')
+            out.append('        model: "gemini-flash-latest"')
             out.append("        promptPrefix: " + json.dumps(instr))
         print("\n".join(out))
         PYEOF
