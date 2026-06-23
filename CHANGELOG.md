@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-06-23
+
 ### Added
 
 - **create/list/delete container output now shows the resolved backend + pool.**
@@ -56,6 +58,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with "model not available". Only `gemini-2.5-pro` is dropped. Existing boxes
   are unaffected until redeployed; the two live workspaces were patched
   out-of-band.
+
+### Fixed
+
+- **Sentinel-key reconcile now absorbs unmarked / duplicate copies (#687).** The
+  host-side `authorized_keys` reconcile only removed a sentinel upstream key when
+  it was preceded by the sentinel marker comment. A copy seeded by an older path
+  or injected manually lands *without* the marker, so the marker scan never
+  reconciled it and copies accumulated across rotations. The reconcile now drops
+  every line whose key material (`<type> <base64>`, comment-ignored) equals the
+  current key — marked or not — so the canonical block is the sole occurrence.
+  Comparing by key material also stops a comment-only difference from being
+  miscounted as a rotation.
+
+- **Jump account is unlocked on every ensure, and the unlock is verified (#687).**
+  `EnsureJumpServerAccount` only unlocked the account on the create path; the
+  already-exists branch fixed the shell and returned, so an account left locked
+  never self-healed — and the create-path unlock swallowed its error. With
+  `UsePAM no` (the hardened jump/BYOC-host setting) OpenSSH refuses a locked
+  account *even for public-key auth*: the box accepts the client key but the
+  sentinel→host upstream hop dies with "account is locked", surfacing as a
+  confusing "authenticated with partial success" loop. The full idempotent
+  account state (unlock, home perms, `.ssh`, sudoers) now runs on both paths so a
+  misprovisioned account recovers on the next create/reconcile, and the unlock is
+  verified by reading the shadow password field directly — treating the account
+  as locked only when it starts with `!` (sshd's own check), since `passwd -S`
+  reports both `!` (locked) and `*` (disabled-but-usable) as `L`.
 
 ## [0.43.2] - 2026-06-22
 
