@@ -300,6 +300,74 @@ func TestRewriteSentinelBlock_MultipleStaleMarkers(t *testing.T) {
 	}
 }
 
+func TestRewriteSentinelBlock_AbsorbsUnmarkedDuplicate(t *testing.T) {
+	// The live BYOC failure mode: an older seeding path / manual injection
+	// left the current upstream key in the file WITHOUT the marker, so the
+	// marker scan alone never reconciled it and copies accumulated. The
+	// rewrite must absorb the unmarked copy into the single canonical block.
+	key := "ssh-ed25519 AAAA_sentinel sentinel@sshpiper"
+	existing := "ssh-ed25519 AAAA_user user@laptop\n" +
+		key + " stray-comment\n" + // unmarked copy (different comment)
+		sentinelKeyMarker + "\n" +
+		key + "\n" +
+		key + "\n" // a second bare unmarked dup
+
+	out, _, _ := rewriteSentinelBlock(existing, key)
+	if got := strings.Count(out, "AAAA_sentinel"); got != 1 {
+		t.Errorf("expected the sentinel key exactly once, got %d:\n%s", got, out)
+	}
+	if strings.Count(out, sentinelKeyMarker) != 1 {
+		t.Errorf("expected exactly one marker, got %d:\n%s",
+			strings.Count(out, sentinelKeyMarker), out)
+	}
+	if !strings.Contains(out, "AAAA_user user@laptop") {
+		t.Errorf("user key must be preserved:\n%s", out)
+	}
+	// Idempotent on the cleaned-up content.
+	out2, _, _ := rewriteSentinelBlock(out, key)
+	if out != out2 {
+		t.Errorf("not idempotent after absorbing dup:\nfirst:\n%s\nsecond:\n%s", out, out2)
+	}
+}
+
+func TestRewriteSentinelBlock_CommentOnlyDiffIsNotRotation(t *testing.T) {
+	// Same key material, different comment, behind the marker: this is the
+	// same key, not a rotation — priorDiffers must stay false.
+	existing := sentinelKeyMarker + "\n" +
+		"ssh-ed25519 AAAA_sentinel old-comment\n"
+	key := "ssh-ed25519 AAAA_sentinel new-comment"
+
+	_, hadPrior, priorDiffers := rewriteSentinelBlock(existing, key)
+	if !hadPrior {
+		t.Error("expected hadPrior=true")
+	}
+	if priorDiffers {
+		t.Error("comment-only difference must not be treated as a rotation")
+	}
+}
+
+func TestSSHKeyMaterial(t *testing.T) {
+	cases := []struct {
+		in     string
+		want   string
+		wantOk bool
+	}{
+		{"ssh-ed25519 AAAA comment", "ssh-ed25519 AAAA", true},
+		{"  ssh-rsa BBBB  ", "ssh-rsa BBBB", true},
+		{"ecdsa-sha2-nistp256 CCCC host", "ecdsa-sha2-nistp256 CCCC", true},
+		{"sk-ssh-ed25519@openssh.com DDDD", "sk-ssh-ed25519@openssh.com DDDD", true},
+		{sentinelKeyMarker, "", false},
+		{"", "", false},
+		{"ssh-ed25519", "", false}, // type only, no material
+	}
+	for _, c := range cases {
+		got, ok := sshKeyMaterial(c.in)
+		if got != c.want || ok != c.wantOk {
+			t.Errorf("sshKeyMaterial(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.want, c.wantOk)
+		}
+	}
+}
+
 func TestApplySentinelKey_FirstInstall(t *testing.T) {
 	tmpHome := t.TempDir()
 	mkUser(t, tmpHome, "alice", "ssh-ed25519 AAAA_alice alice@laptop\n")

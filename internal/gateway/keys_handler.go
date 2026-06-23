@@ -196,17 +196,49 @@ func applySentinelKey(homeRoot, pubKey string) (updated, rotated int, err error)
 	return updated, rotated, nil
 }
 
+// sshKeyMaterial returns the "<type> <base64>" prefix of an authorized_keys
+// line, ignoring any trailing comment, and true when the line looks like a
+// public key. Two lines name the same key iff their material matches — the
+// comment field is cosmetic and must not defeat dedup.
+//
+// Sentinel upstream keys are written without an options prefix, so the type
+// is the first whitespace field; option-prefixed lines (which a sentinel key
+// never is) return false and are left untouched.
+func sshKeyMaterial(line string) (string, bool) {
+	f := strings.Fields(strings.TrimSpace(line))
+	if len(f) < 2 {
+		return "", false
+	}
+	switch {
+	case strings.HasPrefix(f[0], "ssh-"),
+		strings.HasPrefix(f[0], "ecdsa-"),
+		strings.HasPrefix(f[0], "sk-"):
+		return f[0] + " " + f[1], true
+	default:
+		return "", false
+	}
+}
+
 // rewriteSentinelBlock returns authorized_keys content with the sentinel
 // marker + one current pubKey, replacing any prior sentinel marker block
 // (and the key line that follows it).
+//
+// It also absorbs any *unmarked* stray copy of the current sentinel key: an
+// older seeding path or a manual injection can leave the upstream key in the
+// file without the marker, which the marker scan alone would never reconcile,
+// so it accumulates across rotations. Dropping every line whose key material
+// equals pubKey (regardless of marker or comment) guarantees the canonical
+// block appended below is the sole occurrence.
 //
 // Returns the new content, whether a prior sentinel block existed, and
 // whether the prior key (if any) differed from pubKey.
 func rewriteSentinelBlock(existing, pubKey string) (newContent string, hadPrior, priorDiffers bool) {
 	lines := strings.Split(existing, "\n")
 	out := make([]string, 0, len(lines)+2)
+	targetMat, haveTarget := sshKeyMaterial(pubKey)
 
-	// Drop every "marker + next-non-empty-line" pair from the input.
+	// Drop every "marker + next-non-empty-line" pair from the input, plus
+	// any stray (unmarked) copy of the current sentinel key.
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		if strings.TrimSpace(line) == sentinelKeyMarker {
@@ -218,12 +250,21 @@ func rewriteSentinelBlock(existing, pubKey string) (newContent string, hadPrior,
 			}
 			if j < len(lines) {
 				prior := strings.TrimSpace(lines[j])
-				if prior != pubKey {
+				// Compare by key material so a comment-only difference on
+				// the same key is not mistaken for a rotation.
+				if pm, ok := sshKeyMaterial(prior); !ok || !haveTarget || pm != targetMat {
 					priorDiffers = true
 				}
 				i = j // skip the prior key line as well
 			}
 			continue
+		}
+		// Silently dedup an unmarked copy of the current key; the canonical
+		// block re-adds it once below.
+		if haveTarget {
+			if m, ok := sshKeyMaterial(line); ok && m == targetMat {
+				continue
+			}
 		}
 		out = append(out, line)
 	}
