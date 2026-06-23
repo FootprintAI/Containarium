@@ -3336,6 +3336,73 @@
         ]
       }
     },
+    "/v1/network/egress-proxy": {
+      "post": {
+        "summary": "Start egress-via-client proxy",
+        "description": "Bridges a host-loopback SOCKS (exposed by the caller via ssh -R) into a box's network namespace via a source-restricted relay, so the box egresses with the operator's IP.",
+        "operationId": "NetworkService_StartEgressProxy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StartEgressProxyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "StartEgressProxyRequest asks the daemon to bridge a host-loopback SOCKS into\na box's netns (#808 egress-via-client).",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StartEgressProxyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/v1/network/egress-proxy/{containerName}": {
+      "delete": {
+        "summary": "Stop egress-via-client proxy",
+        "description": "Tears down the source-restricted egress relay for the named box.",
+        "operationId": "NetworkService_StopEgressProxy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StopEgressProxyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
     "/v1/network/passthrough": {
       "get": {
         "summary": "List passthrough routes",
@@ -11068,6 +11135,36 @@
       },
       "title": "StartContainerResponse is the response from starting a container"
     },
+    "StartEgressProxyRequest": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "description": "Box (container) whose egress should be routed."
+        },
+        "upstreamPort": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Host-loopback port where the caller has exposed their SOCKS proxy via\n`ssh -R 127.0.0.1:\u003cupstream_port\u003e:localhost:\u003clocal-socks\u003e`. The daemon's\nrelay forwards box connections to 127.0.0.1:\u003cupstream_port\u003e."
+        },
+        "proxyPort": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Optional bridge-gateway port the in-box relay should listen on. 0 = the\ndaemon picks a free port."
+        }
+      },
+      "description": "StartEgressProxyRequest asks the daemon to bridge a host-loopback SOCKS into\na box's netns (#808 egress-via-client)."
+    },
+    "StartEgressProxyResponse": {
+      "type": "object",
+      "properties": {
+        "socksAddress": {
+          "type": "string",
+          "description": "SOCKS address reachable from inside the box, e.g. \"10.100.0.1:18080\".\nPoint the box's apps at socks5://\u003csocks_address\u003e (Chrome:\n--proxy-server=socks5://\u003csocks_address\u003e)."
+        }
+      },
+      "description": "StartEgressProxyResponse returns the in-box SOCKS address to point apps at."
+    },
     "StatusResponse": {
       "type": "object",
       "properties": {
@@ -11122,6 +11219,15 @@
         }
       },
       "title": "StopContainerResponse is the response from stopping a container"
+    },
+    "StopEgressProxyResponse": {
+      "type": "object",
+      "properties": {
+        "stopped": {
+          "type": "boolean"
+        }
+      },
+      "description": "StopEgressProxyResponse is the (empty) ack for a teardown."
     },
     "SuppressPentestFindingBody": {
       "type": "object",

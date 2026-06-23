@@ -3,10 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/egressproxy"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -29,6 +33,7 @@ type NetworkServer struct {
 	proxyIP            string                   // e.g., "10.100.0.1"
 	baseDomain         string                   // e.g., "example.com"
 	emitter            *events.Emitter
+	egressMgr          *egressproxy.Manager // egress-via-client relays, keyed by box (#808)
 }
 
 // resolveFullDomain determines the full domain from a user-provided domain string.
@@ -57,6 +62,7 @@ func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager,
 		containerNetwork:   containerNetwork,
 		proxyIP:            proxyIP,
 		emitter:            events.NewEmitter(events.GetBus()),
+		egressMgr:          egressproxy.NewManager(),
 	}
 }
 
@@ -1162,4 +1168,70 @@ func protoToRouteProtocol(protocol pb.RouteProtocol) app.RouteProtocol {
 	default:
 		return app.RouteProtocolHTTP
 	}
+}
+
+// StartEgressProxy bridges a host-loopback SOCKS (which the caller exposes via
+// `ssh -R 127.0.0.1:<upstream_port>:localhost:<their-socks>`) into a box's
+// network namespace, so the box egresses with the operator's IP — the
+// "egress via client" feature (#808). The daemon runs a source-restricted relay
+// on the bridge gateway that ONLY the target box's IP may use, forwarding to
+// the host-loopback SOCKS the caller opened. The box points its apps at the
+// returned socks_address.
+func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgressProxyRequest) (*pb.StartEgressProxyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetContainerName())
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "container_name is required")
+	}
+	if req.GetUpstreamPort() <= 0 || req.GetUpstreamPort() > 65535 {
+		return nil, status.Error(codes.InvalidArgument, "upstream_port must be 1-65535 (the host-loopback port from your `ssh -R`)")
+	}
+	if s.proxyIP == "" {
+		return nil, status.Error(codes.FailedPrecondition, "daemon bridge gateway is not configured")
+	}
+	if s.incusClient == nil {
+		return nil, status.Error(codes.Unavailable, "container backend unavailable")
+	}
+	info, err := s.incusClient.GetContainer(name)
+	if err != nil || info == nil {
+		return nil, status.Errorf(codes.NotFound, "container %q not found", name)
+	}
+	if info.IPAddress == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "container %q has no IP yet (is it running?)", name)
+	}
+	if s.egressMgr == nil {
+		s.egressMgr = egressproxy.NewManager()
+	}
+
+	// listen on the bridge gateway (box-reachable); proxy_port 0 => free port.
+	listen := net.JoinHostPort(s.proxyIP, strconv.Itoa(int(req.GetProxyPort())))
+	// upstream is the host-loopback listener the caller opened via ssh -R.
+	upstream := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(req.GetUpstreamPort())))
+
+	// allow ONLY the target box's IP — the multi-tenant boundary so a sibling
+	// box on the same bridge can't use this operator's egress channel.
+	addr, err := s.egressMgr.Start(name, listen, upstream, []string{info.IPAddress}, log.Printf)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "start egress relay: %v", err)
+	}
+	log.Printf("[egress-via-client] box %s (%s) -> relay %s -> host-loopback:%d", name, info.IPAddress, addr, req.GetUpstreamPort())
+	return &pb.StartEgressProxyResponse{SocksAddress: addr}, nil
+}
+
+// StopEgressProxy tears down the egress-via-client relay for a box.
+func (s *NetworkServer) StopEgressProxy(ctx context.Context, req *pb.StopEgressProxyRequest) (*pb.StopEgressProxyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetContainerName())
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "container_name is required")
+	}
+	stopped := false
+	if s.egressMgr != nil {
+		stopped = s.egressMgr.Stop(name)
+	}
+	return &pb.StopEgressProxyResponse{Stopped: stopped}, nil
 }

@@ -1114,3 +1114,34 @@ func (c *GRPCClient) DeleteRoute(domain string) error {
 
 	return nil
 }
+
+// StartEgressProxy asks the daemon to bridge a host-loopback SOCKS (exposed by
+// the caller via `ssh -R`) into a box's netns (#808 egress-via-client). Returns
+// the in-box SOCKS address to point the box's apps at.
+func (c *GRPCClient) StartEgressProxy(containerName string, upstreamPort, proxyPort int32) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.networkClient.StartEgressProxy(ctx, &pb.StartEgressProxyRequest{
+		ContainerName: containerName,
+		UpstreamPort:  upstreamPort,
+		ProxyPort:     proxyPort,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to start egress proxy: %w", err)
+	}
+	return resp.GetSocksAddress(), nil
+}
+
+// StopEgressProxy tears down the egress-via-client relay for a box.
+func (c *GRPCClient) StopEgressProxy(containerName string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := c.networkClient.StopEgressProxy(ctx, &pb.StopEgressProxyRequest{
+		ContainerName: containerName,
+	}); err != nil {
+		return fmt.Errorf("failed to stop egress proxy: %w", err)
+	}
+	return nil
+}

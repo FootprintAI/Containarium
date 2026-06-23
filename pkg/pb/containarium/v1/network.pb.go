@@ -2588,6 +2588,212 @@ func (x *ListACLPresetsResponse) GetPresets() []*ACLPresetInfo {
 	return nil
 }
 
+// StartEgressProxyRequest asks the daemon to bridge a host-loopback SOCKS into
+// a box's netns (#808 egress-via-client).
+type StartEgressProxyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Box (container) whose egress should be routed.
+	ContainerName string `protobuf:"bytes,1,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
+	// Host-loopback port where the caller has exposed their SOCKS proxy via
+	// `ssh -R 127.0.0.1:<upstream_port>:localhost:<local-socks>`. The daemon's
+	// relay forwards box connections to 127.0.0.1:<upstream_port>.
+	UpstreamPort int32 `protobuf:"varint,2,opt,name=upstream_port,json=upstreamPort,proto3" json:"upstream_port,omitempty"`
+	// Optional bridge-gateway port the in-box relay should listen on. 0 = the
+	// daemon picks a free port.
+	ProxyPort     int32 `protobuf:"varint,3,opt,name=proxy_port,json=proxyPort,proto3" json:"proxy_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartEgressProxyRequest) Reset() {
+	*x = StartEgressProxyRequest{}
+	mi := &file_containarium_v1_network_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartEgressProxyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartEgressProxyRequest) ProtoMessage() {}
+
+func (x *StartEgressProxyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartEgressProxyRequest.ProtoReflect.Descriptor instead.
+func (*StartEgressProxyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *StartEgressProxyRequest) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
+}
+
+func (x *StartEgressProxyRequest) GetUpstreamPort() int32 {
+	if x != nil {
+		return x.UpstreamPort
+	}
+	return 0
+}
+
+func (x *StartEgressProxyRequest) GetProxyPort() int32 {
+	if x != nil {
+		return x.ProxyPort
+	}
+	return 0
+}
+
+// StartEgressProxyResponse returns the in-box SOCKS address to point apps at.
+type StartEgressProxyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SOCKS address reachable from inside the box, e.g. "10.100.0.1:18080".
+	// Point the box's apps at socks5://<socks_address> (Chrome:
+	// --proxy-server=socks5://<socks_address>).
+	SocksAddress  string `protobuf:"bytes,1,opt,name=socks_address,json=socksAddress,proto3" json:"socks_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartEgressProxyResponse) Reset() {
+	*x = StartEgressProxyResponse{}
+	mi := &file_containarium_v1_network_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartEgressProxyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartEgressProxyResponse) ProtoMessage() {}
+
+func (x *StartEgressProxyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartEgressProxyResponse.ProtoReflect.Descriptor instead.
+func (*StartEgressProxyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *StartEgressProxyResponse) GetSocksAddress() string {
+	if x != nil {
+		return x.SocksAddress
+	}
+	return ""
+}
+
+// StopEgressProxyRequest tears down the egress relay for a box.
+type StopEgressProxyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ContainerName string                 `protobuf:"bytes,1,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopEgressProxyRequest) Reset() {
+	*x = StopEgressProxyRequest{}
+	mi := &file_containarium_v1_network_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopEgressProxyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopEgressProxyRequest) ProtoMessage() {}
+
+func (x *StopEgressProxyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopEgressProxyRequest.ProtoReflect.Descriptor instead.
+func (*StopEgressProxyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *StopEgressProxyRequest) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
+}
+
+// StopEgressProxyResponse is the (empty) ack for a teardown.
+type StopEgressProxyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Stopped       bool                   `protobuf:"varint,1,opt,name=stopped,proto3" json:"stopped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopEgressProxyResponse) Reset() {
+	*x = StopEgressProxyResponse{}
+	mi := &file_containarium_v1_network_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopEgressProxyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopEgressProxyResponse) ProtoMessage() {}
+
+func (x *StopEgressProxyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopEgressProxyResponse.ProtoReflect.Descriptor instead.
+func (*StopEgressProxyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *StopEgressProxyResponse) GetStopped() bool {
+	if x != nil {
+		return x.Stopped
+	}
+	return false
+}
+
 var File_containarium_v1_network_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_network_proto_rawDesc = "" +
@@ -2762,7 +2968,18 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x15default_ingress_rules\x18\x04 \x03(\v2\x18.containarium.v1.ACLRuleR\x13defaultIngressRules\x12J\n" +
 	"\x14default_egress_rules\x18\x05 \x03(\v2\x18.containarium.v1.ACLRuleR\x12defaultEgressRules\"R\n" +
 	"\x16ListACLPresetsResponse\x128\n" +
-	"\apresets\x18\x01 \x03(\v2\x1e.containarium.v1.ACLPresetInfoR\apresets*Y\n" +
+	"\apresets\x18\x01 \x03(\v2\x1e.containarium.v1.ACLPresetInfoR\apresets\"\x84\x01\n" +
+	"\x17StartEgressProxyRequest\x12%\n" +
+	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12#\n" +
+	"\rupstream_port\x18\x02 \x01(\x05R\fupstreamPort\x12\x1d\n" +
+	"\n" +
+	"proxy_port\x18\x03 \x01(\x05R\tproxyPort\"?\n" +
+	"\x18StartEgressProxyResponse\x12#\n" +
+	"\rsocks_address\x18\x01 \x01(\tR\fsocksAddress\"?\n" +
+	"\x16StopEgressProxyRequest\x12%\n" +
+	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\"3\n" +
+	"\x17StopEgressProxyResponse\x12\x18\n" +
+	"\astopped\x18\x01 \x01(\bR\astopped*Y\n" +
 	"\tRouteType\x12\x1a\n" +
 	"\x16ROUTE_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ROUTE_TYPE_PROXY\x10\x01\x12\x1a\n" +
@@ -2784,7 +3001,7 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x19ACL_PRESET_FULL_ISOLATION\x10\x01\x12\x18\n" +
 	"\x14ACL_PRESET_HTTP_ONLY\x10\x02\x12\x19\n" +
 	"\x15ACL_PRESET_PERMISSIVE\x10\x03\x12\x15\n" +
-	"\x11ACL_PRESET_CUSTOM\x10\x042\xf9\x1b\n" +
+	"\x11ACL_PRESET_CUSTOM\x10\x042\xe9 \n" +
 	"\x0eNetworkService\x12\xdd\x01\n" +
 	"\tGetRoutes\x12!.containarium.v1.GetRoutesRequest\x1a\".containarium.v1.GetRoutesResponse\"\x88\x01\x92Ak\n" +
 	"\aNetwork\x12\x11List proxy routes\x1aMReturns all DNS/domain to container mappings configured in the reverse proxy.\x82\xd3\xe4\x93\x02\x14\x12\x12/v1/network/routes\x12\xd0\x01\n" +
@@ -2811,7 +3028,11 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x12GetNetworkTopology\x12*.containarium.v1.GetNetworkTopologyRequest\x1a+.containarium.v1.GetNetworkTopologyResponse\"\xb4\x01\x92A\x94\x01\n" +
 	"\aNetwork\x12\x14Get network topology\x1asReturns the network topology including all containers, apps, proxy routes, and their connections for visualization.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/network/topology\x12\xed\x01\n" +
 	"\x0eListACLPresets\x12&.containarium.v1.ListACLPresetsRequest\x1a'.containarium.v1.ListACLPresetsResponse\"\x89\x01\x92Ag\n" +
-	"\aNetwork\x12\x10List ACL presets\x1aJReturns available firewall rule presets with their default configurations.\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/network/acl-presetsBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\aNetwork\x12\x10List ACL presets\x1aJReturns available firewall rule presets with their default configurations.\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/network/acl-presets\x12\xe6\x02\n" +
+	"\x10StartEgressProxy\x12(.containarium.v1.StartEgressProxyRequest\x1a).containarium.v1.StartEgressProxyResponse\"\xfc\x01\x92A\xd5\x01\n" +
+	"\aNetwork\x12\x1dStart egress-via-client proxy\x1a\xaa\x01Bridges a host-loopback SOCKS (exposed by the caller via ssh -R) into a box's network namespace via a source-restricted relay, so the box egresses with the operator's IP.\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/network/egress-proxy\x12\x84\x02\n" +
+	"\x0fStopEgressProxy\x12'.containarium.v1.StopEgressProxyRequest\x1a(.containarium.v1.StopEgressProxyResponse\"\x9d\x01\x92Ai\n" +
+	"\aNetwork\x12\x1cStop egress-via-client proxy\x1a@Tears down the source-restricted egress relay for the named box.\x82\xd3\xe4\x93\x02+*)/v1/network/egress-proxy/{container_name}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_network_proto_rawDescOnce sync.Once
@@ -2826,7 +3047,7 @@ func file_containarium_v1_network_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_network_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_network_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_containarium_v1_network_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_containarium_v1_network_proto_goTypes = []any{
 	(RouteType)(0),                         // 0: containarium.v1.RouteType
 	(RouteProtocol)(0),                     // 1: containarium.v1.RouteProtocol
@@ -2867,6 +3088,10 @@ var file_containarium_v1_network_proto_goTypes = []any{
 	(*ListACLPresetsRequest)(nil),          // 36: containarium.v1.ListACLPresetsRequest
 	(*ACLPresetInfo)(nil),                  // 37: containarium.v1.ACLPresetInfo
 	(*ListACLPresetsResponse)(nil),         // 38: containarium.v1.ListACLPresetsResponse
+	(*StartEgressProxyRequest)(nil),        // 39: containarium.v1.StartEgressProxyRequest
+	(*StartEgressProxyResponse)(nil),       // 40: containarium.v1.StartEgressProxyResponse
+	(*StopEgressProxyRequest)(nil),         // 41: containarium.v1.StopEgressProxyRequest
+	(*StopEgressProxyResponse)(nil),        // 42: containarium.v1.StopEgressProxyResponse
 }
 var file_containarium_v1_network_proto_depIdxs = []int32{
 	2,  // 0: containarium.v1.ACLRule.action:type_name -> containarium.v1.ACLAction
@@ -2912,21 +3137,25 @@ var file_containarium_v1_network_proto_depIdxs = []int32{
 	32, // 40: containarium.v1.NetworkService.UpdateContainerACL:input_type -> containarium.v1.UpdateContainerACLRequest
 	34, // 41: containarium.v1.NetworkService.GetNetworkTopology:input_type -> containarium.v1.GetNetworkTopologyRequest
 	36, // 42: containarium.v1.NetworkService.ListACLPresets:input_type -> containarium.v1.ListACLPresetsRequest
-	12, // 43: containarium.v1.NetworkService.GetRoutes:output_type -> containarium.v1.GetRoutesResponse
-	14, // 44: containarium.v1.NetworkService.AddRoute:output_type -> containarium.v1.AddRouteResponse
-	16, // 45: containarium.v1.NetworkService.UpdateRoute:output_type -> containarium.v1.UpdateRouteResponse
-	18, // 46: containarium.v1.NetworkService.DeleteRoute:output_type -> containarium.v1.DeleteRouteResponse
-	29, // 47: containarium.v1.NetworkService.ListDNSRecords:output_type -> containarium.v1.ListDNSRecordsResponse
-	20, // 48: containarium.v1.NetworkService.ListPassthroughRoutes:output_type -> containarium.v1.ListPassthroughRoutesResponse
-	22, // 49: containarium.v1.NetworkService.AddPassthroughRoute:output_type -> containarium.v1.AddPassthroughRouteResponse
-	24, // 50: containarium.v1.NetworkService.DeletePassthroughRoute:output_type -> containarium.v1.DeletePassthroughRouteResponse
-	26, // 51: containarium.v1.NetworkService.UpdatePassthroughRoute:output_type -> containarium.v1.UpdatePassthroughRouteResponse
-	31, // 52: containarium.v1.NetworkService.GetContainerACL:output_type -> containarium.v1.GetContainerACLResponse
-	33, // 53: containarium.v1.NetworkService.UpdateContainerACL:output_type -> containarium.v1.UpdateContainerACLResponse
-	35, // 54: containarium.v1.NetworkService.GetNetworkTopology:output_type -> containarium.v1.GetNetworkTopologyResponse
-	38, // 55: containarium.v1.NetworkService.ListACLPresets:output_type -> containarium.v1.ListACLPresetsResponse
-	43, // [43:56] is the sub-list for method output_type
-	30, // [30:43] is the sub-list for method input_type
+	39, // 43: containarium.v1.NetworkService.StartEgressProxy:input_type -> containarium.v1.StartEgressProxyRequest
+	41, // 44: containarium.v1.NetworkService.StopEgressProxy:input_type -> containarium.v1.StopEgressProxyRequest
+	12, // 45: containarium.v1.NetworkService.GetRoutes:output_type -> containarium.v1.GetRoutesResponse
+	14, // 46: containarium.v1.NetworkService.AddRoute:output_type -> containarium.v1.AddRouteResponse
+	16, // 47: containarium.v1.NetworkService.UpdateRoute:output_type -> containarium.v1.UpdateRouteResponse
+	18, // 48: containarium.v1.NetworkService.DeleteRoute:output_type -> containarium.v1.DeleteRouteResponse
+	29, // 49: containarium.v1.NetworkService.ListDNSRecords:output_type -> containarium.v1.ListDNSRecordsResponse
+	20, // 50: containarium.v1.NetworkService.ListPassthroughRoutes:output_type -> containarium.v1.ListPassthroughRoutesResponse
+	22, // 51: containarium.v1.NetworkService.AddPassthroughRoute:output_type -> containarium.v1.AddPassthroughRouteResponse
+	24, // 52: containarium.v1.NetworkService.DeletePassthroughRoute:output_type -> containarium.v1.DeletePassthroughRouteResponse
+	26, // 53: containarium.v1.NetworkService.UpdatePassthroughRoute:output_type -> containarium.v1.UpdatePassthroughRouteResponse
+	31, // 54: containarium.v1.NetworkService.GetContainerACL:output_type -> containarium.v1.GetContainerACLResponse
+	33, // 55: containarium.v1.NetworkService.UpdateContainerACL:output_type -> containarium.v1.UpdateContainerACLResponse
+	35, // 56: containarium.v1.NetworkService.GetNetworkTopology:output_type -> containarium.v1.GetNetworkTopologyResponse
+	38, // 57: containarium.v1.NetworkService.ListACLPresets:output_type -> containarium.v1.ListACLPresetsResponse
+	40, // 58: containarium.v1.NetworkService.StartEgressProxy:output_type -> containarium.v1.StartEgressProxyResponse
+	42, // 59: containarium.v1.NetworkService.StopEgressProxy:output_type -> containarium.v1.StopEgressProxyResponse
+	45, // [45:60] is the sub-list for method output_type
+	30, // [30:45] is the sub-list for method input_type
 	30, // [30:30] is the sub-list for extension type_name
 	30, // [30:30] is the sub-list for extension extendee
 	0,  // [0:30] is the sub-list for field type_name
@@ -2945,7 +3174,7 @@ func file_containarium_v1_network_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_network_proto_rawDesc), len(file_containarium_v1_network_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   35,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

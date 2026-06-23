@@ -32,6 +32,8 @@ const (
 	NetworkService_UpdateContainerACL_FullMethodName     = "/containarium.v1.NetworkService/UpdateContainerACL"
 	NetworkService_GetNetworkTopology_FullMethodName     = "/containarium.v1.NetworkService/GetNetworkTopology"
 	NetworkService_ListACLPresets_FullMethodName         = "/containarium.v1.NetworkService/ListACLPresets"
+	NetworkService_StartEgressProxy_FullMethodName       = "/containarium.v1.NetworkService/StartEgressProxy"
+	NetworkService_StopEgressProxy_FullMethodName        = "/containarium.v1.NetworkService/StopEgressProxy"
 )
 
 // NetworkServiceClient is the client API for NetworkService service.
@@ -66,6 +68,14 @@ type NetworkServiceClient interface {
 	GetNetworkTopology(ctx context.Context, in *GetNetworkTopologyRequest, opts ...grpc.CallOption) (*GetNetworkTopologyResponse, error)
 	// ListACLPresets lists available firewall presets
 	ListACLPresets(ctx context.Context, in *ListACLPresetsRequest, opts ...grpc.CallOption) (*ListACLPresetsResponse, error)
+	// StartEgressProxy starts a source-restricted relay that lets a box egress
+	// through an operator-reachable SOCKS — "egress via client" (#808). The
+	// operator first opens `ssh -R 127.0.0.1:<upstream_port>:localhost:<socks>`
+	// to expose their SOCKS on the host loopback; this RPC then bridges that
+	// host-netns listener into the box's netns, scoped to the box's source IP.
+	StartEgressProxy(ctx context.Context, in *StartEgressProxyRequest, opts ...grpc.CallOption) (*StartEgressProxyResponse, error)
+	// StopEgressProxy stops the egress-via-client relay for a box.
+	StopEgressProxy(ctx context.Context, in *StopEgressProxyRequest, opts ...grpc.CallOption) (*StopEgressProxyResponse, error)
 }
 
 type networkServiceClient struct {
@@ -206,6 +216,26 @@ func (c *networkServiceClient) ListACLPresets(ctx context.Context, in *ListACLPr
 	return out, nil
 }
 
+func (c *networkServiceClient) StartEgressProxy(ctx context.Context, in *StartEgressProxyRequest, opts ...grpc.CallOption) (*StartEgressProxyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartEgressProxyResponse)
+	err := c.cc.Invoke(ctx, NetworkService_StartEgressProxy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *networkServiceClient) StopEgressProxy(ctx context.Context, in *StopEgressProxyRequest, opts ...grpc.CallOption) (*StopEgressProxyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StopEgressProxyResponse)
+	err := c.cc.Invoke(ctx, NetworkService_StopEgressProxy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NetworkServiceServer is the server API for NetworkService service.
 // All implementations must embed UnimplementedNetworkServiceServer
 // for forward compatibility.
@@ -238,6 +268,14 @@ type NetworkServiceServer interface {
 	GetNetworkTopology(context.Context, *GetNetworkTopologyRequest) (*GetNetworkTopologyResponse, error)
 	// ListACLPresets lists available firewall presets
 	ListACLPresets(context.Context, *ListACLPresetsRequest) (*ListACLPresetsResponse, error)
+	// StartEgressProxy starts a source-restricted relay that lets a box egress
+	// through an operator-reachable SOCKS — "egress via client" (#808). The
+	// operator first opens `ssh -R 127.0.0.1:<upstream_port>:localhost:<socks>`
+	// to expose their SOCKS on the host loopback; this RPC then bridges that
+	// host-netns listener into the box's netns, scoped to the box's source IP.
+	StartEgressProxy(context.Context, *StartEgressProxyRequest) (*StartEgressProxyResponse, error)
+	// StopEgressProxy stops the egress-via-client relay for a box.
+	StopEgressProxy(context.Context, *StopEgressProxyRequest) (*StopEgressProxyResponse, error)
 	mustEmbedUnimplementedNetworkServiceServer()
 }
 
@@ -286,6 +324,12 @@ func (UnimplementedNetworkServiceServer) GetNetworkTopology(context.Context, *Ge
 }
 func (UnimplementedNetworkServiceServer) ListACLPresets(context.Context, *ListACLPresetsRequest) (*ListACLPresetsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListACLPresets not implemented")
+}
+func (UnimplementedNetworkServiceServer) StartEgressProxy(context.Context, *StartEgressProxyRequest) (*StartEgressProxyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartEgressProxy not implemented")
+}
+func (UnimplementedNetworkServiceServer) StopEgressProxy(context.Context, *StopEgressProxyRequest) (*StopEgressProxyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopEgressProxy not implemented")
 }
 func (UnimplementedNetworkServiceServer) mustEmbedUnimplementedNetworkServiceServer() {}
 func (UnimplementedNetworkServiceServer) testEmbeddedByValue()                        {}
@@ -542,6 +586,42 @@ func _NetworkService_ListACLPresets_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NetworkService_StartEgressProxy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartEgressProxyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkServiceServer).StartEgressProxy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkService_StartEgressProxy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkServiceServer).StartEgressProxy(ctx, req.(*StartEgressProxyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NetworkService_StopEgressProxy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopEgressProxyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkServiceServer).StopEgressProxy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkService_StopEgressProxy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkServiceServer).StopEgressProxy(ctx, req.(*StopEgressProxyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NetworkService_ServiceDesc is the grpc.ServiceDesc for NetworkService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -600,6 +680,14 @@ var NetworkService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListACLPresets",
 			Handler:    _NetworkService_ListACLPresets_Handler,
+		},
+		{
+			MethodName: "StartEgressProxy",
+			Handler:    _NetworkService_StartEgressProxy_Handler,
+		},
+		{
+			MethodName: "StopEgressProxy",
+			Handler:    _NetworkService_StopEgressProxy_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
