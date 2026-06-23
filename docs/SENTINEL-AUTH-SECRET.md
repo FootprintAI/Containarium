@@ -1,5 +1,14 @@
 # Sentinel ↔ daemon HMAC secret (`CONTAINARIUM_SENTINEL_AUTH_SECRET`)
 
+> **As of v0.45.0 there is a stronger, asymmetric successor.** The shared HMAC
+> secret below is symmetric — every daemon that can verify the sentinel can also
+> forge a request, which is a cross-tenant escalation on multi-tenant / BYOC
+> deployments. To migrate to per-direction ed25519 keys (sentinel signs, daemons
+> verify with a public key they cannot forge with), follow
+> [SENTINEL-ED25519-MIGRATION-RUNBOOK.md](./SENTINEL-ED25519-MIGRATION-RUNBOOK.md).
+> This document remains the reference for the legacy scheme and the shared
+> `env.secrets` plumbing both schemes use.
+
 Since **v0.19.0** the sentinel-facing daemon endpoints are gated behind an
 HMAC signature keyed on a shared secret:
 
