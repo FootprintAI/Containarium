@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-06-24
+
+### Added
+
+- **Egress via client (#808).** Route a box's outbound traffic through the
+  operator's workstation — so a box (e.g. a headless browser) egresses with the
+  operator's IP — even when the box can't reach the operator (a NAT'd laptop).
+  A box runs in its own network namespace and can't consume a host-side
+  `ssh -R` listener directly (it lands in the host netns); the daemon bridges it
+  in. Shipped:
+  - `containarium egress-relay` (Phase 2a) — a source-restricted host-side TCP
+    relay binding the bridge gateway, forwarding to an operator-reachable SOCKS
+    (e.g. over Tailscale), accepting only the target box's IP.
+  - `NetworkService.StartEgressProxy`/`StopEgressProxy` (proto-first) + the
+    `containarium egress-via-client <box>` command (Phase 2b): starts a local
+    SOCKS, opens an `ssh -R` exposing it on the box's host loopback, asks the
+    daemon to bridge it into the box (source-restricted), prints the in-box
+    SOCKS address, and tears down on exit. `--http` targets the cloud control
+    plane (a `ctnr_` token) so it works for cloud boxes too; otherwise gRPC to a
+    daemon (direct / BYOC). Validated live (box egress flipped from the host's
+    IP to the operator's). Design: `docs/EGRESS-VIA-CLIENT-DESIGN.md`.
+
+### Changed
+
+- Bumped `github.com/mark3labs/mcp-go` 0.54.1 → 0.55.0 and
+  `google.golang.org/api` 0.284.0 → 0.285.0 (dependabot).
+
 ## [0.45.1] - 2026-06-23
 
 ### Fixed
