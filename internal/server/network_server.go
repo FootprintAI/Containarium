@@ -1188,8 +1188,16 @@ func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgres
 	if req.GetUpstreamPort() <= 0 || req.GetUpstreamPort() > 65535 {
 		return nil, status.Error(codes.InvalidArgument, "upstream_port must be 1-65535 (the host-loopback port from your `ssh -R`)")
 	}
-	if s.proxyIP == "" {
-		return nil, status.Error(codes.FailedPrecondition, "daemon bridge gateway is not configured")
+	// Resolve the bridge gateway the box reaches the daemon on. proxyIP is only
+	// populated on the app-hosting path; otherwise derive it from the container
+	// network CIDR (the gateway is its first host address, e.g. 10.100.0.0/24 ->
+	// 10.100.0.1) so egress works on every daemon, not just app-hosting ones.
+	gatewayIP := s.proxyIP
+	if gatewayIP == "" {
+		gatewayIP = bridgeGatewayIP(s.containerNetwork)
+	}
+	if gatewayIP == "" {
+		return nil, status.Error(codes.FailedPrecondition, "could not determine the daemon bridge gateway IP")
 	}
 	if s.incusClient == nil {
 		return nil, status.Error(codes.Unavailable, "container backend unavailable")
@@ -1206,7 +1214,7 @@ func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgres
 	}
 
 	// listen on the bridge gateway (box-reachable); proxy_port 0 => free port.
-	listen := net.JoinHostPort(s.proxyIP, strconv.Itoa(int(req.GetProxyPort())))
+	listen := net.JoinHostPort(gatewayIP, strconv.Itoa(int(req.GetProxyPort())))
 	// upstream is the host-loopback listener the caller opened via ssh -R.
 	upstream := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(req.GetUpstreamPort())))
 
@@ -1234,4 +1242,23 @@ func (s *NetworkServer) StopEgressProxy(ctx context.Context, req *pb.StopEgressP
 		stopped = s.egressMgr.Stop(name)
 	}
 	return &pb.StopEgressProxyResponse{Stopped: stopped}, nil
+}
+
+// bridgeGatewayIP returns the gateway (first host) address of a container
+// network CIDR — e.g. "10.100.0.0/24" -> "10.100.0.1" — which is the address a
+// box reaches the daemon on (the incus bridge gateway). Returns "" on a CIDR
+// it can't parse or a non-IPv4 network.
+func bridgeGatewayIP(cidr string) string {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return ""
+	}
+	ip := ipnet.IP.To4()
+	if ip == nil {
+		return ""
+	}
+	gw := make(net.IP, len(ip))
+	copy(gw, ip)
+	gw[3]++ // network address + 1 = the bridge gateway
+	return gw.String()
 }

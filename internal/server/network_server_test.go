@@ -82,3 +82,23 @@ func TestResolveFullDomain(t *testing.T) {
 		})
 	}
 }
+
+func TestBridgeGatewayIP(t *testing.T) {
+	cases := []struct {
+		cidr string
+		want string
+	}{
+		{"10.100.0.0/24", "10.100.0.1"}, // the incus default — box reaches the daemon here
+		{"10.0.3.0/24", "10.0.3.1"},
+		{"192.168.5.0/24", "192.168.5.1"},
+		{"10.100.0.0/16", "10.100.0.1"}, // gateway is network-addr+1 regardless of mask
+		{"", ""},                        // unparseable → empty (caller fails closed)
+		{"not-a-cidr", ""},
+		{"::1/128", ""}, // IPv6 unsupported → empty
+	}
+	for _, c := range cases {
+		if got := bridgeGatewayIP(c.cidr); got != c.want {
+			t.Errorf("bridgeGatewayIP(%q) = %q, want %q", c.cidr, got, c.want)
+		}
+	}
+}
