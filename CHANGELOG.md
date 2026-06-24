@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.2] - 2026-06-24
+
+### Fixed
+
+- **New boxes' jump accounts were left locked → SSH broken on UsePAM=no hosts
+  (#687/#808).** #798 added the jump-account unlock to `EnsureJumpServerAccount`,
+  but boxes are created through the Manager, which calls
+  `CreateJumpServerAccount` — and that path never unlocked. So a new box's host
+  jump account stayed `!`-locked; on a `UsePAM=no` host (the hardened jump/BYOC
+  setting) sshd refuses a locked account even for public-key auth, recurring the
+  "account is locked" sentinel→host SSH failure for every new box. (Benign on a
+  `UsePAM=yes` host, which is why it went unnoticed on the cloud workhorse.)
+  `CreateJumpServerAccount` now unlocks on both the create and already-exists
+  (self-heal) paths.
+
 ## [0.46.1] - 2026-06-24
 
 ### Fixed
