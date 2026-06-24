@@ -57,12 +57,27 @@ func CreateJumpServerAccount(username string, sshPublicKey string, verbose bool)
 		if err := ensureProxyOnlyShell(username, verbose); err != nil {
 			return fmt.Errorf("failed to ensure proxy-only shell: %w", err)
 		}
+		// Self-heal a previously-locked account (created before this unlock fix).
+		if err := ensureAccountUnlocked(username); err != nil {
+			return err
+		}
 		return updateUserSSHKey(username, sshPublicKey, verbose)
 	}
 
 	// Create user with nologin shell (proxy-only, no shell access)
 	// Wait for lock files to clear and retry useradd if needed
 	if err := retryUseraddWithLockWait(username, verbose); err != nil {
+		return err
+	}
+
+	// Unlock: useradd creates locked ("!") accounts, and sshd with UsePAM=no
+	// (the hardened jump/BYOC-host setting) refuses a locked account even for
+	// public-key auth — the box accepts the client key but the sentinel->host
+	// upstream hop dies with "account is locked" (#687/#808). The Manager
+	// creates boxes through THIS function (manager.go), so the unlock must live
+	// here too; EnsureJumpServerAccount only covered the other create path.
+	if err := ensureAccountUnlocked(username); err != nil {
+		_ = exec.Command("userdel", "-r", username).Run()
 		return err
 	}
 
