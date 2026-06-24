@@ -114,24 +114,47 @@ func runEgressViaClient(cmd *cobra.Command, args []string) error {
 	}
 	cmd.Printf("ssh -R exposed your SOCKS on the box's host loopback :%d\n", hostPort)
 
-	// 3. Ask the daemon to bridge the host-loopback listener into the box.
-	grpcClient, err := client.NewGRPCClient(evcServer, certsDir, insecure)
+	// 3. Ask the control plane (or daemon) to bridge the host-loopback listener
+	//    into the box. --http targets the cloud REST surface (a ctnr_ token);
+	//    otherwise gRPC straight to a daemon (direct / BYOC).
+	ctrl, err := newEgressControlClient()
 	if err != nil {
-		return fmt.Errorf("connect to daemon: %w", err)
+		return fmt.Errorf("connect to control plane: %w", err)
 	}
-	defer func() { _ = grpcClient.Close() }()
+	defer func() { _ = ctrl.Close() }()
 
-	inBox, err := grpcClient.StartEgressProxy(box, int32(hostPort), 0) // #nosec G115 -- port is 1..65535
+	inBox, err := ctrl.StartEgressProxy(box, int32(hostPort), 0) // #nosec G115 -- port is 1..65535
 	if err != nil {
 		return err
 	}
-	defer func() { _ = grpcClient.StopEgressProxy(box) }()
+	defer func() { _ = ctrl.StopEgressProxy(box) }()
 
 	cmd.Printf("\n✅ egress wired. Inside the box, point apps at:\n    socks5://%s\n    (Chrome: --proxy-server=socks5://%s)\n\nCtrl-C to tear down.\n", inBox, inBox)
 
 	<-ctx.Done()
 	cmd.Printf("\ntearing down egress for %s...\n", box)
 	return nil
+}
+
+// egressControlClient is the control surface egress-via-client needs. Both
+// *client.GRPCClient and *client.HTTPClient satisfy it.
+type egressControlClient interface {
+	StartEgressProxy(containerName string, upstreamPort, proxyPort int32) (string, error)
+	StopEgressProxy(containerName string) error
+	Close() error
+}
+
+// newEgressControlClient picks the transport: --http targets the cloud REST
+// surface (a ctnr_ token via --token / $CONTAINARIUM_TOKEN, the cloud case);
+// otherwise gRPC straight to a daemon (direct / BYOC).
+func newEgressControlClient() (egressControlClient, error) {
+	if evcServer == "" {
+		return nil, fmt.Errorf("--server is required")
+	}
+	if httpMode {
+		return client.NewHTTPClient(evcServer, authToken)
+	}
+	return client.NewGRPCClient(evcServer, certsDir, insecure)
 }
 
 // readAllocatedPort scans ssh stderr for the dynamically-allocated reverse

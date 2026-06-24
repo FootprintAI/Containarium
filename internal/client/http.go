@@ -919,6 +919,61 @@ func (c *HTTPClient) DeleteContainer(username string, force bool) error {
 	return nil
 }
 
+// StartEgressProxy asks the control plane (or daemon) to bridge a host-loopback
+// SOCKS (exposed by the caller via ssh -R) into a box's netns (#808). Returns
+// the in-box SOCKS address. HTTP counterpart of GRPCClient.StartEgressProxy.
+func (c *HTTPClient) StartEgressProxy(containerName string, upstreamPort, proxyPort int32) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/network/egress-proxy", map[string]interface{}{
+		"containerName": containerName,
+		"upstreamPort":  upstreamPort,
+		"proxyPort":     proxyPort,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to start egress proxy: %w", err)
+	}
+	defer drainClose(resp)
+
+	if resp.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return "", fmt.Errorf("%s", errResp.Error)
+		}
+		return "", fmt.Errorf("failed to start egress proxy: status %d", resp.StatusCode)
+	}
+
+	var out struct {
+		SocksAddress string `json:"socksAddress"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("failed to decode egress proxy response: %w", err)
+	}
+	return out.SocksAddress, nil
+}
+
+// StopEgressProxy tears down the egress-via-client relay for a box. Idempotent
+// (a 404 — already gone — is success).
+func (c *HTTPClient) StopEgressProxy(containerName string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, "/v1/network/egress-proxy/"+url.PathEscape(containerName), nil)
+	if err != nil {
+		return fmt.Errorf("failed to stop egress proxy: %w", err)
+	}
+	defer drainClose(resp)
+
+	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("failed to stop egress proxy: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // GetContainer gets information about a specific container via HTTP
 func (c *HTTPClient) GetContainer(username string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
