@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   address, e.g. `10.100.0.0/24` → `10.100.0.1` — the address a box already
   reaches the daemon on), so egress works on every daemon, not just app-hosting
   ones.
+- **`StartEgressProxy` resolved the wrong Incus instance name (#808).** It
+  looked up the box by the bare username (`cld-abcd1234`), but Incus instances
+  are named `<username>-container`, so the lookup 404'd once the gateway fix
+  above let execution reach it. Now maps username → `<username>-container`
+  (tolerating an already-qualified name), matching every other container RPC.
 
 ## [0.46.0] - 2026-06-24
 

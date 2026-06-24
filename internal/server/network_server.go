@@ -1202,7 +1202,15 @@ func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgres
 	if s.incusClient == nil {
 		return nil, status.Error(codes.Unavailable, "container backend unavailable")
 	}
-	info, err := s.incusClient.GetContainer(name)
+	// The caller passes the box's username (e.g. "cld-abcd1234"); the Incus
+	// instance is "<username>-container" (the convention container_server.go
+	// uses everywhere). Map it before the lookup, tolerating a fully-qualified
+	// name in case a caller already passed the instance name.
+	instanceName := name
+	if !strings.HasSuffix(instanceName, "-container") {
+		instanceName += "-container"
+	}
+	info, err := s.incusClient.GetContainer(instanceName)
 	if err != nil || info == nil {
 		return nil, status.Errorf(codes.NotFound, "container %q not found", name)
 	}
