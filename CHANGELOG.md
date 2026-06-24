@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.3] - 2026-06-25
+
+### Fixed
+
+- **Model-gateway dropped/mis-tagged tool calls on the `gemini-openai` provider
+  → agent chats hung.** Gemini's OpenAI-compat surface is not OpenAI-conformant
+  for tool calls: it returns `finish_reason: "stop"` even when the response
+  carries a `tool_calls` delta. The gateway passed this through unchanged, so an
+  agent client (e.g. a hosted LibreChat workspace) never recognized the tool
+  call, and the generation hung until the client's stale-job reaper killed it
+  (surfacing as "Generation timed out"). Worse, the SSE leak-filter path (active
+  whenever a system prompt is present — the normal agent state) reconstructed
+  chunks from `content` + `finish_reason` only and **dropped the `tool_calls`
+  field entirely**. The gateway now (a) preserves `tool_calls` deltas verbatim on
+  both the filtered and pass-through SSE paths (a tool call is a structured
+  invocation, not a system-prompt-leak vector), and (b) normalizes
+  `finish_reason` `"stop"` → `"tool_calls"` once a tool call has been seen, on
+  the streaming and non-streaming OpenAI-shaped paths. Plain text turns are
+  untouched. This makes agentic tool-calling work through the managed gateway.
+
 ## [0.46.2] - 2026-06-24
 
 ### Fixed

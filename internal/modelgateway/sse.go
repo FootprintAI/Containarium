@@ -142,11 +142,89 @@ func leaks(resp, sysNorm string) bool {
 type sseChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content   string          `json:"content"`
+			ToolCalls json.RawMessage `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage map[string]any `json:"usage"`
+}
+
+// chunkHasToolCalls reports whether a streaming choice carries a non-empty
+// tool_calls array — the delta that asks the client to invoke a function.
+func chunkHasToolCalls(ch sseChunk) bool {
+	if len(ch.Choices) == 0 {
+		return false
+	}
+	raw := strings.TrimSpace(string(ch.Choices[0].Delta.ToolCalls))
+	return raw != "" && raw != "null" && raw != "[]"
+}
+
+// normalizeToolFinish rewrites finish_reason "stop" -> "tool_calls" in an
+// OpenAI chat chunk payload. Gemini's OpenAI-compat surface returns "stop" even
+// when it emitted a tool call, which is NOT OpenAI-conformant: an agent client
+// (e.g. LibreChat) then never runs the tool and the turn hangs until reaped.
+// Only choices whose finish_reason is exactly "stop" are touched; the tool_calls
+// themselves and any provider extras are preserved. Fail-open: returns the input
+// unchanged on any shape it doesn't recognise or if nothing changed.
+func normalizeToolFinish(payload string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(payload), &m) != nil {
+		return payload
+	}
+	chs, ok := m["choices"].([]any)
+	if !ok {
+		return payload
+	}
+	changed := false
+	for _, c := range chs {
+		cm, _ := c.(map[string]any)
+		if cm == nil {
+			continue
+		}
+		if fr, _ := cm["finish_reason"].(string); fr == "stop" {
+			cm["finish_reason"] = "tool_calls"
+			changed = true
+		}
+	}
+	if !changed {
+		return payload
+	}
+	nb, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return string(nb)
+}
+
+// normalizeNonStreamToolFinish rewrites finish_reason "stop" -> "tool_calls" on
+// a NON-streaming OpenAI chat response when the choice actually carries a
+// message.tool_calls array (Gemini returns "stop" there too). Mutates decoded
+// in place; reports whether anything changed.
+func normalizeNonStreamToolFinish(decoded map[string]any) bool {
+	chs, ok := decoded["choices"].([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for _, c := range chs {
+		cm, _ := c.(map[string]any)
+		if cm == nil {
+			continue
+		}
+		if fr, _ := cm["finish_reason"].(string); fr != "stop" {
+			continue
+		}
+		msg, _ := cm["message"].(map[string]any)
+		if msg == nil {
+			continue
+		}
+		if tc, ok := msg["tool_calls"].([]any); ok && len(tc) > 0 {
+			cm["finish_reason"] = "tool_calls"
+			changed = true
+		}
+	}
+	return changed
 }
 
 // filterSSEStream copies an OpenAI-style SSE stream from src to dst, holding
@@ -170,6 +248,10 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 	// FINAL value once (recording each event would double-count).
 	var lastUsage Usage
 	haveUsage := false
+	// Gemini ends a tool-call turn with finish_reason "stop"; once we've seen a
+	// tool call we rewrite that to the OpenAI-conformant "tool_calls" so the
+	// agent client runs the tool instead of hanging.
+	sawToolCall := false
 
 	writeContent := func(s string) error {
 		if s == "" {
@@ -211,11 +293,21 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 			lastUsage = parse(map[string]any{"usage": ch.Usage})
 			haveUsage = true
 		}
+		if chunkHasToolCalls(ch) {
+			sawToolCall = true
+		}
 
 		// Metering-only (no system prompt / filter disabled): pass the original
-		// chunk through unchanged — no hold-back, no re-serialization.
+		// chunk through unchanged — no hold-back, no re-serialization — except we
+		// still normalize a tool-call turn's finish_reason ("stop" -> "tool_calls")
+		// so the agent client runs the tool. The tool_calls delta itself passes
+		// through verbatim.
 		if !filtering {
-			if _, err := dst.Write([]byte(line + "\n")); err != nil {
+			out := line
+			if sawToolCall && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil && *ch.Choices[0].FinishReason == "stop" {
+				out = "data: " + normalizeToolFinish(payload)
+			}
+			if _, err := dst.Write([]byte(out + "\n")); err != nil {
 				loopErr = err
 				break
 			}
@@ -227,6 +319,27 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 		if len(ch.Choices) > 0 {
 			content = ch.Choices[0].Delta.Content
 			finish = ch.Choices[0].FinishReason
+		}
+
+		// Tool-call chunks pass through verbatim (with finish_reason normalized).
+		// A tool call is a structured function invocation, not free-text content,
+		// so it is NOT a system-prompt-leak vector and must not be dropped or held
+		// back — dropping it is exactly what hangs the agent. Flush any pending
+		// safe content first to preserve ordering.
+		if chunkHasToolCalls(ch) {
+			if !redacted && pending.Len() > 0 {
+				if err := writeContent(pending.String()); err != nil {
+					loopErr = err
+					break
+				}
+				emitted.WriteString(pending.String())
+				pending.Reset()
+			}
+			if _, err := dst.Write([]byte("data: " + normalizeToolFinish(payload) + "\n\n")); err != nil {
+				loopErr = err
+				break
+			}
+			continue
 		}
 
 		if content != "" && !redacted {
@@ -259,7 +372,13 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 		if finish != nil || ch.Usage != nil {
 			env := map[string]any{}
 			if finish != nil {
-				env["choices"] = []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": *finish}}
+				fr := *finish
+				// Gemini ends a tool-call turn with "stop"; the agent client needs
+				// the OpenAI-conformant "tool_calls" to run the tool.
+				if fr == "stop" && sawToolCall {
+					fr = "tool_calls"
+				}
+				env["choices"] = []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": fr}}
 			}
 			if ch.Usage != nil {
 				env["usage"] = ch.Usage

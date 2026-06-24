@@ -265,6 +265,18 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 					g.cfg.Sink.RecordUsage(claims.Tenant, claims.SkillID, provName, u)
 				}
 				captureUsage(u) // folded into the END lifecycle log
+
+				// Normalize Gemini's non-conformant tool-call finish_reason
+				// ("stop" -> "tool_calls") on the OpenAI-shaped surface, so an
+				// agent client runs the tool instead of hanging. Only rewrites
+				// when a tool call is actually present; normal responses untouched.
+				if (provName == "openai" || provName == "gemini-openai") && normalizeNonStreamToolFinish(decoded) {
+					if nb, merr := json.Marshal(decoded); merr == nil {
+						resp.Body = io.NopCloser(bytes.NewReader(nb))
+						resp.ContentLength = int64(len(nb))
+						resp.Header.Set("Content-Length", strconv.Itoa(len(nb)))
+					}
+				}
 			}
 			return nil
 		},
