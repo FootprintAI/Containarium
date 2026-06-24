@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-06-24
+
+### Fixed
+
+- **Egress via client was broken on every path (#808).** `StartEgressProxy`
+  (v0.46.0) used the daemon's `proxyIP` as the relay listen address, but it was
+  never wired (`NewNetworkServer` is called with `""`), so the precondition
+  tripped on every call and egress-via-client failed regardless of transport.
+  The gateway is now derived from the container network CIDR (its first host
+  address, e.g. `10.100.0.0/24` → `10.100.0.1` — the address a box already
+  reaches the daemon on), so egress works on every daemon, not just app-hosting
+  ones.
+
 ## [0.46.0] - 2026-06-24
 
 ### Added
