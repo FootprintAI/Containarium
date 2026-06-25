@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.7] - 2026-06-25
+
+### Fixed
+
+- **Workspace chat tool calls now complete the full round-trip.** The tool-using
+  workspace agent now runs on **`gemini-2.5-flash-lite`** instead of
+  `gemini-flash-latest`. Gemini 2.5's thinking models require a
+  `thought_signature` to be echoed back on EVERY tool-result round-trip on the
+  OpenAI-compat surface (round-2 otherwise 400s: "Function call is missing a
+  thought_signature"), and a LangChain/LibreChat client can't carry that
+  non-standard field — so the chat fired the tool but the turn terminated before
+  returning the result. `gemini-2.5-flash-lite` (non-thinking) uses standard
+  function-calling that round-trips cleanly (verified: round-2 = 200). The agent,
+  its model-spec, and the endpoint's model list now use the lite model; chat-only
+  skill personas keep `gemini-flash-latest`. Completes the agentic tool-calling
+  chain (v0.46.3 finish_reason + v0.46.4 envelope + v0.46.6 delta index). Existing
+  workspace boxes need a redeploy (the agent + spec are baked at deploy).
+
 ## [0.46.6] - 2026-06-25
 
 ### Fixed
