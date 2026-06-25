@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.6] - 2026-06-25
+
+### Fixed
+
+- **Workspace chat tool calls aborted after firing ("terminated") — now
+  complete.** Gemini's OpenAI-compat surface streams `tool_calls` deltas that
+  OMIT the `index` field and add a non-standard `extra_content`
+  (`thought_signature`). A LangChain-based client (LibreChat v0.8.6) merges
+  streamed tool-call deltas BY `index`; without it the stream parser throws and
+  aborts the turn (`sendCompletion … terminated`) right after the tool call is
+  emitted — so the tool fired but the result/summary never came back. The
+  model-gateway now standardizes tool_calls deltas on the OpenAI-shaped paths:
+  it injects a position-based `index` where missing and strips `extra_content`,
+  so the client assembles the call, runs the tool, and the model summarizes the
+  result. Completes the agentic tool-calling chain for the managed workspace
+  (with v0.46.3 finish_reason + v0.46.4 envelope fixes). Daemon-side — existing
+  workspace boxes benefit after a workhorse roll, no redeploy.
+
 ## [0.46.5] - 2026-06-25
 
 ### Fixed

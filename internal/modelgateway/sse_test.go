@@ -189,6 +189,27 @@ func TestSSE_FilterOn_FullChunkShape(t *testing.T) {
 	}
 }
 
+// standardizeToolCalls must inject a position index (LangChain clients merge
+// streamed tool-call deltas by index) and drop Gemini's non-standard
+// extra_content — without this LibreChat aborts the turn ("terminated").
+func TestStandardizeToolCalls(t *testing.T) {
+	in := `{"choices":[{"delta":{"tool_calls":[{"extra_content":{"google":{"thought_signature":"x"}},"function":{"name":"list_containers","arguments":"{}"},"id":"abc","type":"function"}]}}]}`
+	out := standardizeToolCalls(in)
+	if !strings.Contains(out, `"index":0`) {
+		t.Fatalf("index not injected: %s", out)
+	}
+	if strings.Contains(out, "extra_content") || strings.Contains(out, "thought_signature") {
+		t.Fatalf("extra_content not stripped: %s", out)
+	}
+	if !strings.Contains(out, `"name":"list_containers"`) {
+		t.Fatalf("tool call dropped: %s", out)
+	}
+	plain := `{"choices":[{"delta":{"content":"hi"}}]}`
+	if standardizeToolCalls(plain) != plain {
+		t.Fatalf("plain content chunk must be unchanged")
+	}
+}
+
 func TestNormalizeNonStreamToolFinish(t *testing.T) {
 	// finish_reason "stop" WITH message.tool_calls → rewritten.
 	withTool := map[string]any{}

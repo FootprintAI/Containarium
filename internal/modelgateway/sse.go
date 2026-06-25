@@ -229,6 +229,60 @@ func normalizeToolFinish(payload string) string {
 	return string(nb)
 }
 
+// standardizeToolCalls rewrites an OpenAI streaming chunk's tool_calls deltas to
+// the spec shape a LangChain-based client (LibreChat v0.8.6) requires: each
+// entry MUST carry an `index` (used to merge streamed tool-call deltas) and only
+// the standard fields. Gemini's OpenAI-compat surface OMITS `index` and adds a
+// non-standard `extra_content` (a `thought_signature`); without the index the
+// client's stream parser throws and aborts the turn ("terminated") before it can
+// run the tool, and the stray field can trip strict decoders. We inject a
+// position-based index where missing and drop `extra_content`. Fail-open:
+// returns the input unchanged on any shape it doesn't recognise or no change.
+func standardizeToolCalls(payload string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(payload), &m) != nil {
+		return payload
+	}
+	chs, ok := m["choices"].([]any)
+	if !ok {
+		return payload
+	}
+	changed := false
+	for _, c := range chs {
+		cm, _ := c.(map[string]any)
+		if cm == nil {
+			continue
+		}
+		delta, _ := cm["delta"].(map[string]any)
+		if delta == nil {
+			continue
+		}
+		tcs, _ := delta["tool_calls"].([]any)
+		for i, tc := range tcs {
+			tcm, _ := tc.(map[string]any)
+			if tcm == nil {
+				continue
+			}
+			if _, has := tcm["index"]; !has {
+				tcm["index"] = i
+				changed = true
+			}
+			if _, has := tcm["extra_content"]; has {
+				delete(tcm, "extra_content")
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return payload
+	}
+	nb, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return string(nb)
+}
+
 // normalizeNonStreamToolFinish rewrites finish_reason "stop" -> "tool_calls" on
 // a NON-streaming OpenAI chat response when the choice actually carries a
 // message.tool_calls array (Gemini returns "stop" there too). Mutates decoded
@@ -354,7 +408,9 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 		// through verbatim.
 		if !filtering {
 			out := line
-			if sawToolCall && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil && *ch.Choices[0].FinishReason == "stop" {
+			if chunkHasToolCalls(ch) {
+				out = "data: " + normalizeToolFinish(standardizeToolCalls(payload))
+			} else if sawToolCall && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil && *ch.Choices[0].FinishReason == "stop" {
 				out = "data: " + normalizeToolFinish(payload)
 			}
 			if _, err := dst.Write([]byte(out + "\n")); err != nil {
@@ -385,7 +441,7 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 				emitted.WriteString(pending.String())
 				pending.Reset()
 			}
-			if _, err := dst.Write([]byte("data: " + normalizeToolFinish(payload) + "\n\n")); err != nil {
+			if _, err := dst.Write([]byte("data: " + normalizeToolFinish(standardizeToolCalls(payload)) + "\n\n")); err != nil {
 				loopErr = err
 				break
 			}
