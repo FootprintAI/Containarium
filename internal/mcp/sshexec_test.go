@@ -1,11 +1,16 @@
 package mcp
 
 import (
+	"encoding/binary"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/connectcore"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -67,5 +72,193 @@ func TestTOFUHostKeyCallback(t *testing.T) {
 	key2 := testSigner(t)
 	if err := cb2(hostport, remote, key2); err == nil {
 		t.Fatal("changed host key should be rejected, but callback accepted it")
+	}
+}
+
+// fakeSSHServer is a minimal in-process SSH server: it accepts exactly the
+// managed public key, answers one "session" channel's "exec" request by
+// writing canned stdout/stderr and an exit status, then closes. It exists to
+// drive runMCPSSHExec end-to-end with NO system ssh binary and NO daemon.
+type fakeSSHServer struct {
+	ln       net.Listener
+	hostKey  ssh.Signer
+	authKey  ssh.PublicKey // the only key allowed
+	stdout   string
+	stderr   string
+	exitCode uint32
+	wg       sync.WaitGroup
+}
+
+func newFakeSSHServer(t *testing.T, authKey ssh.PublicKey, stdout, stderr string, exitCode uint32) *fakeSSHServer {
+	t.Helper()
+	_, hostPEM, err := generateEphemeralSSHKey("fakehost")
+	if err != nil {
+		t.Fatalf("host key: %v", err)
+	}
+	hostSigner, err := ssh.ParsePrivateKey(hostPEM)
+	if err != nil {
+		t.Fatalf("parse host key: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &fakeSSHServer{ln: ln, hostKey: hostSigner, authKey: authKey, stdout: stdout, stderr: stderr, exitCode: exitCode}
+	s.wg.Add(1)
+	go s.serveOne(t)
+	return s
+}
+
+func (s *fakeSSHServer) addr() string { return s.ln.Addr().String() }
+
+func (s *fakeSSHServer) close() {
+	_ = s.ln.Close()
+	s.wg.Wait()
+}
+
+func (s *fakeSSHServer) serveOne(t *testing.T) {
+	defer s.wg.Done()
+	cfg := &ssh.ServerConfig{
+		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if string(key.Marshal()) == string(s.authKey.Marshal()) {
+				return &ssh.Permissions{}, nil
+			}
+			return nil, errUnauthorizedKey
+		},
+	}
+	cfg.AddHostKey(s.hostKey)
+
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return // listener closed
+	}
+	defer func() { _ = conn.Close() }()
+
+	sconn, chans, reqs, err := ssh.NewServerConn(conn, cfg)
+	if err != nil {
+		return
+	}
+	defer func() { _ = sconn.Close() }()
+	go ssh.DiscardRequests(reqs)
+
+	for nc := range chans {
+		if nc.ChannelType() != "session" {
+			_ = nc.Reject(ssh.UnknownChannelType, "only session")
+			continue
+		}
+		ch, chReqs, err := nc.Accept()
+		if err != nil {
+			return
+		}
+		for req := range chReqs {
+			if req.Type != "exec" {
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+				continue
+			}
+			if req.WantReply {
+				_ = req.Reply(true, nil)
+			}
+			if s.stdout != "" {
+				_, _ = ch.Write([]byte(s.stdout))
+			}
+			if s.stderr != "" {
+				_, _ = ch.Stderr().Write([]byte(s.stderr))
+			}
+			// exit-status request: a single big-endian uint32.
+			payload := make([]byte, 4)
+			binary.BigEndian.PutUint32(payload, s.exitCode)
+			_, _ = ch.SendRequest("exit-status", false, payload)
+			_ = ch.Close()
+			return
+		}
+	}
+}
+
+var errUnauthorizedKey = &sshAuthError{}
+
+type sshAuthError struct{}
+
+func (*sshAuthError) Error() string { return "unauthorized key" }
+
+// writeManagedKey writes a fresh private key to a temp file and returns its
+// path plus the matching public key, mirroring what sshkey.LocateOrGenerate
+// hands runMCPSSHExec at runtime.
+func writeManagedKey(t *testing.T) (privPath string, pub ssh.PublicKey) {
+	t.Helper()
+	pubOpenSSH, privPEM, err := generateEphemeralSSHKey("client")
+	if err != nil {
+		t.Fatalf("client key: %v", err)
+	}
+	privPath = filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
+		t.Fatalf("write priv: %v", err)
+	}
+	parsed, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pubOpenSSH))
+	if err != nil {
+		t.Fatalf("parse pub: %v", err)
+	}
+	return privPath, parsed
+}
+
+// TestRunMCPSSHExec_PureGo drives the real exec path against an in-process
+// SSH server: no system `ssh` binary is consulted, proving the tool works
+// inside a minimal image. It asserts stdout, stderr, and exit code all
+// round-trip.
+func TestRunMCPSSHExec_PureGo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate known_hosts (accept-new writes here)
+
+	privPath, pub := writeManagedKey(t)
+	srv := newFakeSSHServer(t, pub, "CONNECT_OK\nhello\n", "a warning\n", 0)
+	defer srv.close()
+
+	host, portStr, err := net.SplitHostPort(srv.addr())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	target := connectcore.Target{User: "tester", Host: host, Port: port}
+
+	out, err := runMCPSSHExec(target, privPath, "echo hi")
+	if err != nil {
+		t.Fatalf("runMCPSSHExec: %v", err)
+	}
+	if !strings.Contains(out, "exit_code: 0") {
+		t.Errorf("missing exit_code 0 in:\n%s", out)
+	}
+	if !strings.Contains(out, "CONNECT_OK") || !strings.Contains(out, "hello") {
+		t.Errorf("stdout not surfaced in:\n%s", out)
+	}
+	if !strings.Contains(out, "a warning") {
+		t.Errorf("stderr not surfaced in:\n%s", out)
+	}
+}
+
+// TestRunMCPSSHExec_NonZeroExit confirms a non-zero remote exit is returned
+// as data (exit_code), not as a tool error.
+func TestRunMCPSSHExec_NonZeroExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	privPath, pub := writeManagedKey(t)
+	srv := newFakeSSHServer(t, pub, "", "boom\n", 7)
+	defer srv.close()
+
+	host, portStr, _ := net.SplitHostPort(srv.addr())
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	target := connectcore.Target{User: "tester", Host: host, Port: port}
+
+	out, err := runMCPSSHExec(target, privPath, "false")
+	if err != nil {
+		t.Fatalf("non-zero remote exit must not be a tool error, got: %v", err)
+	}
+	if !strings.Contains(out, "exit_code: 7") {
+		t.Errorf("expected exit_code 7 in:\n%s", out)
 	}
 }
