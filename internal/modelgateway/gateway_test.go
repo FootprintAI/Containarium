@@ -2,6 +2,7 @@ package modelgateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"log"
@@ -125,6 +126,53 @@ func TestGateway_Anthropic_KeyInjected_TokenStripped_Metered(t *testing.T) {
 	}
 	if r.InputTokens != 12 || r.OutputTokens != 4 || r.CachedTokens != 2 || r.Calls != 1 {
 		t.Errorf("token counts wrong: %+v", r)
+	}
+}
+
+// TestGateway_DecodesGzippedStream pins the GZIP fix: a client that asks for
+// gzip (LibreChat/undici) must NOT make the gateway forward raw compressed
+// bytes to the streaming filter. By stripping the client's Accept-Encoding in
+// the Director, Go's transport owns the gzip and transparently decompresses —
+// so the filter reads plain SSE and tool_call chunks aren't corrupted (the
+// pre-fix bug surfaced as the agent client "terminating").
+func TestGateway_DecodesGzippedStream(t *testing.T) {
+	secret := []byte("shared-secret")
+	sse := `data: {"choices":[{"delta":{"content":"hello-decoded"}}]}` + "\n\n" + "data: [DONE]\n\n"
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// The transport (after the Director strips the client's AE) requests gzip;
+		// honor it with a gzipped body — the gateway must decode it.
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			_, _ = io.WriteString(gz, sse)
+			_ = gz.Close()
+			return
+		}
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer up.Close()
+
+	providers := DefaultProviders()
+	providers["gemini-openai"].UpstreamURL = up.URL
+	gw := New(Config{Secret: secret, Providers: providers, ProviderKeys: map[string]string{"gemini-openai": "REAL-KEY"}})
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+
+	tok, _ := MintToken(secret, GatewayClaims{Tenant: "acme", SkillID: "s1", Provider: "gemini-openai"}, time.Minute)
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/model/gemini-openai/v1beta/openai/chat/completions",
+		strings.NewReader(`{"model":"gemini-2.5-flash-lite","stream":true}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip") // the offending client header
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "hello-decoded") {
+		t.Fatalf("gateway did not decode the gzipped stream; got %q", string(body))
 	}
 }
 

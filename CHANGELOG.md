@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.10] - 2026-06-25
+
+### Fixed
+
+- **Model-gateway corrupted streamed responses for gzip-requesting clients — the
+  root cause of the managed workspace chat failing to use tools.** The gateway
+  forwarded the client's `Accept-Encoding` header to the upstream provider. A
+  client that requests gzip (LibreChat / Node's undici) therefore made the
+  provider **gzip the SSE stream**, and the streaming filter read the **raw
+  compressed bytes as text** — so every chunk (content, `tool_calls`,
+  `finish_reason`) was garbage, the tool-call processing never ran, and the
+  agent client received a corrupted stream and aborted (`terminated`) before it
+  could run the tool-result round. (`curl` probes never sent `Accept-Encoding`,
+  so they always worked — masking the bug.) The gateway now **strips
+  `Accept-Encoding` before proxying upstream**, so Go's transport owns the
+  encoding and transparently decompresses, and the filter reads plain SSE. This
+  is the keystone of the agentic tool-calling chain: v0.46.3 (finish_reason),
+  v0.46.4 (envelope), v0.46.6 (delta index), v0.46.7 (flash-lite), v0.46.8/9
+  (finish/[DONE]) fixed the *parsed-chunk* conformance — this makes the bytes
+  actually parseable. The managed workspace chat now calls platform tools and
+  returns results end-to-end (verified live). Daemon-side — existing boxes
+  benefit after a workhorse roll.
+
 ## [0.46.9] - 2026-06-25
 
 ### Fixed

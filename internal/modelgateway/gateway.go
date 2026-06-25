@@ -213,6 +213,14 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			req.Host = upstream.Host
 			req.URL.Path = upstreamPath
 			prov.inject(req.Header, key) // strip gateway token, inject real key
+			// Drop the client's Accept-Encoding so the upstream returns identity
+			// (and Go's transport transparently decompresses any gzip). Otherwise a
+			// client that asks for gzip (e.g. LibreChat/undici) makes the provider
+			// gzip the SSE stream, and the streaming filter below reads raw
+			// compressed bytes as text — corrupting tool_call chunks so the agent
+			// client gets garbage and aborts ("terminated"). The non-streaming path
+			// already skips compressed bodies; this keeps the streaming path safe.
+			req.Header.Del("Accept-Encoding")
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			// Streaming (SSE): intercept to meter usage + redact prompt leakage.
