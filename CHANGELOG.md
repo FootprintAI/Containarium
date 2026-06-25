@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.9] - 2026-06-25
+
+### Fixed
+
+- **Workspace tool calls hung the gateway because `[DONE]` was a separate write
+  the agent client never drained.** A LangChain agent client (LibreChat) stops
+  reading round-1 the instant it has the tool_call, to go execute the tool. The
+  gateway then wrote `[DONE]` as a SEPARATE write — which blocks on the
+  unbuffered response pipe when the client has stopped draining, so the round-1
+  request never completed (no END) and the client's stream `terminated` before
+  round-2. The gateway now **coalesces the final tool-turn chunk and `[DONE]`
+  into a single write**, so the client receives the stream terminator in the same
+  read it already does (before it stops draining) — round-1 ends cleanly and the
+  client runs the tool-result round. (Direct/draining clients are unaffected;
+  the post-loop no longer double-sends `[DONE]`.) Final piece of the agentic
+  tool-calling chain (v0.46.3–v0.46.8). Daemon-side — existing boxes benefit
+  after a workhorse roll.
+
 ## [0.46.8] - 2026-06-25
 
 ### Fixed

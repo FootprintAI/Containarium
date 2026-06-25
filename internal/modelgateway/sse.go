@@ -339,6 +339,10 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 	// tool call we rewrite that to the OpenAI-conformant "tool_calls" so the
 	// agent client runs the tool instead of hanging.
 	sawToolCall := false
+	// doneSent: a tool turn coalesces its final chunk + [DONE] into ONE write (so
+	// an agent client that stops draining right after the tool_call still receives
+	// [DONE] in the same read); the post-loop must then NOT write [DONE] again.
+	doneSent := false
 
 	// Envelope fields captured from the first upstream chunk, so the chunks WE
 	// synthesize (held-back content, redaction note, finish envelope) carry the
@@ -413,13 +417,18 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 			} else if sawToolCall && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil && *ch.Choices[0].FinishReason == "stop" {
 				out = "data: " + normalizeToolFinish(payload)
 			}
-			if _, err := dst.Write([]byte(out + "\n")); err != nil {
-				loopErr = err
+			if sawToolCall && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil {
+				// Tool turn ending: coalesce [DONE] into the SAME write — the agent
+				// client stops draining right after the tool_call, so a separate
+				// [DONE] write would block (deadlock). Then close.
+				if _, err := dst.Write([]byte(out + "\n" + "data: [DONE]\n\n")); err != nil {
+					loopErr = err
+				}
+				doneSent = true
 				break
 			}
-			// Finish on a tool turn: stop reading + close promptly (see the envelope
-			// note below). Content turns drain fully, so they don't break here.
-			if sawToolCall && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil {
+			if _, err := dst.Write([]byte(out + "\n")); err != nil {
+				loopErr = err
 				break
 			}
 			continue
@@ -446,12 +455,18 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 				emitted.WriteString(pending.String())
 				pending.Reset()
 			}
-			if _, err := dst.Write([]byte("data: " + normalizeToolFinish(standardizeToolCalls(payload)) + "\n\n")); err != nil {
-				loopErr = err
+			tcOut := "data: " + normalizeToolFinish(standardizeToolCalls(payload)) + "\n\n"
+			if len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil {
+				// tool_call + finish in one chunk: append [DONE] to the SAME write so
+				// the client receives both before it stops draining, then close.
+				if _, err := dst.Write([]byte(tcOut + "data: [DONE]\n\n")); err != nil {
+					loopErr = err
+				}
+				doneSent = true
 				break
 			}
-			// If this chunk also carried the finish, stop now (see note below).
-			if len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil {
+			if _, err := dst.Write([]byte(tcOut)); err != nil {
+				loopErr = err
 				break
 			}
 			continue
@@ -501,17 +516,20 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 				}
 			}
 			eb, _ := json.Marshal(c)
-			if _, err := dst.Write([]byte("data: " + string(eb) + "\n\n")); err != nil {
-				loopErr = err
+			envOut := "data: " + string(eb) + "\n\n"
+			if finish != nil && sawToolCall {
+				// Separate finish chunk on a tool turn: coalesce [DONE] into the SAME
+				// write so the client receives it before it stops draining (a separate
+				// write would block on the non-draining client), then close. Content
+				// turns drain fully, so they fall through (preserving trailing usage).
+				if _, err := dst.Write([]byte(envOut + "data: [DONE]\n\n")); err != nil {
+					loopErr = err
+				}
+				doneSent = true
 				break
 			}
-			// Finish on a TOOL turn: stop reading the provider; the post-loop emits
-			// [DONE] + closes NOW. An agent client abandons round-1 the instant it
-			// has the tool_call, and Gemini's OpenAI-compat doesn't reliably close
-			// the tool stream — so waiting deadlocks the response (no END) and the
-			// client reports "terminated" before round-2. (Content turns drain
-			// fully, so we DON'T break — that preserves any trailing usage chunk.)
-			if finish != nil && sawToolCall {
+			if _, err := dst.Write([]byte(envOut)); err != nil {
+				loopErr = err
 				break
 			}
 		}
@@ -521,7 +539,7 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 	if loopErr == nil && !redacted {
 		_ = writeContent(pending.String())
 	}
-	if loopErr == nil {
+	if loopErr == nil && !doneSent {
 		_, _ = dst.Write([]byte("data: [DONE]\n\n"))
 	}
 	// Meter once, with the final cumulative usage (recording each usage event
