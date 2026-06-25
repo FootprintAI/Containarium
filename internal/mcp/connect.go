@@ -5,9 +5,20 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
+)
+
+// connectReadyTimeout bounds how long connect waits for a freshly-created box
+// to finish coming up, and connectPollInterval is the gap between re-checks.
+// An agent commonly creates a box then immediately connects, racing the
+// box's bring-up — waiting absorbs that race instead of erroring.
+// vars (not consts) so tests can shrink them.
+var (
+	connectReadyTimeout = 90 * time.Second
+	connectPollInterval = 3 * time.Second
 )
 
 // handleConnect is the agent-native half of `containarium connect` — the
@@ -33,14 +44,7 @@ func handleConnect(client API, args map[string]interface{}) (string, error) {
 	userOverride := getStringArg(args, "user", "")
 	hostOverride := getStringArg(args, "host", "")
 
-	c, err := mcpGetContainer(client, box)
-	if err != nil {
-		return "", err
-	}
-	if !connectcore.IsRunning(c.State) {
-		return "", fmt.Errorf("box %q is %s, not running — start it first", box, connectcore.PrettyState(c.State))
-	}
-	target, err := connectcore.BuildTarget(c, userOverride, hostOverride, 22)
+	target, err := mcpWaitConnectable(client, box, userOverride, hostOverride)
 	if err != nil {
 		return "", err
 	}
@@ -85,6 +89,45 @@ func handleConnect(client API, args map[string]interface{}) (string, error) {
 	// Exec mode: run the one-shot command in-process (pure-Go SSH, no system
 	// ssh binary) and return its output + exit code.
 	return runMCPSSHExec(target, privPath, execCmd)
+}
+
+// mcpWaitConnectable resolves a box to an SSH target, waiting out the
+// create→running race: an agent often creates a box then immediately calls
+// connect, so the box is still CREATING/PROVISIONING (or RUNNING but without
+// an IP yet). Rather than failing with the misleading "start it first" — you
+// cannot start a box that is already coming up — it polls until the box is
+// RUNNING with a usable target, or the deadline passes. A genuinely stopped
+// box returns the start-it-first guidance immediately, since waiting on it
+// would never succeed.
+func mcpWaitConnectable(client API, box, userOverride, hostOverride string) (connectcore.Target, error) {
+	deadline := time.Now().Add(connectReadyTimeout)
+	for {
+		c, err := mcpGetContainer(client, box)
+		if err != nil {
+			return connectcore.Target{}, err
+		}
+		switch {
+		case connectcore.IsRunning(c.State):
+			target, terr := connectcore.BuildTarget(c, userOverride, hostOverride, 22)
+			if terr == nil {
+				return target, nil
+			}
+			// Running but no IP/host assigned yet — keep waiting briefly.
+			if time.Now().After(deadline) {
+				return connectcore.Target{}, terr
+			}
+		case connectcore.IsTransientState(c.State):
+			if time.Now().After(deadline) {
+				return connectcore.Target{}, fmt.Errorf(
+					"box %q is still %s after %s — it may need longer to come up; try again shortly",
+					box, connectcore.PrettyState(c.State), connectReadyTimeout)
+			}
+		default:
+			// stopped / frozen / error — waiting would not help.
+			return connectcore.Target{}, fmt.Errorf("box %q is %s, not running — start it first", box, connectcore.PrettyState(c.State))
+		}
+		time.Sleep(connectPollInterval)
+	}
 }
 
 // mcpGetContainer GETs the box over the MCP client's daemon connection and

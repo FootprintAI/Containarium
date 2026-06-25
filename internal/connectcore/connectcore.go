@@ -54,6 +54,22 @@ func IsRunning(state string) bool {
 	return state == "CONTAINER_STATE_RUNNING" || strings.EqualFold(state, "running")
 }
 
+// IsTransientState reports whether a box is in a short-lived bring-up state
+// (still being created/provisioned) that will reach RUNNING on its own. A
+// caller that just created a box and immediately wants to connect should
+// wait these out rather than failing — waiting succeeds, whereas "start it
+// first" is wrong (you can't start a box that's already coming up). protojson
+// emits the enum identifier; the friendly form is accepted defensively.
+func IsTransientState(state string) bool {
+	switch {
+	case state == "CONTAINER_STATE_CREATING", strings.EqualFold(state, "creating"):
+		return true
+	case state == "CONTAINER_STATE_PROVISIONING", strings.EqualFold(state, "provisioning"):
+		return true
+	}
+	return false
+}
+
 // PrettyState trims the proto enum prefix for human-facing messages.
 func PrettyState(state string) string {
 	s := strings.TrimPrefix(state, "CONTAINER_STATE_")
