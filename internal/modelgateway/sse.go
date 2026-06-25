@@ -138,8 +138,16 @@ func leaks(resp, sysNorm string) bool {
 	return false
 }
 
-// sseChunk is the slice of an OpenAI streaming chunk we read.
+// sseChunk is the slice of an OpenAI streaming chunk we read. The top-level
+// envelope fields (id/object/created/model) are captured so the re-serialized
+// content chunks we emit carry the SAME envelope as the upstream — a chunk
+// missing object/id/model is rejected by strict clients (LibreChat v0.8.6 hangs
+// on it), so the filtered path must reproduce the full shape, not a minimal one.
 type sseChunk struct {
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created json.RawMessage `json:"created"`
+	Model   string          `json:"model"`
 	Choices []struct {
 		Delta struct {
 			Content   string          `json:"content"`
@@ -148,6 +156,30 @@ type sseChunk struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage map[string]any `json:"usage"`
+}
+
+// outChunk is an OpenAI-shaped streaming chunk the gateway re-emits on the
+// filtered path (held-back content, redaction note, finish/usage envelope). It
+// mirrors the upstream envelope so strict clients accept it. Usage is kept as
+// raw JSON: it is the provider's own pass-through metering object (the
+// type-erasing wire boundary), forwarded verbatim, never constructed here.
+type outChunk struct {
+	ID      string          `json:"id,omitempty"`
+	Object  string          `json:"object"`
+	Created json.RawMessage `json:"created,omitempty"`
+	Model   string          `json:"model,omitempty"`
+	Choices []outChoice     `json:"choices,omitempty"`
+	Usage   json.RawMessage `json:"usage,omitempty"`
+}
+
+type outChoice struct {
+	Index        int      `json:"index"`
+	Delta        outDelta `json:"delta"`
+	FinishReason *string  `json:"finish_reason,omitempty"`
+}
+
+type outDelta struct {
+	Content string `json:"content,omitempty"`
 }
 
 // chunkHasToolCalls reports whether a streaming choice carries a non-empty
@@ -230,9 +262,10 @@ func normalizeNonStreamToolFinish(decoded map[string]any) bool {
 // filterSSEStream copies an OpenAI-style SSE stream from src to dst, holding
 // back the trailing window so a system-prompt leak is redacted before emission,
 // and invoking onUsage with any final usage block. Content is re-emitted as
-// minimal `delta.content` chunks; non-content events (role, finish_reason,
-// usage, comments, [DONE]) pass through unchanged. Runs in its own goroutine;
-// closes dst when done.
+// `delta.content` chunks that carry the SAME envelope (id/object/created/model)
+// as the upstream chunks — a minimal chunk missing those fields is dropped by
+// strict clients (LibreChat v0.8.6 hangs). Non-content events pass through
+// unchanged. Runs in its own goroutine; closes dst when done.
 func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, parse func(map[string]any) Usage, onUsage func(Usage)) {
 	defer src.Close()
 	sysNorm := normalize(sysPrompt)
@@ -253,14 +286,28 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 	// agent client runs the tool instead of hanging.
 	sawToolCall := false
 
+	// Envelope fields captured from the first upstream chunk, so the chunks WE
+	// synthesize (held-back content, redaction note, finish envelope) carry the
+	// same id/object/created/model as the provider's own chunks. Without these a
+	// strict client (LibreChat v0.8.6) drops the chunk and the stream "hangs".
+	var envID, envObject, envModel string
+	var envCreated json.RawMessage
+	newChunk := func() outChunk {
+		obj := envObject
+		if obj == "" {
+			obj = "chat.completion.chunk"
+		}
+		return outChunk{ID: envID, Object: obj, Created: envCreated, Model: envModel}
+	}
+
 	writeContent := func(s string) error {
 		if s == "" {
 			return nil
 		}
-		ev, _ := json.Marshal(map[string]any{
-			"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": s}}},
-		})
-		_, err := dst.Write([]byte("data: " + string(ev) + "\n\n"))
+		c := newChunk()
+		c.Choices = []outChoice{{Delta: outDelta{Content: s}}}
+		b, _ := json.Marshal(c)
+		_, err := dst.Write([]byte("data: " + string(b) + "\n\n"))
 		return err
 	}
 
@@ -288,6 +335,9 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 				break
 			}
 			continue
+		}
+		if envID == "" && ch.ID != "" {
+			envID, envObject, envModel, envCreated = ch.ID, ch.Object, ch.Model, ch.Created
 		}
 		if ch.Usage != nil {
 			lastUsage = parse(map[string]any{"usage": ch.Usage})
@@ -370,7 +420,7 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 		// Preserve finish_reason / usage envelopes (carry the stream's end +
 		// usage to the client) without the original content.
 		if finish != nil || ch.Usage != nil {
-			env := map[string]any{}
+			c := newChunk()
 			if finish != nil {
 				fr := *finish
 				// Gemini ends a tool-call turn with "stop"; the agent client needs
@@ -378,12 +428,14 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 				if fr == "stop" && sawToolCall {
 					fr = "tool_calls"
 				}
-				env["choices"] = []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": fr}}
+				c.Choices = []outChoice{{Delta: outDelta{}, FinishReason: &fr}}
 			}
 			if ch.Usage != nil {
-				env["usage"] = ch.Usage
+				if ub, mErr := json.Marshal(ch.Usage); mErr == nil {
+					c.Usage = ub
+				}
 			}
-			eb, _ := json.Marshal(env)
+			eb, _ := json.Marshal(c)
 			if _, err := dst.Write([]byte("data: " + string(eb) + "\n\n")); err != nil {
 				loopErr = err
 				break

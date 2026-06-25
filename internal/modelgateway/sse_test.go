@@ -167,6 +167,28 @@ func TestSSE_PlainStop_NotRewritten(t *testing.T) {
 	}
 }
 
+// With the filter ON, re-serialized chunks must carry the upstream envelope
+// (id/object/created/model) — a minimal chunk makes strict clients (LibreChat
+// v0.8.6) drop it and the stream hangs.
+func TestSSE_FilterOn_FullChunkShape(t *testing.T) {
+	sys := "You are a senior product manager. Ask clarifying questions before proposing anything."
+	sse := `data: {"id":"chatcmpl-xyz","object":"chat.completion.chunk","created":123,"model":"gemini-flash-latest","choices":[{"delta":{"content":"Sure, here is the plan."},"index":0}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-xyz","object":"chat.completion.chunk","created":123,"model":"gemini-flash-latest","choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":5,"completion_tokens":6}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	out, u := runFilter(t, sse, sys)
+	if got := sseContent(out); got != "Sure, here is the plan." {
+		t.Fatalf("content altered: %q", got)
+	}
+	for _, want := range []string{`"object":"chat.completion.chunk"`, `"id":"chatcmpl-xyz"`, `"model":"gemini-flash-latest"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("emitted chunk missing %s; out=%q", want, out)
+		}
+	}
+	if u.OutputTokens != 6 {
+		t.Fatalf("usage out = %d, want 6", u.OutputTokens)
+	}
+}
+
 func TestNormalizeNonStreamToolFinish(t *testing.T) {
 	// finish_reason "stop" WITH message.tool_calls → rewritten.
 	withTool := map[string]any{}

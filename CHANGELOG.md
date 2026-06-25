@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.4] - 2026-06-25
+
+### Fixed
+
+- **Model-gateway streaming hung agent chats (LibreChat "Error connecting to
+  server" / "Generation timed out").** On the leak-filter path (active whenever a
+  system prompt is present — i.e. every agent turn), the gateway re-serialized
+  streamed content into *minimal* chunks (`{choices:[{index,delta:{content}}]}`)
+  that dropped the upstream envelope (`id`/`object`/`created`/`model`). Strict
+  clients (LibreChat v0.8.6) reject such chunks and the stream silently hangs
+  until the client's stale-job reaper fires. The gateway now captures the
+  upstream envelope from the first chunk and stamps every synthesized chunk
+  (held-back content, redaction note, finish/usage envelope) with the same
+  `id`/`object`/`created`/`model`, so the filtered stream is byte-compatible with
+  what the client expects. Leak redaction and metering are unchanged. The
+  re-emitted chunks are built from typed structs (no `map[string]any`).
+
 ## [0.46.3] - 2026-06-25
 
 ### Fixed
