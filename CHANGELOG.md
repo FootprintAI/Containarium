@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.8] - 2026-06-25
+
+### Fixed
+
+- **Workspace chat tool turns hung the gateway → "terminated" before the result
+  round.** On a tool turn the gateway kept reading the provider after the
+  `finish_reason` arrived, waiting for Gemini to close the SSE stream — but
+  Gemini's OpenAI-compat doesn't reliably close a tool stream, and a LangChain
+  agent client (LibreChat) abandons round-1 the instant it has the `tool_call`.
+  The result: the round-1 gateway request never completed (no END), and the
+  client's HTTP stream "terminated", aborting the turn before it could run the
+  tool-result round. The gateway now **stops reading and emits its own `[DONE]` +
+  closes immediately when a tool turn's `finish_reason` is seen**, so round-1
+  completes promptly and the client proceeds to round-2. Content turns are
+  unchanged (they drain fully, preserving any trailing usage chunk). This is the
+  final piece of the agentic tool-calling chain (v0.46.3/4/6/7).
+
 ## [0.46.7] - 2026-06-25
 
 ### Fixed

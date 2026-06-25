@@ -210,6 +210,34 @@ func TestStandardizeToolCalls(t *testing.T) {
 	}
 }
 
+// The gateway must STOP at finish_reason and emit its own [DONE] promptly rather
+// than waiting for the provider to close the stream — Gemini doesn't reliably
+// close a tool stream and an agent client abandons round-1 the instant it has
+// the tool_call, which otherwise deadlocks the response ("terminated").
+func TestSSE_StopsAtFinish(t *testing.T) {
+	// A TOOL turn: tool_call, then finish, then the provider KEEPS sending
+	// (mimics Gemini not closing the tool stream). The gateway must stop at finish
+	// and emit [DONE]; the trailing content must never leak. Content turns are
+	// covered by the other tests (they drain fully and preserve trailing usage).
+	sse := `data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"list_containers","arguments":"{}"},"id":"a","type":"function"}]},"index":0}]}` + "\n\n" +
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":4}}` + "\n\n" +
+		chunk("LEAKED-AFTER-FINISH", "") +
+		"data: [DONE]\n\n"
+	out, u := runFilter(t, sse, "") // filter off → passthrough path
+	if !strings.Contains(out, "list_containers") {
+		t.Fatalf("tool call missing: %q", out)
+	}
+	if strings.Contains(out, "LEAKED-AFTER-FINISH") {
+		t.Fatalf("content after finish was emitted: %q", out)
+	}
+	if !strings.Contains(out, "[DONE]") {
+		t.Fatalf("missing [DONE] terminator")
+	}
+	if u.OutputTokens != 4 {
+		t.Fatalf("usage out=%d want 4 (from the finish chunk)", u.OutputTokens)
+	}
+}
+
 func TestNormalizeNonStreamToolFinish(t *testing.T) {
 	// finish_reason "stop" WITH message.tool_calls → rewritten.
 	withTool := map[string]any{}

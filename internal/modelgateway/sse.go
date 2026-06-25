@@ -417,6 +417,11 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 				loopErr = err
 				break
 			}
+			// Finish on a tool turn: stop reading + close promptly (see the envelope
+			// note below). Content turns drain fully, so they don't break here.
+			if sawToolCall && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil {
+				break
+			}
 			continue
 		}
 
@@ -443,6 +448,10 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 			}
 			if _, err := dst.Write([]byte("data: " + normalizeToolFinish(standardizeToolCalls(payload)) + "\n\n")); err != nil {
 				loopErr = err
+				break
+			}
+			// If this chunk also carried the finish, stop now (see note below).
+			if len(ch.Choices) > 0 && ch.Choices[0].FinishReason != nil {
 				break
 			}
 			continue
@@ -494,6 +503,15 @@ func filterSSEStream(dst *io.PipeWriter, src io.ReadCloser, sysPrompt string, pa
 			eb, _ := json.Marshal(c)
 			if _, err := dst.Write([]byte("data: " + string(eb) + "\n\n")); err != nil {
 				loopErr = err
+				break
+			}
+			// Finish on a TOOL turn: stop reading the provider; the post-loop emits
+			// [DONE] + closes NOW. An agent client abandons round-1 the instant it
+			// has the tool_call, and Gemini's OpenAI-compat doesn't reliably close
+			// the tool stream — so waiting deadlocks the response (no END) and the
+			// client reports "terminated" before round-2. (Content turns drain
+			// fully, so we DON'T break — that preserves any trailing usage chunk.)
+			if finish != nil && sawToolCall {
 				break
 			}
 		}
