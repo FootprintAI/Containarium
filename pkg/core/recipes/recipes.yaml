@@ -365,7 +365,7 @@ recipes:
       # gateway seeded → empty config, LibreChat falls back to its own provider.
       - |
         if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
-          printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-flash-latest", "gemini-2.5-flash"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-flash-latest"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
+          printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-flash"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-flash-latest"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
         else
           printf 'version: 1.2.1\ncache: true\n' > /opt/lc/librechat.yaml
           echo 'librechat: no managed gateway seeded; configure a provider in LibreChat' >&2
@@ -493,7 +493,7 @@ recipes:
                  "instead of giving generic shell instructions. After a tool returns, "
                  "summarize the result clearly. Be concise.")
         body = {"name": "Containarium Workspace", "description": "Manages your Containarium boxes",
-                "provider": "Containarium (Gemini)", "model": "gemini-flash-latest",
+                "provider": "Containarium (Gemini)", "model": "gemini-2.5-flash-lite",
                 "instructions": instr, "tools": keys}
         try:
             print(json.loads(req("/api/agents", body)).get("id", ""))
@@ -587,7 +587,13 @@ recipes:
                 # carries the instructions + the tools; the spec just selects it.
                 out.append('        endpoint: "agents"')
                 out.append("        agent_id: " + json.dumps(AGENT_ID))
-                out.append('        model: "gemini-flash-latest"')
+                # gemini-2.5-flash-lite, NOT gemini-flash-latest: the 2.5 thinking
+                # model demands a thought_signature be echoed on every tool-result
+                # round-trip (OpenAI-compat), which LangChain/LibreChat can't carry,
+                # so multi-turn tool calls 400 ("missing thought_signature"). The
+                # lite (non-thinking) model uses standard function-calling that
+                # round-trips cleanly.
+                out.append('        model: "gemini-2.5-flash-lite"')
             else:
                 # Chat-only persona (skills) or no-MCP fallback: custom endpoint,
                 # prompt carried by the spec. No tools on this path.
