@@ -1,15 +1,10 @@
 package mcp
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
-	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
@@ -79,102 +74,17 @@ func handleConnect(client API, args map[string]interface{}) (string, error) {
 		return runMCPSessionExec(target, privPath, session, execCmd)
 	}
 
-	sshArgs := connectcore.BuildSSHArgs(target, privPath, execCmd)
-
 	if execCmd == "" {
 		// Config mode: hand the ready invocation back for the human to run.
+		sshArgs := connectcore.BuildSSHArgs(target, privPath, execCmd)
 		fp, _ := sshkey.Fingerprint(pub)
 		return fmt.Sprintf(
 			"✓ %s is ready — key %s authorized.\nRun this in your terminal:\n\n    ssh %s\n",
 			box, fp, strings.Join(sshArgs, " ")), nil
 	}
-	// Exec mode: run the one-shot command and return its output + exit code.
-	return runMCPSSHExec(sshArgs)
-}
-
-// runMCPSSHExec runs ssh non-interactively, capturing stdout and stderr
-// separately, and returns a structured result. A non-zero remote exit is
-// NOT a tool error — the command ran; the agent needs the output and the
-// code. Only a failure to launch ssh is an error.
-func runMCPSSHExec(sshArgs []string) (string, error) {
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		return "", fmt.Errorf("ssh not found in PATH: %w", err)
-	}
-	// #nosec G204 -- sshBin is the resolved `ssh` binary; sshArgs are built
-	// from a validated box name + daemon-resolved target. Running ssh is the
-	// tool's job.
-	cmd := exec.Command(sshBin, sshArgs...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	exitCode := 0
-	if runErr := cmd.Run(); runErr != nil {
-		var ee *exec.ExitError
-		if errors.As(runErr, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			return "", fmt.Errorf("ssh: %w", runErr)
-		}
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "exit_code: %d\n", exitCode)
-	if stdout.Len() > 0 {
-		fmt.Fprintf(&b, "\n--- stdout ---\n%s", stdout.String())
-	}
-	if stderr.Len() > 0 {
-		fmt.Fprintf(&b, "\n--- stderr ---\n%s", stderr.String())
-	}
-	return b.String(), nil
-}
-
-// runMCPSessionExec runs one command inside a named tmux session on the
-// box (Tier 2) and returns the framed output + exit code. Like
-// runMCPSSHExec, a non-zero remote exit is data, not a tool error.
-func runMCPSessionExec(target connectcore.Target, identity, session, command string) (string, error) {
-	marker, err := connectcore.NewMarker()
-	if err != nil {
-		return "", err
-	}
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		return "", fmt.Errorf("ssh not found in PATH: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	args := connectcore.BuildSessionExecArgs(target, identity, session, marker, connectcore.EncodeCommand(command), 60)
-	// #nosec G204 -- sshBin is the resolved `ssh` binary; args are built from
-	// a validated box name + daemon-resolved target. Running ssh is the tool's
-	// job.
-	cmd := exec.CommandContext(ctx, sshBin, args...)
-	cmd.Stdin = strings.NewReader(connectcore.SessionExecScript())
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if runErr := cmd.Run(); runErr != nil {
-		var ee *exec.ExitError
-		if !errors.As(runErr, &ee) {
-			return "", fmt.Errorf("session exec: %w", runErr)
-		}
-		// Non-zero ssh exit still carries framed output we parse below.
-	}
-
-	out, code, perr := connectcore.ParseSessionResult(stdout.String(), marker)
-	if perr != nil {
-		if stderr.Len() > 0 {
-			return "", fmt.Errorf("%w (ssh: %s)", perr, strings.TrimSpace(stderr.String()))
-		}
-		return "", perr
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "session: %s\nexit_code: %d\n", session, code)
-	if out != "" {
-		fmt.Fprintf(&b, "\n--- output ---\n%s", out)
-	}
-	return b.String(), nil
+	// Exec mode: run the one-shot command in-process (pure-Go SSH, no system
+	// ssh binary) and return its output + exit code.
+	return runMCPSSHExec(target, privPath, execCmd)
 }
 
 // mcpGetContainer GETs the box over the MCP client's daemon connection and
