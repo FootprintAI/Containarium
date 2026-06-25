@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.5] - 2026-06-25
+
+### Fixed
+
+- **Managed workspace chat can now actually use platform tools.** The LibreChat
+  `librechat` recipe wired the MCP server but its default model-spec targeted the
+  **custom** endpoint, which does not expose MCP tools — only LibreChat's
+  **agents** endpoint does. So the chat replied with generic shell advice ("run
+  `docker ps`") instead of calling `list_containers`/`create_container`/etc. The
+  recipe now, when the MCP is wired, creates a tool-equipped LibreChat **agent**
+  in `post_start` (all MCP tools attached, with workspace instructions) and
+  `gen_modelspecs.py` emits the default "Containarium Workspace" spec on the
+  `agents` endpoint referencing that agent (`/opt/lc/agent-id`). The chat now
+  calls platform tools and acts on the user's boxes. Skill personas stay
+  chat-only on the custom endpoint; with no MCP/agent the default falls back to
+  the custom endpoint as before. (Existing workspace boxes must be redeployed to
+  pick this up — the agent + spec are baked at deploy time.)
+
 ## [0.46.4] - 2026-06-25
 
 ### Fixed

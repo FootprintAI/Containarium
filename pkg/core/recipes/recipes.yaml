@@ -458,6 +458,59 @@ recipes:
         curl -fsS -A "$UA" -X POST http://127.0.0.1:3080/api/auth/register -H 'Content-Type: application/json' \
           -d "{\"name\":\"$CONTAINARIUM_PARAM_AUTH_NAME\",\"username\":\"$LC_USER\",\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\",\"confirm_password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" \
           >/dev/null 2>&1 || echo 'librechat: owner register failed (may already exist)' >&2
+      # Tool-equipped agent: custom endpoints don't expose MCP tools — only the
+      # agents endpoint does. When the MCP is wired, create an agent carrying the
+      # MCP tools so the default workspace spec (agents endpoint) can CALL platform
+      # tools. Its id (→ /opt/lc/agent-id) makes gen_modelspecs.py emit the
+      # agents-endpoint default spec. Written to a FILE so the logic is reusable;
+      # best-effort — no agent → gen falls back to the chat-only custom spec.
+      - |
+        cat > /opt/lc/create_agent.py <<'PYEOF'
+        import sys, json, urllib.request, time
+        LC = "http://127.0.0.1:3080"
+        UA = "Mozilla/5.0 (X11; Linux x86_64) Chrome/120 Safari/537.36"
+        tok = sys.argv[1]
+        def req(path, data=None):
+            h = {"Content-Type": "application/json", "User-Agent": UA, "Authorization": "Bearer " + tok}
+            r = urllib.request.Request(LC + path, data=(json.dumps(data).encode() if data is not None else None), headers=h, method=("POST" if data is not None else "GET"))
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return resp.read().decode()
+        keys = []
+        for _ in range(20):
+            try:
+                j = json.loads(req("/api/mcp/tools"))
+                keys = [t["pluginKey"] for t in j.get("servers", {}).get("containarium", {}).get("tools", [])]
+            except Exception:
+                keys = []
+            if keys:
+                break
+            time.sleep(3)
+        if not keys:
+            sys.exit(0)
+        instr = ("You are the Containarium workspace assistant. You manage the user's "
+                 "Containarium boxes using the provided tools. When the user asks to list, "
+                 "create, expose, deploy, resize, or delete boxes, CALL the appropriate tool "
+                 "instead of giving generic shell instructions. After a tool returns, "
+                 "summarize the result clearly. Be concise.")
+        body = {"name": "Containarium Workspace", "description": "Manages your Containarium boxes",
+                "provider": "Containarium (Gemini)", "model": "gemini-flash-latest",
+                "instructions": instr, "tools": keys}
+        try:
+            print(json.loads(req("/api/agents", body)).get("id", ""))
+        except Exception:
+            pass
+        PYEOF
+      - |
+        if [ -f /opt/lc/mcp-server ] && [ -f /opt/lc/ctn-token ] && [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ]; then
+          UA="Mozilla/5.0 (X11; Linux x86_64) Chrome/120 Safari/537.36"
+          ATOK=$(curl -fsS -A "$UA" -X POST http://127.0.0.1:3080/api/auth/login -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$CONTAINARIUM_PARAM_AUTH_EMAIL\",\"password\":\"$CONTAINARIUM_PARAM_AUTH_PASSWORD\"}" 2>/dev/null \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
+          if [ -n "$ATOK" ]; then
+            AID=$(python3 /opt/lc/create_agent.py "$ATOK" 2>/dev/null | tail -1 || true)
+            if [ -n "$AID" ]; then printf '%s' "$AID" > /opt/lc/agent-id; echo "librechat: created tool agent $AID" >&2; fi
+          fi
+        fi
       # Model-specs = SKILLS as hidden personas. Each installed skill becomes a
       # model-spec the user picks BY NAME in LibreChat's selector; the whole
       # conversation then runs under that skill's `promptPrefix` (its hidden
@@ -467,11 +520,14 @@ recipes:
       # builder; a model-spec promptPrefix does not). A default "Containarium
       # Workspace" general assistant is always present and is the default pick.
       #
-      # The spec targets the CUSTOM endpoint directly: LibreChat's frontend posts
-      # chat turns to the custom endpoint ("Containarium (Gemini)", endpointType
-      # custom), so a spec with `endpoint: "agents"` would never match and every
-      # turn would fail "Model spec mismatch" (buildEndpointOption.js) → the UI
-      # spins forever. Skills come from the `skills` param (JSON, the cloud
+      # The DEFAULT "Containarium Workspace" spec targets the AGENTS endpoint
+      # (preset endpoint:"agents" + agent_id) when the MCP is wired — that is the
+      # ONLY endpoint that exposes the MCP tools, so the chat can actually CALL
+      # platform tools (list/create/expose/delete boxes). The tool-equipped agent
+      # is created in post_start (above) and its id drives gen_modelspecs.py; the
+      # SPA submits the spec's exact preset, so it matches. Skill personas stay on
+      # the custom endpoint (chat-only, advisory — no tools); with no MCP/agent
+      # the default also falls back to custom. Skills come from the `skills` param (JSON, the cloud
       # injects the org's installed set). Built with python3 so multi-line
       # SKILL.md prompts serialize safely (json.dumps → valid YAML scalars).
       # Needs the gateway; emits nothing without it (LibreChat falls back).
@@ -495,6 +551,10 @@ recipes:
                 skills = []
         except Exception:
             skills = []
+        try:
+            AGENT_ID = open("/opt/lc/agent-id").read().strip()
+        except Exception:
+            AGENT_ID = ""
         def slug(name):
             s = "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
             while "--" in s:
@@ -521,10 +581,20 @@ recipes:
             out.append("      label: " + json.dumps(label))
             out.append("      default: " + ("true" if dflt else "false"))
             out.append("      preset:")
-            out.append('        endpoint: "Containarium (Gemini)"')
-            out.append('        endpointType: "custom"')
-            out.append('        model: "gemini-flash-latest"')
-            out.append("        promptPrefix: " + json.dumps(instr))
+            if dflt and AGENT_ID:
+                # Tool-equipped default: only the agents endpoint exposes the MCP
+                # tools (custom endpoints don't). The agent (created in post_start)
+                # carries the instructions + the tools; the spec just selects it.
+                out.append('        endpoint: "agents"')
+                out.append("        agent_id: " + json.dumps(AGENT_ID))
+                out.append('        model: "gemini-flash-latest"')
+            else:
+                # Chat-only persona (skills) or no-MCP fallback: custom endpoint,
+                # prompt carried by the spec. No tools on this path.
+                out.append('        endpoint: "Containarium (Gemini)"')
+                out.append('        endpointType: "custom"')
+                out.append('        model: "gemini-flash-latest"')
+                out.append("        promptPrefix: " + json.dumps(instr))
         print("\n".join(out))
         PYEOF
       # Render the initial specs from the injected `skills` param. Gated on the
