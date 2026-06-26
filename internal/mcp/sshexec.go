@@ -25,10 +25,7 @@ import (
 // image. Config mode still hands the human a ready `ssh …` line to run in
 // their own terminal; only the non-interactive exec paths dial in-process.
 
-const (
-	mcpSSHDialTimeout = 15 * time.Second
-	mcpSSHExecTimeout = 90 * time.Second
-)
+const mcpSSHDialTimeout = 15 * time.Second
 
 // dialSSH opens a pure-Go SSH client to the target using the managed
 // private key at privPath. No system `ssh` binary required.
@@ -117,15 +114,55 @@ func appendKnownHost(path, hostname string, key ssh.PublicKey) error {
 	return nil
 }
 
+// authRetryWindow / authRetryInterval bound how long the exec path retries the
+// SSH dial when the handshake fails to AUTHENTICATE. handleConnect authorizes
+// the managed key immediately before dialing, but that key lands in the host
+// authorized_keys instantly while the sentinel keysync only mirrors it into
+// sshpiper on its next tick (~2m). So a first connect to a freshly-authorized
+// box can race that sync and get publickey-denied (#830). Retrying absorbs the
+// propagation lag; non-auth failures (dial/connection/host-key) still fail
+// fast. vars (not consts) so tests can shrink them.
+var (
+	authRetryWindow   = 120 * time.Second
+	authRetryInterval = 8 * time.Second
+)
+
+// dialSSHWithAuthRetry dials the box, retrying ONLY on an authentication
+// failure (the keysync-propagation race, #830) until authRetryWindow elapses.
+func dialSSHWithAuthRetry(t connectcore.Target, privPath string) (*ssh.Client, error) {
+	deadline := time.Now().Add(authRetryWindow)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), mcpSSHDialTimeout+5*time.Second)
+		client, err := dialSSH(ctx, t, privPath)
+		cancel()
+		if err == nil {
+			return client, nil
+		}
+		if !isSSHAuthError(err) || !time.Now().Before(deadline) {
+			return nil, err
+		}
+		time.Sleep(authRetryInterval)
+	}
+}
+
+// isSSHAuthError reports whether an SSH dial failed because the server rejected
+// our key (vs. a connection/host-key/other error). x/crypto surfaces this as a
+// "handshake failed: ssh: unable to authenticate …" error.
+func isSSHAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "unable to authenticate") ||
+		strings.Contains(s, "no supported methods remain")
+}
+
 // runMCPSSHExec runs one command over a pure-Go SSH session and returns its
 // stdout/stderr + exit code. A non-zero remote exit is NOT a tool error —
 // the command ran; the agent needs the output and the code. Only a failure
 // to connect or open the session is an error.
 func runMCPSSHExec(t connectcore.Target, privPath, execCmd string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), mcpSSHExecTimeout)
-	defer cancel()
-
-	client, err := dialSSH(ctx, t, privPath)
+	client, err := dialSSHWithAuthRetry(t, privPath)
 	if err != nil {
 		return "", err
 	}
@@ -171,10 +208,8 @@ func runMCPSessionExec(target connectcore.Target, privPath, session, command str
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mcpSSHExecTimeout)
-	defer cancel()
 
-	client, err := dialSSH(ctx, target, privPath)
+	client, err := dialSSHWithAuthRetry(target, privPath)
 	if err != nil {
 		return "", err
 	}

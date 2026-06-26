@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/connectcore"
 	"golang.org/x/crypto/ssh"
@@ -87,6 +89,11 @@ type fakeSSHServer struct {
 	stderr   string
 	exitCode uint32
 	wg       sync.WaitGroup
+	// rejectFirstN rejects that many otherwise-valid auth attempts before
+	// accepting, to simulate the keysync-propagation race (#830). 0 = accept
+	// immediately. authAttempts counts valid-key auth attempts seen.
+	rejectFirstN int32
+	authAttempts int32
 }
 
 func newFakeSSHServer(t *testing.T, authKey ssh.PublicKey, stdout, stderr string, exitCode uint32) *fakeSSHServer {
@@ -105,7 +112,7 @@ func newFakeSSHServer(t *testing.T, authKey ssh.PublicKey, stdout, stderr string
 	}
 	s := &fakeSSHServer{ln: ln, hostKey: hostSigner, authKey: authKey, stdout: stdout, stderr: stderr, exitCode: exitCode}
 	s.wg.Add(1)
-	go s.serveOne(t)
+	go s.serve()
 	return s
 }
 
@@ -116,27 +123,38 @@ func (s *fakeSSHServer) close() {
 	s.wg.Wait()
 }
 
-func (s *fakeSSHServer) serveOne(t *testing.T) {
+func (s *fakeSSHServer) serve() {
 	defer s.wg.Done()
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if string(key.Marshal()) == string(s.authKey.Marshal()) {
-				return &ssh.Permissions{}, nil
+			if string(key.Marshal()) != string(s.authKey.Marshal()) {
+				return nil, errUnauthorizedKey
 			}
-			return nil, errUnauthorizedKey
+			// Reject the first rejectFirstN otherwise-valid auths to simulate
+			// the keysync-propagation race (#830): the key isn't live yet,
+			// then becomes valid on a later attempt.
+			if atomic.AddInt32(&s.authAttempts, 1) <= atomic.LoadInt32(&s.rejectFirstN) {
+				return nil, errUnauthorizedKey
+			}
+			return &ssh.Permissions{}, nil
 		},
 	}
 	cfg.AddHostKey(s.hostKey)
-
-	conn, err := s.ln.Accept()
-	if err != nil {
-		return // listener closed
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return // listener closed
+		}
+		s.handleConn(conn, cfg)
 	}
+}
+
+func (s *fakeSSHServer) handleConn(conn net.Conn, cfg *ssh.ServerConfig) {
 	defer func() { _ = conn.Close() }()
 
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, cfg)
 	if err != nil {
-		return
+		return // auth failed (expected during the reject window)
 	}
 	defer func() { _ = sconn.Close() }()
 	go ssh.DiscardRequests(reqs)
@@ -260,5 +278,65 @@ func TestRunMCPSSHExec_NonZeroExit(t *testing.T) {
 	}
 	if !strings.Contains(out, "exit_code: 7") {
 		t.Errorf("expected exit_code 7 in:\n%s", out)
+	}
+}
+
+// TestRunMCPSSHExec_RetriesThroughAuthRace proves the exec path retries the
+// dial when the key isn't live yet (the keysync-propagation race, #830): the
+// server rejects the first two otherwise-valid auths, then accepts, and
+// runMCPSSHExec still succeeds.
+func TestRunMCPSSHExec_RetriesThroughAuthRace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Shrink the retry knobs so the test is fast.
+	oldW, oldI := authRetryWindow, authRetryInterval
+	authRetryWindow = 5 * time.Second
+	authRetryInterval = 50 * time.Millisecond
+	t.Cleanup(func() { authRetryWindow, authRetryInterval = oldW, oldI })
+
+	privPath, pub := writeManagedKey(t)
+	srv := newFakeSSHServer(t, pub, "CONNECT_OK\n", "", 0)
+	srv.rejectFirstN = 2 // first two auths denied (key not propagated yet)
+	defer srv.close()
+
+	host, portStr, _ := net.SplitHostPort(srv.addr())
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	target := connectcore.Target{User: "tester", Host: host, Port: port}
+
+	out, err := runMCPSSHExec(target, privPath, "echo hi")
+	if err != nil {
+		t.Fatalf("expected retry to succeed past the auth race, got: %v", err)
+	}
+	if !strings.Contains(out, "CONNECT_OK") {
+		t.Errorf("stdout not surfaced after retry:\n%s", out)
+	}
+	if got := atomic.LoadInt32(&srv.authAttempts); got < 3 {
+		t.Errorf("expected ≥3 auth attempts (2 rejected + 1 accepted), got %d", got)
+	}
+}
+
+// TestRunMCPSSHExec_NonAuthErrorFailsFast confirms a non-auth dial failure
+// (nothing listening) is NOT retried for the whole window.
+func TestRunMCPSSHExec_NonAuthErrorFailsFast(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldW, oldI := authRetryWindow, authRetryInterval
+	authRetryWindow = 10 * time.Second
+	authRetryInterval = 50 * time.Millisecond
+	t.Cleanup(func() { authRetryWindow, authRetryInterval = oldW, oldI })
+
+	privPath, _ := writeManagedKey(t)
+	// 127.0.0.1:1 — nothing listening → connection refused (not an auth error).
+	target := connectcore.Target{User: "tester", Host: "127.0.0.1", Port: 1}
+
+	start := time.Now()
+	_, err := runMCPSSHExec(target, privPath, "echo hi")
+	if err == nil {
+		t.Fatal("expected a dial error")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("non-auth error should fail fast, took %s (retried the whole window?)", elapsed)
 	}
 }
