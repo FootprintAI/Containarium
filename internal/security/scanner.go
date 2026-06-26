@@ -54,6 +54,15 @@ func NewScanner(incusClient *incus.Client, store *Store) *Scanner {
 func (s *Scanner) Start(ctx context.Context) {
 	ctx, s.cancel = context.WithCancel(ctx)
 
+	// Reconcile away any scan-<box> devices leaked by a scan that a prior
+	// daemon restart interrupted (#832): ScanContainer removes its mount in a
+	// defer, which a kill/restart mid-scan skips. A leaked device's mount pins
+	// the target's storage volume (later delete → "dataset is busy" → the TTL
+	// sweeper loops forever), and a leaked device whose source was since
+	// deleted blocks the security container from starting. No scan survives a
+	// restart, so all such devices are stale.
+	s.reconcileStaleScanDevices(ctx)
+
 	// Start worker pool
 	s.startWorkers(ctx, maxConcurrentScans)
 
@@ -82,6 +91,46 @@ func (s *Scanner) Stop() {
 		s.cancel()
 	}
 	log.Printf("Security scanner stopped")
+}
+
+// scanDevicePrefix tags the disk devices ScanContainer attaches to the
+// security container ("scan-<box>"). Reconciliation keys off it.
+const scanDevicePrefix = "scan-"
+
+// reconcileStaleScanDevices removes every scan-<box> disk device left on the
+// security container — they only ever exist mid-scan, so any present at
+// startup leaked from a scan a prior daemon interrupted (#832). Best-effort:
+// a missing security container (fresh host) or a per-device failure is logged,
+// never fatal to startup.
+func (s *Scanner) reconcileStaleScanDevices(ctx context.Context) {
+	out, err := exec.CommandContext(ctx, "incus", "config", "device", "list",
+		SecurityContainerName).CombinedOutput()
+	if err != nil {
+		// Fresh host: the security container may not exist yet — not an error.
+		log.Printf("Security scan: skip stale scan-device reconcile (%s): %v",
+			SecurityContainerName, err)
+		return
+	}
+	removed := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		name := strings.TrimSpace(line)
+		if !strings.HasPrefix(name, scanDevicePrefix) {
+			continue
+		}
+		// #nosec G204 -- name is a device listed by incus on our own security
+		// container; removing a scan-* device is exactly this function's job.
+		if rmOut, rmErr := exec.CommandContext(ctx, "incus", "config", "device", "remove",
+			SecurityContainerName, name).CombinedOutput(); rmErr != nil {
+			log.Printf("Security scan: failed to remove stale scan device %s: %v (%s)",
+				name, rmErr, strings.TrimSpace(string(rmOut)))
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		log.Printf("Security scan: reconciled %d stale scan device(s) from %s",
+			removed, SecurityContainerName)
+	}
 }
 
 // runScanCycle enqueues scan jobs for all running user containers
@@ -215,7 +264,7 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 // ScanContainer scans a single container's filesystem via disk device mount.
 // Each container gets a unique mount path so multiple scans can run concurrently.
 func (s *Scanner) ScanContainer(ctx context.Context, containerName, username string) error {
-	deviceName := fmt.Sprintf("scan-%s", strings.ReplaceAll(containerName, "/", "-"))
+	deviceName := scanDevicePrefix + strings.ReplaceAll(containerName, "/", "-")
 	mountPath := fmt.Sprintf("/mnt/scan-%s", strings.ReplaceAll(containerName, "/", "-"))
 	rootfsPath := fmt.Sprintf("/var/lib/incus/storage-pools/%s/containers/%s/rootfs", s.storagePool, containerName)
 

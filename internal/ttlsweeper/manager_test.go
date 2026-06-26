@@ -339,3 +339,92 @@ func (f *fakeIncusCounting) ListContainers() ([]ContainerView, error) {
 	atomic.AddInt64(f.count, 1)
 	return nil, nil
 }
+
+// alwaysFailErrs returns a slice long enough that fakeDeleter fails every call
+// across a test (its errs are indexed per-call; a short slice falls back to nil).
+func alwaysFailErrs(n int) []error {
+	errs := make([]error, n)
+	for i := range errs {
+		errs[i] = errors.New("dataset is busy")
+	}
+	return errs
+}
+
+// TestManager_BackoffOnRepeatedFailure: a container whose delete keeps failing
+// is retried on an exponential schedule, not every tick (#831).
+func TestManager_BackoffOnRepeatedFailure(t *testing.T) {
+	cur := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	expiredAt := cur.Add(-time.Hour)
+	inc := &fakeIncus{containers: []ContainerView{{Name: "stuck-container", TTLExpiresAt: &expiredAt}}}
+	del := &fakeDeleter{errs: alwaysFailErrs(64)}
+	m := NewManager(inc, del, Options{Interval: time.Hour, Clock: func() time.Time { return cur }})
+
+	// First tick → one (failed) attempt; backoff is failBackoffBase (1m).
+	m.tick(context.Background())
+	if got := len(del.recorded()); got != 1 {
+		t.Fatalf("tick1 attempts=%d, want 1", got)
+	}
+
+	// Ticks within the backoff window must NOT retry.
+	for k := 0; k < 5; k++ {
+		cur = cur.Add(10 * time.Second)
+		m.tick(context.Background())
+	}
+	if got := len(del.recorded()); got != 1 {
+		t.Fatalf("attempts during backoff=%d, want 1 (no retry until backoff elapses)", got)
+	}
+
+	// Once the backoff elapses, the next tick retries.
+	cur = cur.Add(failBackoffBase)
+	m.tick(context.Background())
+	if got := len(del.recorded()); got != 2 {
+		t.Fatalf("attempts after backoff elapsed=%d, want 2", got)
+	}
+}
+
+// TestManager_QuarantineAfterThreshold: past quarantineAfter consecutive
+// failures the box is quarantined (parked, logged once) (#831).
+func TestManager_QuarantineAfterThreshold(t *testing.T) {
+	cur := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	expiredAt := cur.Add(-time.Hour)
+	inc := &fakeIncus{containers: []ContainerView{{Name: "stuck-container", TTLExpiresAt: &expiredAt}}}
+	del := &fakeDeleter{errs: alwaysFailErrs(64)}
+	m := NewManager(inc, del, Options{Interval: time.Hour, Clock: func() time.Time { return cur }})
+
+	// Advance well past each (capped) backoff so every tick actually retries.
+	for k := 0; k < quarantineAfter; k++ {
+		m.tick(context.Background())
+		cur = cur.Add(2 * failBackoffMax)
+	}
+	fs := m.failures["stuck-container"]
+	if fs == nil {
+		t.Fatal("expected a failure record for the stuck container")
+	}
+	if fs.count < quarantineAfter || !fs.quarantined {
+		t.Fatalf("expected quarantine after %d failures, got count=%d quarantined=%v",
+			quarantineAfter, fs.count, fs.quarantined)
+	}
+}
+
+// TestManager_FailureEntryPrunedWhenGone: once a previously-failing box is no
+// longer expired (deleted elsewhere / woken / protected), its failure entry is
+// pruned so the map can't grow unbounded.
+func TestManager_FailureEntryPrunedWhenGone(t *testing.T) {
+	cur := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	expiredAt := cur.Add(-time.Hour)
+	inc := &fakeIncus{containers: []ContainerView{{Name: "stuck-container", TTLExpiresAt: &expiredAt}}}
+	del := &fakeDeleter{errs: alwaysFailErrs(8)}
+	m := NewManager(inc, del, Options{Interval: time.Hour, Clock: func() time.Time { return cur }})
+
+	m.tick(context.Background())
+	if m.failures["stuck-container"] == nil {
+		t.Fatal("expected a failure record after the failed delete")
+	}
+
+	// The box is gone from the listing now → its failure entry must be pruned.
+	inc.containers = nil
+	m.tick(context.Background())
+	if len(m.failures) != 0 {
+		t.Fatalf("expected failure map pruned to empty, got %d entries", len(m.failures))
+	}
+}

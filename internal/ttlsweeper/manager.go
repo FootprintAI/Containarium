@@ -13,6 +13,36 @@ import (
 // owns dozens of containers, not thousands.
 const DefaultInterval = 60 * time.Second
 
+const (
+	// failBackoffBase is the wait after a container's first failed delete; it
+	// doubles each consecutive failure up to failBackoffMax. A delete can fail
+	// permanently (e.g. a leaked scan mount pinning the ZFS dataset →
+	// "dataset is busy", #832) and Decide keeps returning the still-expired
+	// box every tick — without backoff the sweeper retries every 60s forever,
+	// flooding the journal and never progressing (#831). Backoff turns that
+	// into 1m, 2m, 4m, … so one wedged box is near-silent and can't starve the
+	// loop.
+	failBackoffBase = 1 * time.Minute
+	failBackoffMax  = 1 * time.Hour
+	// quarantineAfter is the consecutive-failure count past which the sweeper
+	// parks the box at failBackoffMax and logs ONCE at WARN — a permanently
+	// stuck delete becomes a single actionable line instead of an infinite
+	// loop. It still retries hourly in case the blocker clears on its own.
+	quarantineAfter = 10
+	// maxBackoffShift caps the exponent so failBackoffBase << shift can't
+	// overflow on a long-lived stuck entry (the result is clamped to
+	// failBackoffMax regardless).
+	maxBackoffShift = 16
+)
+
+// failState tracks one container's consecutive delete failures so the sweeper
+// can back off instead of hammering an undeletable box every tick (#831).
+type failState struct {
+	count       int
+	nextAttempt time.Time
+	quarantined bool
+}
+
 // IncusClient is the narrow slice of the daemon's container source
 // the sweeper actually needs. The wiring PR adapts the real
 // *incus.Client (or whatever persists TTL — Incus user.* config,
@@ -52,6 +82,11 @@ type Manager struct {
 	stopCh   chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+
+	// failures tracks per-container consecutive delete failures for backoff
+	// (#831). Only ever touched from the single run goroutine's tick, so it
+	// needs no lock.
+	failures map[string]*failState
 }
 
 // Options bundles the optional knobs. Production callers should pass
@@ -86,6 +121,7 @@ func NewManager(inc IncusClient, deleter Deleter, opts Options) *Manager {
 		clock:    opts.Clock,
 		stopCh:   make(chan struct{}),
 		done:     make(chan struct{}),
+		failures: make(map[string]*failState),
 	}
 }
 
@@ -138,6 +174,13 @@ func (m *Manager) tick(ctx context.Context) {
 	}
 	now := m.clock()
 	expired := Decide(containers, now)
+
+	// Prune failure entries for boxes no longer expired (deleted elsewhere,
+	// woken, protected) so the map can't grow unbounded and a recreated box
+	// reusing the name starts with a clean slate. Done before the empty-expired
+	// early return so a box that vanishes entirely is still cleaned up.
+	m.pruneFailures(expired)
+
 	if len(expired) == 0 {
 		return
 	}
@@ -153,14 +196,71 @@ func (m *Manager) tick(ctx context.Context) {
 	}
 
 	for _, name := range expired {
+		// Honor backoff: a box whose delete keeps failing is retried on an
+		// exponential schedule, not every tick (#831).
+		if fs := m.failures[name]; fs != nil && now.Before(fs.nextAttempt) {
+			continue
+		}
 		reason := "ttl_expired"
 		if exp, ok := expiryByName[name]; ok {
 			reason = "ttl_expired at " + exp.UTC().Format(time.RFC3339)
 		}
 		if err := m.deleter.DeleteContainer(ctx, name, reason); err != nil {
-			log.Printf("[ttlsweeper] delete %s: %v", name, err)
+			m.recordFailure(name, err, now)
 			continue
 		}
+		delete(m.failures, name)
 		log.Printf("[ttlsweeper] deleted name=%s reason=%q", name, reason)
 	}
+}
+
+// pruneFailures drops failure records for any container not in the current
+// expired set — it was deleted elsewhere, woken, or protected, so its backoff
+// state is stale. Keeps the map bounded and lets a recreated box reusing the
+// name start clean.
+func (m *Manager) pruneFailures(expired []string) {
+	if len(m.failures) == 0 {
+		return
+	}
+	stillExpired := make(map[string]struct{}, len(expired))
+	for _, name := range expired {
+		stillExpired[name] = struct{}{}
+	}
+	for name := range m.failures {
+		if _, ok := stillExpired[name]; !ok {
+			delete(m.failures, name)
+		}
+	}
+}
+
+// recordFailure bumps a container's consecutive-failure count and schedules
+// the next attempt with exponential backoff, quarantining (parking at
+// failBackoffMax + a single WARN) once it crosses quarantineAfter (#831).
+func (m *Manager) recordFailure(name string, err error, now time.Time) {
+	fs := m.failures[name]
+	if fs == nil {
+		fs = &failState{}
+		m.failures[name] = fs
+	}
+	fs.count++
+
+	shift := fs.count - 1
+	if shift > maxBackoffShift {
+		shift = maxBackoffShift
+	}
+	backoff := failBackoffBase << uint(shift)
+	if backoff > failBackoffMax {
+		backoff = failBackoffMax
+	}
+	fs.nextAttempt = now.Add(backoff)
+
+	if fs.count >= quarantineAfter {
+		if !fs.quarantined {
+			fs.quarantined = true
+			log.Printf("[ttlsweeper] delete %s: %v — failed %d times, quarantining (retry every %s); manual cleanup likely needed",
+				name, err, fs.count, failBackoffMax)
+		}
+		return // already logged the once; stay quiet at the hourly cadence
+	}
+	log.Printf("[ttlsweeper] delete %s: %v (attempt %d, retry in %s)", name, err, fs.count, backoff)
 }
