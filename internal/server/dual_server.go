@@ -192,6 +192,26 @@ type DualServer struct {
 	startTime             time.Time
 }
 
+// bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
+//
+// The base rule `address=/<baseDomain>/<caddyIP>` makes boxes resolve
+// *.baseDomain to the local Caddy edge (hairpin-NAT avoidance for exposed
+// apps). But that wildcard also swallows the SSH apex (sshHost, e.g.
+// region-a.example.com), which must reach the sentinel/sshpiper on :22 —
+// Caddy serves only :80/:443. So when sshHost is set (and is a name the
+// wildcard would capture), we add the more-specific `server=/<sshHost>/#`,
+// which tells dnsmasq to resolve that exact name via the upstream resolvers
+// (→ the sentinel's public IP) instead of the address= override. dnsmasq's
+// longest-match makes the carve-out win. Without it, an in-box `connect`
+// dials the SSH apex and lands on Caddy (no :22) or a stale edge IP (#837.1).
+func bridgeDNSRaw(baseDomain, caddyIP, sshHost string) string {
+	raw := fmt.Sprintf("address=/%s/%s", baseDomain, caddyIP)
+	if sshHost != "" && sshHost != baseDomain {
+		raw += "\nserver=/" + sshHost + "/#"
+	}
+	return raw
+}
+
 // NewDualServer creates a new dual server instance
 func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Audit C-MED-1: when --proxy-protocol is on, the daemon
@@ -482,13 +502,16 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							}
 						}
 
-						// Add DNS override so containers resolve *.baseDomain to Caddy
-						// internally instead of going through the external IP (hairpin NAT).
-						dnsOverride := fmt.Sprintf("address=/%s/%s", config.BaseDomain, caddyIP)
-						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil { // #nosec G204 -- dnsOverride is constructed from trusted BaseDomain and CaddyIP config values
+						// Resolve *.baseDomain to Caddy internally (hairpin NAT
+						// avoidance), carving out the SSH apex so it still reaches
+						// the sentinel (#837.1). Uses the LIVE caddy IP, so each
+						// (re)apply tracks Caddy's current address rather than a
+						// stale one (#837.D).
+						dnsOverride := bridgeDNSRaw(config.BaseDomain, caddyIP, config.SSHHost)
+						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil { // #nosec G204 -- dnsOverride is built from trusted BaseDomain/CaddyIP/SSHHost config values
 							log.Printf("Warning: failed to set DNS override for %s: %v (%s)", config.BaseDomain, err, string(out))
 						} else {
-							log.Printf("DNS override: *.%s -> %s (internal hairpin)", config.BaseDomain, caddyIP)
+							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost)
 						}
 					}
 				}
