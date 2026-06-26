@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // fakeClient is a minimal APIClient for unit-testing Run() without a
@@ -15,6 +16,11 @@ type fakeClient struct {
 	lookupErr                         error
 	lookupCalls                       int
 
+	// ipAfterCall, when > 0, models a box still coming up: LookupContainer
+	// returns an empty IP until the Nth call, then returns lookupIP (the box
+	// "got its IP"). Used to test the create→expose wait.
+	ipAfterCall int
+
 	// CreateRoute behavior
 	createResult *RouteResult
 	createErr    error
@@ -24,6 +30,9 @@ type fakeClient struct {
 
 func (f *fakeClient) LookupContainer(_ context.Context, _ string) (string, string, string, error) {
 	f.lookupCalls++
+	if f.ipAfterCall > 0 && f.lookupCalls < f.ipAfterCall {
+		return f.lookupName, "", f.lookupState, f.lookupErr
+	}
 	return f.lookupName, f.lookupIP, f.lookupState, f.lookupErr
 }
 
@@ -134,5 +143,56 @@ func TestRun_PropagatesCreateError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected create error to propagate")
+	}
+}
+
+// TestRun_WaitsForIPThroughCreating: a box that has no IP yet (still CREATING)
+// is waited out — Run polls LookupContainer until the IP appears, then exposes.
+// This is the create→expose race an agent hits when it exposes right after
+// create.
+func TestRun_WaitsForIPThroughCreating(t *testing.T) {
+	oldT, oldI := exposeReadyTimeout, exposePollInterval
+	exposeReadyTimeout = 2 * time.Second
+	exposePollInterval = 5 * time.Millisecond
+	defer func() { exposeReadyTimeout, exposePollInterval = oldT, oldI }()
+
+	c := &fakeClient{
+		lookupName:   "alice-container",
+		lookupIP:     "10.0.3.42",
+		lookupState:  "Creating",
+		ipAfterCall:  3, // IP appears on the 3rd lookup
+		createResult: &RouteResult{Domain: "x.example", ContainerIP: "10.0.3.42", Port: 8080},
+	}
+	got, err := Run(context.Background(), c, Options{Username: "alice", ContainerPort: 8080, Domain: "x.example"})
+	if err != nil {
+		t.Fatalf("expected Run to wait for the IP, got: %v", err)
+	}
+	if c.lookupCalls < 3 {
+		t.Errorf("expected ≥3 lookups (polled until IP), got %d", c.lookupCalls)
+	}
+	if c.createCalls != 1 || c.lastParams.TargetIP != "10.0.3.42" {
+		t.Errorf("expected one CreateRoute with the resolved IP; create=%d ip=%q", c.createCalls, c.lastParams.TargetIP)
+	}
+	_ = got
+}
+
+// TestRun_TimesOutStillCreating: a box stuck CREATING with no IP past the
+// deadline returns the actionable "no IP address yet" error (and never routes).
+func TestRun_TimesOutStillCreating(t *testing.T) {
+	oldT, oldI := exposeReadyTimeout, exposePollInterval
+	exposeReadyTimeout = 30 * time.Millisecond
+	exposePollInterval = 5 * time.Millisecond
+	defer func() { exposeReadyTimeout, exposePollInterval = oldT, oldI }()
+
+	c := &fakeClient{lookupName: "alice-container", lookupIP: "", lookupState: "Creating"}
+	_, err := Run(context.Background(), c, Options{Username: "alice", ContainerPort: 8080, Domain: "x.example"})
+	if err == nil {
+		t.Fatal("expected a timeout error for a box stuck creating")
+	}
+	if c.lookupCalls < 2 {
+		t.Errorf("expected the box to be polled more than once, got %d", c.lookupCalls)
+	}
+	if c.createCalls != 0 {
+		t.Errorf("must not route a box with no IP")
 	}
 }

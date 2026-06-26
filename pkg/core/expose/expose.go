@@ -13,6 +13,18 @@ package expose
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
+)
+
+// exposeReadyTimeout / exposePollInterval bound how long Run waits for a
+// freshly-created box to get its IP before failing. An agent commonly creates
+// a box and immediately exposes a port, racing the box's bring-up — it has no
+// IP until it's RUNNING. Waiting absorbs that race instead of erroring (the
+// same create→ready fix connect got). vars (not consts) so tests can shrink.
+var (
+	exposeReadyTimeout = 90 * time.Second
+	exposePollInterval = 3 * time.Second
 )
 
 // APIClient is the minimal transport surface this package needs. The
@@ -82,12 +94,9 @@ func Run(ctx context.Context, c APIClient, opts Options) (*RouteResult, error) {
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
-	name, ip, state, err := c.LookupContainer(ctx, opts.Username)
+	name, ip, err := waitForIP(ctx, c, opts.Username)
 	if err != nil {
-		return nil, fmt.Errorf("failed to look up container %q: %w", opts.Username, err)
-	}
-	if ip == "" {
-		return nil, fmt.Errorf("container %q has no IP address yet (state: %s)", opts.Username, state)
+		return nil, err
 	}
 	res, err := c.CreateRoute(ctx, AddRouteParams{
 		Domain:   opts.Domain,
@@ -102,4 +111,44 @@ func Run(ctx context.Context, c APIClient, opts Options) (*RouteResult, error) {
 		return nil, fmt.Errorf("failed to add route: %w", err)
 	}
 	return res, nil
+}
+
+// waitForIP resolves the container to (name, ip), polling until the box has an
+// IP or the deadline passes. A freshly-created box has no IP until it reaches
+// RUNNING, and agents routinely create-then-expose in one breath; waiting
+// absorbs that race instead of failing. A box in a state that will never yield
+// an IP (stopped/error/etc.) fails fast rather than burning the whole window.
+func waitForIP(ctx context.Context, c APIClient, username string) (name, ip string, err error) {
+	deadline := time.Now().Add(exposeReadyTimeout)
+	for {
+		var state string
+		name, ip, state, err = c.LookupContainer(ctx, username)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to look up container %q: %w", username, err)
+		}
+		if ip != "" {
+			return name, ip, nil
+		}
+		if !isComingUp(state) || !time.Now().Before(deadline) {
+			return "", "", fmt.Errorf("container %q has no IP address yet (state: %s)", username, state)
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(exposePollInterval):
+		}
+	}
+}
+
+// isComingUp reports whether a container state is a transient bring-up state
+// that will plausibly yield an IP shortly. RUNNING is included because there
+// is a brief window where a box is running but its IP isn't reported yet.
+// Accepts the proto enum identifier and the friendly form.
+func isComingUp(state string) bool {
+	s := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(state)), "CONTAINER_STATE_")
+	switch s {
+	case "CREATING", "PROVISIONING", "STARTING", "PENDING", "RUNNING":
+		return true
+	}
+	return false
 }
