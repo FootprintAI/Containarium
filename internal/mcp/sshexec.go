@@ -123,7 +123,7 @@ func appendKnownHost(path, hostname string, key ssh.PublicKey) error {
 // propagation lag; non-auth failures (dial/connection/host-key) still fail
 // fast. vars (not consts) so tests can shrink them.
 var (
-	authRetryWindow   = 120 * time.Second
+	authRetryWindow   = 40 * time.Second
 	authRetryInterval = 8 * time.Second
 )
 

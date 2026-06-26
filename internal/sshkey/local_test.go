@@ -266,3 +266,29 @@ func TestLocate_RejectsEmbeddedNewlineKey(t *testing.T) {
 		t.Fatal("expected error on key with embedded newline")
 	}
 }
+
+// TestLocateOrGenerate_IdempotentOnGeneratedKey: the second call must reuse the
+// containarium key the first call generated (generated=false, no error) instead
+// of failing "already exists" — Locate now also searches the managed key (#837).
+func TestLocateOrGenerate_IdempotentOnGeneratedKey(t *testing.T) {
+	home := t.TempDir()
+
+	p1, k1, gen1, err := LocateOrGenerate(LocateOpts{HomeDir: home})
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if !gen1 {
+		t.Fatalf("first call should have generated a key (empty home), got generated=false")
+	}
+
+	p2, k2, gen2, err := LocateOrGenerate(LocateOpts{HomeDir: home})
+	if err != nil {
+		t.Fatalf("second call should reuse the generated key, got: %v", err)
+	}
+	if gen2 {
+		t.Errorf("second call should reuse (generated=false), got generated=true")
+	}
+	if p1 != p2 || k1 != k2 {
+		t.Errorf("second call returned a different key:\n  1: %s\n     %s\n  2: %s\n     %s", p1, k1, p2, k2)
+	}
+}

@@ -14,10 +14,13 @@ import (
 // connectReadyTimeout bounds how long connect waits for a freshly-created box
 // to finish coming up, and connectPollInterval is the gap between re-checks.
 // An agent commonly creates a box then immediately connects, racing the
-// box's bring-up — waiting absorbs that race instead of erroring.
-// vars (not consts) so tests can shrink them.
+// box's bring-up — waiting absorbs that race instead of erroring. Kept under
+// the typical MCP client request timeout (~60s) so a not-yet-ready box returns
+// a clean "try again shortly" the agent can retry on, rather than blowing past
+// the client deadline as an opaque -32001 (#837). vars (not consts) so tests
+// can shrink them.
 var (
-	connectReadyTimeout = 90 * time.Second
+	connectReadyTimeout = 40 * time.Second
 	connectPollInterval = 3 * time.Second
 )
 

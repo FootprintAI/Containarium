@@ -67,14 +67,18 @@ type LocateOpts struct {
 // reading it would gratuitously require an unlock prompt on
 // passphrase-protected keys.
 //
-// Search order: id_ed25519.pub, then id_rsa.pub. Returns os.ErrNotExist
-// if neither exists (callers can choose to fall through to Generate).
+// Search order: id_ed25519.pub, id_rsa.pub, then the containarium-managed
+// key (containarium_ed25519.pub) that Generate writes. Including the managed
+// key LAST keeps the CLI's "reuse my personal key" behavior unchanged while
+// making LocateOrGenerate idempotent: a second call finds the key the first
+// call generated instead of Generate erroring "already exists" (#837). Returns
+// os.ErrNotExist if none exists (callers can fall through to Generate).
 func Locate(opts LocateOpts) (pubPath string, pub string, err error) {
 	dir, err := sshDir(opts.HomeDir)
 	if err != nil {
 		return "", "", err
 	}
-	for _, name := range []string{DefaultPublicKeyPath, FallbackPublicKeyPath} {
+	for _, name := range []string{DefaultPublicKeyPath, FallbackPublicKeyPath, containariumKeyName + containariumPubKeySuffix} {
 		p := filepath.Join(dir, name)
 		// #nosec G304 -- path is under the user's own ~/.ssh; not
 		// attacker-controlled.

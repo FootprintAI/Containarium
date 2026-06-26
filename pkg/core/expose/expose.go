@@ -23,7 +23,7 @@ import (
 // IP until it's RUNNING. Waiting absorbs that race instead of erroring (the
 // same create→ready fix connect got). vars (not consts) so tests can shrink.
 var (
-	exposeReadyTimeout = 90 * time.Second
+	exposeReadyTimeout = 40 * time.Second
 	exposePollInterval = 3 * time.Second
 )
 
