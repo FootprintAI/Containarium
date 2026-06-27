@@ -26,25 +26,27 @@ curl https://blog.example.com → hello world
 
 ---
 
-## Why "agent-native"?
+## Why an agent runtime?
 
 AI agents are increasingly the primary user of dev infrastructure. They
 want to build, install, deploy, and verify — not on the human's laptop
-(too noisy, too risky, too local) but on a sandbox that's:
+(too noisy, too risky, too local) but on a persistent, isolated runtime that's:
 
 - **Persistent**: state survives between agent runs.
-- **Isolated**: a misbehaving install doesn't touch your machine.
+- **Isolated**: a misbehaving install doesn't touch your machine or your cluster.
 - **Real**: a full Linux environment with `systemd`, real networking,
   and the ability to host things on the open internet.
 - **Driven by structured tools**: not by an agent typing commands into a
   TTY hoping nothing scrolls off-screen, but by MCP — typed,
   bounded, safe.
+- **Blast-radius-bounded**: the agent holds an SSH key, not a
+  kube-apiserver token. It can't reach the cluster control plane, the
+  host OS, or other tenants' boxes.
 
-That's the box Containarium gives you. It runs as a self-hosted
-single-host platform (one VM → many isolated LXC containers), exposes
-its admin surface over MCP, and ships a second MCP server that lives
-*inside* the container so the agent can `shell_exec` and edit files
-directly.
+That's the runtime Containarium gives you. It runs as a self-hosted
+platform on LXC or Kubernetes, exposes its admin surface over MCP, and
+ships a second MCP server that lives *inside* the box so the agent can
+`shell_exec` and edit files directly.
 
 You bring the agent. We run the box.
 
@@ -295,6 +297,30 @@ running on, `sbx` is the lighter tool. If you're giving your agent
 (or your customer's agent) a persistent Linux box on the public
 internet, Containarium is the shape.
 
+### vs. OSS Kubernetes agent runtimes (agent-sandbox, OpenShell)
+
+[`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox)
+and [`NVIDIA/OpenShell`](https://github.com/NVIDIA/OpenShell) are the
+closest open-source peers on Kubernetes:
+
+- **SSH-native vs. exec-based**: both agent-sandbox and OpenShell reach
+  the sandbox via `kubectl exec` or a proprietary client, which requires
+  the agent to hold a kube-apiserver token or cluster credentials.
+  Containarium reaches the pod over SSH through sshpiper — the agent has
+  no path to the cluster control plane at all.
+- **MCP-native**: agent-sandbox and OpenShell expose REST APIs or custom
+  SDKs. Containarium's `agent-box` MCP server runs *inside* the box,
+  reachable over SSH stdio — any MCP-speaking agent (Claude Code, Cursor,
+  OpenCode) works with zero client library.
+- **LXC + K8s, one CLI**: Containarium runs on either Incus/LXC or
+  Kubernetes behind the same `containarium` CLI and `--runtime` flag. You
+  switch backends without changing anything for the agent.
+- **eBPF egress policy**: Containarium enforces per-tenant egress
+  allowlists at the kernel level via TC_INGRESS eBPF programs.
+  agent-sandbox has NetworkPolicy; OpenShell has eBPF but is
+  NVIDIA-stack-specific. Neither offers a portable, per-tenant eBPF
+  allowlist across LXC and K8s backends.
+
 ### vs. dev environment platforms (Codespaces, Gitpod, Coder)
 
 Those are persistent IDEs. Containarium is a persistent **box** —
@@ -320,10 +346,10 @@ config files in `/etc`, run a database, and reboot — LXC is the right
 shape. If your agent runs a single Python process, Docker or Modal is
 fine.
 
-It isn't either/or: Containarium can also run a box *as a pod* in a
+It isn't either/or: Containarium can run a box *as a pod* in a
 Kubernetes cluster you already operate — same SSH-native agent contract,
-no kube-apiserver token in the agent's hands. See the **Kubernetes
-backend** below.
+no kube-apiserver token in the agent's hands. Switch with
+`--runtime=k8s`. See the **Kubernetes backend** section below.
 
 ---
 
@@ -359,7 +385,7 @@ All containers from all backends appear in a single unified API.
 
 ### Kubernetes backend (experimental)
 
-Beyond the LXC/incus backend, Containarium can run a box as a **pod in a
+Beyond the LXC/Incus backend, Containarium can run a box as a **pod in a
 Kubernetes cluster you already operate** — reached over SSH exactly like
 an LXC box, so an agent can't tell which substrate it landed on. The
 daemon reconciles a per-tenant namespace + StatefulSet + headless Service
@@ -369,13 +395,26 @@ daemon reconciles a per-tenant namespace + StatefulSet + headless Service
 The pitch isn't "another way to run pods" — it's giving an agent a
 hardened, SSH-native foothold in your cluster **without handing it a
 kube-apiserver token**: the box runs with `automountServiceAccountToken:
-false` and satisfies the `restricted` Pod Security profile.
+false` and satisfies the `restricted` Pod Security profile. Compare this
+to `kubectl exec`-based runtimes where the agent necessarily holds cluster
+credentials.
 
-The backend is compiled behind a `k8s` build tag, so the default daemon
-never pulls in `client-go`. It is **experimental**: the control plane is
-implemented and CI-tested against [kind](https://kind.sigs.k8s.io/) on
-every change; the gateway data-plane (the agent-box image + end-to-end
-SSH through sshpiper) is still landing.
+**Runtime selection** (no recompile needed):
+
+```bash
+# LXC/Incus (default)
+containarium daemon
+
+# Kubernetes — uses in-cluster config or KUBECONFIG
+CONTAINARIUM_RUNTIME=k8s containarium daemon
+# or
+containarium daemon --runtime=k8s
+```
+
+Both backends share the same CLI, MCP tools, JWT auth, and REST/gRPC API.
+GPU passthrough is supported on K8s via `nvidia.com/gpu` resource limits.
+Local bring-up takes under 5 minutes with `kind` — see
+[docs/KIND-QUICKSTART.md](docs/KIND-QUICKSTART.md).
 
 Design, topology, and BYO-cluster integration:
 [docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md](docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md).
@@ -647,9 +686,13 @@ Docker-in-LXC works, persistent filesystem. If your agent will
 `apt install` and reboot, you want LXC.
 
 **Why not Kubernetes?**
-K8s orchestrates application containers across many nodes.
-Containarium runs many full Linux environments on one (or a few)
-nodes. Different shape, different problem.
+K8s orchestrates application containers across nodes — that's the
+infrastructure layer. Containarium is the agent runtime that runs *on
+top of* Kubernetes (or LXC), giving each agent a persistent, SSH-native
+box without handing it cluster credentials. If you're already on K8s,
+run `containarium daemon --runtime=k8s` and use your existing cluster as
+the backend. See the [Kubernetes backend](#kubernetes-backend-experimental)
+section and [docs/KIND-QUICKSTART.md](docs/KIND-QUICKSTART.md).
 
 **Why not Vagrant?**
 Vagrant orchestrates VMs on a developer's local machine. Containarium
@@ -725,10 +768,12 @@ Demoed Containarium somewhere? Open a PR and add it here.
 
 ## Roadmap
 
-- **Shipped (2026-06)**: experimental **[Kubernetes backend](#kubernetes-backend-experimental)**
+- **Shipped (2026-06)**: **[Kubernetes backend](#kubernetes-backend-experimental)**
   — run a box as a pod in a cluster you operate, reached over SSH like an LXC
-  box, with the sshpiper gateway, default-deny NetworkPolicy, and host-key
-  pinning. End-to-end validated on `kind`; behind the `k8s` build tag. See
+  box, with the sshpiper gateway, default-deny NetworkPolicy, CSI storage, and
+  `nvidia.com/gpu` passthrough. Selected at runtime via `--runtime=k8s` (no
+  recompile). End-to-end validated on `kind`; 5-minute local bring-up in
+  [docs/KIND-QUICKSTART.md](docs/KIND-QUICKSTART.md). See also
   [docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md](docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md).
 - **Q2 2026 (in flight)**: `agent-box` MCP, `ssh-config` CLI,
   `expose-port` CLI, demo recording.
