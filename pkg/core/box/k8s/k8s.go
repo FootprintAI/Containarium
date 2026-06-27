@@ -358,7 +358,7 @@ func (b *Backend) boxAuthorizedKeys(agentKeys []string) []string {
 // Resize patches the box container's resource limits. Unparseable (incus-native)
 // quantities are skipped; a no-op resize returns nil.
 func (b *Backend) Resize(ctx context.Context, ref box.BoxRef, r box.ResourceLimits) error {
-	res := resourceRequirements(r)
+	res := resourceRequirements(r, 0) // Resize does not change GPU count
 	if res == nil {
 		return nil
 	}

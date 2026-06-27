@@ -293,6 +293,60 @@ func TestE2E_CSIStorage(t *testing.T) {
 	}
 }
 
+// TestE2E_GPUResourceLimit verifies that a box created with a non-empty GPUs
+// slice carries nvidia.com/gpu limits + the gpu-count annotation against a real
+// apiserver. The kind cluster has no GPU nodes, so the pod stays Pending — we
+// assert the spec shape only, not that the pod schedules.
+func TestE2E_GPUResourceLimit(t *testing.T) {
+	if os.Getenv("CONTAINARIUM_K8S_E2E") == "" {
+		t.Skip("set CONTAINARIUM_K8S_E2E=1 (and KUBECONFIG) to run the kind e2e")
+	}
+	kubeconfig := os.Getenv("KUBECONFIG")
+
+	b, err := New(Config{
+		Kubeconfig:  kubeconfig,
+		BoxImage:    "registry.k8s.io/pause:3.9",
+		GatewayHost: "gateway.example.com",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	restCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		t.Fatalf("rest config: %v", err)
+	}
+	cs, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		t.Fatalf("clientset: %v", err)
+	}
+
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "gpu-e2e"}
+	ns := "tenant-gpu-e2e"
+	t.Cleanup(func() { _ = b.Delete(context.Background(), ref, true) })
+
+	if _, err := b.Create(ctx, box.BoxSpec{
+		Ref:   ref,
+		Image: "registry.k8s.io/pause:3.9",
+		GPUs:  []string{"gpu", "gpu1"}, // 2 GPUs
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("StatefulSet not found: %v", err)
+	}
+	c := ss.Spec.Template.Spec.Containers[0]
+	if v := c.Resources.Limits[nvidiaGPUResource]; v.Value() != 2 {
+		t.Errorf("nvidia.com/gpu limit = %v, want 2", v.Value())
+	}
+	if ann := ss.Spec.Template.Annotations[gpuCountAnnotation]; ann != "2" {
+		t.Errorf("gpu-count annotation = %q, want 2", ann)
+	}
+}
+
 // installPipeCRD applies a minimal sshpiper Pipe CRD (open schema via
 // x-kubernetes-preserve-unknown-fields) and waits for it to be Established.
 func installPipeCRD(t *testing.T, dyn dynamic.Interface) {

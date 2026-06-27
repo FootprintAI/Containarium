@@ -3,6 +3,8 @@
 package k8s
 
 import (
+	"fmt"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -40,6 +42,11 @@ const (
 	managedByValue       = "containarium"
 	tenantLabel          = "containarium.dev/tenant"
 	metaAnnotationPrefix = "containarium.dev/meta."
+	gpuCountAnnotation   = "containarium.dev/gpu-count"
+
+	// nvidiaGPUResource is the K8s extended-resource name for NVIDIA GPUs.
+	// A non-zero limit causes the cluster autoscaler to scale up a GPU node pool.
+	nvidiaGPUResource = corev1.ResourceName("nvidia.com/gpu")
 
 	authorizedKeysKey = "authorized_keys"
 	// authorizedKeysMount is where the box image (dropbear entrypoint) reads
@@ -187,6 +194,7 @@ func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.Statef
 	// restricted-PSA container hardening: non-root, no privilege escalation,
 	// all capabilities dropped, default seccomp. The box image (dropbear on
 	// :2222) is built to run under exactly this.
+	gpuCount := len(spec.GPUs)
 	container := corev1.Container{
 		Name:  "agent-box",
 		Image: spec.Image,
@@ -206,7 +214,7 @@ func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.Statef
 			{Name: hostKeyVolume, MountPath: hostKeyMount, ReadOnly: true},
 		},
 	}
-	if res := resourceRequirements(spec.Resources); res != nil {
+	if res := resourceRequirements(spec.Resources, gpuCount); res != nil {
 		container.Resources = *res
 	}
 
@@ -239,6 +247,13 @@ func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.Statef
 		})
 	}
 
+	podMeta := metav1.ObjectMeta{Labels: labels}
+	if gpuCount > 0 {
+		podMeta.Annotations = map[string]string{
+			gpuCountAnnotation: fmt.Sprintf("%d", gpuCount),
+		}
+	}
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: statefulSetName, Namespace: ns, Labels: labels},
 		Spec: appsv1.StatefulSetSpec{
@@ -246,7 +261,7 @@ func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.Statef
 			ServiceName: serviceName,
 			Selector:    &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				ObjectMeta: podMeta,
 				Spec: corev1.PodSpec{
 					AutomountServiceAccountToken: boolp(false), // the box is a leaf, never a kube-apiserver client
 					SecurityContext: &corev1.PodSecurityContext{
@@ -262,11 +277,13 @@ func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.Statef
 	}
 }
 
-// resourceRequirements maps the runtime-neutral limits onto K8s requests/limits,
-// skipping any field that isn't a valid K8s quantity (the incus-native strings
-// like "4GB" aren't K8s quantities; "4Gi"/"2"/"500m" are). Returns nil when
-// nothing parsed, so the pod runs unconstrained rather than failing admission.
-func resourceRequirements(r box.ResourceLimits) *corev1.ResourceRequirements {
+// resourceRequirements maps the runtime-neutral limits onto K8s requests/limits.
+// CPU and Memory strings that aren't valid K8s quantities (e.g. incus-native
+// "4GB") are silently skipped so the pod runs unconstrained rather than failing
+// admission. gpuCount > 0 adds nvidia.com/gpu; the cluster autoscaler uses this
+// to scale up a GPU node pool when no schedulable node exists.
+// Returns nil when nothing parsed.
+func resourceRequirements(r box.ResourceLimits, gpuCount int) *corev1.ResourceRequirements {
 	limits := corev1.ResourceList{}
 	if r.CPU != "" {
 		if q, err := resource.ParseQuantity(r.CPU); err == nil {
@@ -277,6 +294,10 @@ func resourceRequirements(r box.ResourceLimits) *corev1.ResourceRequirements {
 		if q, err := resource.ParseQuantity(r.Memory); err == nil {
 			limits[corev1.ResourceMemory] = q
 		}
+	}
+	if gpuCount > 0 {
+		q := resource.MustParse(fmt.Sprintf("%d", gpuCount))
+		limits[nvidiaGPUResource] = q
 	}
 	if len(limits) == 0 {
 		return nil

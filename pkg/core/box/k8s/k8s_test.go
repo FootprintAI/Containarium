@@ -209,6 +209,67 @@ func TestResolveGatewayEndpoint(t *testing.T) {
 	}
 }
 
+// TestGPUResourceRequirements verifies that a non-empty GPUs list maps to an
+// nvidia.com/gpu limit on the container, and that the pod carries the
+// gpu-count annotation for observability.
+func TestGPUResourceRequirements(t *testing.T) {
+	b, cs := testBackend()
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "gpu-user"}
+	if _, err := b.Create(ctx, box.BoxSpec{
+		Ref:   ref,
+		Image: "x",
+		GPUs:  []string{"gpu", "gpu1"}, // 2 GPUs
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ns := "tenant-gpu-user"
+	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("StatefulSet not found: %v", err)
+	}
+
+	// Container must carry nvidia.com/gpu: 2 in both limits and requests.
+	c := ss.Spec.Template.Spec.Containers[0]
+	gpuLimit := c.Resources.Limits[nvidiaGPUResource]
+	if gpuLimit.Value() != 2 {
+		t.Errorf("nvidia.com/gpu limit = %v, want 2", gpuLimit.Value())
+	}
+	gpuReq := c.Resources.Requests[nvidiaGPUResource]
+	if gpuReq.Value() != 2 {
+		t.Errorf("nvidia.com/gpu request = %v, want 2", gpuReq.Value())
+	}
+
+	// Pod template must carry the gpu-count annotation.
+	ann := ss.Spec.Template.Annotations[gpuCountAnnotation]
+	if ann != "2" {
+		t.Errorf("gpu-count annotation = %q, want 2", ann)
+	}
+}
+
+// TestNoGPUResourceWhenGPUsEmpty verifies no nvidia.com/gpu limit is set and
+// no gpu-count annotation is added when GPUs is nil/empty.
+func TestNoGPUResourceWhenGPUsEmpty(t *testing.T) {
+	b, cs := testBackend()
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "no-gpu"}
+	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ns := "tenant-no-gpu"
+	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("StatefulSet not found: %v", err)
+	}
+	c := ss.Spec.Template.Spec.Containers[0]
+	if _, ok := c.Resources.Limits[nvidiaGPUResource]; ok {
+		t.Error("nvidia.com/gpu limit set on non-GPU box")
+	}
+	if ss.Spec.Template.Annotations[gpuCountAnnotation] != "" {
+		t.Errorf("gpu-count annotation unexpectedly set: %q", ss.Spec.Template.Annotations[gpuCountAnnotation])
+	}
+}
+
 // testBackendWithStorage returns a backend with a StorageClass set, exercising
 // the CSI PVC lifecycle paths.
 func testBackendWithStorage() (*Backend, *fake.Clientset) {
