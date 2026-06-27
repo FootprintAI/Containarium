@@ -64,6 +64,8 @@ var (
 	proxyProtocolTrusted []string
 
 	otelDropLabels []string
+
+	daemonRuntime string
 )
 
 var daemonCmd = &cobra.Command{
@@ -154,6 +156,9 @@ func init() {
 
 	// OTel collector settings
 	daemonCmd.Flags().StringSliceVar(&otelDropLabels, "otel-drop-labels", nil, "Extra attribute keys (comma-separated) the app-side OTel collector drops on top of the built-in PII/cardinality defaults (request_id, trace_id, user_email, session_id, correlation_id).")
+
+	// Runtime selection
+	daemonCmd.Flags().StringVar(&daemonRuntime, "runtime", "", `Box backend: "lxc" (default) or "k8s". Falls back to CONTAINARIUM_RUNTIME env when unset.`)
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -162,27 +167,43 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// under this process's (the unit's) real caps. Non-fatal.
 	logStartupSelfCheck()
 
-	// Check Incus version before starting daemon
-	incusClient, err := incus.New()
-	if err != nil {
-		return fmt.Errorf("failed to connect to Incus: %w", err)
+	// Resolve runtime: --runtime flag takes precedence, then CONTAINARIUM_RUNTIME
+	// env, then the default "lxc".
+	runtime := daemonRuntime
+	if runtime == "" {
+		runtime = os.Getenv("CONTAINARIUM_RUNTIME")
 	}
+	if runtime == "" {
+		runtime = server.RuntimeLXC
+	}
+	log.Printf("Box runtime: %s", runtime)
 
-	if warning, err := incusClient.CheckVersion(); err != nil {
-		return fmt.Errorf("failed to check Incus version: %w", err)
-	} else if warning != "" {
-		// Print warning but continue - don't block daemon startup
-		log.Printf("\n%s\n", warning)
-	} else {
-		// Version is OK, log it
-		serverInfo, _ := incusClient.GetServerInfo()
-		if serverInfo != nil {
-			log.Printf("Incus version: %s (OK)", serverInfo.Environment.ServerVersion)
+	// Check Incus version before starting daemon. Skipped on k8s runtime
+	// because a K8s host typically has no incus; box lifecycle runs via the
+	// Kubernetes backend and the Manager is constructed with an unavailable
+	// backend (see newManager in boxbackend_factory.go).
+	var incusClient *incus.Client
+	if runtime != server.RuntimeK8s {
+		var err error
+		incusClient, err = incus.New()
+		if err != nil {
+			return fmt.Errorf("failed to connect to Incus: %w", err)
+		}
+		if warning, err := incusClient.CheckVersion(); err != nil {
+			return fmt.Errorf("failed to check Incus version: %w", err)
+		} else if warning != "" {
+			log.Printf("\n%s\n", warning)
+		} else {
+			serverInfo, _ := incusClient.GetServerInfo()
+			if serverInfo != nil {
+				log.Printf("Incus version: %s (OK)", serverInfo.Environment.ServerVersion)
+			}
 		}
 	}
 
-	// Initialize infrastructure (storage, network, profile) unless skipped
-	if !skipInfraInit {
+	// Initialize infrastructure (storage, network, profile) unless skipped or
+	// running on a host without incus (k8s runtime).
+	if !skipInfraInit && incusClient != nil {
 		log.Printf("Initializing infrastructure...")
 		networkConfig := incus.NetworkConfig{
 			Name:        "incusbr0",
@@ -213,7 +234,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Wait for core containers (postgres, caddy) to be ready before proceeding.
 	// This prevents the race condition where the daemon starts before core
 	// containers are fully booted after a spot VM preemption/restart.
-	if standaloneMode {
+	// Skipped in standalone mode and on the k8s runtime (no incus core containers).
+	if standaloneMode || incusClient == nil {
 		log.Printf("Standalone mode: skipping core container wait (Caddy)")
 	} else {
 		if err := waitForCoreContainers(incusClient, 2*time.Minute); err != nil {
@@ -222,16 +244,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Backfill role labels on core containers (for upgrades from older versions)
-	backfillCoreContainerLabels(incusClient)
+	// Backfill role labels and reconcile base scripts — incus-specific, no-op on k8s.
+	if incusClient != nil {
+		backfillCoreContainerLabels(incusClient)
+		go reconcileBaseScripts(incusClient)
+	}
 
-	// Reconcile base scripts on all running containers (best-effort, runs in background)
-	go reconcileBaseScripts(incusClient)
-
-	// Always auto-detect Caddy container IP if no URL specified
-	// This ensures port forwarding (80/443 → Caddy) and route sync work
-	// even without --app-hosting (e.g., after VM recreation)
-	if caddyAdminURL == "" {
+	// Always auto-detect Caddy container IP if no URL specified.
+	// Skipped on k8s runtime (no incus core containers).
+	if caddyAdminURL == "" && incusClient != nil {
 		log.Printf("Auto-detecting Caddy container IP...")
 		if caddyInfo, err := incusClient.FindContainerByRole(incus.RoleCaddy); err != nil {
 			log.Printf("Warning: Could not auto-detect Caddy container: %v", err)
@@ -257,13 +278,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Auto-detect VictoriaMetrics container IP
+	// Auto-detect VictoriaMetrics container IP (incus-only; skipped on k8s runtime).
 	var victoriaMetricsURL string
-	if vmInfo, err := incusClient.FindContainerByRole(incus.RoleVictoriaMetrics); err == nil {
-		victoriaMetricsURL = fmt.Sprintf("http://%s:%d", vmInfo.IPAddress, server.DefaultVMPort)
-		log.Printf("Detected VictoriaMetrics at: %s", victoriaMetricsURL)
-	} else {
-		log.Printf("VictoriaMetrics auto-detect: no core-victoriametrics container found")
+	if incusClient != nil {
+		if vmInfo, err := incusClient.FindContainerByRole(incus.RoleVictoriaMetrics); err == nil {
+			victoriaMetricsURL = fmt.Sprintf("http://%s:%d", vmInfo.IPAddress, server.DefaultVMPort)
+			log.Printf("Detected VictoriaMetrics at: %s", victoriaMetricsURL)
+		} else {
+			log.Printf("VictoriaMetrics auto-detect: no core-victoriametrics container found")
+		}
 	}
 
 	// Phase 4.7 — secret-file overrides take precedence
@@ -279,8 +302,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Auto-detect PostgreSQL container IP if still unset.
-	if postgresConnString == "" {
+	// Auto-detect PostgreSQL container IP if still unset (incus-only).
+	if postgresConnString == "" && incusClient != nil {
 		if pgInfo, err := incusClient.FindContainerByRole(incus.RolePostgres); err == nil && pgInfo.IPAddress != "" {
 			password, pwSource, perr := server.ResolvePostgresPassword()
 			if perr != nil {
@@ -502,6 +525,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ProxyProtocol:        proxyProtocol,
 		ProxyProtocolTrusted: proxyProtocolTrusted,
 		OTelDropLabels:       otelDropLabels,
+		Runtime:              runtime,
 	}
 
 	// Create dual server

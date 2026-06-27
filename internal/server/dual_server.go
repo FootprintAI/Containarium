@@ -128,6 +128,10 @@ type DualServerConfig struct {
 	// allowed to send PROXY headers (typically the sentinel's VPC IP/32).
 	ProxyProtocol        bool
 	ProxyProtocolTrusted []string
+
+	// Runtime selects the box-lifecycle backend: "lxc" (default) or "k8s".
+	// Set via CONTAINARIUM_RUNTIME env or --runtime flag on daemon start.
+	Runtime string
 }
 
 // managementRouteDomains returns the domains the daemon serves its own
@@ -209,7 +213,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	}
 
 	// Create container server
-	containerServer, err := NewContainerServer()
+	containerServer, err := NewContainerServer(config.Runtime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container server: %w", err)
 	}

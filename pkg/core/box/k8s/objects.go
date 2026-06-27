@@ -1,5 +1,3 @@
-//go:build k8s
-
 package k8s
 
 import (

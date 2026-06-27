@@ -194,13 +194,14 @@ type upgradeJob struct {
 	completedAt    string
 }
 
-// NewContainerServer creates a new container server
-func NewContainerServer() (*ContainerServer, error) {
-	mgr, err := newManager()
+// NewContainerServer creates a new container server. runtime selects the box
+// backend: "lxc" (default, empty) or "k8s". See RuntimeLXC / RuntimeK8s.
+func NewContainerServer(runtime string) (*ContainerServer, error) {
+	mgr, err := newManager(runtime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container manager: %w", err)
 	}
-	bb, err := newBoxBackend(mgr)
+	bb, err := newBoxBackend(runtime, mgr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select box backend: %w", err)
 	}
