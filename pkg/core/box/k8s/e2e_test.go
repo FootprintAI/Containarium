@@ -271,12 +271,21 @@ func TestE2E_CSIStorage(t *testing.T) {
 		t.Error("StatefulSet still present after Delete")
 	}
 
-	// Purge: PVC and namespace gone.
+	// Purge: PVC and namespace gone. Namespace deletion is asynchronous in K8s
+	// (goes through Terminating state), so poll until NotFound.
 	if err := b.Purge(ctx, ref); err != nil {
 		t.Fatalf("Purge: %v", err)
 	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		_, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			break // gone
+		}
+		time.Sleep(3 * time.Second)
+	}
 	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Errorf("namespace still present after Purge (err=%v)", err)
+		t.Errorf("namespace still present 2m after Purge (err=%v)", err)
 	}
 	// Purge of an already-gone box is a no-op.
 	if err := b.Purge(ctx, ref); err != nil {
