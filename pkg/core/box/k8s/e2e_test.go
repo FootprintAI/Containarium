@@ -185,6 +185,105 @@ func TestE2E_GatewayPipe(t *testing.T) {
 	}
 }
 
+// TestE2E_CSIStorage drives the PVC lifecycle against a real apiserver using
+// kind's default "standard" StorageClass (local-path-provisioner, pre-installed
+// by kind). It verifies Create provisions a PVC + wires the data volume into the
+// StatefulSet, Delete retains the namespace + PVC while removing compute objects,
+// and Purge removes both.
+//
+// The PVC stays in Pending until a pod is scheduled (local-path binds on pod
+// assignment); we assert the object exists, not that it is Bound — the mount
+// wiring is what matters for storage correctness.
+func TestE2E_CSIStorage(t *testing.T) {
+	if os.Getenv("CONTAINARIUM_K8S_E2E") == "" {
+		t.Skip("set CONTAINARIUM_K8S_E2E=1 (and KUBECONFIG) to run the kind e2e")
+	}
+	kubeconfig := os.Getenv("KUBECONFIG")
+
+	b, err := New(Config{
+		Kubeconfig:   kubeconfig,
+		BoxImage:     "registry.k8s.io/pause:3.9",
+		GatewayHost:  "gateway.example.com",
+		StorageClass: "standard", // kind's default local-path StorageClass
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	restCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		t.Fatalf("rest config: %v", err)
+	}
+	cs, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		t.Fatalf("clientset: %v", err)
+	}
+
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "csi-e2e"}
+	ns := "tenant-csi-e2e"
+	t.Cleanup(func() { _ = b.Purge(context.Background(), ref) })
+
+	// Create: PVC provisioned, StatefulSet mounts it at /home/agent.
+	if _, err := b.Create(ctx, box.BoxSpec{
+		Ref:       ref,
+		Image:     "registry.k8s.io/pause:3.9",
+		SSHKeys:   []string{"ssh-ed25519 AAAAExampleKeyForCSIE2E test@csi-e2e"},
+		Resources: box.ResourceLimits{Disk: "1Gi"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	pvc, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC not found after Create: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "standard" {
+		t.Errorf("PVC StorageClass = %v, want 'standard'", pvc.Spec.StorageClassName)
+	}
+	if q := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; q.String() != "1Gi" {
+		t.Errorf("PVC storage request = %q, want 1Gi", q.String())
+	}
+
+	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("StatefulSet not found: %v", err)
+	}
+	mounts := map[string]string{}
+	for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
+		mounts[m.MountPath] = m.Name
+	}
+	if mounts[dataMount] == "" {
+		t.Errorf("data volume not mounted at %s; mounts: %v", dataMount, mounts)
+	}
+
+	// Delete: compute objects removed; namespace + PVC retained so data survives a node reap.
+	if err := b.Delete(ctx, ref, false); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err != nil {
+		t.Errorf("namespace removed by Delete: %v", err)
+	}
+	if _, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{}); err != nil {
+		t.Errorf("PVC removed by Delete: %v", err)
+	}
+	if _, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{}); err == nil {
+		t.Error("StatefulSet still present after Delete")
+	}
+
+	// Purge: PVC and namespace gone.
+	if err := b.Purge(ctx, ref); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("namespace still present after Purge (err=%v)", err)
+	}
+	// Purge of an already-gone box is a no-op.
+	if err := b.Purge(ctx, ref); err != nil {
+		t.Errorf("second Purge = %v, want nil", err)
+	}
+}
+
 // installPipeCRD applies a minimal sshpiper Pipe CRD (open schema via
 // x-kubernetes-preserve-unknown-fields) and waits for it to be Established.
 func installPipeCRD(t *testing.T, dyn dynamic.Interface) {
