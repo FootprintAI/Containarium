@@ -1,6 +1,10 @@
-# Containarium
+# Containarium — Agent Runtime
 
-**The open-source, self-hostable, agent-native sandbox.**
+> **Open-source agent runtime** · SSH-native isolation · eBPF egress policy · Kubernetes + LXC · MCP-native CLI · GPU passthrough
+
+**The open-source, self-hostable agent runtime for AI agents.**
+Each agent gets a persistent, SSH-reachable box with per-tenant network isolation — no kube-apiserver token, no host access, no cross-tenant leakage.
+
 Bring your own agent — Cursor, Claude Code, OpenCode, your own MCP client.
 We run the box.
 
