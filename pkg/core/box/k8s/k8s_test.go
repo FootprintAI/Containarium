@@ -208,3 +208,160 @@ func TestResolveGatewayEndpoint(t *testing.T) {
 		t.Errorf("endpoint = %+v", ep)
 	}
 }
+
+// testBackendWithStorage returns a backend with a StorageClass set, exercising
+// the CSI PVC lifecycle paths.
+func testBackendWithStorage() (*Backend, *fake.Clientset) {
+	cs := fake.NewSimpleClientset()
+	return NewWithClientset(cs, Config{
+		BoxImage:     "registry.k8s.io/pause:3.9",
+		GatewayHost:  "gw.example.com",
+		StorageClass: "standard",
+	}), cs
+}
+
+// TestPVCObjectBuilder verifies that pvcObject produces a well-formed PVC with
+// the correct namespace, labels, StorageClass, and storage request.
+func TestPVCObjectBuilder(t *testing.T) {
+	pvc := pvcObject("tenant-alice", "alice", "standard", "20Gi")
+
+	if pvc.Name != pvcName {
+		t.Errorf("PVC name = %q, want %q", pvc.Name, pvcName)
+	}
+	if pvc.Namespace != "tenant-alice" {
+		t.Errorf("PVC namespace = %q, want tenant-alice", pvc.Namespace)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "standard" {
+		t.Errorf("StorageClassName = %v", pvc.Spec.StorageClassName)
+	}
+	q := pvc.Spec.Resources.Requests["storage"]
+	if q.String() != "20Gi" {
+		t.Errorf("storage request = %q, want 20Gi", q.String())
+	}
+}
+
+// TestPVCObjectBuilderDefaults verifies the disk-size default when spec leaves
+// Resources.Disk empty.
+func TestPVCObjectBuilderDefaults(t *testing.T) {
+	pvc := pvcObject("tenant-bob", "bob", "fast", "")
+	q := pvc.Spec.Resources.Requests["storage"]
+	if q.String() != defaultDisk {
+		t.Errorf("default storage = %q, want %q", q.String(), defaultDisk)
+	}
+}
+
+// TestCreateProvisionsPVC verifies that Create provisions a PVC when
+// StorageClass is configured.
+func TestCreateProvisionsPVC(t *testing.T) {
+	b, cs := testBackendWithStorage()
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "frank"}
+	if _, err := b.Create(ctx, box.BoxSpec{
+		Ref:       ref,
+		Image:     "x",
+		Resources: box.ResourceLimits{Disk: "30Gi"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ns := "tenant-frank"
+	pvc, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC not created: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "standard" {
+		t.Errorf("StorageClassName = %v", pvc.Spec.StorageClassName)
+	}
+	q := pvc.Spec.Resources.Requests["storage"]
+	if q.String() != "30Gi" {
+		t.Errorf("storage request = %q, want 30Gi", q.String())
+	}
+
+	// StatefulSet must mount the data volume at /home/agent.
+	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("StatefulSet not found: %v", err)
+	}
+	mounts := map[string]string{}
+	for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
+		mounts[m.MountPath] = m.Name
+	}
+	if mounts[dataMount] == "" {
+		t.Errorf("data volume not mounted at %s: mounts=%v", dataMount, mounts)
+	}
+}
+
+// TestCreateNoPVCWhenStorageClassEmpty verifies backward compat: no PVC when
+// StorageClass is unset, and the StatefulSet has no data volume mount.
+func TestCreateNoPVCWhenStorageClassEmpty(t *testing.T) {
+	b, cs := testBackend() // no StorageClass
+	ctx := context.Background()
+	if _, err := b.Create(ctx, box.BoxSpec{Ref: box.BoxRef{Tenant: "grace"}, Image: "x"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ns := "tenant-grace"
+	pvcs, err := cs.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
+	if err != nil || len(pvcs.Items) != 0 {
+		t.Errorf("expected no PVCs when StorageClass is empty, got %d", len(pvcs.Items))
+	}
+	ss, _ := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.MountPath == dataMount {
+			t.Errorf("data volume mounted even without StorageClass")
+		}
+	}
+}
+
+// TestDeleteRetainsPVC verifies that Delete removes box compute objects but
+// keeps the namespace and PVC when StorageClass is configured.
+func TestDeleteRetainsPVC(t *testing.T) {
+	b, cs := testBackendWithStorage()
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "henry"}
+	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := b.Delete(ctx, ref, false); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	ns := "tenant-henry"
+	// Namespace must survive (PVC lives in it).
+	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err != nil {
+		t.Errorf("namespace removed by Delete: %v", err)
+	}
+	// PVC must survive.
+	if _, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{}); err != nil {
+		t.Errorf("PVC removed by Delete: %v", err)
+	}
+	// StatefulSet must be gone.
+	if _, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{}); err == nil {
+		t.Error("StatefulSet still present after Delete")
+	}
+}
+
+// TestPurgeRemovesPVCAndNamespace verifies that Purge removes both the PVC and
+// the namespace, and is a no-op on an absent box.
+func TestPurgeRemovesPVCAndNamespace(t *testing.T) {
+	b, cs := testBackendWithStorage()
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "iris"}
+	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := b.Delete(ctx, ref, false); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := b.Purge(ctx, ref); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+
+	ns := "tenant-iris"
+	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err == nil {
+		t.Error("namespace still present after Purge")
+	}
+	// Purge of an absent box is a no-op.
+	if err := b.Purge(ctx, box.BoxRef{Tenant: "nobody"}); err != nil {
+		t.Errorf("Purge(missing) = %v, want nil", err)
+	}
+}

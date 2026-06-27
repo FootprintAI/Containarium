@@ -19,6 +19,14 @@ const (
 	statefulSetName = "box"
 	serviceName     = "boxes"
 	sshPortName     = "ssh"
+
+	// pvcName is the PersistentVolumeClaim name inside the tenant namespace.
+	// It holds the box's persistent data (home directory). Created before the
+	// StatefulSet and retained on Delete; removed only by Purge.
+	pvcName      = "data"
+	dataMount    = "/home/agent"
+	dataVolume   = "data"
+	defaultDisk  = "10Gi"
 	// sshPort is the box's in-pod SSH port. 2222 (unprivileged) so the box
 	// runs fully non-root with no added capabilities — the agent connects to
 	// the gateway on :22; this is the internal sshpiper→pod hop.
@@ -51,6 +59,37 @@ const (
 )
 
 func hostKeySecretName(tenant string) string { return tenant + "-host-key" }
+
+// pvcObject builds the PersistentVolumeClaim for the box's data volume.
+// storageClass "" disables PVC provisioning (caller must not call this).
+// disk is the requested size (e.g. "20Gi"); defaults to defaultDisk when empty.
+func pvcObject(ns, tenant, storageClass, disk string) *corev1.PersistentVolumeClaim {
+	if disk == "" {
+		disk = defaultDisk
+	}
+	quantity := resource.MustParse(disk)
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName,
+			Namespace: ns,
+			Labels:    boxLabels(tenant),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: quantity,
+				},
+			},
+		},
+	}
+	// A non-empty StorageClass is set explicitly. Empty string is not stored
+	// (nil pointer) so the cluster's default StorageClass takes over — but in
+	// practice callers with StorageClass=="" skip PVC creation entirely (see
+	// Config.StorageClass semantics), so this branch is defensive-only.
+	pvc.Spec.StorageClassName = &storageClass
+	return pvc
+}
 
 func int32p(i int32) *int32 { return &i }
 func int64p(i int64) *int64 { return &i }
@@ -136,8 +175,9 @@ func networkPolicyObject(ns, tenant string) *networkingv1.NetworkPolicy {
 }
 
 // statefulSetObject builds the per-tenant box. replicas is 1 when the spec
-// asks to auto-start, else 0 (created stopped).
-func statefulSetObject(ns string, spec box.BoxSpec) *appsv1.StatefulSet {
+// asks to auto-start, else 0 (created stopped). withPVC mounts the data PVC
+// at dataMount (/home/agent) when true; the PVC must already exist.
+func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.StatefulSet {
 	replicas := int32(0)
 	if spec.AutoStart {
 		replicas = 1
@@ -170,6 +210,35 @@ func statefulSetObject(ns string, spec box.BoxSpec) *appsv1.StatefulSet {
 		container.Resources = *res
 	}
 
+	volumes := []corev1.Volume{
+		{
+			Name: authorizedKeysVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: secretName(spec.Ref.Tenant)},
+			},
+		},
+		{
+			Name: hostKeyVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: hostKeySecretName(spec.Ref.Tenant)},
+			},
+		},
+	}
+	if withPVC {
+		volumes = append(volumes, corev1.Volume{
+			Name: dataVolume,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: pvcName,
+				},
+			},
+		})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      dataVolume,
+			MountPath: dataMount,
+		})
+	}
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: statefulSetName, Namespace: ns, Labels: labels},
 		Spec: appsv1.StatefulSetSpec{
@@ -186,20 +255,7 @@ func statefulSetObject(ns string, spec box.BoxSpec) *appsv1.StatefulSet {
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{container},
-					Volumes: []corev1.Volume{
-						{
-							Name: authorizedKeysVolume,
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{SecretName: secretName(spec.Ref.Tenant)},
-							},
-						},
-						{
-							Name: hostKeyVolume,
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{SecretName: hostKeySecretName(spec.Ref.Tenant)},
-							},
-						},
-					},
+					Volumes:    volumes,
 				},
 			},
 		},

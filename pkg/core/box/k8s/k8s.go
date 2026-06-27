@@ -152,6 +152,15 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if _, err := b.clientset.CoreV1().Namespaces().Create(ctx, namespaceObject(ns, tenant), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure namespace: %w", err)
 	}
+	// Provision the data PVC before the StatefulSet so the pod can mount it on
+	// first start. Skipped when StorageClass is unset (backward compat: existing
+	// deployments that don't need persistent storage keep the old behaviour).
+	if b.cfg.StorageClass != "" {
+		pvc := pvcObject(ns, tenant, b.cfg.StorageClass, spec.Resources.Disk)
+		if _, err := b.clientset.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, metav1.CreateOptions{}); ignoreExists(err) != nil {
+			return nil, fmt.Errorf("k8s: ensure pvc: %w", err)
+		}
+	}
 	if _, err := b.clientset.CoreV1().Secrets(ns).Create(ctx, secretObject(ns, tenant, b.boxAuthorizedKeys(spec.SSHKeys)), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure secret: %w", err)
 	}
@@ -166,7 +175,7 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if _, err := b.ensureHostKey(ctx, tenant); err != nil {
 		return nil, fmt.Errorf("k8s: ensure host key: %w", err)
 	}
-	if _, err := b.clientset.AppsV1().StatefulSets(ns).Create(ctx, statefulSetObject(ns, spec), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	if _, err := b.clientset.AppsV1().StatefulSets(ns).Create(ctx, statefulSetObject(ns, spec, b.cfg.StorageClass != ""), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure statefulset: %w", err)
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op
@@ -225,14 +234,63 @@ func (b *Backend) List(ctx context.Context) ([]box.BoxStatus, error) {
 	return out, nil
 }
 
-// Delete removes the per-tenant namespace (cascading every box object) and the
-// tenant's gateway Pipe, which lives in the gateway namespace and so is not
-// covered by the namespace cascade.
+// Delete removes the box's compute objects (StatefulSet, Service, Secrets,
+// NetworkPolicy, gateway Pipe) but retains the PVC and namespace so the
+// persistent data survives. Call Purge to permanently remove the PVC and
+// namespace.
+//
+// When StorageClass is unset (no PVC), Delete falls back to removing the entire
+// namespace (original behaviour, backward compat).
 func (b *Backend) Delete(ctx context.Context, ref box.BoxRef, force bool) error {
+	ns := b.namespaceFor(ref.Tenant)
 	if err := b.deletePipe(ctx, ref.Tenant); err != nil {
 		return fmt.Errorf("k8s: delete gateway pipe: %w", err)
 	}
-	err := b.clientset.CoreV1().Namespaces().Delete(ctx, b.namespaceFor(ref.Tenant), metav1.DeleteOptions{})
+	// No persistent storage: delete the whole namespace (original behaviour).
+	if b.cfg.StorageClass == "" {
+		err := b.clientset.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	// Persistent storage: delete compute objects individually; keep namespace+PVC.
+	dels := []func() error{
+		func() error {
+			return ignoreNotFound(b.clientset.AppsV1().StatefulSets(ns).Delete(ctx, statefulSetName, metav1.DeleteOptions{}))
+		},
+		func() error {
+			return ignoreNotFound(b.clientset.CoreV1().Services(ns).Delete(ctx, serviceName, metav1.DeleteOptions{}))
+		},
+		func() error {
+			return ignoreNotFound(b.clientset.NetworkingV1().NetworkPolicies(ns).Delete(ctx, "default-deny", metav1.DeleteOptions{}))
+		},
+		func() error {
+			return ignoreNotFound(b.clientset.CoreV1().Secrets(ns).Delete(ctx, secretName(ref.Tenant), metav1.DeleteOptions{}))
+		},
+		func() error {
+			return ignoreNotFound(b.clientset.CoreV1().Secrets(ns).Delete(ctx, hostKeySecretName(ref.Tenant), metav1.DeleteOptions{}))
+		},
+	}
+	for _, del := range dels {
+		if err := del(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Purge permanently removes the box's PVC and namespace. Call after Delete
+// when the box's data should be discarded (e.g. DeletePolicy=DeleteOnStop).
+// No-op when the namespace does not exist.
+func (b *Backend) Purge(ctx context.Context, ref box.BoxRef) error {
+	ns := b.namespaceFor(ref.Tenant)
+	if b.cfg.StorageClass != "" {
+		if err := ignoreNotFound(b.clientset.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, pvcName, metav1.DeleteOptions{})); err != nil {
+			return fmt.Errorf("k8s: purge pvc: %w", err)
+		}
+	}
+	err := b.clientset.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -387,6 +445,14 @@ func resourcesOf(ss *appsv1.StatefulSet) box.ResourceLimits {
 // ignoreExists turns an AlreadyExists error into nil (idempotent reconcile).
 func ignoreExists(err error) error {
 	if apierrors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}
+
+// ignoreNotFound turns a NotFound error into nil (idempotent delete).
+func ignoreNotFound(err error) error {
+	if apierrors.IsNotFound(err) {
 		return nil
 	}
 	return err
