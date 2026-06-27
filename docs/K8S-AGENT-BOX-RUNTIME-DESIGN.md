@@ -1,9 +1,8 @@
 # K8s Agent-Box Runtime — SSH-Reachable Pod Design Note
 
-> Status: **Exploration / not yet approved.** Tracking: #700. This proposes a Kubernetes
-> backend for the agent box: a per-tenant pod that an agent reaches over
-> SSH, exposing the same `agent-box` stdio MCP surface served today from an
-> LXC box. Nothing here is built yet.
+> Status: **Approved / shipped.** Tracking: #840 (umbrella), #841–#845 (sub-issues).
+> The Kubernetes backend is implemented and in CI. See [`pkg/core/box/k8s/`](../pkg/core/box/k8s/)
+> and [`docs/KIND-QUICKSTART.md`](KIND-QUICKSTART.md) for the local bring-up guide.
 
 ## What this closes
 
@@ -326,65 +325,29 @@ the LXC implementation as a pure wrapper over today's `Manager` (no behavior
 change, golden test parity), and only then lands the K8s implementation
 against the same contract.
 
-## Packaging & repo strategy — one repo now, extract later
+## Packaging & repo strategy — one binary, runtime selection
 
-Should the K8s bridge be its own repository? **Not yet.** The decision is
-dominated by one factor and gated by one future fork.
+The K8s backend is **always compiled into the daemon binary** (no build tag).
+`client-go` is already in `go.mod`; the dependency cost is accepted in exchange
+for a simpler build surface. The active backend is selected at daemon start:
 
-### The dominating factor: `client-go` dependency weight
-
-The K8s backend pulls in `k8s.io/client-go` — a large transitive tree. As an
-ordinary package in the main module, **every LXC-only daemon build carries that
-weight** (slower builds, bigger binary, wider attack surface for users who never
-touch K8s). The fix is a **Go build tag**, not a separate repo:
-
-```go
-//go:build k8s
+```sh
+CONTAINARIUM_RUNTIME=k8s containarium daemon start   # Kubernetes backend
+CONTAINARIUM_RUNTIME=lxc containarium daemon start   # LXC/incus backend (default)
 ```
 
-The K8s implementation compiles only into a `containarium-k8s` build variant;
-the default daemon never imports `client-go`. Dependency blast radius is
-isolated while everything stays in one tree.
+or via the flag: `containarium daemon start --runtime=k8s`.
 
-### Why same-repo wins now
+See [`internal/server/boxbackend_factory.go`](../internal/server/boxbackend_factory.go)
+for the factory. The interface lives in `pkg/core/box` (public, not `internal/`)
+so a future out-of-process bridge can import it without promoting internals.
 
-- **The interface will churn.** `BoxBackend` is new and will change as the K8s
-  impl teaches us what's wrong with it. In one repo, "change interface + update
-  LXC + update K8s" is one atomic PR with compile-time enforcement. Split into
-  two repos and every tweak becomes a version-bump-and-coordinate dance.
-- **Go's `internal/` rule.** A separate repo *cannot* import `internal/server`.
-  Splitting forces promoting the interface to `pkg/` anyway — doing that early
-  freezes an unstable contract.
+### Future: out-of-process bridge
 
-### Cheap insurance to lock in today
-
-Put the interface where a future extraction is free: **`pkg/core/box`**
-(public), not `internal/`. Domain types (`BoxSpec`, `BoxHandle`, `BoxEndpoint`)
-live there too. Then "extract to its own repo" is a `git mv` + a `go.mod`, not a
-redesign.
-
-### The fork that gates a future split
-
-| | Compiled-in (build tag) | Out-of-process bridge |
-| --- | --- | --- |
-| What it is | K8s impl linked into a daemon variant | separate binary the daemon calls over gRPC |
-| `client-go` location | daemon-k8s variant only | fully outside core — no daemon binary |
-| Fits existing pattern | a new backend | **the multi-backend-peer model already in the tree** |
-| Release cadence | tied to daemon | independent |
-| Cost | one binary | a process to deploy + a wire protocol |
-
-The out-of-process bridge is the natural end state **because the PeerPool /
-`backend_id` routing already exists** — a K8s bridge can register like a peer,
-and `client-go` leaves the core dependency graph entirely. That is the version
-where an independent repo clearly pays for itself. It is a **Phase 2** move,
-after the interface stabilizes.
-
-### Decided path
-
-1. **Now:** one repo, K8s impl behind `//go:build k8s`, interface in
-   `pkg/core/box`.
-2. **Later (interface stable):** extract to its own repo as an **out-of-process
-   bridge that registers like a peer**.
+The multi-backend-peer / `backend_id` routing already exists. The natural
+end-state is a K8s bridge that registers *like a peer* — `client-go` then
+leaves the core dependency graph entirely. That is a Phase 2 move, after the
+`BoxBackend` interface stabilizes.
 
 Per the OSS/Cloud convention, the bridge is a **generic mechanism → it ships in
 OSS**, wherever it lives. BYO-cluster *support/packaging* may be a commercial
@@ -544,24 +507,93 @@ fallback** — and surface which mode is active in box status.
 ## Open questions
 
 1. **sshpiper plugin** — CRD `kubernetes` plugin (eliminates the file-write
-   race) vs. the `yaml` plugin run today. Leaning CRD.
+   race) vs. the `yaml` plugin run today. Leaning CRD; the daemon already
+   manages `Pipe` objects via the dynamic client.
 2. **Host-key trust** — pre-distribute the gateway host key (ConfigMap →
    agent known_hosts) so first-connect is not a TOFU prompt.
-3. **Runtime interface shape** — sketched above ("The box-backend Go
-   interface"). Open sub-questions: does K8s v1 implement `ExecCapable` at all
-   (vs. fully image-baked provisioning), and does `SetMeta` need a typed struct
-   rather than `map[string]string` per the repo's strong-typing convention.
-4. **Packaging** — *decided* (see "Packaging & repo strategy"): one repo +
-   `//go:build k8s` now, interface in `pkg/core/box`; extract to an
-   out-of-process peer-registering bridge once the interface stabilizes.
-   Remaining: confirm the build-tag split keeps `client-go` out of the default
-   `go.sum`, and whether CI gains a `containarium-k8s` build target.
+3. **`ExecCapable`** — K8s v1 does NOT implement it (provisioning is
+   image-baked; `ForceCommand` pins the session). Callers discover support via
+   type assertion.
+4. **GPU node affinity** — the `gpu-spec` label → node affinity mapping
+   (so the scheduler picks the right GPU node pool) is not yet wired.
+
+## Shipped features
+
+### Runtime selection (#842)
+
+The daemon binary ships one factory that supports both backends:
+
+```sh
+# Default: LXC/incus (unchanged behaviour)
+containarium daemon start
+
+# Kubernetes backend
+CONTAINARIUM_RUNTIME=k8s containarium daemon start --runtime=k8s \
+  --skip-infra-init \
+  --standalone
+```
+
+`--runtime` takes precedence over `CONTAINARIUM_RUNTIME`. On a K8s host with
+no incus installed, the daemon starts cleanly; box lifecycle goes through the
+kube-apiserver; incus-only RPCs (Exec, GPU resolve, core-container detection)
+return clear errors.
+
+Key env vars for the K8s backend:
+
+| Env | Default | Purpose |
+|---|---|---|
+| `CONTAINARIUM_K8S_KUBECONFIG` | ambient rules | Path to kubeconfig; empty = in-cluster |
+| `CONTAINARIUM_K8S_BOX_IMAGE` | _(required)_ | Agent-box image (`ghcr.io/footprintai/containarium-agent-box`) |
+| `CONTAINARIUM_K8S_GATEWAY_HOST` | _(required)_ | Public SSH gateway host (sshpiper LB) |
+| `CONTAINARIUM_K8S_GATEWAY_NAMESPACE` | `agent-gateway` | Namespace sshpiper runs in |
+| `CONTAINARIUM_K8S_TENANT_NS_PREFIX` | `tenant-` | Prefix for per-tenant namespaces |
+| `CONTAINARIUM_K8S_STORAGE_CLASS` | _(empty = no PVC)_ | StorageClass for persistent data |
+| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY` | _(empty)_ | Public key sshpiper→box authenticates with |
+| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET` | _(empty)_ | Secret name holding the matching private key |
+
+### CSI persistent storage (#841 / #844)
+
+Each box optionally gets a `PersistentVolumeClaim` for its home directory
+(`/home/agent`). Controlled by `CONTAINARIUM_K8S_STORAGE_CLASS`:
+
+- **Empty (default):** no PVC; namespace is deleted on `Delete` (original
+  behavior, backward-compatible).
+- **Non-empty:** PVC named `data` is created before the StatefulSet;
+  `Delete` removes compute objects (StatefulSet, Service, NetworkPolicy,
+  Secrets) but **retains the namespace + PVC** so data survives a node
+  reap. `Purge` removes both PVC and namespace when the tenant is gone.
+
+This design lets autoscaled GCE VMs be reaped without data loss — the PV is
+CSI-managed (GKE, EKS, or kind local-path) and outlives any compute node.
+
+Disk size is read from `BoxSpec.Resources.Disk` (e.g., `"20Gi"`); defaults to
+`10Gi` when unset.
+
+### GPU resource requests (#845)
+
+`BoxSpec.GPUs []string` maps to a `nvidia.com/gpu` extended-resource limit on
+the box container:
+
+```go
+len(spec.GPUs) > 0  →  container.Resources.Limits["nvidia.com/gpu"] = N
+```
+
+The K8s cluster autoscaler uses this to scale up a GPU node pool when no
+schedulable node is available — no Containarium-side autoscaler needed for the
+K8s backend. The pod template carries a `containarium.dev/gpu-count: "N"`
+annotation for observability.
+
+The GPU *type* (L4, A100, etc.) is expressed via node affinity, driven by a
+`gpu-spec` label on the box when set — otherwise K8s schedules to any GPU
+node. This is deliberately different from the LXC/GCE path, where the daemon
+selects the exact machine type; on K8s, the scheduler owns that decision.
 
 ## Deferred (not in v1)
 
 - **Hard isolation** (gVisor/Kata `RuntimeClass`) — for tenants needing a
   VM/syscall boundary closer to the LXC trust boundary.
 - **Ephemeral / pooled lifecycles** — spin-up-on-connect or warm-pool leasing.
-- **GPU passthrough** in pods (`nvidia.com/gpu` resource + device plugin).
 - **Cross-cluster / multi-pool** fan-out (the K8s analog of multi-backend
   peers).
+- **GPU node affinity by spec** — the `gpu-spec` label → node affinity mapping
+  is not yet wired; scheduling to any GPU node is the v1 behavior.
