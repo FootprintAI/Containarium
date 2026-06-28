@@ -23,10 +23,10 @@ const (
 	// pvcName is the PersistentVolumeClaim name inside the tenant namespace.
 	// It holds the box's persistent data (home directory). Created before the
 	// StatefulSet and retained on Delete; removed only by Purge.
-	pvcName      = "data"
-	dataMount    = "/home/agent"
-	dataVolume   = "data"
-	defaultDisk  = "10Gi"
+	pvcName     = "data"
+	dataMount   = "/home/agent"
+	dataVolume  = "data"
+	defaultDisk = "10Gi"
 	// sshPort is the box's in-pod SSH port. 2222 (unprivileged) so the box
 	// runs fully non-root with no added capabilities — the agent connects to
 	// the gateway on :22; this is the internal sshpiper→pod hop.

@@ -45,7 +45,7 @@ func ServeSOCKS5(ctx context.Context, listenAddr string, logf func(string, ...an
 }
 
 func socksHandle(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
 
 	// Greeting: VER, NMETHODS, METHODS...
@@ -102,7 +102,7 @@ func socksHandle(c net.Conn) {
 		_, _ = c.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0}) // conn refused
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	if _, err := c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
 	}

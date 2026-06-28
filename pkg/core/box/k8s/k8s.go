@@ -328,7 +328,7 @@ func (b *Backend) Resolve(ctx context.Context, ref box.BoxRef) (*box.BoxEndpoint
 // the agent's keys authorize the box itself, so we update the box Secret too.
 func (b *Backend) SetAuthorizedKeys(ctx context.Context, ref box.BoxRef, keys []string) error {
 	ns := b.namespaceFor(ref.Tenant)
-	if !(b.gatewayEnabled() && b.cfg.GatewayUpstreamPublicKey != "") {
+	if !b.gatewayEnabled() || b.cfg.GatewayUpstreamPublicKey == "" {
 		sec := secretObject(ns, ref.Tenant, keys)
 		_, err := b.clientset.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
 		if apierrors.IsNotFound(err) {

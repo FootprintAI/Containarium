@@ -157,7 +157,7 @@ func (r *Relay) serveListener(ctx context.Context, ln net.Listener) error {
 }
 
 func (r *Relay) handle(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ap, ok := remoteAddrPort(c.RemoteAddr())
 	if !ok || !r.sourceAllowed(ap.Addr()) {
 		r.logf("egress-relay DENY %s (allow %v)", c.RemoteAddr(), r.allow)
@@ -168,7 +168,7 @@ func (r *Relay) handle(c net.Conn) {
 		r.logf("egress-relay upstream %s dial failed: %v", r.upstream, err)
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	// Bidirectional copy; both directions end when either side closes.
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(up, c); done <- struct{}{} }()

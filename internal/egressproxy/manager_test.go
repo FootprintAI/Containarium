@@ -16,14 +16,14 @@ func TestManager_StartStop_AndForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upstream: %v", err)
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	go func() {
 		for {
 			c, err := up.Accept()
 			if err != nil {
 				return
 			}
-			go func() { _, _ = io.Copy(c, c); c.Close() }()
+			go func() { _, _ = io.Copy(c, c); _ = c.Close() }()
 		}
 	}()
 

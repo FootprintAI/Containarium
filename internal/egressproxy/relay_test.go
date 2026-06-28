@@ -61,14 +61,14 @@ func TestRelay_ForwardsAllowedSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upstream listen: %v", err)
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	go func() {
 		for {
 			c, err := up.Accept()
 			if err != nil {
 				return
 			}
-			go func() { _, _ = io.Copy(c, c); c.Close() }()
+			go func() { _, _ = io.Copy(c, c); _ = c.Close() }()
 		}
 	}()
 
@@ -93,7 +93,7 @@ func TestRelay_ForwardsAllowedSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial relay: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := c.Write([]byte("ping")); err != nil {
 		t.Fatalf("write: %v", err)
