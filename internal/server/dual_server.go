@@ -1421,6 +1421,8 @@ skipAppHosting:
 			gatewayServer.SetAuditStore(auditStore)
 			// Agent-skill service logs A2A hops under a trace id (Phase 2 / #575).
 			agentSkillServer.SetAuditStore(auditStore)
+			// Container server logs admin-initiated upgrade operations (#354).
+			containerServer.SetAuditStore(auditStore)
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured

@@ -14,6 +14,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
@@ -169,6 +170,11 @@ type ContainerServer struct {
 	// Empty (direct mode / no sentinel) leaves ssh_host empty and clients fall
 	// back to network.ip_address.
 	sshHost string
+
+	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
+	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
+	// not persisted). #354.
+	auditStore *audit.Store
 
 	// autoUpdater drives on-demand daemon upgrades (TriggerUpgrade). Nil on
 	// daemons started without an auto-update source (e.g. no sentinel), in
@@ -2018,6 +2024,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
 	log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
+	s.logUpgradeAudit(ctx, subject, backendKey, id, "triggered", "")
 
 	// Run async: TriggerNow restarts the daemon on a successful swap, so neither
 	// this goroutine nor the in-memory job survives a local upgrade. We still
@@ -2036,11 +2043,16 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 			job.errMsg = err.Error()
 			job.completedAt = time.Now().UTC().Format(time.RFC3339)
 			log.Printf("[upgrade] job %s failed: %v", id, err)
+			s.logUpgradeAudit(upgradeCtx, subject, backendKey, id, "failed", err.Error())
 		case !changed:
 			job.status = "noop"
 			job.completedAt = time.Now().UTC().Format(time.RFC3339)
+			s.logUpgradeAudit(upgradeCtx, subject, backendKey, id, "noop", "")
 		default:
-			// changed: restart imminent; leave status "in_progress".
+			// changed: restart imminent; daemon will not record "completed" since
+			// it is about to die. The post-restart version in ListBackends is the
+			// canonical confirmation.
+			s.logUpgradeAudit(upgradeCtx, subject, backendKey, id, "binary_swapped", "")
 		}
 	}()
 
@@ -3065,6 +3077,39 @@ func sshCommandFor(username, sshHost, ip string) string {
 // returning Unavailable. #354.
 func (s *ContainerServer) SetAutoUpdater(u *AutoUpdater) {
 	s.autoUpdater = u
+}
+
+// SetAuditStore wires the audit store so admin-initiated operations like
+// TriggerUpgrade are persisted. Nil is safe — ops are still log.Printf'd.
+func (s *ContainerServer) SetAuditStore(store *audit.Store) {
+	s.auditStore = store
+}
+
+// logUpgradeAudit records a TriggerUpgrade outcome. Best-effort — audit must
+// never fail the call. No-op until the audit store is wired.
+func (s *ContainerServer) logUpgradeAudit(ctx context.Context, subject, backendID, upgradeID, outcome, detail string) {
+	if s.auditStore == nil {
+		return
+	}
+	username := subject
+	if username == "" {
+		username = "_unknown"
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"upgrade_id": upgradeID,
+		"backend_id": backendID,
+		"outcome":    outcome,
+		"detail":     detail,
+	})
+	if err := s.auditStore.Log(ctx, &audit.AuditEntry{
+		Username:     username,
+		Action:       "backend.upgrade",
+		ResourceType: "backend",
+		ResourceID:   backendID,
+		Detail:       string(payload),
+	}); err != nil {
+		log.Printf("[upgrade] audit %s/%s: %v", upgradeID, outcome, err)
+	}
 }
 
 // SetOTelCollectorEndpoint wires the OTLP/HTTP URL of this daemon's
