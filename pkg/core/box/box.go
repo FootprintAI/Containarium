@@ -46,6 +46,10 @@ type ResourceLimits struct {
 	CPU    string
 	Memory string
 	Disk   string
+	// StorageClass is the K8s StorageClass for the box's data PVC.
+	// Empty = use the backend's default (Config.StorageClass).
+	// Only meaningful on the K8s backend; ignored by LXC.
+	StorageClass string
 }
 
 // BoxSpec is the declarative input to Create. The backend makes a box matching
