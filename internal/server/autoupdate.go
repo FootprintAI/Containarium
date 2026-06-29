@@ -11,15 +11,17 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // AutoUpdater periodically checks the sentinel for a newer binary and
 // self-updates if a new version is available.
 type AutoUpdater struct {
-	sentinelURL string // e.g. "http://10.130.0.13:8888"
-	binaryPath  string // e.g. "/usr/local/bin/containarium"
-	interval    time.Duration
+	sentinelURL     string // e.g. "http://10.130.0.13:8888"
+	binaryPath      string // e.g. "/usr/local/bin/containarium"
+	interval        time.Duration
+	watchdogHealthURL string // polled by upgrade-watchdog to confirm liveness (#507); defaults to http://localhost:8080/health
 }
 
 // NewAutoUpdater creates a new auto-updater.
@@ -29,6 +31,12 @@ func NewAutoUpdater(sentinelURL, binaryPath string, interval time.Duration) *Aut
 		binaryPath:  binaryPath,
 		interval:    interval,
 	}
+}
+
+// SetWatchdogHealthURL overrides the health endpoint the upgrade watchdog polls
+// to confirm the new binary is live. Defaults to http://localhost:8080/health.
+func (u *AutoUpdater) SetWatchdogHealthURL(url string) {
+	u.watchdogHealthURL = url
 }
 
 // Run starts the auto-update loop. Blocks until ctx is cancelled.
@@ -143,7 +151,13 @@ func (u *AutoUpdater) checkAndUpdate(ctx context.Context, force bool) (bool, err
 
 	log.Printf("[auto-update] binary replaced successfully, restarting...")
 
-	// 8. Restart services via systemd (async — we'll be killed)
+	// 8. Launch a detached upgrade watchdog before restarting. The watchdog
+	// outlives this process (new session via Setsid) and polls the health
+	// endpoint; if the new binary doesn't become healthy within 90s it
+	// restores .old and restarts the service automatically (#507).
+	u.launchWatchdog()
+
+	// 9. Restart services via systemd (async — we'll be killed)
 	// Restart tunnel first (it also uses the same binary), then the daemon.
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -212,6 +226,82 @@ func (u *AutoUpdater) downloadBinary(ctx context.Context, destPath string) error
 		return err
 	}
 	return f.Close()
+}
+
+// RunUpgradeWatchdog polls healthURL until the daemon is healthy or timeout
+// elapses. On timeout, if binaryPath+".old" exists, it restores .old and
+// optionally restarts the service. dryRun skips the systemctl restart.
+// This is the testable core called by both the daemon and the CLI subcommand.
+func RunUpgradeWatchdog(binaryPath, healthURL string, timeout, initialDelay, pollInterval time.Duration, dryRun bool) error {
+	oldPath := binaryPath + ".old"
+
+	if initialDelay > 0 {
+		time.Sleep(initialDelay)
+	}
+
+	log.Printf("[upgrade-watchdog] polling %s (timeout %s, interval %s)", healthURL, timeout, pollInterval)
+
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(healthURL) //nolint:noctx
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				log.Printf("[upgrade-watchdog] daemon is healthy — upgrade succeeded")
+				_ = os.Remove(oldPath)
+				return nil
+			}
+		}
+		time.Sleep(pollInterval)
+	}
+
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		return fmt.Errorf("[upgrade-watchdog] daemon not healthy after %s and no .old binary; manual intervention required", timeout)
+	}
+
+	log.Printf("[upgrade-watchdog] daemon not healthy after %s — rolling back to .old", timeout)
+	if err := os.Rename(oldPath, binaryPath); err != nil {
+		return fmt.Errorf("[upgrade-watchdog] rename .old back: %w", err)
+	}
+	log.Printf("[upgrade-watchdog] binary restored")
+
+	if dryRun {
+		return nil
+	}
+
+	log.Printf("[upgrade-watchdog] restarting containarium service")
+	out, err := exec.Command("systemctl", "restart", "containarium").CombinedOutput() // #nosec G204
+	if err != nil {
+		log.Printf("[upgrade-watchdog] systemctl restart failed (%v; %s) — exiting for service-manager restart", err, string(out))
+		os.Exit(1)
+	}
+	log.Printf("[upgrade-watchdog] rollback complete")
+	return nil
+}
+
+// launchWatchdog spawns the upgrade-watchdog subcommand in a detached process
+// (new session via Setsid) so it outlives the current daemon process through
+// the systemctl restart (#507). Errors are best-effort logged — a watchdog
+// launch failure is not fatal to the upgrade itself.
+func (u *AutoUpdater) launchWatchdog() {
+	healthURL := u.watchdogHealthURL
+	if healthURL == "" {
+		healthURL = "http://localhost:8080/health"
+	}
+	cmd := exec.Command(u.binaryPath, // #nosec G204 -- binaryPath is trusted config
+		"upgrade-watchdog",
+		"--binary-path", u.binaryPath,
+		"--health-url", healthURL,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from parent process group
+	if err := cmd.Start(); err != nil {
+		log.Printf("[auto-update] WARNING: failed to launch upgrade watchdog: %v — rollback on failure will not be available", err)
+		return
+	}
+	log.Printf("[auto-update] upgrade watchdog launched (pid %d)", cmd.Process.Pid)
+	// Do NOT cmd.Wait() — the watchdog outlives this process intentionally.
 }
 
 func checksumFile(path string) (string, error) {
