@@ -104,6 +104,7 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	// capability without a separate feature flag.
 	mux.Handle("/sentinel/ca", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.CAHandler()))
 	mux.Handle("/sentinel/peer-cert", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PeerCertHandler()))
+	mux.Handle("/sentinel/fetch-release", auth.SentinelHMACMiddleware(manager.hmacSecret, fetchReleaseHandler(binaryPath)))
 
 	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
 	// This allows the primary daemon to reach tunnel backends through the sentinel
