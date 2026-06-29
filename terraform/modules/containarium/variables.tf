@@ -366,7 +366,7 @@ variable "enable_sentinel" {
 }
 
 variable "sentinel_machine_type" {
-  description = "Machine type for the sentinel VM (e2-micro for free tier)"
+  description = "Machine type for the sentinel VM (e2-micro is free tier). Trim bloat via startup-sentinel.sh to keep the 1 GB footprint manageable (#770)."
   type        = string
   default     = "e2-micro"
 }
