@@ -297,8 +297,8 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		resources["storageClass"] = storageClass
 	}
 	reqBody := map[string]interface{}{
-		"username":  username,
-		"resources": resources,
+		"username":     username,
+		"resources":    resources,
 		"sshKeys":      sshKeys,
 		"image":        image,
 		"enablePodman": enablePodman,
