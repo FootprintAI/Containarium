@@ -18,9 +18,9 @@ import (
 // AutoUpdater periodically checks the sentinel for a newer binary and
 // self-updates if a new version is available.
 type AutoUpdater struct {
-	sentinelURL     string // e.g. "http://10.130.0.13:8888"
-	binaryPath      string // e.g. "/usr/local/bin/containarium"
-	interval        time.Duration
+	sentinelURL       string // e.g. "http://10.130.0.13:8888"
+	binaryPath        string // e.g. "/usr/local/bin/containarium"
+	interval          time.Duration
 	watchdogHealthURL string // polled by upgrade-watchdog to confirm liveness (#507); defaults to http://localhost:8080/health
 }
 

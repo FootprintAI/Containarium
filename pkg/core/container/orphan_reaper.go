@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	orphanReaperInterval  = 5 * time.Minute
-	orphanReaperHomeRoot  = "/home"
+	orphanReaperInterval    = 5 * time.Minute
+	orphanReaperHomeRoot    = "/home"
 	orphanReaperGracePeriod = 30 * time.Second // delay before first sweep to avoid racing startup
 )
 

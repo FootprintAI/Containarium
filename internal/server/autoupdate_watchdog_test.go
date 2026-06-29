@@ -87,7 +87,7 @@ func TestWatchdogHealthy(t *testing.T) {
 
 	err := RunUpgradeWatchdog(binaryPath, srv.URL+"/health",
 		10*time.Second,
-		0,               // no initial delay
+		0, // no initial delay
 		200*time.Millisecond,
 		true,
 	)
