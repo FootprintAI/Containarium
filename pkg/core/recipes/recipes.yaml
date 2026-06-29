@@ -379,7 +379,21 @@ recipes:
       - |
         LC_MCP_MOUNTS=""
         if [ -n "${CONTAINARIUM_PARAM_MCP_SERVER_URL:-}" ] && [ -n "${CONTAINARIUM_PARAM_MCP_TOKEN:-}" ]; then
-          if curl -fsSL https://github.com/FootprintAI/Containarium/releases/latest/download/mcp-server-linux-amd64 -o /opt/lc/mcp-server 2>/dev/null; then
+          MCP_DL_URL="https://github.com/FootprintAI/Containarium/releases/latest/download/mcp-server-linux-amd64"
+          MCP_MIN_BYTES=5242880
+          MCP_DL_OK=0
+          if curl --retry 3 --retry-delay 2 --retry-all-errors -fSL -m 180 \
+               "$MCP_DL_URL" -o /opt/lc/mcp-server; then
+            ACTUAL=$(stat -c%s /opt/lc/mcp-server 2>/dev/null || echo 0)
+            if [ "$ACTUAL" -ge "$MCP_MIN_BYTES" ]; then
+              MCP_DL_OK=1
+            else
+              echo "librechat: mcp-server download truncated (${ACTUAL}B < ${MCP_MIN_BYTES}B); skipping MCP injection" >&2
+            fi
+          else
+            echo 'librechat: mcp-server download failed after retries; skipping MCP injection' >&2
+          fi
+          if [ "$MCP_DL_OK" = "1" ]; then
             chmod +x /opt/lc/mcp-server
             printf '%s' "$CONTAINARIUM_PARAM_MCP_TOKEN" > /opt/lc/ctn-token
             # Owned by the in-image 'node' user (uid 1000) with 0600. The
@@ -419,8 +433,6 @@ recipes:
             # timer (the units are written + enabled further down, after they
             # exist — this MCP step runs before them).
             printf 'SKILLS_URL=%s/v1/recipes/workspace/skills\nTOKEN_FILE=/opt/lc/ctn-token\nAPEX_HOST=%s\n' "$MCP_URL" "$APEX_HOST" > /opt/lc/skills-sync.env
-          else
-            echo 'librechat: mcp-server download failed; skipping MCP injection' >&2
           fi
         fi
       - |
