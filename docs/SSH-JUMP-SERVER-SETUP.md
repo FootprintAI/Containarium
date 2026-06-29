@@ -434,6 +434,38 @@ EOF
 
 ---
 
+## Known Limitations
+
+### SSH `-R`/`-L` port-forwards bind in the host network namespace, not the box
+
+When you open a port-forward against a box (`ssh -R`/`-L`), the tunnel endpoint lives in the **host** network namespace on the jump server — not inside the box. This is a direct consequence of how sshpiper works: the SSH transport terminates on the host sshd, which then executes `containarium-shell` to proxy commands into the box via `incus exec`. The forwarded socket is opened before the `incus exec` hand-off, so it never enters the box's network namespace.
+
+**What this means in practice:**
+
+- `ssh -R 1080 user@host` creates a listener at `host:127.0.0.1:1080`. A process **inside the box** cannot reach that listener because the box's `127.0.0.1` is a separate network namespace.
+- `ssh -L 8080:localhost:80 user@host` similarly binds on your **local** machine, but the tunnel's upstream (`localhost:80`) is resolved in the host netns, not the box's.
+
+**Recommended workaround — initiate the tunnel from inside the box:**
+
+Instead of forwarding a port *to* the box, run the SSH client *from* inside the box so the listener is created in the right network namespace:
+
+```bash
+# 1. SSH into the box normally
+ssh <username>@<sentinel-host>
+
+# 2. From inside the box, establish a SOCKS or local-forward tunnel
+#    outbound to your workstation (which runs a SOCKS server or target port):
+ssh -fN -L 1080:127.0.0.1:1080 <you>@<your-workstation>
+
+# 3. Any process inside the box can now use socks5://127.0.0.1:1080
+```
+
+This is safe for multi-tenant deployments: the listener binds inside the box's netns and is not reachable by other tenants.
+
+> **Note:** There is no single-command solution today for "create an in-box listener reachable inside the box from an outside SSH session" — this requires a design change to run an sshd inside each box. See [issue #808](https://github.com/FootprintAI/Containarium/issues/808) for discussion.
+
+---
+
 ## Best Practices
 
 1. **Use SSH ProxyJump** instead of port forwarding for better security

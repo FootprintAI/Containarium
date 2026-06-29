@@ -37,7 +37,11 @@ type userspaceForwarder struct {
 // once with the backend address and ports to serve.
 func newUserspaceForwarder(emitProxyV2 bool) *userspaceForwarder {
 	return &userspaceForwarder{
-		dialer:    &net.Dialer{Timeout: 5 * time.Second},
+		// KeepAlive detects dead backend connections (e.g. a same-IP hard
+		// reboot where the kernel resets the TCP stack without sending RSTs).
+		// Without it, stale io.Copy goroutine pairs accumulate without bound
+		// and can exhaust the sentinel's FDs / goroutines (#769).
+		dialer:    &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second},
 		emitProxy: emitProxyV2,
 	}
 }

@@ -235,7 +235,7 @@ func (hp *HTTPSProxy) Serve(ln net.Listener) error {
 func (hp *HTTPSProxy) proxy(src net.Conn) {
 	defer func() { _ = src.Close() }()
 
-	dst, err := net.DialTimeout("tcp", hp.target, 5*time.Second)
+	dst, err := sentinelDialer.Dial("tcp", hp.target)
 	if err != nil {
 		log.Printf("[https-proxy] failed to connect to %s: %v", hp.target, err)
 		return

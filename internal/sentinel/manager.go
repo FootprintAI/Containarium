@@ -29,6 +29,12 @@ const (
 	StateMaintenance State = "maintenance"
 )
 
+// sentinelDialer is used for all sentinel→backend TCP dials. The 15s
+// KeepAlive causes the OS to probe idle connections so a hard-reset
+// backend (no TCP RST sent) is detected within ~45 s instead of
+// never, preventing goroutine/FD leaks from stuck io.Copy pairs (#769).
+var sentinelDialer = &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
+
 // Config holds the sentinel configuration.
 type Config struct {
 	HealthPort         int
@@ -878,13 +884,13 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 				} else {
 					// In-VPC primary: TCP dial.
 					target := net.JoinHostPort(p.IP, fmt.Sprintf("%d", p.Port))
-					dst, err = net.DialTimeout("tcp", target, 5*time.Second)
+					dst, err = sentinelDialer.Dial("tcp", target)
 				}
 			}
 		}
 		if dst == nil {
 			// No primary match (or yamux/TCP failed): fall back.
-			dst, err = net.DialTimeout("tcp", fallbackTarget, 5*time.Second)
+			dst, err = sentinelDialer.Dial("tcp", fallbackTarget)
 		}
 		if err != nil || dst == nil {
 			return
