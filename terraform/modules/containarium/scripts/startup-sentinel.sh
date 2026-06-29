@@ -69,9 +69,21 @@ reconcile_containarium_binary() {
     return 0
 }
 
+# Trim unnecessary services that consume 150-200 MB on the sentinel (#770).
+# snapd (~38 MB), multipathd (~27 MB), update-notifier/check-new-release (~90 MB
+# transient) are irrelevant on a pure-forwarder VM. Removing them frees headroom
+# so a reconnect storm or GC spike can't freeze the entire host.
+systemctl stop snapd.service snapd.socket 2>/dev/null || true
+systemctl disable snapd.service snapd.socket 2>/dev/null || true
+apt-get purge -y -qq snapd 2>/dev/null || true
+apt-get purge -y -qq update-notifier update-notifier-common 2>/dev/null || true
+systemctl stop multipathd.service multipathd.socket 2>/dev/null || true
+systemctl disable multipathd.service multipathd.socket 2>/dev/null || true
+systemctl mask multipathd.service multipathd.socket 2>/dev/null || true
+
 # Disable apt auto-upgrade timers — manual patching only.
-# Auto-upgrades on the e2-micro sentinel (955MB RAM, no swap) caused OOM
-# hangs when unattended-upgrades + packagekit + sshpiper ran concurrently.
+# Auto-upgrades on a small sentinel VM caused OOM hangs when
+# unattended-upgrades + packagekit + sshpiper ran concurrently.
 # Re-enable with: systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
 systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
