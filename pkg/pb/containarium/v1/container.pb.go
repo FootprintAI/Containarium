@@ -277,7 +277,12 @@ type ResourceLimits struct {
 	// GPU device IDs for passthrough — one entry per GPU to attach (each is a
 	// device index like "0"/"1" or a PCI address like "0000:0b:00.0"). Empty
 	// means no GPU. Supersedes the singular `gpu` field.
-	Gpus          []string `protobuf:"bytes,5,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	Gpus []string `protobuf:"bytes,5,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	// storage_class is the K8s StorageClass for the box's data PVC (K8s
+	// runtime only). Empty means use the backend's cluster-wide default
+	// (CONTAINARIUM_K8S_STORAGE_CLASS). Ignored by the LXC backend.
+	// Example: "fast-nvme", "standard", "ceph-block".
+	StorageClass  string `protobuf:"bytes,6,opt,name=storage_class,json=storageClass,proto3" json:"storage_class,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -345,6 +350,13 @@ func (x *ResourceLimits) GetGpus() []string {
 		return x.Gpus
 	}
 	return nil
+}
+
+func (x *ResourceLimits) GetStorageClass() string {
+	if x != nil {
+		return x.StorageClass
+	}
+	return ""
 }
 
 // NetworkInfo contains network configuration for a container
@@ -4393,13 +4405,14 @@ var File_containarium_v1_container_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
-	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"t\n" +
+	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x99\x01\n" +
 	"\x0eResourceLimits\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\tR\x06memory\x12\x12\n" +
 	"\x04disk\x18\x03 \x01(\tR\x04disk\x12\x10\n" +
 	"\x03gpu\x18\x04 \x01(\tR\x03gpu\x12\x12\n" +
-	"\x04gpus\x18\x05 \x03(\tR\x04gpus\"\x83\x01\n" +
+	"\x04gpus\x18\x05 \x03(\tR\x04gpus\x12#\n" +
+	"\rstorage_class\x18\x06 \x01(\tR\fstorageClass\"\x83\x01\n" +
 	"\vNetworkInfo\x12\x1d\n" +
 	"\n" +
 	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1f\n" +

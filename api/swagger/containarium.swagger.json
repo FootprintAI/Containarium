@@ -10508,6 +10508,10 @@
             "type": "string"
           },
           "description": "GPU device IDs for passthrough — one entry per GPU to attach (each is a\ndevice index like \"0\"/\"1\" or a PCI address like \"0000:0b:00.0\"). Empty\nmeans no GPU. Supersedes the singular `gpu` field."
+        },
+        "storageClass": {
+          "type": "string",
+          "description": "storage_class is the K8s StorageClass for the box's data PVC (K8s\nruntime only). Empty means use the backend's cluster-wide default\n(CONTAINARIUM_K8S_STORAGE_CLASS). Ignored by the LXC backend.\nExample: \"fast-nvme\", \"standard\", \"ceph-block\"."
         }
       },
       "title": "ResourceLimits defines resource constraints for a container"

@@ -102,6 +102,12 @@ message ResourceLimits {
   // device index like "0"/"1" or a PCI address like "0000:0b:00.0"). Empty
   // means no GPU. Supersedes the singular `gpu` field.
   repeated string gpus = 5;
+
+  // storage_class is the K8s StorageClass for the box's data PVC (K8s
+  // runtime only). Empty means use the backend's cluster-wide default
+  // (CONTAINARIUM_K8S_STORAGE_CLASS). Ignored by the LXC backend.
+  // Example: "fast-nvme", "standard", "ceph-block".
+  string storage_class = 6;
 }
 
 // NetworkInfo contains network configuration for a container

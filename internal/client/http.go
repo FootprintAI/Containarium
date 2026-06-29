@@ -284,17 +284,21 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
+	resources := map[string]string{
+		"cpu":    cpu,
+		"memory": memory,
+		"disk":   disk,
+	}
+	if storageClass != "" {
+		resources["storageClass"] = storageClass
+	}
 	reqBody := map[string]interface{}{
-		"username": username,
-		"resources": map[string]string{
-			"cpu":    cpu,
-			"memory": memory,
-			"disk":   disk,
-		},
+		"username":  username,
+		"resources": resources,
 		"sshKeys":      sshKeys,
 		"image":        image,
 		"enablePodman": enablePodman,

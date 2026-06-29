@@ -689,9 +689,10 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 				IPAddress string `json:"ipAddress"`
 			} `json:"network"`
 			Resources struct {
-				CPU    string `json:"cpu"`
-				Memory string `json:"memory"`
-				Disk   string `json:"disk"`
+				CPU          string `json:"cpu"`
+				Memory       string `json:"memory"`
+				Disk         string `json:"disk"`
+				StorageClass string `json:"storageClass"`
 			} `json:"resources"`
 		} `json:"container"`
 		Message    string `json:"message"`
@@ -710,9 +711,10 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 				IpAddress: data.Container.Network.IPAddress,
 			},
 			Resources: &pb.ResourceLimits{
-				Cpu:    data.Container.Resources.CPU,
-				Memory: data.Container.Resources.Memory,
-				Disk:   data.Container.Resources.Disk,
+				Cpu:          data.Container.Resources.CPU,
+				Memory:       data.Container.Resources.Memory,
+				Disk:         data.Container.Resources.Disk,
+				StorageClass: data.Container.Resources.StorageClass,
 			},
 		},
 		Message:    data.Message,
