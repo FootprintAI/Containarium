@@ -13,7 +13,47 @@ of LXC containers; everything else (CLI, MCP server, proto API) is identical.
 | Docker | https://docs.docker.com/get-docker/ |
 | kind | `brew install kind` / https://kind.sigs.k8s.io/docs/user/quick-start/ |
 | kubectl | `brew install kubectl` |
-| Go 1.23+ | https://go.dev/dl/ |
+| Helm 3 | `brew install helm` / https://helm.sh/docs/intro/install/ |
+| Go 1.23+ (binary path only) | https://go.dev/dl/ |
+
+---
+
+## Helm quickstart (recommended)
+
+If you already have a kind cluster, the Helm chart installs everything in
+one command.
+
+```sh
+# 1. Create the cluster
+kind create cluster --name containarium
+
+# 2. Install the chart from the repo
+cd Containarium
+helm install containarium ./charts/containarium-k8s \
+  --set daemon.jwtSecret="$(openssl rand -hex 32)" \
+  --set storageClass=standard \
+  --wait
+
+# 3. Create a box
+export CTN_URL="http://localhost:8080"
+export CTN_JWT="$(kubectl get secret containarium-containarium-k8s-daemon \
+  -o jsonpath='{.data.jwt-secret}' | base64 -d)"
+
+kubectl port-forward svc/containarium-containarium-k8s-daemon 8080:8080 &
+./containarium container create myorg/mybox \
+  --url "$CTN_URL" --token "$CTN_JWT"
+
+# 4. Verify isolation: no SA token in the box pod
+kubectl exec -n tenant-mybox box-0 -- \
+  cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>&1
+# cat: can't open '...token': No such file or directory  ← expected
+```
+
+> **SSH access** requires the full agent-box image and sshpiper (installed by
+> the chart). Forward port 32022 from the kind node to reach the SSH gateway:
+> `ssh -p 32022 mybox@localhost`
+
+---
 
 ## 1. Create the cluster
 

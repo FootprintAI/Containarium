@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.gateway.namespace }}
+  labels:
+    {{- include "containarium-k8s.labels" . | nindent 4 }}
+    {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+    {{- end }}

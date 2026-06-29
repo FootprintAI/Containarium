@@ -1,0 +1,33 @@
+# Minimal sshpiper Pipe CRD.
+#
+# This is a stripped-down version of the CRD shipped with sshpiper; it uses
+# x-kubernetes-preserve-unknown-fields so the full sshpiper schema is not
+# required for Containarium's control-plane operations. If you already have
+# sshpiper installed with its full CRD, this file is a no-op (Helm skips CRDs
+# that already exist).
+#
+# Source: https://github.com/tg123/sshpiper
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: pipes.sshpiper.com
+  annotations:
+    # Tells Helm to skip this CRD on upgrades — the sshpiper project owns the
+    # full schema; we only install if nothing is present.
+    helm.sh/resource-policy: keep
+spec:
+  group: sshpiper.com
+  scope: Namespaced
+  names:
+    plural: pipes
+    singular: pipe
+    kind: Pipe
+    listKind: PipeList
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true

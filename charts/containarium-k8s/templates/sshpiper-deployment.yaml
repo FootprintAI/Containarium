@@ -1,0 +1,40 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "containarium-k8s.fullname" . }}-sshpiper
+  namespace: {{ .Values.gateway.namespace }}
+  labels:
+    {{- include "containarium-k8s.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "containarium-k8s.name" . }}-sshpiper
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "containarium-k8s.name" . }}-sshpiper
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "containarium-k8s.sshpiperServiceAccountName" . }}
+      containers:
+        - name: sshpiper
+          image: {{ .Values.gateway.sshpiper.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --address=:2222
+          ports:
+            - name: ssh
+              containerPort: 2222
+              protocol: TCP
+          {{- with .Values.gateway.sshpiper.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

@@ -1,0 +1,50 @@
+# Default values for containarium-k8s.
+# This is a YAML-formatted file.
+
+# -- Containarium daemon image
+daemon:
+  image:
+    repository: ghcr.io/footprintai/containarium
+    # -- Defaults to chart appVersion when empty
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  # -- JWT secret for API authentication. Must be 32+ characters. CHANGE THIS.
+  jwtSecret: "change-me-please-use-a-real-secret"
+  service:
+    type: ClusterIP
+    port: 8080
+  resources: {}
+
+# -- Box image deployed per tenant (sshd + agent-box, ForceCommand-pinned)
+agentBox:
+  image: ghcr.io/footprintai/containarium-agent-box:latest
+
+# -- SSH gateway configuration (sshpiper routes SSH connections to box pods)
+gateway:
+  # -- Kubernetes namespace where the sshpiper Deployment lives and Pipes are created
+  namespace: agent-gateway
+  # -- Deploy sshpiper as part of this chart. Set false to bring your own.
+  enabled: true
+  service:
+    # -- Use NodePort for kind / LoadBalancer for cloud clusters
+    type: NodePort
+    port: 22
+    # -- NodePort for kind (access via localhost:32022)
+    nodePort: 32022
+  sshpiper:
+    image: ghcr.io/tg123/sshpiper/sshpiperd-kubernetes:v1.5.3
+    resources: {}
+
+# -- Prefix for per-tenant Kubernetes namespaces (tenant → tenant-<name>)
+tenantNamespacePrefix: "tenant-"
+
+# -- StorageClass for per-box persistent volume claims.
+# Empty = no PVC (box data is ephemeral). Use "standard" for kind.
+storageClass: ""
+
+# -- Annotations to add to all resources
+commonAnnotations: {}
+
+# -- Labels to add to all resources
+commonLabels: {}

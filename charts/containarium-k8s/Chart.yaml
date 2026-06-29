@@ -1,0 +1,24 @@
+apiVersion: v2
+name: containarium-k8s
+description: >
+  Containarium K8s agent-box runtime — safe, SSH-accessible per-tenant agent
+  pods on Kubernetes. Agents connect over SSH to a ForceCommand-pinned
+  agent-box; no kube-apiserver token is mounted in the box.
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - agent
+  - mcp
+  - ssh
+  - kubernetes
+  - security
+  - agent-box
+home: https://github.com/FootprintAI/Containarium
+sources:
+  - https://github.com/FootprintAI/Containarium
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial Helm chart for the Kubernetes agent-box backend

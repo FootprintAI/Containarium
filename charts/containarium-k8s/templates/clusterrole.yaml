@@ -1,0 +1,57 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "containarium-k8s.fullname" . }}-daemon
+  labels:
+    {{- include "containarium-k8s.labels" . | nindent 4 }}
+rules:
+  # Manage per-tenant namespaces
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Manage box workloads in tenant namespaces
+  - apiGroups: ["apps"]
+    resources: [statefulsets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [services, pods, persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Read pod logs / exec for debug commands
+  - apiGroups: [""]
+    resources: [pods/log, pods/exec]
+    verbs: [get, list, create]
+  # Manage per-box SSH keys in tenant namespaces
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Enforce NetworkPolicy isolation per tenant namespace
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Manage sshpiper Pipe CRDs in the gateway namespace
+  - apiGroups: [sshpiper.com]
+    resources: [pipes]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+{{- if .Values.gateway.enabled }}
+# sshpiper needs read access to Pipe CRDs and the secrets they reference
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "containarium-k8s.fullname" . }}-sshpiper
+  labels:
+    {{- include "containarium-k8s.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [sshpiper.com]
+    resources: [pipes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+{{- end }}

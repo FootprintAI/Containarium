@@ -1,0 +1,26 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "containarium-k8s.fullname" . }}-sshpiper
+  namespace: {{ .Values.gateway.namespace }}
+  labels:
+    {{- include "containarium-k8s.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "containarium-k8s.name" . }}-sshpiper
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: ssh
+      port: {{ .Values.gateway.service.port }}
+      targetPort: ssh
+      protocol: TCP
+      {{- if and (eq .Values.gateway.service.type "NodePort") .Values.gateway.service.nodePort }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}
+{{- end }}
