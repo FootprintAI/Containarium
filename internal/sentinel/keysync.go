@@ -160,7 +160,9 @@ func (ks *KeyStore) Apply() error {
 	}
 
 	// Write per-user authorized_keys
+	liveUsers := make(map[string]bool, len(routes))
 	for _, r := range routes {
+		liveUsers[r.username] = true
 		userDir := filepath.Join(sshpiperUsersDir, r.username)
 		if err := os.MkdirAll(userDir, 0755); err != nil { // #nosec G301 -- sshpiper requires world-readable user dirs
 			log.Printf("[keysync] failed to create dir for %s: %v", r.username, err)
@@ -174,6 +176,28 @@ func (ks *KeyStore) Apply() error {
 			log.Printf("[keysync] failed to write authorized_keys for %s: %v", r.username, err)
 			continue
 		}
+	}
+
+	// Prune sshpiper user dirs for containers that no longer exist (#835).
+	// The sentinel accumulates one dir per historical container; without this
+	// step the directory grows without bound and keysync's O(dirs) work
+	// widens the first-connect race window.
+	pruned := 0
+	if entries, err := os.ReadDir(sshpiperUsersDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || liveUsers[e.Name()] {
+				continue
+			}
+			stale := filepath.Join(sshpiperUsersDir, e.Name())
+			if rmErr := os.RemoveAll(stale); rmErr != nil {
+				log.Printf("[keysync] failed to prune stale sshpiper dir %s: %v", stale, rmErr)
+			} else {
+				pruned++
+			}
+		}
+	}
+	if pruned > 0 {
+		log.Printf("[keysync] pruned %d stale sshpiper user dirs", pruned)
 	}
 
 	// Generate sshpiper YAML config with per-user backend routing

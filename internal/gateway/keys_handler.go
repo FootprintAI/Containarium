@@ -59,6 +59,7 @@ func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string
 		}
 
 		var keys []UserKeys
+		orphanCount := 0
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
@@ -78,13 +79,16 @@ func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string
 				continue
 			}
 			if containerExistsFn != nil && !containerExistsFn(username) {
-				log.Printf("[keys] WARNING: orphan authorized_keys for %q — no live container; skipping (run `containarium delete %s` or `userdel -r %s` to clean up)", username, username, username)
+				orphanCount++
 				continue
 			}
 			keys = append(keys, UserKeys{
 				Username:       username,
 				AuthorizedKeys: content,
 			})
+		}
+		if orphanCount > 0 {
+			log.Printf("[keys] WARNING: %d orphan authorized_keys found (no live container); orphan-reaper will clean up on next tick", orphanCount)
 		}
 
 		w.Header().Set("Content-Type", "application/json")

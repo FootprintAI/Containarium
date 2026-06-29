@@ -1904,6 +1904,19 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.ttlSweeperManager.Start(ctx)
 	}
 
+	// Orphan reaper (#835): periodically userdel host accounts whose
+	// container no longer exists. userdel -r on container delete can fail
+	// under lock contention (google-guest-agent race on GCP), leaving stale
+	// /home/<user> dirs that flood keysync with per-orphan WARNINGs and
+	// widen the #830 first-connect race window.
+	if ds.containerServer != nil {
+		if mgr := ds.containerServer.GetManager(); mgr != nil {
+			go container.RunOrphanReaper(ctx, func(username string) bool {
+				return mgr.ContainerExists(username + "-container")
+			})
+		}
+	}
+
 	// Phase 4.3 Phase B-3 — file-mode secret reconciler.
 	// Periodically re-stamps tmpfs secrets on running
 	// containers so a bare `incus restart` not routed
