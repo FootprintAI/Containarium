@@ -151,10 +151,14 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 		return nil, fmt.Errorf("k8s: ensure namespace: %w", err)
 	}
 	// Provision the data PVC before the StatefulSet so the pod can mount it on
-	// first start. Skipped when StorageClass is unset (backward compat: existing
-	// deployments that don't need persistent storage keep the old behaviour).
-	if b.cfg.StorageClass != "" {
-		pvc := pvcObject(ns, tenant, b.cfg.StorageClass, spec.Resources.Disk)
+	// first start. Per-box spec.Resources.StorageClass takes precedence over the
+	// global Config.StorageClass; skipped when both are empty (backward compat).
+	storageClass := b.cfg.StorageClass
+	if spec.Resources.StorageClass != "" {
+		storageClass = spec.Resources.StorageClass
+	}
+	if storageClass != "" {
+		pvc := pvcObject(ns, tenant, storageClass, spec.Resources.Disk)
 		if _, err := b.clientset.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, metav1.CreateOptions{}); ignoreExists(err) != nil {
 			return nil, fmt.Errorf("k8s: ensure pvc: %w", err)
 		}
@@ -173,7 +177,7 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if _, err := b.ensureHostKey(ctx, tenant); err != nil {
 		return nil, fmt.Errorf("k8s: ensure host key: %w", err)
 	}
-	if _, err := b.clientset.AppsV1().StatefulSets(ns).Create(ctx, statefulSetObject(ns, spec, b.cfg.StorageClass != ""), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	if _, err := b.clientset.AppsV1().StatefulSets(ns).Create(ctx, statefulSetObject(ns, spec, storageClass != ""), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure statefulset: %w", err)
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op

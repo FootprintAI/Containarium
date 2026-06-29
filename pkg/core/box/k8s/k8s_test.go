@@ -426,3 +426,55 @@ func TestPurgeRemovesPVCAndNamespace(t *testing.T) {
 		t.Errorf("Purge(missing) = %v, want nil", err)
 	}
 }
+
+// TestCreatePerBoxStorageClassOverride verifies that a per-box
+// spec.Resources.StorageClass takes precedence over the global Config.StorageClass.
+func TestCreatePerBoxStorageClassOverride(t *testing.T) {
+	b, cs := testBackendWithStorage() // Config.StorageClass = "standard"
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "jane"}
+
+	if _, err := b.Create(ctx, box.BoxSpec{
+		Ref:   ref,
+		Image: "x",
+		Resources: box.ResourceLimits{
+			StorageClass: "fast-nvme", // per-box override
+		},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ns := "tenant-jane"
+	pvc, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC not created: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "fast-nvme" {
+		t.Errorf("StorageClassName = %v; want fast-nvme", pvc.Spec.StorageClassName)
+	}
+}
+
+// TestCreatePerBoxStorageClassEmpty verifies that an empty per-box StorageClass
+// falls back to the global Config.StorageClass.
+func TestCreatePerBoxStorageClassEmpty(t *testing.T) {
+	b, cs := testBackendWithStorage() // Config.StorageClass = "standard"
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "ken"}
+
+	if _, err := b.Create(ctx, box.BoxSpec{
+		Ref:       ref,
+		Image:     "x",
+		Resources: box.ResourceLimits{}, // no per-box override
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ns := "tenant-ken"
+	pvc, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC not created: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "standard" {
+		t.Errorf("StorageClassName = %v; want standard (global default)", pvc.Spec.StorageClassName)
+	}
+}
