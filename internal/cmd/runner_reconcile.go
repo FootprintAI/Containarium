@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/runner"
 	"github.com/spf13/cobra"
 )
@@ -59,7 +60,7 @@ func init() {
 	runnerCmd.AddCommand(runnerReconcileCmd)
 
 	runnerReconcileCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT with `repo` scope (env: GH_PAT). REQUIRED.")
-	runnerReconcileCmd.Flags().StringVar(&runnerSentinelHost, "sentinel", os.Getenv("CONTAINARIUM_SENTINEL_HOST"), "Sentinel SSH host (env: CONTAINARIUM_SENTINEL_HOST). REQUIRED for the install step.")
+	runnerReconcileCmd.Flags().StringVar(&runnerSentinelHost, "sentinel", os.Getenv(config.EnvSentinelHost), "Sentinel SSH host (env: CONTAINARIUM_SENTINEL_HOST). REQUIRED for the install step.")
 	runnerReconcileCmd.Flags().StringVar(&runnerSSHUser, "ssh-user", "", "SSH user when SSH'ing into a runner box (default: the runner name, via sshpiper)")
 	runnerReconcileCmd.Flags().StringVar(&runnerSSHKeyPath, "ssh-key", "", "Path to SSH public key used when creating new boxes (default: ~/.ssh/id_rsa.pub)")
 	runnerReconcileCmd.Flags().StringVar(&runnerNamePrefix, "name-prefix", "ci-runner", "Prefix for generated box names (also the count filter)")

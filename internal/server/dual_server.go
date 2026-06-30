@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/autosleep"
 	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/internal/collaborator"
+	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
@@ -1371,7 +1372,7 @@ skipAppHosting:
 		// minimum) the gateway fails closed — every request returns
 		// 401 — so an operator running without the env var sees the
 		// keysync error loudly and configures it. Don't paper over.
-		if secret := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET")); secret != "" {
+		if secret := strings.TrimSpace(os.Getenv(appconfig.EnvSentinelAuthSecret)); secret != "" {
 			if len(secret) < auth.SentinelMinSecretLen {
 				log.Printf("WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is %d bytes, want >=%d — sentinel endpoints will refuse all requests until this is fixed",
 					len(secret), auth.SentinelMinSecretLen)
@@ -1387,7 +1388,7 @@ skipAppHosting:
 		// holding only this public key can verify the sentinel but cannot
 		// forge a request, so it's safe to distribute everywhere. Optional:
 		// when unset the daemon stays on HMAC-only (no behavior change).
-		if pubB64 := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_PUBLIC_KEY")); pubB64 != "" {
+		if pubB64 := strings.TrimSpace(os.Getenv(appconfig.EnvSentinelPublicKey)); pubB64 != "" {
 			if pub, err := auth.ParseSentinelPublicKey(pubB64); err != nil {
 				log.Printf("WARNING: CONTAINARIUM_SENTINEL_PUBLIC_KEY is set but invalid (%v) — falling back to HMAC-only for sentinel endpoints", err)
 			} else {

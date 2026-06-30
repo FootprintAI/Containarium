@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/pkg/version"
 )
 
@@ -197,15 +198,19 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	// rollout; the HTTP listener stays up for the un-flipped ones.
 	var httpsSrv *http.Server
 	if certPEM, keyPEM := manager.SentinelServerCertPEM(); certPEM != nil && keyPEM != nil {
+		// Sentinel config via the typed loader (internal/config). Only HTTPSPort
+		// is consumed here; its default (HTTP port + 1) depends on the runtime
+		// port, so the default + parse-error logging stay at the call site.
+		sentCfg := config.LoadSentinel()
 		httpsPort := port + 1
-		if env := os.Getenv("CONTAINARIUM_SENTINEL_HTTPS_PORT"); env != "" {
+		if env := sentCfg.HTTPSPort; env != "" {
 			if p, perr := parsePort(env); perr == nil {
 				httpsPort = p
 			} else {
 				// #nosec G706 -- env is strconv.Quote'd into the
 				// format string; gosec's taint analysis doesn't
 				// recognize Quote as a sanitizer.
-				log.Printf("[sentinel] invalid CONTAINARIUM_SENTINEL_HTTPS_PORT=%s (%v) — defaulting to %d", strconv.Quote(env), perr, httpsPort)
+				log.Printf("[sentinel] invalid %s=%s (%v) — defaulting to %d", config.EnvSentinelHTTPSPort, strconv.Quote(env), perr, httpsPort)
 			}
 		}
 		tlsCert, tlsErr := tls.X509KeyPair(certPEM, keyPEM)

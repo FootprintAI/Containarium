@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/pkg/core/pki"
 )
 
@@ -184,7 +185,7 @@ func (m *Manager) SetCertProvisioner(p *pki.Provisioner) error {
 	// addresses are always included so in-process / same-host tests
 	// work without DNS gymnastics.
 	dnsNames := []string{"localhost", "containarium-sentinel"}
-	if extra := os.Getenv("CONTAINARIUM_SENTINEL_CERT_SANS"); extra != "" {
+	if extra := os.Getenv(appconfig.EnvSentinelCertSANs); extra != "" {
 		for _, name := range strings.Split(extra, ",") {
 			if name = strings.TrimSpace(name); name != "" {
 				dnsNames = append(dnsNames, name)
@@ -272,7 +273,7 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		certStore: NewCertStore(),
 		keyStore:  NewKeyStore(),
 	}
-	if raw := os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET"); raw != "" {
+	if raw := os.Getenv(appconfig.EnvSentinelAuthSecret); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {
 			// #nosec G706 -- both args are ints (len(raw) and a
 			// const) so there is no log-injection vector; gosec's

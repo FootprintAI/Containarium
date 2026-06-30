@@ -23,6 +23,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/footprintai/containarium/internal/config"
 )
 
 // ErrSentinelUnresolved is returned by resolve when no SSH endpoint could
@@ -68,7 +70,7 @@ func (o *Options) resolve() error {
 		return fmt.Errorf("username is required")
 	}
 	if o.SentinelHost == "" {
-		o.SentinelHost = os.Getenv("CONTAINARIUM_SENTINEL_HOST")
+		o.SentinelHost = os.Getenv(config.EnvSentinelHost)
 		if o.SentinelHost == "" {
 			return fmt.Errorf("%w: the daemon reports the reachable SSH target in the "+
 				"container's ssh_host (see `containarium get %s` / the get_container tool) — "+

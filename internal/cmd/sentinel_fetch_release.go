@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -52,7 +53,7 @@ func init() {
 
 	sentinelFetchReleaseCmd.Flags().StringVar(&sentinelFetchReleaseSentinelURL, "url", "", "Sentinel binary-server base URL, e.g. http://10.130.0.5:8888 (required)")
 	sentinelFetchReleaseCmd.Flags().StringVar(&sentinelFetchReleaseTag, "tag", "", "Release tag to install, e.g. v0.50.0 or \"latest\" (required)")
-	sentinelFetchReleaseCmd.Flags().StringVar(&sentinelFetchReleaseSecret, "secret", os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET"), "Sentinel HMAC secret (defaults to $CONTAINARIUM_SENTINEL_AUTH_SECRET)")
+	sentinelFetchReleaseCmd.Flags().StringVar(&sentinelFetchReleaseSecret, "secret", os.Getenv(config.EnvSentinelAuthSecret), "Sentinel HMAC secret (defaults to $CONTAINARIUM_SENTINEL_AUTH_SECRET)")
 
 	_ = sentinelFetchReleaseCmd.MarkFlagRequired("url")
 	_ = sentinelFetchReleaseCmd.MarkFlagRequired("tag")
