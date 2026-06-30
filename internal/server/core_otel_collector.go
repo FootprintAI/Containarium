@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
@@ -260,7 +261,7 @@ func (cs *CoreServices) applyOTelCollectorConfig(vmIP string, dropLabels []strin
 //     container without the header drops silently (and
 //     that's the signal to find the laggard).
 func collectorBearerForConfig() string {
-	raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_OTEL_REQUIRE_AUTH"))
+	raw := strings.TrimSpace(os.Getenv(appconfig.EnvOTELRequireAuth))
 	on := false
 	switch strings.ToLower(raw) {
 	case "1", "true", "yes", "on":
@@ -398,7 +399,7 @@ func mergeOTelDropLabels(base, extra []string) []string {
 // collector's specific bridge IP) so the listen socket is pinned
 // to the bridge interface explicitly.
 func otelReceiverBindAddress() string {
-	if v := strings.TrimSpace(os.Getenv("CONTAINARIUM_OTEL_COLLECTOR_BIND")); v != "" {
+	if v := strings.TrimSpace(os.Getenv(appconfig.EnvOTELCollectorBind)); v != "" {
 		return v
 	}
 	return "0.0.0.0"

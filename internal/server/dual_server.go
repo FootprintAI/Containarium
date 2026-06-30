@@ -1343,7 +1343,7 @@ skipAppHosting:
 				// chat path (#670 layer 2). Default on; set
 				// CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0 to disable. Streaming token
 				// metering is independent and always on.
-				OutputFilter: os.Getenv("CONTAINARIUM_GATEWAY_OUTPUT_FILTER") != "0",
+				OutputFilter: os.Getenv(appconfig.EnvGatewayOutputFilter) != "0",
 			})
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			primary := gatewayPrimaryProvider(keys)
@@ -2058,7 +2058,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// operator-applied nft TPROXY rule (see the runbook), so an existing
 	// deployment is unaffected. Forward-only at this stage (no inspection); the
 	// Coraza WAF lands in PR-2. A bind failure is non-fatal.
-	if wafAddr := strings.TrimSpace(os.Getenv("CONTAINARIUM_WAF_TPROXY_ADDR")); wafAddr != "" {
+	if wafAddr := strings.TrimSpace(os.Getenv(appconfig.EnvWAFTProxyAddr)); wafAddr != "" {
 		if !waf.ListenAddrValid(wafAddr) {
 			log.Printf("Warning: CONTAINARIUM_WAF_TPROXY_ADDR=%q is not a valid host:port; WAF steering disabled", wafAddr)
 		} else {
@@ -2066,7 +2066,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			// PR-2: attach the reference inspector when CONTAINARIUM_WAF_INSPECT=1.
 			// Observe-only unless ENFORCE is also armed (same gate as the kernel
 			// drop path). Blocks audit as network_policy.waf_block.
-			switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_WAF_INSPECT"))) {
+			switch strings.ToLower(strings.TrimSpace(os.Getenv(appconfig.EnvWAFInspect))) {
 			case "1", "true", "yes", "on":
 				cfg.Inspector = waf.NewBuiltinInspector()
 				switch strings.ToLower(strings.TrimSpace(os.Getenv(appconfig.EnvNetworkPolicyEnforce))) {
@@ -2317,7 +2317,7 @@ func stripHostFromURL(rawURL string) string {
 // default: ingress routes are unchanged unless an operator opts in (and the
 // Caddy binary must be built with the coraza module — CaddyConfig.WAF).
 func wafIngressFromEnv(pm *app.ProxyManager) *app.ProxyManager {
-	if !envTruthy(os.Getenv("CONTAINARIUM_WAF_INGRESS")) {
+	if !envTruthy(os.Getenv(appconfig.EnvWAFIngress)) {
 		return pm
 	}
 	enforce := envTruthy(os.Getenv(appconfig.EnvNetworkPolicyEnforce))
