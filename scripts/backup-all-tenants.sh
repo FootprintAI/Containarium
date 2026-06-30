@@ -2,6 +2,10 @@
 # Iterate the tenant config and create a GCS backup for each entry.
 # Designed to be driven by containarium-backup.{service,timer}.
 #
+# One-copy policy: before creating a new backup the script deletes any
+# existing backups for the same tenant, so there is always at most one dump
+# per tenant in the index.  restore-tenant.sh relies on this invariant.
+#
 # Config file format (/etc/containarium/backup-tenants.conf):
 #   # comment
 #   <tenant>  <database>  [PASSWORD_ENV_VAR]
@@ -11,7 +15,7 @@
 # (the common default — pg_dump runs as root inside the container on loopback).
 #
 # Required environment variables (set in /etc/containarium/backup.env):
-#   CONTAINARIUM_SERVER       daemon address, e.g. localhost:8080
+#   CONTAINARIUM_SERVER         daemon address, e.g. localhost:8080
 #   CONTAINARIUM_BACKUP_BUCKET  GCS bucket prefix, e.g. gs://my-backups/pg
 #
 # Optional:
@@ -33,7 +37,6 @@ if [[ ! -f "$CONF" ]]; then
   exit 1
 fi
 
-# Build auth flag once (empty string = no flag).
 auth_flags=()
 if [[ -n "$TOKEN" ]]; then
   auth_flags=(--token "$TOKEN")
@@ -43,14 +46,12 @@ failed=0
 total=0
 
 while IFS=$' \t' read -r tenant database pw_env _rest; do
-  # Skip blank lines and comments.
   [[ -z "$tenant" || "$tenant" == \#* ]] && continue
 
   total=$((total + 1))
 
   pw_flags=()
   if [[ -n "${pw_env:-}" ]]; then
-    # Indirect expansion: read the named variable for the password.
     pw_value="${!pw_env:-}"
     if [[ -z "$pw_value" ]]; then
       echo "[backup] WARNING: $pw_env is not set; attempting without password (tenant=$tenant db=$database)" >&2
@@ -59,7 +60,21 @@ while IFS=$' \t' read -r tenant database pw_env _rest; do
     fi
   fi
 
-  echo "[backup] start tenant=$tenant db=$database"
+  # One-copy policy: delete any existing backup(s) for this tenant before
+  # creating a fresh one.  This keeps the index lean and makes restore trivial
+  # (the single record is always the current good dump).
+  while IFS= read -r old_id; do
+    [[ -z "$old_id" ]] && continue
+    echo "[backup] prune  tenant=$tenant id=$old_id"
+    "$CTN" backup delete "$old_id" \
+        --server "$SERVER" \
+        "${auth_flags[@]}" || true   # non-fatal: stale index entry, carry on
+  done < <("$CTN" backup list "$tenant" \
+      --server "$SERVER" \
+      "${auth_flags[@]}" 2>/dev/null \
+    | awk 'NR>1 {print $1}')
+
+  echo "[backup] start  tenant=$tenant db=$database"
   if "$CTN" backup create "$tenant" \
       --database "$database" \
       --dest gcs \
@@ -67,9 +82,9 @@ while IFS=$' \t' read -r tenant database pw_env _rest; do
       --server "$SERVER" \
       "${auth_flags[@]}" \
       "${pw_flags[@]}"; then
-    echo "[backup] ok    tenant=$tenant db=$database"
+    echo "[backup] ok     tenant=$tenant db=$database"
   else
-    echo "[backup] FAIL  tenant=$tenant db=$database" >&2
+    echo "[backup] FAIL   tenant=$tenant db=$database" >&2
     failed=$((failed + 1))
   fi
 done < "$CONF"
