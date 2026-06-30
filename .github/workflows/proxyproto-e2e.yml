@@ -26,6 +26,14 @@ jobs:
         with:
           go-version: '1.25.11'
 
+      - name: Windows client cross-compile guard
+        # The release builds a client-only Windows binary (cmd/containarium for
+        # GOOS=windows). It must not pull in the daemon, which imports the
+        # Linux-only eBPF loader (internal/netbpf). This catches a new cmd file
+        # importing internal/server without a //go:build !windows guard at PR
+        # time instead of at release time (see #884 / v0.47.0).
+        run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/containarium/
+
       - name: Run sentinel + app tests
         # The skipped tests are pre-existing failures on unprivileged Linux
         # runners (they pass on darwin where loopback aliases are no-ops).
