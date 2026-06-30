@@ -11,13 +11,14 @@ import (
 const (
 	EnvSentinelAddr         = "CONTAINARIUM_SENTINEL_ADDR"
 	EnvSentinelAlertWebhook = "CONTAINARIUM_SENTINEL_ALERT_WEBHOOK"
-	EnvSentinelAuthSecret   = "CONTAINARIUM_SENTINEL_AUTH_SECRET"
-	EnvSentinelCertSANs     = "CONTAINARIUM_SENTINEL_CERT_SANS"
-	EnvSentinelHost         = "CONTAINARIUM_SENTINEL_HOST"
-	EnvSentinelHTTPSPort    = "CONTAINARIUM_SENTINEL_HTTPS_PORT"
-	EnvSentinelPublicKey    = "CONTAINARIUM_SENTINEL_PUBLIC_KEY"
-	EnvSentinelSigningKey   = "CONTAINARIUM_SENTINEL_SIGNING_KEY"
-	EnvSentinelURL          = "CONTAINARIUM_SENTINEL_URL"
+	// #nosec G101 -- this is the NAME of an environment variable, not a credential value.
+	EnvSentinelAuthSecret = "CONTAINARIUM_SENTINEL_AUTH_SECRET"
+	EnvSentinelCertSANs   = "CONTAINARIUM_SENTINEL_CERT_SANS"
+	EnvSentinelHost       = "CONTAINARIUM_SENTINEL_HOST"
+	EnvSentinelHTTPSPort  = "CONTAINARIUM_SENTINEL_HTTPS_PORT"
+	EnvSentinelPublicKey  = "CONTAINARIUM_SENTINEL_PUBLIC_KEY"
+	EnvSentinelSigningKey = "CONTAINARIUM_SENTINEL_SIGNING_KEY"
+	EnvSentinelURL        = "CONTAINARIUM_SENTINEL_URL"
 )
 
 // Sentinel is the typed view of the CONTAINARIUM_SENTINEL_* namespace — the
