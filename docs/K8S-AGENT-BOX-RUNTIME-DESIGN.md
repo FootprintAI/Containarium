@@ -538,18 +538,25 @@ no incus installed, the daemon starts cleanly; box lifecycle goes through the
 kube-apiserver; incus-only RPCs (Exec, GPU resolve, core-container detection)
 return clear errors.
 
-Key env vars for the K8s backend:
+Key env vars for the K8s backend. These are read once at daemon start through
+the typed `internal/config` loader: `config.LoadK8s()` returns a `config.K8s`
+(whose `Env*` constants are the single source of truth for the names below, and
+which applies the defaults shown), and `config.K8s.Validate()` fails fast on a
+bad gateway port. The server factory (`newK8sBackend`) maps the result onto the
+env-agnostic `pkg/core/box/k8s.Config` — so `pkg/core` reads no environment.
 
 | Env | Default | Purpose |
 |---|---|---|
 | `CONTAINARIUM_K8S_KUBECONFIG` | ambient rules | Path to kubeconfig; empty = in-cluster |
 | `CONTAINARIUM_K8S_BOX_IMAGE` | _(required)_ | Agent-box image (`ghcr.io/footprintai/containarium-agent-box`) |
 | `CONTAINARIUM_K8S_GATEWAY_HOST` | _(required)_ | Public SSH gateway host (sshpiper LB) |
+| `CONTAINARIUM_K8S_GATEWAY_SSH_PORT` | `22` | Gateway SSH port surfaced on the box endpoint |
 | `CONTAINARIUM_K8S_GATEWAY_NAMESPACE` | `agent-gateway` | Namespace sshpiper runs in |
 | `CONTAINARIUM_K8S_TENANT_NS_PREFIX` | `tenant-` | Prefix for per-tenant namespaces |
 | `CONTAINARIUM_K8S_STORAGE_CLASS` | _(empty = no PVC)_ | StorageClass for persistent data |
 | `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY` | _(empty)_ | Public key sshpiper→box authenticates with |
 | `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET` | _(empty)_ | Secret name holding the matching private key |
+| `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY` | `0` | `1` skips box host-key pinning (escape hatch, not recommended) |
 | `CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST` | `256Mi` | Default per-box memory request when the box sets none; invalid → built-in default |
 | `CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT` | `1Gi` | Default per-box memory limit (hard cap, noisy-neighbor guard); invalid → built-in default |
 | `CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR` | `0` | `1` disables the floor — boxes with no explicit memory run unconstrained |
