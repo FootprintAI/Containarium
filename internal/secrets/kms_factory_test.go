@@ -6,9 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	corecrypto "github.com/footprintai/containarium/pkg/core/secrets"
 )
 
-// Phase 4.1 — KMS backend selector tests.
+// Phase 4.1 — KMS backend selector tests. Moved here with the factory: the
+// env-reading + dispatch now lives in the app layer (internal/secrets), while
+// pkg/core/secrets keeps only the env-free *Config structs + constructors.
 
 func clearKMSEnv(t *testing.T) {
 	t.Helper()
@@ -41,7 +45,7 @@ func clearKMSEnv(t *testing.T) {
 
 func mkMaster(t *testing.T) []byte {
 	t.Helper()
-	k := make([]byte, MasterKeySize)
+	k := make([]byte, corecrypto.MasterKeySize)
 	if _, err := io.ReadFull(rand.Reader, k); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
@@ -81,7 +85,7 @@ func TestLoadKMSClient_InProcReturnsImpl(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if _, ok := c.(*InProcKMS); !ok {
+	if _, ok := c.(*corecrypto.InProcKMS); !ok {
 		t.Fatalf("expected *InProcKMS; got %T", c)
 	}
 	if desc == "" {
@@ -136,7 +140,7 @@ func TestLoadKMSClient_VaultTokenFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if _, ok := c.(*VaultKMS); !ok {
+	if _, ok := c.(*corecrypto.VaultKMS); !ok {
 		t.Fatalf("expected *VaultKMS; got %T", c)
 	}
 	if desc == "" {
@@ -293,7 +297,7 @@ func TestLoadKMSClient_AWSFromEnvSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if _, ok := c.(*AWSKMS); !ok {
+	if _, ok := c.(*corecrypto.AWSKMS); !ok {
 		t.Fatalf("expected *AWSKMS; got %T", c)
 	}
 	if desc == "" || desc[:3] != "aws" {
@@ -356,7 +360,7 @@ func TestLoadKMSClient_AWSSecretFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if _, ok := c.(*AWSKMS); !ok {
+	if _, ok := c.(*corecrypto.AWSKMS); !ok {
 		t.Fatalf("expected *AWSKMS from secret-file path; got %T", c)
 	}
 }

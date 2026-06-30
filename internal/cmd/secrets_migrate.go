@@ -181,7 +181,7 @@ func openSecretsStoreWithKMS(ctx context.Context, masterKeyPath string) (*intern
 	if err != nil {
 		return nil, nil, fmt.Errorf("build cipher: %w", err)
 	}
-	kms, kmsDesc, err := corecrypto.LoadKMSClient(masterKey)
+	kms, kmsDesc, err := internalsecrets.LoadKMSClient(masterKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load KMS backend: %w", err)
 	}
