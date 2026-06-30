@@ -627,7 +627,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						// On err the store still opens in legacy mode
 						// (no envelope) — operators see the WARNING
 						// rather than the daemon refusing to start.
-						kms, kdesc, kerr := corecryptosecrets.LoadKMSClient(key)
+						kms, kdesc, kerr := secretsstore.LoadKMSClient(key)
 						if kerr != nil {
 							log.Printf("Warning: KMS backend config error: %v. Secrets store falling back to legacy mode.", kerr)
 							kms = nil
