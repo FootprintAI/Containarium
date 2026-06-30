@@ -5,9 +5,8 @@ package server
 import (
 	"fmt"
 	"log"
-	"os"
-	"strconv"
 
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxk8s "github.com/footprintai/containarium/pkg/core/box/k8s"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
@@ -53,33 +52,26 @@ func newBoxBackend(runtime string, mgr *container.Manager) (box.BoxBackend, erro
 }
 
 func newK8sBackend() (box.BoxBackend, error) {
-	port, _ := strconv.Atoi(os.Getenv("CONTAINARIUM_K8S_GATEWAY_SSH_PORT"))
-	if port == 0 {
-		port = 22
+	// The CONTAINARIUM_K8S_* namespace is read + defaulted once via internal/config
+	// (typed, validated); pkg/core/box/k8s.Config stays env-agnostic, so we map
+	// the fields across here.
+	cfg := config.LoadK8s()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("k8s config: %w", err)
 	}
 	return boxk8s.New(boxk8s.Config{
-		Kubeconfig:               os.Getenv("CONTAINARIUM_K8S_KUBECONFIG"),
-		GatewayNamespace:         envOr("CONTAINARIUM_K8S_GATEWAY_NAMESPACE", "agent-gateway"),
-		GatewayHost:              os.Getenv("CONTAINARIUM_K8S_GATEWAY_HOST"),
-		GatewaySSHPort:           port,
-		TenantNamespacePrefix:    envOr("CONTAINARIUM_K8S_TENANT_NS_PREFIX", "tenant-"),
-		BoxImage:                 os.Getenv("CONTAINARIUM_K8S_BOX_IMAGE"),
-		StorageClass:             os.Getenv("CONTAINARIUM_K8S_STORAGE_CLASS"),
-		GatewayUpstreamPublicKey: os.Getenv("CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY"),
-		GatewayUpstreamKeySecret: os.Getenv("CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET"),
-		InsecureIgnoreHostKey:    os.Getenv("CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY") == "1",
-		// Per-box default memory floor. Empty = built-in defaults (256Mi/1Gi);
-		// an invalid quantity degrades to the built-in default. Disable turns the
-		// floor off so boxes with no explicit memory run unconstrained.
-		DefaultMemoryRequest:      os.Getenv("CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST"),
-		DefaultMemoryLimit:        os.Getenv("CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT"),
-		DisableDefaultMemoryFloor: os.Getenv("CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR") == "1",
+		Kubeconfig:                cfg.Kubeconfig,
+		GatewayNamespace:          cfg.GatewayNamespace,
+		GatewayHost:               cfg.GatewayHost,
+		GatewaySSHPort:            cfg.GatewaySSHPort,
+		TenantNamespacePrefix:     cfg.TenantNamespacePrefix,
+		BoxImage:                  cfg.BoxImage,
+		StorageClass:              cfg.StorageClass,
+		GatewayUpstreamPublicKey:  cfg.GatewayUpstreamPublicKey,
+		GatewayUpstreamKeySecret:  cfg.GatewayUpstreamKeySecret,
+		InsecureIgnoreHostKey:     cfg.InsecureIgnoreHostKey,
+		DefaultMemoryRequest:      cfg.DefaultMemoryRequest,
+		DefaultMemoryLimit:        cfg.DefaultMemoryLimit,
+		DisableDefaultMemoryFloor: cfg.DisableDefaultMemoryFloor,
 	})
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

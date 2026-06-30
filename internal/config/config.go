@@ -19,7 +19,11 @@
 // remaining inline os.Getenv calls do — values cannot diverge.
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+	"strings"
+)
 
 // getString returns the value of the environment variable key, or def when it
 // is unset or empty. It is the building block Load<Namespace>() functions use so
@@ -27,6 +31,30 @@ import "os"
 func getString(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// getBool reports whether the environment variable key is set to a truthy value
+// ("1", "true", "yes", "on", case-insensitive). Anything else — including unset
+// — is false. This is a superset of the historical `== "1"` convention, so
+// existing "1" settings keep working.
+func getBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// getInt returns the integer value of the environment variable key, or def when
+// it is unset or not a valid integer.
+func getInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }
