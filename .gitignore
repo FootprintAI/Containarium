@@ -93,3 +93,8 @@ Desktop.ini
 
 # Compiled eBPF object — built by `make build-bpf` for embedding, never committed (#627)
 internal/netbpf/*.bpf.o
+
+# Local git worktrees (e.g. `git worktree add .worktrees/<name>`). These are
+# separate checkouts living under the repo root; never commit them as embedded
+# repos (a stray `git add -A` would otherwise sweep them in).
+.worktrees/
