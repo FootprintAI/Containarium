@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-box default memory floor on the Kubernetes backend.** Boxes created on
+  the `k8s` runtime with no explicit memory previously ran with no resource
+  requests or limits, so the scheduler couldn't bin-pack them and a single box
+  could balloon and pressure its neighbors on the shared host kernel. They now
+  get a default memory request/limit (`256Mi`/`1Gi`, with the request kept below
+  the limit so idle boxes still pack densely). GPU boxes are exempt (sized
+  explicitly), the request is clamped to the limit, and an invalid operator
+  override degrades to the built-in default rather than disabling the floor.
+  Configurable via `CONTAINARIUM_K8S_DEFAULT_MEMORY_{REQUEST,LIMIT}` and
+  `CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR`. (#871)
+
+### Changed
+
+- **Environment configuration consolidated into a typed `internal/config`
+  package.** The `CONTAINARIUM_*` environment variables — previously read inline
+  via `os.Getenv` calls scattered across the tree — now have `Env*` name
+  constants as the single source of truth, with typed `Load`/`Validate` per
+  namespace. Migrated: SENTINEL (#872), K8S (#873), NETWORK (#874), JWT (#879),
+  and OTEL/WAF/GATEWAY (#880). No behavior change for operators — same variables,
+  same semantics; for NETWORK this also collapsed several duplicated inline
+  enforce/signature switches into one typed load.
+- **KMS credential loading lifted out of `pkg/core/secrets`.** The KMS backend
+  selector and the AWS / Vault / GCP credential readers (env + file-fallback +
+  validation) moved to the app layer (`internal/secrets`), so `pkg/core/secrets`
+  no longer reads the environment — it exposes only the typed config structs and
+  constructors. Same `CONTAINARIUM_{KMS,AWS,VAULT,GCP}_*` variables and
+  behavior. (#876)
+
+### Documentation
+
+- K8s agent-box design doc: completed the backend env-var table (all 13
+  variables, including `GATEWAY_SSH_PORT` and `INSECURE_IGNORE_HOST_KEY`) and
+  noted the new typed `config.LoadK8s()` loader. (#881)
+
+### Chores
+
+- Ignore local `.worktrees/` git worktrees so a stray `git add -A` cannot commit
+  them as embedded repositories. (#877)
+
 ## [0.46.10] - 2026-06-25
 
 ### Fixed
