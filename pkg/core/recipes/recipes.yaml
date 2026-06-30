@@ -310,9 +310,8 @@ recipes:
         default: Admin
       - name: auth_password
         label: Owner password
-        description: Password for the workspace owner login. Required — the box is never left open.
+        description: Password for the workspace owner login. If not supplied, the cloud control plane generates a strong random password and returns it in the deploy response (shown once in the webui). Never left open.
         type: password
-        required: true
       - name: librechat_version
         label: LibreChat image tag
         description: LibreChat image tag to run (pin for reproducibility).
