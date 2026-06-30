@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -117,7 +118,7 @@ func NewTokenManager(secretKey string, issuer string) (*TokenManager, error) {
 	}
 
 	audience := DefaultAudience
-	if env := os.Getenv("CONTAINARIUM_JWT_AUDIENCE"); env != "" {
+	if env := os.Getenv(config.EnvJWTAudience); env != "" {
 		audience = env
 	}
 

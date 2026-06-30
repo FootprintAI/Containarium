@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -469,7 +470,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	var isRandomSecret bool
 	if enableREST {
 		// Priority 1: Environment variable (silent - production use)
-		if envSecret := os.Getenv("CONTAINARIUM_JWT_SECRET"); envSecret != "" {
+		if envSecret := os.Getenv(config.EnvJWTSecret); envSecret != "" {
 			finalJWTSecret = envSecret
 			log.Printf("Using JWT secret from CONTAINARIUM_JWT_SECRET environment variable")
 		} else if jwtSecretFile != "" {

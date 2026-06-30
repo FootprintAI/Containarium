@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/credentials"
 )
 
@@ -54,10 +55,11 @@ func LoadConfig() *Config {
 		debug, _ = strconv.ParseBool(debugStr)
 	}
 
+	jwt := config.LoadJWT()
 	cfg := &Config{
 		ServerURL:    os.Getenv("CONTAINARIUM_SERVER_URL"),
-		JWTToken:     os.Getenv("CONTAINARIUM_JWT_TOKEN"),
-		JWTTokenFile: os.Getenv("CONTAINARIUM_JWT_TOKEN_FILE"),
+		JWTToken:     jwt.Token,
+		JWTTokenFile: jwt.TokenFile,
 		Debug:        debug,
 	}
 

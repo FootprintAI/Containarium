@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/mcp"
 	"github.com/spf13/cobra"
 )
@@ -182,7 +183,7 @@ func newSecurityClient() (*mcp.Client, error) {
 	if serverURL == "" {
 		return nil, fmt.Errorf("set CONTAINARIUM_SERVER_URL or use --server")
 	}
-	token := os.Getenv("CONTAINARIUM_JWT_TOKEN")
+	token := os.Getenv(config.EnvJWTToken)
 	if token == "" {
 		return nil, fmt.Errorf("set CONTAINARIUM_JWT_TOKEN to a daemon-issued JWT")
 	}
