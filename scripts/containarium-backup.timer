@@ -1,0 +1,20 @@
+[Unit]
+Description=Containarium nightly database backup timer
+Documentation=https://github.com/footprintai/Containarium/blob/main/docs/DB-BACKUP-OPERATIONS.md
+
+[Timer]
+# Fire at 02:30 every night.
+OnCalendar=*-*-* 02:30:00
+
+# Spread firing up to 15 min to avoid a thundering herd if multiple hosts
+# run this timer simultaneously.
+RandomizedDelaySec=900
+
+# If the host was down at 02:30, catch up on the next boot.
+Persistent=true
+
+# 1-minute granularity is fine for a nightly job.
+AccuracySec=60
+
+[Install]
+WantedBy=timers.target

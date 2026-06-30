@@ -71,26 +71,76 @@ The same operations are available as MCP tools (`create_backup`,
 all call the one `BackupService`, so an agent, a human shell, and CI have
 an identical surface.
 
-## Scheduling (cron-driven in v1)
+## Scheduling (systemd timer — recommended)
 
 v1 has no in-daemon scheduler — and for an audit that is a feature, not a
-gap: a cron entry is an explicit, reviewable, timestamped artifact. Put
-this on the daemon host (or any host with the CLI + credentials):
+gap: a timer unit is an explicit, reviewable, timestamped artifact whose
+history is preserved in the journal.
 
-```cron
-# /etc/cron.d/containarium-backup  — nightly per-tenant dump to GCS at 02:30
-30 2 * * *  root  /usr/local/bin/containarium backup create <tenant> \
-  --database app --dest gcs --gcs-bucket gs://<your-backup-bucket>/pg \
-  --server <host> >> /var/log/containarium-backup.log 2>&1
+The repo ships three files under `scripts/`:
+
+| File | Purpose |
+|---|---|
+| `scripts/backup-all-tenants.sh` | iterates `/etc/containarium/backup-tenants.conf`, one `backup create` per tenant |
+| `scripts/containarium-backup.service` | oneshot service that runs the script |
+| `scripts/containarium-backup.timer` | fires the service at 02:30 every night |
+
+### Installation on the daemon host
+
+```bash
+# 1. Install the script.
+cp scripts/backup-all-tenants.sh /usr/local/bin/
+chmod +x /usr/local/bin/backup-all-tenants.sh
+
+# 2. Install the systemd units.
+cp scripts/containarium-backup.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+
+# 3. Create the environment file (mode 0600 — contains credentials).
+cat > /etc/containarium/backup.env <<'ENV'
+CONTAINARIUM_SERVER=localhost:8080
+CONTAINARIUM_BACKUP_BUCKET=gs://<your-backup-bucket>/pg
+# CONTAINARIUM_AUTH_TOKEN=<jwt>  # omit when running on the daemon host as root
+ENV
+chmod 0600 /etc/containarium/backup.env
+
+# 4. Create the tenant config (one line per database to back up).
+#    Format: <tenant>  <database>  [OPTIONAL_PASSWORD_ENV_VAR]
+cat > /etc/containarium/backup-tenants.conf <<'CONF'
+# tenant          database
+<tenant-a>        app
+<tenant-b>        app
+CONF
+
+# 5. Enable and start the timer.
+systemctl enable --now containarium-backup.timer
+
+# 6. Verify the timer is queued.
+systemctl list-timers containarium-backup.timer
 ```
+
+### Watching and alerting
+
+```bash
+# Tail the current run log.
+journalctl -u containarium-backup -f
+
+# Check the last run's exit status.
+systemctl status containarium-backup.service
+
+# Alert on absence: the service exits 1 if any tenant failed, which marks
+# the unit as "failed". Wire this into your monitoring:
+systemctl is-failed containarium-backup.service && alert "backup failed"
+```
+
+The service exits non-zero if **any** tenant fails, so a monitoring check on
+`systemctl is-failed containarium-backup.service` catches both partial and
+total failures. Alert on **absence** too — a timer that was disabled emits
+no failure line, only silence.
 
 For a tighter RPO than "nightly," add Postgres WAL archiving inside the
 container (`archive_command` → GCS) on top of these base dumps; that gives
 point-in-time recovery with an RPO of minutes, still cheaply.
-
-> A scheduled job is only as good as its alerting. Pipe the log to your
-> monitoring and alert on **absence** of a success line, not just on
-> error lines — a cron that never runs emits no errors.
 
 ## GCS bucket setup + retention lifecycle
 

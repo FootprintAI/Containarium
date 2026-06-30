@@ -1,0 +1,35 @@
+[Unit]
+Description=Containarium nightly database backup
+Documentation=https://github.com/footprintai/Containarium/blob/main/docs/DB-BACKUP-OPERATIONS.md
+# Start after network and the daemon itself are up.
+After=network-online.target containarium.service
+Requires=containarium.service
+# Triggered by the companion timer; don't start on boot.
+RefuseManualStart=no
+
+[Service]
+Type=oneshot
+# Load server address, bucket, auth token, and per-tenant passwords.
+# Create this file on the host: /etc/containarium/backup.env
+EnvironmentFile=/etc/containarium/backup.env
+
+ExecStart=/usr/local/bin/backup-all-tenants.sh
+
+# Run as root (same as the daemon) so it can exec into containers.
+User=root
+Group=root
+
+# Hard cap: if the full sweep takes more than 2 hours something is wrong.
+TimeoutStartSec=7200
+
+# Journal output lets `journalctl -u containarium-backup` show the run log.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=containarium-backup
+
+# Harden: no new capabilities, but still needs /etc for config and
+# /var/lib/containarium/backups for the JSON index sidecars.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/var/lib/containarium /etc/containarium /tmp
