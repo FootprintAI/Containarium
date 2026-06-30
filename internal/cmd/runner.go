@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/footprintai/containarium/internal/client"
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/runner"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
@@ -117,7 +118,7 @@ func init() {
 	runnerProvisionCmd.Flags().StringVar(&runnerLabels, "labels", "containarium,ephemeral", "Comma-separated runner labels")
 	runnerProvisionCmd.Flags().StringVar(&runnerNameTemplate, "runner-name-template", "{prefix}-{i}", "Template for box names; {prefix} and {i} are substituted")
 	runnerProvisionCmd.Flags().StringVar(&runnerSSHKeyPath, "ssh-key", "", "Path to SSH public key used when creating new boxes (default: ~/.ssh/id_rsa.pub)")
-	runnerProvisionCmd.Flags().StringVar(&runnerSentinelHost, "sentinel", os.Getenv("CONTAINARIUM_SENTINEL_HOST"), "Sentinel SSH host (env: CONTAINARIUM_SENTINEL_HOST). REQUIRED for the install step.")
+	runnerProvisionCmd.Flags().StringVar(&runnerSentinelHost, "sentinel", os.Getenv(config.EnvSentinelHost), "Sentinel SSH host (env: CONTAINARIUM_SENTINEL_HOST). REQUIRED for the install step.")
 	runnerProvisionCmd.Flags().StringVar(&runnerSSHUser, "ssh-user", "", "SSH user to use when SSH'ing into a runner box (default: the runner name, via sshpiper)")
 
 	// List flags.

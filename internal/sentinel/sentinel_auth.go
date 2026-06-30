@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/config"
 )
 
 // Sentinel-to-daemon authentication.
@@ -55,7 +56,7 @@ var (
 // (CONTAINARIUM_SENTINEL_SIGNING_KEY), or nil when unset/invalid.
 func loadSentinelSigningKey() ed25519.PrivateKey {
 	sentinelSigningKeyOnce.Do(func() {
-		if raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_SIGNING_KEY")); raw != "" {
+		if raw := strings.TrimSpace(os.Getenv(config.EnvSentinelSigningKey)); raw != "" {
 			if priv, err := auth.ParseSentinelSigningKey(raw); err != nil {
 				log.Printf("[sentinel-auth] WARNING: CONTAINARIUM_SENTINEL_SIGNING_KEY is set but invalid (%v) — falling back to HMAC signing", err)
 			} else {
@@ -69,7 +70,7 @@ func loadSentinelSigningKey() ed25519.PrivateKey {
 
 func loadSentinelSecret() []byte {
 	sentinelSecretOnce.Do(func() {
-		raw := os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET")
+		raw := os.Getenv(config.EnvSentinelAuthSecret)
 		switch {
 		case raw == "":
 			log.Printf("[sentinel-auth] WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset; daemon sentinel endpoints will reject every request")

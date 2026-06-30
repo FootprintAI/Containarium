@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/config"
 	metricsPackage "github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -285,7 +286,7 @@ var (
 
 func loadSentinelHMACSecret() []byte {
 	sentinelHMACSecretOnce.Do(func() {
-		if raw := os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET"); raw != "" {
+		if raw := os.Getenv(config.EnvSentinelAuthSecret); raw != "" {
 			sentinelHMACSecret = []byte(raw)
 		}
 	})
@@ -302,7 +303,7 @@ var (
 
 func loadSentinelPublicKey() ed25519.PublicKey {
 	sentinelPubKeyOnce.Do(func() {
-		if raw := strings.TrimSpace(os.Getenv("CONTAINARIUM_SENTINEL_PUBLIC_KEY")); raw != "" {
+		if raw := strings.TrimSpace(os.Getenv(config.EnvSentinelPublicKey)); raw != "" {
 			if pub, err := auth.ParseSentinelPublicKey(raw); err != nil {
 				log.Printf("[peers] CONTAINARIUM_SENTINEL_PUBLIC_KEY invalid (%v) — falling back to HMAC for discovery verification", err)
 			} else {

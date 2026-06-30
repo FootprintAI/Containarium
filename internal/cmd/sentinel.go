@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/sentinel"
 	"github.com/spf13/cobra"
 )
@@ -88,7 +89,7 @@ func init() {
 	sentinelCmd.Flags().DurationVar(&sentinelCertSyncInterval, "cert-sync-interval", 6*time.Hour, "Interval for syncing TLS certificates from backend (0 to use default 6h)")
 	sentinelCmd.Flags().DurationVar(&sentinelKeySyncInterval, "key-sync-interval", 2*time.Minute, "Interval for syncing SSH keys from backend for sshpiper (0 to use default 2m)")
 	sentinelCmd.Flags().BoolVar(&sentinelProxyProtocol, "proxy-protocol", false, "Prepend a PROXY v2 header to forwarded HTTPS streams so the backend Caddy sees the real client IP (requires Caddy with proxy_protocol listener wrapper trusting the sentinel)")
-	sentinelCmd.Flags().StringVar(&sentinelAlertWebhookURL, "alert-webhook-url", os.Getenv("CONTAINARIUM_SENTINEL_ALERT_WEBHOOK"), "Webhook POSTed on spot preempted/recovered (always-on alert path; the on-spot vmalert dies with the VM). Falls back to $CONTAINARIUM_SENTINEL_ALERT_WEBHOOK (#514)")
+	sentinelCmd.Flags().StringVar(&sentinelAlertWebhookURL, "alert-webhook-url", os.Getenv(config.EnvSentinelAlertWebhook), "Webhook POSTed on spot preempted/recovered (always-on alert path; the on-spot vmalert dies with the VM). Falls back to $CONTAINARIUM_SENTINEL_ALERT_WEBHOOK (#514)")
 }
 
 func runSentinel(cmd *cobra.Command, args []string) error {
