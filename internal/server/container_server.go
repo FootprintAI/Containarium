@@ -18,6 +18,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
+	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/integrity"
@@ -2780,7 +2781,7 @@ func (s *ContainerServer) computeSelfMeasurement() (integrity.Measurement, error
 	// Loaded in-kernel network-policy program object(s). The daemon arms the
 	// per-veth enforcer only when CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT points
 	// at an object on disk; that object's bytes are exactly what we attest.
-	if bpfObj := strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT")); bpfObj != "" {
+	if bpfObj := strings.TrimSpace(os.Getenv(appconfig.EnvNetworkPolicyBPFObject)); bpfObj != "" {
 		in.Programs = append(in.Programs, integrity.ProgramObject{Name: bpfObj, Path: bpfObj})
 	}
 

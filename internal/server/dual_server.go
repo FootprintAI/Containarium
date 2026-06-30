@@ -1215,7 +1215,8 @@ skipAppHosting:
 	// would-deny flows. The tenant→u32 ID registry is persisted in Postgres when
 	// available (IDs must be stable across restarts) and in-memory otherwise.
 	var networkPolicyEnforcer *NetworkPolicyEnforcer
-	if bpfObj := os.Getenv("CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT"); bpfObj != "" && networkIncusClient != nil {
+	netCfg := appconfig.LoadNetwork()
+	if bpfObj := netCfg.PolicyBPFObject; bpfObj != "" && networkIncusClient != nil {
 		var tenantRegistry TenantRegistry
 		if postgresConnString != "" {
 			if regPool, perr := connectToPostgres(postgresConnString, 5, 3*time.Second); perr != nil {
@@ -1235,20 +1236,12 @@ skipAppHosting:
 		// also arms it. Without this, even a stored `--mode enforce` policy stays
 		// observation-only — so an operator soaks in log_only, watches the
 		// would-deny logs, finishes the allow-list, then arms enforce.
-		enforceArmed := false
-		switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))) {
-		case "1", "true", "yes", "on":
-			enforceArmed = true
-		}
+		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, networkIncusClient, auditStore, events.GetBus(), enforceArmed)
 		// Tier 2 (#661): opt into inbound cleartext exploit-signature scanning.
 		// Separate from ENFORCE — loading signatures is harmless in observation
 		// mode (logs matches), but the per-packet scan cost only runs when set.
-		var sigArmed bool
-		switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_SIGNATURES"))) {
-		case "1", "true", "yes", "on":
-			sigArmed = true
-		}
+		sigArmed := netCfg.PolicySignatures
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {
@@ -1783,11 +1776,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// detect tampering of a backend's control plane. Generic, integrity-
 		// relevant config only — base domain + network-policy enforcement posture.
 		netPolicyEnforce := "0"
-		switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))) {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(appconfig.EnvNetworkPolicyEnforce))) {
 		case "1", "true", "yes", "on":
 			netPolicyEnforce = "1"
 		}
-		netPolicyObj := strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT"))
+		netPolicyObj := strings.TrimSpace(os.Getenv(appconfig.EnvNetworkPolicyBPFObject))
 		ds.containerServer.SetIntegrityConfig(map[string]string{
 			"base_domain":            ds.config.BaseDomain,
 			"pool":                   ds.config.Pool,
@@ -2076,7 +2069,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_WAF_INSPECT"))) {
 			case "1", "true", "yes", "on":
 				cfg.Inspector = waf.NewBuiltinInspector()
-				switch strings.ToLower(strings.TrimSpace(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))) {
+				switch strings.ToLower(strings.TrimSpace(os.Getenv(appconfig.EnvNetworkPolicyEnforce))) {
 				case "1", "true", "yes", "on":
 					cfg.EnforceBlock = true
 				}
@@ -2327,7 +2320,7 @@ func wafIngressFromEnv(pm *app.ProxyManager) *app.ProxyManager {
 	if !envTruthy(os.Getenv("CONTAINARIUM_WAF_INGRESS")) {
 		return pm
 	}
-	enforce := envTruthy(os.Getenv("CONTAINARIUM_NETWORK_POLICY_ENFORCE"))
+	enforce := envTruthy(os.Getenv(appconfig.EnvNetworkPolicyEnforce))
 	mode := "DetectionOnly (observe)"
 	if enforce {
 		mode = "On (blocking)"
