@@ -270,6 +270,114 @@ func TestNoGPUResourceWhenGPUsEmpty(t *testing.T) {
 	}
 }
 
+// builtinMemDefaults is the resolved built-in floor, as newBackend would supply
+// it when the operator sets no Config override.
+func builtinMemDefaults() memDefaults {
+	return memDefaults{request: defaultMemoryRequest, limit: defaultMemoryLimit}
+}
+
+// TestDefaultMemoryFloor verifies a box with no explicit memory gets the
+// default memory request+limit, so the scheduler can bin-pack it and it can't
+// balloon and pressure neighbors on the shared kernel — with the request kept
+// below the limit for dense packing.
+func TestDefaultMemoryFloor(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{}, 0, builtinMemDefaults())
+	if r == nil {
+		t.Fatal("resourceRequirements returned nil; want default memory floor")
+	}
+	lim := r.Limits["memory"]
+	if lim.String() != defaultMemoryLimit {
+		t.Errorf("memory limit = %q, want %q", lim.String(), defaultMemoryLimit)
+	}
+	req := r.Requests["memory"]
+	if req.String() != defaultMemoryRequest {
+		t.Errorf("memory request = %q, want %q", req.String(), defaultMemoryRequest)
+	}
+	if req.Cmp(lim) >= 0 {
+		t.Errorf("memory request %q must be below limit %q for dense packing", req.String(), lim.String())
+	}
+}
+
+// TestExplicitMemoryOverridesDefault verifies an explicit memory pins
+// request==limit and suppresses the default floor.
+func TestExplicitMemoryOverridesDefault(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{Memory: "2Gi"}, 0, builtinMemDefaults())
+	lim := r.Limits["memory"]
+	req := r.Requests["memory"]
+	if lim.String() != "2Gi" || req.String() != "2Gi" {
+		t.Errorf("memory request/limit = %q/%q, want 2Gi/2Gi", req.String(), lim.String())
+	}
+}
+
+// TestSpecInvalidMemoryFallsBackToDefault verifies an incus-native quantity in
+// the spec that isn't a valid K8s quantity ("4GB") is skipped and the default
+// floor applies, rather than leaving the box unconstrained.
+func TestSpecInvalidMemoryFallsBackToDefault(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{Memory: "4GB"}, 0, builtinMemDefaults())
+	lim := r.Limits["memory"]
+	if lim.String() != defaultMemoryLimit {
+		t.Errorf("memory limit = %q, want default %q", lim.String(), defaultMemoryLimit)
+	}
+}
+
+// TestGPUBoxExemptFromMemoryFloor verifies GPU boxes don't get the small default
+// memory cap (which would OOM the workload); they're sized explicitly.
+func TestGPUBoxExemptFromMemoryFloor(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{}, 1, builtinMemDefaults())
+	if _, ok := r.Limits["memory"]; ok {
+		t.Error("GPU box got the default memory floor; want exempt")
+	}
+}
+
+// TestDisabledMemoryFloor verifies an empty floor (DisableDefaultMemoryFloor)
+// leaves a box with no explicit resources unconstrained.
+func TestDisabledMemoryFloor(t *testing.T) {
+	if r := resourceRequirements(box.ResourceLimits{}, 0, memDefaults{}); r != nil {
+		t.Errorf("disabled floor still set resources: %+v", r)
+	}
+}
+
+// TestDefaultRequestClampedToLimit verifies that when an operator override sets
+// a limit below the (default) request, the request is clamped to the limit so
+// the pod doesn't fail admission (request must not exceed limit).
+func TestDefaultRequestClampedToLimit(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{}, 0, memDefaults{request: "256Mi", limit: "128Mi"})
+	req := r.Requests["memory"]
+	lim := r.Limits["memory"]
+	if req.Cmp(lim) > 0 {
+		t.Errorf("request %q exceeds limit %q; want clamped", req.String(), lim.String())
+	}
+	if req.String() != "128Mi" {
+		t.Errorf("request = %q, want clamped to 128Mi", req.String())
+	}
+}
+
+// TestConfigOverrideMemoryFloor verifies newBackend resolves operator Config
+// overrides, and that a typo'd quantity degrades to the safe built-in default
+// rather than disabling the floor.
+func TestConfigOverrideMemoryFloor(t *testing.T) {
+	// Valid overrides flow through.
+	b := NewWithClientset(fake.NewSimpleClientset(), Config{
+		DefaultMemoryRequest: "512Mi",
+		DefaultMemoryLimit:   "2Gi",
+	})
+	if d := b.memDefaults(); d.request != "512Mi" || d.limit != "2Gi" {
+		t.Errorf("memDefaults = %+v, want {512Mi 2Gi}", d)
+	}
+
+	// A typo'd limit degrades to the built-in default (not unconstrained).
+	bad := NewWithClientset(fake.NewSimpleClientset(), Config{DefaultMemoryLimit: "2GB"})
+	if d := bad.memDefaults(); d.limit != defaultMemoryLimit {
+		t.Errorf("invalid override limit = %q, want built-in %q", d.limit, defaultMemoryLimit)
+	}
+
+	// Disable clears the floor entirely.
+	off := NewWithClientset(fake.NewSimpleClientset(), Config{DisableDefaultMemoryFloor: true})
+	if d := off.memDefaults(); d.limit != "" || d.request != "" {
+		t.Errorf("disabled memDefaults = %+v, want empty", d)
+	}
+}
+
 // testBackendWithStorage returns a backend with a StorageClass set, exercising
 // the CSI PVC lifecycle paths.
 func testBackendWithStorage() (*Backend, *fake.Clientset) {

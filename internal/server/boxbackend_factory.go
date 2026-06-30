@@ -68,6 +68,12 @@ func newK8sBackend() (box.BoxBackend, error) {
 		GatewayUpstreamPublicKey: os.Getenv("CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY"),
 		GatewayUpstreamKeySecret: os.Getenv("CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET"),
 		InsecureIgnoreHostKey:    os.Getenv("CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY") == "1",
+		// Per-box default memory floor. Empty = built-in defaults (256Mi/1Gi);
+		// an invalid quantity degrades to the built-in default. Disable turns the
+		// floor off so boxes with no explicit memory run unconstrained.
+		DefaultMemoryRequest:      os.Getenv("CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST"),
+		DefaultMemoryLimit:        os.Getenv("CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT"),
+		DisableDefaultMemoryFloor: os.Getenv("CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR") == "1",
 	})
 }
 

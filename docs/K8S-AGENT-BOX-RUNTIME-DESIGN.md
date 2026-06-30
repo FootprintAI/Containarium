@@ -550,6 +550,9 @@ Key env vars for the K8s backend:
 | `CONTAINARIUM_K8S_STORAGE_CLASS` | _(empty = no PVC)_ | StorageClass for persistent data |
 | `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY` | _(empty)_ | Public key sshpiper→box authenticates with |
 | `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET` | _(empty)_ | Secret name holding the matching private key |
+| `CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST` | `256Mi` | Default per-box memory request when the box sets none; invalid → built-in default |
+| `CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT` | `1Gi` | Default per-box memory limit (hard cap, noisy-neighbor guard); invalid → built-in default |
+| `CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR` | `0` | `1` disables the floor — boxes with no explicit memory run unconstrained |
 
 ### CSI persistent storage (#841 / #844)
 

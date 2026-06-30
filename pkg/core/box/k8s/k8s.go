@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
@@ -45,6 +46,24 @@ type Config struct {
 
 	// StorageClass is reserved for the box PVC (not wired in this slice).
 	StorageClass string
+
+	// DefaultMemoryRequest / DefaultMemoryLimit override the built-in per-box
+	// memory floor applied when a box's spec carries no valid memory quantity.
+	// The request (scheduler reservation) is kept below the limit (hard cap) so
+	// idle boxes pack densely on the shared host kernel while the limit stops any
+	// one box ballooning and pressuring its neighbors (noisy-neighbor). Empty →
+	// the built-in defaults (defaultMemoryRequest / defaultMemoryLimit); a value
+	// that isn't a valid K8s quantity also falls back to the built-in default.
+	// These are cluster-size specific — tune to the node pool (e.g. "512Mi",
+	// "2Gi"). Ignored when DisableDefaultMemoryFloor is set.
+	DefaultMemoryRequest string
+	DefaultMemoryLimit   string
+
+	// DisableDefaultMemoryFloor turns the automatic per-box memory floor off
+	// entirely: boxes with no explicit memory run unconstrained (the pre-floor
+	// behavior). An escape hatch for dedicated / single-tenant nodes; on shared
+	// nodes it lets a box balloon, so it is not recommended there.
+	DisableDefaultMemoryFloor bool
 
 	// Gateway upstream credential (sshpiper → box hop). sshpiper terminates the
 	// client connection and opens a NEW connection to the box as user `agent`,
@@ -116,7 +135,38 @@ func newBackend(cs kubernetes.Interface, dyn dynamic.Interface, cfg Config) *Bac
 	if cfg.GatewaySSHPort == 0 {
 		cfg.GatewaySSHPort = 22
 	}
+	// Resolve the default memory floor once: built-in defaults when unset, the
+	// built-in default when an operator value isn't a valid K8s quantity (a typo
+	// degrades to the safe floor rather than silently leaving boxes unconstrained),
+	// or cleared entirely when explicitly disabled. The object builders then
+	// consume the resolved, pre-validated strings via b.memDefaults().
+	if cfg.DisableDefaultMemoryFloor {
+		cfg.DefaultMemoryRequest, cfg.DefaultMemoryLimit = "", ""
+	} else {
+		cfg.DefaultMemoryRequest = resolveQuantity(cfg.DefaultMemoryRequest, defaultMemoryRequest)
+		cfg.DefaultMemoryLimit = resolveQuantity(cfg.DefaultMemoryLimit, defaultMemoryLimit)
+	}
 	return &Backend{cfg: cfg, clientset: cs, dyn: dyn}
+}
+
+// resolveQuantity returns v when it is a valid K8s resource quantity, else the
+// fallback. Used to validate operator-supplied Config defaults at construction
+// so the object builders can MustParse them safely.
+func resolveQuantity(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	if _, err := resource.ParseQuantity(v); err != nil {
+		return fallback
+	}
+	return v
+}
+
+// memDefaults returns the resolved cluster-wide default memory floor consumed by
+// the object builders. An empty limit (when DisableDefaultMemoryFloor is set)
+// disables the floor.
+func (b *Backend) memDefaults() memDefaults {
+	return memDefaults{request: b.cfg.DefaultMemoryRequest, limit: b.cfg.DefaultMemoryLimit}
 }
 
 func buildRestConfig(kubeconfig string) (*rest.Config, error) {
@@ -177,7 +227,7 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if _, err := b.ensureHostKey(ctx, tenant); err != nil {
 		return nil, fmt.Errorf("k8s: ensure host key: %w", err)
 	}
-	if _, err := b.clientset.AppsV1().StatefulSets(ns).Create(ctx, statefulSetObject(ns, spec, storageClass != ""), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	if _, err := b.clientset.AppsV1().StatefulSets(ns).Create(ctx, statefulSetObject(ns, spec, storageClass != "", b.memDefaults()), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure statefulset: %w", err)
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op
@@ -360,7 +410,10 @@ func (b *Backend) boxAuthorizedKeys(agentKeys []string) []string {
 // Resize patches the box container's resource limits. Unparseable (incus-native)
 // quantities are skipped; a no-op resize returns nil.
 func (b *Backend) Resize(ctx context.Context, ref box.BoxRef, r box.ResourceLimits) error {
-	res := resourceRequirements(r, 0) // Resize does not change GPU count
+	// Resize does not change GPU count, and passes no memory default: the floor
+	// is a create-time concern, so an explicit resize honors "empty = unchanged"
+	// rather than re-stamping the default.
+	res := resourceRequirements(r, 0, memDefaults{})
 	if res == nil {
 		return nil
 	}

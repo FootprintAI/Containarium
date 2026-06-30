@@ -27,6 +27,20 @@ const (
 	dataMount   = "/home/agent"
 	dataVolume  = "data"
 	defaultDisk = "10Gi"
+
+	// Default per-box memory bounds, applied when a box's spec carries no valid
+	// memory quantity. The request (what the scheduler reserves) is deliberately
+	// kept below the limit (the hard cap) so a mostly-idle box packs densely on
+	// the shared host kernel — preserving the memory density LXC gave us — while
+	// the limit still stops any single box from ballooning and pressuring its
+	// neighbors (noisy-neighbor). GPU boxes are exempt: they're sized explicitly
+	// and a small cap would OOM the workload. Override per box via
+	// Resources.Memory (CLI --memory / Resize); a future Config knob can retune
+	// the cluster-wide floor. CPU is intentionally left undefaulted — it's
+	// compressible (a limit throttles rather than kills), so an implicit CPU cap
+	// would surprise more than it protects.
+	defaultMemoryRequest = "256Mi"
+	defaultMemoryLimit   = "1Gi"
 	// sshPort is the box's in-pod SSH port. 2222 (unprivileged) so the box
 	// runs fully non-root with no added capabilities — the agent connects to
 	// the gateway on :22; this is the internal sshpiper→pod hop.
@@ -179,10 +193,19 @@ func networkPolicyObject(ns, tenant string) *networkingv1.NetworkPolicy {
 	}
 }
 
+// memDefaults is the resolved cluster-wide default memory floor (from Config),
+// threaded into the object builders. An empty limit disables the floor — boxes
+// with no explicit memory then run unconstrained.
+type memDefaults struct {
+	request string
+	limit   string
+}
+
 // statefulSetObject builds the per-tenant box. replicas is 1 when the spec
 // asks to auto-start, else 0 (created stopped). withPVC mounts the data PVC
-// at dataMount (/home/agent) when true; the PVC must already exist.
-func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.StatefulSet {
+// at dataMount (/home/agent) when true; the PVC must already exist. def is the
+// resolved default memory floor applied when the spec sets no explicit memory.
+func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults) *appsv1.StatefulSet {
 	replicas := int32(0)
 	if spec.AutoStart {
 		replicas = 1
@@ -212,7 +235,7 @@ func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.Statef
 			{Name: hostKeyVolume, MountPath: hostKeyMount, ReadOnly: true},
 		},
 	}
-	if res := resourceRequirements(spec.Resources, gpuCount); res != nil {
+	if res := resourceRequirements(spec.Resources, gpuCount, def); res != nil {
 		container.Resources = *res
 	}
 
@@ -277,28 +300,55 @@ func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool) *appsv1.Statef
 
 // resourceRequirements maps the runtime-neutral limits onto K8s requests/limits.
 // CPU and Memory strings that aren't valid K8s quantities (e.g. incus-native
-// "4GB") are silently skipped so the pod runs unconstrained rather than failing
-// admission. gpuCount > 0 adds nvidia.com/gpu; the cluster autoscaler uses this
-// to scale up a GPU node pool when no schedulable node exists.
-// Returns nil when nothing parsed.
-func resourceRequirements(r box.ResourceLimits, gpuCount int) *corev1.ResourceRequirements {
+// "4GB") are silently skipped so the pod doesn't fail admission. Explicit CPU
+// and Memory pin request==limit (Guaranteed for that resource).
+//
+// When the spec sets no valid memory limit, the resolved default memory floor
+// (def.request < def.limit) is applied so the scheduler can bin-pack the box
+// and no single box can balloon and pressure its neighbors on the shared host
+// kernel. GPU boxes are exempt — sized explicitly, a small cap would OOM them.
+// An empty def.limit disables the floor (box runs unconstrained). gpuCount > 0
+// adds nvidia.com/gpu (request==limit, as the device plugin requires); the
+// cluster autoscaler uses it to scale up a GPU node pool. Returns nil only when
+// nothing at all is set.
+//
+// def.request / def.limit are pre-validated quantities (resolved in newBackend),
+// so the floor block parses them with MustParse; if the operator's request
+// exceeds the limit it is clamped to the limit (a request may not exceed a
+// limit, which would otherwise fail admission).
+func resourceRequirements(r box.ResourceLimits, gpuCount int, def memDefaults) *corev1.ResourceRequirements {
+	requests := corev1.ResourceList{}
 	limits := corev1.ResourceList{}
 	if r.CPU != "" {
 		if q, err := resource.ParseQuantity(r.CPU); err == nil {
+			requests[corev1.ResourceCPU] = q
 			limits[corev1.ResourceCPU] = q
 		}
 	}
 	if r.Memory != "" {
 		if q, err := resource.ParseQuantity(r.Memory); err == nil {
+			requests[corev1.ResourceMemory] = q
 			limits[corev1.ResourceMemory] = q
 		}
 	}
+	// Apply the default memory floor when the spec set no valid memory limit.
+	// Skip it for GPU boxes (sized explicitly) and when the floor is disabled.
+	if _, ok := limits[corev1.ResourceMemory]; !ok && gpuCount == 0 && def.limit != "" {
+		limQ := resource.MustParse(def.limit)
+		reqQ := resource.MustParse(def.request)
+		if reqQ.Cmp(limQ) > 0 {
+			reqQ = limQ
+		}
+		requests[corev1.ResourceMemory] = reqQ
+		limits[corev1.ResourceMemory] = limQ
+	}
 	if gpuCount > 0 {
 		q := resource.MustParse(fmt.Sprintf("%d", gpuCount))
+		requests[nvidiaGPUResource] = q
 		limits[nvidiaGPUResource] = q
 	}
-	if len(limits) == 0 {
+	if len(limits) == 0 && len(requests) == 0 {
 		return nil
 	}
-	return &corev1.ResourceRequirements{Limits: limits, Requests: limits}
+	return &corev1.ResourceRequirements{Limits: limits, Requests: requests}
 }
