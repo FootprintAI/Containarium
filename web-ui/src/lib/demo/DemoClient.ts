@@ -6,6 +6,7 @@ import {
 import {
   ClamavSummaryResponse, ClamavReportsResponse, ScanStatusResponse,
   PentestFindingsResponse, PentestFindingSummaryResponse, PentestScanRunsResponse, PentestConfigResponse,
+  RemediatePentestFindingResponse,
   ZapAlertsResponse, ZapAlertSummaryResponse, ZapScanRunsResponse, ZapConfigResponse,
 } from '@/src/types/security';
 import { AuditLogsResponse, AuditLogsParams } from '@/src/types/audit';
@@ -446,11 +447,14 @@ export class DemoClient extends ContaineriumClient {
 
   // Pentest
   async getPentestFindingSummary(): Promise<PentestFindingSummaryResponse> { return delay(DEMO_PENTEST_SUMMARY); }
-  async listPentestFindings(): Promise<PentestFindingsResponse> { return delay(DEMO_PENTEST_FINDINGS); }
-  async listPentestScanRuns(): Promise<PentestScanRunsResponse> { return delay(DEMO_PENTEST_SCAN_RUNS); }
+  async listPentestFindings(_params?: import('@/src/types/security').ListPentestFindingsParams): Promise<PentestFindingsResponse> { return delay(DEMO_PENTEST_FINDINGS); }
+  async listPentestScanRuns(_containerName?: string, _limit?: number, _offset?: number): Promise<PentestScanRunsResponse> { return delay(DEMO_PENTEST_SCAN_RUNS); }
   async getPentestConfig(): Promise<PentestConfigResponse> { return delay(DEMO_PENTEST_CONFIG); }
-  async triggerPentestScan(): Promise<{ scanRunId: string; message: string }> {
+  async triggerPentestScan(_containerName?: string): Promise<{ scanRunId: string; message: string }> {
     return delay({ scanRunId: 'demo-run', message: 'Scan triggered (demo mode)' });
+  }
+  async remediatePentestFinding(_findingId: number): Promise<RemediatePentestFindingResponse> {
+    return delay({ success: true, message: 'Upgraded libssl from 1.1.1f to 1.1.1n', packageName: 'libssl', oldVersion: '1.1.1f', newVersion: '1.1.1n' });
   }
 
   // ZAP

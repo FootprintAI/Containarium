@@ -2,13 +2,15 @@
 
 import {
   Trash2, Play, Square, Terminal, Monitor, Shield,
-  Tag, SlidersHorizontal, Users, Moon,
+  Tag, SlidersHorizontal, Users, Moon, ShieldAlert,
 } from 'lucide-react';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
+import { SecurityBadge } from '@/src/lib/hooks/useSecurity';
 
 interface ContainerListViewProps {
   containers: Container[];
   metricsMap: Record<string, ContainerMetricsWithRate>;
+  securityBadgesMap?: Record<string, SecurityBadge | null>;
   onDelete: (username: string) => void;
   onStart?: (username: string) => void;
   onStop?: (username: string) => void;
@@ -18,6 +20,7 @@ interface ContainerListViewProps {
   onResize?: (username: string, currentResources: { cpu: string; memory: string; disk: string }) => void;
   onManageCollaborators?: (username: string) => void;
   onToggleAutoSleep?: (username: string, current: { enabled: boolean; threshold: number }) => void;
+  onSecurityClick?: (containerName: string) => void;
 }
 
 function parseSize(s: string): number {
@@ -70,7 +73,7 @@ function IconBtn({ title, onClick, className = '', children }: { title: string; 
 }
 
 export default function ContainerListView({
-  containers, metricsMap, onDelete, onStart, onStop, onTerminal,
+  containers, metricsMap, securityBadgesMap, onDelete, onStart, onStop, onTerminal,
   onEditFirewall, onEditLabels, onResize, onManageCollaborators, onToggleAutoSleep,
 }: ContainerListViewProps) {
   return (
@@ -110,16 +113,40 @@ export default function ContainerListView({
 
                 {/* State */}
                 <td className="px-3 py-2.5">
-                  {c.state === 'Stopped' && c.autoSleepEnabled ? (
-                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-400">
-                      <Moon size={10} />
-                      Sleeping
-                    </span>
-                  ) : (
-                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${stateBadge(c.state)}`}>
-                      {c.state}
-                    </span>
-                  )}
+                  <div className="flex items-center flex-wrap gap-1">
+                    {c.state === 'Stopped' && c.autoSleepEnabled ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-400">
+                        <Moon size={10} />
+                        Sleeping
+                      </span>
+                    ) : (
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${stateBadge(c.state)}`}>
+                        {c.state}
+                      </span>
+                    )}
+                    {(() => {
+                      const badge = securityBadgesMap?.[c.name];
+                      if (!badge || badge.critical + badge.high + badge.medium === 0) return null;
+                      const total = badge.critical + badge.high;
+                      const cls = 'cursor-pointer focus:outline-none';
+                      if (total > 0) return (
+                        <button title={`${badge.critical} critical, ${badge.high} high CVEs — click to view`}
+                          onClick={() => onSecurityClick?.(c.name)}
+                          className={`inline-flex items-center gap-0.5 rounded-full border border-red-500/30 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-400 ${cls}`}>
+                          <ShieldAlert size={9} />
+                          {total}
+                        </button>
+                      );
+                      return (
+                        <button title={`${badge.medium} medium CVEs — click to view`}
+                          onClick={() => onSecurityClick?.(c.name)}
+                          className={`inline-flex items-center gap-0.5 rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-400 ${cls}`}>
+                          <ShieldAlert size={9} />
+                          {badge.medium}
+                        </button>
+                      );
+                    })()}
+                  </div>
                 </td>
 
                 {/* IP */}

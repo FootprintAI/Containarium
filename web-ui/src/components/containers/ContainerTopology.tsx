@@ -8,6 +8,7 @@ import ContainerListView from './ContainerListView';
 import CoreServicesSection from './CoreServicesSection';
 import SystemResourcesCard from '../system/SystemResourcesCard';
 import { CoreService } from '@/src/lib/api/client';
+import { SecurityBadge } from '@/src/lib/hooks/useSecurity';
 
 type ViewMode = 'grid' | 'list';
 
@@ -31,6 +32,8 @@ interface ContainerTopologyProps {
   onRefresh: () => void;
   backends?: BackendInfo[];
   onSelectBackend?: (backendId: string) => Promise<SystemInfo | null>;
+  securityBadgesMap?: Record<string, SecurityBadge | null>;
+  onSecurityClick?: (containerName: string) => void;
 }
 
 export default function ContainerTopology({
@@ -38,6 +41,7 @@ export default function ContainerTopology({
   onCreateContainer, onDeleteContainer, onStartContainer, onStopContainer,
   onTerminalContainer, onEditFirewall, onEditLabels, onResize,
   onManageCollaborators, onToggleAutoSleep, onRefresh, backends, onSelectBackend,
+  securityBadgesMap, onSecurityClick,
 }: ContainerTopologyProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [groupByLabel, setGroupByLabel] = useState('');
@@ -218,6 +222,7 @@ export default function ContainerTopology({
                 <ContainerListView
                   containers={groupContainers}
                   metricsMap={metricsMap}
+                  securityBadgesMap={securityBadgesMap}
                   onDelete={onDeleteContainer}
                   onStart={onStartContainer}
                   onStop={onStopContainer}
@@ -227,6 +232,7 @@ export default function ContainerTopology({
                   onResize={onResize}
                   onManageCollaborators={onManageCollaborators}
                   onToggleAutoSleep={onToggleAutoSleep}
+                  onSecurityClick={onSecurityClick}
                 />
               ) : (
                 <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
@@ -235,6 +241,7 @@ export default function ContainerTopology({
                       key={container.name}
                       container={container}
                       metrics={metricsMap[container.name]}
+                      securityBadge={securityBadgesMap?.[container.name]}
                       onDelete={onDeleteContainer}
                       onStart={onStartContainer}
                       onStop={onStopContainer}
@@ -243,6 +250,7 @@ export default function ContainerTopology({
                       onEditLabels={onEditLabels ? (u) => onEditLabels(u, container.labels || {}) : undefined}
                       onResize={onResize ? (u) => onResize(u, { cpu: container.cpu, memory: container.memory, disk: container.disk }) : undefined}
                       onToggleAutoSleep={onToggleAutoSleep}
+                      onSecurityClick={onSecurityClick ? () => onSecurityClick(container.name) : undefined}
                     />
                   ))}
                 </div>

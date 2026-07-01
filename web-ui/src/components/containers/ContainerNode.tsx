@@ -2,13 +2,15 @@
 
 import {
   Trash2, Play, Square, Terminal, Monitor,
-  Shield, Tag, SlidersHorizontal, Network, Moon,
+  Shield, Tag, SlidersHorizontal, Network, Moon, ShieldAlert,
 } from 'lucide-react';
 import { Container, ContainerState, ContainerMetricsWithRate } from '@/src/types/container';
+import { SecurityBadge } from '@/src/lib/hooks/useSecurity';
 
 interface ContainerNodeProps {
   container: Container;
   metrics?: ContainerMetricsWithRate;
+  securityBadge?: SecurityBadge | null;
   onDelete: (username: string) => void;
   onStart?: (username: string) => void;
   onStop?: (username: string) => void;
@@ -17,6 +19,7 @@ interface ContainerNodeProps {
   onEditLabels?: (username: string) => void;
   onResize?: (username: string) => void;
   onToggleAutoSleep?: (username: string, current: { enabled: boolean; threshold: number }) => void;
+  onSecurityClick?: () => void;
 }
 
 function parseSize(s: string): number {
@@ -62,6 +65,25 @@ function barColor(pct: number) {
   return 'bg-emerald-500';
 }
 
+function SecurityBadgePill({ badge }: { badge: SecurityBadge }) {
+  const total = badge.critical + badge.high;
+  if (total > 0) return (
+    <span title={`${badge.critical} critical, ${badge.high} high CVEs`}
+      className="inline-flex items-center gap-0.5 rounded-full border border-red-500/30 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-400">
+      <ShieldAlert size={9} />
+      {total}
+    </span>
+  );
+  if (badge.medium > 0) return (
+    <span title={`${badge.medium} medium CVEs`}
+      className="inline-flex items-center gap-0.5 rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+      <ShieldAlert size={9} />
+      {badge.medium}
+    </span>
+  );
+  return null;
+}
+
 function IconBtn({ title, onClick, className = '', children }: { title: string; onClick: () => void; className?: string; children: React.ReactNode }) {
   return (
     <button
@@ -74,7 +96,7 @@ function IconBtn({ title, onClick, className = '', children }: { title: string; 
   );
 }
 
-export default function ContainerNode({ container, metrics, onDelete, onStart, onStop, onTerminal, onEditFirewall, onEditLabels, onResize, onToggleAutoSleep }: ContainerNodeProps) {
+export default function ContainerNode({ container, metrics, securityBadge, onDelete, onStart, onStop, onTerminal, onEditFirewall, onEditLabels, onResize, onToggleAutoSleep, onSecurityClick }: ContainerNodeProps) {
   const isRunning = container.state === 'Running';
   const username = container.username || container.name;
 
@@ -126,6 +148,11 @@ export default function ContainerNode({ container, metrics, onDelete, onStart, o
           <span className={`rounded border px-1.5 py-0.5 text-[10px] ${container.backendId.startsWith('tunnel-') ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-400' : 'border-blue-500/30 bg-blue-500/10 text-[var(--c-blue)]'}`}>
             {container.backendId}
           </span>
+        )}
+        {securityBadge && (
+          onSecurityClick
+            ? <button onClick={onSecurityClick} className="focus:outline-none"><SecurityBadgePill badge={securityBadge} /></button>
+            : <SecurityBadgePill badge={securityBadge} />
         )}
       </div>
 

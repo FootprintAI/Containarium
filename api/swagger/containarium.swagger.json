@@ -3813,6 +3813,13 @@
             "in": "query",
             "required": false,
             "type": "string"
+          },
+          {
+            "name": "containerName",
+            "description": "Filter to findings for a specific container (optional).\nWhen set, only the container's own findings are returned.\nNon-admin callers may only set this to a container they own.",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [

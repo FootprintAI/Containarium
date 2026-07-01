@@ -172,6 +172,14 @@ export interface PentestFindingSummaryResponse {
   summary: PentestFindingSummary;
 }
 
+export interface RemediatePentestFindingResponse {
+  success: boolean;
+  message: string;
+  packageName: string;
+  oldVersion: string;
+  newVersion: string;
+}
+
 export interface PentestConfigResponse {
   config: PentestConfig;
 }
@@ -191,6 +199,7 @@ export interface ListPentestFindingsParams {
   category?: string;
   status?: string;
   targetType?: string;
+  containerName?: string;
   limit?: number;
   offset?: number;
 }

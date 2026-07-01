@@ -3,7 +3,7 @@ import { Container, ContainerMetrics, CreateContainerRequest, CreateContainerRes
 import { Server } from '@/src/types/server';
 import { App, NetworkACL, ProxyRoute, NetworkTopology, ACLPresetInfo, DNSRecord, PassthroughRoute, WorkspaceAccess } from '@/src/types/app';
 import { Connection, ConnectionSummary, HistoricalConnection, TrafficAggregate, GetConnectionsResponse, GetConnectionSummaryResponse, QueryTrafficHistoryResponse, GetTrafficAggregatesResponse } from '@/src/types/traffic';
-import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse, PentestScanRunsResponse, PentestFindingsResponse, PentestFindingSummaryResponse, PentestConfigResponse, TriggerPentestScanResponse, ListPentestFindingsParams, InstallPentestToolResponse, ZapScanRunsResponse, ZapAlertsResponse, ZapAlertSummaryResponse, ZapConfigResponse, TriggerZapScanResponse, ZapReportResponse, InstallZapResponse, ListZapAlertsParams } from '@/src/types/security';
+import { ClamavSummaryResponse, ClamavReportsResponse, ListClamavReportsParams, TriggerScanResponse, ScanStatusResponse, PentestScanRunsResponse, PentestFindingsResponse, PentestFindingSummaryResponse, PentestConfigResponse, TriggerPentestScanResponse, ListPentestFindingsParams, InstallPentestToolResponse, RemediatePentestFindingResponse, ZapScanRunsResponse, ZapAlertsResponse, ZapAlertSummaryResponse, ZapConfigResponse, TriggerZapScanResponse, ZapReportResponse, InstallZapResponse, ListZapAlertsParams } from '@/src/types/security';
 import { AuditLogsResponse, AuditLogsParams } from '@/src/types/audit';
 import { AlertRule, AlertRulesResponse, AlertingInfoResponse, CreateAlertRuleRequest, UpdateAlertRuleRequest, UpdateAlertingConfigResponse, TestWebhookResponse, WebhookDeliveriesResponse } from '@/src/types/alerts';
 
@@ -1046,17 +1046,21 @@ export class ContaineriumClient {
   // Pentest Methods
   // ============================================
 
-  async triggerPentestScan(): Promise<TriggerPentestScanResponse> {
-    const response = await this.client.post<TriggerPentestScanResponse>('/pentest/scan', {});
+  async triggerPentestScan(containerName?: string): Promise<TriggerPentestScanResponse> {
+    const body: Record<string, string> = {};
+    if (containerName) body.container_name = containerName;
+    const response = await this.client.post<TriggerPentestScanResponse>('/pentest/scan', body);
     return {
       scanRunId: response.data.scanRunId || (response.data as any).scan_run_id || '',
       message: response.data.message || '',
     };
   }
 
-  async listPentestScanRuns(limit: number = 20, offset: number = 0): Promise<PentestScanRunsResponse> {
+  async listPentestScanRuns(containerName?: string, limit: number = 20, offset: number = 0): Promise<PentestScanRunsResponse> {
+    const params: Record<string, any> = { limit, offset };
+    if (containerName) params.container_name = containerName;
     const response = await this.client.get<PentestScanRunsResponse>('/pentest/scans', {
-      params: { limit, offset },
+      params,
     });
     return {
       scanRuns: (response.data.scanRuns || (response.data as any).scan_runs || []).map((r: any) => ({
@@ -1088,6 +1092,7 @@ export class ContaineriumClient {
       if (params.category) queryParams.category = params.category;
       if (params.status) queryParams.status = params.status;
       if (params.targetType) queryParams.target_type = params.targetType;
+      if (params.containerName) queryParams.container_name = params.containerName;
       if (params.limit !== undefined) queryParams.limit = params.limit;
       if (params.offset !== undefined) queryParams.offset = params.offset;
     }
@@ -1143,6 +1148,17 @@ export class ContaineriumClient {
       reason,
     });
     return { message: response.data.message || '' };
+  }
+
+  async remediatePentestFinding(findingId: number): Promise<RemediatePentestFindingResponse> {
+    const response = await this.client.post<RemediatePentestFindingResponse>(`/pentest/findings/${findingId}/remediate`, {});
+    return {
+      success: response.data.success ?? false,
+      message: response.data.message || '',
+      packageName: response.data.packageName || (response.data as any).package_name || '',
+      oldVersion: response.data.oldVersion || (response.data as any).old_version || '',
+      newVersion: response.data.newVersion || (response.data as any).new_version || '',
+    };
   }
 
   async getPentestConfig(): Promise<PentestConfigResponse> {

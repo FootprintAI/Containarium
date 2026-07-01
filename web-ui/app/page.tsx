@@ -17,6 +17,7 @@ import LabelEditorDialog from '@/src/components/containers/LabelEditorDialog';
 import ResizeContainerDialog from '@/src/components/containers/ResizeContainerDialog';
 import AutoSleepDialog from '@/src/components/containers/AutoSleepDialog';
 import CollaboratorsDialog from '@/src/components/containers/CollaboratorsDialog';
+import ContainerSecurityDialog from '@/src/components/containers/ContainerSecurityDialog';
 import AppsView from '@/src/components/apps/AppsView';
 import NetworkTopologyView from '@/src/components/network/NetworkTopologyView';
 import FirewallEditor from '@/src/components/network/FirewallEditor';
@@ -30,6 +31,8 @@ import WorkspaceView from '@/src/components/workspace/WorkspaceView';
 import { useServers } from '@/src/lib/hooks/useServers';
 import { useContainers, CreateContainerProgress } from '@/src/lib/hooks/useContainers';
 import { useMetrics } from '@/src/lib/hooks/useMetrics';
+import { useContainerSecurityBadges } from '@/src/lib/hooks/useSecurity';
+import { isAdminToken } from '@/src/lib/tokenUtils';
 import { useApps } from '@/src/lib/hooks/useApps';
 import { useRoutes, usePassthroughRoutes, useNetworkTopology, useContainerACL, useACLPresets, useDNSRecords } from '@/src/lib/hooks/useNetwork';
 import { useCollaborators } from '@/src/lib/hooks/useCollaborators';
@@ -157,6 +160,10 @@ export default function Home() {
     return map;
   }, [metrics]);
 
+  const containerNames = useMemo(() => containers.map(c => c.name), [containers]);
+  const { badgesMap: securityBadgesMap } = useContainerSecurityBadges(activeServer, containerNames);
+  const isAdmin = useMemo(() => isAdminToken(activeServer?.token || ''), [activeServer?.token]);
+
   const [serverDialogOpen, setServerDialogOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<Server | null>(null);
   const [createContainerOpen, setCreateContainerOpen] = useState(false);
@@ -168,6 +175,7 @@ export default function Home() {
   const [resizeDialogOpen, setResizeDialogOpen] = useState(false);
   const [resizeTarget, setResizeTarget] = useState<{ username: string; cpu: string; memory: string; disk: string } | null>(null);
   const [autoSleepTarget, setAutoSleepTarget] = useState<{ username: string; enabled: boolean; threshold: number } | null>(null);
+  const [securityDialogContainer, setSecurityDialogContainer] = useState<{ name: string; username: string } | null>(null);
 
   const handleEditServer = (serverId: string) => {
     const server = servers.find(s => s.id === serverId);
@@ -244,21 +252,24 @@ export default function Home() {
         <>
           {/* View tab bar */}
           <div className="flex items-end gap-0 overflow-x-auto border-b border-[var(--border-subtle)] bg-[var(--surface)] px-4 shrink-0">
-            {TABS.map(({ label, icon: Icon }, i) => (
-              <button
-                key={label}
-                onClick={() => setViewTab(i)}
-                className={[
-                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 -mb-px',
-                  viewTab === i
-                    ? 'border-[var(--accent)] text-[var(--accent)]'
-                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text)]',
-                ].join(' ')}
-              >
-                <Icon size={13} />
-                {label}
-              </button>
-            ))}
+            {TABS.map(({ label, icon: Icon }, i) => {
+              if (i === 5 && !isAdmin) return null;
+              return (
+                <button
+                  key={label}
+                  onClick={() => setViewTab(i)}
+                  className={[
+                    'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 -mb-px',
+                    viewTab === i
+                      ? 'border-[var(--accent)] text-[var(--accent)]'
+                      : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text)]',
+                  ].join(' ')}
+                >
+                  <Icon size={13} />
+                  {label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Tab content */}
@@ -268,6 +279,7 @@ export default function Home() {
                 containers={containers}
                 coreServices={coreServices}
                 metricsMap={metricsMap}
+                securityBadgesMap={securityBadgesMap}
                 systemInfo={systemInfo}
                 isLoading={containersLoading}
                 error={containersError as Error | null}
@@ -284,6 +296,10 @@ export default function Home() {
                 onRefresh={refreshContainers}
                 backends={backends}
                 onSelectBackend={getSystemInfoForBackend}
+                onSecurityClick={(name) => {
+                  const c = containers.find(x => x.name === name);
+                  if (c) setSecurityDialogContainer({ name, username: c.username || name });
+                }}
               />
             )}
             {viewTab === 1 && (
@@ -428,6 +444,16 @@ export default function Home() {
           isLoading={collaboratorsLoading}
           onAdd={async (req) => { const result = await addCollaborator(req); return { sshCommand: result.sshCommand }; }}
           onRemove={removeCollaborator}
+        />
+      )}
+
+      {securityDialogContainer && activeServer && (
+        <ContainerSecurityDialog
+          open={!!securityDialogContainer}
+          onClose={() => setSecurityDialogContainer(null)}
+          containerName={securityDialogContainer.name}
+          username={securityDialogContainer.username}
+          server={activeServer}
         />
       )}
     </div>
