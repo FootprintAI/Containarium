@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-07-03
+
+### Added
+
+- **Per-tenant pentest scan + CVE badge on container cards.** `PentestService`
+  RPCs (`TriggerPentestScan`, `ListPentestScanRuns`, `GetPentestScanRun`,
+  `ListPentestFindings`, `RemediatePentestFinding`) now accept a
+  `container_name` and verify ownership via `AuthorizeContainerAccess`, so a
+  tenant can scan/view/remediate their own container's Trivy CVE findings
+  without admin scope; cluster-wide calls (no `container_name`) still require
+  admin. Web UI: a severity badge (red critical/high, amber medium) appears on
+  each container card/list row, opening a per-container dialog with scan
+  history, findings, per-finding Fix (Trivy only), and a "Fix all critical &
+  high" batch action. The Security tab itself stays admin-only in the nav.
+  (#886)
+
+### Fixed
+
+- **`CONTAINARIUM_CONTAINER_ID` / OTel `container.id` stamped the OSS-side LXC
+  name instead of the cloud UUID cloud-managed containers actually need.**
+  Containarium-cloud already sends the container's cloud UUID at create time
+  via `labels["cloud_container_id"]`, but every OTel env-var stamping path
+  (create, adopt/migrate re-stamp, `ToggleMonitoring` re-stamp) ignored it and
+  stamped the derived `cld-<8hex>-container` name instead. Since the cloud
+  control plane's metrics queries filter strictly on the cloud UUID, every
+  cloud-managed container's app-emitted metrics were silently unqueryable —
+  the cloud dashboard showed "monitoring not enabled" even when telemetry was
+  actually flowing under the wrong label. `container.OTelContainerID` now
+  prefers the cloud label when present, falling back to the OSS name
+  otherwise (unchanged behavior for operator-created containers). (#893)
+- **Windows client cross-compile broke the v0.47.0 release build, publishing
+  no artifacts.** `internal/cmd/upgrade_watchdog.go` (added in #865) pulled in
+  the Linux-only eBPF loader with no `//go:build !windows` guard, so
+  `GOOS=windows go build ./cmd/containarium/` failed — breaking `make
+  build-all` and the whole release pipeline. Pre-existing since #865; v0.47.0
+  was just the first release to surface it. (#884)
+
+### CI
+
+- Guard the Windows client cross-compile inside the already-required "Unit +
+  default e2e" job, so a future cmd file that imports the Linux-only netbpf
+  loader without the `!windows` guard fails at PR time instead of at release
+  time — the same regression class that broke v0.47.0. (#885)
+
+### Documentation
+
+- Security FAQ on shared-kernel isolation: what tenants are actually isolated
+  by (namespaces/cgroups + eBPF network policy, not a hypervisor boundary),
+  and an explicit flag that Cloud's low-friction free-tier signup is an open
+  gap against that model. (#888)
+- Kernel-patch runbook: gap analysis (no automated host-kernel CVE remediation
+  path today) and an interim manual procedure, tracking the two fixes that
+  close it (#889 drain-and-relocate, #890 live kernel patching) plus follow-on
+  kernel-CVE monitoring (#891). (#892)
+
 ## [0.47.0] - 2026-06-30
 
 ### Added
