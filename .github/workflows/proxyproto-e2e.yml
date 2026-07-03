@@ -34,6 +34,24 @@ jobs:
         # time instead of at release time (see #884 / v0.47.0).
         run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/containarium/
 
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Web UI build guard
+        # `make build-release` runs a full `next build` (with TypeScript
+        # type-checking) that no PR-time job exercised — the same "only
+        # caught at release time" gap as the Windows guard above, just for
+        # the web UI. A prop destructure typo (#886) and two wrong-argument
+        # client calls broke v0.48.0's release build (webui compiled fine in
+        # `next dev`/lint, only `next build`'s full type-check caught it).
+        # Same fix shape as #884/#885: run the real release build at PR time.
+        working-directory: web-ui
+        run: |
+          npm ci
+          npm run build
+
       - name: Run sentinel + app tests
         # The skipped tests are pre-existing failures on unprivileged Linux
         # runners (they pass on darwin where loopback aliases are no-ops).
