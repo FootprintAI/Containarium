@@ -75,6 +75,7 @@ function IconBtn({ title, onClick, className = '', children }: { title: string; 
 export default function ContainerListView({
   containers, metricsMap, securityBadgesMap, onDelete, onStart, onStop, onTerminal,
   onEditFirewall, onEditLabels, onResize, onManageCollaborators, onToggleAutoSleep,
+  onSecurityClick,
 }: ContainerListViewProps) {
   return (
     <div className="overflow-x-auto rounded-xl border border-[var(--border-subtle)]">
