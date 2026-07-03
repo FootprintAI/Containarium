@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.1] - 2026-07-03
+
+### Fixed
+
+- **v0.48.0's release build never published — `make build-release`'s full
+  `next build` (with TypeScript type-checking) failed on two genuine
+  compile errors from #886, neither caught at PR time because no CI job
+  built the web UI at all.** `ContainerListView.tsx` destructured props
+  omitted `onSecurityClick` even though it's declared in the props
+  interface, used in the JSX, and already passed in by
+  `ContainerTopology.tsx`. `PentestView.tsx` called
+  `client.listPentestScanRuns(<limit>)` as a bare number, but the method's
+  first positional param is the optional `containerName` string, not
+  `limit` — fixed both call sites to `listPentestScanRuns(undefined,
+  <limit>)`. No artifacts were ever published from the v0.48.0 tag, so it's
+  left as a dead tag; this release supersedes it. (#896)
+
+### CI
+
+- Guard the web UI build inside the already-required "Unit + default e2e"
+  job — the same "only caught at release time" gap as #884/#885's Windows
+  cross-compile break, just for the web UI. A future TypeScript error now
+  fails the PR instead of the release tag. (#896)
+
 ## [0.48.0] - 2026-07-03
 
 ### Added
