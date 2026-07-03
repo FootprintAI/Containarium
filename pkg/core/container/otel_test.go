@@ -112,6 +112,69 @@ func TestOtelEnvVars_FullyConfigured(t *testing.T) {
 	}
 }
 
+func TestOtelEnvVars_CloudLabelPreferredOverContainerName(t *testing.T) {
+	// #893: a cloud-managed container carries the real cloud UUID in
+	// labels[CloudContainerIDLabelKey] — that must win over the
+	// derived "alice-container" LXC name so cloud-daemon's
+	// container_id-keyed metrics queries actually match.
+	opts := CreateOptions{
+		Username:              "cld-30dc0e41",
+		Monitoring:            true,
+		OTelCollectorEndpoint: "http://10.0.0.1:4318",
+		BackendID:             "local",
+		Labels: map[string]string{
+			CloudContainerIDLabelKey: "30dc0e41-1234-4abc-9def-000000000001",
+		},
+	}
+	got := otelEnvVars(opts, "cld-30dc0e41-container")
+	if got == nil {
+		t.Fatal("expected non-nil env vars")
+	}
+	want := "30dc0e41-1234-4abc-9def-000000000001"
+	if got["CONTAINARIUM_CONTAINER_ID"] != want {
+		t.Errorf("CONTAINARIUM_CONTAINER_ID = %q, want %q", got["CONTAINARIUM_CONTAINER_ID"], want)
+	}
+	if !strings.Contains(got["OTEL_RESOURCE_ATTRIBUTES"], "container.id="+want) {
+		t.Errorf("OTEL_RESOURCE_ATTRIBUTES missing container.id=%s: %q", want, got["OTEL_RESOURCE_ATTRIBUTES"])
+	}
+}
+
+func TestOtelEnvVars_NoCloudLabelFallsBackToContainerName(t *testing.T) {
+	// Operator-created containers (or any caller that never set the
+	// label) must keep exactly the pre-#893 behavior.
+	opts := CreateOptions{
+		Username:              "alice",
+		Monitoring:            true,
+		OTelCollectorEndpoint: "http://10.0.0.1:4318",
+		BackendID:             "local",
+	}
+	got := otelEnvVars(opts, "alice-container")
+	if got["CONTAINARIUM_CONTAINER_ID"] != "alice-container" {
+		t.Errorf("CONTAINARIUM_CONTAINER_ID = %q, want %q (fallback)", got["CONTAINARIUM_CONTAINER_ID"], "alice-container")
+	}
+}
+
+func TestOTelContainerID(t *testing.T) {
+	cases := []struct {
+		name     string
+		labels   map[string]string
+		fallback string
+		want     string
+	}{
+		{"label present", map[string]string{CloudContainerIDLabelKey: "cloud-uuid-1"}, "alice-container", "cloud-uuid-1"},
+		{"label absent", map[string]string{"other": "x"}, "alice-container", "alice-container"},
+		{"nil labels", nil, "alice-container", "alice-container"},
+		{"label present but empty", map[string]string{CloudContainerIDLabelKey: ""}, "alice-container", "alice-container"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OTelContainerID(tc.labels, tc.fallback); got != tc.want {
+				t.Errorf("OTelContainerID(%v, %q) = %q, want %q", tc.labels, tc.fallback, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestOTelEnvVarsForMigration_EmptyEndpoint(t *testing.T) {
 	if got := OTelEnvVarsForMigration("alice", "alice", "local", ""); got != nil {
 		t.Fatalf("expected nil for empty endpoint, got %v", got)

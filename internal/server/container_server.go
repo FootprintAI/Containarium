@@ -1465,7 +1465,7 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 			// works (collector remains open).
 			bearer, _ := LoadOrCreateOTelBearer()
 			envVars := container.OTelEnvVarsForMigrationWithBearer(
-				req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint, bearer,
+				req.Username, container.OTelContainerID(info.Labels, containerName), s.localBackendID(), s.otelCollectorEndpoint, bearer,
 			)
 			for k, v := range envVars {
 				if err := s.manager.SetEnv(containerName, k, v); err != nil {
@@ -1597,7 +1597,7 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 		// works for the operator.
 		bearer, _ := LoadOrCreateOTelBearer()
 		envVars := container.OTelEnvVarsForMigrationWithBearer(
-			req.Username, containerName, s.localBackendID(), s.otelCollectorEndpoint, bearer,
+			req.Username, container.OTelContainerID(info.Labels, containerName), s.localBackendID(), s.otelCollectorEndpoint, bearer,
 		)
 		for k, v := range envVars {
 			if err := s.manager.SetEnv(containerName, k, v); err != nil {

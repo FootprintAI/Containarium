@@ -82,7 +82,31 @@ func otelEnvVars(opts CreateOptions, containerName string) map[string]string {
 		log.Printf("[otel] container %s requested monitoring=true but daemon has no collector endpoint configured; skipping env-var injection", containerName)
 		return nil
 	}
-	return buildOTelEnvMap(opts.Username, containerName, opts.BackendID, opts.OTelCollectorEndpoint, opts.OTelBearer)
+	return buildOTelEnvMap(opts.Username, OTelContainerID(opts.Labels, containerName), opts.BackendID, opts.OTelCollectorEndpoint, opts.OTelBearer)
+}
+
+// CloudContainerIDLabelKey is the Incus label key Containarium-cloud
+// stamps at create time with the container's cloud UUID
+// (ossprimary.LabelCloudContainerID = "cloud_container_id" in that
+// repo). OTelContainerID prefers it over the OSS-side LXC name so
+// cloud-daemon's container_id-keyed metrics queries — which filter on
+// the cloud UUID, not the derived "cld-<8hex>-container" name — actually
+// match. See issue #893.
+const CloudContainerIDLabelKey = "cloud_container_id"
+
+// OTelContainerID picks the identity to stamp as container.id /
+// CONTAINARIUM_CONTAINER_ID. Cloud-managed containers carry the real
+// cloud UUID in labels[CloudContainerIDLabelKey]; everything else
+// (operator-created containers, or any caller that never set the
+// label) falls back to the OSS-side LXC name, matching pre-#893
+// behavior exactly. Exported so internal/server's re-stamp call sites
+// (adopt/migrate, ToggleMonitoring) can reuse the same rule with a
+// container's already-persisted labels rather than raw create-time opts.
+func OTelContainerID(labels map[string]string, fallback string) string {
+	if v := labels[CloudContainerIDLabelKey]; v != "" {
+		return v
+	}
+	return fallback
 }
 
 // OTelEnvVarsForMigration returns the same env-var set as
