@@ -2,7 +2,8 @@
 
 > Status: **gap analysis + interim manual procedure. No automation exists
 > yet.** Tracking: #889 (drain-and-relocate before reboot), #890 (live
-> kernel patching evaluation).
+> kernel patching evaluation), #891 (fleet kernel version monitoring +
+> CVE/USN watch).
 > Related: [`SECURITY-FAQ.md`](SECURITY-FAQ.md) — "what stops one tenant
 > from reaching another" names a host-kernel LPE as the honest cost of
 > shared-kernel isolation. This doc is the other half of that answer:
@@ -87,10 +88,12 @@ the point of #889 and #890.
    Removes the need for a reboot (and therefore #889) for the common case
    of routine kernel security fixes. Needs a pilot to confirm compatibility
    with the loaded eBPF network-policy program before fleet rollout.
-3. **A kernel-CVE watch.** Not yet its own issue — folding it into #890's
-   evaluation scope (a live-patch feed doubles as an advisory feed) rather
-   than standing up a separate tracker. Revisit as a standalone issue if
-   #890 doesn't cover it.
+3. **#891 — fleet kernel version monitoring + CVE/USN watch.** Exports
+   `KernelVersion` (already collected by `GetSystemInfo`) as an OTel
+   gauge for dashboard visibility, plus a scheduled check against a
+   kernel-CVE advisory source. Deliberately sequenced *after* #890: if
+   Canonical Livepatch is adopted, its advisory feed may cover the CVE
+   side for free, narrowing #891 to just the OTel export.
 
 ## Open questions
 
