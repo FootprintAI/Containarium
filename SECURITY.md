@@ -110,6 +110,13 @@ day-to-day operator procedures (token rotation, leak response,
 least-privilege agent tokens, audit-chain verification), see the
 [operator security runbook](docs/security/OPERATOR-SECURITY-RUNBOOK.md).
 
+## Security FAQ
+
+For an honest answer to "how does Containarium actually isolate
+tenants, and what's it good for" — including how it compares to
+hypervisor-based platforms — see the
+[security FAQ](docs/security/SECURITY-FAQ.md).
+
 ## Thank you
 
 Security reports help keep Containarium operators safe. We're
