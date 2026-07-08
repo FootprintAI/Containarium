@@ -581,16 +581,47 @@ func (s *shim) startAgentServer(sess *session) error {
 	envFlags.WriteString(" -e " + shellQuote("SESSION_API_KEY="+sess.Key))
 	envFlags.WriteString(" -e " + shellQuote("OH_SESSION_API_KEYS_0="+sess.Key))
 
-	script := fmt.Sprintf(
-		"podman image exists %[1]s || podman pull -q %[1]s; "+
-			"podman rm -f %[2]s >/dev/null 2>&1; "+
+	// Pull DETACHED, then poll with short execs. A multi-GB pull can outlive
+	// a proxied SSH connection (resets surface as exit 255 mid-exec), so no
+	// single exec may span the slow step — same reason the platform's
+	// recipes run their slow provisioning daemon-side, detached.
+	kick := fmt.Sprintf(
+		"podman image exists %[1]s && echo PRESENT || "+
+			"{ nohup podman pull %[1]s > /root/oh-pull.log 2>&1 & echo PULLING; }",
+		shellQuote(sess.Image))
+	out, err := s.connectExec(sess.Box, "sudo bash -c "+shellQuote(kick), 2*time.Minute)
+	if err != nil {
+		return fmt.Errorf("start agent-server (pull kick): %w (output: %s)", err, tail(out, 300))
+	}
+	if !strings.Contains(out, "PRESENT") {
+		probe := fmt.Sprintf(
+			"podman image exists %[1]s && echo IMAGE_READY || "+
+				"{ echo NOT_YET; tail -c 200 /root/oh-pull.log 2>/dev/null; }",
+			shellQuote(sess.Image))
+		deadline := time.Now().Add(25 * time.Minute)
+		for {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("image pull did not finish within 25m (last: %s)", tail(out, 300))
+			}
+			time.Sleep(15 * time.Second)
+			out, err = s.connectExec(sess.Box, "sudo bash -c "+shellQuote(probe), 2*time.Minute)
+			if err != nil {
+				continue // transient exec failure; the pull runs detached regardless
+			}
+			if strings.Contains(out, "IMAGE_READY") {
+				break
+			}
+		}
+	}
+
+	run := fmt.Sprintf(
+		"podman rm -f %[2]s >/dev/null 2>&1; "+
 			"podman run -d --name %[2]s --restart=always -p %[3]d:%[3]d%[4]s -w %[5]s --entrypoint %[6]s %[1]s%[7]s "+
 			"&& echo AGENT_SERVER_STARTED",
 		shellQuote(sess.Image), podmanName, agentServerPort, envFlags.String(),
 		shellQuote(workdir), shellQuote(entry), args,
 	)
-
-	out, err := s.connectExec(sess.Box, "sudo bash -c "+shellQuote(script), 10*time.Minute)
+	out, err = s.connectExec(sess.Box, "sudo bash -c "+shellQuote(run), 3*time.Minute)
 	if err != nil {
 		return fmt.Errorf("start agent-server: %w (output: %s)", err, tail(out, 400))
 	}
@@ -635,6 +666,10 @@ func (s *shim) connectExec(box, command string, timeout time.Duration) (string, 
 	transient := []string{
 		"Permission denied (publickey)",
 		"does not exist or the user entry does not contain all the required fields",
+		// Proxied SSH connections can be reset under load; every command the
+		// shim runs is idempotent, so a retry is always safe.
+		"Connection reset by peer",
+		"Broken pipe",
 	}
 	deadline := time.Now().Add(4 * time.Minute)
 	for {
@@ -679,18 +714,17 @@ func (s *shim) ensureRoute(sess *session) error {
 		"description":   "openhands-runtime-shim (PoC) session " + sess.SessionID,
 	})
 
-	// Try update-in-place first (idempotent for resume after an IP change),
-	// fall back to create.
-	req, _ := http.NewRequest("PUT", s.cfg.server+"/v1/network/routes/"+sess.Box, bytes.NewReader(body))
-	if resp, err := s.doREST(req); err == nil && resp < 300 {
-		return nil
-	}
-	req, _ = http.NewRequest("POST", s.cfg.server+"/v1/network/routes", bytes.NewReader(body))
+	// The box's IP changes across sleep/wake, and the cloud's OSS-compat
+	// route surface has no update verb (POST + DELETE only) — a conflicting
+	// stale route would keep pointing at the dead IP. Recreate: best-effort
+	// DELETE, then POST fresh.
+	_ = s.deleteRoute(sess.Box)
+	req, _ := http.NewRequest("POST", s.cfg.server+"/v1/network/routes", bytes.NewReader(body))
 	status, err := s.doRESTErr(req)
 	if err != nil {
 		return fmt.Errorf("route create: %w", err)
 	}
-	if status >= 300 && status != http.StatusConflict {
+	if status >= 300 {
 		return fmt.Errorf("route create: HTTP %d", status)
 	}
 	return nil
