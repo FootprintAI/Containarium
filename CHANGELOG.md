@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-07-08
+
+### Added
+
+- **`oci-service` recipe** (#910) — generic run-an-OCI-image-as-an-always-on-
+  service mechanism: pull a caller-specified image, run it via root podman
+  with `--restart=always`, and publish its service port on the box's stable
+  `:8080`. Parameters: `oci_image` (required), `service_port`, `command`
+  (first token overrides the container entrypoint), `env_lines` (podman
+  `--env-file` literal semantics). Application-agnostic building block; the
+  first consumer is the cloud runtime API's agent sandboxes.
+
+
 ## [0.48.3] - 2026-07-08
 
 ### Fixed
