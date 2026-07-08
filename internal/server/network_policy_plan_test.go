@@ -19,18 +19,22 @@ func compiled(t *testing.T, p *pb.NetworkPolicy) netpolicy.CompiledPolicy {
 
 func TestResolveTenant(t *testing.T) {
 	cases := []struct {
-		label, name, want string
+		label, cloudOrgID, name, want string
 	}{
-		{"acme", "cld-1a2b3c", "acme"},          // label wins for a cloud-named container
-		{"acme", "alice-container", "acme"},     // label wins over name
-		{"", "alice-container", "alice"},        // fall back to name convention
-		{"  ", "alice-container", "alice"},      // blank label ignored
-		{"", "cld-1a2b3c", ""},                  // cloud name, no label → unmanaged
-		{" tenant7 ", "x-container", "tenant7"}, // label trimmed
+		{"acme", "", "cld-1a2b3c", "acme"},          // label wins for a cloud-named container
+		{"acme", "", "alice-container", "acme"},     // label wins over name
+		{"", "", "alice-container", "alice"},        // fall back to name convention
+		{"  ", "", "alice-container", "alice"},      // blank label ignored
+		{"", "", "cld-1a2b3c", ""},                  // cloud name, no label → unmanaged
+		{" tenant7 ", "", "x-container", "tenant7"}, // label trimmed
+		{"", "org-42", "cld-1a2b3c", "org-42"},      // push-mode (OSS-primary): no tenant label, cloud_org_id fills in
+		{"acme", "org-42", "cld-1a2b3c", "acme"},    // explicit tenant label still wins over cloud_org_id
+		{"", " org-42 ", "cld-1a2b3c", "org-42"},    // cloud_org_id trimmed
+		{"", "", "", ""},                            // nothing at all → unmanaged
 	}
 	for _, c := range cases {
-		if got := resolveTenant(c.label, c.name); got != c.want {
-			t.Errorf("resolveTenant(%q, %q) = %q, want %q", c.label, c.name, got, c.want)
+		if got := resolveTenant(c.label, c.cloudOrgID, c.name); got != c.want {
+			t.Errorf("resolveTenant(%q, %q, %q) = %q, want %q", c.label, c.cloudOrgID, c.name, got, c.want)
 		}
 	}
 }

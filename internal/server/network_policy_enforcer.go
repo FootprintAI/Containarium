@@ -726,7 +726,7 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	idName := make(map[uint32]string)
 	running := make(map[string]bool, len(containers))
 	for _, c := range containers {
-		tenant := resolveTenant(c.Tenant, c.Name)
+		tenant := resolveTenant(c.Tenant, c.Labels[cloudOrgIDLabel], c.Name)
 		if tenant == "" {
 			continue
 		}
@@ -842,14 +842,28 @@ func (e *NetworkPolicyEnforcer) refreshDomains() {
 	e.resolver.Refresh(cctx, domains)
 }
 
+// cloudOrgIDLabel is the generic attribution label (incus.LabelPrefix +
+// this key) the cloud control plane stamps on every container it creates via
+// the OSS-primary driver (push-mode actuation, prd/cloud/oss-primary-driver.md)
+// — cloud_org_id / cloud_container_id / managed_by. Distinct from
+// incus.TenantLabelKey (user.containarium.tenant), which only the pull-based
+// cloud-actuation client (cloudContainerActuator, #354) stamps. Both label a
+// container with the same data (its owning org UUID); resolveTenant checks
+// both so the network-policy enforcer works under either actuation mode.
+const cloudOrgIDLabel = "cloud_org_id"
+
 // resolveTenant determines a container's owning tenant. An explicit tenant
 // label (user.containarium.tenant) wins — it decouples tenant identity from the
 // container name, which is what lets cloud-assigned containers (named
 // cld-<uuid>, not <tenant>-container) be policed too (#315 "Cloud extension").
-// Falls back to the <tenant>-container naming convention; "" if neither yields
-// a tenant (the container is then left unmanaged).
-func resolveTenant(tenantLabel, containerName string) string {
+// Falls back to the cloud_org_id attribution label (see cloudOrgIDLabel), then
+// the <tenant>-container naming convention; "" if none yield a tenant (the
+// container is then left unmanaged).
+func resolveTenant(tenantLabel, cloudOrgID, containerName string) string {
 	if t := strings.TrimSpace(tenantLabel); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(cloudOrgID); t != "" {
 		return t
 	}
 	return tenantOf(containerName)
