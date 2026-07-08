@@ -370,7 +370,7 @@ func (s *shim) handleResume(w http.ResponseWriter, r *http.Request) {
 			s.setStatus(sess, "error", "resume route: "+err.Error())
 			return
 		}
-		s.setStatus(sess, "starting", "") // health probe flips it to running
+		s.awaitHealthy(sess)
 	}()
 
 	s.mu.Lock()
@@ -489,7 +489,13 @@ func (s *shim) provision(sess *session) {
 		return
 	}
 
-	// Health-probe loop: flip to running as soon as the public URL serves.
+	s.awaitHealthy(sess)
+}
+
+// awaitHealthy polls the public URL and flips a "starting" session to
+// "running" as soon as it serves. Runs at the tail of BOTH async paths that
+// leave a session in "starting" — first provision and resume.
+func (s *shim) awaitHealthy(sess *session) {
 	for i := 0; i < 300; i++ {
 		s.probeHealth(sess)
 		s.mu.Lock()
