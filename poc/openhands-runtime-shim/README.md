@@ -28,6 +28,37 @@ the contract here was derived from those two (MIT-licensed) clients.
 Because the box persists across sessions, the same `session_id` re-attaches to
 its sandbox with all state intact — unlike ephemeral-first hosted runtimes.
 
+## Validation status
+
+The **full contract is validated end-to-end** against a live Containarium
+cloud control plane, driving the shim with OpenHands' **unmodified** SDK
+(v1.32.0) and raw HTTP for the lifecycle verbs:
+
+- **Cold provision** (`/start` → box create → image pull → agent-server →
+  route → healthy): ~2 min to `ready`, inside the SDK's default 300 s window.
+- **Attach + exec**: `execute_command` round-trips inside the agent-server
+  container; readiness/health/WebSocket URL shapes all consumed by the SDK
+  as-is.
+- **Persistence**: two SDK runs with the same `session_id` land in the same
+  sandbox with prior state intact.
+- **`/pause` / `/resume`**: box sleeps and wakes; resume mints a **new**
+  `session_api_key` (the old one is invalidated, per the upstream security
+  invariant), re-runs the agent-server with the new key, recreates the route
+  for the box's new IP, and the session returns to `running`/`ready`.
+  Requires a control plane whose OSS-compat shim serves the container
+  stop/start sub-path verbs (Containarium-cloud #785).
+- **`/stop`**: box and route are actually destroyed.
+- **Failure semantics**: a failed provision surfaces as `pod_status: failed`
+  + `pod_logs`, which the SDK raises verbatim.
+- **Recovery**: re-`/start` of a failed session adopts the existing box and
+  finishes provisioning.
+
+One environmental requirement surfaced by validation: the runtime hostname
+family must be **DNS-only (not proxied through a CDN/WAF)**. The SDK's health
+check uses raw `urllib` (bot protection 403s it on User-Agent), and proxy
+request-duration caps would sever long agent operations. Direct-to-ingress
+with the managed wildcard TLS cert works as-is.
+
 ## Run
 
 ```sh
@@ -68,12 +99,12 @@ with workspace:
 - No webhook egress validation (`RUNTIME` → app-server callbacks).
 - The CLI `expose-port` verb is gRPC-only today, so routes go through REST
   directly — a CLI-first gap to fix upstream.
-- **`pause`/`resume` don't work against a cloud control plane yet**: the
-  cloud's OSS-compat shim deliberately 404s the `/v1/containers/{u}/stop` and
-  `/start` sub-path verbs (out-of-scope). The shim's implementation is
-  correct against an OSS daemon; cloud support needs those two verbs added to
-  the ossshim (same pattern as its `/ttl` sub-resource).
+- `pause`/`resume` need a control plane whose OSS-compat shim serves the
+  container stop/start sub-path verbs (Containarium-cloud #785; against a
+  plain OSS daemon the endpoints already exist).
 - Fresh boxes have two transient windows the shim retries through: sentinel
   SSH-key propagation (~2 min) and in-box tenant-user creation (SSH auth can
   succeed before the user is fully written — surfaces as an su "user does not
-  exist / required fields" error).
+  exist / required fields" error). Long steps (the image pull) run detached
+  in-box with short polling execs, because a single exec spanning minutes can
+  be reset mid-flight on a proxied SSH path.
