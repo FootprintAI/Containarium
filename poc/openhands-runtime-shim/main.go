@@ -73,6 +73,7 @@ type session struct {
 	SessionID  string            `json:"session_id"`
 	RuntimeID  string            `json:"runtime_id"` // == box name
 	Box        string            `json:"box"`
+	Username   string            `json:"username,omitempty"` // platform tenant user (cld-...); sleep/wake/delete key on this
 	Image      string            `json:"image"`
 	Command    string            `json:"command"`
 	WorkingDir string            `json:"working_dir"`
@@ -325,7 +326,7 @@ func (s *shim) handlePause(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "no such runtime")
 		return
 	}
-	if _, err := s.runCLI("sleep", sess.Box); err != nil {
+	if _, err := s.runCLI("sleep", s.tenantUser(sess)); err != nil {
 		httpError(w, http.StatusBadGateway, "sleep failed: "+err.Error())
 		return
 	}
@@ -347,7 +348,7 @@ func (s *shim) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.runCLI("wake", sess.Box); err != nil {
+	if _, err := s.runCLI("wake", s.tenantUser(sess)); err != nil {
 		httpError(w, http.StatusBadGateway, "wake failed: "+err.Error())
 		return
 	}
@@ -391,7 +392,7 @@ func (s *shim) handleStop(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "no such runtime")
 		return
 	}
-	if _, err := s.runCLI("delete", sess.Box, "--force"); err != nil && !strings.Contains(err.Error(), "not found") {
+	if _, err := s.runCLI("delete", s.tenantUser(sess), "--force"); err != nil && !strings.Contains(err.Error(), "not found") {
 		httpError(w, http.StatusBadGateway, "delete failed: "+err.Error())
 		return
 	}
@@ -505,7 +506,7 @@ func (s *shim) provision(sess *session) {
 func (s *shim) waitBoxRunning(box string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		ip, state, err := s.boxIP(box)
+		ip, state, _, err := s.boxInfo(box)
 		if err == nil && state == "CONTAINER_STATE_RUNNING" && ip != "" {
 			return ip, nil
 		}
@@ -514,32 +515,52 @@ func (s *shim) waitBoxRunning(box string, timeout time.Duration) (string, error)
 	return "", fmt.Errorf("box %s not RUNNING with an IP after %s", box, timeout)
 }
 
-func (s *shim) boxIP(box string) (ip, state string, err error) {
+func (s *shim) boxInfo(box string) (ip, state, username string, err error) {
 	out, err := s.runCLI("list", "--format", "json")
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	// The CLI prints a JSON object; tolerate leading log lines.
 	idx := strings.Index(out, "{")
 	if idx < 0 {
-		return "", "", errors.New("no JSON in list output")
+		return "", "", "", errors.New("no JSON in list output")
 	}
 	var parsed struct {
 		Containers []struct {
 			Name      string `json:"Name"`
+			Username  string `json:"Username"`
 			State     string `json:"State"`
 			IPAddress string `json:"IPAddress"`
 		} `json:"containers"`
 	}
 	if err := json.Unmarshal([]byte(out[idx:]), &parsed); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for _, c := range parsed.Containers {
 		if c.Name == box {
-			return c.IPAddress, c.State, nil
+			return c.IPAddress, c.State, c.Username, nil
 		}
 	}
-	return "", "", fmt.Errorf("box %q not found", box)
+	return "", "", "", fmt.Errorf("box %q not found", box)
+}
+
+// tenantUser returns the identifier the container lifecycle endpoints key on
+// (sleep/wake/delete take the tenant username, not the box name).
+func (s *shim) tenantUser(sess *session) string {
+	s.mu.Lock()
+	u := sess.Username
+	s.mu.Unlock()
+	if u != "" {
+		return u
+	}
+	if _, _, username, err := s.boxInfo(sess.Box); err == nil && username != "" {
+		s.mu.Lock()
+		sess.Username = username
+		s.saveStateLocked()
+		s.mu.Unlock()
+		return username
+	}
+	return sess.Box // last resort; delete tolerates the box name
 }
 
 // startAgentServer runs the agent-server image inside the box via root podman.
@@ -626,9 +647,15 @@ func (s *shim) connectExec(box, command string, timeout time.Duration) (string, 
 // ---- route management (REST; the CLI expose-port verb is gRPC-only today) ----
 
 func (s *shim) ensureRoute(sess *session) error {
-	ip, _, err := s.boxIP(sess.Box)
+	ip, _, username, err := s.boxInfo(sess.Box)
 	if err != nil {
 		return fmt.Errorf("route: %w", err)
+	}
+	if username != "" {
+		s.mu.Lock()
+		sess.Username = username
+		s.saveStateLocked()
+		s.mu.Unlock()
 	}
 	body, _ := json.Marshal(map[string]any{
 		"domain":        sess.Box,
