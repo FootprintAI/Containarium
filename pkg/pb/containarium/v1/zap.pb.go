@@ -810,7 +810,11 @@ type ListZapAlertsRequest struct {
 	// Maximum number of alerts to return (default: 50)
 	Limit int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	// Offset for pagination
-	Offset        int32 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	Offset int32 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	// Filter by domain/host — substring-matched against the alert's target
+	// URL (optional). E.g. "wordpress.kafeido.app" matches any alert whose
+	// url contains that host.
+	Domain        string `protobuf:"bytes,5,opt,name=domain,proto3" json:"domain,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -871,6 +875,13 @@ func (x *ListZapAlertsRequest) GetOffset() int32 {
 		return x.Offset
 	}
 	return 0
+}
+
+func (x *ListZapAlertsRequest) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
 }
 
 type ListZapAlertsResponse struct {
@@ -1475,12 +1486,13 @@ const file_containarium_v1_zap_proto_rawDesc = "" +
 	"\x17ListZapScanRunsResponse\x128\n" +
 	"\tscan_runs\x18\x01 \x03(\v2\x1b.containarium.v1.ZapScanRunR\bscanRuns\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
-	"totalCount\"p\n" +
+	"totalCount\"\x88\x01\n" +
 	"\x14ListZapAlertsRequest\x12\x12\n" +
 	"\x04risk\x18\x01 \x01(\tR\x04risk\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12\x16\n" +
-	"\x06offset\x18\x04 \x01(\x05R\x06offset\"k\n" +
+	"\x06offset\x18\x04 \x01(\x05R\x06offset\x12\x16\n" +
+	"\x06domain\x18\x05 \x01(\tR\x06domain\"k\n" +
 	"\x15ListZapAlertsResponse\x121\n" +
 	"\x06alerts\x18\x01 \x03(\v2\x19.containarium.v1.ZapAlertR\x06alerts\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
@@ -1506,15 +1518,15 @@ const file_containarium_v1_zap_proto_rawDesc = "" +
 	"\x11InstallZapRequest\"H\n" +
 	"\x12InstallZapResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage2\x8e\x0e\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage2\x98\x0e\n" +
 	"\n" +
 	"ZapService\x12\xd8\x01\n" +
 	"\x0eTriggerZapScan\x12&.containarium.v1.TriggerZapScanRequest\x1a'.containarium.v1.TriggerZapScanResponse\"u\x92A[\n" +
 	"\x03ZAP\x12\x10Trigger ZAP scan\x1aBTriggers an on-demand OWASP ZAP scan across all exposed endpoints.\x82\xd3\xe4\x93\x02\x11:\x01*\"\f/v1/zap/scan\x12\xd9\x01\n" +
 	"\x0fListZapScanRuns\x12'.containarium.v1.ListZapScanRunsRequest\x1a(.containarium.v1.ListZapScanRunsResponse\"s\x92A[\n" +
-	"\x03ZAP\x12\x12List ZAP scan runs\x1a@Returns recent ZAP scan runs with their status and alert counts.\x82\xd3\xe4\x93\x02\x0f\x12\r/v1/zap/scans\x12\xde\x01\n" +
-	"\rListZapAlerts\x12%.containarium.v1.ListZapAlertsRequest\x1a&.containarium.v1.ListZapAlertsResponse\"~\x92Ae\n" +
-	"\x03ZAP\x12\x0fList ZAP alerts\x1aMReturns ZAP security alerts with optional filtering by risk level and status.\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/zap/alerts\x12\xf9\x01\n" +
+	"\x03ZAP\x12\x12List ZAP scan runs\x1a@Returns recent ZAP scan runs with their status and alert counts.\x82\xd3\xe4\x93\x02\x0f\x12\r/v1/zap/scans\x12\xe8\x01\n" +
+	"\rListZapAlerts\x12%.containarium.v1.ListZapAlertsRequest\x1a&.containarium.v1.ListZapAlertsResponse\"\x87\x01\x92An\n" +
+	"\x03ZAP\x12\x0fList ZAP alerts\x1aVReturns ZAP security alerts with optional filtering by risk level, status, and domain.\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/zap/alerts\x12\xf9\x01\n" +
 	"\x12GetZapAlertSummary\x12*.containarium.v1.GetZapAlertSummaryRequest\x1a+.containarium.v1.GetZapAlertSummaryResponse\"\x89\x01\x92Ah\n" +
 	"\x03ZAP\x12\x15Get ZAP alert summary\x1aJReturns aggregate statistics of ZAP alerts including counts by risk level.\x82\xd3\xe4\x93\x02\x18\x12\x16/v1/zap/alerts/summary\x12\xe4\x01\n" +
 	"\x10SuppressZapAlert\x12(.containarium.v1.SuppressZapAlertRequest\x1a).containarium.v1.SuppressZapAlertResponse\"{\x92AK\n" +

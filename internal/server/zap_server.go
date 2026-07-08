@@ -102,6 +102,7 @@ func (s *ZapServer) ListZapAlerts(ctx context.Context, req *pb.ListZapAlertsRequ
 	params := zapscanner.AlertListParams{
 		Risk:   req.Risk,
 		Status: req.Status,
+		Domain: req.Domain,
 		Limit:  int(req.Limit),
 		Offset: int(req.Offset),
 	}

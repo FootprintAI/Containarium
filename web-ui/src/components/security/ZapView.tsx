@@ -108,6 +108,8 @@ export default function ZapView({ server }: ZapViewProps) {
   const [snackMessage, setSnackMessage] = useState<string | null>(null);
   const [riskFilter, setRiskFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('open');
+  const [domainInput, setDomainInput] = useState('');
+  const [domainFilter, setDomainFilter] = useState('');
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [suppressId, setSuppressId] = useState<number | null>(null);
@@ -121,6 +123,12 @@ export default function ZapView({ server }: ZapViewProps) {
     if (snackMessage) { const t = setTimeout(() => setSnackMessage(null), 5000); return () => clearTimeout(t); }
   }, [snackMessage]);
 
+  // Debounce the free-text domain filter so it doesn't re-query on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => { setDomainFilter(domainInput.trim()); setPage(0); }, 400);
+    return () => clearTimeout(t);
+  }, [domainInput]);
+
   const loadData = useCallback(async () => {
     try {
       const client = getClient(server);
@@ -128,7 +136,7 @@ export default function ZapView({ server }: ZapViewProps) {
       const offset = rowsPerPage === -1 ? 0 : page * rowsPerPage;
       const [summaryResp, alertsResp, runsResp, configResp] = await Promise.all([
         client.getZapAlertSummary(),
-        client.listZapAlerts({ risk: riskFilter || undefined, status: statusFilter || undefined, limit, offset }),
+        client.listZapAlerts({ risk: riskFilter || undefined, status: statusFilter || undefined, domain: domainFilter || undefined, limit, offset }),
         client.listZapScanRuns(10),
         client.getZapConfig(),
       ]);
@@ -136,7 +144,7 @@ export default function ZapView({ server }: ZapViewProps) {
       setScanRuns(runsResp.scanRuns); setConfig(configResp.config); setError(null);
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to load ZAP data'); }
     finally { setIsLoading(false); }
-  }, [server, riskFilter, statusFilter, page, rowsPerPage]);
+  }, [server, riskFilter, statusFilter, domainFilter, page, rowsPerPage]);
 
   useEffect(() => { loadData(); const interval = setInterval(loadData, 60000); return () => clearInterval(interval); }, [loadData]);
 
@@ -171,7 +179,7 @@ export default function ZapView({ server }: ZapViewProps) {
     setDownloading(true);
     try {
       const client = getClient(server);
-      const resp = await client.listZapAlerts({ risk: riskFilter || undefined, status: statusFilter || undefined, limit: 1000, offset: 0 });
+      const resp = await client.listZapAlerts({ risk: riskFilter || undefined, status: statusFilter || undefined, domain: domainFilter || undefined, limit: 1000, offset: 0 });
       const all = resp.alerts;
       const dateStr = new Date().toISOString().slice(0, 10);
       let blob: Blob; let filename: string;
@@ -289,6 +297,8 @@ export default function ZapView({ server }: ZapViewProps) {
           <option value="resolved">Resolved</option>
           <option value="suppressed">Suppressed</option>
         </select>
+        <input type="text" value={domainInput} onChange={e => setDomainInput(e.target.value)} placeholder="Filter by domain..."
+          className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-1.5 text-xs text-[var(--text)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none" style={{ width: 180 }} />
         <span className="text-xs text-[var(--text-muted)]">{totalCount} alerts</span>
         <div className="ml-auto flex items-center gap-2">
           <select value={downloadFormat} onChange={e => setDownloadFormat(e.target.value as 'csv' | 'json')} className={selectCls} style={{ width: 70 }}>

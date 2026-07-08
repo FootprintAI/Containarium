@@ -301,6 +301,8 @@ export interface InstallZapResponse {
 export interface ListZapAlertsParams {
   risk?: string;
   status?: string;
+  /** Substring-matched against each alert's target url. */
+  domain?: string;
   limit?: number;
   offset?: number;
 }

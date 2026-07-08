@@ -188,6 +188,11 @@ message ListZapAlertsRequest {
 
   // Offset for pagination
   int32 offset = 4;
+
+  // Filter by domain/host — substring-matched against the alert's target
+  // URL (optional). E.g. "wordpress.kafeido.app" matches any alert whose
+  // url contains that host.
+  string domain = 5;
 }
 
 message ListZapAlertsResponse {
@@ -281,7 +286,7 @@ service ZapService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List ZAP alerts";
-      description: "Returns ZAP security alerts with optional filtering by risk level and status.";
+      description: "Returns ZAP security alerts with optional filtering by risk level, status, and domain.";
       tags: "ZAP";
     };
   }

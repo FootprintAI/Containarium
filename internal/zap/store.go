@@ -349,6 +349,11 @@ func (s *Store) SaveAlerts(ctx context.Context, scanRunID string, alerts []Alert
 type AlertListParams struct {
 	Risk   string
 	Status string
+	// Domain filters to alerts whose url contains this host — substring
+	// matched (ILIKE) against the stored url column rather than a
+	// dedicated host column, since url is the only place the target is
+	// recorded today (#zap-domain-filter).
+	Domain string
 	Limit  int
 	Offset int
 }
@@ -382,6 +387,12 @@ func (s *Store) ListAlerts(ctx context.Context, params AlertListParams) ([]Alert
 		baseQuery += fmt.Sprintf(" AND status = $%d", argIdx)
 		countQuery += fmt.Sprintf(" AND status = $%d", argIdx)
 		args = append(args, params.Status)
+		argIdx++
+	}
+	if params.Domain != "" {
+		baseQuery += fmt.Sprintf(" AND url ILIKE $%d", argIdx)
+		countQuery += fmt.Sprintf(" AND url ILIKE $%d", argIdx)
+		args = append(args, "%"+params.Domain+"%")
 		argIdx++
 	}
 

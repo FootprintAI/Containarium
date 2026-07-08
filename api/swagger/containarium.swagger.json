@@ -5409,7 +5409,7 @@
     "/v1/zap/alerts": {
       "get": {
         "summary": "List ZAP alerts",
-        "description": "Returns ZAP security alerts with optional filtering by risk level and status.",
+        "description": "Returns ZAP security alerts with optional filtering by risk level, status, and domain.",
         "operationId": "ZapService_ListZapAlerts",
         "responses": {
           "200": {
@@ -5455,6 +5455,13 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          },
+          {
+            "name": "domain",
+            "description": "Filter by domain/host — substring-matched against the alert's target\nURL (optional). E.g. \"wordpress.kafeido.app\" matches any alert whose\nurl contains that host.",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [

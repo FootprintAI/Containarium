@@ -1359,6 +1359,7 @@ export class ContaineriumClient {
     if (params) {
       if (params.risk) queryParams.risk = params.risk;
       if (params.status) queryParams.status = params.status;
+      if (params.domain) queryParams.domain = params.domain;
       if (params.limit !== undefined) queryParams.limit = params.limit;
       if (params.offset !== undefined) queryParams.offset = params.offset;
     }
