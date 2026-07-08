@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.2] - 2026-07-08
+
+### Fixed
+
+- **Cloud-assigned containers could permanently miss their `user.containarium.tenant`
+  label, leaving them unmatched by the per-org network-policy enforcer.**
+  `cloudContainerActuator.create()` stamps the tenant label correctly, but
+  only the first time a container is created — the reconcile path for an
+  already-existing container never re-checked it. A container created
+  before this labeling logic was live on a given host would stay
+  unmanaged indefinitely, regardless of how its org's network policy was
+  configured. `EnsureRunning` now self-heals the label on every reconcile
+  of an existing container (best-effort; a stamp failure doesn't block
+  start/route convergence). (#903)
+
 ## [0.48.1] - 2026-07-03
 
 ### Fixed
