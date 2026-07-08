@@ -39,6 +39,15 @@ func newCloudContainerActuator(routes *app.RouteStore) (*cloudContainerActuator,
 
 // EnsureRunning creates the container (stamping the tenant label) if absent,
 // ensures it is started, and converges its edge routes. Idempotent.
+//
+// Also self-heals the tenant label on every reconcile of an already-existing
+// container, not just at creation (#780 follow-up) — a container created
+// before this labeling logic shipped (or whose label was lost some other
+// way) would otherwise stay permanently unmatched by the network-policy
+// enforcer, since create() only runs once. The reconcile loop already
+// carries org_id for every live assignment each cycle, so this converges the
+// whole fleet within one watchPollInterval of a daemon restart, no separate
+// backfill tool needed.
 func (a *cloudContainerActuator) EnsureRunning(ctx context.Context, spec cloud.ContainerSpec) error {
 	info, err := a.incus.GetContainer(spec.LocalName)
 	if err != nil {
@@ -47,15 +56,38 @@ func (a *cloudContainerActuator) EnsureRunning(ctx context.Context, spec cloud.C
 		if cerr := a.create(spec); cerr != nil {
 			return cerr
 		}
-	} else if isRunning(info.State) {
-		a.applyRoutes(ctx, spec) // already running — still converge routes
-		return nil
+	} else {
+		// Best-effort: a stamp failure here shouldn't block start/route
+		// convergence for an otherwise-healthy container — it retries next cycle.
+		if terr := a.ensureTenantLabel(spec.LocalName, spec.OrgID, info.Tenant); terr != nil {
+			log.Printf("[cloud] stamp tenant label on %s: %v", spec.LocalName, terr)
+		}
+		if isRunning(info.State) {
+			a.applyRoutes(ctx, spec) // already running — still converge routes
+			return nil
+		}
 	}
 	if err := a.incus.StartContainer(spec.LocalName); err != nil {
 		return fmt.Errorf("start %s: %w", spec.LocalName, err)
 	}
 	a.applyRoutes(ctx, spec)
 	return nil
+}
+
+// ensureTenantLabel stamps localName's tenant label when it doesn't already
+// match orgID.
+func (a *cloudContainerActuator) ensureTenantLabel(localName, orgID, currentTenant string) error {
+	if !tenantLabelStale(orgID, currentTenant) {
+		return nil
+	}
+	return a.incus.SetConfig(localName, incus.TenantLabelKey, orgID)
+}
+
+// tenantLabelStale reports whether a container's tenant label needs
+// (re)stamping: orgID is known and differs from what's currently set. Pure
+// so the decision is unit-testable without an Incus client.
+func tenantLabelStale(orgID, currentTenant string) bool {
+	return orgID != "" && currentTenant != orgID
 }
 
 // EnsureStopped stops the container if it exists and is running. Idempotent.
