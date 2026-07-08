@@ -68,3 +68,12 @@ with workspace:
 - No webhook egress validation (`RUNTIME` → app-server callbacks).
 - The CLI `expose-port` verb is gRPC-only today, so routes go through REST
   directly — a CLI-first gap to fix upstream.
+- **`pause`/`resume` don't work against a cloud control plane yet**: the
+  cloud's OSS-compat shim deliberately 404s the `/v1/containers/{u}/stop` and
+  `/start` sub-path verbs (out-of-scope). The shim's implementation is
+  correct against an OSS daemon; cloud support needs those two verbs added to
+  the ossshim (same pattern as its `/ttl` sub-resource).
+- Fresh boxes have two transient windows the shim retries through: sentinel
+  SSH-key propagation (~2 min) and in-box tenant-user creation (SSH auth can
+  succeed before the user is fully written — surfaces as an su "user does not
+  exist / required fields" error).

@@ -627,16 +627,30 @@ func splitCommand(command string) (entry, argStr string) {
 }
 
 // connectExec runs one command in the box via `containarium connect --exec`,
-// retrying through the sentinel key-propagation window (~2 min) on a fresh box.
+// retrying through the transient windows of a freshly created box: sentinel
+// key propagation (~2 min, "Permission denied") and in-box user provisioning
+// (SSH auth can succeed BEFORE the tenant user is fully written to the box's
+// /etc/passwd, surfacing as an su "does not exist / required fields" error).
 func (s *shim) connectExec(box, command string, timeout time.Duration) (string, error) {
+	transient := []string{
+		"Permission denied (publickey)",
+		"does not exist or the user entry does not contain all the required fields",
+	}
 	deadline := time.Now().Add(4 * time.Minute)
 	for {
 		out, err := s.runCLIWithTimeout(timeout, "connect", box, "--exec", command)
 		if err == nil {
 			return out, nil
 		}
-		if strings.Contains(out, "Permission denied (publickey)") && time.Now().Before(deadline) {
-			log.Printf("box %s: SSH key not yet propagated, retrying...", box)
+		retryable := false
+		for _, marker := range transient {
+			if strings.Contains(out, marker) {
+				retryable = true
+				break
+			}
+		}
+		if retryable && time.Now().Before(deadline) {
+			log.Printf("box %s: not yet connectable (key/user still provisioning), retrying...", box)
 			time.Sleep(15 * time.Second)
 			continue
 		}
