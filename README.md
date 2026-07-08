@@ -19,6 +19,9 @@ curl https://blog.example.com → hello world
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25-00ADD8.svg)](go.mod)
+[![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/score.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
+
+[![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
 [![Containarium demo: prompt → live HTTPS Python app](docs/images/demo-preview.gif)](https://youtu.be/IBDDD_tb8FY)
 
