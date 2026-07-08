@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.3] - 2026-07-08
+
+### Fixed
+
+- **The per-org network-policy enforcer couldn't identify containers
+  created via the cloud's direct (push-mode) actuation path** — only
+  containers created through the pull-based cloud-actuation client
+  received `user.containarium.tenant`. Push-mode containers already
+  carry the owning org's UUID under a different, pre-existing
+  attribution label (`cloud_org_id`); `resolveTenant` now falls back to
+  it when the explicit tenant label is absent, so both actuation modes
+  are covered by the same enforcer logic. (#906)
+
 ## [0.48.2] - 2026-07-08
 
 ### Fixed
