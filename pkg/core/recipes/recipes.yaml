@@ -783,3 +783,65 @@ recipes:
         podman run -d --name lcproxy --restart=always --network host \
           -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \
           docker.io/library/caddy:2 >/dev/null
+
+  # oci-service is the GENERIC single-container service mechanism: run ANY
+  # caller-specified OCI image as an always-on service in an isolated box.
+  # It is deliberately application-agnostic (open-core line: OSS ships the
+  # mechanism); higher layers parameterize it — e.g. the cloud runtime API
+  # deploys OpenHands' agent-server image through it. The service's container
+  # port is published on the box's port 8080 (the recipe's exposed port), so
+  # ingress/expose machinery has one stable port to route regardless of what
+  # the image listens on.
+  - id: oci-service
+    name: OCI Service
+    description: Run an OCI image as an always-on service in an isolated box — pull, run with --restart=always, publish one port. Application-agnostic building block.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 8GB
+      disk: 30GB
+    ports:
+      - container_port: 8080
+        subdomain: svc
+    parameters:
+      - name: oci_image
+        label: OCI image
+        description: Fully-qualified image reference to run (e.g. ghcr.io/org/app:tag). Must be pullable from the box.
+        type: string
+        required: true
+      - name: service_port
+        label: Service port
+        description: Port the service listens on INSIDE its container. Published on box port 8080.
+        type: string
+        default: "8080"
+      - name: command
+        label: Command
+        description: Optional command override — the first token becomes the container entrypoint, the rest its arguments. Empty keeps the image's own entrypoint/cmd.
+        type: string
+        default: ""
+      - name: env_lines
+        label: Environment
+        description: Optional newline-separated KEY=VALUE lines injected into the container (podman --env-file semantics — everything after '=' is literal, no shell quoting).
+        type: string
+        default: ""
+    post_start:
+      - mkdir -p /opt/ocisvc
+      # env-file semantics keep values literal (commas/spaces safe) — never
+      # bash-source this file.
+      - 'printf "%s\n" "${CONTAINARIUM_PARAM_ENV_LINES}" > /opt/ocisvc/env'
+      - 'podman pull "${CONTAINARIUM_PARAM_OCI_IMAGE}" >/dev/null'
+      # Split the optional command into entrypoint + args. An image whose
+      # entrypoint already launches the service would otherwise re-receive
+      # its own path as an argument.
+      - |
+        set -- ${CONTAINARIUM_PARAM_COMMAND}
+        ENTRY="${1:-}"
+        [ "$#" -gt 0 ] && shift
+        podman rm -f ocisvc >/dev/null 2>&1 || true
+        podman run -d --name ocisvc --restart=always \
+          -p "8080:${CONTAINARIUM_PARAM_SERVICE_PORT}" \
+          --env-file /opt/ocisvc/env \
+          ${ENTRY:+--entrypoint "$ENTRY"} \
+          "${CONTAINARIUM_PARAM_OCI_IMAGE}" "$@" >/dev/null
+        echo "oci-service: ${CONTAINARIUM_PARAM_OCI_IMAGE} up on box port 8080 (container port ${CONTAINARIUM_PARAM_SERVICE_PORT})"

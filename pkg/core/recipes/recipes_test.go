@@ -86,6 +86,49 @@ func TestAgentWorkspaceRecipe(t *testing.T) {
 	}
 }
 
+func TestOCIServiceRecipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("oci-service")
+	if err != nil {
+		t.Fatalf("expected built-in recipe oci-service: %v", err)
+	}
+	if r.RequiresGpu {
+		t.Error("oci-service should not require a GPU")
+	}
+	// One stable exposed port regardless of what the image listens on.
+	if len(r.Ports) != 1 || r.Ports[0].ContainerPort != 8080 {
+		t.Errorf("oci-service should expose box port 8080; got %+v", r.Ports)
+	}
+	// oci_image is the one required parameter; everything else defaults.
+	var img *pb.RecipeParam
+	for _, p := range r.Parameters {
+		if p.Name == "oci_image" {
+			img = p
+		}
+	}
+	if img == nil || !img.Required || img.Default != "" {
+		t.Errorf("oci_image must be required with no default; got %+v", img)
+	}
+	if _, err := ResolveParameters(r, map[string]string{}); err == nil {
+		t.Error("resolving without oci_image should fail (required)")
+	}
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"--restart=always", // survives box reboot and SSH logout
+		"--env-file",       // literal env semantics, never bash-sourced
+		"--entrypoint",     // command's first token overrides entrypoint
+		"CONTAINARIUM_PARAM_OCI_IMAGE",
+		"CONTAINARIUM_PARAM_SERVICE_PORT",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("oci-service post_start missing %q", want)
+		}
+	}
+}
+
 func TestGetUnknown(t *testing.T) {
 	m := New()
 	_ = m.LoadEmbedded()
