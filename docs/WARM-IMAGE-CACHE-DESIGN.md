@@ -1,8 +1,9 @@
 # Warm-image cache for in-box podman (#908)
 
-Status: **design / RFC** — no code yet. This doc picks a direction and scopes a
-v1 before we build. It is grounded in the current box/podman seams (cited
-inline); if those move, re-check before implementing.
+Status: **v1 shipped** (#916) — the BYO-mirror config + `registries.conf.d`
+injection landed; this doc is the direction record and the map of what remains
+(shared RO store, warm-list, golden base image). Grounded in the box/podman
+seams cited inline; if those move, re-check before extending.
 
 ## Problem
 
