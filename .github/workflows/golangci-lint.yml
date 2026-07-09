@@ -30,7 +30,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.11'
+          go-version: '1.25.12'
 
       - name: Install golangci-lint
         # Pinned to the version the config (version: "2") targets. `go install`
