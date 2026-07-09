@@ -59,6 +59,9 @@ func RunOrphanReaperWithRoot(ctx context.Context, homeRoot string, containerExis
 // getent unavailable) are surfaced to the caller, which treats them as
 // "don't reap" — see reapOnce.
 func userShell(username string) (string, error) {
+	// #nosec G204 -- callers validate username via isValidUsername (see
+	// reapOnce), same invariant as the sibling getent-shadow call in
+	// jump_server.go.
 	out, err := exec.Command("getent", "passwd", username).Output()
 	if err != nil {
 		return "", err
@@ -88,6 +91,9 @@ func reapOnce(
 			continue
 		}
 		username := e.Name()
+		if !isValidUsername(username) {
+			continue // directory name isn't a containarium username shape at all
+		}
 		akPath := filepath.Join(homeRoot, username, ".ssh", "authorized_keys")
 		if _, statErr := os.Stat(akPath); os.IsNotExist(statErr) {
 			continue // no authorized_keys → not a containarium user
