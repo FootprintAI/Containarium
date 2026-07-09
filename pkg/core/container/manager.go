@@ -20,6 +20,10 @@ import (
 // Manager handles container lifecycle operations
 type Manager struct {
 	incus incus.Backend
+	// mirrors are the operator-configured registry pull-through mirrors (#908)
+	// injected into each podman-enabled box's registries.conf.d. Empty = boxes
+	// pull from upstream registries as before. See registry_mirror.go.
+	mirrors []RegistryMirror
 }
 
 // CreateOptions holds options for creating a container
@@ -88,7 +92,7 @@ func New() (*Manager, error) {
 		return nil, fmt.Errorf("failed to create Incus client: %w", err)
 	}
 
-	return &Manager{incus: client}, nil
+	return &Manager{incus: client, mirrors: defaultRegistryMirrors()}, nil
 }
 
 // NewWithBackend creates a new container manager backed by the given Incus
@@ -561,6 +565,15 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 		}
 		if err := m.incus.Exec(containerName, []string{"systemctl", "start", "podman"}); err != nil {
 			return fmt.Errorf("failed to start podman: %w", err)
+		}
+
+		// #908: point the box's podman at the operator-configured registry
+		// mirror(s) so multi-GB image pulls come from the LAN, not the WAN. A
+		// non-destructive registries.conf.d drop-in; no-op when no mirror is
+		// configured. Best-effort: a mirror-config failure must not fail box
+		// provisioning — podman still pulls from upstream (today's behavior).
+		if err := m.writeRegistryMirrors(containerName); err != nil {
+			log.Printf("Warning: registry-mirror config on %s: %v", containerName, err)
 		}
 
 		// Install podman-compose via pip
