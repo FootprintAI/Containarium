@@ -2,9 +2,12 @@ package container
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -36,7 +39,7 @@ func RunOrphanReaperWithRoot(ctx context.Context, homeRoot string, containerExis
 	case <-time.After(orphanReaperGracePeriod):
 	}
 
-	reapOnce(homeRoot, containerExistsFn)
+	reapOnce(homeRoot, containerExistsFn, userShell, DeleteJumpServerAccount)
 
 	ticker := time.NewTicker(orphanReaperInterval)
 	defer ticker.Stop()
@@ -45,12 +48,34 @@ func RunOrphanReaperWithRoot(ctx context.Context, homeRoot string, containerExis
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			reapOnce(homeRoot, containerExistsFn)
+			reapOnce(homeRoot, containerExistsFn, userShell, DeleteJumpServerAccount)
 		}
 	}
 }
 
-func reapOnce(homeRoot string, containerExistsFn func(username string) bool) {
+// userShell returns username's login shell from the passwd database (the
+// 7th colon-separated field of `getent passwd`), used to gate reaping to
+// accounts actually running containerShellPath. Errors (unknown user,
+// getent unavailable) are surfaced to the caller, which treats them as
+// "don't reap" — see reapOnce.
+func userShell(username string) (string, error) {
+	out, err := exec.Command("getent", "passwd", username).Output()
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Split(strings.TrimRight(string(out), "\n"), ":")
+	if len(fields) < 7 {
+		return "", fmt.Errorf("unexpected getent passwd output for %q: %q", username, out)
+	}
+	return fields[6], nil
+}
+
+func reapOnce(
+	homeRoot string,
+	containerExistsFn func(username string) bool,
+	userShellFn func(username string) (string, error),
+	deleteFn func(username string, verbose bool) error,
+) {
 	entries, err := os.ReadDir(homeRoot)
 	if err != nil {
 		log.Printf("[orphan-reaper] failed to read %s: %v", homeRoot, err)
@@ -67,6 +92,18 @@ func reapOnce(homeRoot string, containerExistsFn func(username string) bool) {
 		if _, statErr := os.Stat(akPath); os.IsNotExist(statErr) {
 			continue // no authorized_keys → not a containarium user
 		}
+		// A home directory with authorized_keys is not, by itself,
+		// proof the reaper created it — a manually-provisioned admin
+		// account can happen to live under the same homeRoot with its
+		// own SSH key. Only reap accounts actually running the
+		// containarium-managed shell; anything else (bash, zsh, etc.)
+		// is left alone even if no matching container exists. A real
+		// incident: an operator's own admin login shared this
+		// heuristic's shape and got userdel'd by an upgrade that
+		// enabled this reaper for the first time.
+		if shell, err := userShellFn(username); err != nil || shell != containerShellPath {
+			continue
+		}
 		if containerExistsFn(username) {
 			continue
 		}
@@ -80,7 +117,7 @@ func reapOnce(homeRoot string, containerExistsFn func(username string) bool) {
 	log.Printf("[orphan-reaper] found %d orphaned host accounts; reaping", len(orphans))
 	reaped, failed := 0, 0
 	for _, username := range orphans {
-		if err := DeleteJumpServerAccount(username, false); err != nil {
+		if err := deleteFn(username, false); err != nil {
 			log.Printf("[orphan-reaper] userdel %s failed: %v", username, err)
 			failed++
 		} else {

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The orphan-reaper (#835) could delete a legitimate, manually-provisioned
+  admin account that happened to live under `/home` with its own SSH key.**
+  `RunOrphanReaper` swept every `/home/<name>` directory with an
+  `authorized_keys` file and no matching `<name>-container`, with no way to
+  tell a genuine Containarium tenant apart from an unrelated admin login
+  sharing the same directory shape. It now only reaps accounts whose login
+  shell is the containarium-managed shell wrapper — anything else (bash,
+  zsh, etc.) is left alone even with no matching container. A real incident:
+  upgrading a host's daemon (which enabled this reaper for the first time on
+  that host) `userdel -r`'d an operator's own admin account mid-session.
+
 ## [0.49.1] - 2026-07-09
 
 ### Added
