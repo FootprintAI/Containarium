@@ -726,6 +726,16 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	idName := make(map[uint32]string)
 	running := make(map[string]bool, len(containers))
 	for _, c := range containers {
+		// The control plane is platform infrastructure, not a tenant (#780).
+		// Excluding it entirely means (1) its IP never enters ip_tenant, so a
+		// tenant reaching its auth-gated API hits the external/egress branch
+		// instead of the cross-tenant drop (reachable under the default egress);
+		// and (2) its own veth is never enforced, so it can actuate every box.
+		// Other core services (postgres, caddy, …) are deliberately NOT excluded
+		// here — they stay tenant-tagged and thus isolated from tenants.
+		if c.Role == incus.RoleControlPlane {
+			continue
+		}
 		tenant := resolveTenant(c.Tenant, c.Labels[cloudOrgIDLabel], c.Name)
 		if tenant == "" {
 			continue

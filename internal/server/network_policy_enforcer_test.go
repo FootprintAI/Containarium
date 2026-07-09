@@ -89,3 +89,38 @@ func TestGather_CachesVethToAvoidInspect(t *testing.T) {
 		t.Fatalf("GetRawInstance calls = %d, want 2 (re-inspect after restart)", got)
 	}
 }
+
+// TestGather_ExcludesControlPlaneFromTenantTagging locks down #780 step 3: the
+// control plane is infrastructure, not a tenant, so gather() must drop it from
+// the reconcile views entirely (keeping its IP out of ip_tenant so tenants can
+// reach its API as an external dest). Other core services stay tagged/isolated.
+func TestGather_ExcludesControlPlaneFromTenantTagging(t *testing.T) {
+	insp := &fakeInspector{
+		containers: []incus.ContainerInfo{
+			{Name: "cld-tenant-container", State: "stopped", IPAddress: "10.100.0.10"},
+			{Name: "core-postgres-container", State: "stopped", IPAddress: "10.100.0.11", Role: incus.RolePostgres},
+			{Name: "controlplane-container", State: "stopped", IPAddress: "10.100.0.200", Role: incus.RoleControlPlane},
+		},
+		rawCalls: map[string]int{},
+	}
+	e := NewNetworkPolicyEnforcer("", nil, NewMemTenantRegistry(), insp, nil, nil, false)
+	e.ctx = context.Background()
+
+	views, _, err := e.gather(context.Background())
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	tagged := map[string]bool{}
+	for _, v := range views {
+		tagged[v.Name] = true
+	}
+	if tagged["controlplane-container"] {
+		t.Error("control plane must be EXCLUDED from tenant tagging (reachable as infra, unenforced source)")
+	}
+	if !tagged["cld-tenant-container"] {
+		t.Error("tenant box must stay tagged (isolated)")
+	}
+	if !tagged["core-postgres-container"] {
+		t.Error("non-control-plane core services must stay tagged (still isolated from tenants)")
+	}
+}

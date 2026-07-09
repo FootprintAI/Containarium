@@ -291,6 +291,14 @@ const (
 	RoleSecurity        Role = "core-security"
 	RoleGuacamole       Role = "core-guacamole"
 	RoleOTelCollector   Role = "core-otelcollector"
+	// RoleControlPlane marks a control-plane container (e.g. a cloud control
+	// plane co-located on a backend host). It is platform infrastructure, not a
+	// tenant: tenants legitimately call its auth-gated API, and it must reach
+	// every box to actuate them. The network-policy enforcer excludes it from
+	// tenant tagging so it's reachable as an external destination and its own
+	// egress is unenforced (#780). Distinct from the co-tenant core services
+	// above, which stay tenant-isolated.
+	RoleControlPlane Role = "core-controlplane"
 )
 
 // IsCoreRole returns true if the role represents a core container.
