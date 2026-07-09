@@ -53,105 +53,116 @@ These are the load-bearing facts. They rule things in and out:
    `/etc/containers/registries.conf` or `storage.conf` today, so either is a
    greenfield injection at the podman-enable step (`manager.go:557`).
 
-## The two viable directions
+## Don't build a mirror. Ship the wiring; bring your own.
 
-### Direction 1 — pull-through registry mirror (a core service)
+Pull-through registry caching is a **commodity** — `registry:2` proxy mode,
+Harbor proxy-cache projects, zot, and every cloud registry's pull-through
+mirror all do it well. The mistake would be to build or operate a registry
+inside Containarium. **We shouldn't.**
 
-Run a registry **pull-through cache** (e.g. `registry:2` in proxy mode, or zot)
-as a new **core-service box** per backend host/region — same lifecycle model as
-`core-caddy`/`core-otelcollector` (constraint 4). At box create, inject a
-`/etc/containers/registries.conf` mirror entry so the box's podman resolves the
-target registries (ghcr.io, docker.io, …) through the LAN mirror first
-(constraint 6, at `manager.go:557`).
+The actual mechanism gap is narrower: **a box today cannot be pointed at a
+mirror at all.** No box writes `/etc/containers/registries.conf`, and there is
+no config hook to supply one (constraint 6). So the *only* thing Containarium
+must ship is that thin box-side wiring — the mirror itself is
+bring-your-own, off-the-shelf.
 
-- First box to want an image pulls it *through* the mirror (WAN, once per host);
-  the mirror caches the blobs. **Every box after pulls over the LAN.**
-- 3.8 GB over a LAN link is seconds-to-tens-of-seconds — meets the acceptance.
+### Direction 1 (recommended) — BYO mirror: config + registries.conf injection
 
-**Pros:** works for **arbitrary images, no curation**; no host podman
-(constraint 3 satisfied — the mirror is itself a container); **no idmap/overlay
-sharing** (each box still has its own store, just fed locally); fits the
-existing core-service pattern (constraint 4); degrades safely (mirror down →
-boxes fall back to the upstream registry, i.e. today's behavior).
+Containarium ships **only**:
+1. a config knob (daemon/host) declaring one or more registry mirrors —
+   `upstream → mirror URL` (e.g. `ghcr.io → registry-mirror.internal:5000`), and
+2. box-create injection that writes `/etc/containers/registries.conf` in the box
+   with those mirror entries, at the podman-enable step (`manager.go:557`,
+   constraint 6).
 
-**Cons:** still a per-box *pull* (LAN-fast, not zero-copy); you run and
-capacity-manage a cache service (disk lifecycle / GC for the blob cache);
-registries.conf must enumerate which upstreams to mirror.
+The mirror is **whatever the operator already runs** (or stands up from an
+off-the-shelf image — see the optional recipe below). First box pulls *through*
+it (WAN, once); every box after pulls over the LAN.
 
-### Direction 2 — shared read-only additional image store
+- **We build ~zero infra** — a config field + a file the box already knows how
+  to receive (`WriteFile`, constraint 6). No service to run, GC, or capacity-plan.
+- Works for **arbitrary images, no curation**; **no idmap/overlay sharing**
+  (each box keeps its own store, just fed from the LAN mirror); **fails safe**
+  (no mirror configured, or mirror down → boxes pull upstream exactly as today).
+- Fits the open-core line: OSS ships the generic *mechanism* (point a box at a
+  mirror); operators supply the commodity *service*.
 
-Maintain one **warmed podman image store on the host**, RO-bind-mount it into
-each box (constraint 5), and write the box's `/etc/containers/storage.conf` with
-`additionalimagestores = ["<mountpath>"]` so podman sees warmed images as
-already present. A box's first `podman run` of a warmed image is **zero-pull**.
+**Optional convenience (not product code):** a documented `deploy/` recipe/compose
+that stands up `registry:2` in pull-through mode as a `containarium-core-*` box
+(constraint 4) for operators who don't already run one. It's an off-the-shelf
+image behind a recipe — swappable for Harbor/zot/cloud AR — never a thing we
+maintain the internals of.
 
-**Pros:** fastest — no pull at all (meets "seconds", the strongest form of the
-acceptance).
+### Direction 2 — golden base image (no running service either)
 
-**Cons (the reason this is not the v1):**
-- **Populating the store needs podman on the host or a dedicated warmer box**
-  (constraint 3) — new infrastructure either way.
-- **Unprivileged idmap ownership.** Boxes are unprivileged LXC (constraint 1),
-  each with its own uid/gid idmap. A shared overlay store populated by a
-  *different* podman (host or warmer box, different mapping) is read back through
-  the box's idmap; layer file ownership can mismatch, which podman's
-  containers/storage treats as a corrupt/foreign store. Making this robust
-  tends to force **privileged boxes** (constraint 1's opt-in) or careful
-  `raw.idmap` alignment — a materially bigger, riskier change.
-- Curation + storage lifecycle for what gets warmed (which is Direction 3).
+Bake the hot images into the **incus base image** boxes launch from: publish a
+custom base whose podman store is pre-populated, so a fresh box has them already
+present — zero pull, no mirror, no service. Cost: the warm set is coupled to the
+base image (rebuild + redistribute the base per region to change it), and it
+only helps images known at base-build time. Good complement to Dir 1 for a small,
+stable hot set; not a substitute for arbitrary images.
 
-| | Dir 1: pull-through mirror | Dir 2: shared RO store |
-| --- | --- | --- |
-| First-start speed (warm) | tens of seconds (LAN pull) | seconds (zero-pull) |
-| Arbitrary images | yes, no curation | no — curated warm-list |
-| Needs host podman | no (mirror is a container) | yes (or a warmer box) |
-| Unprivileged-LXC safe | yes (per-box store, just LAN-fed) | risky (idmap on shared overlay) |
-| New infra | one cache core-service | host store + RO mounts + storage.conf |
-| Failure mode | falls back to upstream (today) | box can't read store → worse than today |
+### Direction 3 — shared read-only additional image store (deferred)
 
-## Recommendation: Direction 1 as v1, Direction 3 as the knob
+Maintain a warmed podman store on the host, RO-bind-mount it into boxes
+(constraint 5) + `additionalimagestores` in the box's `storage.conf`. Zero-pull
+and fastest, **but** it needs host podman (constraint 3) and runs into
+unprivileged-LXC idmap ownership on a shared overlay store (constraint 1) — layer
+ownership read back through the box idmap mismatches, which containers/storage
+treats as a foreign/corrupt store; making it robust tends to force privileged
+boxes. Materially bigger and riskier; not the first win.
 
-Ship the **pull-through mirror** first. It clears the acceptance ("tens of
-seconds"), is robust under the unprivileged-LXC reality that makes Direction 2
-risky, needs no host podman, works for any image with zero curation, and fails
-*safe* (back to today's behavior). Direction 2's zero-pull is a worthwhile
-*later* optimization for a curated hot set once the idmap story is proven — it
-is not the thing to gate the first win on.
+| | Dir 1: BYO mirror | Dir 2: golden base | Dir 3: shared RO store |
+| --- | --- | --- | --- |
+| Infra we build/run | ~none (config + file) | base-image build | host store + RO mounts |
+| Warm first-start | tens of seconds (LAN) | seconds (baked in) | seconds (zero-pull) |
+| Arbitrary images | yes, no curation | no (baked set only) | no (curated) |
+| Needs host podman | no | at base-build only | yes |
+| Unprivileged-LXC safe | yes | yes | risky (idmap) |
+| Failure mode | upstream pull (today) | upstream pull (today) | box can't read store |
+| Update the warm set | change config / mirror | rebuild+ship base | re-warm host store |
 
-Layer **Direction 3 (warm-list) as a thin control knob** on top: a recipe /
-daemon config can *declare* an image as warmable so the mirror is pre-primed
-(one warm pull through the mirror at deploy/host-init, not on the box's hot
-path). This is where a recipe like `oci-service` would advertise its image.
+## Recommendation: Direction 1 (BYO mirror), Direction 3 as the knob it needs
+
+Ship **Direction 1** — config + `registries.conf` injection, mirror BYO. It is
+the *smallest* change that closes the gap, reuses commodity infra instead of
+reinventing it, is robust under the unprivileged-LXC reality, and fails safe.
+Keep **Direction 2 (golden base)** in the back pocket for a tiny stable hot set.
+Treat **Direction 3 (shared RO store)** as a later zero-pull optimization once
+the idmap story is proven — not a v1 gate.
+
+Layer a thin **warm-list** on top (the old "Direction 3" control idea): a recipe
+/ daemon config can *declare* an image so the operator's mirror is pre-primed
+once (a warm pull *through* the mirror at host-init, off the box's hot path).
+`oci-service` can advertise its caller image this way. This is a knob, not a
+service.
 
 ## v1 scope (Direction 1)
 
-1. **Mirror core-service** — a pull-through registry cache box, provisioned like
-   the other `containarium-core-*` services (constraint 4). Config: which
-   upstreams to proxy (ghcr.io, docker.io, quay.io), cache dir + size cap. Likely
-   a `deploy/` artifact + daemon wiring, not just Go.
+1. **Mirror config** — a daemon/host config field: a list of `upstream → mirror`
+   entries (and an `insecure` flag for a plain-HTTP LAN mirror). Empty = today's
+   behavior, no injection.
 2. **Box-create injection** — at the podman-enable step (`manager.go:557`), write
-   `/etc/containers/registries.conf` in the box with the mirror as a
-   `[[registry]].mirror` for each proxied upstream, when a mirror is configured
-   for the host. Gated so a host without a mirror behaves exactly as today.
+   `/etc/containers/registries.conf` in the box with a `[[registry]].mirror` for
+   each configured upstream (`WriteFile`, constraint 6). Gated on config being set.
 3. **CLI-first surface** (per CLAUDE.md) — a `containarium warm-image <ref>` verb
-   that primes the mirror for a given image (pull-through prime), plus status
-   (`containarium warm-image --list`). The MCP tool, if any, wraps the same Go
-   function.
-4. **Warm-list declaration** — an optional recipe field (e.g. `warm_images`) and/
-   or a daemon config list the host keeps primed. `oci-service` can declare its
-   caller image warmable via a param passthrough.
+   that primes the configured mirror for an image (a pull-through prime), plus
+   `--list`. MCP, if any, wraps the same Go function.
+4. **Warm-list declaration (optional)** — a recipe field (e.g. `warm_images`) /
+   daemon list the host keeps primed via (3).
 
-Deliberately **out of v1:** the shared RO store (Direction 2), cross-host cache
-federation, and any automatic GC policy beyond a size cap.
+Deliberately **out of v1:** building/operating a registry (BYO); the shared RO
+store (Dir 3); the golden base image (Dir 2); cache federation and GC (the
+mirror owns its own lifecycle, off-the-shelf).
 
 ## Acceptance
 
-On a host with a running mirror and image `X` primed (or pulled once by an
-earlier box): a fresh box configured with the mirror runs `X` to `podman run -d`
-completion in seconds-to-tens-of-seconds, independent of WAN conditions. On a
-host with **no** mirror configured, box creation and pulls behave exactly as
-today (no regression). Validate on a real backend host by timing a second box's
-pull of the agent-server image vs. the first.
+With a mirror configured and image `X` primed (or pulled once by an earlier box):
+a fresh box runs `X` to `podman run -d` completion in seconds-to-tens-of-seconds,
+independent of WAN conditions. With **no** mirror configured, box creation and
+pulls behave exactly as today (no regression). Validate on a real backend host by
+timing a second box's pull of the agent-server image vs. the first, pointed at an
+off-the-shelf `registry:2` proxy.
 
 ## Open questions
 
