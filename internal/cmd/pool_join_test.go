@@ -3,9 +3,27 @@
 package cmd
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
 )
+
+// testCmd returns a *cobra.Command with a real context — a bare
+// &cobra.Command{} has a nil Context() (unlike OutOrStdout/ErrOrStderr,
+// which do fall back), which panics deep inside net/context on first use.
+func testCmd() *cobra.Command {
+	c := &cobra.Command{}
+	c.SetContext(context.Background())
+	return c
+}
 
 func TestRenderTunnelUnit_RequiredFlags(t *testing.T) {
 	u := renderTunnelUnit(tunnelUnitParams{
@@ -162,5 +180,71 @@ func TestParseExecStartArgv(t *testing.T) {
 		if _, ok := parseExecStartArgv(bad); ok {
 			t.Errorf("parseExecStartArgv(%q) should be false", bad)
 		}
+	}
+}
+
+// TestCloudEnrollAfterPoolJoin_RedeemsSameToken locks in the containarium-cloud#799
+// fix: `pool join --cloud-control-plane` chains the SAME join token into
+// EnrollHost, with oss_backend_id derived as "tunnel-"+spotID (matching the
+// sentinel's own OnTunnelConnect prefixing) — not left for the operator to
+// separately discover and pass by hand.
+func TestCloudEnrollAfterPoolJoin_RedeemsSameToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate cloud.Save's ~/.containarium/cloud.yaml write
+
+	var got cloudv1.EnrollHostRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/actuation/enroll" {
+			t.Errorf("path = %s, want /v1/actuation/enroll", r.URL.Path)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = protojson.Unmarshal(raw, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hostId":"host-abc"}`))
+	}))
+	defer srv.Close()
+
+	cmd := testCmd()
+	err := cloudEnrollAfterPoolJoin(cmd, srv.URL, "host-abc.secret", "tunnel-lab-node1", false)
+	if err != nil {
+		t.Fatalf("cloudEnrollAfterPoolJoin: %v", err)
+	}
+	if got.GetJoinToken() != "host-abc.secret" {
+		t.Errorf("server saw join_token = %q, want the same token pool join used", got.GetJoinToken())
+	}
+	if got.GetOssBackendId() != "tunnel-lab-node1" {
+		t.Errorf("server saw oss_backend_id = %q, want tunnel-lab-node1", got.GetOssBackendId())
+	}
+}
+
+// TestCloudEnrollAfterPoolJoin_SurfacesServerError ensures a failed enroll
+// (e.g. expired/redeemed token) is returned as an error, not swallowed —
+// runPoolJoin's caller is what decides to downgrade it to a warning.
+func TestCloudEnrollAfterPoolJoin_SurfacesServerError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":9,"message":"join token expired"}`))
+	}))
+	defer srv.Close()
+
+	cmd := testCmd()
+	if err := cloudEnrollAfterPoolJoin(cmd, srv.URL, "host-abc.secret", "tunnel-lab-node1", false); err == nil {
+		t.Fatal("expected an error from an expired join token, got nil")
+	}
+}
+
+// TestPoolJoinFlags_CloudControlPlaneIsOptOut confirms the cloud-enroll
+// chaining flags exist and default to off — a plain OSS pool join with no
+// --cloud-control-plane must not attempt any cloud call.
+func TestPoolJoinFlags_CloudControlPlaneIsOptOut(t *testing.T) {
+	if poolJoinCmd.Flags().Lookup("cloud-control-plane") == nil {
+		t.Fatal("expected a --cloud-control-plane flag on pool join")
+	}
+	if poolJoinCmd.Flags().Lookup("cloud-insecure") == nil {
+		t.Fatal("expected a --cloud-insecure flag on pool join")
+	}
+	if poolJoinCloudControlPlane != "" {
+		t.Errorf("--cloud-control-plane default = %q, want empty (opt-in)", poolJoinCloudControlPlane)
 	}
 }

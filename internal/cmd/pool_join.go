@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/footprintai/containarium/internal/cloud"
 )
 
 // pool join — the turnkey, one-command path that turns a fresh Linux host
@@ -38,17 +41,19 @@ func minimalDaemonArgv() []string {
 }
 
 var (
-	poolJoinSentinels      []string
-	poolJoinRegion         string
-	poolJoinToken          string
-	poolJoinPool           string
-	poolJoinSpotID         string
-	poolJoinPorts          string
-	poolJoinPublicHostname string
-	poolJoinPublicPort     int
-	poolJoinBaseDomain     string
-	poolJoinDryRun         bool
-	poolJoinDaemonFlags    []string
+	poolJoinSentinels         []string
+	poolJoinRegion            string
+	poolJoinToken             string
+	poolJoinPool              string
+	poolJoinSpotID            string
+	poolJoinPorts             string
+	poolJoinPublicHostname    string
+	poolJoinPublicPort        int
+	poolJoinBaseDomain        string
+	poolJoinDryRun            bool
+	poolJoinDaemonFlags       []string
+	poolJoinCloudControlPlane string
+	poolJoinCloudInsecure     bool
 )
 
 var poolJoinCmd = &cobra.Command{
@@ -73,7 +78,14 @@ Multi-region (probe + pick the closest sentinel from the host):
   sudo containarium pool join --region auto \
     --sentinel us=us.sentinel.example.com:443 \
     --sentinel eu=eu.sentinel.example.com:443 \
-    --pool prod --token <scoped-join-token>`,
+    --pool prod --token <scoped-join-token>
+
+BYO-compute (also register with a cloud control plane, using the same
+token — the webui's "Add compute" one-liner sets this automatically):
+  sudo containarium pool join \
+    --sentinel asia-east1.containarium.dev:443 \
+    --token <scoped-join-token> \
+    --cloud-control-plane https://cloud.containarium.dev`,
 	RunE: runPoolJoin,
 }
 
@@ -90,6 +102,8 @@ func init() {
 	poolJoinCmd.Flags().StringVar(&poolJoinBaseDomain, "base-domain", "", "Base domain the daemon's Caddy auto-provisions HTTPS for (optional)")
 	poolJoinCmd.Flags().BoolVar(&poolJoinDryRun, "dry-run", false, "Print the unit files that would be written, then exit (no changes)")
 	poolJoinCmd.Flags().StringArrayVar(&poolJoinDaemonFlags, "daemon-flag", nil, "Extra daemon flag to carry into the unit (repeatable), e.g. --daemon-flag=--app-hosting --daemon-flag=--network-subnet=10.0.0.0/24. Use to add/override flags on top of the preserved/baseline set")
+	poolJoinCmd.Flags().StringVar(&poolJoinCloudControlPlane, "cloud-control-plane", "", "Also self-register this host with a cloud control plane (e.g. https://cloud.containarium.dev) using the same --token, right after the tunnel comes up. Optional — omit for a plain OSS pool join with no cloud involvement. A failure here is a warning, not a join failure: the tunnel is joined either way.")
+	poolJoinCmd.Flags().BoolVar(&poolJoinCloudInsecure, "cloud-insecure", false, "Dial --cloud-control-plane without TLS (local dev only; ignored unless --cloud-control-plane is set)")
 }
 
 // tunnelUnitParams are the inputs to the tunnel systemd unit.
@@ -354,11 +368,71 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 	fmt.Printf("Joined pool %q via sentinel %s (spot-id %s).\n", poolJoinPool, sentinelAddr, spotID)
+
+	// 6. Cloud self-registration (opt-in, --cloud-control-plane). Chains the
+	// same join token into `cloud enroll` so a BYOC host shows up in the
+	// cloud's own host list right away, instead of tunnel-connected-but-
+	// invisible until an operator separately discovers and runs `cloud
+	// enroll` by hand (containarium-cloud#799). Best-effort: the tunnel is
+	// already joined by this point regardless of how this goes.
+	if cp := strings.TrimSpace(poolJoinCloudControlPlane); cp != "" {
+		fmt.Println()
+		if err := cloudEnrollAfterPoolJoin(cmd, cp, poolJoinToken, "tunnel-"+spotID, poolJoinCloudInsecure); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ cloud enrollment failed (%v)\n  the tunnel is joined regardless; re-run `containarium cloud enroll --control-plane %s --token-file <token-file> --oss-backend-id tunnel-%s` once fixed\n", err, cp, spotID)
+		}
+	}
+
 	fmt.Println()
 	fmt.Println("  Daemon:  sudo systemctl status containarium")
 	fmt.Println("  Tunnel:  sudo systemctl status containarium-tunnel")
 	fmt.Println("  Verify:  containarium pool list --server http://localhost:8080")
 	fmt.Println()
 	fmt.Println("NOTE (MVP): scoped-token minting and binary fetch are not yet wired.")
+	return nil
+}
+
+// cloudEnrollAfterPoolJoin redeems the same join token used for the tunnel
+// handshake against a cloud control plane's EnrollHost, mirroring `cloud
+// enroll` (internal/cmd/cloud.go) — the join-token format (`<host_id>.
+// <secret>`) is shared between the two steps, so no separate token is
+// needed. Mints a driver token best-effort (same as `cloud enroll`); a
+// mint failure is a warning inside cloud.Enroll's caller pattern, not
+// treated as fatal here either.
+func cloudEnrollAfterPoolJoin(cmd *cobra.Command, controlPlane, token, ossBackendID string, insecure bool) error {
+	opts := cloud.EnrollOptions{OSSBackendID: ossBackendID}
+	if driverTok, mintErr := mintDriverToken(defaultDaemonJWTSecretFile, 30*24*time.Hour); mintErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "⚠ no driver token minted (%v)\n  host will cloud-enroll but the cloud can't place workloads on it yet\n", mintErr)
+	} else {
+		opts.DriverToken = driverTok
+	}
+
+	hostID, err := cloud.Enroll(cmd.Context(), controlPlane, token, insecure, opts)
+	if err != nil {
+		return err
+	}
+	cfg := &cloud.Config{
+		ControlPlane: controlPlane,
+		HostID:       hostID,
+		Token:        token,
+		Insecure:     insecure,
+		JWTSecretFile: func() string {
+			if opts.DriverToken == "" {
+				return ""
+			}
+			return defaultDaemonJWTSecretFile
+		}(),
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	path, err := cloud.DefaultPath()
+	if err != nil {
+		return err
+	}
+	if err := cloud.Save(path, cfg); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ also enrolled with cloud control plane %s\n  host-id: %s\n  config:  %s (restart the daemon to start actuating + reporting)\n",
+		controlPlane, hostID, path)
 	return nil
 }

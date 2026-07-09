@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pool join --cloud-control-plane` — chain cloud self-registration onto
+  the tunnel handshake, using the same join token** (containarium-cloud#799).
+  Previously `pool join` only ever set up the tunnel; a host could connect
+  fine and still never appear in a cloud control plane's own host list,
+  because nothing called the separate `cloud enroll` step required to
+  register it — a gap only discoverable by reading the CLI source, not
+  documented anywhere a self-service BYOC user would see it. Now, when
+  `--cloud-control-plane` is set (e.g. by the cloud webui's generated
+  one-liner), `pool join` redeems the same token against `EnrollHost` right
+  after the tunnel comes up, deriving `oss_backend_id` as `tunnel-<spot-id>`
+  automatically. Best-effort: a cloud-enroll failure is a warning, not a
+  join failure — the tunnel is joined either way. Opt-in; omit the flag for
+  a plain OSS pool join with no cloud involvement.
+
 ## [0.49.2] - 2026-07-09
 
 ### Fixed
