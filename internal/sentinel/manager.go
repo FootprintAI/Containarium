@@ -134,6 +134,23 @@ type Manager struct {
 	// CONTAINARIUM_SENTINEL_AUTH_SECRET at startup.
 	hmacSecret []byte
 
+	// adminSecret gates POST /sentinel/tunnel-tokens (registering a
+	// freshly-minted tunnel-join token at runtime). Deliberately a
+	// different secret than hmacSecret — see EnvSentinelAdminSecret.
+	// Loaded from CONTAINARIUM_SENTINEL_ADMIN_SECRET in NewManager;
+	// tests can override with SetAdminSecret.
+	adminSecret []byte
+
+	// tunnelPolicy is the token-authorization policy the tunnel
+	// server was constructed with (see PolicyFromCLI in
+	// internal/cmd/sentinel.go). Wired in via SetTunnelPolicy so the
+	// TunnelTokenRegisterHandler can add tokens at runtime — the
+	// policy is otherwise 100% static after startup. nil in modes
+	// that don't run a tunnel server (e.g. provider=gcp with no
+	// tunnel token configured), in which case the register endpoint
+	// responds 501.
+	tunnelPolicy *TokenPolicy
+
 	// pki holds the operator-bootstrapped peer-CA and the sentinel's
 	// own server cert. Set when CONTAINARIUM_CA_KEY_FILE points at a
 	// valid RSA key — see NewManager and SetCertProvisioner.
@@ -285,6 +302,18 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 	} else {
 		log.Printf("[sentinel] WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset — /sentinel/peers responses will be unsigned (daemons in rollout mode accept them with a warning; once fully rolled out they will reject)")
 	}
+	if raw := os.Getenv(appconfig.EnvSentinelAdminSecret); raw != "" {
+		if len(raw) < auth.SentinelMinSecretLen {
+			// #nosec G706 -- both args are ints (len(raw) and a
+			// const) so there is no log-injection vector; gosec's
+			// taint chases `raw` upstream and flags any descendant.
+			log.Printf("[sentinel] WARNING: CONTAINARIUM_SENTINEL_ADMIN_SECRET is %d bytes, want >=%d — /sentinel/tunnel-tokens will reject every request",
+				len(raw), auth.SentinelMinSecretLen)
+		}
+		m.adminSecret = []byte(raw)
+	} else {
+		log.Printf("[sentinel] CONTAINARIUM_SENTINEL_ADMIN_SECRET is unset — /sentinel/tunnel-tokens is disabled (fresh tunnel-join tokens can only be added by restarting the sentinel with --tunnel-token-policy)")
+	}
 
 	// Phase 0.5: peer-CA bootstrap. Operators provision a single
 	// RSA private key on the sentinel (mode 0400) and point this
@@ -335,6 +364,22 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 // the SNI router falls back to TCP-dialing the primary's IP:Port.
 func (m *Manager) SetTunnelRegistry(reg *TunnelRegistry) {
 	m.tunnelRegistry = reg
+}
+
+// SetTunnelPolicy wires in the token-authorization policy the tunnel
+// server was constructed with, so TunnelTokenRegisterHandler can add
+// tokens to it at runtime. Called from internal/cmd/sentinel.go right
+// after PolicyFromCLI builds the policy.
+func (m *Manager) SetTunnelPolicy(policy *TokenPolicy) {
+	m.tunnelPolicy = policy
+}
+
+// SetAdminSecret wires the secret that gates POST
+// /sentinel/tunnel-tokens. Tests can use this to inject a secret
+// without setting CONTAINARIUM_SENTINEL_ADMIN_SECRET in the
+// environment.
+func (m *Manager) SetAdminSecret(secret []byte) {
+	m.adminSecret = secret
 }
 
 // SetHTTPSListener sets a ConnMux HTTPS chanListener for tunnel/hybrid mode.

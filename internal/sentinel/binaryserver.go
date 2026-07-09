@@ -107,6 +107,11 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	mux.Handle("/sentinel/peer-cert", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PeerCertHandler()))
 	mux.Handle("/sentinel/fetch-release", auth.SentinelHMACMiddleware(manager.hmacSecret, fetchReleaseHandler(binaryPath)))
 
+	// Runtime tunnel-token registration — gated by the separate
+	// admin secret (CONTAINARIUM_SENTINEL_ADMIN_SECRET), not the
+	// cluster-wide daemon HMAC secret. See TunnelTokenRegisterHandler.
+	mux.Handle("/sentinel/tunnel-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.TunnelTokenRegisterHandler()))
+
 	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
 	// This allows the primary daemon to reach tunnel backends through the sentinel
 	// without needing extra firewall rules for external ports.

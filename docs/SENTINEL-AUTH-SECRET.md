@@ -1,5 +1,14 @@
 # Sentinel ↔ daemon HMAC secret (`CONTAINARIUM_SENTINEL_AUTH_SECRET`)
 
+> **This is not the only sentinel secret.** `CONTAINARIUM_SENTINEL_ADMIN_SECRET`
+> gates `POST /sentinel/tunnel-tokens` (registering a tunnel-join token at
+> runtime — see #799) and is deliberately a *different* value: every daemon in
+> the cluster holds the auth secret below, but admitting a brand-new node into
+> a pool is a bigger capability than keysync/certsync, so it isn't gated by a
+> secret every daemon already has. Generate and distribute it the same way as
+> below, to whoever issues join tokens (an operator, or the cloud control
+> plane's token-issuance service) — not to every daemon.
+
 > **As of v0.45.0 there is a stronger, asymmetric successor.** The shared HMAC
 > secret below is symmetric — every daemon that can verify the sentinel can also
 > forge a request, which is a cross-tenant escalation on multi-tenant / BYOC

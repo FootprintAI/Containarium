@@ -13,12 +13,21 @@ const (
 	EnvSentinelAlertWebhook = "CONTAINARIUM_SENTINEL_ALERT_WEBHOOK"
 	// #nosec G101 -- this is the NAME of an environment variable, not a credential value.
 	EnvSentinelAuthSecret = "CONTAINARIUM_SENTINEL_AUTH_SECRET"
-	EnvSentinelCertSANs   = "CONTAINARIUM_SENTINEL_CERT_SANS"
-	EnvSentinelHost       = "CONTAINARIUM_SENTINEL_HOST"
-	EnvSentinelHTTPSPort  = "CONTAINARIUM_SENTINEL_HTTPS_PORT"
-	EnvSentinelPublicKey  = "CONTAINARIUM_SENTINEL_PUBLIC_KEY"
-	EnvSentinelSigningKey = "CONTAINARIUM_SENTINEL_SIGNING_KEY"
-	EnvSentinelURL        = "CONTAINARIUM_SENTINEL_URL"
+	// #nosec G101 -- this is the NAME of an environment variable, not a credential value.
+	//
+	// Deliberately separate from EnvSentinelAuthSecret: the auth secret is
+	// held by every daemon in the cluster (keysync/certsync), so reusing it
+	// here would let a compromised daemon mint tunnel-join tokens for any
+	// pool. This secret is held only by whoever is trusted to admit new
+	// nodes — an operator, or the cloud control plane's token-issuance
+	// service. See sentinel.TunnelTokenRegisterHandler.
+	EnvSentinelAdminSecret = "CONTAINARIUM_SENTINEL_ADMIN_SECRET"
+	EnvSentinelCertSANs    = "CONTAINARIUM_SENTINEL_CERT_SANS"
+	EnvSentinelHost        = "CONTAINARIUM_SENTINEL_HOST"
+	EnvSentinelHTTPSPort   = "CONTAINARIUM_SENTINEL_HTTPS_PORT"
+	EnvSentinelPublicKey   = "CONTAINARIUM_SENTINEL_PUBLIC_KEY"
+	EnvSentinelSigningKey  = "CONTAINARIUM_SENTINEL_SIGNING_KEY"
+	EnvSentinelURL         = "CONTAINARIUM_SENTINEL_URL"
 )
 
 // Sentinel is the typed view of the CONTAINARIUM_SENTINEL_* namespace — the

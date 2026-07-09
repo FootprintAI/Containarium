@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`POST /sentinel/tunnel-tokens` — register a tunnel-join token on a
+  running sentinel without a restart** (#799). The sentinel's
+  `TokenPolicy` was previously built once at startup from
+  `--tunnel-token`/`--tunnel-token-policy` and never updated again, so
+  any token minted afterwards (e.g. by a BYOC join flow that issues a
+  fresh token per request) was permanently rejected with "invalid
+  token" — not a transient failure, a structural one. Gated by a new,
+  deliberately separate `CONTAINARIUM_SENTINEL_ADMIN_SECRET` (not the
+  cluster-wide `CONTAINARIUM_SENTINEL_AUTH_SECRET` every daemon already
+  holds for keysync/certsync — admitting a new node into a pool is a
+  bigger capability than that). New CLI: `containarium sentinel
+  register-token --url <sentinel> --token <token> [--pool <pool>]`.
+
 ## [0.49.0] - 2026-07-08
 
 ### Added
