@@ -1,0 +1,22 @@
+[Unit]
+Description=incus API watchdog — force-recover a wedged incusd (#755)
+Documentation=https://github.com/lxc/lxc/pull/4708
+# Start after incus so the API exists to probe; don't fail if incus is down —
+# the watchdog is exactly what brings a wedged incus back.
+After=incus.service
+Wants=incus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/incus-watchdog.sh
+# Tune per host without editing the script; see the script header for keys.
+# Environment=INCUS_WATCHDOG_INTERVAL=45
+# Environment=INCUS_WATCHDOG_FAIL_THRESHOLD=2
+Restart=always
+RestartSec=10
+# The watchdog itself must never be OOM-killed or throttled away.
+OOMScoreAdjust=-500
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
