@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-07-10
+
+### Fixed
+
+- **Network policy: exclude the control plane from tenant tagging**
+  (containarium-cloud#780). Cross-org isolation tags every managed
+  container's IP with its tenant and drops cross-tenant traffic — but that
+  also dropped a tenant's calls to a control plane co-located on the same
+  backend host, since the control plane is a container and got tenant-tagged
+  like any other (the eBPF egress allow-list can't override this — it's
+  consulted only for non-container destinations). A new
+  `core-controlplane` role, skipped by the enforcer's reconcile, keeps the
+  control plane's IP out of the tenant map: tenants reach its auth-gated API
+  as an external destination, and its own egress stays unenforced so it can
+  actuate every box. Scoped to the control-plane role only — other core
+  services stay tenant-isolated. Label the control-plane container
+  `user.containarium.role=core-controlplane` to apply it.
+
 ### Added
 
 - **`pool join --cloud-control-plane` — chain cloud self-registration onto
