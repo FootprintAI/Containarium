@@ -279,6 +279,22 @@ func (l *Loader) SetIPTenant(ip [4]byte, tenantID uint32) error {
 	return nil
 }
 
+// DeleteIPTenant removes an IP -> tenant mapping. Used by the reconcile loop to
+// converge the map when a container's IP is no longer managed (stopped/deleted)
+// or is excluded from tagging (e.g. the control plane): a stale tag would let
+// the program treat a since-freed or re-purposed IP as a same-tenant peer. A
+// missing key is not an error (the desired state is already reached).
+func (l *Loader) DeleteIPTenant(ip [4]byte) error {
+	key := binary.LittleEndian.Uint32(ip[:])
+	if err := l.coll.Maps[mapIPTenant].Delete(&key); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netbpf: delete ip_tenant: %w", err)
+	}
+	return nil
+}
+
 // Stats reads the (seen, wouldDeny) counters — the validator's success signal,
 // mirroring the Phase 0 counter read.
 func (l *Loader) Stats() (seen, wouldDeny uint64, err error) {

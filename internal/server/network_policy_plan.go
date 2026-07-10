@@ -202,3 +202,57 @@ func applyDeny(installed map[netbpf.DenyKey]netbpf.DenyEntry, desired []netbpf.D
 		delete(installed, dk)
 	}
 }
+
+// diffIPTenant computes the ip_tenant entries to set and the keys to delete so
+// the kernel map converges to the desired IP->tenant set (#923). An entry is
+// (re)set when its IP is new OR its tenant differs from what's installed; a key
+// is deleted when no desired entry uses that IP. Deleting stale keys is what
+// makes a freed or excluded IP actually stop being treated as a same-tenant
+// peer — without it the map is add-only and a stale tag survives until a daemon
+// restart rebuilds the maps.
+func diffIPTenant(installed, desired map[[4]byte]uint32) (toSet map[[4]byte]uint32, toDel [][4]byte) {
+	toSet = make(map[[4]byte]uint32)
+	for ip, tid := range desired {
+		if cur, ok := installed[ip]; !ok || cur != tid {
+			toSet[ip] = tid
+		}
+	}
+	for ip := range installed {
+		if _, ok := desired[ip]; !ok {
+			toDel = append(toDel, ip)
+		}
+	}
+	return toSet, toDel
+}
+
+// ipTenantApplier is the slice of the BPF loader the ip_tenant reconcile needs.
+// *netbpf.Loader satisfies it; an interface keeps applyIPTenant testable without
+// a kernel.
+type ipTenantApplier interface {
+	SetIPTenant(ip [4]byte, tenantID uint32) error
+	DeleteIPTenant(ip [4]byte) error
+}
+
+// applyIPTenant converges the kernel ip_tenant map from installed to desired via
+// the applier, updating installed in place (#923). Sets apply BEFORE deletes;
+// diffIPTenant guarantees the two sets never share a key, so a just-set entry is
+// never immediately deleted. A failed op is logged and skipped WITHOUT touching
+// installed, so the next reconcile retries it rather than recording a state the
+// kernel doesn't hold.
+func applyIPTenant(installed, desired map[[4]byte]uint32, a ipTenantApplier) {
+	set, del := diffIPTenant(installed, desired)
+	for ip, tid := range set {
+		if err := a.SetIPTenant(ip, tid); err != nil {
+			log.Printf("[netpolicy] set ip_tenant: %v", err)
+			continue
+		}
+		installed[ip] = tid
+	}
+	for _, ip := range del {
+		if err := a.DeleteIPTenant(ip); err != nil {
+			log.Printf("[netpolicy] delete ip_tenant: %v", err)
+			continue
+		}
+		delete(installed, ip)
+	}
+}

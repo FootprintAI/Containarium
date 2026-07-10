@@ -110,12 +110,13 @@ type NetworkPolicyEnforcer struct {
 	sigNames   map[uint16]string           // signature id -> name, for audit labelling (built at populate)
 	sigLoaded  string                      // last applied signature set fingerprint (skip redundant map writes)
 
-	mu              sync.Mutex
-	attached        map[int]string                      // ifindex -> container name currently attached
-	idName          map[uint32]string                   // tenant id -> name (for audit/log)
-	enforced        map[uint32]bool                     // tenant ids whose effective mode is ENFORCE (deny == dropped)
-	egressInstalled map[netbpf.EgressEntry]bool         // egress LPM entries currently in the map
-	denyInstalled   map[netbpf.DenyKey]netbpf.DenyEntry // virtual-patch deny entries currently in the map (#660)
+	mu                sync.Mutex
+	attached          map[int]string                      // ifindex -> container name currently attached
+	idName            map[uint32]string                   // tenant id -> name (for audit/log)
+	enforced          map[uint32]bool                     // tenant ids whose effective mode is ENFORCE (deny == dropped)
+	egressInstalled   map[netbpf.EgressEntry]bool         // egress LPM entries currently in the map
+	denyInstalled     map[netbpf.DenyKey]netbpf.DenyEntry // virtual-patch deny entries currently in the map (#660)
+	ipTenantInstalled map[[4]byte]uint32                  // ip_tenant entries currently in the map (#923: converge deletes)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -124,24 +125,25 @@ type NetworkPolicyEnforcer struct {
 
 func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry TenantRegistry, insp containerInspector, auditStore *audit.Store, bus *events.Bus, enforceEnabled bool) *NetworkPolicyEnforcer {
 	return &NetworkPolicyEnforcer{
-		objPath:         objPath,
-		store:           store,
-		registry:        registry,
-		insp:            insp,
-		audit:           auditStore,
-		bus:             bus,
-		interval:        defaultNetPolicyReconcileInterval,
-		enforceEnabled:  enforceEnabled,
-		resolver:        NewDomainResolver(nil),
-		domainRefresh:   defaultDomainRefreshInterval,
-		flowPoll:        defaultFlowPollInterval,
-		flowIdleTimeout: defaultFlowIdleTimeout,
-		vethCache:       make(map[string]string),
-		attached:        make(map[int]string),
-		idName:          make(map[uint32]string),
-		enforced:        make(map[uint32]bool),
-		egressInstalled: make(map[netbpf.EgressEntry]bool),
-		denyInstalled:   make(map[netbpf.DenyKey]netbpf.DenyEntry),
+		objPath:           objPath,
+		store:             store,
+		registry:          registry,
+		insp:              insp,
+		audit:             auditStore,
+		bus:               bus,
+		interval:          defaultNetPolicyReconcileInterval,
+		enforceEnabled:    enforceEnabled,
+		resolver:          NewDomainResolver(nil),
+		domainRefresh:     defaultDomainRefreshInterval,
+		flowPoll:          defaultFlowPollInterval,
+		flowIdleTimeout:   defaultFlowIdleTimeout,
+		vethCache:         make(map[string]string),
+		attached:          make(map[int]string),
+		idName:            make(map[uint32]string),
+		enforced:          make(map[uint32]bool),
+		egressInstalled:   make(map[netbpf.EgressEntry]bool),
+		denyInstalled:     make(map[netbpf.DenyKey]netbpf.DenyEntry),
+		ipTenantInstalled: make(map[[4]byte]uint32),
 	}
 }
 
@@ -632,12 +634,13 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	// when the set is unchanged, so this is cheap every pass.
 	e.refreshSignatureSlots()
 
-	// ip_tenant: every managed container's IP -> its tenant id.
-	for ip, tid := range plan.ipTenant {
-		if err := e.loader.SetIPTenant(ip, tid); err != nil {
-			log.Printf("[netpolicy] set ip_tenant: %v", err)
-		}
-	}
+	// ip_tenant: every managed container's IP -> its tenant id. Converge the map
+	// (set desired, delete stale) like egress/deny below — an add-only pass would
+	// leak a tag once a container's IP is freed or an entity is excluded from
+	// tagging (e.g. the control plane), letting the program keep treating a
+	// since-freed or re-purposed IP as a same-tenant peer until a daemon restart
+	// rebuilt the maps (#923).
+	applyIPTenant(e.ipTenantInstalled, plan.ipTenant, e.loader)
 	// egress allow-list: converge the map (add new, delete stale). Deleting
 	// removed CIDRs is what makes a tightened policy actually take effect in
 	// enforce mode.
