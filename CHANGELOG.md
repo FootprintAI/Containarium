@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.1] - 2026-07-11
+
+### Fixed
+
+- **Sentinel: make loopback-alias registration idempotent** (#927).
+  `addLoopbackAlias` errored on `ip addr add`'s "File exists", which
+  fires whenever a spot's deterministic loopback alias survives an
+  ungraceful sentinel crash (skips the graceful-shutdown cleanup). Since
+  the allocator's slot for a given spot ID never changes, this meant a
+  spot could get stuck retrying the exact same doomed reconnect forever
+  after any crash — a BYOC peer's tunnel was found wedged this way for a
+  full week. The alias is now treated as already-satisfied instead of a
+  fatal error, and failures surface the actual `ip` output instead of a
+  bare exit code.
+- **Network policy: converge `ip_tenant` deletes, not just adds** (#923).
+  The reconcile loop upserted every managed container's tenant tag but
+  never deleted stale ones, unlike the egress/deny maps which already
+  diff-and-delete — a tag could leak past a container's IP being freed
+  or reused, requiring a daemon restart to clear.
+
+### Added
+
+- **incus-watchdog: auto-recover a wedged incusd** (#755). incusd can
+  hang with its process alive but its API unresponsive (a cgo call into
+  liblxc's command protocol blocking forever on an unresponsive
+  container monitor) — `systemctl restart` can't recover it because
+  incusd's own signal handlers are part of the deadlock. A new systemd
+  watchdog probes the API on an interval and, after repeated timeouts,
+  force-kills and restarts the service; running instances survive
+  (deploy/incus-watchdog/).
+
 ## [0.50.0] - 2026-07-10
 
 ### Fixed
