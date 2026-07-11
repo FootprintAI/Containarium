@@ -7,6 +7,7 @@ import (
 	"net"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -268,13 +269,52 @@ func preferredOctet(spotID string) byte {
 	return byte(2 + (h.Sum32() % 253))
 }
 
-// addLoopbackAlias adds an IP alias to the loopback interface.
+// addLoopbackAlias adds an IP alias to the loopback interface. Idempotent:
+// if the alias is already present, that's treated as success rather than
+// an error.
+//
+// This matters because allocateOctet's slot for a given spotID is a pure
+// function of spotID (#342) but the registry's usedIPs bookkeeping is
+// purely in-memory — it has no cross-restart memory. If the sentinel
+// process ever exits without running UnregisterAll (a crash, an OOM kill,
+// `kill -9`, anything that skips the graceful-shutdown path — the same
+// failure class #337 already flagged for restarts), the OS-level alias
+// for a still-connected spot survives the process death. On the next
+// startup, usedIPs starts empty, so allocateOctet freely reassigns that
+// spot's (deterministic, unchanged) preferred octet — and `ip addr add`
+// then fails with "RTNETLINK answers: File exists" because the address is
+// still there. Before this fix, that error aborted Register() and the
+// spot's tunnel client would retry, hash to the exact same octet, and
+// hit the exact same "already exists" error — forever, with no operator
+// visibility beyond an opaque "exit status 2" on the client side (found
+// live: a BYOC peer's tunnel silently wedged this way for a full week).
+// Since the goal of addLoopbackAlias is just "make sure this alias
+// exists," an already-present alias already satisfies that — so treat it
+// as success instead of a fatal error.
 func addLoopbackAlias(ip string) error {
 	if runtime.GOOS != "linux" {
 		log.Printf("[tunnel-registry] loopback alias %s: skipping on %s", ip, runtime.GOOS)
 		return nil
 	}
-	return exec.Command("ip", "addr", "add", ip+"/32", "dev", "lo").Run()
+	out, err := exec.Command("ip", "addr", "add", ip+"/32", "dev", "lo").CombinedOutput()
+	if err != nil {
+		if isAlreadyExistsErr(out) {
+			log.Printf("[tunnel-registry] loopback alias %s already present (stale from a prior crash?) — reusing", ip)
+			return nil
+		}
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// isAlreadyExistsErr reports whether `ip addr add`'s output indicates the
+// alias already exists (iproute2 prints "RTNETLINK answers: File exists"
+// and exits 2) rather than some other, genuinely fatal failure (bad
+// address, missing interface, permission denied, ...). Split out from
+// addLoopbackAlias so the detection logic is unit-testable without
+// shelling out to `ip` or needing CAP_NET_ADMIN.
+func isAlreadyExistsErr(cmdOutput []byte) bool {
+	return strings.Contains(string(cmdOutput), "File exists")
 }
 
 // removeLoopbackAlias removes an IP alias from the loopback interface.
