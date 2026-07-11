@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.2] - 2026-07-11
+
+### Fixed
+
+- **Startup scripts: avoid `useradd` primary-group collision on admin
+  usernames** (#929). Mirrors the fix already shipped in
+  `startup-spot.sh` into the other 4 startup scripts
+  (`terraform/gce/scripts/{startup,startup-sentinel}.sh`,
+  `terraform/modules/containarium/scripts/{startup,startup-sentinel}.sh`).
+  `useradd -G sudo <username>` auto-creates a same-named primary group,
+  which fails outright if a group of that name already exists (e.g.
+  "admin" collides with a group the stock Ubuntu GCE image ships) —
+  under `set -euo pipefail` this could abort an entire sentinel
+  bootstrap over one bad username (kafeido-infra#41).
+
+### Changed
+
+- Dependency bumps: `google.golang.org/grpc` 1.81.1 → 1.82.0,
+  `github.com/pires/go-proxyproto` 0.12.0 → 0.14.0,
+  `actions/checkout` 6 → 7, `azure/setup-helm` 4 → 5 (dependabot).
+
 ## [0.50.1] - 2026-07-11
 
 ### Fixed
