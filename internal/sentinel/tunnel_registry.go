@@ -296,7 +296,7 @@ func addLoopbackAlias(ip string) error {
 		log.Printf("[tunnel-registry] loopback alias %s: skipping on %s", ip, runtime.GOOS)
 		return nil
 	}
-	out, err := exec.Command("ip", "addr", "add", ip+"/32", "dev", "lo").CombinedOutput()
+	out, err := exec.Command("ip", "addr", "add", ip+"/32", "dev", "lo").CombinedOutput() // #nosec G204 -- ip is "127.0.0.<octet>", built internally by allocateOctet, never user input
 	if err != nil {
 		if isAlreadyExistsErr(out) {
 			log.Printf("[tunnel-registry] loopback alias %s already present (stale from a prior crash?) — reusing", ip)
