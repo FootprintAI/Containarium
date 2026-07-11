@@ -258,7 +258,12 @@ echo "==> Setting up admin users..."
 IFS=',' read -ra USERS <<< "$ADMIN_USERS"
 for username in "$${USERS[@]}"; do
     if ! id "$username" &>/dev/null; then
-        useradd -m -s /bin/bash -G sudo "$username"
+        # Create user without creating a new primary group (use existing or
+        # fall back to "users") — a bare useradd tries to auto-create a
+        # same-named primary group, which fails outright if a group of that
+        # name already exists (e.g. "admin" collides with a pre-existing
+        # system group shipped in the stock Ubuntu image; kafeido-infra#41).
+        useradd -m -s /bin/bash -N -G sudo "$username" || useradd -m -s /bin/bash -g users -G sudo "$username"
         echo "$username ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$username"
         chmod 0440 /etc/sudoers.d/"$username"
         echo "✓ Created user: $username"

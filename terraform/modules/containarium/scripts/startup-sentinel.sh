@@ -119,7 +119,15 @@ for username in "$${USERS[@]}"; do
     username=$(echo "$username" | xargs)
     if [ -z "$username" ]; then continue; fi
     if ! id "$username" &>/dev/null; then
-        useradd -m -s /bin/bash -G sudo "$username"
+        # Create user without creating a new primary group (use existing or
+        # fall back to "users") — a bare useradd tries to auto-create a
+        # same-named primary group, which fails outright if a group of that
+        # name already exists (e.g. "admin" collides with a pre-existing
+        # system group shipped in the stock Ubuntu image; kafeido-infra#41).
+        # This script runs under `set -euo pipefail`, so an unhandled
+        # failure here previously aborted the ENTIRE sentinel bootstrap
+        # (sshpiper, containarium, everything) over one bad username.
+        useradd -m -s /bin/bash -N -G sudo "$username" || useradd -m -s /bin/bash -g users -G sudo "$username"
         echo "$username ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$username"
         chmod 440 /etc/sudoers.d/"$username"
         mkdir -p /home/"$username"/.ssh
