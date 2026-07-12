@@ -840,7 +840,7 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 
 		// Get IP address - need to get state separately
 		// Priority: eth0 (Incus bridge) > other non-container interfaces > container bridge (docker0/podman0)
-		state, _, err := c.server.GetInstanceState(inst.Name)
+		state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
 		if err == nil && state.Network != nil {
 			var fallbackIP string
 
@@ -966,7 +966,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 
 	// Get IP address - need to get state separately
 	// Priority: eth0 (Incus bridge) > other non-container interfaces > container bridge (docker0/podman0)
-	state, _, err := c.server.GetInstanceState(name)
+	state, _, err := c.getInstanceStateWithRetry("get "+name, name)
 	if err == nil && state.Network != nil {
 		var fallbackIP string
 
@@ -1055,6 +1055,60 @@ func execWithRetry(what string, attempt func() error) error {
 		time.Sleep(time.Duration(i) * execBackoffBase)
 	}
 	return err
+}
+
+// stateMaxAttempts bounds retries of an incus GetInstanceState call on the
+// transient "Instance not found" failure (see isTransientStateErr). Same
+// 4-attempts/linear-backoff shape as execWithRetry — this is the
+// GetInstanceState sibling of that fix, for the same class of liblxc-socket
+// flakiness (OSS #931).
+const stateMaxAttempts = 4
+
+// stateBackoffBase is the linear backoff unit between GetInstanceState
+// retries. A var (not const) so tests can zero it; production keeps the
+// default.
+var stateBackoffBase = 150 * time.Millisecond
+
+// isTransientStateErr reports whether a GetInstanceState error is the
+// transient "Instance not found" failure a running instance can
+// spuriously report on some hosts (OSS #931): the daemon's single
+// long-lived Incus connection gets wedged for one specific instance —
+// `incus list` / `incus info` against the SAME host, at the SAME moment,
+// correctly report it RUNNING — while GetInstanceState keeps returning
+// "Instance not found" until a retry unwedges it. Retrying absorbs it; an
+// instance that's ACTUALLY gone keeps returning this on every attempt and
+// surfaces the same error once retries are exhausted, so this never masks
+// a real deletion.
+func isTransientStateErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Instance not found")
+}
+
+// getInstanceStateWithRetry runs c.server.GetInstanceState up to
+// stateMaxAttempts times, retrying ONLY the transient "Instance not found"
+// error (isTransientStateErr) with a linear backoff — the GetInstanceState
+// sibling of execWithRetry.
+func (c *Client) getInstanceStateWithRetry(what, name string) (*api.InstanceState, string, error) {
+	return stateWithRetry(what, func() (*api.InstanceState, string, error) {
+		return c.server.GetInstanceState(name)
+	})
+}
+
+// stateWithRetry is the generic retry loop behind getInstanceStateWithRetry,
+// split out (mirroring execWithRetry) so tests can exercise the retry/backoff
+// behavior against a fake attempt func without a real Incus server.
+func stateWithRetry(what string, attempt func() (*api.InstanceState, string, error)) (*api.InstanceState, string, error) {
+	var state *api.InstanceState
+	var etag string
+	var err error
+	for i := 1; i <= stateMaxAttempts; i++ {
+		state, etag, err = attempt()
+		if err == nil || !isTransientStateErr(err) || i == stateMaxAttempts {
+			return state, etag, err
+		}
+		log.Printf("[incus] %s: transient state error (attempt %d/%d), retrying: %v", what, i, stateMaxAttempts, err)
+		time.Sleep(time.Duration(i) * stateBackoffBase)
+	}
+	return state, etag, err
 }
 
 // Exec executes a command inside a container
@@ -1550,7 +1604,7 @@ func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) 
 
 // GetContainerMetrics gets runtime metrics for a container
 func (c *Client) GetContainerMetrics(name string) (*ContainerMetrics, error) {
-	state, _, err := c.server.GetInstanceState(name)
+	state, _, err := c.getInstanceStateWithRetry("metrics "+name, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container state: %w", err)
 	}
