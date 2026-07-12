@@ -167,39 +167,92 @@ if [ ! -f /etc/sshpiper/upstream_key ]; then
     echo "sshpiper upstream key generated"
 fi
 
-# Create sshpiper systemd service
-cat > /etc/systemd/system/sshpiper.service <<'EOF'
+# reconcile_sshpiper_service fetches the desired /etc/systemd/system/sshpiper.service
+# content LIVE from the "sshpiper-service-unit" instance-metadata key (not an
+# inline heredoc) and applies it only if it differs from what's on disk.
+#
+# Why: this whole startup-script only runs once, at first boot. A `terraform
+# apply` that tunes the unit (e.g. failtoban's --max-failures/--ban-duration)
+# updates the instance's metadata immediately, but an already-running
+# sentinel never re-reads it — the change silently never reaches production
+# until someone manually intervenes or the VM is recreated (issue #933: a
+# sentinel was found running month-old, far more aggressive failtoban
+# settings than what had shipped in this repo twice since). GCE metadata
+# values ARE fetchable live at any time via the metadata server, so this
+# function is installed as a periodic systemd timer (below) in addition to
+# running here at boot — the SAME source of truth both times, no drift.
+reconcile_sshpiper_service() {
+    desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
+        'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || {
+        echo "WARNING: failed to fetch sshpiper-service-unit metadata; leaving sshpiper.service as-is"
+        return 0
+    }
+
+    if [ -f /etc/systemd/system/sshpiper.service ] && [ "$(cat /etc/systemd/system/sshpiper.service)" = "$desired" ]; then
+        return 0
+    fi
+
+    printf '%s' "$desired" > /etc/systemd/system/sshpiper.service
+    systemctl daemon-reload
+    systemctl enable sshpiper >/dev/null 2>&1 || true
+
+    # Only restart if it was already running — on a fresh boot nothing has
+    # started it yet (that happens further down, after config.yaml is seeded).
+    if systemctl is-active --quiet sshpiper; then
+        systemctl restart sshpiper
+        echo "sshpiper.service content changed; reloaded and restarted"
+    else
+        echo "sshpiper.service content installed (not yet started)"
+    fi
+}
+
+reconcile_sshpiper_service
+
+# Periodic reconcile timer: re-runs reconcile_sshpiper_service every 6h so a
+# terraform-side tuning change reaches this sentinel without waiting for a
+# reboot/recreation (issue #933).
+cat > /usr/local/bin/reconcile-sshpiper-service.sh <<'RECONCILE_EOF'
+#!/bin/bash
+set -euo pipefail
+desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
+    'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || exit 0
+if [ -f /etc/systemd/system/sshpiper.service ] && [ "$(cat /etc/systemd/system/sshpiper.service)" = "$desired" ]; then
+    exit 0
+fi
+printf '%s' "$desired" > /etc/systemd/system/sshpiper.service
+systemctl daemon-reload
+systemctl enable sshpiper >/dev/null 2>&1 || true
+if systemctl is-active --quiet sshpiper; then
+    systemctl restart sshpiper
+    logger -t sshpiper-reconcile "sshpiper.service content changed; reloaded and restarted"
+fi
+RECONCILE_EOF
+chmod +x /usr/local/bin/reconcile-sshpiper-service.sh
+
+cat > /etc/systemd/system/sshpiper-reconcile.service <<'EOF'
 [Unit]
-Description=SSHPiper reverse proxy
-After=network.target
-# On a fresh deploy the routing config.yaml isn't written until the first
-# container exists (keysync). sshpiper may therefore fail to start for a
-# while; without disabling the start-rate limiter, Restart=always gives up
-# after StartLimitBurst and the :22 listener never comes back. Keysync
-# updates config but no longer restarts the service (see #404), so the
-# service must be able to retry until the config is valid.
-StartLimitIntervalSec=0
+Description=Reconcile sshpiper.service against current instance metadata (issue #933)
 
 [Service]
-ExecStart=/usr/local/bin/sshpiperd \
-  -i /etc/sshpiper/host_key \
-  -p 22 \
-  --drop-hostkeys-message \
-  yaml \
-  --config /etc/sshpiper/config.yaml \
-  -- \
-  failtoban \
-  --max-failures 100 \
-  --ban-duration 5m
-Restart=always
-RestartSec=5
+Type=oneshot
+ExecStart=/usr/local/bin/reconcile-sshpiper-service.sh
+EOF
+
+cat > /etc/systemd/system/sshpiper-reconcile.timer <<'EOF'
+[Unit]
+Description=Periodically reconcile sshpiper.service against current instance metadata (issue #933)
+
+[Timer]
+OnUnitActiveSec=6h
+OnBootSec=15min
+Persistent=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable sshpiper
+systemctl enable --now sshpiper-reconcile.timer
 
 # Seed a minimal (no-routes) config so sshpiper can bind :22 from boot;
 # keysync overwrites it with real per-tenant pipes once the first

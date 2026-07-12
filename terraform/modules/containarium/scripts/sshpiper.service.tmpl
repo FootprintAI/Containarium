@@ -1,0 +1,27 @@
+[Unit]
+Description=SSHPiper reverse proxy
+After=network.target
+# On a fresh deploy the routing config.yaml isn't written until the first
+# container exists (keysync). sshpiper may therefore fail to start for a
+# while; without disabling the start-rate limiter, Restart=always gives up
+# after StartLimitBurst and the :22 listener never comes back. Keysync
+# updates config but no longer restarts the service (see #404), so the
+# service must be able to retry until the config is valid.
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/sshpiperd \
+  -i /etc/sshpiper/host_key \
+  -p 22 \
+  --drop-hostkeys-message \
+  yaml \
+  --config /etc/sshpiper/config.yaml \
+  -- \
+  failtoban \
+  --max-failures 100 \
+  --ban-duration 5m
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

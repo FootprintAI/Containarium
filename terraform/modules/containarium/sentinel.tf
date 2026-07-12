@@ -57,6 +57,15 @@ resource "google_compute_instance" "sentinel" {
       for user, key in var.admin_ssh_keys :
       "${user}:${key}"
     ])
+    # Its own metadata key (not inlined in startup-script) so the periodic
+    # reconcile timer in startup-sentinel.sh can fetch the CURRENT desired
+    # unit content live from the metadata server without a reboot — GCE
+    # metadata updates apply immediately on `terraform apply`, but the
+    # startup-script itself only runs once at boot. Before this, a tuning
+    # change here (e.g. failtoban's --max-failures/--ban-duration) silently
+    # never reached already-running sentinels (issue #933) — some sentinels
+    # kept running months-stale, far more aggressive settings indefinitely.
+    sshpiper-service-unit = file("${path.module}/scripts/sshpiper.service.tmpl")
     startup-script = templatefile("${path.module}/scripts/startup-sentinel.sh", {
       admin_users             = keys(var.admin_ssh_keys)
       containarium_version    = var.containarium_version
