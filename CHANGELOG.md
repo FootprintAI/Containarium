@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.2] - 2026-07-14
+
+### Fixed
+
+- **`pool join` never provisioned `CONTAINARIUM_SENTINEL_AUTH_SECRET` on
+  the joining daemon** (Containarium-cloud#687). The sentinel's keysync
+  signs every `/authorized-keys` request with this shared secret;
+  without it on the daemon side, every sync cycle 401s, the host never
+  accumulates users, and it never gets an sshpiper pipe entry — SSH to
+  its containers silently never works. Confirmed live against a
+  production sentinel's logs (`unexpected status 401 from
+  http://127.0.0.216:8080/authorized-keys`). Terraform-provisioned GCP
+  workhorses got this automatically via their startup script; hosts
+  joined via `pool join` (BYO-compute) never did. Adds
+  `--sentinel-auth-secret` to `pool join`, written to a root-only 0600
+  env file and wired via `EnvironmentFile=` (never inline in the
+  world-readable drop-in). Missing secret now warns explicitly instead
+  of silently leaving SSH broken; keysync's own 401 log line now names
+  the likely cause.
+- **Container `image` field was always empty** (Containarium-cloud#870),
+  showing as `unknown` for every adopted container in the webui. Not a
+  discarded field on the cloud side — OSS never computed/returned an
+  image at any layer. Incus already auto-populates `image.description` /
+  `volatile.base_image` on every launch; now read through
+  `ListContainers`/`GetContainer` into the `Container.image` proto
+  field (already defined, previously always empty).
+
 ## [0.51.1] - 2026-07-13
 
 ### Fixed
