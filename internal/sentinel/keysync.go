@@ -307,6 +307,13 @@ func (ks *KeyStore) RunSyncLoopLegacy(ctx context.Context, backendIP string, htt
 func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) {
 	if err := ks.Sync(backendID, backendIP, httpPort); err != nil {
 		log.Printf("[keysync] sync failed for %s: %v", backendID, err)
+		if strings.Contains(err.Error(), "unexpected status 401") {
+			log.Printf("[keysync] backend %s rejected the signed /authorized-keys request with 401 — "+
+				"this backend's CONTAINARIUM_SENTINEL_AUTH_SECRET doesn't match this sentinel's (or is unset). "+
+				"Until fixed, this backend never gets an sshpiper pipe entry and SSH to its containers silently "+
+				"fails with 'no matching pipe' (#687). Fix: set matching CONTAINARIUM_SENTINEL_AUTH_SECRET on both ends "+
+				"(BYOC hosts: `pool join --sentinel-auth-secret ...`).", backendID)
+		}
 		return
 	}
 

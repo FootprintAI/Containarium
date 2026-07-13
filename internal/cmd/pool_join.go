@@ -31,6 +31,14 @@ const (
 	daemonDropInDir = "/etc/systemd/system/containarium.service.d"
 	daemonDropIn    = daemonDropInDir + "/pool.conf"
 	daemonBinPath   = "/usr/local/bin/containarium"
+
+	// sentinelAuthSecretFile holds CONTAINARIUM_SENTINEL_AUTH_SECRET for the
+	// EnvironmentFile= directive in the pool drop-in (see renderPoolDropIn).
+	// Separate from daemonDropIn (which stays 0644/no-secrets by convention,
+	// #341) so the fleet-wide HMAC secret this host needs to authenticate
+	// the sentinel's keysync/certsync requests never lands in a
+	// world-readable file.
+	sentinelAuthSecretFile = "/etc/containarium/sentinel-auth.env"
 )
 
 // minimalDaemonArgv is the baseline daemon command used when no existing
@@ -41,19 +49,20 @@ func minimalDaemonArgv() []string {
 }
 
 var (
-	poolJoinSentinels         []string
-	poolJoinRegion            string
-	poolJoinToken             string
-	poolJoinPool              string
-	poolJoinSpotID            string
-	poolJoinPorts             string
-	poolJoinPublicHostname    string
-	poolJoinPublicPort        int
-	poolJoinBaseDomain        string
-	poolJoinDryRun            bool
-	poolJoinDaemonFlags       []string
-	poolJoinCloudControlPlane string
-	poolJoinCloudInsecure     bool
+	poolJoinSentinels          []string
+	poolJoinRegion             string
+	poolJoinToken              string
+	poolJoinPool               string
+	poolJoinSpotID             string
+	poolJoinPorts              string
+	poolJoinPublicHostname     string
+	poolJoinPublicPort         int
+	poolJoinBaseDomain         string
+	poolJoinDryRun             bool
+	poolJoinDaemonFlags        []string
+	poolJoinCloudControlPlane  string
+	poolJoinCloudInsecure      bool
+	poolJoinSentinelAuthSecret string
 )
 
 var poolJoinCmd = &cobra.Command{
@@ -104,6 +113,7 @@ func init() {
 	poolJoinCmd.Flags().StringArrayVar(&poolJoinDaemonFlags, "daemon-flag", nil, "Extra daemon flag to carry into the unit (repeatable), e.g. --daemon-flag=--app-hosting --daemon-flag=--network-subnet=10.0.0.0/24. Use to add/override flags on top of the preserved/baseline set")
 	poolJoinCmd.Flags().StringVar(&poolJoinCloudControlPlane, "cloud-control-plane", "", "Also self-register this host with a cloud control plane (e.g. https://cloud.containarium.dev) using the same --token, right after the tunnel comes up. Optional — omit for a plain OSS pool join with no cloud involvement. A failure here is a warning, not a join failure: the tunnel is joined either way.")
 	poolJoinCmd.Flags().BoolVar(&poolJoinCloudInsecure, "cloud-insecure", false, "Dial --cloud-control-plane without TLS (local dev only; ignored unless --cloud-control-plane is set)")
+	poolJoinCmd.Flags().StringVar(&poolJoinSentinelAuthSecret, "sentinel-auth-secret", os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET"), "Fleet-wide HMAC secret (32+ bytes) matching the sentinel's CONTAINARIUM_SENTINEL_AUTH_SECRET. Without it, the sentinel's keysync/certsync requests to this host's /authorized-keys get rejected with 401 — this host stays joined to the tunnel but never gets an SSH pipe (#687). Defaults to $CONTAINARIUM_SENTINEL_AUTH_SECRET; written to a root-only env file, never into the world-readable drop-in")
 }
 
 // tunnelUnitParams are the inputs to the tunnel systemd unit.
@@ -155,9 +165,17 @@ func renderTunnelUnit(p tunnelUnitParams) string {
 // renderPoolDropIn renders the daemon drop-in that sets ExecStart to the
 // resolved argv (which already carries the preserved/baseline flags + --pool /
 // --base-domain). Pure. systemd override semantics: clear then re-set.
-func renderPoolDropIn(argv []string) string {
+//
+// authSecretFile, when non-empty, adds an EnvironmentFile= directive pointing
+// at the root-only file holding CONTAINARIUM_SENTINEL_AUTH_SECRET (#687) —
+// never inline as Environment=, since this drop-in itself stays 0644/no-secrets
+// by convention (#341).
+func renderPoolDropIn(argv []string, authSecretFile string) string {
 	var b strings.Builder
 	b.WriteString("[Service]\n")
+	if authSecretFile != "" {
+		fmt.Fprintf(&b, "EnvironmentFile=%s\n", authSecretFile)
+	}
 	b.WriteString("ExecStart=\n")
 	b.WriteString("ExecStart=" + strings.Join(argv, " ") + "\n")
 	return b.String()
@@ -259,6 +277,9 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if poolJoinPublicHostname != "" && poolJoinPublicPort == 0 {
 		return fmt.Errorf("--public-port is required when --public-hostname is set")
 	}
+	if poolJoinSentinelAuthSecret != "" && len(poolJoinSentinelAuthSecret) < 32 {
+		return fmt.Errorf("--sentinel-auth-secret must be at least 32 characters (got %d)", len(poolJoinSentinelAuthSecret))
+	}
 	spotID := poolJoinSpotID
 	if spotID == "" {
 		h, err := os.Hostname()
@@ -292,7 +313,11 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	// command and silently dropping e.g. --app-hosting / --network-subnet.
 	current, found := currentDaemonArgv()
 	daemonArgv := resolvePoolDaemonArgv(current, found, poolJoinPool, poolJoinBaseDomain, poolJoinDaemonFlags)
-	dropIn := renderPoolDropIn(daemonArgv)
+	authSecretFile := ""
+	if poolJoinSentinelAuthSecret != "" {
+		authSecretFile = sentinelAuthSecretFile
+	}
+	dropIn := renderPoolDropIn(daemonArgv, authSecretFile)
 	if !found {
 		fmt.Println("# WARNING: could not read an existing daemon ExecStart.")
 		fmt.Println("#   Using the minimal baseline (--rest --jwt-secret-file). If this host")
@@ -300,6 +325,13 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		fmt.Println("#   --network-subnet), pass them via --daemon-flag to preserve them.")
 	} else {
 		fmt.Printf("# Preserving existing daemon ExecStart flags; resulting command:\n#   %s\n", strings.Join(daemonArgv, " "))
+	}
+	if authSecretFile == "" {
+		fmt.Println("# WARNING: --sentinel-auth-secret not set (and $CONTAINARIUM_SENTINEL_AUTH_SECRET is")
+		fmt.Println("#   empty). This host will join the tunnel but the sentinel's keysync/certsync")
+		fmt.Println("#   requests to it will be rejected with 401 — SSH to containers on this host")
+		fmt.Println("#   will silently never work (#687). Pass --sentinel-auth-secret matching the")
+		fmt.Println("#   sentinel's value to fix this now, or re-run with it set later.")
 	}
 	tunnel := renderTunnelUnit(tunnelUnitParams{
 		SentinelAddr:   sentinelAddr,
@@ -313,6 +345,9 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 
 	if poolJoinDryRun {
 		fmt.Printf("# would ensure the canonical daemon unit (%s) + JWT secret\n\n", systemdServicePath)
+		if authSecretFile != "" {
+			fmt.Printf("# %s (mode 0600, contents redacted)\nCONTAINARIUM_SENTINEL_AUTH_SECRET=<redacted, %d bytes>\n\n", authSecretFile, len(poolJoinSentinelAuthSecret))
+		}
 		fmt.Printf("# %s\n%s\n", daemonDropIn, dropIn)
 		fmt.Printf("# %s\n%s\n", tunnelUnitPath, tunnel)
 		fmt.Println("# (dry-run: nothing written; re-run without --dry-run as root to apply)")
@@ -326,6 +361,17 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	// 1. Canonical hardened daemon unit + JWT secret (shared with `service install`).
 	if err := ensureDaemonUnitAndSecret(); err != nil {
 		return err
+	}
+	// 1b. Sentinel HMAC auth secret (#687) — root-only, referenced by the
+	// drop-in's EnvironmentFile= rather than embedded in it.
+	if authSecretFile != "" {
+		if err := os.MkdirAll("/etc/containarium", 0700); err != nil {
+			return fmt.Errorf("create config directory: %w", err)
+		}
+		content := fmt.Sprintf("CONTAINARIUM_SENTINEL_AUTH_SECRET=%s\n", poolJoinSentinelAuthSecret)
+		if err := os.WriteFile(authSecretFile, []byte(content), 0600); err != nil {
+			return fmt.Errorf("write sentinel auth secret file: %w", err)
+		}
 	}
 	// 2. --pool drop-in on the daemon unit.
 	// #nosec G301 -- systemd drop-in dir, world-readable config by convention (no secrets)

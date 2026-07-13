@@ -73,7 +73,7 @@ func TestRenderTunnelUnit_PublicPrimary(t *testing.T) {
 func TestRenderPoolDropIn(t *testing.T) {
 	// ExecStart must be cleared then re-set (systemd override semantics).
 	argv := resolvePoolDaemonArgv(nil, false, "prod", "", nil)
-	d := renderPoolDropIn(argv)
+	d := renderPoolDropIn(argv, "")
 	if !strings.Contains(d, "ExecStart=\nExecStart=/usr/local/bin/containarium daemon") {
 		t.Errorf("drop-in must clear+reset ExecStart:\n%s", d)
 	}
@@ -83,9 +83,26 @@ func TestRenderPoolDropIn(t *testing.T) {
 	if strings.Contains(d, "--base-domain") {
 		t.Errorf("drop-in should omit --base-domain when empty:\n%s", d)
 	}
-	d2 := renderPoolDropIn(resolvePoolDaemonArgv(nil, false, "prod", "boxes.example.com", nil))
+	if strings.Contains(d, "EnvironmentFile") {
+		t.Errorf("drop-in should omit EnvironmentFile when no auth secret file given:\n%s", d)
+	}
+	d2 := renderPoolDropIn(resolvePoolDaemonArgv(nil, false, "prod", "boxes.example.com", nil), "")
 	if !strings.Contains(d2, "--base-domain boxes.example.com") {
 		t.Errorf("drop-in missing --base-domain when set:\n%s", d2)
+	}
+}
+
+// TestRenderPoolDropIn_SentinelAuthSecret pins #687's fix: the drop-in must
+// reference the auth-secret file via EnvironmentFile=, never embed the
+// secret value inline (the drop-in itself stays 0644/world-readable).
+func TestRenderPoolDropIn_SentinelAuthSecret(t *testing.T) {
+	argv := resolvePoolDaemonArgv(nil, false, "prod", "", nil)
+	d := renderPoolDropIn(argv, "/etc/containarium/sentinel-auth.env")
+	if !strings.Contains(d, "EnvironmentFile=/etc/containarium/sentinel-auth.env") {
+		t.Errorf("drop-in missing EnvironmentFile directive:\n%s", d)
+	}
+	if strings.Contains(d, "CONTAINARIUM_SENTINEL_AUTH_SECRET") {
+		t.Errorf("drop-in must never embed the secret value inline:\n%s", d)
 	}
 }
 
