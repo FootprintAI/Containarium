@@ -214,6 +214,7 @@ func StatusFromInfo(info *incus.ContainerInfo) box.BoxStatus {
 		StoppedAt:                 info.StoppedAt,
 		DeleteAfterStoppedSeconds: info.DeleteAfterStoppedSeconds,
 		DeletePolicy:              info.DeletePolicy,
+		Image:                     info.Image,
 	}
 }
 

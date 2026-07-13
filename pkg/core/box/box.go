@@ -150,6 +150,11 @@ type BoxStatus struct {
 	StoppedAt                 time.Time
 	DeleteAfterStoppedSeconds int64
 	DeletePolicy              string // "protected" or "" (unprotected)
+
+	// Image is a human-readable label for the image the box was launched
+	// from (LXC: Incus's image.description / volatile.base_image config
+	// keys). Empty when the backend has no such data.
+	Image string
 }
 
 // BoxMetrics is the runtime-neutral form of a box's runtime metrics.

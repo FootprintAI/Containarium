@@ -375,6 +375,12 @@ type ContainerInfo struct {
 	// auto-reap, `containarium prune`) skips the box — only a deliberate
 	// single-box delete can remove it. Empty = unprotected (today's default).
 	DeletePolicy string
+
+	// Image is a human-readable description of the image the container was
+	// launched from (Incus's auto-populated image.description config key,
+	// falling back to the volatile.base_image fingerprint). Empty if Incus
+	// never recorded either — e.g. a container created by a very old client.
+	Image string
 }
 
 // AutoSleepEnabledKey is the Incus config key storing the per-container
@@ -791,6 +797,7 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 			StoppedAt:                 parseStoppedAt(inst.Config),
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
+			Image:                     imageDescriptionFromConfig(inst.Config),
 		}
 
 		// Get CPU and memory limits from config
@@ -916,6 +923,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
+		Image:                imageDescriptionFromConfig(inst.Config),
 	}
 
 	// Get resource limits
@@ -1442,6 +1450,20 @@ func (c *Client) GetContainerImageFingerprint(containerName string) (string, err
 		return "", fmt.Errorf("get instance for fingerprint: %w", err)
 	}
 	return inst.Config["volatile.base_image"], nil
+}
+
+// imageDescriptionFromConfig returns a human-readable label for the image a
+// container was launched from. Prefers Incus's auto-populated
+// image.description (e.g. "Ubuntu 24.04 LTS server"), falling back to the
+// volatile.base_image fingerprint when the description is missing — both
+// are set by Incus itself at launch, so this needs no extra plumbing on
+// either cloud-created or pre-existing BYOC containers. Empty when neither
+// key is present (e.g. a container from a very old client).
+func imageDescriptionFromConfig(config map[string]string) string {
+	if desc := config["image.description"]; desc != "" {
+		return desc
+	}
+	return config["volatile.base_image"]
 }
 
 // SetCPULimit updates a container's CPU limit, translating the request into

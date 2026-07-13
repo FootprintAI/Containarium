@@ -2985,6 +2985,7 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		MonitoringEnabled:    st.MonitoringEnabled,
 		AutoSleepEnabled:     st.AutoSleepEnabled,
 		IdleThresholdMinutes: st.IdleThresholdMinutes,
+		Image:                st.Image,
 	}
 	// TTL — populated by SetContainerTTL on the writer side. Zero value means
 	// no TTL set (parser silently drops missing/unparseable keys; a corrupted
