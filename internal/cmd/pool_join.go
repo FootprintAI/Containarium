@@ -38,7 +38,7 @@ const (
 	// #341) so the fleet-wide HMAC secret this host needs to authenticate
 	// the sentinel's keysync/certsync requests never lands in a
 	// world-readable file.
-	sentinelAuthSecretFile = "/etc/containarium/sentinel-auth.env"
+	sentinelAuthSecretFile = "/etc/containarium/sentinel-auth.env" // #nosec G101 -- a file PATH, not a credential
 )
 
 // minimalDaemonArgv is the baseline daemon command used when no existing
