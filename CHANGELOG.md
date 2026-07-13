@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-07-13
+
+### Fixed
+
+- **Incus: retry transient "Instance not found" on GetInstanceState**
+  (#931). The daemon's single long-lived Incus connection could get
+  wedged for a specific instance, making `GetContainerMetrics` /
+  `ListContainers` / `GetContainer` spuriously report an instance as
+  gone even though `incus list`/`incus info` confirmed it was genuinely
+  running — restarting the daemon cleared it, but it recurred within
+  hours under normal polling load on affected hosts. Extends the
+  existing `execWithRetry` precedent (a sibling liblxc transient-error
+  fix) to `GetInstanceState`: a narrow, capped retry with linear
+  backoff. A genuinely deleted instance still fails cleanly once
+  retries are exhausted. (#932)
+- **Sentinel: reconcile `sshpiper.service` against live metadata, not
+  just at boot** (#933). The sentinel startup-script only runs once at
+  boot, so tuning `sshpiper`'s failtoban flags (`--max-failures`/
+  `--ban-duration`) in this repo never reached already-running
+  sentinels — a production sentinel was found still running the
+  *original* `--max-failures 3 --ban-duration 1h`, 33x stricter and
+  12x longer-banning than the `100`/`5m` shipped two months earlier,
+  causing legitimate clients to get silently banned for an hour on a
+  handful of failed connection attempts. The `sshpiper.service` unit
+  content now lives in its own instance-metadata key, with a new
+  `sshpiper-reconcile.timer` (every 6h) that fetches and applies the
+  current desired content live — no restart needed for future tuning
+  to take effect. (#934)
+
+### Added
+
+- **Sentinel: `sentinel_admin_secret` Terraform variable** (#935,
+  #936). Wires `CONTAINARIUM_SENTINEL_ADMIN_SECRET` through to the
+  sentinel, enabling its existing (but previously unreachable)
+  `POST /sentinel/tunnel-tokens` runtime path — the mechanism that lets
+  a freshly-minted BYOC join token actually be registered with the
+  sentinel's tunnel-handshake auth without a full sentinel restart.
+  Terraform-only in this repo; a companion Containarium-cloud change
+  calls this endpoint from `MintHostJoinToken`. (#943)
+
 ## [0.50.2] - 2026-07-11
 
 ### Fixed
