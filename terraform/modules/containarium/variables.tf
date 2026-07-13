@@ -198,6 +198,32 @@ variable "sentinel_auth_secret" {
   default     = ""
 }
 
+# `sentinel_admin_secret` gates POST /sentinel/tunnel-tokens — the runtime
+# path that lets an authorized caller (a cloud control plane's token-issuance
+# service, or an operator) register a freshly-minted tunnel-join token on an
+# already-running sentinel without a restart. Deliberately a SEPARATE secret
+# from sentinel_auth_secret: registering a brand-new node into a pool is a
+# materially bigger capability than the intra-cluster keysync/certsync
+# operations sentinel_auth_secret gates, so a compromised daemon holding only
+# the cluster-wide HMAC secret shouldn't also be able to mint tunnel access.
+#
+# When empty, the sentinel's TunnelTokenRegisterHandler stays disabled (its
+# own default, safe state) — a freshly-minted BYOC join token then has no way
+# to become valid on the sentinel except a full sentinel restart with
+# --tunnel-token-policy, which is exactly the gap that leaves BYOC hosts
+# unable to reconnect after enrollment (Containarium#935/#936).
+#
+# Generate with:
+#   openssl rand -base64 48
+#
+# Must be at least 32 bytes after any encoding (sentinel.SentinelMinSecretLen).
+variable "sentinel_admin_secret" {
+  description = "Shared HMAC secret gating POST /sentinel/tunnel-tokens (dynamic BYOC join-token registration). 32+ bytes. Empty = the endpoint stays disabled and freshly-minted join tokens are never registered with the sentinel."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # `enable_peer_mtls` turns on the Phase 0.5 peer-CA path. When true,
 # the sentinel auto-generates an RSA-4096 CA private key at
 # `/etc/containarium/ca.key` on first boot, mints itself a server

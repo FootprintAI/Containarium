@@ -290,16 +290,24 @@ chmod 0700 /etc/containarium
 # Empty terraform var → file omitted → daemon logs a loud WARNING
 # and the audit-known endpoints stay vulnerable.
 SENTINEL_AUTH_SECRET="${sentinel_auth_secret}"
-if [ -n "$SENTINEL_AUTH_SECRET" ]; then
+# CONTAINARIUM_SENTINEL_ADMIN_SECRET gates POST /sentinel/tunnel-tokens —
+# see variables.tf's sentinel_admin_secret doc comment. Separate secret from
+# CONTAINARIUM_SENTINEL_AUTH_SECRET on purpose (bigger capability).
+SENTINEL_ADMIN_SECRET="${sentinel_admin_secret}"
+if [ -n "$SENTINEL_AUTH_SECRET" ] || [ -n "$SENTINEL_ADMIN_SECRET" ]; then
     umask 077
-    cat > /etc/containarium/env.secrets <<EOF
-CONTAINARIUM_SENTINEL_AUTH_SECRET=$SENTINEL_AUTH_SECRET
-EOF
+    : > /etc/containarium/env.secrets
+    if [ -n "$SENTINEL_AUTH_SECRET" ]; then
+        echo "CONTAINARIUM_SENTINEL_AUTH_SECRET=$SENTINEL_AUTH_SECRET" >> /etc/containarium/env.secrets
+    fi
+    if [ -n "$SENTINEL_ADMIN_SECRET" ]; then
+        echo "CONTAINARIUM_SENTINEL_ADMIN_SECRET=$SENTINEL_ADMIN_SECRET" >> /etc/containarium/env.secrets
+    fi
     chmod 0600 /etc/containarium/env.secrets
-    echo "✓ /etc/containarium/env.secrets written from terraform var"
+    echo "✓ /etc/containarium/env.secrets written from terraform vars"
 else
     rm -f /etc/containarium/env.secrets
-    echo "⚠ sentinel_auth_secret terraform var is empty — Phase 0.4/0.6 disabled, sentinel endpoints return 401 / unsigned"
+    echo "⚠ sentinel_auth_secret and sentinel_admin_secret terraform vars are both empty — Phase 0.4/0.6 disabled (sentinel endpoints return 401/unsigned) AND /sentinel/tunnel-tokens is disabled (dynamic BYOC join-token registration will not work — Containarium#935/#936)"
 fi
 
 # Peer-CA private key (Phase 0.5). Auto-generated on first boot if
@@ -341,6 +349,8 @@ if [ -f /usr/local/bin/containarium ]; then
     #   - CONTAINARIUM_SENTINEL_AUTH_SECRET  (HMAC for /authorized-keys,
     #     /certs, /sentinel/ca, /sentinel/peer-cert; signs
     #     /sentinel/peers response)
+    #   - CONTAINARIUM_SENTINEL_ADMIN_SECRET (HMAC gating POST
+    #     /sentinel/tunnel-tokens — dynamic BYOC join-token registration)
     #   - CONTAINARIUM_CA_KEY_FILE           (peer-CA private key path)
     #
     # `EnvironmentFile=-/path` with the leading dash tells systemd to

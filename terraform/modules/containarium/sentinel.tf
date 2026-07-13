@@ -75,6 +75,7 @@ resource "google_compute_instance" "sentinel" {
       project_id              = var.project_id
       enable_proxy_protocol   = var.enable_proxy_protocol
       sentinel_auth_secret    = var.sentinel_auth_secret
+      sentinel_admin_secret   = var.sentinel_admin_secret
       enable_peer_mtls        = var.enable_peer_mtls
     })
   }
