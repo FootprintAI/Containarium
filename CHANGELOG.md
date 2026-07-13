@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-07-13
+
+### Fixed
+
+- **Sentinel loopback-alias idempotency fix (#927) missed a second
+  iproute2 already-exists message format** (#945). #927 treated
+  "alias already present" as success, but its detection only matched
+  `"File exists"` (older raw-netlink-style iproute2). A newer iproute2
+  build reports the identical condition as `"Error: ipv4: Address
+  already assigned."`, with no `"File exists"` substring at all —
+  live-confirmed blocking a real BYOC host's tunnel reconnect on every
+  single attempt, the exact "wedged forever" failure #927 set out to
+  eliminate. (#946)
+
 ## [0.51.0] - 2026-07-13
 
 ### Fixed
