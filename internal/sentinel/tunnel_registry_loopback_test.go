@@ -3,9 +3,9 @@ package sentinel
 import "testing"
 
 // TestIsAlreadyExistsErr pins the detection logic behind addLoopbackAlias's
-// idempotency fix: only "RTNETLINK answers: File exists" (the alias is
-// already there — safe to treat as success) should be swallowed. Anything
-// else must still surface as a real failure.
+// idempotency fix: two distinct iproute2 message formats for the identical
+// "alias already there — safe to treat as success" condition must both be
+// swallowed. Anything else must still surface as a real failure.
 func TestIsAlreadyExistsErr(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -13,13 +13,22 @@ func TestIsAlreadyExistsErr(t *testing.T) {
 		want   bool
 	}{
 		{
-			name:   "real iproute2 already-exists output",
+			name:   "real iproute2 already-exists output (older/raw-netlink style)",
 			output: "RTNETLINK answers: File exists\n",
 			want:   true,
 		},
 		{
 			name:   "already-exists text embedded in a longer message",
 			output: "Error: ipv4: Address already assigned.\nRTNETLINK answers: File exists\n",
+			want:   true,
+		},
+		// Live-confirmed production output (newer libnl-style iproute2) —
+		// this alone, with NO "File exists" substring anywhere, is what
+		// actually failed a real BYOC host's tunnel registration on every
+		// reconnect until this case was added.
+		{
+			name:   "standalone newer-iproute2 already-assigned output, no File exists substring",
+			output: "Error: ipv4: Address already assigned.\n",
 			want:   true,
 		},
 		{

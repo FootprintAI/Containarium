@@ -308,13 +308,25 @@ func addLoopbackAlias(ip string) error {
 }
 
 // isAlreadyExistsErr reports whether `ip addr add`'s output indicates the
-// alias already exists (iproute2 prints "RTNETLINK answers: File exists"
-// and exits 2) rather than some other, genuinely fatal failure (bad
+// alias already exists rather than some other, genuinely fatal failure (bad
 // address, missing interface, permission denied, ...). Split out from
 // addLoopbackAlias so the detection logic is unit-testable without
 // shelling out to `ip` or needing CAP_NET_ADMIN.
+//
+// Matches TWO distinct message formats for the identical condition, since
+// different iproute2 builds phrase it differently:
+//   - "RTNETLINK answers: File exists" (older/raw-netlink-style iproute2)
+//   - "Error: ipv4: Address already assigned." (newer libnl-style iproute2)
+//
+// Live-confirmed gap: the original fix (#927) only matched "File exists",
+// so a sentinel running the newer message format still hit the exact fatal
+// error #927 set out to eliminate — found live when a BYOC host's tunnel
+// registration kept failing with "Error: ipv4: Address already assigned."
+// on every reconnect attempt, indistinguishable from a genuine fatal error
+// on the client side beyond an opaque "exit status 2".
 func isAlreadyExistsErr(cmdOutput []byte) bool {
-	return strings.Contains(string(cmdOutput), "File exists")
+	out := string(cmdOutput)
+	return strings.Contains(out, "File exists") || strings.Contains(out, "Address already assigned")
 }
 
 // removeLoopbackAlias removes an IP alias from the loopback interface.
