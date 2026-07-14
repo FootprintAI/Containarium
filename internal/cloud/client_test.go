@@ -26,9 +26,13 @@ type fakeActuation struct {
 	enrollHostID    string
 	enrollDriverTok string
 	enrollBackendID string
-	statusBearer    string
-	statusReq       *cloudv1.ReportHostStatusRequest
-	statusReports   int
+	// enrollHostIDOverride, when set, makes EnrollHost return this id instead
+	// of the join token's own embedded id — simulating a cloud #572 re-enroll,
+	// where the cloud resolves to a pre-existing host row with a different id.
+	enrollHostIDOverride string
+	statusBearer         string
+	statusReq            *cloudv1.ReportHostStatusRequest
+	statusReports        int
 }
 
 // EnrollHost echoes back the host id embedded in the join token (first
@@ -42,6 +46,9 @@ func (f *fakeActuation) EnrollHost(_ context.Context, req *cloudv1.EnrollHostReq
 	id := req.GetJoinToken()
 	if i := indexByte(id, '.'); i >= 0 {
 		id = id[:i]
+	}
+	if f.enrollHostIDOverride != "" {
+		id = f.enrollHostIDOverride
 	}
 	f.enrollHostID = id
 	return &cloudv1.EnrollHostResponse{HostId: id}, nil
@@ -386,13 +393,16 @@ func TestEnroll_RedeemsTokenAndReturnsHostID(t *testing.T) {
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
-	hostID, err := Enroll(context.Background(), lis.Addr().String(), "host-uuid.secret", true,
+	hostID, bearer, err := Enroll(context.Background(), lis.Addr().String(), "host-uuid.secret", true,
 		EnrollOptions{DriverToken: "admin.jwt.tok", OSSBackendID: "tunnel-gpu-1"})
 	if err != nil {
 		t.Fatalf("Enroll: %v", err)
 	}
 	if hostID != "host-uuid" {
 		t.Errorf("want host id host-uuid, got %q", hostID)
+	}
+	if bearer != "host-uuid.secret" {
+		t.Errorf("want bearer host-uuid.secret, got %q", bearer)
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
@@ -404,6 +414,35 @@ func TestEnroll_RedeemsTokenAndReturnsHostID(t *testing.T) {
 	}
 	if fake.enrollBackendID != "tunnel-gpu-1" {
 		t.Errorf("server saw backend id %q", fake.enrollBackendID)
+	}
+}
+
+// TestEnroll_ReEnrollRebuildsBearerFromReturnedHostID pins the cloud #572
+// re-enroll case over gRPC (mirrors TestEnrollREST_ReEnroll for the REST
+// transport): the server resolves the join token to an EXISTING host row
+// whose id differs from the token's own embedded (throwaway) id. The
+// persisted bearer must be rebuilt from the RETURNED id, or every subsequent
+// heartbeat 401s forever.
+func TestEnroll_ReEnrollRebuildsBearerFromReturnedHostID(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := grpc.NewServer()
+	fake := &fakeActuation{enrollHostIDOverride: "existing-host-999"}
+	cloudv1.RegisterActuationServiceServer(srv, fake)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	hostID, bearer, err := Enroll(context.Background(), lis.Addr().String(), "throwaway-host-123.secret", true, EnrollOptions{})
+	if err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+	if hostID != "existing-host-999" {
+		t.Errorf("want host id existing-host-999, got %q", hostID)
+	}
+	if bearer != "existing-host-999.secret" {
+		t.Errorf("want bearer rebuilt from the returned id (existing-host-999.secret), got %q", bearer)
 	}
 }
 

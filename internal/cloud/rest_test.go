@@ -78,7 +78,7 @@ func TestEnrollREST(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := enrollREST(context.Background(), srv.URL, "host-123.secret",
+	id, bearer, err := enrollREST(context.Background(), srv.URL, "host-123.secret",
 		EnrollOptions{DriverToken: "admin.jwt", OSSBackendID: "tunnel-fts-13700k"})
 	if err != nil {
 		t.Fatalf("enrollREST: %v", err)
@@ -86,7 +86,35 @@ func TestEnrollREST(t *testing.T) {
 	if id != "host-123" {
 		t.Errorf("host id = %q, want host-123", id)
 	}
+	if bearer != "host-123.secret" {
+		t.Errorf("bearer = %q, want host-123.secret (first enroll: response id matches the token's own id)", bearer)
+	}
 	if got.GetJoinToken() != "host-123.secret" || got.GetDriverToken() != "admin.jwt" || got.GetOssBackendId() != "tunnel-fts-13700k" {
 		t.Errorf("server saw join=%q driver=%q backend=%q", got.GetJoinToken(), got.GetDriverToken(), got.GetOssBackendId())
+	}
+}
+
+// TestEnrollREST_ReEnroll pins the cloud #572 re-enroll case: the cloud
+// resolves the join token to an EXISTING host row (matched on oss_backend_id)
+// whose id differs from the throwaway id embedded in the join token itself.
+// The bearer persisted client-side must use the RETURNED host id, not the
+// token's own id — otherwise every heartbeat after a re-enroll 401s forever
+// (the throwaway id was never created as an actual host row).
+func TestEnrollREST_ReEnroll(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hostId":"existing-host-999"}`))
+	}))
+	defer srv.Close()
+
+	id, bearer, err := enrollREST(context.Background(), srv.URL, "throwaway-host-123.secret", EnrollOptions{})
+	if err != nil {
+		t.Fatalf("enrollREST: %v", err)
+	}
+	if id != "existing-host-999" {
+		t.Errorf("host id = %q, want existing-host-999", id)
+	}
+	if bearer != "existing-host-999.secret" {
+		t.Errorf("bearer = %q, want existing-host-999.secret (rebuilt from the returned id, not the token's own throwaway id)", bearer)
 	}
 }

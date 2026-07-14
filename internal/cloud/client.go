@@ -272,22 +272,34 @@ type EnrollOptions struct {
 	OSSBackendID string
 }
 
-// Enroll redeems a single-use join token against the control plane and returns
-// the registered host id. One-shot (no running client / host bearer yet — the
-// token authenticates itself in the body). Used by `containarium cloud enroll`
-// for the BYO self-service flow; after this, the same token is the host's
-// durable bearer (the cloud reuses the token secret as the host bearer).
+// Enroll redeems a single-use join token against the control plane and
+// returns the registered host id plus the durable host bearer to persist.
+// One-shot (no running client / host bearer yet — the token authenticates
+// itself in the body). Used by `containarium cloud enroll` for the BYO
+// self-service flow.
+//
+// On a FIRST enroll, the returned host id matches the join token's own
+// embedded host_id, so the bearer is (coincidentally) the join token itself.
+// On a RE-enroll (cloud #572, an existing host row matched by oss_backend_id),
+// the cloud updates the EXISTING row's bearer hash but returns that row's own,
+// different id — the join token's embedded host_id was only ever a throwaway,
+// never itself created as a host row. Persisting the raw join token in that
+// case produces a bearer whose embedded host_id resolves to nothing, and
+// every subsequent heartbeat/status call permanently 401s. bearerToken is
+// therefore always reconstructed as "<returned host id>.<token's secret
+// half>" rather than returning the raw joinToken — correct in both cases,
+// and a no-op string-rebuild on first enroll.
 //
 // opts optionally carries the BYOC driver token + backend id (cloud #554) so a
 // tunnel-joined host becomes cloud-drivable in the same round-trip.
-func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool, opts EnrollOptions) (string, error) {
+func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool, opts EnrollOptions) (hostID, bearerToken string, err error) {
 	// REST control plane (#722): redeem over grpc-gateway instead of gRPC.
 	if isRESTControlPlane(controlPlane) {
 		return enrollREST(ctx, controlPlane, joinToken, opts)
 	}
 	conn, err := dialControlPlane(controlPlane, insecureTLS)
 	if err != nil {
-		return "", fmt.Errorf("cloud: dial control plane %s: %w", controlPlane, err)
+		return "", "", fmt.Errorf("cloud: dial control plane %s: %w", controlPlane, err)
 	}
 	defer func() { _ = conn.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -298,9 +310,24 @@ func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS boo
 		OssBackendId: opts.OSSBackendID,
 	})
 	if err != nil {
-		return "", fmt.Errorf("cloud: enroll: %w", err)
+		return "", "", fmt.Errorf("cloud: enroll: %w", err)
 	}
-	return resp.GetHostId(), nil
+	return resp.GetHostId(), rebuildBearer(resp.GetHostId(), joinToken), nil
+}
+
+// rebuildBearer reconstructs a "<hostID>.<secret>" host bearer from a freshly
+// enrolled/re-enrolled host id and the join token presented to redeem it. The
+// join token is itself "<throwaway host_id>.<secret>" — only the secret half
+// is reused; the durable bearer's host_id is always the id the cloud actually
+// returned. Falls back to the raw joinToken if it isn't in the expected
+// "<id>.<secret>" shape (defensive; the server would already have rejected a
+// malformed token before responding).
+func rebuildBearer(hostID, joinToken string) string {
+	_, secret, ok := strings.Cut(joinToken, ".")
+	if !ok || secret == "" {
+		return joinToken
+	}
+	return hostID + "." + secret
 }
 
 // statusLoop reports the host's capability profile + self-check on the same
