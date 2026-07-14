@@ -31,8 +31,8 @@ type fakeActuation struct {
 	// where the cloud resolves to a pre-existing host row with a different id.
 	enrollHostIDOverride string
 	statusBearer         string
-	statusReq       *cloudv1.ReportHostStatusRequest
-	statusReports   int
+	statusReq            *cloudv1.ReportHostStatusRequest
+	statusReports        int
 }
 
 // EnrollHost echoes back the host id embedded in the join token (first
