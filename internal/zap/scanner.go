@@ -75,6 +75,16 @@ func getContainerIP() (string, error) {
 
 // EnsureDaemonRunning starts the ZAP daemon in the security container if it's not already running
 func (s *Scanner) EnsureDaemonRunning(ctx context.Context) error {
+	// Fail fast if ZAP was never installed (InstallZap RPC never run on this
+	// host). Without this check, every scan job silently backgrounds a
+	// "command not found" inside the container and then burns the full
+	// 120-second readiness poll before reporting the generic timeout below —
+	// indistinguishable from a slow-starting daemon, and it repeats forever
+	// since nothing here ever installs ZAP.
+	if !s.Available() {
+		return fmt.Errorf("ZAP is not installed in the security container (run the InstallZap RPC/API for this host first)")
+	}
+
 	// Get container IP
 	ip, err := getContainerIP()
 	if err != nil {
