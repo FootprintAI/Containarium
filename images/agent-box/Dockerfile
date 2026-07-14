@@ -21,7 +21,7 @@
 # --- build agent-box -------------------------------------------------------
 # No `k8s` build tag here: agent-box is the in-box MCP and never imports
 # client-go, so this stays a small static binary.
-FROM golang:1.25.12-bookworm AS build
+FROM golang:1.26.5-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

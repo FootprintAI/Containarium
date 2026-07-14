@@ -38,7 +38,7 @@ jobs:
           # Pinned to match the version the daemon's release workflow
           # uses; drift would mean release-built daemon and CI-tested
           # distro stop sharing a toolchain.
-          go-version: '1.25.12'
+          go-version: '1.26.5'
 
       - name: Verify module hygiene
         # `go mod tidy` should be a no-op on a clean PR. If it changes
