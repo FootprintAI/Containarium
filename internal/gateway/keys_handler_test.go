@@ -3,9 +3,11 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,6 +66,54 @@ func TestServeAuthorizedKeys_OrphanFiltered(t *testing.T) {
 	}
 	if resp.Keys[0].Username != "alice" {
 		t.Errorf("expected alice, got %s", resp.Keys[0].Username)
+	}
+}
+
+// TestServeAuthorizedKeys_OrphanWarningSkipsNonContainerShell is the
+// regression guard for the "ubuntu" incident: a real host admin account
+// (getent-resolvable, but never running the containarium-shell wrapper) can
+// share the orphan directory shape (authorized_keys under homeRoot, no
+// matching container) without ever being orphan-reaper-eligible — see
+// pkg/core/container's IsContainerManagedShell. The keysync WARNING must not
+// claim "orphan-reaper will clean up on next tick" for an account the
+// reaper will never touch; exclusion from the response itself (#343) is
+// unaffected.
+func TestServeAuthorizedKeys_OrphanWarningSkipsNonContainerShell(t *testing.T) {
+	if _, err := exec.LookPath("getent"); err != nil {
+		t.Skip("getent not available on this platform (Linux-only tool; CI runs Linux)")
+	}
+
+	tmpHome := t.TempDir()
+	// "root" always exists via getent and never runs the containarium-shell
+	// wrapper — same fixture-free approach as
+	// pkg/core/container's TestUserShell_ParsesGetentOutput.
+	mkUser(t, tmpHome, "root", "ssh-ed25519 AAAA_root root@admin\n")
+
+	exists := func(string) bool { return false } // no container for anyone
+
+	var logBuf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(orig)
+
+	handler := ServeAuthorizedKeys(tmpHome, exists)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var resp KeysResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range resp.Keys {
+		if k.Username == "root" {
+			t.Fatal("root should still be excluded from the keys response (no matching container) — unaffected by this fix")
+		}
+	}
+	if strings.Contains(logBuf.String(), "orphan authorized_keys found") {
+		t.Errorf("WARNING must not fire for a non-containarium-shell account (the reaper will never touch it); got log: %s", logBuf.String())
 	}
 }
 

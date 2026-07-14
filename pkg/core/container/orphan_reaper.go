@@ -53,6 +53,25 @@ func RunOrphanReaperWithRoot(ctx context.Context, homeRoot string, containerExis
 	}
 }
 
+// UserLoginShell exports userShell for packages outside pkg/core/container
+// (e.g. the keysync HTTP handler) that need the exact same
+// orphan-reaper-eligibility check without duplicating the getent logic —
+// see IsContainerManagedShell.
+func UserLoginShell(username string) (string, error) {
+	return userShell(username)
+}
+
+// IsContainerManagedShell reports whether shell is the containarium-shell
+// wrapper reapOnce requires before it will ever touch an account (line
+// ~110 below). A host account with any other shell — including a normal
+// admin login that happens to share this heuristic's directory shape — is
+// never reaped. Exported so callers outside this package (the keysync
+// WARNING log) can describe "will the reaper actually clean this up?"
+// without duplicating containerShellPath.
+func IsContainerManagedShell(shell string) bool {
+	return shell == containerShellPath
+}
+
 // userShell returns username's login shell from the passwd database (the
 // 7th colon-separated field of `getent passwd`), used to gate reaping to
 // accounts actually running containerShellPath. Errors (unknown user,
