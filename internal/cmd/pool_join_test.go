@@ -28,14 +28,12 @@ func testCmd() *cobra.Command {
 func TestRenderTunnelUnit_RequiredFlags(t *testing.T) {
 	u := renderTunnelUnit(tunnelUnitParams{
 		SentinelAddr: "sentinel.example.com:443",
-		Token:        "tok-123",
 		SpotID:       "node1",
 		Ports:        "22,8080,443",
 		Pool:         "prod",
 	})
 	for _, want := range []string{
 		"--sentinel-addr sentinel.example.com:443",
-		"--token tok-123",
 		"--spot-id node1",
 		"--ports 22,8080,443",
 		"--pool prod",
@@ -52,10 +50,31 @@ func TestRenderTunnelUnit_RequiredFlags(t *testing.T) {
 	}
 }
 
+// TestRenderTunnelUnit_TokenNeverInExecStart is the regression guard for
+// #935: the tunnel-handshake token is a bearer-equivalent credential (the
+// sentinel's TokenPolicy grants standing tunnel access to whoever presents
+// it) and must never appear in the world-readable (0644) unit's ExecStart
+// line — it's supplied via EnvironmentFile= instead (see
+// tunnelTokenSecretFile), which `containarium tunnel` already reads as
+// $CONTAINARIUM_TUNNEL_TOKEN.
+func TestRenderTunnelUnit_TokenNeverInExecStart(t *testing.T) {
+	u := renderTunnelUnit(tunnelUnitParams{
+		SentinelAddr: "sentinel.example.com:443",
+		SpotID:       "node1",
+		Ports:        "22,8080,443",
+		Pool:         "prod",
+	})
+	if strings.Contains(u, "--token") {
+		t.Errorf("tunnel unit must not embed --token in ExecStart:\n%s", u)
+	}
+	if !strings.Contains(u, "EnvironmentFile="+tunnelTokenSecretFile) {
+		t.Errorf("tunnel unit missing EnvironmentFile=%s:\n%s", tunnelTokenSecretFile, u)
+	}
+}
+
 func TestRenderTunnelUnit_PublicPrimary(t *testing.T) {
 	u := renderTunnelUnit(tunnelUnitParams{
 		SentinelAddr:   "s:443",
-		Token:          "t",
 		SpotID:         "n",
 		Ports:          "443",
 		Pool:           "prod",

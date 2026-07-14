@@ -39,6 +39,16 @@ const (
 	// the sentinel's keysync/certsync requests never lands in a
 	// world-readable file.
 	sentinelAuthSecretFile = "/etc/containarium/sentinel-auth.env" // #nosec G101 -- a file PATH, not a credential
+
+	// tunnelTokenSecretFile holds CONTAINARIUM_TUNNEL_TOKEN for the
+	// EnvironmentFile= directive in the tunnel unit (see renderTunnelUnit).
+	// #935: the tunnel-handshake token used to be baked straight into the
+	// unit's world-readable (0644) ExecStart line — visible to any local
+	// user via `systemctl cat`/`systemctl show -p ExecStart`/`ps`. It's a
+	// bearer-equivalent credential (the tunnel-server's TokenPolicy grants
+	// standing tunnel access to whoever presents it), so it gets the same
+	// root-only-file treatment sentinelAuthSecretFile already established.
+	tunnelTokenSecretFile = "/etc/containarium/tunnel-token.env" // #nosec G101 -- a file PATH, not a credential
 )
 
 // minimalDaemonArgv is the baseline daemon command used when no existing
@@ -116,10 +126,13 @@ func init() {
 	poolJoinCmd.Flags().StringVar(&poolJoinSentinelAuthSecret, "sentinel-auth-secret", os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET"), "Fleet-wide HMAC secret (32+ bytes) matching the sentinel's CONTAINARIUM_SENTINEL_AUTH_SECRET. Without it, the sentinel's keysync/certsync requests to this host's /authorized-keys get rejected with 401 — this host stays joined to the tunnel but never gets an SSH pipe (#687). Defaults to $CONTAINARIUM_SENTINEL_AUTH_SECRET; written to a root-only env file, never into the world-readable drop-in")
 }
 
-// tunnelUnitParams are the inputs to the tunnel systemd unit.
+// tunnelUnitParams are the inputs to the tunnel systemd unit. The token
+// itself is NOT a field here (#935) — it never appears in the rendered
+// unit text. It's written separately to tunnelTokenSecretFile (root-only,
+// 0600) and referenced via EnvironmentFile=, which `containarium tunnel`
+// already reads via $CONTAINARIUM_TUNNEL_TOKEN (see internal/cmd/tunnel.go).
 type tunnelUnitParams struct {
 	SentinelAddr   string
-	Token          string
 	SpotID         string
 	Ports          string
 	Pool           string
@@ -139,9 +152,9 @@ func renderTunnelUnit(p tunnelUnitParams) string {
 	b.WriteString("Documentation=https://github.com/footprintai/Containarium\n")
 	b.WriteString("After=network-online.target\nWants=network-online.target\n\n")
 	b.WriteString("[Service]\nType=simple\n")
+	fmt.Fprintf(&b, "EnvironmentFile=%s\n", tunnelTokenSecretFile)
 	b.WriteString("ExecStart=/usr/local/bin/containarium tunnel \\\n")
 	fmt.Fprintf(&b, "  --sentinel-addr %s \\\n", p.SentinelAddr)
-	fmt.Fprintf(&b, "  --token %s \\\n", p.Token)
 	fmt.Fprintf(&b, "  --spot-id %s \\\n", p.SpotID)
 	fmt.Fprintf(&b, "  --ports %s", p.Ports)
 	if p.Pool != "" {
@@ -335,7 +348,6 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	}
 	tunnel := renderTunnelUnit(tunnelUnitParams{
 		SentinelAddr:   sentinelAddr,
-		Token:          poolJoinToken,
 		SpotID:         spotID,
 		Ports:          poolJoinPorts,
 		Pool:           poolJoinPool,
@@ -348,6 +360,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		if authSecretFile != "" {
 			fmt.Printf("# %s (mode 0600, contents redacted)\nCONTAINARIUM_SENTINEL_AUTH_SECRET=<redacted, %d bytes>\n\n", authSecretFile, len(poolJoinSentinelAuthSecret))
 		}
+		fmt.Printf("# %s (mode 0600, contents redacted)\nCONTAINARIUM_TUNNEL_TOKEN=<redacted, %d bytes>\n\n", tunnelTokenSecretFile, len(poolJoinToken))
 		fmt.Printf("# %s\n%s\n", daemonDropIn, dropIn)
 		fmt.Printf("# %s\n%s\n", tunnelUnitPath, tunnel)
 		fmt.Println("# (dry-run: nothing written; re-run without --dry-run as root to apply)")
@@ -372,6 +385,16 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		if err := os.WriteFile(authSecretFile, []byte(content), 0600); err != nil {
 			return fmt.Errorf("write sentinel auth secret file: %w", err)
 		}
+	}
+	// 1c. Tunnel-handshake token (#935) — root-only, referenced by the
+	// tunnel unit's EnvironmentFile= rather than embedded in its
+	// world-readable ExecStart line.
+	if err := os.MkdirAll("/etc/containarium", 0700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	tokenContent := fmt.Sprintf("CONTAINARIUM_TUNNEL_TOKEN=%s\n", poolJoinToken)
+	if err := os.WriteFile(tunnelTokenSecretFile, []byte(tokenContent), 0600); err != nil {
+		return fmt.Errorf("write tunnel token secret file: %w", err)
 	}
 	// 2. --pool drop-in on the daemon unit.
 	// #nosec G301 -- systemd drop-in dir, world-readable config by convention (no secrets)

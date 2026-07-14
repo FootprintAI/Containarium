@@ -44,6 +44,7 @@ func runPoolLeave(cmd *cobra.Command, args []string) error {
 		fmt.Println("Would leave the pool:")
 		fmt.Printf("  - systemctl disable --now containarium-tunnel  (deregisters from the sentinel)\n")
 		fmt.Printf("  - rm %s\n", tunnelUnitPath)
+		fmt.Printf("  - rm %s   (tunnel-handshake token, #935)\n", tunnelTokenSecretFile)
 		fmt.Printf("  - rm %s   (daemon returns to standalone)\n", daemonDropIn)
 		fmt.Printf("  - systemctl daemon-reload && systemctl try-restart containarium\n")
 		fmt.Println("  (dry-run: nothing changed; the daemon + your containers are untouched)")
@@ -63,8 +64,9 @@ func runPoolLeave(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 2. Remove the tunnel unit + the --pool drop-in (idempotent).
-	for _, p := range []string{tunnelUnitPath, daemonDropIn} {
+	// 2. Remove the tunnel unit + its token secret file + the --pool drop-in
+	// (idempotent).
+	for _, p := range []string{tunnelUnitPath, tunnelTokenSecretFile, daemonDropIn} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
