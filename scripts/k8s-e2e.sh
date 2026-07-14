@@ -48,8 +48,12 @@ AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
 echo "==> installing agent-sandbox controller ${AGENT_SANDBOX_VERSION}"
 command -v kubectl >/dev/null || { echo "kubectl is required to install the agent-sandbox controller" >&2; exit 1; }
 kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
-kubectl wait --for=condition=available deployment -A \
-  -l control-plane=controller-manager --timeout=180s
+# The manifest installs Deployment agent-sandbox-controller in namespace
+# agent-sandbox-system (it does NOT carry the kubebuilder-conventional
+# control-plane=controller-manager label — a label-selector wait matches
+# nothing and kubectl exits "no matching resources found").
+kubectl -n agent-sandbox-system wait --for=condition=available \
+  deployment/agent-sandbox-controller --timeout=180s
 
 echo "==> running K8s agent-box e2e (reconciler vs. the kind apiserver)"
 CONTAINARIUM_K8S_E2E=1 go test -tags k8s -run TestE2E -timeout 12m -v ./pkg/core/box/k8s/
