@@ -19,6 +19,10 @@ func newManagerForTunnelTokenTest(t *testing.T, withPolicy bool) *Manager {
 	if withPolicy {
 		m.SetTunnelPolicy(NewTokenPolicy())
 	}
+	// Persist to a tmp dir, not the real /etc/containarium (#936) — a
+	// hermetic test must not depend on (or fail attempting) a real
+	// filesystem write to a root-owned path.
+	m.SetTunnelTokenStorePath(t.TempDir() + "/tunnel-tokens.json")
 	return m
 }
 
@@ -50,6 +54,47 @@ func TestTunnelTokenRegisterHandler_RegistersFreshToken(t *testing.T) {
 	}
 	if err := m.tunnelPolicy.Validate("fresh-token", "asia-east1"); err != nil {
 		t.Fatalf("token should match any pool (PoolAny default): %v", err)
+	}
+}
+
+// TestTunnelTokenRegisterHandler_PersistsAcrossRestart is the regression
+// guard for #936: a token registered at runtime must survive the sentinel
+// process restarting, not just be valid in the current process's
+// in-memory TokenPolicy. Simulates a restart by building a FRESH policy +
+// loading the persisted store into it, mirroring exactly what
+// internal/cmd/sentinel.go's loadPersistedTunnelTokens does at startup.
+func TestTunnelTokenRegisterHandler_PersistsAcrossRestart(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+
+	body, _ := json.Marshal(TunnelTokenRegisterRequest{Token: "byoc-token", Pools: []Pool{"asia-east1"}})
+	req := httptest.NewRequest(http.MethodPost, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenRegisterHandler())
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// "Restart": a brand-new policy, as PolicyFromCLI would build at
+	// startup, with none of this process's registrations.
+	freshPolicy := NewTokenPolicy()
+	if err := freshPolicy.Validate("byoc-token", "asia-east1"); err == nil {
+		t.Fatal("sanity check: fresh policy should not yet know this token")
+	}
+
+	entries, err := LoadTunnelTokenStore(m.tunnelTokenStorePath)
+	if err != nil {
+		t.Fatalf("LoadTunnelTokenStore: %v", err)
+	}
+	ApplyTunnelTokenStore(entries, freshPolicy)
+
+	if err := freshPolicy.Validate("byoc-token", "asia-east1"); err != nil {
+		t.Fatalf("token must survive a restart via the persisted store: %v", err)
+	}
+	if err := freshPolicy.Validate("byoc-token", "us-west1"); err == nil {
+		t.Fatal("token was scoped to asia-east1 only; pool restriction must survive too")
 	}
 }
 

@@ -92,6 +92,25 @@ func init() {
 	sentinelCmd.Flags().StringVar(&sentinelAlertWebhookURL, "alert-webhook-url", os.Getenv(config.EnvSentinelAlertWebhook), "Webhook POSTed on spot preempted/recovered (always-on alert path; the on-spot vmalert dies with the VM). Falls back to $CONTAINARIUM_SENTINEL_ALERT_WEBHOOK (#514)")
 }
 
+// loadPersistedTunnelTokens applies every dynamically-registered tunnel
+// token this sentinel has ever persisted (#936) on top of the
+// CLI-flag-built policy, so a restart doesn't silently forget a token
+// that a prior `sentinel register-token` call (or a cloud control
+// plane's BYOC join flow) made valid at runtime. A missing/unreadable
+// store is logged and otherwise ignored — the sentinel still starts and
+// serves its static CLI-flag tokens either way.
+func loadPersistedTunnelTokens(policy *sentinel.TokenPolicy) {
+	entries, err := sentinel.LoadTunnelTokenStore(sentinel.DefaultTunnelTokenStorePath)
+	if err != nil {
+		log.Printf("[sentinel] WARNING: failed to load persisted tunnel tokens from %s: %v", sentinel.DefaultTunnelTokenStorePath, err)
+		return
+	}
+	if len(entries) > 0 {
+		log.Printf("[sentinel] loaded %d persisted tunnel token(s) from %s", len(entries), sentinel.DefaultTunnelTokenStorePath)
+	}
+	sentinel.ApplyTunnelTokenStore(entries, policy)
+}
+
 func runSentinel(cmd *cobra.Command, args []string) error {
 	// Parse forwarded ports
 	ports, err := parseForwardedPorts(sentinelForwardedPorts)
@@ -175,6 +194,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			if polErr != nil {
 				return polErr
 			}
+			loadPersistedTunnelTokens(tunnelPolicy)
 			tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry)
 			tunnelServer.OnConnect = manager.OnTunnelConnect
 			tunnelServer.OnDisconnect = manager.OnTunnelDisconnect
@@ -260,6 +280,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		if polErr != nil {
 			return polErr
 		}
+		loadPersistedTunnelTokens(tunnelPolicy)
 		tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry)
 		tunnelServer.OnConnect = manager.OnTunnelConnect
 		tunnelServer.OnDisconnect = manager.OnTunnelDisconnect

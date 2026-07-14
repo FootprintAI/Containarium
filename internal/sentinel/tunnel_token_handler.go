@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -61,6 +62,17 @@ func (m *Manager) TunnelTokenRegisterHandler() http.HandlerFunc {
 			pools = []Pool{PoolAny}
 		}
 		m.tunnelPolicy.Allow(req.Token, pools...)
+		// Persist so this registration survives a sentinel restart (#936) —
+		// TokenPolicy itself is pure in-memory and would otherwise silently
+		// forget every dynamically-registered token the moment this process
+		// exits, permanently locking out any host whose tunnel session
+		// needs to re-handshake after that restart. Best-effort: a
+		// persistence failure must not fail a legitimate BYOC join, since
+		// the token is already valid for this process's lifetime either
+		// way — it only affects survival across a *future* restart.
+		if err := m.persistTunnelToken(req.Token, pools); err != nil {
+			log.Printf("[sentinel] WARNING: failed to persist tunnel token registration (won't survive a restart): %v", err)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

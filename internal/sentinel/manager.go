@@ -151,6 +151,12 @@ type Manager struct {
 	// responds 501.
 	tunnelPolicy *TokenPolicy
 
+	// tunnelTokenStorePath is where TunnelTokenRegisterHandler persists
+	// each dynamic registration (#936) so a sentinel restart doesn't
+	// silently forget it. Empty means DefaultTunnelTokenStorePath; tests
+	// override via SetTunnelTokenStorePath to use a tmp dir.
+	tunnelTokenStorePath string
+
 	// pki holds the operator-bootstrapped peer-CA and the sentinel's
 	// own server cert. Set when CONTAINARIUM_CA_KEY_FILE points at a
 	// valid RSA key — see NewManager and SetCertProvisioner.
@@ -372,6 +378,36 @@ func (m *Manager) SetTunnelRegistry(reg *TunnelRegistry) {
 // after PolicyFromCLI builds the policy.
 func (m *Manager) SetTunnelPolicy(policy *TokenPolicy) {
 	m.tunnelPolicy = policy
+}
+
+// SetTunnelTokenStorePath overrides where dynamic tunnel-token
+// registrations are persisted (#936). Tests use this to point at a tmp
+// dir; production wiring (internal/cmd/sentinel.go) leaves it unset and
+// relies on the DefaultTunnelTokenStorePath fallback in
+// persistTunnelToken.
+func (m *Manager) SetTunnelTokenStorePath(path string) {
+	m.tunnelTokenStorePath = path
+}
+
+// persistTunnelToken upserts (token, pools) into the on-disk dynamic
+// tunnel-token store (#936) so a future sentinel restart re-applies it
+// via ApplyTunnelTokenStore instead of silently forgetting it. Best-effort
+// by design at the call site (TunnelTokenRegisterHandler still returns
+// success on a persistence failure) — the token is already valid in this
+// process's TokenPolicy either way; persistence only affects survival
+// across a restart, and a disk hiccup here must not block a legitimate
+// BYOC join.
+func (m *Manager) persistTunnelToken(token string, pools []Pool) error {
+	path := m.tunnelTokenStorePath
+	if path == "" {
+		path = DefaultTunnelTokenStorePath
+	}
+	entries, err := LoadTunnelTokenStore(path)
+	if err != nil {
+		return err
+	}
+	entries = upsertTunnelTokenEntry(entries, token, pools)
+	return SaveTunnelTokenStore(path, entries)
 }
 
 // SetAdminSecret wires the secret that gates POST
