@@ -130,6 +130,28 @@ type GPUDevice struct {
 	PCI string
 }
 
+// pciMaskRawLXC hides the host's PCI device enumeration from a container's
+// /proc and /sys, closing the hardware-fingerprinting leak described where
+// it's applied (security#951). Live-validated on a real GPU host (RTX
+// 3090): both mounts apply cleanly, the container restarts and remains
+// otherwise fully functional, /proc/bus/pci/devices reads back empty, and
+// /sys/bus/pci/devices/ lists zero entries — while an unmasked sibling
+// container on the same host still shows the real device table.
+const pciMaskRawLXC = "lxc.mount.entry = /dev/null proc/bus/pci/devices none bind,optional,create=file 0 0\n" +
+	"lxc.mount.entry = tmpfs sys/bus/pci/devices tmpfs rw,size=1k,mode=0755,optional,create=dir 0 0"
+
+// appendRawLXC adds lines to the container's raw.lxc config, appending to
+// (rather than clobbering) any value already set by an earlier config
+// decision — e.g. Docker-in-Docker's AppArmor override and the PCI-masking
+// mount entries can both apply to the same container.
+func appendRawLXC(cfg map[string]string, lines string) {
+	if existing, ok := cfg["raw.lxc"]; ok && existing != "" {
+		cfg["raw.lxc"] = existing + "\n" + lines
+	} else {
+		cfg["raw.lxc"] = lines
+	}
+}
+
 // gpuDeviceName returns the Incus device name for the i-th attached GPU.
 // The first GPU keeps the legacy "gpu" name so single-GPU containers are
 // byte-identical to the pre-multi-GPU config; subsequent GPUs are "gpu1",
@@ -654,7 +676,19 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 	// This is required for Docker to run properly inside the container
 	if config.EnablePodmanPrivileged {
 		req.Config["security.privileged"] = "true"
-		req.Config["raw.lxc"] = "lxc.apparmor.profile=unconfined"
+		appendRawLXC(req.Config, "lxc.apparmor.profile=unconfined")
+	}
+
+	// PCI device enumeration isn't namespaced by the Linux kernel (unlike
+	// network/mount/PID), so even an unprivileged container with no GPU
+	// device attached can read /proc/bus/pci/devices and
+	// /sys/bus/pci/devices to fingerprint the host's hardware — including
+	// whether it has a GPU and its exact model (security#951). Mask both
+	// for containers that weren't granted a GPU device; a GPU-passthrough
+	// container legitimately needs to see its own device, so this only
+	// applies when no GPU was requested.
+	if len(config.GPUs) == 0 {
+		appendRawLXC(req.Config, pciMaskRawLXC)
 	}
 
 	// Auto-start on boot
