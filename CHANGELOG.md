@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.4] - 2026-07-14
+
+### Fixed
+
+- **Host bearer permanently invalid after a cloud re-enroll** (#957). A
+  join token embeds its own throwaway host id, minted fresh per token
+  and never itself created as a host row. On first enroll the cloud
+  control plane creates the host row using that id, so persisting the
+  raw token as the durable bearer worked by coincidence. On re-enroll
+  (`cloud enroll` / `pool join --cloud-control-plane` run again for a
+  machine that already has a host row, matched on `oss_backend_id`),
+  the control plane instead updates an *existing* row's bearer hash but
+  returns that row's own, different id — the daemon kept persisting the
+  raw join token (with the wrong, non-existent host id) into
+  `cloud.yaml`, so every heartbeat/status call 401'd forever. `Enroll`
+  and the REST enroll transport now rebuild the durable bearer as
+  `<returned host id>.<token's secret half>` instead of reusing the raw
+  token, so re-enrollment produces a bearer that actually resolves.
+
 ## [0.51.3] - 2026-07-14
 
 ### Added
