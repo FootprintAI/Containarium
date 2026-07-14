@@ -113,19 +113,20 @@ func (r *restActuation) post(ctx context.Context, path string, in, out proto.Mes
 }
 
 // enrollREST redeems a join token over REST (POST /v1/actuation/enroll). The
-// join token self-authenticates in the body, so no host bearer is sent.
-func enrollREST(ctx context.Context, controlPlane, joinToken string, opts EnrollOptions) (string, error) {
+// join token self-authenticates in the body, so no host bearer is sent. See
+// Enroll's doc comment for why the returned bearer is rebuilt rather than the
+// raw joinToken being reused verbatim.
+func enrollREST(ctx context.Context, controlPlane, joinToken string, opts EnrollOptions) (hostID, bearerToken string, err error) {
 	r := newRESTActuation(controlPlane, "")
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var resp cloudv1.EnrollHostResponse
-	err := r.post(ctx, "/v1/actuation/enroll", &cloudv1.EnrollHostRequest{
+	if err := r.post(ctx, "/v1/actuation/enroll", &cloudv1.EnrollHostRequest{
 		JoinToken:    joinToken,
 		DriverToken:  opts.DriverToken,
 		OssBackendId: opts.OSSBackendID,
-	}, &resp)
-	if err != nil {
-		return "", fmt.Errorf("cloud: enroll (REST): %w", err)
+	}, &resp); err != nil {
+		return "", "", fmt.Errorf("cloud: enroll (REST): %w", err)
 	}
-	return resp.GetHostId(), nil
+	return resp.GetHostId(), rebuildBearer(resp.GetHostId(), joinToken), nil
 }

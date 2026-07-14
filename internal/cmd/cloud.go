@@ -183,14 +183,14 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 	// Redeem the join token against the control plane. On success the cloud
 	// has created the host row and returns its id; the same token is now this
 	// host's durable bearer (the cloud reuses the token secret).
-	hostID, err := cloud.Enroll(cmd.Context(), controlPlane, token, cloudEnrollInsecure, opts)
+	hostID, bearer, err := cloud.Enroll(cmd.Context(), controlPlane, token, cloudEnrollInsecure, opts)
 	if err != nil {
 		return err
 	}
 	cfg := &cloud.Config{
 		ControlPlane: controlPlane,
 		HostID:       hostID,
-		Token:        token,
+		Token:        bearer,
 		Insecure:     cloudEnrollInsecure,
 		// Persist the JWT secret path so the daemon can re-mint the driver
 		// token autonomously before it expires (#557). Only set when the

@@ -452,14 +452,14 @@ func cloudEnrollAfterPoolJoin(cmd *cobra.Command, controlPlane, token, ossBacken
 		opts.DriverToken = driverTok
 	}
 
-	hostID, err := cloud.Enroll(cmd.Context(), controlPlane, token, insecure, opts)
+	hostID, bearer, err := cloud.Enroll(cmd.Context(), controlPlane, token, insecure, opts)
 	if err != nil {
 		return err
 	}
 	cfg := &cloud.Config{
 		ControlPlane: controlPlane,
 		HostID:       hostID,
-		Token:        token,
+		Token:        bearer,
 		Insecure:     insecure,
 		JWTSecretFile: func() string {
 			if opts.DriverToken == "" {
