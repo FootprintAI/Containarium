@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/footprintai/containarium/pkg/core/container"
 )
 
 // UserKeys holds a username and their authorized_keys content.
@@ -79,7 +81,18 @@ func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string
 				continue
 			}
 			if containerExistsFn != nil && !containerExistsFn(username) {
-				orphanCount++
+				// Only count/warn about accounts the orphan-reaper will
+				// actually touch. reapOnce (orphan_reaper.go) refuses to
+				// delete anything whose login shell isn't the
+				// containarium-managed wrapper — a real host admin login
+				// (e.g. the VM's own cloud-init "ubuntu" user) can share
+				// this directory shape without ever being reap-eligible.
+				// Without this gate the WARNING claims "orphan-reaper will
+				// clean up on next tick" forever for an account the reaper
+				// will never touch.
+				if shell, shellErr := container.UserLoginShell(username); shellErr == nil && container.IsContainerManagedShell(shell) {
+					orphanCount++
+				}
 				continue
 			}
 			keys = append(keys, UserKeys{
