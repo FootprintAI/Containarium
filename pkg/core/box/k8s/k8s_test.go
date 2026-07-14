@@ -8,6 +8,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	sandboxv1beta1 "sigs.k8s.io/agent-sandbox/api/v1beta1"
+	sandboxfake "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
 
 	"github.com/footprintai/containarium/pkg/core/box"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -17,13 +19,24 @@ import (
 // in plain `go test -tags k8s` with no cluster. The kind e2e (e2e_test.go)
 // covers behavior against a real apiserver.
 
-func testBackend() (*Backend, *fake.Clientset) {
+func testBackend() (*Backend, *fake.Clientset, *sandboxfake.Clientset) {
 	cs := fake.NewSimpleClientset()
-	return NewWithClientset(cs, Config{BoxImage: "registry.k8s.io/pause:3.9", GatewayHost: "gw.example.com"}), cs
+	sc := sandboxfake.NewSimpleClientset()
+	return NewWithClientset(cs, sc, Config{BoxImage: "registry.k8s.io/pause:3.9", GatewayHost: "gw.example.com"}), cs, sc
+}
+
+// getSandbox fetches the tenant's Sandbox CR from the fake clientset.
+func getSandbox(t *testing.T, sc *sandboxfake.Clientset, ns string) *sandboxv1beta1.Sandbox {
+	t.Helper()
+	sb, err := sc.AgentsV1beta1().Sandboxes(ns).Get(context.Background(), sandboxName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("sandbox not created: %v", err)
+	}
+	return sb
 }
 
 func TestKindAndCapabilities(t *testing.T) {
-	b, _ := testBackend()
+	b, _, _ := testBackend()
 	if b.Kind() != box.KindK8s {
 		t.Fatalf("Kind() = %q, want %q", b.Kind(), box.KindK8s)
 	}
@@ -34,7 +47,7 @@ func TestKindAndCapabilities(t *testing.T) {
 }
 
 func TestCreateReconcilesObjects(t *testing.T) {
-	b, cs := testBackend()
+	b, cs, sc := testBackend()
 	ctx := context.Background()
 	st, err := b.Create(ctx, box.BoxSpec{
 		Ref:       box.BoxRef{Tenant: "alice"},
@@ -45,7 +58,7 @@ func TestCreateReconcilesObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if st == nil || st.Ref.Tenant != "alice" || st.Ref.Name != statefulSetName {
+	if st == nil || st.Ref.Tenant != "alice" || st.Ref.Name != sandboxName {
 		t.Fatalf("status = %+v", st)
 	}
 
@@ -53,36 +66,35 @@ func TestCreateReconcilesObjects(t *testing.T) {
 	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err != nil {
 		t.Errorf("namespace not created: %v", err)
 	}
-	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
-	if err != nil {
-		t.Errorf("statefulset not created: %v", err)
-	} else {
+	sb := getSandbox(t, sc, ns)
+	podSpec := sb.Spec.PodTemplate.Spec
+	{
 		// restricted-PSA hardening the box image is built for.
-		sc := ss.Spec.Template.Spec.Containers[0].SecurityContext
-		if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
-			t.Errorf("container not runAsNonRoot: %+v", sc)
+		csc := podSpec.Containers[0].SecurityContext
+		if csc == nil || csc.RunAsNonRoot == nil || !*csc.RunAsNonRoot {
+			t.Errorf("container not runAsNonRoot: %+v", csc)
 		}
-		if sc != nil && (sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || string(sc.Capabilities.Drop[0]) != "ALL") {
-			t.Errorf("container does not drop ALL caps: %+v", sc.Capabilities)
+		if csc != nil && (csc.Capabilities == nil || len(csc.Capabilities.Drop) != 1 || string(csc.Capabilities.Drop[0]) != "ALL") {
+			t.Errorf("container does not drop ALL caps: %+v", csc.Capabilities)
 		}
-		if pscPort := ss.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort; pscPort != 2222 {
+		if pscPort := podSpec.Containers[0].Ports[0].ContainerPort; pscPort != 2222 {
 			t.Errorf("container port = %d, want 2222", pscPort)
 		}
 		// authorized_keys mounted where the image reads it (or the box rejects
 		// every login — found in live test), and the stable host key mounted
 		// (so the gateway can pin it).
 		mounts := map[string]string{} // mountPath set
-		for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
+		for _, m := range podSpec.Containers[0].VolumeMounts {
 			mounts[m.MountPath] = m.Name
 		}
 		if mounts["/etc/agent-box"] == "" {
-			t.Errorf("authorized_keys not mounted at /etc/agent-box: %+v", ss.Spec.Template.Spec.Containers[0].VolumeMounts)
+			t.Errorf("authorized_keys not mounted at /etc/agent-box: %+v", podSpec.Containers[0].VolumeMounts)
 		}
 		if mounts["/etc/agent-box-hostkey"] == "" {
 			t.Errorf("host key not mounted at /etc/agent-box-hostkey")
 		}
 		vols := map[string]string{} // volume name -> secret name
-		for _, v := range ss.Spec.Template.Spec.Volumes {
+		for _, v := range podSpec.Volumes {
 			if v.Secret != nil {
 				vols[v.Name] = v.Secret.SecretName
 			}
@@ -94,8 +106,9 @@ func TestCreateReconcilesObjects(t *testing.T) {
 			t.Errorf("host-key volume secret = %q", vols[hostKeyVolume])
 		}
 	}
-	if _, err := cs.CoreV1().Services(ns).Get(ctx, serviceName, metav1.GetOptions{}); err != nil {
-		t.Errorf("service not created: %v", err)
+	// The controller owns the headless Service; the Sandbox must ask for it.
+	if sb.Spec.Service == nil || !*sb.Spec.Service {
+		t.Error("sandbox spec.service not enabled; the gateway needs the headless Service")
 	}
 	if _, err := cs.NetworkingV1().NetworkPolicies(ns).Get(ctx, "default-deny", metav1.GetOptions{}); err != nil {
 		t.Errorf("networkpolicy not created: %v", err)
@@ -114,7 +127,7 @@ func TestCreateReconcilesObjects(t *testing.T) {
 }
 
 func TestCreateIdempotent(t *testing.T) {
-	b, _ := testBackend()
+	b, _, _ := testBackend()
 	ctx := context.Background()
 	spec := box.BoxSpec{Ref: box.BoxRef{Tenant: "bob"}, Image: "x", AutoStart: true}
 	if _, err := b.Create(ctx, spec); err != nil {
@@ -126,7 +139,7 @@ func TestCreateIdempotent(t *testing.T) {
 }
 
 func TestGetMissing(t *testing.T) {
-	b, _ := testBackend()
+	b, _, _ := testBackend()
 	st, err := b.Get(context.Background(), box.BoxRef{Tenant: "ghost"})
 	if err != nil || st != nil {
 		t.Fatalf("Get(missing) = (%+v, %v), want (nil, nil)", st, err)
@@ -134,34 +147,31 @@ func TestGetMissing(t *testing.T) {
 }
 
 func TestStartStopScale(t *testing.T) {
-	b, cs := testBackend()
+	b, _, sc := testBackend()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "carol"}
 	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil { // AutoStart false → 0
 		t.Fatalf("Create: %v", err)
 	}
-	ss, _ := cs.AppsV1().StatefulSets("tenant-carol").Get(ctx, statefulSetName, metav1.GetOptions{})
-	if *ss.Spec.Replicas != 0 {
-		t.Fatalf("created replicas = %d, want 0", *ss.Spec.Replicas)
+	if sb := getSandbox(t, sc, "tenant-carol"); sb.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeSuspended {
+		t.Fatalf("created operatingMode = %q, want Suspended", sb.Spec.OperatingMode)
 	}
 	if err := b.Start(ctx, ref); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	ss, _ = cs.AppsV1().StatefulSets("tenant-carol").Get(ctx, statefulSetName, metav1.GetOptions{})
-	if *ss.Spec.Replicas != 1 {
-		t.Errorf("after Start replicas = %d, want 1", *ss.Spec.Replicas)
+	if sb := getSandbox(t, sc, "tenant-carol"); sb.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeRunning {
+		t.Errorf("after Start operatingMode = %q, want Running", sb.Spec.OperatingMode)
 	}
 	if err := b.Stop(ctx, ref, false); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	ss, _ = cs.AppsV1().StatefulSets("tenant-carol").Get(ctx, statefulSetName, metav1.GetOptions{})
-	if *ss.Spec.Replicas != 0 {
-		t.Errorf("after Stop replicas = %d, want 0", *ss.Spec.Replicas)
+	if sb := getSandbox(t, sc, "tenant-carol"); sb.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeSuspended {
+		t.Errorf("after Stop operatingMode = %q, want Suspended", sb.Spec.OperatingMode)
 	}
 }
 
 func TestDeleteRemovesNamespace(t *testing.T) {
-	b, cs := testBackend()
+	b, cs, _ := testBackend()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "dave"}
 	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x", AutoStart: true}); err != nil {
@@ -180,7 +190,7 @@ func TestDeleteRemovesNamespace(t *testing.T) {
 }
 
 func TestSetGetMeta(t *testing.T) {
-	b, _ := testBackend()
+	b, _, _ := testBackend()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "erin"}
 	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x", AutoStart: true}); err != nil {
@@ -199,7 +209,7 @@ func TestSetGetMeta(t *testing.T) {
 }
 
 func TestResolveGatewayEndpoint(t *testing.T) {
-	b, _ := testBackend()
+	b, _, _ := testBackend()
 	ep, err := b.Resolve(context.Background(), box.BoxRef{Tenant: "alice"})
 	if err != nil || ep == nil {
 		t.Fatalf("Resolve = (%+v, %v)", ep, err)
@@ -213,7 +223,7 @@ func TestResolveGatewayEndpoint(t *testing.T) {
 // nvidia.com/gpu limit on the container, and that the pod carries the
 // gpu-count annotation for observability.
 func TestGPUResourceRequirements(t *testing.T) {
-	b, cs := testBackend()
+	b, _, sc := testBackend()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "gpu-user"}
 	if _, err := b.Create(ctx, box.BoxSpec{
@@ -224,13 +234,10 @@ func TestGPUResourceRequirements(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	ns := "tenant-gpu-user"
-	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("StatefulSet not found: %v", err)
-	}
+	sb := getSandbox(t, sc, ns)
 
 	// Container must carry nvidia.com/gpu: 2 in both limits and requests.
-	c := ss.Spec.Template.Spec.Containers[0]
+	c := sb.Spec.PodTemplate.Spec.Containers[0]
 	gpuLimit := c.Resources.Limits[nvidiaGPUResource]
 	if gpuLimit.Value() != 2 {
 		t.Errorf("nvidia.com/gpu limit = %v, want 2", gpuLimit.Value())
@@ -241,7 +248,7 @@ func TestGPUResourceRequirements(t *testing.T) {
 	}
 
 	// Pod template must carry the gpu-count annotation.
-	ann := ss.Spec.Template.Annotations[gpuCountAnnotation]
+	ann := sb.Spec.PodTemplate.ObjectMeta.Annotations[gpuCountAnnotation]
 	if ann != "2" {
 		t.Errorf("gpu-count annotation = %q, want 2", ann)
 	}
@@ -250,23 +257,20 @@ func TestGPUResourceRequirements(t *testing.T) {
 // TestNoGPUResourceWhenGPUsEmpty verifies no nvidia.com/gpu limit is set and
 // no gpu-count annotation is added when GPUs is nil/empty.
 func TestNoGPUResourceWhenGPUsEmpty(t *testing.T) {
-	b, cs := testBackend()
+	b, _, sc := testBackend()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "no-gpu"}
 	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	ns := "tenant-no-gpu"
-	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("StatefulSet not found: %v", err)
-	}
-	c := ss.Spec.Template.Spec.Containers[0]
+	sb := getSandbox(t, sc, ns)
+	c := sb.Spec.PodTemplate.Spec.Containers[0]
 	if _, ok := c.Resources.Limits[nvidiaGPUResource]; ok {
 		t.Error("nvidia.com/gpu limit set on non-GPU box")
 	}
-	if ss.Spec.Template.Annotations[gpuCountAnnotation] != "" {
-		t.Errorf("gpu-count annotation unexpectedly set: %q", ss.Spec.Template.Annotations[gpuCountAnnotation])
+	if sb.Spec.PodTemplate.ObjectMeta.Annotations[gpuCountAnnotation] != "" {
+		t.Errorf("gpu-count annotation unexpectedly set: %q", sb.Spec.PodTemplate.ObjectMeta.Annotations[gpuCountAnnotation])
 	}
 }
 
@@ -357,7 +361,7 @@ func TestDefaultRequestClampedToLimit(t *testing.T) {
 // rather than disabling the floor.
 func TestConfigOverrideMemoryFloor(t *testing.T) {
 	// Valid overrides flow through.
-	b := NewWithClientset(fake.NewSimpleClientset(), Config{
+	b := NewWithClientset(fake.NewSimpleClientset(), sandboxfake.NewSimpleClientset(), Config{
 		DefaultMemoryRequest: "512Mi",
 		DefaultMemoryLimit:   "2Gi",
 	})
@@ -366,13 +370,13 @@ func TestConfigOverrideMemoryFloor(t *testing.T) {
 	}
 
 	// A typo'd limit degrades to the built-in default (not unconstrained).
-	bad := NewWithClientset(fake.NewSimpleClientset(), Config{DefaultMemoryLimit: "2GB"})
+	bad := NewWithClientset(fake.NewSimpleClientset(), sandboxfake.NewSimpleClientset(), Config{DefaultMemoryLimit: "2GB"})
 	if d := bad.memDefaults(); d.limit != defaultMemoryLimit {
 		t.Errorf("invalid override limit = %q, want built-in %q", d.limit, defaultMemoryLimit)
 	}
 
 	// Disable clears the floor entirely.
-	off := NewWithClientset(fake.NewSimpleClientset(), Config{DisableDefaultMemoryFloor: true})
+	off := NewWithClientset(fake.NewSimpleClientset(), sandboxfake.NewSimpleClientset(), Config{DisableDefaultMemoryFloor: true})
 	if d := off.memDefaults(); d.limit != "" || d.request != "" {
 		t.Errorf("disabled memDefaults = %+v, want empty", d)
 	}
@@ -380,13 +384,14 @@ func TestConfigOverrideMemoryFloor(t *testing.T) {
 
 // testBackendWithStorage returns a backend with a StorageClass set, exercising
 // the CSI PVC lifecycle paths.
-func testBackendWithStorage() (*Backend, *fake.Clientset) {
+func testBackendWithStorage() (*Backend, *fake.Clientset, *sandboxfake.Clientset) {
 	cs := fake.NewSimpleClientset()
-	return NewWithClientset(cs, Config{
+	sc := sandboxfake.NewSimpleClientset()
+	return NewWithClientset(cs, sc, Config{
 		BoxImage:     "registry.k8s.io/pause:3.9",
 		GatewayHost:  "gw.example.com",
 		StorageClass: "standard",
-	}), cs
+	}), cs, sc
 }
 
 // TestPVCObjectBuilder verifies that pvcObject produces a well-formed PVC with
@@ -422,7 +427,7 @@ func TestPVCObjectBuilderDefaults(t *testing.T) {
 // TestCreateProvisionsPVC verifies that Create provisions a PVC when
 // StorageClass is configured.
 func TestCreateProvisionsPVC(t *testing.T) {
-	b, cs := testBackendWithStorage()
+	b, cs, sc := testBackendWithStorage()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "frank"}
 	if _, err := b.Create(ctx, box.BoxSpec{
@@ -446,24 +451,36 @@ func TestCreateProvisionsPVC(t *testing.T) {
 		t.Errorf("storage request = %q, want 30Gi", q.String())
 	}
 
-	// StatefulSet must mount the data volume at /home/agent.
-	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("StatefulSet not found: %v", err)
+	// The Sandbox pod template must mount the data volume at /home/agent as a
+	// plain persistentVolumeClaim volume (NOT a volumeClaimTemplate, which the
+	// controller would owner-reference and GC with the Sandbox).
+	sb := getSandbox(t, sc, ns)
+	if len(sb.Spec.VolumeClaimTemplates) != 0 {
+		t.Errorf("sandbox uses volumeClaimTemplates; the data PVC must stay daemon-owned")
 	}
 	mounts := map[string]string{}
-	for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
+	for _, m := range sb.Spec.PodTemplate.Spec.Containers[0].VolumeMounts {
 		mounts[m.MountPath] = m.Name
 	}
 	if mounts[dataMount] == "" {
 		t.Errorf("data volume not mounted at %s: mounts=%v", dataMount, mounts)
+	}
+	var claims []string
+	for _, v := range sb.Spec.PodTemplate.Spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			claims = append(claims, v.PersistentVolumeClaim.ClaimName)
+		}
+	}
+	if len(claims) != 1 || claims[0] != pvcName {
+		t.Errorf("pod volumes reference claims %v, want [%s]", claims, pvcName)
 	}
 }
 
 // TestCreateNoPVCWhenStorageClassEmpty verifies backward compat: no PVC when
 // StorageClass is unset, and the StatefulSet has no data volume mount.
 func TestCreateNoPVCWhenStorageClassEmpty(t *testing.T) {
-	b, cs := testBackend() // no StorageClass
+	b, cs, sc := testBackend() // no StorageClass
+	_ = sc
 	ctx := context.Background()
 	if _, err := b.Create(ctx, box.BoxSpec{Ref: box.BoxRef{Tenant: "grace"}, Image: "x"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -473,8 +490,8 @@ func TestCreateNoPVCWhenStorageClassEmpty(t *testing.T) {
 	if err != nil || len(pvcs.Items) != 0 {
 		t.Errorf("expected no PVCs when StorageClass is empty, got %d", len(pvcs.Items))
 	}
-	ss, _ := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
-	for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
+	sb := getSandbox(t, sc, ns)
+	for _, m := range sb.Spec.PodTemplate.Spec.Containers[0].VolumeMounts {
 		if m.MountPath == dataMount {
 			t.Errorf("data volume mounted even without StorageClass")
 		}
@@ -484,7 +501,7 @@ func TestCreateNoPVCWhenStorageClassEmpty(t *testing.T) {
 // TestDeleteRetainsPVC verifies that Delete removes box compute objects but
 // keeps the namespace and PVC when StorageClass is configured.
 func TestDeleteRetainsPVC(t *testing.T) {
-	b, cs := testBackendWithStorage()
+	b, cs, sc := testBackendWithStorage()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "henry"}
 	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil {
@@ -503,16 +520,16 @@ func TestDeleteRetainsPVC(t *testing.T) {
 	if _, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{}); err != nil {
 		t.Errorf("PVC removed by Delete: %v", err)
 	}
-	// StatefulSet must be gone.
-	if _, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{}); err == nil {
-		t.Error("StatefulSet still present after Delete")
+	// The Sandbox must be gone (its pod + Service go with it via owner refs).
+	if _, err := sc.AgentsV1beta1().Sandboxes(ns).Get(ctx, sandboxName, metav1.GetOptions{}); err == nil {
+		t.Error("Sandbox still present after Delete")
 	}
 }
 
 // TestPurgeRemovesPVCAndNamespace verifies that Purge removes both the PVC and
 // the namespace, and is a no-op on an absent box.
 func TestPurgeRemovesPVCAndNamespace(t *testing.T) {
-	b, cs := testBackendWithStorage()
+	b, cs, _ := testBackendWithStorage()
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "iris"}
 	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil {
@@ -538,7 +555,7 @@ func TestPurgeRemovesPVCAndNamespace(t *testing.T) {
 // TestCreatePerBoxStorageClassOverride verifies that a per-box
 // spec.Resources.StorageClass takes precedence over the global Config.StorageClass.
 func TestCreatePerBoxStorageClassOverride(t *testing.T) {
-	b, cs := testBackendWithStorage() // Config.StorageClass = "standard"
+	b, cs, _ := testBackendWithStorage() // Config.StorageClass = "standard"
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "jane"}
 
@@ -565,7 +582,7 @@ func TestCreatePerBoxStorageClassOverride(t *testing.T) {
 // TestCreatePerBoxStorageClassEmpty verifies that an empty per-box StorageClass
 // falls back to the global Config.StorageClass.
 func TestCreatePerBoxStorageClassEmpty(t *testing.T) {
-	b, cs := testBackendWithStorage() // Config.StorageClass = "standard"
+	b, cs, _ := testBackendWithStorage() // Config.StorageClass = "standard"
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "ken"}
 

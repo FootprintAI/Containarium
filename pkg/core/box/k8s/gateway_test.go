@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	sandboxfake "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
 
 	"github.com/footprintai/containarium/pkg/core/box"
 )
@@ -25,7 +26,7 @@ func gatewayBackend() (*Backend, *dynfake.FakeDynamicClient) {
 	scheme := runtime.NewScheme()
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{pipeGVR: "PipeList"})
-	b := NewWithClients(fake.NewSimpleClientset(), dyn, Config{
+	b := NewWithClients(fake.NewSimpleClientset(), sandboxfake.NewSimpleClientset(), dyn, Config{
 		GatewayNamespace: "sshpiper",
 		GatewayHost:      "gw.example.com",
 	})
@@ -69,7 +70,7 @@ func TestCreateProgramsPipe(t *testing.T) {
 	}
 
 	host, _, _ := unstructured.NestedString(p.Object, "spec", "to", "host")
-	if host != "box-0.boxes.tenant-alice.svc.cluster.local:2222" {
+	if host != "box.tenant-alice.svc.cluster.local:2222" {
 		t.Errorf("to.host = %q", host)
 	}
 	user, _, _ := unstructured.NestedString(p.Object, "spec", "to", "username")
@@ -87,10 +88,10 @@ func TestCreateProgramsPipe(t *testing.T) {
 	}
 	raw, _ := base64.StdEncoding.DecodeString(khd)
 	// Both host keys pinned (sshpiper may negotiate either), bracketed [host]:port.
-	if !strings.Contains(string(raw), "[box-0.boxes.tenant-alice.svc.cluster.local]:2222 ssh-ed25519 ") {
+	if !strings.Contains(string(raw), "[box.tenant-alice.svc.cluster.local]:2222 ssh-ed25519 ") {
 		t.Errorf("known_hosts missing ed25519 line: %q", raw)
 	}
-	if !strings.Contains(string(raw), "[box-0.boxes.tenant-alice.svc.cluster.local]:2222 ssh-rsa ") {
+	if !strings.Contains(string(raw), "[box.tenant-alice.svc.cluster.local]:2222 ssh-rsa ") {
 		t.Errorf("known_hosts missing rsa line: %q", raw)
 	}
 }
@@ -135,7 +136,7 @@ func TestGatewayUpstreamCredential(t *testing.T) {
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{pipeGVR: "PipeList"})
 	cs := fake.NewSimpleClientset()
-	b := NewWithClients(cs, dyn, Config{
+	b := NewWithClients(cs, sandboxfake.NewSimpleClientset(), dyn, Config{
 		GatewayNamespace:         "sshpiper",
 		GatewayHost:              "gw.example.com",
 		GatewayUpstreamPublicKey: "ssh-ed25519 GATEWAYPUB gateway",
@@ -178,7 +179,7 @@ func TestGatewayUpstreamCredential(t *testing.T) {
 func TestGatewayDisabledSkipsPipe(t *testing.T) {
 	// No dynamic client (NewWithClientset) → gateway off → Create still succeeds
 	// and programs no Pipe.
-	b := NewWithClientset(fake.NewSimpleClientset(), Config{GatewayNamespace: "sshpiper"})
+	b := NewWithClientset(fake.NewSimpleClientset(), sandboxfake.NewSimpleClientset(), Config{GatewayNamespace: "sshpiper"})
 	if b.gatewayEnabled() {
 		t.Fatal("gateway should be disabled without a dynamic client")
 	}

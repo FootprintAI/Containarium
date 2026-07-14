@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	sandboxclient "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned"
 
 	"github.com/footprintai/containarium/pkg/core/box"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -45,7 +46,8 @@ func TestE2E_BoxLifecycle(t *testing.T) {
 	ref := box.BoxRef{Tenant: "e2e"}
 	t.Cleanup(func() { _ = b.Delete(context.Background(), ref, true) })
 
-	// Create reconciles namespace + Secret + Service + NetworkPolicy + StatefulSet.
+	// Create reconciles namespace + Secrets + NetworkPolicy + the Sandbox CR;
+	// the agent-sandbox controller creates the pod and headless Service.
 	if _, err := b.Create(ctx, box.BoxSpec{
 		Ref:       ref,
 		Image:     "registry.k8s.io/pause:3.9",
@@ -61,13 +63,13 @@ func TestE2E_BoxLifecycle(t *testing.T) {
 		t.Errorf("running box has no pod IP")
 	}
 
-	// Stop scales to 0 → STOPPED.
+	// Stop suspends the Sandbox (controller deletes the pod) → STOPPED.
 	if err := b.Stop(ctx, ref, false); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	waitForState(t, b, ref, pb.ContainerState_CONTAINER_STATE_STOPPED, time.Minute)
 
-	// Start scales back to 1 → RUNNING.
+	// Start resumes the Sandbox (controller recreates the pod) → RUNNING.
 	if err := b.Start(ctx, ref); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -172,7 +174,7 @@ func TestE2E_GatewayPipe(t *testing.T) {
 		t.Fatalf("get pipe: %v", err)
 	}
 	host, _, _ := unstructured.NestedString(p.Object, "spec", "to", "host")
-	if host != "box-0.boxes.tenant-gw-e2e.svc.cluster.local:2222" {
+	if host != "box.tenant-gw-e2e.svc.cluster.local:2222" {
 		t.Errorf("pipe to.host = %q", host)
 	}
 
@@ -245,12 +247,16 @@ func TestE2E_CSIStorage(t *testing.T) {
 		t.Errorf("PVC storage request = %q, want 1Gi", q.String())
 	}
 
-	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	sbc, err := sandboxclient.NewForConfig(restCfg)
 	if err != nil {
-		t.Fatalf("StatefulSet not found: %v", err)
+		t.Fatalf("agent-sandbox clientset: %v", err)
+	}
+	sb, err := sbc.AgentsV1beta1().Sandboxes(ns).Get(ctx, sandboxName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Sandbox not found: %v", err)
 	}
 	mounts := map[string]string{}
-	for _, m := range ss.Spec.Template.Spec.Containers[0].VolumeMounts {
+	for _, m := range sb.Spec.PodTemplate.Spec.Containers[0].VolumeMounts {
 		mounts[m.MountPath] = m.Name
 	}
 	if mounts[dataMount] == "" {
@@ -267,8 +273,8 @@ func TestE2E_CSIStorage(t *testing.T) {
 	if _, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName, metav1.GetOptions{}); err != nil {
 		t.Errorf("PVC removed by Delete: %v", err)
 	}
-	if _, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{}); err == nil {
-		t.Error("StatefulSet still present after Delete")
+	if _, err := sbc.AgentsV1beta1().Sandboxes(ns).Get(ctx, sandboxName, metav1.GetOptions{}); err == nil {
+		t.Error("Sandbox still present after Delete")
 	}
 
 	// Purge: PVC and namespace gone. Namespace deletion is asynchronous in K8s
@@ -316,10 +322,6 @@ func TestE2E_GPUResourceLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rest config: %v", err)
 	}
-	cs, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		t.Fatalf("clientset: %v", err)
-	}
 
 	ctx := context.Background()
 	ref := box.BoxRef{Tenant: "gpu-e2e"}
@@ -334,15 +336,19 @@ func TestE2E_GPUResourceLimit(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	ss, err := cs.AppsV1().StatefulSets(ns).Get(ctx, statefulSetName, metav1.GetOptions{})
+	sbc, err := sandboxclient.NewForConfig(restCfg)
 	if err != nil {
-		t.Fatalf("StatefulSet not found: %v", err)
+		t.Fatalf("agent-sandbox clientset: %v", err)
 	}
-	c := ss.Spec.Template.Spec.Containers[0]
+	sb, err := sbc.AgentsV1beta1().Sandboxes(ns).Get(ctx, sandboxName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Sandbox not found: %v", err)
+	}
+	c := sb.Spec.PodTemplate.Spec.Containers[0]
 	if v := c.Resources.Limits[nvidiaGPUResource]; v.Value() != 2 {
 		t.Errorf("nvidia.com/gpu limit = %v, want 2", v.Value())
 	}
-	if ann := ss.Spec.Template.Annotations[gpuCountAnnotation]; ann != "2" {
+	if ann := sb.Spec.PodTemplate.ObjectMeta.Annotations[gpuCountAnnotation]; ann != "2" {
 		t.Errorf("gpu-count annotation = %q, want 2", ann)
 	}
 }

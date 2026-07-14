@@ -68,9 +68,12 @@ func (b *Backend) gatewayEnabled() bool {
 }
 
 // upstreamHost is the in-cluster DNS the gateway forwards the tenant's SSH to:
-// the headless Service's stable per-pod name (box-0.boxes.<ns>.svc).
+// the Sandbox's controller-created headless Service (named after the Sandbox),
+// whose A record resolves to the box pod. Matches the Sandbox's
+// status.serviceFQDN; computed here rather than read from status so the Pipe
+// can be programmed at Create time, before the controller first reconciles.
 func (b *Backend) upstreamHost(tenant string) string {
-	return fmt.Sprintf("%s-0.%s.%s.svc.cluster.local:%d", statefulSetName, serviceName, b.namespaceFor(tenant), sshPort)
+	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", sandboxName, b.namespaceFor(tenant), sshPort)
 }
 
 // pipeObject builds the sshpiper Pipe that routes username=<tenant> to the

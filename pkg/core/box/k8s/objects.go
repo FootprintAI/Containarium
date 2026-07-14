@@ -3,7 +3,6 @@ package k8s
 import (
 	"fmt"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -13,16 +12,20 @@ import (
 	"github.com/footprintai/containarium/pkg/core/box"
 )
 
-// Object naming + labels. One box per tenant namespace: the StatefulSet is
-// always "box" (pod "box-0"), fronted by the headless Service "boxes".
+// Object naming + labels. One box per tenant namespace: the agent-sandbox
+// Sandbox CR is always "box"; its controller creates the pod (also "box") and
+// a headless Service (also "box") that gives the pod stable in-cluster DNS.
 const (
-	statefulSetName = "box"
-	serviceName     = "boxes"
-	sshPortName     = "ssh"
+	sandboxName = "box"
+	sshPortName = "ssh"
 
 	// pvcName is the PersistentVolumeClaim name inside the tenant namespace.
-	// It holds the box's persistent data (home directory). Created before the
-	// StatefulSet and retained on Delete; removed only by Purge.
+	// It holds the box's persistent data (home directory). Owned by the daemon,
+	// NOT declared via the Sandbox's volumeClaimTemplates: template-derived PVCs
+	// are owner-referenced to the Sandbox and garbage-collected with it, which
+	// would break delete-retains-data. Created before the Sandbox, mounted as a
+	// plain persistentVolumeClaim volume, retained on Delete; removed only by
+	// Purge.
 	pvcName     = "data"
 	dataMount   = "/home/agent"
 	dataVolume  = "data"
@@ -110,7 +113,6 @@ func pvcObject(ns, tenant, storageClass, disk string) *corev1.PersistentVolumeCl
 	return pvc
 }
 
-func int32p(i int32) *int32 { return &i }
 func int64p(i int64) *int64 { return &i }
 func boolp(b bool) *bool    { return &b }
 
@@ -143,24 +145,6 @@ func secretObject(ns, tenant string, keys []string) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{Name: secretName(tenant), Namespace: ns, Labels: boxLabels(tenant)},
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{authorizedKeysKey: buf},
-	}
-}
-
-// serviceObject is the headless Service that gives the pod a stable DNS name
-// (box-0.boxes.<ns>.svc) the gateway routes to.
-func serviceObject(ns, tenant string) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: ns, Labels: boxLabels(tenant)},
-		Spec: corev1.ServiceSpec{
-			ClusterIP: corev1.ClusterIPNone, // headless
-			Selector:  boxLabels(tenant),
-			Ports: []corev1.ServicePort{{
-				Name:       sshPortName,
-				Port:       sshPort,
-				TargetPort: intstr.FromInt(sshPort),
-				Protocol:   corev1.ProtocolTCP,
-			}},
-		},
 	}
 }
 
@@ -199,103 +183,6 @@ func networkPolicyObject(ns, tenant string) *networkingv1.NetworkPolicy {
 type memDefaults struct {
 	request string
 	limit   string
-}
-
-// statefulSetObject builds the per-tenant box. replicas is 1 when the spec
-// asks to auto-start, else 0 (created stopped). withPVC mounts the data PVC
-// at dataMount (/home/agent) when true; the PVC must already exist. def is the
-// resolved default memory floor applied when the spec sets no explicit memory.
-func statefulSetObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults) *appsv1.StatefulSet {
-	replicas := int32(0)
-	if spec.AutoStart {
-		replicas = 1
-	}
-	labels := boxLabels(spec.Ref.Tenant)
-
-	// restricted-PSA container hardening: non-root, no privilege escalation,
-	// all capabilities dropped, default seccomp. The box image (dropbear on
-	// :2222) is built to run under exactly this.
-	gpuCount := len(spec.GPUs)
-	container := corev1.Container{
-		Name:  "agent-box",
-		Image: spec.Image,
-		Ports: []corev1.ContainerPort{{Name: sshPortName, ContainerPort: sshPort, Protocol: corev1.ProtocolTCP}},
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: boolp(false),
-			RunAsNonRoot:             boolp(true),
-			RunAsUser:                int64p(1000),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		},
-		// Mount the box's authorized_keys (so it accepts logins) and its stable
-		// host key (so the gateway can pin it). Without the first the box
-		// rejects every login.
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: authorizedKeysVolume, MountPath: authorizedKeysMount, ReadOnly: true},
-			{Name: hostKeyVolume, MountPath: hostKeyMount, ReadOnly: true},
-		},
-	}
-	if res := resourceRequirements(spec.Resources, gpuCount, def); res != nil {
-		container.Resources = *res
-	}
-
-	volumes := []corev1.Volume{
-		{
-			Name: authorizedKeysVolume,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{SecretName: secretName(spec.Ref.Tenant)},
-			},
-		},
-		{
-			Name: hostKeyVolume,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{SecretName: hostKeySecretName(spec.Ref.Tenant)},
-			},
-		},
-	}
-	if withPVC {
-		volumes = append(volumes, corev1.Volume{
-			Name: dataVolume,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: pvcName,
-				},
-			},
-		})
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-			Name:      dataVolume,
-			MountPath: dataMount,
-		})
-	}
-
-	podMeta := metav1.ObjectMeta{Labels: labels}
-	if gpuCount > 0 {
-		podMeta.Annotations = map[string]string{
-			gpuCountAnnotation: fmt.Sprintf("%d", gpuCount),
-		}
-	}
-
-	return &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: statefulSetName, Namespace: ns, Labels: labels},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas:    int32p(replicas),
-			ServiceName: serviceName,
-			Selector:    &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: podMeta,
-				Spec: corev1.PodSpec{
-					AutomountServiceAccountToken: boolp(false), // the box is a leaf, never a kube-apiserver client
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot:   boolp(true),
-						RunAsUser:      int64p(1000),
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-					},
-					Containers: []corev1.Container{container},
-					Volumes:    volumes,
-				},
-			},
-		},
-	}
 }
 
 // resourceRequirements maps the runtime-neutral limits onto K8s requests/limits.

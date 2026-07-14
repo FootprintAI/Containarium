@@ -7,9 +7,10 @@
 # Keep cluster: E2E_KEEP=1 bash scripts/k8s-e2e.sh   (skips teardown for debugging)
 # CI:           invoked by .github/workflows/k8s-e2e.yml on an ubuntu runner.
 #
-# Requirements: kind, go, and a working Docker daemon (preinstalled on the
-# GitHub ubuntu-latest runner). kubectl is NOT required — the e2e talks to the
-# apiserver via client-go, not the CLI.
+# Requirements: kind, kubectl, go, and a working Docker daemon (all
+# preinstalled on the GitHub ubuntu-latest runner). kubectl installs the
+# agent-sandbox controller; the e2e itself talks to the apiserver via
+# client-go.
 #
 # Note: kind's default CNI (kindnet) does NOT enforce NetworkPolicy, so this
 # suite asserts the reconciler creates the right objects + the pod lifecycle,
@@ -37,6 +38,18 @@ trap cleanup EXIT
 
 echo "==> creating kind cluster '$CLUSTER'"
 kind create cluster --name "$CLUSTER" --wait 120s
+
+# The box backend declares agent-sandbox Sandbox CRs; the agent-sandbox
+# controller (kubernetes-sigs/agent-sandbox) owns the pod + Service under
+# them, so it must run in the cluster for the lifecycle e2e to converge.
+# Note: v0.5.1's install asset is manifest.yaml (their README still says
+# sandbox-with-extensions.yaml, which 404s).
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
+echo "==> installing agent-sandbox controller ${AGENT_SANDBOX_VERSION}"
+command -v kubectl >/dev/null || { echo "kubectl is required to install the agent-sandbox controller" >&2; exit 1; }
+kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
+kubectl wait --for=condition=available deployment -A \
+  -l control-plane=controller-manager --timeout=180s
 
 echo "==> running K8s agent-box e2e (reconciler vs. the kind apiserver)"
 CONTAINARIUM_K8S_E2E=1 go test -tags k8s -run TestE2E -timeout 12m -v ./pkg/core/box/k8s/

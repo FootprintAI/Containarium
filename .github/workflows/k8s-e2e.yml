@@ -9,7 +9,7 @@ on:
   pull_request:
     paths:
       - 'pkg/core/box/**'
-      - 'internal/server/boxbackend_k8s.go'
+      - 'internal/server/boxbackend_factory.go'
       - 'scripts/k8s-e2e.sh'
       - '.github/workflows/k8s-e2e.yml'
       - 'go.mod'
@@ -18,7 +18,7 @@ on:
     branches: [main]
     paths:
       - 'pkg/core/box/**'
-      - 'internal/server/boxbackend_k8s.go'
+      - 'internal/server/boxbackend_factory.go'
       - 'scripts/k8s-e2e.sh'
       - '.github/workflows/k8s-e2e.yml'
       - 'go.mod'
