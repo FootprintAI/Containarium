@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.3] - 2026-07-14
+
+### Added
+
+- **Backups: back up every database automatically, don't require a
+  name** (#954). Setting up a backup required typing the exact
+  database name — most users don't know it offhand, and no layer
+  validated it, so a typo just failed deep inside `pg_dump` with a
+  cryptic error; a scheduled backup with a bad name failed silently
+  forever with no notification. When `connection.database` is left
+  empty (the new default), the daemon enumerates every non-template
+  database (`Manager.ListDatabases`, reusing the same container-exec
+  plumbing `pg_dump` itself uses) and backs up each one
+  (`Manager.CreateAll`) — one database failing doesn't abort the
+  others. An explicit database still works exactly as before.
+  `CreateBackupResponse` gains `records` (always populated) and
+  `failures` (per-database errors) alongside the existing `record`
+  field.
+
 ## [0.51.2] - 2026-07-14
 
 ### Fixed
