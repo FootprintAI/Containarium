@@ -37,6 +37,7 @@ import (
 	"github.com/footprintai/containarium/internal/waf"
 	"github.com/footprintai/containarium/internal/wake"
 	zapscanner "github.com/footprintai/containarium/internal/zap"
+	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/crews"
@@ -1889,15 +1890,27 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// Naturally cooperates with autosleep — if both ticks decide on
 	// the same container in the same second, deletion is final and
 	// the autosleep stop becomes a no-op against a missing container.
-	if incusClient, err := incus.New(); err != nil {
-		log.Printf("[ttlsweeper] incus client unavailable: %v (sweeper disabled)", err)
-	} else {
+	if incusClient, err := incus.New(); err == nil {
 		ds.ttlSweeperManager = ttlsweeper.NewManager(
 			&ttlsweeperIncusAdapter{ic: incusClient},
 			&ttlsweeperDeleter{cs: ds.containerServer},
 			ttlsweeper.Options{},
 		)
 		ds.ttlSweeperManager.Start(ctx)
+	} else if ds.containerServer != nil && ds.containerServer.boxes().Kind() == box.KindK8s {
+		// No Incus, but the K8s box backend persists TTL natively (Sandbox
+		// spec.shutdownTime + the mirrored ttl_expires_at meta). Sweep off the
+		// backend's List instead so expiry still routes through the full
+		// DeleteContainer cascade on the k8s runtime.
+		ds.ttlSweeperManager = ttlsweeper.NewManager(
+			&ttlsweeperBoxAdapter{bb: ds.containerServer.boxes()},
+			&ttlsweeperDeleter{cs: ds.containerServer},
+			ttlsweeper.Options{},
+		)
+		ds.ttlSweeperManager.Start(ctx)
+		log.Printf("[ttlsweeper] incus unavailable (%v); sweeping via the k8s box backend", err)
+	} else {
+		log.Printf("[ttlsweeper] incus client unavailable: %v (sweeper disabled)", err)
 	}
 
 	// Orphan reaper (#835): periodically userdel host accounts whose

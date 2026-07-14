@@ -234,3 +234,16 @@ type MetricsCapable interface {
 type GPUCapable interface {
 	ResolveGPU(ctx context.Context, input string) (deviceID string, err error)
 }
+
+// TTLCapable is an optional capability: backends that can persist a box's
+// absolute auto-delete time natively in their substrate implement it. The K8s
+// backend maps it onto the agent-sandbox Sandbox's spec.shutdownTime (with
+// shutdownPolicy Retain — the controller stops the pod at the deadline even
+// if the daemon is down; the daemon's sweeper then completes the delete
+// through the full DeleteContainer cascade). LXC persists TTL via Incus
+// config keys on the server side instead and does not implement this.
+//
+// expiresAt nil clears the TTL (the box persists indefinitely).
+type TTLCapable interface {
+	SetTTL(ctx context.Context, ref BoxRef, expiresAt *time.Time) error
+}

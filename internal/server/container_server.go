@@ -232,6 +232,20 @@ func (s *ContainerServer) boxes() box.BoxBackend {
 	return boxlxc.New(s.manager)
 }
 
+// k8sBoxes returns the box backend when the daemon runs the k8s runtime.
+// Lifecycle handlers use it to route their action through the backend seam:
+// s.manager is the LXC/incus surface, which is wired to an unavailable stub
+// on the k8s runtime — so without this branch Start/Stop/Delete/Resize would
+// error on every call there. The incus-config side effects those handlers
+// stamp (autosleep timestamps, stopped_at, secrets re-stamping) are
+// LXC-runtime features and are skipped on k8s.
+func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
+	if bb := s.boxes(); bb.Kind() == box.KindK8s {
+		return bb, true
+	}
+	return nil, false
+}
+
 // CreateContainer creates a new container
 func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
@@ -463,7 +477,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 			// stampBirthTTL deletes the box on failure so an ephemeral box
 			// never leaks just because the async stamp lost a race.
 			if err == nil && info != nil && req.TtlSeconds > 0 {
-				if terr := s.stampBirthTTL(info.Ref.Name, req.Username, req.TtlSeconds); terr != nil {
+				if terr := s.stampBirthTTL(context.Background(), info.Ref.Name, req.Username, req.TtlSeconds); terr != nil {
 					err = terr
 					info = nil
 				}
@@ -543,7 +557,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// errors if it can't honor the requested TTL — an ephemeral box that
 	// would leak is worse than no box.
 	if req.TtlSeconds > 0 {
-		if err := s.stampBirthTTL(info.Ref.Name, req.Username, req.TtlSeconds); err != nil {
+		if err := s.stampBirthTTL(ctx, info.Ref.Name, req.Username, req.TtlSeconds); err != nil {
 			return nil, err
 		}
 	}
@@ -861,6 +875,21 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 	// Before deleting, deregister Guacamole connection if this is a Windows VM
 	s.deregisterGuacamoleConnection(req.Username)
 
+	if bb, isK8s := s.k8sBoxes(); isK8s {
+		// K8s runtime: deleting the Sandbox cascades to its pod + Service via
+		// owner refs; the backend keeps the namespace + data PVC (its
+		// delete-retains-data contract) and removes the gateway Pipe + Secrets.
+		if err := bb.Delete(ctx, box.BoxRef{Tenant: req.Username}, req.Force); err != nil {
+			return nil, fmt.Errorf("failed to delete container: %w", err)
+		}
+		s.cascadeContainerCleanup(ctx, containerName, req.Username)
+		s.emitter.EmitContainerDeleted(containerName)
+		return &pb.DeleteContainerResponse{
+			Message:       fmt.Sprintf("Container for user %s deleted successfully", req.Username),
+			ContainerName: containerName,
+		}, nil
+	}
+
 	err := s.manager.Delete(req.Username, req.Force)
 	if err != nil {
 		// Not found locally — try peers
@@ -978,54 +1007,62 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, err
 	}
 
-	if err := s.manager.Start(req.Username); err != nil {
-		// Try peer
-		if s.peerPool != nil {
-			authToken := extractAuthToken(ctx)
-			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
-			if peer != nil {
-				body, _ := json.Marshal(map[string]interface{}{
-					"wait_for_ready":        req.WaitForReady,
-					"ready_timeout_seconds": req.ReadyTimeoutSeconds,
-				})
-				_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/start", req.Username), authToken, body)
-				if fwdErr == nil {
-					return &pb.StartContainerResponse{
-						Message: fmt.Sprintf("Container for user %s started on backend %s", req.Username, peer.ID),
-					}, nil
+	if bb, isK8s := s.k8sBoxes(); isK8s {
+		// K8s runtime: resume the Sandbox (operatingMode=Running); the
+		// agent-sandbox controller recreates the pod with the retained PVC.
+		if err := bb.Start(ctx, box.BoxRef{Tenant: req.Username}); err != nil {
+			return nil, fmt.Errorf("failed to start container: %w", err)
+		}
+	} else {
+		if err := s.manager.Start(req.Username); err != nil {
+			// Try peer
+			if s.peerPool != nil {
+				authToken := extractAuthToken(ctx)
+				peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+				if peer != nil {
+					body, _ := json.Marshal(map[string]interface{}{
+						"wait_for_ready":        req.WaitForReady,
+						"ready_timeout_seconds": req.ReadyTimeoutSeconds,
+					})
+					_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/start", req.Username), authToken, body)
+					if fwdErr == nil {
+						return &pb.StartContainerResponse{
+							Message: fmt.Sprintf("Container for user %s started on backend %s", req.Username, peer.ID),
+						}, nil
+					}
 				}
 			}
+			return nil, fmt.Errorf("failed to start container: %w", err)
 		}
-		return nil, fmt.Errorf("failed to start container: %w", err)
-	}
 
-	// Stamp last-start timestamp so the Phase 2 auto-sleep ticker can
-	// enforce its anti-thrash window (don't sleep within 2× threshold
-	// of the most recent start). Best-effort — if the SetConfig fails
-	// the container is already running, and the worst case is one
-	// extra wake → sleep flap.
-	if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		log.Printf("[autosleep] failed to stamp %s on %s: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
-	}
+		// Stamp last-start timestamp so the Phase 2 auto-sleep ticker can
+		// enforce its anti-thrash window (don't sleep within 2× threshold
+		// of the most recent start). Best-effort — if the SetConfig fails
+		// the container is already running, and the worst case is one
+		// extra wake → sleep flap.
+		if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			log.Printf("[autosleep] failed to stamp %s on %s: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
+		}
 
-	// Two-phase reaping (#525): the box is running again, so clear stopped_at.
-	// This resets the stopped→delete timer — a box someone keeps waking to
-	// investigate never gets reaped; only a box left continuously stopped past
-	// its window does. Best-effort + idempotent (UnsetConfig of an absent key
-	// is a no-op).
-	if err := s.manager.UnsetConfig(req.Username+"-container", incus.StoppedAtKey); err != nil {
-		log.Printf("[ttl] failed to clear %s on %s: %v (continuing)", incus.StoppedAtKey, req.Username, err)
-	}
+		// Two-phase reaping (#525): the box is running again, so clear stopped_at.
+		// This resets the stopped→delete timer — a box someone keeps waking to
+		// investigate never gets reaped; only a box left continuously stopped past
+		// its window does. Best-effort + idempotent (UnsetConfig of an absent key
+		// is a no-op).
+		if err := s.manager.UnsetConfig(req.Username+"-container", incus.StoppedAtKey); err != nil {
+			log.Printf("[ttl] failed to clear %s on %s: %v (continuing)", incus.StoppedAtKey, req.Username, err)
+		}
 
-	// Re-stamp tenant secrets from the current DB state. Picks up
-	// any rotations that happened while the container was stopped;
-	// existing processes won't see the change (POSIX inherit-at-fork),
-	// but new execs will.
-	if s.secretsStore != nil {
-		if n, err := s.stampSecretsOnLXC(ctx, req.Username); err != nil {
-			log.Printf("[secrets] failed to re-stamp on start of %s-container: %v (continuing)", req.Username, err)
-		} else if n > 0 {
-			log.Printf("[secrets] re-stamped %d secret(s) on %s-container at start time", n, req.Username)
+		// Re-stamp tenant secrets from the current DB state. Picks up
+		// any rotations that happened while the container was stopped;
+		// existing processes won't see the change (POSIX inherit-at-fork),
+		// but new execs will.
+		if s.secretsStore != nil {
+			if n, err := s.stampSecretsOnLXC(ctx, req.Username); err != nil {
+				log.Printf("[secrets] failed to re-stamp on start of %s-container: %v (continuing)", req.Username, err)
+			} else if n > 0 {
+				log.Printf("[secrets] re-stamped %d secret(s) on %s-container at start time", n, req.Username)
+			}
 		}
 	}
 
@@ -1126,7 +1163,13 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		return nil, err
 	}
 
-	if err := s.manager.Stop(req.Username, req.Force); err != nil {
+	if bb, isK8s := s.k8sBoxes(); isK8s {
+		// K8s runtime: suspend the Sandbox (operatingMode=Suspended); the
+		// controller deletes only the pod — PVC + Service + identity persist.
+		if err := bb.Stop(ctx, box.BoxRef{Tenant: req.Username}, req.Force); err != nil {
+			return nil, fmt.Errorf("failed to stop container: %w", err)
+		}
+	} else if err := s.manager.Stop(req.Username, req.Force); err != nil {
 		// Try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -1157,9 +1200,12 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 	// stamp just means the stopped→delete clock doesn't start until a later
 	// stop restamps it; it never fails the stop. Only matters for boxes that
 	// opted into delete_after_stopped, but stamping unconditionally keeps the
-	// timestamp honest for any box and costs one config write.
-	if serr := s.manager.SetConfig(info.Ref.Name, incus.StoppedAtKey, time.Now().UTC().Format(time.RFC3339)); serr != nil {
-		log.Printf("[ttl] failed to stamp %s on %s: %v (stopped→delete timer not started)", incus.StoppedAtKey, info.Ref.Name, serr)
+	// timestamp honest for any box and costs one config write. LXC-only: the
+	// stopped→delete rule isn't modeled on the k8s runtime yet.
+	if _, isK8s := s.k8sBoxes(); !isK8s {
+		if serr := s.manager.SetConfig(info.Ref.Name, incus.StoppedAtKey, time.Now().UTC().Format(time.RFC3339)); serr != nil {
+			log.Printf("[ttl] failed to stamp %s on %s: %v (stopped→delete timer not started)", incus.StoppedAtKey, info.Ref.Name, serr)
+		}
 	}
 
 	s.emitter.EmitContainerStopped(toProtoContainer(info))
@@ -1230,6 +1276,37 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 	}
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
+
+	if bb, isK8s := s.k8sBoxes(); isK8s {
+		ref := box.BoxRef{Tenant: req.Username}
+		if err := bb.Resize(ctx, ref, box.ResourceLimits{CPU: req.Cpu, Memory: req.Memory, Disk: req.Disk}); err != nil {
+			return nil, fmt.Errorf("failed to resize container: %w", err)
+		}
+		// The agent-sandbox controller doesn't restart a live pod on template
+		// drift, so bounce a running box (suspend → resume, i.e. pod recreate)
+		// to apply the new limits now — same downtime as the StatefulSet
+		// rolling restart the old path triggered. A stopped box just picks the
+		// limits up at its next start.
+		if cur, gerr := bb.Get(ctx, ref); gerr == nil && cur != nil && cur.State == pb.ContainerState_CONTAINER_STATE_RUNNING {
+			if err := bb.Stop(ctx, ref, false); err != nil {
+				return nil, fmt.Errorf("resized but failed to restart (stop) container: %w", err)
+			}
+			if err := bb.Start(ctx, ref); err != nil {
+				return nil, fmt.Errorf("resized but failed to restart (start) container: %w", err)
+			}
+		}
+		info, err := s.boxes().Get(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get updated container info: %w", err)
+		}
+		if info == nil {
+			return nil, fmt.Errorf("container resized but not found on read-back")
+		}
+		return &pb.ResizeContainerResponse{
+			Message:   fmt.Sprintf("Container %s resized successfully", containerName),
+			Container: toProtoContainer(info),
+		}, nil
+	}
 
 	// Perform resize — try local first, then peer
 	if err := s.manager.Resize(containerName, req.Cpu, req.Memory, req.Disk, false); err != nil {

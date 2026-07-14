@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestStampBirthTTL_StampsExpiry(t *testing.T) {
 	mock.DeleteContainerFunc = func(string) error { deleted = true; return nil }
 
 	before := time.Now().UTC()
-	if err := s.stampBirthTTL("alice-container", "alice", 1800); err != nil {
+	if err := s.stampBirthTTL(context.Background(), "alice-container", "alice", 1800); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	after := time.Now().UTC()
@@ -67,7 +68,7 @@ func TestStampBirthTTL_FailureDeletesBox(t *testing.T) {
 	deletedName := ""
 	mock.DeleteContainerFunc = func(name string) error { deletedName = name; return nil }
 
-	err := s.stampBirthTTL("alice-container", "alice", 1800)
+	err := s.stampBirthTTL(context.Background(), "alice-container", "alice", 1800)
 	if err == nil {
 		t.Fatal("expected an error when the TTL stamp fails")
 	}

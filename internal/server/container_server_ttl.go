@@ -74,6 +74,27 @@ func (s *ContainerServer) SetContainerTTL(ctx context.Context, req *pb.SetContai
 	containerName := info.Ref.Name
 
 	resp := &pb.SetContainerTTLResponse{}
+
+	// TTL-capable backends (K8s: agent-sandbox spec.shutdownTime) persist the
+	// expiry natively; the Incus-config path below is the LXC persistence.
+	if tc, ok := s.boxes().(box.TTLCapable); ok {
+		ref := box.BoxRef{Tenant: username}
+		if req.DurationSeconds == 0 {
+			if err := tc.SetTTL(ctx, ref, nil); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to clear ttl: %v", err)
+			}
+			log.Printf("[ttl] cleared container=%s", containerName)
+			return resp, nil
+		}
+		expiresAt := time.Now().Add(time.Duration(req.DurationSeconds) * time.Second).UTC()
+		if err := tc.SetTTL(ctx, ref, &expiresAt); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to set ttl: %v", err)
+		}
+		log.Printf("[ttl] set container=%s expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), req.DurationSeconds)
+		resp.TtlExpiresAt = timestamppb.New(expiresAt)
+		return resp, nil
+	}
+
 	if req.DurationSeconds == 0 {
 		// Clear: remove the key entirely so parseTTLExpiresAt and the
 		// sweeper see "absent" rather than "empty string". UnsetConfig
@@ -120,13 +141,21 @@ func validateTTLSeconds(seconds int64) error {
 // ran. On failure it DELETES the box and returns an error rather than hand
 // back a box that was asked to be ephemeral but would otherwise leak forever:
 // default-dead, not default-alive (#522). ttlSeconds must be > 0 (the zero
-// case is "no TTL" and never reaches here). containerName is the incus name
-// (info.Name) for the config write + logs; username is what manager.Delete
-// keys on.
-func (s *ContainerServer) stampBirthTTL(containerName, username string, ttlSeconds int64) error {
-	expiresAt, err := s.stampTTL(containerName, ttlSeconds)
+// case is "no TTL" and never reaches here). containerName is the backend box
+// name (info.Ref.Name) for logs and the LXC config write; username keys the
+// cleanup delete.
+func (s *ContainerServer) stampBirthTTL(ctx context.Context, containerName, username string, ttlSeconds int64) error {
+	var expiresAt time.Time
+	var err error
+	if tc, ok := s.boxes().(box.TTLCapable); ok {
+		// Native persistence (K8s: Sandbox spec.shutdownTime).
+		expiresAt = time.Now().Add(time.Duration(ttlSeconds) * time.Second).UTC()
+		err = tc.SetTTL(ctx, box.BoxRef{Tenant: username}, &expiresAt)
+	} else {
+		expiresAt, err = s.stampTTL(containerName, ttlSeconds)
+	}
 	if err != nil {
-		if delErr := s.manager.Delete(username, true); delErr != nil {
+		if delErr := s.boxes().Delete(ctx, box.BoxRef{Tenant: username}, true); delErr != nil {
 			log.Printf("[ttl] birth TTL stamp failed AND cleanup-delete failed for %s: stamp=%v delete=%v", containerName, err, delErr)
 		}
 		return status.Errorf(codes.Internal, "failed to set birth TTL on %s (box deleted to avoid a leak): %v", containerName, err)
