@@ -213,7 +213,14 @@ func (x *BackupRecord) GetEngine() string {
 // child process via the PGPASSWORD environment variable, not argv.
 type PgConnection struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Logical database to dump or restore into. Required.
+	// Logical database to dump or restore into. For CreateBackup, leave
+	// empty to back up EVERY non-template database in the container (#954)
+	// — the default, no-guessing path; a caller doesn't need to already
+	// know a database name, and there's no name left to typo. Set an
+	// explicit name to dump just that one database instead. For
+	// RestoreBackup, empty means "the backup record's own database"
+	// (restore in place) — always required in practice there since a
+	// record always names exactly one database.
 	Database string `protobuf:"bytes,1,opt,name=database,proto3" json:"database,omitempty"`
 	// Postgres role. Defaults to "postgres" when empty.
 	User string `protobuf:"bytes,2,opt,name=user,proto3" json:"user,omitempty"`
@@ -299,7 +306,9 @@ type CreateBackupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Tenant (username) whose container holds the database.
 	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
-	// Connection parameters for pg_dump inside the container.
+	// Connection parameters for pg_dump inside the container. Leave
+	// connection.database empty to back up every non-template database
+	// found (#954, the default); set it to back up just that one.
 	Connection *PgConnection `protobuf:"bytes,2,opt,name=connection,proto3" json:"connection,omitempty"`
 	// Where to store the dump.
 	Destination BackupDestination `protobuf:"varint,3,opt,name=destination,proto3,enum=containarium.v1.BackupDestination" json:"destination,omitempty"`
@@ -372,8 +381,21 @@ type CreateBackupResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Operator-facing summary.
 	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	// The committed backup record.
-	Record        *BackupRecord `protobuf:"bytes,2,opt,name=record,proto3" json:"record,omitempty"`
+	// The committed backup record. Populated only when connection.database
+	// named exactly one database (single-database create, back-compat
+	// shape). For a "back up all" create (connection.database empty),
+	// this is unset — use records instead.
+	Record *BackupRecord `protobuf:"bytes,2,opt,name=record,proto3" json:"record,omitempty"`
+	// Every committed backup record from this call. Always populated:
+	// one entry for a single-database create (mirrors record above), or
+	// one entry per database for a "back up all" create (#954).
+	Records []*BackupRecord `protobuf:"bytes,3,rep,name=records,proto3" json:"records,omitempty"`
+	// Per-database failures from a "back up all" create — a database that
+	// failed to dump (e.g. transient pg_dump error) does not abort the
+	// others; its failure is reported here instead. Always empty for a
+	// single-database create (that path fails the whole RPC on error, as
+	// before).
+	Failures      []string `protobuf:"bytes,4,rep,name=failures,proto3" json:"failures,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -418,6 +440,20 @@ func (x *CreateBackupResponse) GetMessage() string {
 func (x *CreateBackupResponse) GetRecord() *BackupRecord {
 	if x != nil {
 		return x.Record
+	}
+	return nil
+}
+
+func (x *CreateBackupResponse) GetRecords() []*BackupRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+func (x *CreateBackupResponse) GetFailures() []string {
+	if x != nil {
+		return x.Failures
 	}
 	return nil
 }
@@ -835,10 +871,12 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"connection\x12D\n" +
 	"\vdestination\x18\x03 \x01(\x0e2\".containarium.v1.BackupDestinationR\vdestination\x12\x1d\n" +
 	"\n" +
-	"gcs_bucket\x18\x04 \x01(\tR\tgcsBucket\"g\n" +
+	"gcs_bucket\x18\x04 \x01(\tR\tgcsBucket\"\xbc\x01\n" +
 	"\x14CreateBackupResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x125\n" +
-	"\x06record\x18\x02 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\"0\n" +
+	"\x06record\x18\x02 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\x127\n" +
+	"\arecords\x18\x03 \x03(\v2\x1d.containarium.v1.BackupRecordR\arecords\x12\x1a\n" +
+	"\bfailures\x18\x04 \x03(\tR\bfailures\"0\n" +
 	"\x12ListBackupsRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\"N\n" +
 	"\x13ListBackupsResponse\x127\n" +
@@ -862,10 +900,11 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x11BackupDestination\x12\"\n" +
 	"\x1eBACKUP_DESTINATION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18BACKUP_DESTINATION_LOCAL\x10\x01\x12\x1a\n" +
-	"\x16BACKUP_DESTINATION_GCS\x10\x022\xb3\t\n" +
-	"\rBackupService\x12\x90\x02\n" +
-	"\fCreateBackup\x12$.containarium.v1.CreateBackupRequest\x1a%.containarium.v1.CreateBackupResponse\"\xb2\x01\x92A\x98\x01\n" +
-	"\aBackups\x12\x0fCreate a backup\x1a|Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS).\x82\xd3\xe4\x93\x02\x10:\x01*\"\v/v1/backups\x12\xd3\x01\n" +
+	"\x16BACKUP_DESTINATION_GCS\x10\x022\x9e\n" +
+	"\n" +
+	"\rBackupService\x12\xfb\x02\n" +
+	"\fCreateBackup\x12$.containarium.v1.CreateBackupRequest\x1a%.containarium.v1.CreateBackupResponse\"\x9d\x02\x92A\x83\x02\n" +
+	"\aBackups\x12\x0fCreate a backup\x1a\xe6\x01Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.\x82\xd3\xe4\x93\x02\x10:\x01*\"\v/v1/backups\x12\xd3\x01\n" +
 	"\vListBackups\x12#.containarium.v1.ListBackupsRequest\x1a$.containarium.v1.ListBackupsResponse\"y\x92Ac\n" +
 	"\aBackups\x12\fList backups\x1aJLists stored backup records (newest first), optionally filtered by tenant.\x82\xd3\xe4\x93\x02\r\x12\v/v1/backups\x12\xb8\x01\n" +
 	"\tGetBackup\x12!.containarium.v1.GetBackupRequest\x1a\".containarium.v1.GetBackupResponse\"d\x92AI\n" +
@@ -909,24 +948,25 @@ var file_containarium_v1_backup_proto_depIdxs = []int32{
 	2,  // 1: containarium.v1.CreateBackupRequest.connection:type_name -> containarium.v1.PgConnection
 	0,  // 2: containarium.v1.CreateBackupRequest.destination:type_name -> containarium.v1.BackupDestination
 	1,  // 3: containarium.v1.CreateBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	1,  // 4: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
-	1,  // 5: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	2,  // 6: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	3,  // 7: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
-	5,  // 8: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
-	7,  // 9: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
-	9,  // 10: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
-	11, // 11: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
-	4,  // 12: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
-	6,  // 13: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
-	8,  // 14: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
-	10, // 15: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
-	12, // 16: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
-	12, // [12:17] is the sub-list for method output_type
-	7,  // [7:12] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	1,  // 4: containarium.v1.CreateBackupResponse.records:type_name -> containarium.v1.BackupRecord
+	1,  // 5: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
+	1,  // 6: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	2,  // 7: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	3,  // 8: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
+	5,  // 9: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
+	7,  // 10: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
+	9,  // 11: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
+	11, // 12: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
+	4,  // 13: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
+	6,  // 14: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
+	8,  // 15: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
+	10, // 16: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
+	12, // 17: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
+	13, // [13:18] is the sub-list for method output_type
+	8,  // [8:13] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_backup_proto_init() }

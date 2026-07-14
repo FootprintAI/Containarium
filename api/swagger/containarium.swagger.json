@@ -1160,7 +1160,7 @@
       },
       "post": {
         "summary": "Create a backup",
-        "description": "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS).",
+        "description": "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.",
         "operationId": "BackupService_CreateBackup",
         "responses": {
           "200": {
@@ -7317,7 +7317,7 @@
         },
         "connection": {
           "$ref": "#/definitions/PgConnection",
-          "description": "Connection parameters for pg_dump inside the container."
+          "description": "Connection parameters for pg_dump inside the container. Leave\nconnection.database empty to back up every non-template database\nfound (#954, the default); set it to back up just that one."
         },
         "destination": {
           "$ref": "#/definitions/BackupDestination",
@@ -7339,7 +7339,22 @@
         },
         "record": {
           "$ref": "#/definitions/BackupRecord",
-          "description": "The committed backup record."
+          "description": "The committed backup record. Populated only when connection.database\nnamed exactly one database (single-database create, back-compat\nshape). For a \"back up all\" create (connection.database empty),\nthis is unset — use records instead."
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BackupRecord"
+          },
+          "description": "Every committed backup record from this call. Always populated:\none entry for a single-database create (mirrors record above), or\none entry per database for a \"back up all\" create (#954)."
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Per-database failures from a \"back up all\" create — a database that\nfailed to dump (e.g. transient pg_dump error) does not abort the\nothers; its failure is reported here instead. Always empty for a\nsingle-database create (that path fails the whole RPC on error, as\nbefore)."
         }
       }
     },
@@ -9983,7 +9998,7 @@
       "properties": {
         "database": {
           "type": "string",
-          "description": "Logical database to dump or restore into. Required."
+          "description": "Logical database to dump or restore into. For CreateBackup, leave\nempty to back up EVERY non-template database in the container (#954)\n— the default, no-guessing path; a caller doesn't need to already\nknow a database name, and there's no name left to typo. Set an\nexplicit name to dump just that one database instead. For\nRestoreBackup, empty means \"the backup record's own database\"\n(restore in place) — always required in practice there since a\nrecord always names exactly one database."
         },
         "user": {
           "type": "string",

@@ -67,7 +67,14 @@ message BackupRecord {
 // reached over loopback. db_password is never logged and is passed to the
 // child process via the PGPASSWORD environment variable, not argv.
 message PgConnection {
-  // Logical database to dump or restore into. Required.
+  // Logical database to dump or restore into. For CreateBackup, leave
+  // empty to back up EVERY non-template database in the container (#954)
+  // — the default, no-guessing path; a caller doesn't need to already
+  // know a database name, and there's no name left to typo. Set an
+  // explicit name to dump just that one database instead. For
+  // RestoreBackup, empty means "the backup record's own database"
+  // (restore in place) — always required in practice there since a
+  // record always names exactly one database.
   string database = 1;
 
   // Postgres role. Defaults to "postgres" when empty.
@@ -90,7 +97,9 @@ message CreateBackupRequest {
   // Tenant (username) whose container holds the database.
   string username = 1;
 
-  // Connection parameters for pg_dump inside the container.
+  // Connection parameters for pg_dump inside the container. Leave
+  // connection.database empty to back up every non-template database
+  // found (#954, the default); set it to back up just that one.
   PgConnection connection = 2;
 
   // Where to store the dump.
@@ -105,8 +114,23 @@ message CreateBackupResponse {
   // Operator-facing summary.
   string message = 1;
 
-  // The committed backup record.
+  // The committed backup record. Populated only when connection.database
+  // named exactly one database (single-database create, back-compat
+  // shape). For a "back up all" create (connection.database empty),
+  // this is unset — use records instead.
   BackupRecord record = 2;
+
+  // Every committed backup record from this call. Always populated:
+  // one entry for a single-database create (mirrors record above), or
+  // one entry per database for a "back up all" create (#954).
+  repeated BackupRecord records = 3;
+
+  // Per-database failures from a "back up all" create — a database that
+  // failed to dump (e.g. transient pg_dump error) does not abort the
+  // others; its failure is reported here instead. Always empty for a
+  // single-database create (that path fails the whole RPC on error, as
+  // before).
+  repeated string failures = 4;
 }
 
 // ListBackupsRequest enumerates stored backups, newest first.
@@ -173,7 +197,7 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Create a backup";
-      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS).";
+      description: "Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.";
       tags: "Backups";
     };
   }

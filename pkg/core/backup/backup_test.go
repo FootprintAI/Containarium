@@ -16,6 +16,17 @@ type fakeOps struct {
 	written     map[string][]byte // in-container path -> content (restore)
 	execLog     []string
 	failExec    bool
+
+	// listDatabasesOut, when set, is returned verbatim as stdout for a
+	// `psql ... -Atc` listing call (ListDatabases); listDatabasesErr, when
+	// set, makes that call fail instead. Dump/restore calls are
+	// unaffected by either field.
+	listDatabasesOut string
+	listDatabasesErr error
+	// failDatabases, when set, makes Create's own pg_dump step fail only
+	// for these specific database names — lets tests exercise CreateAll's
+	// partial-failure path without failing every database.
+	failDatabases map[string]bool
 }
 
 func newFakeOps(payload []byte) *fakeOps {
@@ -29,6 +40,18 @@ func (f *fakeOps) Exec(container string, command []string) error {
 
 func (f *fakeOps) ExecWithOutput(container string, command []string) (string, string, error) {
 	f.execLog = append(f.execLog, strings.Join(command, " "))
+	full := strings.Join(command, " ")
+	if strings.Contains(full, "psql") && strings.Contains(full, "-Atc") {
+		if f.listDatabasesErr != nil {
+			return "", "connection refused", f.listDatabasesErr
+		}
+		return f.listDatabasesOut, "", nil
+	}
+	for db := range f.failDatabases {
+		if strings.Contains(full, "-d '"+db+"'") {
+			return "", "FATAL: database \"" + db + "\" does not exist", errExec
+		}
+	}
 	if f.failExec {
 		return "", "FATAL: database \"missing\" does not exist", errExec
 	}
@@ -347,4 +370,148 @@ func (f *fakeUploader) Delete(destURI string) error {
 	delete(f.blobs, destURI)
 	delete(f.uploaded, destURI)
 	return nil
+}
+
+func TestListDatabases(t *testing.T) {
+	ops := newFakeOps([]byte("payload"))
+	ops.listDatabasesOut = "postgres\napp_production\nanalytics\n"
+	m := newTestManager(t, ops)
+
+	dbs, err := m.ListDatabases("alice-container", PgConn{})
+	if err != nil {
+		t.Fatalf("ListDatabases: %v", err)
+	}
+	want := []string{"postgres", "app_production", "analytics"}
+	if len(dbs) != len(want) {
+		t.Fatalf("got %v, want %v", dbs, want)
+	}
+	for i, w := range want {
+		if dbs[i] != w {
+			t.Errorf("dbs[%d] = %q, want %q", i, dbs[i], w)
+		}
+	}
+}
+
+func TestListDatabases_EmptyOutput(t *testing.T) {
+	ops := newFakeOps([]byte("payload"))
+	ops.listDatabasesOut = ""
+	m := newTestManager(t, ops)
+
+	dbs, err := m.ListDatabases("alice-container", PgConn{})
+	if err != nil {
+		t.Fatalf("ListDatabases: %v", err)
+	}
+	if len(dbs) != 0 {
+		t.Errorf("got %v, want empty", dbs)
+	}
+}
+
+func TestListDatabases_ExecFails(t *testing.T) {
+	ops := newFakeOps([]byte("payload"))
+	ops.listDatabasesErr = errExec
+	m := newTestManager(t, ops)
+
+	if _, err := m.ListDatabases("alice-container", PgConn{}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// TestCreateAll_BacksUpEveryDatabase pins #954's core behavior: no database
+// name is supplied by the caller — CreateAll discovers and backs up every
+// one found, producing one Record per database (same shape a single Create
+// call already produces, just looped).
+func TestCreateAll_BacksUpEveryDatabase(t *testing.T) {
+	ops := newFakeOps([]byte("PGDMP-fake-archive-bytes"))
+	ops.listDatabasesOut = "app_production\nanalytics\n"
+	m := newTestManager(t, ops)
+
+	records, errs := m.CreateAll(CreateOptions{
+		Username:      "alice",
+		ContainerName: "alice-container",
+		Destination:   DestLocal,
+	})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	gotDBs := map[string]bool{}
+	for _, r := range records {
+		gotDBs[r.Database] = true
+	}
+	if !gotDBs["app_production"] || !gotDBs["analytics"] {
+		t.Errorf("records = %+v, want app_production and analytics", records)
+	}
+
+	// Each database's record is independently listable/gettable, same as
+	// today's single-database Create — CreateAll doesn't change storage
+	// shape, just how many Creates happen per call.
+	listed, err := m.List("alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Errorf("List returned %d records, want 2", len(listed))
+	}
+}
+
+// TestCreateAll_PartialFailureStillBacksUpTheRest pins the resilience
+// property: one database failing pg_dump must not abort the others.
+func TestCreateAll_PartialFailureStillBacksUpTheRest(t *testing.T) {
+	ops := newFakeOps([]byte("PGDMP-fake-archive-bytes"))
+	ops.listDatabasesOut = "app_production\nbroken_db\nanalytics\n"
+	ops.failDatabases = map[string]bool{"broken_db": true}
+	m := newTestManager(t, ops)
+
+	records, errs := m.CreateAll(CreateOptions{
+		Username:      "alice",
+		ContainerName: "alice-container",
+		Destination:   DestLocal,
+	})
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2 (broken_db should be the only failure)", len(records))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1", len(errs))
+	}
+	if !strings.Contains(errs[0].Error(), "broken_db") {
+		t.Errorf("error %q doesn't name the failing database", errs[0].Error())
+	}
+}
+
+func TestCreateAll_NoDatabasesFound(t *testing.T) {
+	ops := newFakeOps([]byte("payload"))
+	ops.listDatabasesOut = ""
+	m := newTestManager(t, ops)
+
+	records, errs := m.CreateAll(CreateOptions{
+		Username:      "alice",
+		ContainerName: "alice-container",
+		Destination:   DestLocal,
+	})
+	if len(records) != 0 {
+		t.Errorf("got %d records, want 0", len(records))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1", len(errs))
+	}
+}
+
+func TestCreateAll_ListDatabasesFails(t *testing.T) {
+	ops := newFakeOps([]byte("payload"))
+	ops.listDatabasesErr = errExec
+	m := newTestManager(t, ops)
+
+	records, errs := m.CreateAll(CreateOptions{
+		Username:      "alice",
+		ContainerName: "alice-container",
+		Destination:   DestLocal,
+	})
+	if len(records) != 0 {
+		t.Errorf("got %d records, want 0", len(records))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1", len(errs))
+	}
 }

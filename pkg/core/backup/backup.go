@@ -242,6 +242,73 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	return record, nil
 }
 
+// ListDatabases enumerates the non-template databases visible inside the
+// container's Postgres — the same connection info used for pg_dump/
+// pg_restore, just pointed at the always-present "postgres" maintenance
+// database to run a catalog query instead of a dump. Used by CreateAll so
+// a backup never requires the caller to already know a database name (#954).
+func (m *Manager) ListDatabases(containerName string, conn PgConn) ([]string, error) {
+	conn = conn.withDefaults()
+	if containerName == "" {
+		return nil, fmt.Errorf("container name is required")
+	}
+	const query = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname;"
+	script := fmt.Sprintf(
+		"psql -h %s -p %d -U %s -d postgres -Atc %s",
+		shellQuote(conn.Host), conn.Port, shellQuote(conn.User), shellQuote(query),
+	)
+	stdout, stderr, err := m.ops.ExecWithOutput(containerName, wrapPg(conn.Password, script))
+	if err != nil {
+		return nil, fmt.Errorf("list databases: %w: %s", err, strings.TrimSpace(stderr))
+	}
+	var dbs []string
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			dbs = append(dbs, line)
+		}
+	}
+	return dbs, nil
+}
+
+// CreateAll backs up every non-template database in the container — the
+// default, no-guessing path (#954): the caller doesn't need to already
+// know a database name, and a scheduled backup can't fail because of a
+// typo'd one, since no name is ever supplied. opts.Conn.Database is
+// ignored (overwritten per database); every other CreateOptions field
+// (container, destination, credentials) applies to each dump the same way
+// a single Create call would.
+//
+// Reuses Create as-is per database rather than duplicating its dump/stage/
+// upload logic, so the two paths can never drift. One failing database
+// doesn't abort the others — errs collects a per-database failure
+// alongside the record for every database that DID succeed, so a caller
+// can surface "7 of 8 databases backed up, orders_db failed: <reason>"
+// instead of an all-or-nothing result.
+func (m *Manager) CreateAll(opts CreateOptions) ([]*Record, []error) {
+	dbs, err := m.ListDatabases(opts.ContainerName, opts.Conn)
+	if err != nil {
+		return nil, []error{fmt.Errorf("list databases: %w", err)}
+	}
+	if len(dbs) == 0 {
+		return nil, []error{fmt.Errorf("no databases found to back up")}
+	}
+
+	var records []*Record
+	var errs []error
+	for _, db := range dbs {
+		o := opts
+		o.Conn.Database = db
+		r, err := m.Create(o)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("database %q: %w", db, err))
+			continue
+		}
+		records = append(records, r)
+	}
+	return records, errs
+}
+
 // List returns stored records, newest first, optionally filtered by
 // tenant.
 func (m *Manager) List(username string) ([]*Record, error) {

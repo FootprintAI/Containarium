@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -76,13 +77,45 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", req.Username, err)
 	}
 
-	rec, err := s.mgr.Create(backup.CreateOptions{
+	opts := backup.CreateOptions{
 		Username:      req.Username,
 		ContainerName: info.Name,
 		Conn:          connFromProto(req.Connection),
 		Destination:   dest,
 		GCSBucket:     req.GcsBucket,
-	})
+	}
+
+	// Empty database → back up every non-template database found (#954),
+	// the default, no-guessing path. An explicit database keeps today's
+	// single-database behavior and response shape exactly as before.
+	if opts.Conn.Database == "" {
+		records, errs := s.mgr.CreateAll(opts)
+		if len(records) == 0 {
+			msg := "no databases were backed up"
+			if len(errs) > 0 {
+				msg = errs[0].Error()
+			}
+			return nil, status.Errorf(codes.Internal, "backup failed: %s", msg)
+		}
+		resp := &pb.CreateBackupResponse{
+			Records: make([]*pb.BackupRecord, 0, len(records)),
+		}
+		for _, r := range records {
+			resp.Records = append(resp.Records, recordToProto(r))
+			log.Printf("[backup] created id=%s user=%s db=%s dest=%s size=%d", r.ID, r.Username, r.Database, r.Destination, r.SizeBytes)
+		}
+		for _, e := range errs {
+			resp.Failures = append(resp.Failures, e.Error())
+			log.Printf("[backup] partial failure user=%s: %v", req.Username, e)
+		}
+		resp.Message = fmt.Sprintf("backed up %d database(s)", len(records))
+		if len(errs) > 0 {
+			resp.Message += fmt.Sprintf(", %d failed", len(errs))
+		}
+		return resp, nil
+	}
+
+	rec, err := s.mgr.Create(opts)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "backup failed: %v", err)
 	}
@@ -90,6 +123,7 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	return &pb.CreateBackupResponse{
 		Message: "backup created: " + rec.ID,
 		Record:  recordToProto(rec),
+		Records: []*pb.BackupRecord{recordToProto(rec)},
 	}, nil
 }
 

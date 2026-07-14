@@ -19,16 +19,21 @@ var (
 
 var backupCreateCmd = &cobra.Command{
 	Use:   "create <username>",
-	Short: "Dump a container's database and store it off-host",
+	Short: "Dump a container's database(s) and store them off-host",
 	Long: `Run pg_dump inside the tenant's container and store the compressed
-dump at the chosen destination.
+dump(s) at the chosen destination.
+
+Omit --database to back up EVERY non-template database found in the
+container — the default. This is usually what you want: no need to
+already know a database name, and there's no name to get wrong. Pass
+--database to dump just that one instead.
 
 Connection defaults target a per-container local Postgres on loopback
 (user "postgres", host 127.0.0.1, port 5432). The password, if needed, is
 passed to pg_dump via PGPASSWORD inside the container — never on argv.
 
 Examples:
-  containarium backup create alice --database app --dest local --server <host>
+  containarium backup create alice --dest local --server <host>
   containarium backup create alice --database app --dest gcs \
       --gcs-bucket gs://my-backups/pg --db-password "$PGPW" --server <host>`,
 	Args: cobra.ExactArgs(1),
@@ -38,7 +43,7 @@ Examples:
 func init() {
 	backupCmd.AddCommand(backupCreateCmd)
 	f := backupCreateCmd.Flags()
-	f.StringVar(&backupCreateDatabase, "database", "", "database name to dump (required)")
+	f.StringVar(&backupCreateDatabase, "database", "", "database name to dump; omit to back up every non-template database found (default)")
 	f.StringVar(&backupCreateDest, "dest", "local", "destination: 'local' or 'gcs'")
 	f.StringVar(&backupCreateBucket, "gcs-bucket", "", "GCS bucket/prefix for --dest gcs, e.g. gs://my-backups/pg")
 	f.StringVar(&backupCreateDBUser, "db-user", "", "Postgres role (default: postgres)")
@@ -49,9 +54,6 @@ func init() {
 
 func runBackupCreate(cmd *cobra.Command, args []string) error {
 	username := args[0]
-	if backupCreateDatabase == "" {
-		return fmt.Errorf("--database is required")
-	}
 	dest, err := parseDestination(backupCreateDest)
 	if err != nil {
 		return err
@@ -66,7 +68,11 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = c.Close() }()
 
-	fmt.Printf("Backing up %s database %q to %s...\n", username, backupCreateDatabase, backupCreateDest)
+	if backupCreateDatabase == "" {
+		fmt.Printf("Backing up every database in %s to %s...\n", username, backupCreateDest)
+	} else {
+		fmt.Printf("Backing up %s database %q to %s...\n", username, backupCreateDatabase, backupCreateDest)
+	}
 	resp, err := c.CreateBackup(&pb.CreateBackupRequest{
 		Username:    username,
 		Destination: dest,
@@ -84,11 +90,14 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\n✓ %s\n", resp.Message)
-	if r := resp.Record; r != nil {
-		fmt.Printf("  ID:       %s\n", r.Id)
-		fmt.Printf("  Size:     %s\n", humanBytes(r.SizeBytes))
-		fmt.Printf("  SHA-256:  %s\n", r.Sha256)
-		fmt.Printf("  Location: %s\n", r.Location)
+	for _, r := range resp.Records {
+		fmt.Printf("  - %s (db: %s)\n", r.Id, r.Database)
+		fmt.Printf("      Size:     %s\n", humanBytes(r.SizeBytes))
+		fmt.Printf("      SHA-256:  %s\n", r.Sha256)
+		fmt.Printf("      Location: %s\n", r.Location)
+	}
+	for _, f := range resp.Failures {
+		fmt.Printf("  ✗ %s\n", f)
 	}
 	return nil
 }
