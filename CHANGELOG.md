@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.5] - 2026-07-14
+
+### Fixed
+
+- **ZAP scan jobs retried forever with a generic 120-second timeout when
+  ZAP was never installed on a host** (#960, #961). `EnsureDaemonRunning`
+  unconditionally tried to start the ZAP daemon without checking whether
+  the `InstallZap` RPC had ever been run for that host's security
+  container. On an uninstalled host, the backgrounded `zap.sh` invocation
+  silently failed inside the container and every scan job burned the
+  full 120-second readiness poll before reporting a generic timeout —
+  indistinguishable from a slow start, and repeating forever since
+  nothing in that path ever installs ZAP. It now checks
+  `Scanner.Available()` first and fails immediately with a clear
+  "ZAP is not installed" error.
+- **Keysync's orphan-`authorized_keys` WARNING didn't match the
+  orphan-reaper's own safety gate** (#962). The reaper (fixed in #920
+  after a real incident where an operator's own admin login got
+  `userdel`'d) already refuses to delete any host account whose login
+  shell isn't the containarium-managed wrapper — but the keysync
+  handler's WARNING log had no equivalent check, so a real host admin
+  account sharing the orphan directory shape logged a permanently
+  misleading "orphan-reaper will clean up on next tick" that the reaper
+  would never actually do. The WARNING now applies the exact same
+  shell-eligibility check as the reaper.
+
 ## [0.51.4] - 2026-07-14
 
 ### Fixed
