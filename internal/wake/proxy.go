@@ -245,21 +245,19 @@ func (w *WakeProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	w.logEvent(username, latencyMs, "ready", "")
 
-	// Proxy the request through to the container.
+	// Proxy the request through to the container. SetURL's default rewrites
+	// Host to the upstream's; many app backends key on the original Host
+	// header for vhost routing, so preserve it. X-Forwarded-* is left to the
+	// first hop (Caddy already added them; we're the second hop).
 	target := &url.URL{
 		Scheme: "http",
 		Host:   fmt.Sprintf("%s:%d", entry.ip, entry.port),
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	// Default director rewrites Host to the upstream's; many app
-	// backends key on the original Host header for vhost routing, so
-	// preserve it. The default also overwrites X-Forwarded-* which is
-	// fine here (Caddy already added them; we're the second hop).
-	defaultDirector := proxy.Director
-	originalHost := req.Host
-	proxy.Director = func(r *http.Request) {
-		defaultDirector(r)
-		r.Host = originalHost
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.Host = pr.In.Host
+		},
 	}
 	proxy.ServeHTTP(rw, req)
 }
