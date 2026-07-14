@@ -9,7 +9,16 @@ rules:
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [get, list, watch, create, update, patch, delete]
-  # Manage box workloads in tenant namespaces
+  # Manage box workloads in tenant namespaces: one agent-sandbox Sandbox CR
+  # per box; the agent-sandbox controller owns the pod + Service under it.
+  # Requires the agent-sandbox controller to be installed in the cluster —
+  # see docs/KIND-QUICKSTART.md.
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Legacy: pre-Sandbox deployments managed a StatefulSet per box. Kept one
+  # release for the migration window (delete of old boxes on the previous
+  # object shape); drop after that.
   - apiGroups: ["apps"]
     resources: [statefulsets]
     verbs: [get, list, watch, create, update, patch, delete]

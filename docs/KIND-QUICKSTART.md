@@ -27,14 +27,23 @@ one command.
 # 1. Create the cluster
 kind create cluster --name containarium
 
-# 2. Install the chart from the repo
+# 2. Install the agent-sandbox controller (kubernetes-sigs/agent-sandbox).
+#    The daemon declares one Sandbox CR per box; the controller owns the
+#    pod + headless Service under it. Note: the v0.5.1 release asset is
+#    manifest.yaml (upstream's README still references
+#    sandbox-with-extensions.yaml, which 404s).
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.1/manifest.yaml
+kubectl -n agent-sandbox-system wait --for=condition=available \
+  deployment/agent-sandbox-controller --timeout=180s
+
+# 3. Install the chart from the repo
 cd Containarium
 helm install containarium ./charts/containarium-k8s \
   --set daemon.jwtSecret="$(openssl rand -hex 32)" \
   --set storageClass=standard \
   --wait
 
-# 3. Create a box
+# 4. Create a box
 export CTN_URL="http://localhost:8080"
 export CTN_JWT="$(kubectl get secret containarium-containarium-k8s-daemon \
   -o jsonpath='{.data.jwt-secret}' | base64 -d)"
@@ -43,8 +52,8 @@ kubectl port-forward svc/containarium-containarium-k8s-daemon 8080:8080 &
 ./containarium container create myorg/mybox \
   --url "$CTN_URL" --token "$CTN_JWT"
 
-# 4. Verify isolation: no SA token in the box pod
-kubectl exec -n tenant-mybox box-0 -- \
+# 5. Verify isolation: no SA token in the box pod
+kubectl exec -n tenant-mybox box -- \
   cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>&1
 # cat: can't open '...token': No such file or directory  ← expected
 ```
@@ -86,7 +95,20 @@ cd Containarium
 go build -o containarium ./cmd/containarium
 ```
 
-## 3. Create the gateway namespace
+## 3. Install the agent-sandbox controller
+
+The daemon's K8s backend declares one `Sandbox` CR (agents.x-k8s.io/v1beta1)
+per box; the [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
+controller creates the pod and headless Service under it. Without the CRD +
+controller installed, `container create` fails on the Sandbox create.
+
+```sh
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.1/manifest.yaml
+kubectl -n agent-sandbox-system wait --for=condition=available \
+  deployment/agent-sandbox-controller --timeout=180s
+```
+
+## 4. Create the gateway namespace
 
 The daemon programs SSH routing via the sshpiper `Pipe` CRD. For a local
 quickstart without a real sshpiper deployment, create the namespace so the
@@ -96,7 +118,7 @@ daemon doesn't error on Pipe operations:
 kubectl create namespace agent-gateway
 ```
 
-## 4. Start the daemon
+## 5. Start the daemon
 
 ```sh
 export KUBECONFIG="$(kind get kubeconfig --name containarium 2>/dev/null || echo ~/.kube/config)"
@@ -122,7 +144,7 @@ CONTAINARIUM_K8S_GATEWAY_HOST="localhost" \
 
 The daemon logs `Box runtime: k8s` on startup.
 
-## 5. Create a box
+## 6. Create a box
 
 In a second terminal:
 
@@ -139,17 +161,19 @@ Verify the pod is scheduled:
 
 ```sh
 kubectl get pods -n tenant-mybox
-# NAME    READY   STATUS    RESTARTS   AGE
-# box-0   1/1     Running   0          10s
+# NAME   READY   STATUS    RESTARTS   AGE
+# box    1/1     Running   0          10s
 ```
 
-And the per-tenant objects:
+And the per-tenant objects (the Sandbox is the daemon's object; the pod and
+Service under it are the agent-sandbox controller's):
 
 ```sh
-kubectl get ns,sts,svc,netpol -l containarium.dev/tenant=mybox
+kubectl get ns,sandbox,netpol -l containarium.dev/tenant=mybox
+kubectl get pods,svc -n tenant-mybox
 ```
 
-## 6. Persistent storage (optional)
+## 7. Persistent storage (optional)
 
 kind ships a `standard` StorageClass backed by the local-path provisioner.
 Pass `CONTAINARIUM_K8S_STORAGE_CLASS=standard` to enable PVC-per-box:
@@ -177,11 +201,11 @@ kubectl get pvc -n tenant-mybox
 The PVC stays Pending until a pod with `AutoStart=true` schedules (the
 local-path provisioner binds on pod assignment, not on PVC creation).
 
-## 7. Verify isolation
+## 8. Verify isolation
 
 ```sh
 # No service-account token is mounted in the box pod.
-kubectl exec -n tenant-mybox box-0 -- cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>&1
+kubectl exec -n tenant-mybox box -- cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>&1
 # cat: can't open '/var/run/secrets/kubernetes.io/serviceaccount/token': No such file or directory
 
 # Default-deny NetworkPolicy is in place.
@@ -190,7 +214,7 @@ kubectl get netpol -n tenant-mybox
 # default-deny   …              …
 ```
 
-## 8. Teardown
+## 9. Teardown
 
 ```sh
 # Delete the box (retains PVC when StorageClass is set).
@@ -206,8 +230,10 @@ kind delete cluster --name containarium
 |---|---|---|
 | `Box runtime: lxc` in logs | env var not set | Check `CONTAINARIUM_RUNTIME=k8s` is exported |
 | `failed to select box backend: k8s: build rest config` | Kubeconfig missing | Set `CONTAINARIUM_K8S_KUBECONFIG` |
-| Pod stays `Pending` forever | No schedulable node | `kubectl describe pod -n tenant-mybox box-0` for events |
+| Pod stays `Pending` forever | No schedulable node | `kubectl describe pod -n tenant-mybox box` for events |
 | `Pipe` errors in daemon log | Gateway namespace missing | `kubectl create namespace agent-gateway` |
+| `ensure sandbox: ... no matches for kind "Sandbox"` | agent-sandbox controller/CRD not installed | Step 3: apply the agent-sandbox `manifest.yaml` |
+| Pod never appears for a created box | Controller not running | `kubectl get pods -n agent-sandbox-system` |
 
 ## CI / automated testing
 

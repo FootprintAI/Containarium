@@ -58,20 +58,34 @@ are explicitly **out of scope for v1** — see "Deferred".
                    └──────┬───────────────┬────────┘
                           │ route by user │
               ┌───────────▼───┐     ┌─────▼─────────┐
-   ns:tenant-a │ StatefulSet │     │ StatefulSet  │ ns:tenant-b
-              │ box-0 (sshd + │     │ box-0 (...)  │
-              │ agent-box)    │     │              │
+   ns:tenant-a │ Sandbox CR   │     │ Sandbox CR   │ ns:tenant-b
+              │ └ pod "box"   │     │ └ pod "box"  │
+              │   (sshd +     │     │   (...)      │
+              │    agent-box) │     │              │
               │ NetworkPolicy │     │ NetworkPolicy│
               │ default-deny  │     │ default-deny │
               └───────────────┘     └──────────────┘
+
+  (pod + headless Service are created by the kubernetes-sigs/agent-sandbox
+   controller from the Sandbox CR; the daemon owns everything else)
 ```
 
 ## Components
 
-### 1. The box (per-tenant StatefulSet)
+### 1. The box (per-tenant agent-sandbox `Sandbox` CR)
 
-StatefulSet (not Deployment) for the **stable per-pod DNS name** sshpiper
-routes to: `box-0.boxes.<tenant>.svc.cluster.local`.
+One [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
+`Sandbox` CR (agents.x-k8s.io/v1beta1) per tenant. The agent-sandbox
+controller — a required install alongside the daemon — creates the pod and a
+headless Service from it, giving sshpiper a **stable DNS name** to route to:
+`box.<tenant-ns>.svc.cluster.local` (the CR's `status.serviceFQDN`). The CRD
+also gives us suspend/resume (`spec.operatingMode`) and a native absolute
+expiry (`spec.lifecycle.shutdownTime`) instead of hand-rolled replica scaling
+and sweeper-only TTL.
+
+(Originally this was a hand-managed StatefulSet `box-0` fronted by a
+headless Service `boxes`; replaced when SIG Apps standardized exactly this
+workload shape as the Sandbox CRD.)
 
 - One container: `sshd` + the `agent-box` binary on PATH.
 - `automountServiceAccountToken: false` — the box is a **leaf**, never a
@@ -119,7 +133,8 @@ The new piece is a thin **upstream controller** replacing the sentinel's
 - Programs the sshpiper upstream map via the maintained sshpiper **Kubernetes
   plugin** CRD — the `Pipe` resource (`sshpiper.com/v1beta1`, plural `pipes`;
   earlier drafts of this note called it "PiperUpstream"): `spec.from[].username
-  = <tenant>` → `spec.to.host = box-0.boxes.<tenant>.svc:2222` (the box's
+  = <tenant>` → `spec.to.host = box.<tenant-ns>.svc:2222` (the Sandbox's
+  controller-created headless Service; the box's
   internal SSH port), upstream user `agent`, with the box's
   authorized keys inline as `authorized_keys_data`. The daemon manages Pipes via
   the dynamic client (no sshpiper Go types imported). CRD-driven removes the
@@ -152,7 +167,7 @@ Per tenant namespace:
 | `agent-box` over stdio, SSH-wrapped | identical — same binary, same `ForceCommand` |
 | sshpiper on sentinel :22 | sshpiper Deployment + LB Service :22 |
 | sentinel key-sync → YAML | controller → `Pipe` CRD + Secret |
-| LXC box per tenant | StatefulSet `box-0` per tenant namespace |
+| LXC box per tenant | agent-sandbox `Sandbox` CR (pod `box`) per tenant namespace |
 | eBPF deny-by-default + egress allowlist | default-deny NetworkPolicy + egress allowlist |
 | sshd 2222 (mgmt) vs sshpiper 22 | mgmt via `kubectl`/RBAC; sshpiper owns 22 |
 
@@ -165,8 +180,9 @@ vocabulary**, not a new verb tree:
 containarium box create --runtime=k8s --tenant=<t>
 ```
 
-templates the namespace + StatefulSet + headless Service + NetworkPolicy +
-`Pipe` CRD + per-tenant key Secret. The platform MCP tool wraps the
+templates the namespace + `Sandbox` CR + NetworkPolicy + `Pipe` CRD +
+per-tenant key Secrets (the controller derives pod + headless Service from
+the Sandbox). The platform MCP tool wraps the
 **same Go function** the CLI handler calls. The backend is selected behind a
 runtime interface; LXC stays the default.
 
@@ -236,7 +252,7 @@ type BoxBackend interface {
 ```go
 type BoxRef struct {
     Tenant string // routing key / SSH username
-    Name   string // box name (LXC: "<tenant>-container"; K8s: StatefulSet "box-0")
+    Name   string // box name (LXC: "<tenant>-container"; K8s: Sandbox "box")
 }
 
 type BoxSpec struct {
@@ -472,7 +488,8 @@ clusters cleanly. That is a feature: the RBAC ask is small and auditable.
 
 | Verb scope | Resources | Boundary |
 | --- | --- | --- |
-| create/get/delete | StatefulSet, Service, Secret, NetworkPolicy | **label-selected tenant namespaces only** |
+| create/get/delete | `Sandbox` (agents.x-k8s.io), Secret, NetworkPolicy, PVC | **label-selected tenant namespaces only** |
+| (controller-owned) | Pod, Service | created by the agent-sandbox controller from the Sandbox, not by the daemon |
 | CRUD | `Pipe` | gateway namespace only |
 | create | Namespace | only if the controller owns tenant-namespace lifecycle |
 
@@ -568,10 +585,13 @@ Each box optionally gets a `PersistentVolumeClaim` for its home directory
 
 - **Empty (default):** no PVC; namespace is deleted on `Delete` (original
   behavior, backward-compatible).
-- **Non-empty:** PVC named `data` is created before the StatefulSet;
-  `Delete` removes compute objects (StatefulSet, Service, NetworkPolicy,
-  Secrets) but **retains the namespace + PVC** so data survives a node
-  reap. `Purge` removes both PVC and namespace when the tenant is gone.
+- **Non-empty:** PVC named `data` is created before the Sandbox and mounted
+  as a **plain pod volume, not a `volumeClaimTemplate`** — template-derived
+  PVCs are owner-referenced to the Sandbox and garbage-collected with it,
+  which would break this contract. `Delete` removes compute objects (the
+  Sandbox — cascading to pod + Service — plus NetworkPolicy, Secrets) but
+  **retains the namespace + PVC** so data survives a node reap. `Purge`
+  removes both PVC and namespace when the tenant is gone.
 
 This design lets autoscaled GCE VMs be reaped without data loss — the PV is
 CSI-managed (GKE, EKS, or kind local-path) and outlives any compute node.
@@ -598,11 +618,53 @@ The GPU *type* (L4, A100, etc.) is expressed via node affinity, driven by a
 node. This is deliberately different from the LXC/GCE path, where the daemon
 selects the exact machine type; on K8s, the scheduler owns that decision.
 
+## Sandbox-CRD semantics worth knowing
+
+- **Stop/Start = suspend/resume.** Stop patches `spec.operatingMode:
+  Suspended` — the controller deletes only the pod; PVC, Service, Secrets,
+  and the Sandbox identity persist. Start patches back to `Running` and the
+  pod is recreated with the same PVC.
+- **Resize restarts the pod.** The agent-sandbox controller does not restart
+  a live pod on podTemplate drift, so after patching resources the daemon
+  bounces a running box (suspend → resume) to apply them now — comparable
+  downtime to the StatefulSet rolling restart the old path triggered.
+- **TTL is two mechanisms in one patch.** `SetContainerTTL` stamps the
+  Sandbox's `spec.shutdownTime` with `shutdownPolicy: Retain` (the controller
+  stops the pod at the deadline even if the daemon is down) plus a mirrored
+  `ttl_expires_at` meta annotation that the daemon's TTL sweeper reads; the
+  sweeper routes the actual delete through the full `DeleteContainer`
+  cascade. Retain — not Delete — because a controller-side Sandbox delete
+  would orphan the daemon-owned Pipe, Secrets, PVC, namespace, and routes.
+
+## Migrating a pre-Sandbox deployment
+
+Deployments created by the StatefulSet-era backend must recreate their boxes
+(the daemon no longer manages the old object shape):
+
+1. On the old build: `containarium container delete <tenant>` per box — or,
+   post-upgrade, `kubectl delete statefulset box; kubectl delete svc boxes`
+   in each `tenant-*` namespace.
+2. Upgrade the daemon; ensure the agent-sandbox controller is installed.
+3. `containarium container create` again. With a StorageClass configured,
+   home data survives: the new backend reuses the same daemon-owned PVC
+   `data` as a plain pod volume.
+
+The chart's ClusterRole keeps the legacy `apps/statefulsets` rule for one
+release so the post-upgrade cleanup in step 1 works, then it gets dropped.
+
 ## Deferred (not in v1)
 
 - **Hard isolation** (gVisor/Kata `RuntimeClass`) — for tenants needing a
   VM/syscall boundary closer to the LXC trust boundary.
 - **Ephemeral / pooled lifecycles** — spin-up-on-connect or warm-pool leasing.
+  agent-sandbox ships SandboxTemplate/SandboxWarmPool/SandboxClaim for this,
+  but claim adoption is same-namespace-only (`ErrCrossNamespaceAdoption`), so
+  warm capacity cannot be shared across per-tenant namespaces — a shared pool
+  would require collapsing the tenancy model, and per-tenant pools invert the
+  economics (N tenants × idle warm replicas). Until that tension is resolved
+  (upstream cross-namespace pools, or a tenancy redesign), most of the
+  fast-create win comes from pre-pulling the agent-box image (DaemonSet) +
+  suspend/resume, since resume is just pod creation on a warm node.
 - **Cross-cluster / multi-pool** fan-out (the K8s analog of multi-backend
   peers).
 - **GPU node affinity by spec** — the `gpu-spec` label → node affinity mapping
