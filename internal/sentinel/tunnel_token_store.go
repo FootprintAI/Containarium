@@ -14,7 +14,7 @@ import (
 // registered via POST /sentinel/tunnel-tokens minutes or days before a
 // restart would otherwise vanish, permanently locking out every host
 // whose next handshake happens to land after that restart.
-const DefaultTunnelTokenStorePath = "/etc/containarium/tunnel-tokens.json"
+const DefaultTunnelTokenStorePath = "/etc/containarium/tunnel-tokens.json" // #nosec G101 -- a file PATH, not a credential
 
 // TunnelTokenEntry is one persisted dynamic registration.
 type TunnelTokenEntry struct {
