@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.6] - 2026-07-14
+
+### Fixed
+
+- **A BYOC host's tunnel could lose connectivity forever after a routine
+  sentinel restart** (#936). The sentinel's dynamic tunnel-token
+  registry (`POST /sentinel/tunnel-tokens`, the path a cloud control
+  plane's BYOC join flow uses) was pure in-memory — a sentinel process
+  restart silently forgot every token registered at runtime, leaving
+  any host whose tunnel session predated that restart on a credential
+  the sentinel no longer recognized. The failure stayed invisible until
+  that host's tunnel needed a fresh handshake (network blip, host
+  reboot, tunnel-client restart), at which point it failed permanently
+  with `handshake rejected: invalid token` and never recovered on its
+  own. Registrations are now persisted to
+  `/etc/containarium/tunnel-tokens.json` (root-only, 0600) and reloaded
+  at sentinel startup alongside the static CLI-flag policy.
+- **`pool join` baked the tunnel-handshake token into the world-readable
+  systemd unit** (#935). The token is a bearer-equivalent credential —
+  the sentinel's `TokenPolicy` grants standing tunnel access to
+  whoever presents it — but it lived in plaintext on the
+  `containarium-tunnel.service` unit's `ExecStart` line (0644,
+  readable via `systemctl cat`/`ps`). It now lives in a root-only
+  0600 `EnvironmentFile` (`/etc/containarium/tunnel-token.env`),
+  matching the treatment `CONTAINARIUM_SENTINEL_AUTH_SECRET` already
+  got in #687. `pool leave` cleans up the new file on exit.
+
 ## [0.51.5] - 2026-07-14
 
 ### Fixed
