@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-07-15
+
+### Fixed
+
+- The v0.52.0 tag's image publishing failed before pushing anything: the new
+  `containarium-sshpiper` / `containarium-agent-box` jobs in `sidecars.yml`
+  were missing the Buildx setup step, and provenance/SBOM attestation is not
+  supported by the plain docker driver. v0.52.1 is the first tag where both
+  images actually publish. (The v0.52.0 binaries released fine.)
+
 ## [0.52.0] - 2026-07-15
 
 ### Changed
