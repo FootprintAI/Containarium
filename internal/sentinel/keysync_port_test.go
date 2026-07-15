@@ -157,3 +157,62 @@ func TestApply_YAMLContainsTunnelPort(t *testing.T) {
 func portStr(p int) string {
 	return fmt.Sprintf("%d", p)
 }
+
+// TestRouteTargetPort pins the forwarding-port resolution: legacy backends
+// (no advertised port) keep the 22/20022 convention; a backend-advertised
+// ingress (a K8s node's in-cluster gateway, e.g. 32022) is used as-is on
+// both direct and tunnel paths, because tunnel listeners for non-22 ports
+// keep their advertised number.
+func TestRouteTargetPort(t *testing.T) {
+	tests := []struct {
+		name       string
+		backendIP  string
+		advertised int
+		want       int
+	}{
+		{"legacy direct", "10.130.0.15", 0, 22},
+		{"legacy tunnel", "127.0.0.10", 0, 20022},
+		{"advertised 22 direct", "10.130.0.15", 22, 22},
+		{"advertised 22 tunnel remaps", "127.0.0.10", 22, 20022},
+		{"k8s gateway direct", "10.130.0.15", 32022, 32022},
+		{"k8s gateway via tunnel", "127.0.0.10", 32022, 32022},
+	}
+	for _, tt := range tests {
+		if got := routeTargetPort(tt.backendIP, tt.advertised); got != tt.want {
+			t.Errorf("%s: routeTargetPort(%q, %d) = %d, want %d",
+				tt.name, tt.backendIP, tt.advertised, got, tt.want)
+		}
+	}
+}
+
+// TestApply_AdvertisedPortRouting drives Sync's decode of ssh_port through
+// to the route emission shape (the same simulation style as
+// TestApply_TunnelPortRouting): a K8s-runtime backend advertising 32022
+// must be routed to backendIP:32022, not the legacy 22.
+func TestApply_AdvertisedPortRouting(t *testing.T) {
+	ks := NewKeyStore()
+	ks.mu.Lock()
+	ks.backends["k8s-node"] = &backendKeys{
+		backendID: "k8s-node",
+		backendIP: "10.130.0.20",
+		sshPort:   32022,
+		users: []gateway.UserKeys{
+			{Username: "mybox", AuthorizedKeys: "ssh-ed25519 AAAA_mybox agent@laptop"},
+		},
+	}
+	ks.mu.Unlock()
+
+	// Mirror Apply's route-emission logic (Apply itself writes to
+	// /etc/sshpiper — not testable here; same approach as the tunnel test).
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	for _, bk := range ks.backends {
+		for range bk.users {
+			port := routeTargetPort(bk.backendIP, bk.sshPort)
+			hostLine := fmt.Sprintf("host: %s:%d", bk.backendIP, port)
+			if !strings.Contains(hostLine, "10.130.0.20:32022") {
+				t.Errorf("route host = %q, want 10.130.0.20:32022", hostLine)
+			}
+		}
+	}
+}

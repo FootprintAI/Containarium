@@ -29,8 +29,12 @@ type backendKeys struct {
 	backendID string
 	backendIP string
 	users     []gateway.UserKeys
-	lastSync  time.Time
-	lastErr   error
+	// sshPort is the SSH ingress the backend advertised in its
+	// /authorized-keys response (KeysResponse.SSHPort). 0 = legacy
+	// convention (22 direct / 20022 tunnel-loopback) — see routeTargetPort.
+	sshPort  int
+	lastSync time.Time
+	lastErr  error
 }
 
 // KeyStore syncs SSH authorized keys from one or more backends and generates
@@ -86,6 +90,7 @@ func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
 	ks.mu.Lock()
 	bk := ks.ensureBackendLocked(backendID, backendIP)
 	bk.users = keysResp.Keys
+	bk.sshPort = keysResp.SSHPort
 	bk.lastSync = time.Now()
 	bk.lastErr = nil
 	ks.mu.Unlock()
@@ -117,6 +122,7 @@ func (ks *KeyStore) Apply() error {
 		username       string
 		authorizedKeys string
 		backendIP      string
+		sshPort        int // backend-advertised; 0 = legacy convention
 	}
 	seen := make(map[string]bool)
 	var routes []userRoute
@@ -140,6 +146,7 @@ func (ks *KeyStore) Apply() error {
 				username:       u.Username,
 				authorizedKeys: u.AuthorizedKeys,
 				backendIP:      bk.backendIP,
+				sshPort:        bk.sshPort,
 			})
 		}
 	}
@@ -205,13 +212,7 @@ func (ks *KeyStore) Apply() error {
 	buf.WriteString("version: \"1.0\"\npipes:\n")
 
 	for _, r := range routes {
-		// Tunnel backends use loopback aliases (127.0.0.x where x >= 10) with
-		// SSH on port 20022 to avoid conflicting with sshpiper's *:22 listener.
-		// Direct backends (e.g., 10.x.x.x) use the standard port 22.
-		sshPort := 22
-		if isTunnelLoopback(r.backendIP) {
-			sshPort = 20022
-		}
+		sshPort := routeTargetPort(r.backendIP, r.sshPort)
 		akPath := filepath.Join(sshpiperUsersDir, r.username, "authorized_keys")
 		fmt.Fprintf(&buf, "  - from:\n")
 		fmt.Fprintf(&buf, "      - username: %q\n", r.username)
@@ -378,6 +379,32 @@ func cleanAuthorizedKeys(raw string) string {
 // These addresses are assigned by the TunnelRegistry for tunnel-connected backends.
 func isTunnelLoopback(ip string) bool {
 	return strings.HasPrefix(ip, "127.0.0.") && len(ip) > 8 && ip != "127.0.0.1"
+}
+
+// routeTargetPort resolves the port the sentinel forwards a user's SSH to.
+//
+// advertised is the backend's KeysResponse.SSHPort:
+//   - 0 (pre-advertisement daemons, and the LXC runtime): the legacy
+//     convention — 22 for direct backends, 20022 through a tunnel loopback
+//     (the TunnelServer remaps an advertised port 22 to a 20022 listener to
+//     stay clear of sshpiper's own *:22).
+//   - 22 on a tunnel loopback: same 20022 remap — the backend means "my
+//     sshd", and the tunnel listener for it is on 20022.
+//   - anything else: used as-is. Tunnel listeners for non-22 ports keep
+//     their advertised number, so a K8s node's gateway ingress (e.g. 32022)
+//     is the same port on the loopback alias as on the node directly.
+func routeTargetPort(backendIP string, advertised int) int {
+	tunnel := isTunnelLoopback(backendIP)
+	switch {
+	case advertised == 0 && tunnel:
+		return 20022
+	case advertised == 0:
+		return 22
+	case advertised == 22 && tunnel:
+		return 20022
+	default:
+		return advertised
+	}
 }
 
 func (ks *KeyStore) backendCount() int {

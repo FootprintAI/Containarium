@@ -21,6 +21,14 @@ type UserKeys struct {
 // KeysResponse is the JSON response from the /authorized-keys endpoint.
 type KeysResponse struct {
 	Keys []UserKeys `json:"keys"`
+
+	// SSHPort is the port on this node the sentinel should forward SSH to
+	// for every user in Keys. 0 (or absent — pre-advertisement daemons)
+	// means the legacy convention: 22 direct, 20022 through a tunnel
+	// loopback. A K8s-runtime node advertises its in-cluster gateway
+	// ingress here (e.g. the sshpiper Service's NodePort), since nothing
+	// listens on the node's :22 for boxes.
+	SSHPort int `json:"ssh_port,omitempty"`
 }
 
 // SentinelKeyRequest is the JSON body for POST /authorized-keys/sentinel.
@@ -105,6 +113,9 @@ func ServeAuthorizedKeys(homeRoot string, containerExistsFn func(username string
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		// SSHPort deliberately omitted (0): on the LXC runtime boxes are
+		// reached on the node's own sshd port, which is the sentinel's
+		// legacy 22/20022 convention.
 		_ = json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
 	}
 }
