@@ -38,7 +38,7 @@ func (b *Backend) SetSentinelKey(ctx context.Context, pubKey string) (updated, r
 	if pubKey == "" {
 		return 0, 0, fmt.Errorf("k8s: empty sentinel key")
 	}
-	if !b.gatewayEnabled() || b.cfg.GatewayUpstreamKeySecret == "" {
+	if !b.router.Enabled() || b.cfg.GatewayUpstreamKeySecret == "" {
 		return 0, 0, fmt.Errorf("k8s: sentinel fronting requires gateway-upstream mode " +
 			"(set CONTAINARIUM_K8S_GATEWAY_NAMESPACE + _UPSTREAM_KEY_SECRET); refusing to authorize a sentinel key in direct mode")
 	}
@@ -77,7 +77,7 @@ func (b *Backend) SetSentinelKey(ctx context.Context, pubKey string) (updated, r
 	for i := range boxes {
 		tenant := boxes[i].Ref.Tenant
 		clientKeys := splitKeys(b.clientKeysOf(ctx, tenant))
-		if perr := b.upsertPipe(ctx, tenant, clientKeys); perr != nil {
+		if perr := b.router.ProgramRoute(ctx, tenant, clientKeys); perr != nil {
 			log.Printf("[k8s] sentinel re-key: box %s Pipe update failed: %v", tenant, perr)
 			continue
 		}
