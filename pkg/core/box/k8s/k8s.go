@@ -111,6 +111,7 @@ type Backend struct {
 	clientset kubernetes.Interface
 	sandboxes sandboxclient.Interface
 	dyn       dynamic.Interface // for the sshpiper Pipe CRD; nil disables gateway routing
+	router    gatewayRouter     // SSH-gateway routing seam; sshpiperRouter today
 }
 
 var _ box.BoxBackend = (*Backend)(nil)
@@ -171,7 +172,9 @@ func newBackend(cs kubernetes.Interface, sc sandboxclient.Interface, dyn dynamic
 		cfg.DefaultMemoryRequest = resolveQuantity(cfg.DefaultMemoryRequest, defaultMemoryRequest)
 		cfg.DefaultMemoryLimit = resolveQuantity(cfg.DefaultMemoryLimit, defaultMemoryLimit)
 	}
-	return &Backend{cfg: cfg, clientset: cs, sandboxes: sc, dyn: dyn}
+	b := &Backend{cfg: cfg, clientset: cs, sandboxes: sc, dyn: dyn}
+	b.router = &sshpiperRouter{b: b}
+	return b
 }
 
 // resolveQuantity returns v when it is a valid K8s resource quantity, else the
@@ -255,7 +258,7 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op
 	// when the gateway isn't configured).
-	if err := b.upsertPipe(ctx, tenant, spec.SSHKeys); err != nil {
+	if err := b.router.ProgramRoute(ctx, tenant, spec.SSHKeys); err != nil {
 		return nil, fmt.Errorf("k8s: ensure gateway pipe: %w", err)
 	}
 	return b.Get(ctx, spec.Ref)
@@ -316,7 +319,7 @@ func (b *Backend) statusOf(tenant string, sb *sandboxv1beta1.Sandbox) *box.BoxSt
 // namespace (original behaviour, backward compat).
 func (b *Backend) Delete(ctx context.Context, ref box.BoxRef, force bool) error {
 	ns := b.namespaceFor(ref.Tenant)
-	if err := b.deletePipe(ctx, ref.Tenant); err != nil {
+	if err := b.router.RemoveRoute(ctx, ref.Tenant); err != nil {
 		return fmt.Errorf("k8s: delete gateway pipe: %w", err)
 	}
 	// No persistent storage: delete the whole namespace (original behaviour).
@@ -417,14 +420,14 @@ func (b *Backend) SetAuthorizedKeys(ctx context.Context, ref box.BoxRef, keys []
 	}
 	// Re-program the gateway Pipe so the rotated client keys take effect at the
 	// front (no-op when the gateway isn't configured).
-	return b.upsertPipe(ctx, ref.Tenant, keys)
+	return b.router.ProgramRoute(ctx, ref.Tenant, keys)
 }
 
 // boxAuthorizedKeys returns the keys the box itself should authorize: the
 // gateway's upstream key when routing through sshpiper, else the agent's keys
 // (direct access).
 func (b *Backend) boxAuthorizedKeys(agentKeys []string) []string {
-	if b.gatewayEnabled() && b.cfg.GatewayUpstreamPublicKey != "" {
+	if b.router.Enabled() && b.cfg.GatewayUpstreamPublicKey != "" {
 		return []string{b.cfg.GatewayUpstreamPublicKey}
 	}
 	return agentKeys

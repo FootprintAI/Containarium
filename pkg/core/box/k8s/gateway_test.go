@@ -180,7 +180,7 @@ func TestGatewayDisabledSkipsPipe(t *testing.T) {
 	// No dynamic client (NewWithClientset) → gateway off → Create still succeeds
 	// and programs no Pipe.
 	b := NewWithClientset(fake.NewSimpleClientset(), sandboxfake.NewSimpleClientset(), Config{GatewayNamespace: "sshpiper"})
-	if b.gatewayEnabled() {
+	if b.router.Enabled() {
 		t.Fatal("gateway should be disabled without a dynamic client")
 	}
 	if _, err := b.Create(context.Background(), box.BoxSpec{Ref: box.BoxRef{Tenant: "dave"}, Image: "x", AutoStart: true}); err != nil {
