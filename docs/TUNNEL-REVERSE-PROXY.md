@@ -85,6 +85,27 @@ When the sentinel needs to forward a connection to the spot (e.g., an SSH sessio
 
 The spot reads the port number, connects to `127.0.0.1:<port>` locally, and proxies the data.
 
+#### Overriding the local dial target (`--forward`)
+
+`127.0.0.1:<port>` is right when the advertised service listens on the spot's
+own loopback (an LXC node's sshd, a local Caddy). A **K8s node** is different:
+its box gateway is an in-cluster sshpiper reached through a Kubernetes
+Service, and NodePorts are *not* reliably reachable on `127.0.0.1` (kube-proxy
+`iptablesLocalhostNodePorts` is off by default). So the tunnel client accepts
+a per-port dial override:
+
+```bash
+containarium tunnel --ports 32022 --forward 32022=<gateway-addr>
+```
+
+`<gateway-addr>` is the Service's reachable address — a LoadBalancer ingress
+(`<lb>:22`) or `<nodeIP>:<NodePort>`. The daemon resolves and logs the
+recommended value (`k8s.Backend.ResolveGatewayDialTarget`: LB ingress first,
+else a node InternalIP + the NodePort). The port advertised to the sentinel
+(via `/authorized-keys` `ssh_port`) and the tunnel listener stay on the same
+number; only the *local* dial target changes. See
+[MULTI-BACKEND-PEERS.md](MULTI-BACKEND-PEERS.md#k8s-runtime-backends-a-second-gateway-hop).
+
 ### 4. Loopback Aliases
 
 Each connected tunnel spot gets a loopback alias on the sentinel (e.g., `127.0.0.2`). The tunnel server opens TCP proxy listeners on `127.0.0.2:<port>` for each advertised port. This makes the tunneled spot look like a directly reachable IP to the existing sentinel code:

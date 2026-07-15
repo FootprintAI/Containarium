@@ -115,12 +115,50 @@ Client                  Sentinel (sshpiper)           Backend Host
   │                          ├─ Route to backend:          │
   │                          │   Same VPC: host:22         │
   │                          │   Tunnel:   127.0.0.x:20022 │
+  │                          │   K8s node: host:<ssh_port> │
   │                          ├─ Auth with upstream key ───►│
   │                          │                            ├─ sshd accepts key
   │                          │                            ├─ containarium-shell
   │                          │                            ├─ incus exec {user}-container
   │◄─── interactive shell ───┤◄───────────────────────────┤
 ```
+
+### K8s-runtime backends: a second gateway hop
+
+An LXC backend runs its own sshd on the routed port (22, or 20022 through a
+tunnel). A **K8s-runtime node** has no per-box sshd on the host — boxes are
+pods, reached through an *in-cluster* sshpiper. So the sentinel forwards to
+that node's gateway ingress rather than to :22, and the chain grows a hop:
+
+```
+agent ──agent key──▶ sentinel sshpiper ──sentinel upstream key──▶
+    node in-cluster sshpiper (NodePort/LB) ──node upstream key──▶ box pod → agent-box MCP
+```
+
+Each key is scoped to one hop (a leak reaches one hop, not the cluster). The
+mechanism reuses the existing sentinel plumbing:
+
+- The node's daemon advertises its gateway SSH ingress in the
+  `/authorized-keys` response (`ssh_port`); keysync routes `username →
+  <backend>:<ssh_port>` instead of assuming :22. Absent/0 keeps the legacy
+  22/20022 convention, so LXC backends and old daemons are unchanged.
+- The node serves `/authorized-keys` from box metadata (the agent keys the
+  K8s backend records per tenant) — there is no `/home` on a K8s node.
+- When the sentinel pushes its upstream key, the node authorizes it at its
+  in-cluster gateway (appended to every box's sshpiper Pipe), not in box home
+  dirs. Requires gateway-upstream mode.
+
+For a **tunnel-attached** K8s node, the tunnel must forward the advertised
+gateway port to the in-cluster sshpiper Service's *reachable* address — a
+LoadBalancer ingress, or `<nodeIP>:<NodePort>` (NodePorts aren't reliably
+reachable on 127.0.0.1). Use `containarium tunnel --forward
+<port>=<addr>`; the daemon logs the resolved target
+(`ResolveGatewayDialTarget`: LB ingress first, else node InternalIP +
+NodePort). See [TUNNEL-REVERSE-PROXY.md](TUNNEL-REVERSE-PROXY.md).
+
+> **Username collisions** are resolved first-backend-wins (by backend-ID
+> sort) — the same exposure the LXC multi-backend fleet has today. Box names
+> are globally unique in practice, so this is a note, not a guard.
 
 ### containarium-shell
 

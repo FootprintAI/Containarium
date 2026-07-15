@@ -618,6 +618,48 @@ The GPU *type* (L4, A100, etc.) is expressed via node affinity, driven by a
 node. This is deliberately different from the LXC/GCE path, where the daemon
 selects the exact machine type; on K8s, the scheduler owns that decision.
 
+## Fronting a K8s node with the fleet sentinel
+
+Everything above describes a K8s node reached at its *own* in-cluster gateway
+(`ssh <box>@<node-gateway>`). In a multi-node fleet, the Containarium
+**sentinel** is the single public SSH entrypoint and chains to each node's
+gateway — so `ssh <box>@<sentinel>` reaches a box on any node, K8s or LXC,
+with the client holding only its agent key:
+
+```
+agent ──agent key──▶ sentinel sshpiper :22
+                         │  (keysync: username → node:<ssh_port>)
+                         ▼
+        node in-cluster sshpiper (NodePort/LB)
+                         │  (Pipe: username → box pod, node upstream key)
+                         ▼
+                   box pod :2222 (dropbear ForceCommand → agent-box MCP)
+```
+
+Three hops; each key authenticates exactly one:
+
+- **agent → sentinel**: the agent's key, in the sentinel's per-user
+  `authorized_keys` (synced from the node's `/authorized-keys`).
+- **sentinel → node gateway**: the sentinel's upstream key, authorized at the
+  node gateway (appended to every box's Pipe `from` by the daemon when the
+  sentinel POSTs `/authorized-keys/sentinel`). Requires gateway-upstream mode.
+- **node gateway → box**: the node's own upstream key (the box authorizes it).
+
+How the node participates:
+
+- Start the daemon with `--ssh-host <sentinel>` so boxes surface the sentinel
+  as their `ssh_host` (stamped runtime-neutrally, same as LXC).
+- The node advertises its gateway ingress port to the sentinel automatically
+  (`/authorized-keys` `ssh_port`, resolved from the gateway Service NodePort
+  or `CONTAINARIUM_K8S_GATEWAY_ADVERTISE_PORT`).
+- Attach to the sentinel like any backend: direct (routable node IP) or via
+  the yamux tunnel. A tunnel-attached node forwards its gateway port to the
+  Service's reachable address — `containarium tunnel --forward
+  <port>=<addr>`; see [TUNNEL-REVERSE-PROXY.md](TUNNEL-REVERSE-PROXY.md).
+
+End-to-end verification: `scripts/k8s-sentinel-e2e.sh` (kind node gateway + a
+stand-in sentinel sshpiperd + a two-hop MCP handshake).
+
 ## Sandbox-CRD semantics worth knowing
 
 - **Stop/Start = suspend/resume.** Stop patches `spec.operatingMode:

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -81,6 +82,52 @@ func (b *Backend) GatewayIngressPort(ctx context.Context) int {
 	log.Printf("[k8s] gateway service %s/%s has no NodePort; advertising no SSH ingress (expose it or set the advertise-port override)",
 		b.cfg.GatewayNamespace, b.cfg.GatewayService)
 	return 0
+}
+
+// ResolveGatewayDialTarget returns the host:port a tunnel-attached node
+// should forward its advertised gateway port to (TunnelClient.Forward) — the
+// in-cluster sshpiper Service's reachable address. NodePorts aren't reliably
+// reachable on 127.0.0.1, so the tunnel needs an explicit target. Precedence:
+// a LoadBalancer ingress address, else <node InternalIP>:<NodePort>. Empty
+// when neither resolves (advertise nothing). Best-effort, logs on miss.
+func (b *Backend) ResolveGatewayDialTarget(ctx context.Context) string {
+	svc, err := b.clientset.CoreV1().Services(b.cfg.GatewayNamespace).Get(ctx, b.cfg.GatewayService, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("[k8s] gateway dial target: service %s/%s lookup failed: %v", b.cfg.GatewayNamespace, b.cfg.GatewayService, err)
+		return ""
+	}
+	// LoadBalancer ingress wins: routable from anywhere, dial the Service port.
+	for _, ing := range svc.Status.LoadBalancer.Ingress {
+		addr := ing.IP
+		if addr == "" {
+			addr = ing.Hostname
+		}
+		if addr != "" {
+			for _, p := range svc.Spec.Ports {
+				if p.Name == "ssh" || len(svc.Spec.Ports) == 1 {
+					return fmt.Sprintf("%s:%d", addr, p.Port)
+				}
+			}
+		}
+	}
+	// Else a node InternalIP + the NodePort.
+	nodePort := b.GatewayIngressPort(ctx)
+	if nodePort == 0 {
+		return ""
+	}
+	nodes, err := b.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil || len(nodes.Items) == 0 {
+		log.Printf("[k8s] gateway dial target: no nodes to resolve an InternalIP: %v", err)
+		return ""
+	}
+	for _, n := range nodes.Items {
+		for _, a := range n.Status.Addresses {
+			if a.Type == corev1.NodeInternalIP && a.Address != "" {
+				return fmt.Sprintf("%s:%d", a.Address, nodePort)
+			}
+		}
+	}
+	return ""
 }
 
 // upsertTenantSecret writes the per-tenant Secret with both halves: the keys

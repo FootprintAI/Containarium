@@ -6,8 +6,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/footprintai/containarium/internal/sentinel"
@@ -24,6 +27,7 @@ var (
 	tunnelPublicAliases     []string
 	tunnelPublicBaseDomains []string
 	tunnelPublicPort        int
+	tunnelForward           []string
 )
 
 var tunnelCmd = &cobra.Command{
@@ -57,6 +61,7 @@ func init() {
 	tunnelCmd.Flags().StringSliceVar(&tunnelPublicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com)")
 	tunnelCmd.Flags().StringSliceVar(&tunnelPublicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes through this tunnel without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend. See docs/PER-POOL-BASE-DOMAIN.md.")
 	tunnelCmd.Flags().IntVar(&tunnelPublicPort, "public-port", 0, "Public TLS port the sentinel forwards to via this tunnel (typically 443; required with --public-hostname)")
+	tunnelCmd.Flags().StringSliceVar(&tunnelForward, "forward", nil, "Override the local dial target for an advertised port: PORT=HOST:PORT (repeatable). Use on a K8s node to point its gateway port at the in-cluster sshpiper Service's reachable address, e.g. --forward 32022=10.0.0.5:32022, since NodePorts aren't reliably reachable on 127.0.0.1.")
 }
 
 func runTunnel(cmd *cobra.Command, args []string) error {
@@ -78,6 +83,11 @@ func runTunnel(cmd *cobra.Command, args []string) error {
 	ports, err := parseForwardedPorts(tunnelPorts)
 	if err != nil {
 		return fmt.Errorf("invalid ports: %w", err)
+	}
+
+	forward, err := parseForwardMap(tunnelForward)
+	if err != nil {
+		return fmt.Errorf("invalid --forward: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -102,8 +112,39 @@ func runTunnel(cmd *cobra.Command, args []string) error {
 		PublicAliases:     tunnelPublicAliases,
 		PublicBaseDomains: tunnelPublicBaseDomains,
 		PublicPort:        tunnelPublicPort,
+		Forward:           forward,
 	}
 
 	log.Printf("[tunnel] connecting to sentinel at %s as %q (ports: %v, pool: %q, primary_host: %q)", tunnelSentinelAddr, tunnelSpotID, ports, tunnelPool, tunnelPublicHostname)
 	return client.Run(ctx)
+}
+
+// parseForwardMap parses repeated "PORT=HOST:PORT" entries into a
+// map[advertisedPort]dialTarget for TunnelClient.Forward. Empty input
+// yields a nil map (default 127.0.0.1:port dialing).
+func parseForwardMap(entries []string) (map[int]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	m := make(map[int]string, len(entries))
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		key, target, ok := strings.Cut(e, "=")
+		if !ok {
+			return nil, fmt.Errorf("entry %q is not PORT=HOST:PORT", e)
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(key))
+		if err != nil || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("entry %q: invalid port %q", e, key)
+		}
+		target = strings.TrimSpace(target)
+		if _, _, err := net.SplitHostPort(target); err != nil {
+			return nil, fmt.Errorf("entry %q: invalid target %q (want HOST:PORT)", e, target)
+		}
+		m[port] = target
+	}
+	return m, nil
 }

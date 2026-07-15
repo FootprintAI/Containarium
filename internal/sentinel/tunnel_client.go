@@ -27,6 +27,14 @@ type TunnelClient struct {
 	PublicAliases     []string
 	PublicBaseDomains []string // suffix-match anchors; see docs/PER-POOL-BASE-DOMAIN.md
 	PublicPort        int
+
+	// Forward maps an advertised port to a custom local dial target
+	// (host:port). Without an entry, a stream for port N dials
+	// 127.0.0.1:N. A K8s node uses this to point its advertised gateway
+	// port at the in-cluster sshpiper Service's reachable address (a
+	// LoadBalancer ingress or <nodeIP>:<NodePort>), since NodePorts are
+	// not reliably reachable on 127.0.0.1.
+	Forward map[int]string
 }
 
 // Run connects to the sentinel and serves tunnel traffic.
@@ -156,8 +164,13 @@ func (tc *TunnelClient) handleStream(stream net.Conn) {
 	}
 	port := int(portBuf[0])<<8 | int(portBuf[1])
 
-	// Connect to the local service on that port
+	// Connect to the local service on that port. A Forward entry overrides
+	// the default 127.0.0.1:port target — used to reach an in-cluster
+	// gateway Service that isn't localhost-reachable.
 	localAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	if target, ok := tc.Forward[port]; ok && target != "" {
+		localAddr = target
+	}
 	localConn, err := net.DialTimeout("tcp", localAddr, 5*time.Second)
 	if err != nil {
 		log.Printf("[tunnel-client] failed to connect to local %s: %v", localAddr, err)
