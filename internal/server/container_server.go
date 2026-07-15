@@ -232,6 +232,11 @@ func (s *ContainerServer) boxes() box.BoxBackend {
 	return boxlxc.New(s.manager)
 }
 
+// Boxes exposes the box backend so daemon wiring (dual_server) can
+// type-assert runtime-specific capabilities — e.g. the K8s backend's
+// ClientKeyLister for the /authorized-keys handler.
+func (s *ContainerServer) Boxes() box.BoxBackend { return s.boxes() }
+
 // k8sBoxes returns the box backend when the daemon runs the k8s runtime.
 // Lifecycle handlers use it to route their action through the backend seam:
 // s.manager is the LXC/incus surface, which is wired to an unavailable stub

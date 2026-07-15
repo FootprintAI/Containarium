@@ -1406,6 +1406,23 @@ skipAppHosting:
 			})
 		}
 
+		// On the K8s runtime, boxes have no /home on the node — serve
+		// /authorized-keys from box metadata instead (the client keys the
+		// K8s backend records per tenant), and advertise the in-cluster
+		// gateway's SSH ingress so the sentinel forwards there.
+		if lister, ok := containerServer.Boxes().(gateway.ClientKeyLister); ok {
+			if portResolver, ok := containerServer.Boxes().(interface {
+				GatewayIngressPort(context.Context) int
+			}); ok {
+				gatewayServer.SetAuthorizedKeysHandler(
+					gateway.ServeAuthorizedKeysFromLister(lister, func() int {
+						return portResolver.GatewayIngressPort(context.Background())
+					}),
+				)
+				log.Printf("[gateway] /authorized-keys served from the K8s box backend (advertising the in-cluster gateway ingress)")
+			}
+		}
+
 		// Wire security store for CSV export
 		if securityStore != nil {
 			gatewayServer.SetSecurityStore(securityStore)

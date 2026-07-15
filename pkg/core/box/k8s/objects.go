@@ -134,17 +134,25 @@ func namespaceObject(name, tenant string) *corev1.Namespace {
 	}
 }
 
-// secretObject holds the box's authorized_keys.
-func secretObject(ns, tenant string, keys []string) *corev1.Secret {
-	var buf []byte
-	for _, k := range keys {
-		buf = append(buf, []byte(k)...)
-		buf = append(buf, '\n')
+// secretObject holds the box's authorized_keys (what dropbear reads — the
+// gateway upstream key in gateway mode) plus the client_keys record (the
+// agent's own keys, served to the sentinel via /authorized-keys).
+func secretObject(ns, tenant string, boxKeys, clientKeys []string) *corev1.Secret {
+	join := func(keys []string) []byte {
+		var buf []byte
+		for _, k := range keys {
+			buf = append(buf, []byte(k)...)
+			buf = append(buf, '\n')
+		}
+		return buf
 	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: secretName(tenant), Namespace: ns, Labels: boxLabels(tenant)},
 		Type:       corev1.SecretTypeOpaque,
-		Data:       map[string][]byte{authorizedKeysKey: buf},
+		Data: map[string][]byte{
+			authorizedKeysKey: join(boxKeys),
+			clientKeysKey:     join(clientKeys),
+		},
 	}
 }
 

@@ -40,6 +40,15 @@ type Config struct {
 	GatewayHost    string
 	GatewaySSHPort int
 
+	// GatewayService is the in-cluster sshpiper Service name in
+	// GatewayNamespace, used to resolve the node's SSH ingress (NodePort)
+	// advertised to the sentinel. Defaults to "sshpiper".
+	GatewayService string
+
+	// GatewayAdvertisePort overrides the resolved ingress port advertised
+	// to the sentinel (0 = resolve from GatewayService).
+	GatewayAdvertisePort int
+
 	// TenantNamespacePrefix prefixes the per-tenant namespace
 	// (e.g. "tenant-" → "tenant-<tenant>"). Defaults to "tenant-".
 	TenantNamespacePrefix string
@@ -148,6 +157,9 @@ func newBackend(cs kubernetes.Interface, sc sandboxclient.Interface, dyn dynamic
 	if cfg.GatewaySSHPort == 0 {
 		cfg.GatewaySSHPort = 22
 	}
+	if cfg.GatewayService == "" {
+		cfg.GatewayService = "sshpiper"
+	}
 	// Resolve the default memory floor once: built-in defaults when unset, the
 	// built-in default when an operator value isn't a valid K8s quantity (a typo
 	// degrades to the safe floor rather than silently leaving boxes unconstrained),
@@ -227,7 +239,7 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 			return nil, fmt.Errorf("k8s: ensure pvc: %w", err)
 		}
 	}
-	if _, err := b.clientset.CoreV1().Secrets(ns).Create(ctx, secretObject(ns, tenant, b.boxAuthorizedKeys(spec.SSHKeys)), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	if _, err := b.clientset.CoreV1().Secrets(ns).Create(ctx, secretObject(ns, tenant, b.boxAuthorizedKeys(spec.SSHKeys), spec.SSHKeys), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure secret: %w", err)
 	}
 	if _, err := b.clientset.NetworkingV1().NetworkPolicies(ns).Create(ctx, networkPolicyObject(ns, tenant), metav1.CreateOptions{}); ignoreExists(err) != nil {
@@ -397,16 +409,11 @@ func (b *Backend) Resolve(ctx context.Context, ref box.BoxRef) (*box.BoxEndpoint
 // in the Pipe's spec.from, so we only re-program the Pipe. In the direct path
 // the agent's keys authorize the box itself, so we update the box Secret too.
 func (b *Backend) SetAuthorizedKeys(ctx context.Context, ref box.BoxRef, keys []string) error {
-	ns := b.namespaceFor(ref.Tenant)
-	if !b.gatewayEnabled() || b.cfg.GatewayUpstreamPublicKey == "" {
-		sec := secretObject(ns, ref.Tenant, keys)
-		_, err := b.clientset.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
-		if apierrors.IsNotFound(err) {
-			_, err = b.clientset.CoreV1().Secrets(ns).Create(ctx, sec, metav1.CreateOptions{})
-		}
-		if err != nil {
-			return err
-		}
+	// The Secret is always rewritten: the box-authorized half follows the
+	// access mode (gateway key vs client keys) and the client_keys record
+	// must track rotations in both modes — the sentinel sync reads it.
+	if err := b.upsertTenantSecret(ctx, ref.Tenant, b.boxAuthorizedKeys(keys), keys); err != nil {
+		return err
 	}
 	// Re-program the gateway Pipe so the rotated client keys take effect at the
 	// front (no-op when the gateway isn't configured).
