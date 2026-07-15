@@ -1422,6 +1422,12 @@ skipAppHosting:
 				log.Printf("[gateway] /authorized-keys served from the K8s box backend (advertising the in-cluster gateway ingress)")
 			}
 		}
+		// On the K8s runtime the sentinel's upstream key belongs at the node
+		// gateway (the box Pipes), not in box home dirs.
+		if authorizer, ok := containerServer.Boxes().(gateway.SentinelKeyAuthorizer); ok {
+			gatewayServer.SetSentinelKeyHandler(gateway.ServeSentinelKeyWithAuthorizer(authorizer))
+			log.Printf("[gateway] /authorized-keys/sentinel authorizes the sentinel at the K8s in-cluster gateway")
+		}
 
 		// Wire security store for CSV export
 		if securityStore != nil {

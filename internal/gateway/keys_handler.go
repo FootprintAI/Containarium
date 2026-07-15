@@ -45,6 +45,46 @@ type ClientKeyLister interface {
 	ListClientKeys(ctx context.Context) (map[string]string, error)
 }
 
+// SentinelKeyAuthorizer installs the sentinel's upstream pubkey at whatever
+// hop authenticates the sentinel on this runtime. The LXC runtime writes it
+// into every box's authorized_keys (ServeSentinelKey); the K8s runtime
+// authorizes it at the in-cluster gateway (the node's sshpiper Pipes).
+type SentinelKeyAuthorizer interface {
+	// SetSentinelKey persists pubKey and applies it. Returns how many boxes
+	// were (re)authorized and how many had a prior different sentinel key
+	// replaced.
+	SetSentinelKey(ctx context.Context, pubKey string) (updated, rotated int, err error)
+}
+
+// ServeSentinelKeyWithAuthorizer returns a /authorized-keys/sentinel handler
+// backed by a SentinelKeyAuthorizer (the K8s runtime path).
+func ServeSentinelKeyWithAuthorizer(a SentinelKeyAuthorizer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var req SentinelKeyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+			return
+		}
+		pubKey := strings.TrimSpace(req.PublicKey)
+		if pubKey == "" {
+			http.Error(w, `{"error":"public_key is required"}`, http.StatusBadRequest)
+			return
+		}
+		updated, rotated, err := a.SetSentinelKey(r.Context(), pubKey)
+		if err != nil {
+			log.Printf("[keys] sentinel-key authorize failed: %v", err)
+			http.Error(w, `{"error":"failed to apply sentinel key"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{"updated": updated, "rotated": rotated})
+	}
+}
+
 // ServeAuthorizedKeysFromLister returns a handler that answers
 // /authorized-keys from a ClientKeyLister and advertises sshPort as the
 // node's SSH ingress (KeysResponse.SSHPort) so the sentinel forwards to the
