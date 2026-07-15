@@ -14,7 +14,8 @@
 #   - dropbear instead of OpenSSH: it runs cleanly rootless and supports a
 #     forced command, so there's no sshd privsep/PAM/root dance.
 #
-# Published per-release as ghcr.io/footprintai/containarium-agent-box:vX.Y.Z.
+# Published per-release as ghcr.io/footprintai/containarium-agent-box:vX.Y.Z
+# by .github/workflows/sidecars.yml (release tags).
 # Build context is the repo root:
 #   docker build -f images/agent-box/Dockerfile -t containarium-agent-box .
 

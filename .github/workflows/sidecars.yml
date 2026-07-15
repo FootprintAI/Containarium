@@ -98,3 +98,38 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           provenance: true
           sbom: true
+
+  agent-box:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          minor="v$(echo "$version" | cut -d. -f1-2)"
+          base="ghcr.io/footprintai/containarium-agent-box"
+          {
+            echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push containarium-agent-box
+        uses: docker/build-push-action@v7
+        with:
+          # Repo root context: the Dockerfile builds ./cmd/agent-box.
+          context: .
+          file: ./images/agent-box/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: true
+          sbom: true
