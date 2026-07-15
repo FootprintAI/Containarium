@@ -83,6 +83,11 @@ type GatewayServer struct {
 	// Wired from dual_server using the container manager.
 	containerExistsFn func(username string) bool
 
+	// authorizedKeysHandler overrides the default home-dir-walking
+	// /authorized-keys handler. The K8s runtime installs a lister-backed
+	// handler here (boxes have no /home on the node). nil = default.
+	authorizedKeysHandler http.HandlerFunc
+
 	// Wake handler (for serverless / wake-on-HTTP, set externally).
 	// Mounted at /wake/ and at the root catch-all when the daemon's
 	// wake feature is enabled. NOT wrapped by the JWT auth middleware
@@ -185,6 +190,12 @@ func (gs *GatewayServer) SetSentinelAuthSecret(secret []byte) {
 // including BYOC, since a verifier cannot forge requests.
 func (gs *GatewayServer) SetSentinelPublicKey(pub ed25519.PublicKey) {
 	gs.sentinelPubKey = pub
+}
+
+// SetAuthorizedKeysHandler overrides the default /authorized-keys handler
+// (the LXC home-dir walker) — the K8s runtime installs a lister-backed one.
+func (gs *GatewayServer) SetAuthorizedKeysHandler(h http.HandlerFunc) {
+	gs.authorizedKeysHandler = h
 }
 
 // SetContainerExistsFn wires the orphan filter for /authorized-keys.
@@ -742,7 +753,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// neither is configured, all requests get 401. See A-CRIT-4 / A-HIGH-2.
 	sentinelVerifier := auth.NewSentinelVerifier(gs.sentinelPubKey, gs.sentinelAuthSecret)
 	httpMux.Handle("/certs", sentinelVerifier.Middleware(ServeCerts(gs.caddyCertDir)))
-	httpMux.Handle("/authorized-keys", sentinelVerifier.Middleware(ServeAuthorizedKeys("", gs.containerExistsFn)))
+	authorizedKeysHandler := gs.authorizedKeysHandler
+	if authorizedKeysHandler == nil {
+		authorizedKeysHandler = ServeAuthorizedKeys("", gs.containerExistsFn)
+	}
+	httpMux.Handle("/authorized-keys", sentinelVerifier.Middleware(authorizedKeysHandler))
 	httpMux.Handle("/authorized-keys/sentinel", sentinelVerifier.Middleware(ServeSentinelKey()))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy

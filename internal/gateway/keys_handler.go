@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -34,6 +35,43 @@ type KeysResponse struct {
 // SentinelKeyRequest is the JSON body for POST /authorized-keys/sentinel.
 type SentinelKeyRequest struct {
 	PublicKey string `json:"public_key"`
+}
+
+// ClientKeyLister is the runtime-neutral source of tenant → authorized_keys
+// for /authorized-keys. The LXC runtime uses the home-dir walker
+// (ServeAuthorizedKeys); the K8s runtime supplies a lister backed by box
+// metadata (nothing lives in /home on a K8s node).
+type ClientKeyLister interface {
+	ListClientKeys(ctx context.Context) (map[string]string, error)
+}
+
+// ServeAuthorizedKeysFromLister returns a handler that answers
+// /authorized-keys from a ClientKeyLister and advertises sshPort as the
+// node's SSH ingress (KeysResponse.SSHPort) so the sentinel forwards to the
+// in-cluster gateway rather than the node's :22. Used on the K8s runtime.
+func ServeAuthorizedKeysFromLister(lister ClientKeyLister, sshPort func() int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		m, err := lister.ListClientKeys(r.Context())
+		if err != nil {
+			log.Printf("[keys] lister failed: %v", err)
+			http.Error(w, `{"error":"failed to list client keys"}`, http.StatusInternalServerError)
+			return
+		}
+		keys := make([]UserKeys, 0, len(m))
+		for username, ak := range m {
+			content := strings.TrimSpace(ak)
+			if content == "" {
+				continue
+			}
+			keys = append(keys, UserKeys{Username: username, AuthorizedKeys: content})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(KeysResponse{Keys: keys, SSHPort: sshPort()})
+	}
 }
 
 // ServeAuthorizedKeys returns an HTTP handler that walks

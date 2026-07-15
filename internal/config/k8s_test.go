@@ -9,7 +9,7 @@ var allK8sEnvKeys = []string{
 	EnvK8sTenantNSPrefix, EnvK8sBoxImage, EnvK8sStorageClass,
 	EnvK8sGatewayUpstreamPublicKey, EnvK8sGatewayUpstreamKeySecret,
 	EnvK8sInsecureIgnoreHostKey, EnvK8sDefaultMemoryRequest, EnvK8sDefaultMemoryLimit,
-	EnvK8sDisableMemoryFloor,
+	EnvK8sDisableMemoryFloor, EnvK8sGatewayService, EnvK8sGatewayAdvertisePort,
 }
 
 func clearK8sEnv(t *testing.T) {
@@ -27,6 +27,7 @@ func TestLoadK8sDefaults(t *testing.T) {
 		GatewayNamespace:      defaultK8sGatewayNamespace,
 		TenantNamespacePrefix: defaultK8sTenantNSPrefix,
 		GatewaySSHPort:        defaultK8sGatewaySSHPort,
+		GatewayService:        defaultK8sGatewayService,
 	}
 	if got != want {
 		t.Errorf("LoadK8s defaults = %+v, want %+v", got, want)
@@ -47,6 +48,8 @@ func TestLoadK8sReadsEnv(t *testing.T) {
 	t.Setenv(EnvK8sGatewayUpstreamPublicKey, "ssh-ed25519 AAA")
 	t.Setenv(EnvK8sGatewayUpstreamKeySecret, "gw-upstream-key")
 	t.Setenv(EnvK8sInsecureIgnoreHostKey, "1")
+	t.Setenv(EnvK8sGatewayService, "my-gw")
+	t.Setenv(EnvK8sGatewayAdvertisePort, "31000")
 	t.Setenv(EnvK8sDefaultMemoryRequest, "512Mi")
 	t.Setenv(EnvK8sDefaultMemoryLimit, "2Gi")
 	t.Setenv(EnvK8sDisableMemoryFloor, "true")
@@ -63,6 +66,8 @@ func TestLoadK8sReadsEnv(t *testing.T) {
 		GatewayUpstreamPublicKey:  "ssh-ed25519 AAA",
 		GatewayUpstreamKeySecret:  "gw-upstream-key",
 		InsecureIgnoreHostKey:     true,
+		GatewayService:            "my-gw",
+		GatewayAdvertisePort:      31000,
 		DefaultMemoryRequest:      "512Mi",
 		DefaultMemoryLimit:        "2Gi",
 		DisableDefaultMemoryFloor: true,

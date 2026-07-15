@@ -18,6 +18,8 @@ const (
 	// #nosec G101 -- this is the NAME of an environment variable, not a credential value.
 	EnvK8sGatewayUpstreamKeySecret = "CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET"
 	EnvK8sInsecureIgnoreHostKey    = "CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY"
+	EnvK8sGatewayService           = "CONTAINARIUM_K8S_GATEWAY_SERVICE"
+	EnvK8sGatewayAdvertisePort     = "CONTAINARIUM_K8S_GATEWAY_ADVERTISE_PORT"
 	EnvK8sDefaultMemoryRequest     = "CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST"
 	EnvK8sDefaultMemoryLimit       = "CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT"
 	EnvK8sDisableMemoryFloor       = "CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR"
@@ -28,6 +30,7 @@ const (
 	defaultK8sGatewayNamespace = "agent-gateway"
 	defaultK8sTenantNSPrefix   = "tenant-"
 	defaultK8sGatewaySSHPort   = 22
+	defaultK8sGatewayService   = "sshpiper"
 )
 
 // K8s is the typed view of the CONTAINARIUM_K8S_* namespace — the wiring the
@@ -61,6 +64,18 @@ type K8s struct {
 	// StorageClass is the StorageClass for the box's data PVC; empty disables the
 	// PVC. (EnvK8sStorageClass)
 	StorageClass string
+
+	// GatewayService is the name of the in-cluster sshpiper Service in
+	// GatewayNamespace, used to auto-resolve the node's advertised SSH
+	// ingress (its NodePort) for the sentinel's /authorized-keys sync.
+	// (EnvK8sGatewayService; default "sshpiper")
+	GatewayService string
+
+	// GatewayAdvertisePort overrides the auto-resolved SSH ingress port
+	// advertised to the sentinel. 0 = resolve from GatewayService; useful
+	// when the gateway is exposed via a hostPort/LB the Service lookup
+	// can't see. (EnvK8sGatewayAdvertisePort)
+	GatewayAdvertisePort int
 
 	// GatewayUpstreamPublicKey is the public key authorized on each box so
 	// sshpiper can log in upstream. (EnvK8sGatewayUpstreamPublicKey)
@@ -100,6 +115,8 @@ func LoadK8s() K8s {
 		GatewayUpstreamPublicKey:  getString(EnvK8sGatewayUpstreamPublicKey, ""),
 		GatewayUpstreamKeySecret:  getString(EnvK8sGatewayUpstreamKeySecret, ""),
 		InsecureIgnoreHostKey:     getBool(EnvK8sInsecureIgnoreHostKey),
+		GatewayService:            getString(EnvK8sGatewayService, defaultK8sGatewayService),
+		GatewayAdvertisePort:      getInt(EnvK8sGatewayAdvertisePort, 0),
 		DefaultMemoryRequest:      getString(EnvK8sDefaultMemoryRequest, ""),
 		DefaultMemoryLimit:        getString(EnvK8sDefaultMemoryLimit, ""),
 		DisableDefaultMemoryFloor: getBool(EnvK8sDisableMemoryFloor),
