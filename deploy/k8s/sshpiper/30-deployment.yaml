@@ -23,7 +23,9 @@ spec:
       containers:
         - name: sshpiperd
           # Pin to a release tag in production rather than :latest.
-          image: farmer1992/sshpiperd:latest
+          # Containarium-published gateway image (pinned upstream release inside);
+          # published per release by .github/workflows/sidecars.yml.
+          image: ghcr.io/footprintai/containarium-sshpiper:latest-stable
           env:
             # Activates the kubernetes plugin (watches Pipes in this namespace).
             - name: PLUGIN

@@ -1,0 +1,43 @@
+name: sshpiper image
+
+# Build-checks the containarium-sshpiper gateway image (images/sshpiper/) —
+# pinned upstream sshpiperd release + our entrypoint. Build only (no push);
+# publishing to ghcr.io/footprintai/containarium-sshpiper happens on release
+# tags via sidecars.yml.
+on:
+  pull_request:
+    paths:
+      - 'images/sshpiper/**'
+      - '.github/workflows/sshpiper-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'images/sshpiper/**'
+      - '.github/workflows/sshpiper-image.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build sshpiper image
+        run: docker build -f images/sshpiper/Dockerfile -t containarium-sshpiper:ci images/sshpiper
+      - name: Smoke-check the image
+        # sshpiperd + the kubernetes plugin must be present, the entrypoint
+        # executable, and the runtime user non-root.
+        run: |
+          docker run --rm --entrypoint /bin/sh containarium-sshpiper:ci -c '
+            set -e
+            test -x /sshpiperd/sshpiperd
+            test -x /sshpiperd/plugins/kubernetes
+            test -x /sshpiperd/entrypoint.sh
+            id -u | grep -qx 1000
+          '

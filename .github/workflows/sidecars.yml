@@ -64,3 +64,37 @@ jobs:
           # explicit so it's reviewable.
           provenance: true
           sbom: true
+
+  sshpiper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          minor="v$(echo "$version" | cut -d. -f1-2)"
+          base="ghcr.io/footprintai/containarium-sshpiper"
+          {
+            echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push containarium-sshpiper
+        uses: docker/build-push-action@v7
+        with:
+          context: ./images/sshpiper
+          file: ./images/sshpiper/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: true
+          sbom: true

@@ -33,7 +33,16 @@ gateway:
     # -- NodePort for kind (access via localhost:32022)
     nodePort: 32022
   sshpiper:
-    image: ghcr.io/tg123/sshpiper/sshpiperd-kubernetes:v1.5.3
+    # -- Containarium's own gateway image (pinned upstream sshpiperd release +
+    # kubernetes-plugin entrypoint), published per Containarium release by
+    # sidecars.yml. The previously pinned ghcr.io/tg123/... path was never
+    # published upstream and 403s on pull (#976).
+    image: ghcr.io/footprintai/containarium-sshpiper:latest-stable
+    # -- Secret holding sshpiperd's host key under the `server_key` field.
+    # Create before enabling the gateway:
+    #   ssh-keygen -t ed25519 -f host_key -N ""
+    #   kubectl -n <gateway ns> create secret generic sshpiper-server-key --from-file=server_key=host_key
+    serverKeySecret: sshpiper-server-key
     resources: {}
 
 # -- Prefix for per-tenant Kubernetes namespaces (tenant → tenant-<name>)

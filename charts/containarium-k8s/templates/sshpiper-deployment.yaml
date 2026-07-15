@@ -27,14 +27,29 @@ spec:
         - name: sshpiper
           image: {{ .Values.gateway.sshpiper.image }}
           imagePullPolicy: IfNotPresent
-          args:
-            - --address=:2222
+          env:
+            # Route by the Pipe CRDs the daemon programs in this namespace.
+            - name: PLUGIN
+              value: kubernetes
+            - name: SSHPIPERD_SERVER_KEY
+              value: /serverkey/ssh_host_ed25519_key
           ports:
             - name: ssh
               containerPort: 2222
               protocol: TCP
+          volumeMounts:
+            - name: server-key
+              mountPath: /serverkey/
+              readOnly: true
           {{- with .Values.gateway.sshpiper.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      volumes:
+        - name: server-key
+          secret:
+            secretName: {{ .Values.gateway.sshpiper.serverKeySecret }}
+            items:
+              - key: server_key
+                path: ssh_host_ed25519_key
 {{- end }}
