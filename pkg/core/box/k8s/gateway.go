@@ -80,9 +80,13 @@ func (b *Backend) upstreamHost(tenant string) string {
 // tenant's box pod: the incoming connection authenticates against the box's
 // authorized keys (inline, base64), and the upstream host key is trusted
 // (ignore_hostkey — TOFU/known_hosts pinning is a follow-up).
-func (b *Backend) pipeObject(tenant string, keys []string, hostPubKeys []string) *unstructured.Unstructured {
+//
+// fromKeys is the union of the agent's client keys (direct node-gateway
+// access) and any authorized sentinel keys (hop 2 of the sentinel chain) —
+// both authenticate the incoming connection at the node gateway.
+func (b *Backend) pipeObject(tenant string, fromKeys []string, hostPubKeys []string) *unstructured.Unstructured {
 	var buf []byte
-	for _, k := range keys {
+	for _, k := range fromKeys {
 		buf = append(buf, []byte(k)...)
 		buf = append(buf, '\n')
 	}
@@ -123,7 +127,9 @@ func (b *Backend) pipeObject(tenant string, keys []string, hostPubKeys []string)
 }
 
 // upsertPipe creates or updates the tenant's Pipe in the gateway namespace.
-// No-op when the gateway isn't configured.
+// No-op when the gateway isn't configured. The Pipe's from-keys are the
+// agent's client keys plus any authorized sentinel keys (so a sentinel in
+// front of this node can complete hop 2).
 func (b *Backend) upsertPipe(ctx context.Context, tenant string, keys []string) error {
 	if !b.gatewayEnabled() {
 		return nil
@@ -133,7 +139,8 @@ func (b *Backend) upsertPipe(ctx context.Context, tenant string, keys []string) 
 	if err != nil {
 		return fmt.Errorf("ensure host key: %w", err)
 	}
-	obj := b.pipeObject(tenant, keys, hostPubs)
+	fromKeys := append(append([]string{}, keys...), b.sentinelKeys(ctx)...)
+	obj := b.pipeObject(tenant, fromKeys, hostPubs)
 	_, err = b.dyn.Resource(pipeGVR).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		existing, gerr := b.dyn.Resource(pipeGVR).Namespace(ns).Get(ctx, pipeName(tenant), metav1.GetOptions{})

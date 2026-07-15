@@ -95,3 +95,13 @@ func (b *Backend) upsertTenantSecret(ctx context.Context, tenant string, boxKeys
 	}
 	return err
 }
+
+// clientKeysOf reads a tenant's recorded client keys (empty when absent).
+// Used by SetSentinelKey to rebuild each Pipe's from-keys.
+func (b *Backend) clientKeysOf(ctx context.Context, tenant string) string {
+	sec, err := b.clientset.CoreV1().Secrets(b.namespaceFor(tenant)).Get(ctx, secretName(tenant), metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	return string(sec.Data[clientKeysKey])
+}
