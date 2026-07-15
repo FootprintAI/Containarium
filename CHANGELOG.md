@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-07-15
+
+### Changed
+
+- **The Kubernetes box backend now runs on the kubernetes-sigs/agent-sandbox
+  `Sandbox` CRD** (#969, #970, #971, #972). The daemon declares one Sandbox
+  CR per box and the agent-sandbox controller (a new install prerequisite —
+  its v0.5.1 `manifest.yaml`) owns the pod and headless Service under it;
+  the daemon keeps owning the per-tenant namespace, Secrets, NetworkPolicy,
+  data PVC, and sshpiper Pipe. Start/Stop map to the CRD's native
+  suspend/resume (`spec.operatingMode`) — suspend deletes only the pod,
+  retaining PVC and identity. Box TTL is now honored on the k8s runtime via
+  `spec.lifecycle.shutdownTime` (`shutdownPolicy: Retain`, with the sweeper
+  completing the delete through the full cascade); Start/Stop/Delete/Resize
+  RPCs, previously incus-only, are routed through the box backend.
+  Pre-Sandbox k8s deployments must recreate their boxes — see the migration
+  note in docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md (home data survives via the
+  daemon-owned `data` PVC).
+- k8s.io dependencies bumped v0.31.3 → v0.36.2; Go toolchain 1.25 → 1.26
+  (#968). The wake proxy migrated from the deprecated
+  `httputil.ReverseProxy.Director` to `Rewrite`.
+
+### Added
+
+- **Container images now actually publish on release tags** (#977, #978):
+  `ghcr.io/footprintai/containarium-agent-box` (the in-box MCP image — its
+  Dockerfile claimed per-release publishing since it landed, but no
+  workflow ever pushed it) and `ghcr.io/footprintai/containarium-sshpiper`
+  (our own gateway image: the pinned upstream sshpiperd v1.5.3 release the
+  sentinel already installs, with a kubernetes-plugin entrypoint), each
+  tagged `:vX.Y.Z`, `:vX.Y`, `:latest-stable`.
+
+### Fixed
+
+- The helm chart's sshpiper image pin pointed at a never-published upstream
+  path (403 on pull → ImagePullBackOff with `gateway.enabled=true`), and
+  its Deployment template was missing plugin selection and the sshpiperd
+  server host key entirely (#976, #977).
+- `scripts/k8s-e2e.sh` waits for the agent-sandbox controller by
+  deployment name — the upstream manifest carries no
+  `control-plane=controller-manager` label, so a label-selector wait
+  matched nothing (#972).
+
 ## [0.51.6] - 2026-07-14
 
 ### Fixed
