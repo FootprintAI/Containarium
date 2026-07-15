@@ -61,15 +61,27 @@ func runProxyProtoE2E(t *testing.T, useProxyProto bool) {
 	defer func() { _ = rawBackendLn.Close() }()
 	backendAddr := rawBackendLn.Addr().(*net.TCPAddr)
 
-	// We always wrap the backend with proxyproto.Listener using the default
-	// USE policy. This is the realistic configuration: Caddy's
-	// proxy_protocol listener wrapper does the same. With USE:
+	// We always wrap the backend with proxyproto.Listener under an explicit
+	// USE policy. This is the realistic configuration: Caddy's proxy_protocol
+	// listener wrapper accepts a connection whether or not it carries a PROXY
+	// header. With USE:
 	//   - PROXY header present → conn.RemoteAddr() = parsed source
 	//   - PROXY header absent  → conn.RemoteAddr() = the actual TCP peer
 	// So the assertion changes between the two scenarios but the backend
 	// configuration stays identical, which mirrors how production rolls
 	// out (deploy backend first, then flip sentinel flag).
-	ppLn := &proxyproto.Listener{Listener: rawBackendLn}
+	//
+	// USE must be set explicitly: go-proxyproto v0.15.0 changed the default
+	// policy from USE to REQUIRE, so a header-less connection now fails its
+	// first read with ErrNoProxyProtocol instead of passing through. That
+	// would break the without-proxy-protocol case, which is exactly the
+	// baseline this test asserts.
+	ppLn := &proxyproto.Listener{
+		Listener: rawBackendLn,
+		ConnPolicy: func(proxyproto.ConnPolicyOptions) (proxyproto.Policy, error) {
+			return proxyproto.USE, nil
+		},
+	}
 
 	cert, err := generateSelfSignedCert()
 	require.NoError(t, err)
