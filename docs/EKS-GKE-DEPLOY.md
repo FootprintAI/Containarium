@@ -116,6 +116,10 @@ This deploys the Containarium daemon (`--runtime=k8s`), the sshpiper gateway,
 RBAC, and the `Pipe` CRD. For a VPC-internal gateway instead of a public one,
 see the commented annotations in the preset file.
 
+> **Developer boxes?** Add `-f charts/containarium-k8s/values-devbox.yaml` to
+> the install to give every box an interactive shell instead of the MCP
+> endpoint — see [Developer-box mode](#developer-box-mode-interactive-shell).
+
 ## 3. Get the public endpoint
 
 The cloud provisions the LoadBalancer asynchronously; wait for its address:
@@ -153,9 +157,38 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 Point any MCP client at `ssh -i ~/.ssh/id_ed25519 -p 22 <box>@<gateway>` and it
 speaks to the box with zero cluster credentials in its path.
 
-> For a developer-style **interactive shell** instead of the MCP endpoint, the
-> box image supports `AGENTBOX_MODE=shell` (opt-in; drops the forced command).
-> See [K8S-AGENT-BOX-RUNTIME-DESIGN.md](K8S-AGENT-BOX-RUNTIME-DESIGN.md).
+## Developer-box mode (interactive shell)
+
+By default every box is an MCP endpoint: `ssh <box>@<gateway>` runs the
+forced-command `agent-box` server and nothing else. To make boxes **interactive
+developer machines** instead — where `ssh <box>@<gateway>` lands in a real
+`/bin/bash` — install with the `values-devbox.yaml` preset composed onto the
+cloud preset:
+
+```bash
+# developer boxes on GKE (compose with values-eks.yaml on EKS)
+helm install containarium ./charts/containarium-k8s \
+  -f charts/containarium-k8s/values-gke.yaml \
+  -f charts/containarium-k8s/values-devbox.yaml \
+  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+```
+
+The preset sets `agentBox.mode=shell` (the box image's `AGENTBOX_MODE`), so a
+box created exactly as in step 4 gives you a shell instead of the MCP loop:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -p 22 <box>@<gateway>
+# -> lands in /bin/bash inside the box
+```
+
+**Tradeoff.** Shell mode drops the forced-command guarantee — anyone who can
+authenticate gets a general shell in the box, not just its MCP surface. Pair it
+with the default-deny NetworkPolicy from [Production notes](#production-notes)
+so the shell can't reach the cluster network, and scope who may create boxes. To
+run MCP and developer boxes side by side, deploy two daemon releases (one with
+the preset, one without). See
+[K8S-AGENT-BOX-RUNTIME-DESIGN.md](K8S-AGENT-BOX-RUNTIME-DESIGN.md) for the
+image-level detail.
 
 ## Production notes
 
