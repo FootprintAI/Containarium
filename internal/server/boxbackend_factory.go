@@ -68,6 +68,7 @@ func newK8sBackend() (box.BoxBackend, error) {
 		GatewayAdvertisePort:      cfg.GatewayAdvertisePort,
 		TenantNamespacePrefix:     cfg.TenantNamespacePrefix,
 		BoxImage:                  cfg.BoxImage,
+		BoxMode:                   cfg.BoxMode,
 		StorageClass:              cfg.StorageClass,
 		GatewayUpstreamPublicKey:  cfg.GatewayUpstreamPublicKey,
 		GatewayUpstreamKeySecret:  cfg.GatewayUpstreamKeySecret,

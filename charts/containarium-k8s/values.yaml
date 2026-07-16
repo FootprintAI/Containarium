@@ -16,9 +16,13 @@ daemon:
     port: 8080
   resources: {}
 
-# -- Box image deployed per tenant (sshd + agent-box, ForceCommand-pinned)
+# -- Box image deployed per tenant (sshd + agent-box)
 agentBox:
   image: ghcr.io/footprintai/containarium-agent-box:latest
+  # -- Session behavior: "" or "mcp" pins every SSH session to the agent-box
+  # MCP server (forced command — the secure default); "shell" gives an
+  # interactive login shell (developer-box). See values-devbox.yaml.
+  mode: ""
 
 # -- SSH gateway configuration (sshpiper routes SSH connections to box pods)
 gateway:

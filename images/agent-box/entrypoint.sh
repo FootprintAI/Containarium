@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # agent-box image entrypoint: prepare authorized_keys + host key, then run
-# dropbear in the foreground with a forced command pinning every session to
-# agent-box. See images/agent-box/Dockerfile.
+# dropbear in the foreground. By default every session is pinned by a forced
+# command to agent-box (the in-box MCP server); set AGENTBOX_MODE=shell for an
+# interactive login shell instead (opt-in — see the mode note below).
+# See images/agent-box/Dockerfile.
 set -euo pipefail
 
 # The daemon mounts the box's authorized_keys Secret at
@@ -49,5 +51,28 @@ fi
 #   -F  foreground (PID 1)            -E  log to stderr
 #   -s  disable password auth         -j -k  no local/remote port forwarding
 #   -p 2222  unprivileged port        -r  host key file (repeatable)
-#   -c  forced command — every session runs agent-box, nothing else
-exec dropbear -F -E -s -j -k -p 2222 -r "$ED_HOSTKEY" -r "$RSA_HOSTKEY" -c /usr/local/bin/agent-box
+dropbear_flags=(-F -E -s -j -k -p 2222 -r "$ED_HOSTKEY" -r "$RSA_HOSTKEY")
+
+# Session mode (AGENTBOX_MODE, default "mcp"):
+#   mcp    every session is a forced command into agent-box — the key can start
+#          the MCP server and nothing else, so a leaked key's blast radius is one
+#          box's MCP surface, never a shell. This is the default and the property
+#          the K8s agent-box design is built around.
+#   shell  interactive login shell (the agent user's /bin/bash). Opt-in: it
+#          trades the forced-command guarantee for a general shell, so anyone who
+#          can authenticate gets shell access inside the box. Use it for a
+#          developer-style SSH box, and pair it with a default-deny NetworkPolicy
+#          so the shell can't reach the cluster network.
+case "${AGENTBOX_MODE:-mcp}" in
+  mcp)
+    exec dropbear "${dropbear_flags[@]}" -c /usr/local/bin/agent-box
+    ;;
+  shell)
+    echo "[agent-box-entrypoint] AGENTBOX_MODE=shell — interactive shell enabled, forced-command MCP disabled" >&2
+    exec dropbear "${dropbear_flags[@]}"
+    ;;
+  *)
+    echo "[agent-box-entrypoint] unknown AGENTBOX_MODE='${AGENTBOX_MODE}' (want: mcp | shell)" >&2
+    exit 1
+    ;;
+esac

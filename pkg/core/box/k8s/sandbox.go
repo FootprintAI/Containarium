@@ -25,7 +25,7 @@ import (
 // which the controller would owner-reference and GC on Sandbox deletion,
 // breaking delete-retains-data. def is the resolved default memory floor
 // applied when the spec sets no explicit memory.
-func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults) *sandboxv1beta1.Sandbox {
+func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, boxMode string) *sandboxv1beta1.Sandbox {
 	labels := boxLabels(spec.Ref.Tenant)
 
 	// restricted-PSA container hardening: non-root, no privilege escalation,
@@ -53,6 +53,13 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults) *
 	}
 	if res := resourceRequirements(spec.Resources, gpuCount, def); res != nil {
 		container.Resources = *res
+	}
+	// AGENTBOX_MODE selects the box's SSH session behavior in the image
+	// entrypoint (images/agent-box/entrypoint.sh): "shell" swaps the
+	// forced-command MCP session for an interactive login shell. Left unset the
+	// image defaults to the forced-command MCP session.
+	if boxMode != "" {
+		container.Env = append(container.Env, corev1.EnvVar{Name: "AGENTBOX_MODE", Value: boxMode})
 	}
 
 	volumes := []corev1.Volume{

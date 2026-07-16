@@ -41,6 +41,8 @@ spec:
               value: "22"
             - name: CONTAINARIUM_K8S_BOX_IMAGE
               value: {{ .Values.agentBox.image | quote }}
+            - name: CONTAINARIUM_K8S_BOX_MODE
+              value: {{ .Values.agentBox.mode | quote }}
             - name: CONTAINARIUM_K8S_TENANT_NS_PREFIX
               value: {{ .Values.tenantNamespacePrefix | quote }}
             - name: CONTAINARIUM_K8S_STORAGE_CLASS

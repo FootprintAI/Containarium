@@ -112,6 +112,16 @@ AllowTcpForwarding  no                          # no pivoting out of the box
 `ForceCommand` is the load-bearing line: even a misbehaving client cannot get
 a shell — it gets `agent-box` and nothing else.
 
+**Interactive-shell mode (opt-in).** Setting `AGENTBOX_MODE=shell` in the
+container env drops the forced command so a session lands in the agent user's
+`/bin/bash` — turning the box into a developer-style SSH machine rather than an
+MCP-only endpoint. The default (`AGENTBOX_MODE=mcp`) keeps the forced-command
+guarantee above. Shell mode deliberately trades that guarantee for a general
+shell, so anyone who can authenticate gets shell access inside the box: use it
+only when that's the intent, and pair it with a default-deny NetworkPolicy so
+the shell cannot reach the cluster network. Everything else — key-only auth, no
+port forwarding, non-root on `:2222` — is unchanged between the two modes.
+
 **Shipped image (`images/agent-box/`):** the config above is the contract; the
 actual image realizes it with **dropbear** rather than OpenSSH — dropbear runs
 cleanly rootless and takes a forced command (`-c agent-box`), so the box runs

@@ -1,0 +1,21 @@
+# Values preset for developer boxes: an interactive SSH login shell instead of
+# the forced-command MCP endpoint.
+#
+# Every box this daemon creates runs its agent-box image in shell mode
+# (AGENTBOX_MODE=shell), so `ssh <box>@<gateway>` lands in a real /bin/bash —
+# a developer-style SSH machine on Kubernetes rather than an MCP-only box.
+#
+# Compose it with a cloud preset, e.g. developer boxes on GKE:
+#
+#   helm install containarium ./charts/containarium-k8s \
+#     -f charts/containarium-k8s/values-gke.yaml \
+#     -f charts/containarium-k8s/values-devbox.yaml \
+#     --set daemon.jwtSecret="$(openssl rand -hex 24)"
+#
+# Security note: shell mode trades the forced-command blast-radius guarantee
+# (a key can only drive MCP, never a shell) for a general shell. Pair it with a
+# default-deny NetworkPolicy so the shell can't reach the cluster network, and
+# scope who can create boxes accordingly.
+
+agentBox:
+  mode: shell

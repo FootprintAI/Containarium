@@ -56,6 +56,11 @@ type Config struct {
 	// BoxImage is the agent-box image (sshd + agent-box) the box runs.
 	BoxImage string
 
+	// BoxMode is passed to the box as the AGENTBOX_MODE env var: "" or "mcp"
+	// keeps the forced-command MCP session (default), "shell" gives the box an
+	// interactive login shell (developer-box). Empty leaves the image default.
+	BoxMode string
+
 	// StorageClass is reserved for the box PVC (not wired in this slice).
 	StorageClass string
 
@@ -253,7 +258,7 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if _, err := b.ensureHostKey(ctx, tenant); err != nil {
 		return nil, fmt.Errorf("k8s: ensure host key: %w", err)
 	}
-	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults()), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults(), b.cfg.BoxMode), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure sandbox: %w", err)
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op

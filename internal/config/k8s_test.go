@@ -6,7 +6,7 @@ import "testing"
 // ambient environment.
 var allK8sEnvKeys = []string{
 	EnvK8sKubeconfig, EnvK8sGatewayNamespace, EnvK8sGatewayHost, EnvK8sGatewaySSHPort,
-	EnvK8sTenantNSPrefix, EnvK8sBoxImage, EnvK8sStorageClass,
+	EnvK8sTenantNSPrefix, EnvK8sBoxImage, EnvK8sBoxMode, EnvK8sStorageClass,
 	EnvK8sGatewayUpstreamPublicKey, EnvK8sGatewayUpstreamKeySecret,
 	EnvK8sInsecureIgnoreHostKey, EnvK8sDefaultMemoryRequest, EnvK8sDefaultMemoryLimit,
 	EnvK8sDisableMemoryFloor, EnvK8sGatewayService, EnvK8sGatewayAdvertisePort,
@@ -44,6 +44,7 @@ func TestLoadK8sReadsEnv(t *testing.T) {
 	t.Setenv(EnvK8sGatewaySSHPort, "2222")
 	t.Setenv(EnvK8sTenantNSPrefix, "t-")
 	t.Setenv(EnvK8sBoxImage, "ghcr.io/x/agent-box:latest")
+	t.Setenv(EnvK8sBoxMode, "shell")
 	t.Setenv(EnvK8sStorageClass, "standard")
 	t.Setenv(EnvK8sGatewayUpstreamPublicKey, "ssh-ed25519 AAA")
 	t.Setenv(EnvK8sGatewayUpstreamKeySecret, "gw-upstream-key")
@@ -62,6 +63,7 @@ func TestLoadK8sReadsEnv(t *testing.T) {
 		GatewaySSHPort:            2222,
 		TenantNamespacePrefix:     "t-",
 		BoxImage:                  "ghcr.io/x/agent-box:latest",
+		BoxMode:                   "shell",
 		StorageClass:              "standard",
 		GatewayUpstreamPublicKey:  "ssh-ed25519 AAA",
 		GatewayUpstreamKeySecret:  "gw-upstream-key",
@@ -97,6 +99,14 @@ func TestK8sValidate(t *testing.T) {
 	}
 	if err := (K8s{GatewaySSHPort: 70000}).Validate(); err == nil {
 		t.Error("port 70000 should be invalid")
+	}
+	for _, m := range []string{"", "mcp", "shell"} {
+		if err := (K8s{GatewaySSHPort: 22, BoxMode: m}).Validate(); err != nil {
+			t.Errorf("BoxMode %q should be valid: %v", m, err)
+		}
+	}
+	if err := (K8s{GatewaySSHPort: 22, BoxMode: "vm"}).Validate(); err == nil {
+		t.Error("BoxMode 'vm' should be invalid")
 	}
 }
 

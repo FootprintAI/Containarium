@@ -13,6 +13,7 @@ const (
 	EnvK8sGatewaySSHPort           = "CONTAINARIUM_K8S_GATEWAY_SSH_PORT"
 	EnvK8sTenantNSPrefix           = "CONTAINARIUM_K8S_TENANT_NS_PREFIX"
 	EnvK8sBoxImage                 = "CONTAINARIUM_K8S_BOX_IMAGE"
+	EnvK8sBoxMode                  = "CONTAINARIUM_K8S_BOX_MODE"
 	EnvK8sStorageClass             = "CONTAINARIUM_K8S_STORAGE_CLASS"
 	EnvK8sGatewayUpstreamPublicKey = "CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY"
 	// #nosec G101 -- this is the NAME of an environment variable, not a credential value.
@@ -60,6 +61,12 @@ type K8s struct {
 	// BoxImage is the agent-box image (sshd + agent-box) each box runs.
 	// (EnvK8sBoxImage)
 	BoxImage string
+
+	// BoxMode selects the box's SSH session behavior, passed to the agent-box
+	// image as AGENTBOX_MODE: "" or "mcp" pins every session to the agent-box
+	// MCP server (forced command — the secure default); "shell" gives an
+	// interactive login shell (developer-box). (EnvK8sBoxMode)
+	BoxMode string
 
 	// StorageClass is the StorageClass for the box's data PVC; empty disables the
 	// PVC. (EnvK8sStorageClass)
@@ -111,6 +118,7 @@ func LoadK8s() K8s {
 		GatewaySSHPort:            getInt(EnvK8sGatewaySSHPort, defaultK8sGatewaySSHPort),
 		TenantNamespacePrefix:     getString(EnvK8sTenantNSPrefix, defaultK8sTenantNSPrefix),
 		BoxImage:                  getString(EnvK8sBoxImage, ""),
+		BoxMode:                   getString(EnvK8sBoxMode, ""),
 		StorageClass:              getString(EnvK8sStorageClass, ""),
 		GatewayUpstreamPublicKey:  getString(EnvK8sGatewayUpstreamPublicKey, ""),
 		GatewayUpstreamKeySecret:  getString(EnvK8sGatewayUpstreamKeySecret, ""),
@@ -129,6 +137,11 @@ func LoadK8s() K8s {
 func (k K8s) Validate() error {
 	if k.GatewaySSHPort < 1 || k.GatewaySSHPort > 65535 {
 		return fmt.Errorf("%s=%d is not a valid TCP port (1-65535)", EnvK8sGatewaySSHPort, k.GatewaySSHPort)
+	}
+	switch k.BoxMode {
+	case "", "mcp", "shell":
+	default:
+		return fmt.Errorf("%s=%q is not valid (want: mcp | shell)", EnvK8sBoxMode, k.BoxMode)
 	}
 	return nil
 }
