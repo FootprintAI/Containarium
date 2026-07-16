@@ -1,0 +1,180 @@
+# Containarium Box CRD (containarium.dev/v1alpha1).
+#
+# A Box is the declarative description of a Containarium agent-box. The daemon's
+# Box controller reconciles it into the per-tenant bundle (agent-sandbox
+# Sandbox + gateway Pipe + authorized-keys Secret + NetworkPolicy). See issue
+# #995. Hand-authored to match `controller-gen crd` output; regenerate with:
+#   controller-gen crd paths=./apis/containarium/v1alpha1/... output:crd:dir=charts/containarium-k8s/crds
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: boxes.containarium.dev
+spec:
+  group: containarium.dev
+  names:
+    kind: Box
+    listKind: BoxList
+    plural: boxes
+    singular: box
+    shortNames:
+      - box
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Tenant
+          type: string
+          jsonPath: .spec.tenant
+        - name: Mode
+          type: string
+          jsonPath: .spec.mode
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Endpoint
+          type: string
+          jsonPath: .status.endpoint
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          description: >-
+            Box is a Containarium agent-box on Kubernetes: the daemon reconciles
+            it into an agent-sandbox Sandbox plus the gateway routing (Pipe),
+            authorized-keys Secret, and NetworkPolicy that make it SSH-reachable
+            and MCP-native.
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: BoxSpec is the declarative description of a box.
+              type: object
+              properties:
+                tenant:
+                  description: >-
+                    Routing key / SSH username the gateway routes by. Empty
+                    defaults to the Box's metadata.name.
+                  type: string
+                image:
+                  description: >-
+                    agent-box image to run. Empty uses the daemon's configured
+                    default.
+                  type: string
+                mode:
+                  description: >-
+                    SSH session behavior: "mcp" (default) pins every session to
+                    the forced-command MCP server; "shell" gives an interactive
+                    login shell.
+                  type: string
+                  enum:
+                    - mcp
+                    - shell
+                sshKeys:
+                  description: Authorized public keys for this box's tenant.
+                  type: array
+                  items:
+                    type: string
+                resources:
+                  description: Requested CPU/memory/disk for the box.
+                  type: object
+                  properties:
+                    cpu:
+                      type: string
+                    memory:
+                      type: string
+                    disk:
+                      type: string
+                    storageClass:
+                      type: string
+                stack:
+                  description: Optional provisioning stack (e.g. "nodejs").
+                  type: string
+                stackParams:
+                  type: object
+                  additionalProperties:
+                    type: string
+                gitSource:
+                  type: string
+                gitRef:
+                  type: string
+                workspacePath:
+                  type: string
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                autoStart:
+                  description: >-
+                    Run the box immediately. Defaults to true; false creates the
+                    box suspended (no pod) until started.
+                  type: boolean
+                ttlSeconds:
+                  description: >-
+                    Expire the box this many seconds after creation, when set.
+                  type: integer
+                  format: int64
+                  minimum: 0
+            status:
+              description: BoxStatus is the observed state of a Box.
+              type: object
+              properties:
+                phase:
+                  description: High-level lifecycle summary.
+                  type: string
+                podName:
+                  type: string
+                endpoint:
+                  description: SSH connect target (<tenant>@<gateway>).
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    properties:
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      message:
+                        type: string
+                        maxLength: 32768
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                      reason:
+                        type: string
+                        maxLength: 1024
+                        minLength: 1
+                        pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      type:
+                        type: string
+                        maxLength: 316
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
