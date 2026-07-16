@@ -38,6 +38,7 @@ kubectl -n agent-sandbox-system wait --for=condition=available \
 
 # 3. Install the chart from the repo
 cd Containarium
+go build -o containarium ./cmd/containarium   # needed for the CLI calls below
 helm install containarium ./charts/containarium-k8s \
   --set daemon.jwtSecret="$(openssl rand -hex 32)" \
   --set storageClass=standard \
@@ -45,12 +46,17 @@ helm install containarium ./charts/containarium-k8s \
 
 # 4. Create a box
 export CTN_URL="http://localhost:8080"
-export CTN_JWT="$(kubectl get secret containarium-containarium-k8s-daemon \
+JWT_SECRET="$(kubectl get secret containarium-containarium-k8s-daemon \
   -o jsonpath='{.data.jwt-secret}' | base64 -d)"
 
+# The API expects a signed JWT, not the raw daemon secret — mint one with
+# `token generate` (it must be signed with the SAME secret the daemon holds).
+export CTN_JWT="$(./containarium token generate --username admin --roles admin \
+  --secret "$JWT_SECRET" --raw)"
+
 kubectl port-forward svc/containarium-containarium-k8s-daemon 8080:8080 &
-./containarium container create myorg/mybox \
-  --url "$CTN_URL" --token "$CTN_JWT"
+./containarium create myorg/mybox \
+  --server "$CTN_URL" --http --token "$CTN_JWT"
 
 # 5. Verify isolation: no SA token in the box pod
 kubectl exec -n tenant-mybox box -- \
@@ -100,7 +106,7 @@ go build -o containarium ./cmd/containarium
 The daemon's K8s backend declares one `Sandbox` CR (agents.x-k8s.io/v1beta1)
 per box; the [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
 controller creates the pod and headless Service under it. Without the CRD +
-controller installed, `container create` fails on the Sandbox create.
+controller installed, `create` fails on the Sandbox create.
 
 ```sh
 kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.1/manifest.yaml
@@ -108,33 +114,65 @@ kubectl -n agent-sandbox-system wait --for=condition=available \
   deployment/agent-sandbox-controller --timeout=180s
 ```
 
-## 4. Create the gateway namespace
+## 4. Set up SSH gateway routing (namespace + Pipe CRD)
 
-The daemon programs SSH routing via the sshpiper `Pipe` CRD. For a local
-quickstart without a real sshpiper deployment, create the namespace so the
-daemon doesn't error on Pipe operations:
+The daemon programs SSH routing via the sshpiper `Pipe` CRD, and this is **on
+by default** — `CONTAINARIUM_K8S_GATEWAY_NAMESPACE` defaults to
+`agent-gateway`, not something you opt into. `create` fails hard with
+`the server could not find the requested resource` if the `Pipe` CRD isn't
+installed, even once the `agent-gateway` namespace exists — the namespace
+alone is not enough.
+
+For a local quickstart without a full sshpiper deployment, create the
+namespace and apply the minimal `Pipe` CRD this repo ships for exactly this
+purpose:
 
 ```sh
 kubectl create namespace agent-gateway
+kubectl apply -f deploy/k8s/sshpiper/10-pipe-crd.yaml
 ```
+
+This lets the daemon program `Pipe` objects (so `create` succeeds) without
+requiring a running sshpiper deployment — nothing is watching the Pipe yet.
+See [`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) to
+turn this into an actual SSH-reachable gateway.
+
+> The Helm quickstart above doesn't need this step: the chart's
+> `charts/containarium-k8s/crds/` directory (including `pipe.yaml`) is
+> auto-installed by `helm install`, and `templates/namespace.yaml` creates
+> `agent-gateway` too.
+>
+> Alternative: if you don't need gateway routing for this quickstart at all,
+> set `CONTAINARIUM_K8S_GATEWAY_NAMESPACE=""` on the daemon (step 5) instead
+> of creating the namespace/CRD — `create` then skips the Pipe step
+> entirely.
 
 ## 5. Start the daemon
 
 ```sh
 export KUBECONFIG="$(kind get kubeconfig --name containarium 2>/dev/null || echo ~/.kube/config)"
 
+# JWT secret must be >= 32 bytes (auth.MinSecretKeyLen) — the daemon refuses
+# to start REST auth on anything shorter. The literal below is 33 bytes;
+# for anything beyond a throwaway local cluster, generate one instead:
+#   JWT_SECRET="$(openssl rand -base64 32)"
+export JWT_SECRET="dev-secret-at-least-32-bytes-long"
+
 CONTAINARIUM_RUNTIME=k8s \
 CONTAINARIUM_K8S_KUBECONFIG="$KUBECONFIG" \
 CONTAINARIUM_K8S_BOX_IMAGE="registry.k8s.io/pause:3.9" \
 CONTAINARIUM_K8S_GATEWAY_HOST="localhost" \
-./containarium daemon start \
+./containarium daemon \
   --skip-infra-init \
   --standalone \
-  --jwt-secret dev-secret-min32chars-padding \
+  --jwt-secret "$JWT_SECRET" \
   --port 50051 \
   --http-port 8080 \
   --rest
 ```
+
+> `daemon` has no `start` subcommand — the daemon runs directly under
+> `containarium daemon` (foreground; Ctrl+C to stop).
 
 > `registry.k8s.io/pause:3.9` is a minimal placeholder image that satisfies the
 > StatefulSet — it boots instantly and verifies object creation without needing
@@ -150,10 +188,16 @@ In a second terminal:
 
 ```sh
 export CTN_URL="http://localhost:8080"
-export CTN_JWT="dev-secret-min32chars-padding"  # same value as --jwt-secret
+export JWT_SECRET="dev-secret-at-least-32-bytes-long"  # same value as --jwt-secret in step 5
 
-./containarium container create myorg/mybox \
-  --url "$CTN_URL" \
+# The API expects a signed JWT, not the raw secret — `export CTN_JWT="$JWT_SECRET"`
+# and passing that as --token no longer works. Mint a real token instead:
+export CTN_JWT="$(./containarium token generate --username admin --roles admin \
+  --secret "$JWT_SECRET" --raw)"
+
+./containarium create myorg/mybox \
+  --server "$CTN_URL" \
+  --http \
   --token "$CTN_JWT"
 ```
 
@@ -184,9 +228,9 @@ CONTAINARIUM_K8S_KUBECONFIG="$KUBECONFIG" \
 CONTAINARIUM_K8S_BOX_IMAGE="registry.k8s.io/pause:3.9" \
 CONTAINARIUM_K8S_GATEWAY_HOST="localhost" \
 CONTAINARIUM_K8S_STORAGE_CLASS="standard" \
-./containarium daemon start \
+./containarium daemon \
   --skip-infra-init --standalone \
-  --jwt-secret dev-secret-min32chars-padding \
+  --jwt-secret "$JWT_SECRET" \
   --port 50051 --http-port 8080 --rest
 ```
 
@@ -218,7 +262,7 @@ kubectl get netpol -n tenant-mybox
 
 ```sh
 # Delete the box (retains PVC when StorageClass is set).
-./containarium container delete myorg/mybox --url "$CTN_URL" --token "$CTN_JWT"
+./containarium delete myorg/mybox --server "$CTN_URL" --http --token "$CTN_JWT"
 
 # Destroy the kind cluster.
 kind delete cluster --name containarium
@@ -231,9 +275,11 @@ kind delete cluster --name containarium
 | `Box runtime: lxc` in logs | env var not set | Check `CONTAINARIUM_RUNTIME=k8s` is exported |
 | `failed to select box backend: k8s: build rest config` | Kubeconfig missing | Set `CONTAINARIUM_K8S_KUBECONFIG` |
 | Pod stays `Pending` forever | No schedulable node | `kubectl describe pod -n tenant-mybox box` for events |
-| `Pipe` errors in daemon log | Gateway namespace missing | `kubectl create namespace agent-gateway` |
+| `ensure gateway pipe: ... namespaces "agent-gateway" not found` | Gateway namespace missing | `kubectl create namespace agent-gateway` (step 4) |
+| `ensure gateway pipe: ... the server could not find the requested resource` | `Pipe` CRD not installed (namespace existing is not enough) | `kubectl apply -f deploy/k8s/sshpiper/10-pipe-crd.yaml` (step 4) |
 | `ensure sandbox: ... no matches for kind "Sandbox"` | agent-sandbox controller/CRD not installed | Step 3: apply the agent-sandbox `manifest.yaml` |
 | Pod never appears for a created box | Controller not running | `kubectl get pods -n agent-sandbox-system` |
+| `create` succeeds but the box still runs the OLD `--image` after a fix | A prior partial `create` (e.g. failed at the Pipe step) already created the Sandbox; re-running `create` treats an existing Sandbox as success and does **not** update its spec (image included) | Delete first, then re-create: `./containarium delete myorg/mybox --server "$CTN_URL" --http --token "$CTN_JWT"`, or pass `--force` to `create` to delete+recreate in one step |
 
 ## CI / automated testing
 
