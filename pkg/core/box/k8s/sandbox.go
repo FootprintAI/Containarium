@@ -19,10 +19,12 @@ import (
 // AutoStart maps onto spec.operatingMode: Running creates the pod immediately,
 // Suspended parks the Sandbox with no pod (the CR-native form of the old
 // replicas=0). withPVC mounts the daemon-owned data PVC at dataMount
-// (/home/agent) as a plain persistentVolumeClaim volume — deliberately not a
-// volumeClaimTemplate, which the controller would owner-reference and GC on
-// Sandbox deletion, breaking delete-retains-data. def is the resolved default
-// memory floor applied when the spec sets no explicit memory.
+// (/home/agent/workspace — a subdirectory of the home dir, not the home dir
+// itself; see the dataMount doc comment in objects.go for why, #974) as a
+// plain persistentVolumeClaim volume — deliberately not a volumeClaimTemplate,
+// which the controller would owner-reference and GC on Sandbox deletion,
+// breaking delete-retains-data. def is the resolved default memory floor
+// applied when the spec sets no explicit memory.
 func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults) *sandboxv1beta1.Sandbox {
 	labels := boxLabels(spec.Ref.Tenant)
 

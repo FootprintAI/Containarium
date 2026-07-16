@@ -20,15 +20,29 @@ const (
 	sshPortName = "ssh"
 
 	// pvcName is the PersistentVolumeClaim name inside the tenant namespace.
-	// It holds the box's persistent data (home directory). Owned by the daemon,
-	// NOT declared via the Sandbox's volumeClaimTemplates: template-derived PVCs
-	// are owner-referenced to the Sandbox and garbage-collected with it, which
-	// would break delete-retains-data. Created before the Sandbox, mounted as a
-	// plain persistentVolumeClaim volume, retained on Delete; removed only by
-	// Purge.
-	pvcName     = "data"
-	dataMount   = "/home/agent"
-	dataVolume  = "data"
+	// It holds the box's persistent data, mounted at dataMount below. Owned by
+	// the daemon, NOT declared via the Sandbox's volumeClaimTemplates:
+	// template-derived PVCs are owner-referenced to the Sandbox and
+	// garbage-collected with it, which would break delete-retains-data.
+	// Created before the Sandbox, mounted as a plain persistentVolumeClaim
+	// volume, retained on Delete; removed only by Purge.
+	pvcName    = "data"
+	dataVolume = "data"
+	// dataMount is a subdirectory of the home directory, NOT the home
+	// directory itself (#974). Mounting the PVC directly at /home/agent
+	// replaces the image's real home with the provisioner's fresh volume
+	// root — typically 0777 root:root (kind/local-path) or 0755 root:root
+	// (a typical CSI ext4 root) — either of which either fails dropbear's
+	// strict-modes home-directory check (group/world-writable) or leaves
+	// uid-1000 `agent` unable to write its own home at all. Mounting one
+	// level down keeps /home/agent itself exactly as the image built it
+	// (owned by `agent`, dropbear-compatible perms, authorized_keys layered
+	// in via a separate Secret mount) while still giving the box a
+	// persistent, per-tenant working directory. Trade-off: only this
+	// subdirectory survives box recreation now, not the whole home — see
+	// the CSI persistent storage section in
+	// docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md.
+	dataMount   = "/home/agent/workspace"
 	defaultDisk = "10Gi"
 
 	// Default per-box memory bounds, applied when a box's spec carries no valid

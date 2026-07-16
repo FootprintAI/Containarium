@@ -580,8 +580,10 @@ env-agnostic `pkg/core/box/k8s.Config` — so `pkg/core` reads no environment.
 
 ### CSI persistent storage (#841 / #844)
 
-Each box optionally gets a `PersistentVolumeClaim` for its home directory
-(`/home/agent`). Controlled by `CONTAINARIUM_K8S_STORAGE_CLASS`:
+Each box optionally gets a `PersistentVolumeClaim` for a persistent working
+directory, mounted at **`/home/agent/workspace`** — a subdirectory of the
+image's home directory, not the home directory itself. Controlled by
+`CONTAINARIUM_K8S_STORAGE_CLASS`:
 
 - **Empty (default):** no PVC; namespace is deleted on `Delete` (original
   behavior, backward-compatible).
@@ -598,6 +600,33 @@ CSI-managed (GKE, EKS, or kind local-path) and outlives any compute node.
 
 Disk size is read from `BoxSpec.Resources.Disk` (e.g., `"20Gi"`); defaults to
 `10Gi` when unset.
+
+**Mount path is `/home/agent/workspace`, not `/home/agent` (#974).** An
+earlier revision mounted the PVC directly over `/home/agent`. That replaced
+the box image's real home directory with the provisioner's fresh volume
+root — 0777 root:root on kind/local-path, 0755 root:root on a typical CSI
+ext4 root — either of which broke SSH: dropbear's strict `modes` check
+rejects a group/world-writable home directory outright, and a 0755
+root:root root additionally leaves uid-1000 `agent` unable to write (or in
+some cases even read) its own home. Every login to a storage-backed box
+failed with `Permission denied (publickey)` even though the
+`authorized_keys` Secret was mounted and matched the client key. Neither the
+unit tests nor the kind e2e caught it because they asserted the PVC existed
+and was mounted, never that SSH auth actually succeeded afterward.
+
+The fix mounts the PVC one level down, at `/home/agent/workspace`, leaving
+`/home/agent` itself exactly as the image built it — owned by `agent`,
+dropbear-compatible permissions, with the `authorized_keys` Secret layered
+in via its own separate volume mount (unaffected by this change either way).
+
+**Data-contract change:** before #974, the *entire* home directory persisted
+across box recreation on storage-backed boxes. After #974, only
+`/home/agent/workspace` persists — files written elsewhere under
+`/home/agent` (e.g. shell rc files, caches outside the workspace dir) reset
+to the image defaults on recreate, the same as on non-storage-backed boxes.
+Agents and tooling that assumed the whole home directory was durable on K8s
+storage-backed boxes should keep persistent state under
+`/home/agent/workspace`.
 
 ### GPU resource requests (#845)
 

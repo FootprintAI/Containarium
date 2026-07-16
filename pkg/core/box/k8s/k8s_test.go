@@ -4,6 +4,7 @@ package k8s
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -451,9 +452,10 @@ func TestCreateProvisionsPVC(t *testing.T) {
 		t.Errorf("storage request = %q, want 30Gi", q.String())
 	}
 
-	// The Sandbox pod template must mount the data volume at /home/agent as a
-	// plain persistentVolumeClaim volume (NOT a volumeClaimTemplate, which the
-	// controller would owner-reference and GC with the Sandbox).
+	// The Sandbox pod template must mount the data volume at
+	// /home/agent/workspace as a plain persistentVolumeClaim volume (NOT a
+	// volumeClaimTemplate, which the controller would owner-reference and GC
+	// with the Sandbox).
 	sb := getSandbox(t, sc, ns)
 	if len(sb.Spec.VolumeClaimTemplates) != 0 {
 		t.Errorf("sandbox uses volumeClaimTemplates; the data PVC must stay daemon-owned")
@@ -473,6 +475,66 @@ func TestCreateProvisionsPVC(t *testing.T) {
 	}
 	if len(claims) != 1 || claims[0] != pvcName {
 		t.Errorf("pod volumes reference claims %v, want [%s]", claims, pvcName)
+	}
+}
+
+// TestDataMountDoesNotOverrideHomeDirectory is a regression test for #974:
+// the data PVC must never be mounted directly at /home/agent, because that
+// replaces the image's real home directory (owned by `agent`,
+// dropbear-strict-modes-compatible permissions) with the provisioner's fresh
+// volume root — typically root:root and group/world-writable or otherwise
+// wrong for the non-root `agent` user — which makes dropbear reject every
+// SSH login outright. The PVC must land one level down, at a subdirectory of
+// the home directory, so the home directory itself is untouched. It also
+// confirms the authorized_keys Secret mount (dropbear's login credential
+// source) is unaffected: same path, still read-only, still a Secret volume.
+func TestDataMountDoesNotOverrideHomeDirectory(t *testing.T) {
+	if dataMount == "/home/agent" {
+		t.Fatalf("dataMount = %q, must not be the home directory itself (#974)", dataMount)
+	}
+	if !strings.HasPrefix(dataMount, "/home/agent/") {
+		t.Fatalf("dataMount = %q, want a subdirectory of /home/agent", dataMount)
+	}
+
+	b, cs, sc := testBackendWithStorage()
+	ctx := context.Background()
+	ref := box.BoxRef{Tenant: "ivy"}
+	if _, err := b.Create(ctx, box.BoxSpec{Ref: ref, Image: "x"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	_ = cs
+
+	sb := getSandbox(t, sc, "tenant-ivy")
+	container := sb.Spec.PodTemplate.Spec.Containers[0]
+
+	var dataMountFound, homeMountFound, authKeysFound bool
+	for _, m := range container.VolumeMounts {
+		switch m.MountPath {
+		case dataMount:
+			dataMountFound = true
+			if m.Name != dataVolume {
+				t.Errorf("mount at %s uses volume %q, want %q", dataMount, m.Name, dataVolume)
+			}
+		case "/home/agent":
+			homeMountFound = true
+		case authorizedKeysMount:
+			authKeysFound = true
+			if !m.ReadOnly {
+				t.Errorf("authorized_keys mount at %s is writable, want read-only", authorizedKeysMount)
+			}
+			if m.Name != authorizedKeysVolume {
+				t.Errorf("authorized_keys mount uses volume %q, want %q", m.Name, authorizedKeysVolume)
+			}
+		}
+	}
+	if !dataMountFound {
+		t.Errorf("no volume mount found at dataMount (%s)", dataMount)
+	}
+	if homeMountFound {
+		t.Errorf("a volume is mounted directly at /home/agent — this overrides the image's home directory and breaks dropbear strict modes (#974)")
+	}
+	if !authKeysFound {
+		t.Errorf("authorized_keys Secret mount at %s missing — unaffected by the data-PVC mount path change", authorizedKeysMount)
 	}
 }
 
