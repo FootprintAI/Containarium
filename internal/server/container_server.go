@@ -19,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/controller"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/integrity"
@@ -58,7 +59,12 @@ type ContainerServer struct {
 	// here behind a build tag. Box-lifecycle operations (Create/Get/…) route
 	// through it; the LXC-specific surface (Exec, config keys, security scans,
 	// app hosting) still calls manager directly during the transition.
-	boxBackend          box.BoxBackend
+	boxBackend box.BoxBackend
+	// boxWriter, when non-nil (k8s runtime + operator enabled), makes the
+	// imperative create path write a Box CR instead of calling boxBackend
+	// directly — the operator then reconciles it, so both the imperative and
+	// declarative paths converge on one builder (#995, slice 4).
+	boxWriter           *controller.BoxWriter
 	collaboratorManager *container.CollaboratorManager
 	emitter             *events.Emitter
 	pendingCreations    map[string]*PendingCreation
@@ -218,6 +224,7 @@ func NewContainerServer(runtime string) (*ContainerServer, error) {
 	return &ContainerServer{
 		manager:          mgr,
 		boxBackend:       bb,
+		boxWriter:        newBoxWriterIfEnabled(runtime),
 		emitter:          events.NewEmitter(events.GetBus()),
 		pendingCreations: make(map[string]*PendingCreation),
 	}, nil
@@ -428,6 +435,30 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	}
 	if spec.Resources.Disk == "" {
 		spec.Resources.Disk = "50GB"
+	}
+
+	// Convergence (#995): when the Box operator is running, the imperative
+	// create writes a Box CR and the reconciler builds the box — one builder
+	// for both the imperative and declarative (kubectl apply / GitOps) paths.
+	// Returns CREATING regardless of req.Async; the caller polls GET to track it.
+	if s.boxWriter != nil {
+		if err := s.boxWriter.Upsert(ctx, spec); err != nil {
+			return nil, fmt.Errorf("create Box CR for %s: %w", req.Username, err)
+		}
+		return &pb.CreateContainerResponse{
+			Container: &pb.Container{
+				Name:     fmt.Sprintf("%s-container", req.Username),
+				Username: req.Username,
+				State:    pb.ContainerState_CONTAINER_STATE_CREATING,
+				Resources: &pb.ResourceLimits{
+					Cpu:          spec.Resources.CPU,
+					Memory:       spec.Resources.Memory,
+					Disk:         spec.Resources.Disk,
+					StorageClass: spec.Resources.StorageClass,
+				},
+			},
+			Message: fmt.Sprintf("Box CR created for user %s; the operator is reconciling it. Poll GET /v1/containers/%s to check status.", req.Username, req.Username),
+		}, nil
 	}
 
 	// Async mode - return immediately and create in background

@@ -190,6 +190,46 @@ the preset, one without). See
 [K8S-AGENT-BOX-RUNTIME-DESIGN.md](K8S-AGENT-BOX-RUNTIME-DESIGN.md) for the
 image-level detail.
 
+## Declarative boxes (the Box CRD)
+
+Everything above creates boxes imperatively (`containarium create`). With the
+**operator** enabled, a box is also a custom resource — create it with
+`kubectl apply` or GitOps, and a controller reconciles it into the same bundle:
+
+```bash
+# install with the operator on (composes with any cloud preset)
+helm install containarium ./charts/containarium-k8s \
+  -f charts/containarium-k8s/values-gke.yaml \
+  --set operator.enabled=true \
+  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+```
+
+```yaml
+# box.yaml
+apiVersion: containarium.dev/v1alpha1
+kind: Box
+metadata:
+  name: alice
+spec:
+  mode: shell            # or "mcp" (default)
+  sshKeys:
+    - ssh-ed25519 AAAA... alice
+  resources:
+    cpu: "2"
+    memory: 4GB
+```
+
+```bash
+kubectl apply -f box.yaml
+kubectl get boxes          # NAME  TENANT  MODE  PHASE  ENDPOINT  AGE
+ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -p 22 alice@<gateway>
+```
+
+`containarium create` and `kubectl apply` converge on the same `Box` resource,
+so the CLI and GitOps drive one reconcile loop. The operator is opt-in
+(`operator.enabled`); with it off, only the imperative path runs. See
+[issue #995](https://github.com/FootprintAI/Containarium/issues/995) for the design.
+
 ## Production notes
 
 - **Pin the gateway host key.** The chart defaults to

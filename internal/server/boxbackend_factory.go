@@ -69,6 +69,27 @@ func maybeStartBoxOperator(runtime string, bb box.BoxBackend) {
 	}()
 }
 
+// newBoxWriterIfEnabled returns a BoxWriter for the convergent create path when
+// the operator is enabled on the k8s runtime, else nil (the imperative
+// Backend.Create path is used). A client-build failure logs and returns nil so
+// the daemon still starts and falls back to the imperative path.
+func newBoxWriterIfEnabled(runtime string) *controller.BoxWriter {
+	if runtime != RuntimeK8s {
+		return nil
+	}
+	cfg := config.LoadK8s()
+	if !cfg.OperatorEnabled {
+		return nil
+	}
+	w, err := controller.NewBoxWriter(cfg.BoxNamespace)
+	if err != nil {
+		log.Printf("[operator] convergent create disabled: cannot build Box writer: %v", err)
+		return nil
+	}
+	log.Printf("[operator] convergent create enabled: imperative create writes Box CRs in namespace %q", cfg.BoxNamespace)
+	return w
+}
+
 func newK8sBackend() (box.BoxBackend, error) {
 	// The CONTAINARIUM_K8S_* namespace is read + defaulted once via internal/config
 	// (typed, validated); pkg/core/box/k8s.Config stays env-agnostic, so we map

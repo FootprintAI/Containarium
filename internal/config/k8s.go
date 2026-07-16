@@ -25,6 +25,7 @@ const (
 	EnvK8sDefaultMemoryLimit       = "CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT"
 	EnvK8sDisableMemoryFloor       = "CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR"
 	EnvK8sOperator                 = "CONTAINARIUM_K8S_OPERATOR"
+	EnvK8sBoxNamespace             = "CONTAINARIUM_K8S_BOX_NAMESPACE"
 )
 
 // K8s defaults applied by LoadK8s when the variable is unset.
@@ -33,6 +34,7 @@ const (
 	defaultK8sTenantNSPrefix   = "tenant-"
 	defaultK8sGatewaySSHPort   = 22
 	defaultK8sGatewayService   = "sshpiper"
+	defaultK8sBoxNamespace     = "default"
 )
 
 // K8s is the typed view of the CONTAINARIUM_K8S_* namespace — the wiring the
@@ -112,6 +114,10 @@ type K8s struct {
 	// imperative API, so `kubectl apply -f box.yaml` and GitOps create boxes
 	// declaratively. Off by default. (EnvK8sOperator)
 	OperatorEnabled bool
+
+	// BoxNamespace is where the convergent create path writes Box CRs when the
+	// operator is enabled. (EnvK8sBoxNamespace; default "default")
+	BoxNamespace string
 }
 
 // LoadK8s reads the CONTAINARIUM_K8S_* namespace from the environment once,
@@ -135,6 +141,7 @@ func LoadK8s() K8s {
 		DefaultMemoryLimit:        getString(EnvK8sDefaultMemoryLimit, ""),
 		DisableDefaultMemoryFloor: getBool(EnvK8sDisableMemoryFloor),
 		OperatorEnabled:           getBool(EnvK8sOperator),
+		BoxNamespace:              getString(EnvK8sBoxNamespace, defaultK8sBoxNamespace),
 	}
 }
 
