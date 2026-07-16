@@ -258,7 +258,12 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if _, err := b.ensureHostKey(ctx, tenant); err != nil {
 		return nil, fmt.Errorf("k8s: ensure host key: %w", err)
 	}
-	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults(), b.cfg.BoxMode), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	// Per-box spec.Mode overrides the daemon-wide default (Config.BoxMode).
+	boxMode := spec.Mode
+	if boxMode == "" {
+		boxMode = b.cfg.BoxMode
+	}
+	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults(), boxMode), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure sandbox: %w", err)
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op

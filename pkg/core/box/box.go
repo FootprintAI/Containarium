@@ -56,8 +56,13 @@ type ResourceLimits struct {
 // the spec exist and returns a BoxStatus. Create must be idempotent on
 // re-create (the agent-skills bring-up taught us this the hard way, #669).
 type BoxSpec struct {
-	Ref        BoxRef
-	Image      string
+	Ref   BoxRef
+	Image string
+	// Mode selects the box's SSH session behavior on backends that support it
+	// (K8s → the agent-box image's AGENTBOX_MODE: "mcp" forced-command MCP, or
+	// "shell" interactive login shell). Empty uses the backend's configured
+	// default. Ignored by backends without the notion (LXC).
+	Mode       string
 	OSType     pb.OSType
 	Resources  ResourceLimits
 	GPUs       []string // empty on K8s v1 (deferred)
