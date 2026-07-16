@@ -16,6 +16,19 @@ export CONTAINARIUM_JWT_TOKEN="your-jwt-token"
 ./bin/mcp-server
 ```
 
+### Run in a container
+
+```bash
+docker build -f images/mcp-server/Dockerfile -t containarium-mcp-server .
+docker run -i --rm \
+  -e CONTAINARIUM_SERVER_URL="http://host.docker.internal:8080" \
+  -e CONTAINARIUM_JWT_TOKEN="your-jwt-token" \
+  containarium-mcp-server
+```
+
+The MCP protocol runs over stdio, so `-i` (attach stdin) is required; no
+ports are exposed.
+
 ### Configure Claude Desktop
 
 Add to `~/.config/claude/claude_desktop_config.json`:
