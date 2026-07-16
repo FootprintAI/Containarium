@@ -1357,6 +1357,25 @@ func (c *Client) RemediateSecurityFinding(findingID int64) (*SecurityRemediateRe
 	return &resp, nil
 }
 
+// InstallZap calls the daemon's InstallZap RPC, which downloads and
+// installs OWASP ZAP into the host's security container. Admin-only on
+// the daemon side (RequireRole(RoleAdmin)); this is the one Go call both
+// the `containarium zap-install` CLI subcommand and the install_zap MCP
+// tool go through, per this repo's CLI-first convention. Host-level —
+// there is no per-container scoping, since each daemon manages exactly
+// one security container.
+func (c *Client) InstallZap() (*InstallZapResponse, error) {
+	body, err := c.doRequest("POST", "/v1/zap/install", struct{}{})
+	if err != nil {
+		return nil, err
+	}
+	var resp InstallZapResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse install response: %w", err)
+	}
+	return &resp, nil
+}
+
 // API Request/Response types
 
 type CreateContainerRequest struct {

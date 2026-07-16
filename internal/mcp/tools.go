@@ -839,6 +839,24 @@ func (s *Server) registerTools() {
 			Handler: handleSecurityRemediate,
 		},
 		{
+			Name: "install_zap",
+			Description: "Download and install OWASP ZAP into this host's security container. " +
+				"Admin-only, one-time-per-host setup — `security_scan` (kind=zap) and the " +
+				"scheduled ZAP scan cycle both require this to have been run at least once.\n\n" +
+				"Without it, every ZAP scan job on an uninstalled host used to fail after a " +
+				"generic 120-second timeout, indistinguishable from a slow daemon start, and " +
+				"repeat forever on every subsequent scan (#960) — this call is what closes " +
+				"that gap. Safe to call again on an already-installed host; it reports " +
+				"'already installed' instead of erroring.\n\n" +
+				"Takes no arguments — a daemon manages exactly one security container, so " +
+				"there's no per-container or per-host identifier to pass.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleInstallZap,
+		},
+		{
 			Name: "sync_ssh_config",
 			Description: "Generate a self-contained ssh_config covering every reachable container " +
 				"and write it to ~/.containarium/ssh_config. After this call, `ssh <username>` " +
@@ -1278,6 +1296,10 @@ func toolScopeAssignments() map[string]string {
 		"security_scan":      auth.ScopeSecurityWrite,
 		"security_remediate": auth.ScopeSecurityWrite,
 		"security_findings":  auth.ScopeSecurityRead,
+		// install_zap is admin-only (the daemon also enforces
+		// RoleAdmin server-side); scope-gated the same as the other
+		// security-write tools at the MCP layer.
+		"install_zap": auth.ScopeSecurityWrite,
 		// developer-loop tools
 		"push":            auth.ScopeCodeWrite,
 		"sync":            auth.ScopeCodeWrite,

@@ -83,6 +83,10 @@ type API interface {
 	DebugContainer(username string) (*DebugContainerResponse, error)
 	TriggerUpgrade(backendID string, force bool) (*TriggerUpgradeResponse, error)
 	GetUpgradeStatus(upgradeID string) (*UpgradeStatusResponse, error)
+	// InstallZap downloads and installs OWASP ZAP into this host's
+	// security container. Host-level — a daemon manages exactly one
+	// security container, so there's no per-tenant scoping.
+	InstallZap() (*InstallZapResponse, error)
 
 	// Transport-level escape hatches used by handlers that issue a raw
 	// request (compose, move, connect) or need the effective token (scope
@@ -137,6 +141,10 @@ func (cloudClient) TriggerUpgrade(string, bool) (*TriggerUpgradeResponse, error)
 
 func (cloudClient) GetUpgradeStatus(string) (*UpgradeStatusResponse, error) {
 	return nil, errUnsupportedOnCloud("get_upgrade_status", "")
+}
+
+func (cloudClient) InstallZap() (*InstallZapResponse, error) {
+	return nil, errUnsupportedOnCloud("install_zap", "the platform provisions ZAP on managed hosts")
 }
 
 // newBackend builds the API the handlers use, classifying the target from the

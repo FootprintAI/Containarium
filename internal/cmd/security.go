@@ -83,6 +83,28 @@ product's hosted security-patch agent territory.`,
 	RunE: runSecurityRemediate,
 }
 
+// --- containarium zap-install -----------------------------------------------
+
+var zapInstallCmd = &cobra.Command{
+	Use:   "zap-install",
+	Short: "Install OWASP ZAP into this host's security container",
+	Long: `Downloads and installs OWASP ZAP into the daemon host's security
+container. Admin-only, one-time-per-host setup step.
+
+Without this having been run, ZAP scan jobs on this host fail — since
+#960, that's now a fast, clear "ZAP is not installed" error rather than
+the old failure mode: every attempt silently backgrounding a "command
+not found" and burning a full 120-second readiness poll before timing
+out, forever, on every subsequent scan.
+
+Takes no arguments: a daemon manages exactly one security container, so
+there's no per-container or per-host identifier to pass. Safe to run
+again on an already-installed host — it reports "already installed"
+instead of erroring.`,
+	Args: cobra.NoArgs,
+	RunE: runZapInstall,
+}
+
 func init() {
 	rootCmd.AddCommand(securityScanCmd)
 	securityScanCmd.Flags().StringVar(&scanKind, "kind", "all", "clamav | pentest | zap | all")
@@ -91,6 +113,29 @@ func init() {
 	securityFindingsCmd.Flags().StringVar(&findKind, "kind", "all", "clamav | pentest | zap | all")
 
 	rootCmd.AddCommand(securityRemediateCmd)
+
+	rootCmd.AddCommand(zapInstallCmd)
+}
+
+// runZapInstall dispatches through the same mcp.Client.InstallZap call
+// the install_zap MCP tool uses — one Go function, two surfaces, per
+// CLAUDE.md's CLI-first convention. Previously the only way to trigger
+// InstallZap was a raw authenticated REST call (#960).
+func runZapInstall(_ *cobra.Command, _ []string) error {
+	c, err := newSecurityClient()
+	if err != nil {
+		return err
+	}
+	resp, err := c.InstallZap()
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		fmt.Printf("ZAP install FAILED: %s\n", resp.Message)
+		return fmt.Errorf("zap install reported failure")
+	}
+	fmt.Printf("ZAP install OK: %s\n", resp.Message)
+	return nil
 }
 
 // runSecurityScan dispatches the scan via the same Go code path the

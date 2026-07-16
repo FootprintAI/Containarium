@@ -52,6 +52,12 @@ type SecurityRemediateResponse struct {
 	NewVersion  string `json:"newVersion,omitempty"`
 }
 
+// InstallZapResponse mirrors the daemon's InstallZapResponse.
+type InstallZapResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
 // --- MCP handlers ----------------------------------------------------------
 
 // handleSecurityScan triggers one or more scanners against a container.
@@ -130,6 +136,20 @@ func handleSecurityRemediate(client API, args map[string]interface{}) (string, e
 	resp, err := client.RemediateSecurityFinding(fid)
 	if err != nil {
 		return "", fmt.Errorf("remediate: %w", err)
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleInstallZap downloads and installs OWASP ZAP into this host's
+// security container. Admin-only operator action — see #960: without
+// this having been run at least once, every ZAP scan job on the host
+// fails fast with a clear "not installed" error (rather than the old
+// behavior of silently retrying forever with a generic 120s timeout).
+func handleInstallZap(client API, _ map[string]interface{}) (string, error) {
+	resp, err := client.InstallZap()
+	if err != nil {
+		return "", fmt.Errorf("install zap: %w", err)
 	}
 	out, _ := json.MarshalIndent(resp, "", "  ")
 	return string(out), nil
