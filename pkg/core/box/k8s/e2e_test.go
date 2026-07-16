@@ -196,6 +196,21 @@ func TestE2E_GatewayPipe(t *testing.T) {
 // The PVC stays in Pending until a pod is scheduled (local-path binds on pod
 // assignment); we assert the object exists, not that it is Bound — the mount
 // wiring is what matters for storage correctness.
+//
+// It also guards against #974 regressing: the data volume must land at
+// dataMount (a subdirectory of the home directory), never directly at
+// /home/agent — mounting the PVC over the home directory itself replaces the
+// box image's real home (dropbear-strict-modes-compatible ownership/perms)
+// with the provisioner's fresh volume root, which dropbear's strict `modes`
+// check rejects (kind/local-path: 0777 root:root) or which locks uid-1000
+// `agent` out of its own home entirely (a typical CSI ext4 root: 0755
+// root:root) — either way every SSH login fails. This test uses the
+// shell-less `pause` image, so it cannot drive an actual SSH login or stat
+// the mounted directory's live permissions against a real apiserver; that
+// finer-grained check (mount path is a home subdirectory, authorized_keys
+// mount unaffected) is covered by the unit-level
+// TestDataMountDoesNotOverrideHomeDirectory in k8s_test.go, which runs
+// without a cluster.
 func TestE2E_CSIStorage(t *testing.T) {
 	if os.Getenv("CONTAINARIUM_K8S_E2E") == "" {
 		t.Skip("set CONTAINARIUM_K8S_E2E=1 (and KUBECONFIG) to run the kind e2e")
@@ -226,7 +241,8 @@ func TestE2E_CSIStorage(t *testing.T) {
 	ns := "tenant-csi-e2e"
 	t.Cleanup(func() { _ = b.Purge(context.Background(), ref) })
 
-	// Create: PVC provisioned, StatefulSet mounts it at /home/agent.
+	// Create: PVC provisioned, Sandbox pod template mounts it at dataMount
+	// (/home/agent/workspace — not directly over /home/agent, see #974).
 	if _, err := b.Create(ctx, box.BoxSpec{
 		Ref:       ref,
 		Image:     "registry.k8s.io/pause:3.9",
@@ -261,6 +277,9 @@ func TestE2E_CSIStorage(t *testing.T) {
 	}
 	if mounts[dataMount] == "" {
 		t.Errorf("data volume not mounted at %s; mounts: %v", dataMount, mounts)
+	}
+	if _, ok := mounts["/home/agent"]; ok {
+		t.Errorf("data volume mounted directly at /home/agent — this overrides the image's home directory and breaks dropbear strict modes (#974); mounts: %v", mounts)
 	}
 
 	// Delete: compute objects removed; namespace + PVC retained so data survives a node reap.
