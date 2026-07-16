@@ -10,6 +10,7 @@ var allK8sEnvKeys = []string{
 	EnvK8sGatewayUpstreamPublicKey, EnvK8sGatewayUpstreamKeySecret,
 	EnvK8sInsecureIgnoreHostKey, EnvK8sDefaultMemoryRequest, EnvK8sDefaultMemoryLimit,
 	EnvK8sDisableMemoryFloor, EnvK8sGatewayService, EnvK8sGatewayAdvertisePort,
+	EnvK8sOperator,
 }
 
 func clearK8sEnv(t *testing.T) {
@@ -54,6 +55,7 @@ func TestLoadK8sReadsEnv(t *testing.T) {
 	t.Setenv(EnvK8sDefaultMemoryRequest, "512Mi")
 	t.Setenv(EnvK8sDefaultMemoryLimit, "2Gi")
 	t.Setenv(EnvK8sDisableMemoryFloor, "true")
+	t.Setenv(EnvK8sOperator, "true")
 
 	got := LoadK8s()
 	want := K8s{
@@ -73,6 +75,7 @@ func TestLoadK8sReadsEnv(t *testing.T) {
 		DefaultMemoryRequest:      "512Mi",
 		DefaultMemoryLimit:        "2Gi",
 		DisableDefaultMemoryFloor: true,
+		OperatorEnabled:           true,
 	}
 	if got != want {
 		t.Errorf("LoadK8s = %+v\nwant %+v", got, want)

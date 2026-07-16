@@ -54,6 +54,13 @@ gateway:
     serverKeySecret: sshpiper-server-key
     resources: {}
 
+# -- Box CRD operator (issue #995): run the Box controller so
+# `kubectl apply -f box.yaml` (and GitOps) create boxes declaratively, alongside
+# the imperative API. Ships the boxes.containarium.dev CRD in crds/. Off by
+# default — enabling only starts the reconcile loop; the API path is unchanged.
+operator:
+  enabled: false
+
 # -- Prefix for per-tenant Kubernetes namespaces (tenant → tenant-<name>)
 tenantNamespacePrefix: "tenant-"
 

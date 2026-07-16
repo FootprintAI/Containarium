@@ -41,6 +41,17 @@ rules:
   - apiGroups: [sshpiper.com]
     resources: [pipes]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Box CRD operator (issue #995): watch Box CRs and reconcile them into the
+  # per-tenant bundle. Only exercised when operator.enabled; harmless otherwise.
+  - apiGroups: [containarium.dev]
+    resources: [boxes]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [containarium.dev]
+    resources: [boxes/status]
+    verbs: [get, update, patch]
+  - apiGroups: [containarium.dev]
+    resources: [boxes/finalizers]
+    verbs: [update]
 ---
 {{- if .Values.gateway.enabled }}
 # sshpiper needs read access to Pipe CRDs and the secrets they reference

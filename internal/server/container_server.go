@@ -212,6 +212,9 @@ func NewContainerServer(runtime string) (*ContainerServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to select box backend: %w", err)
 	}
+	// Start the declarative Box controller alongside the imperative API when
+	// enabled (k8s runtime + CONTAINARIUM_K8S_OPERATOR). No-op otherwise.
+	maybeStartBoxOperator(runtime, bb)
 	return &ContainerServer{
 		manager:          mgr,
 		boxBackend:       bb,

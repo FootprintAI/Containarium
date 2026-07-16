@@ -3,10 +3,12 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/controller"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxk8s "github.com/footprintai/containarium/pkg/core/box/k8s"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
@@ -49,6 +51,22 @@ func newBoxBackend(runtime string, mgr *container.Manager) (box.BoxBackend, erro
 	default:
 		return nil, fmt.Errorf("unknown runtime %q: must be %q or %q", runtime, RuntimeLXC, RuntimeK8s)
 	}
+}
+
+// maybeStartBoxOperator starts the Box CRD controller in the background when
+// the k8s runtime is selected and CONTAINARIUM_K8S_OPERATOR is set. Off by
+// default — the imperative API path is unaffected either way. The manager runs
+// for the daemon's lifetime; when disabled this is a no-op.
+func maybeStartBoxOperator(runtime string, bb box.BoxBackend) {
+	if runtime != RuntimeK8s || !config.LoadK8s().OperatorEnabled {
+		return
+	}
+	go func() {
+		log.Printf("[operator] Box controller enabled (CONTAINARIUM_K8S_OPERATOR); starting manager")
+		if err := controller.StartOperator(context.Background(), bb); err != nil {
+			log.Printf("[operator] Box controller stopped: %v", err)
+		}
+	}()
 }
 
 func newK8sBackend() (box.BoxBackend, error) {

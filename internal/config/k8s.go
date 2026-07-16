@@ -24,6 +24,7 @@ const (
 	EnvK8sDefaultMemoryRequest     = "CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST"
 	EnvK8sDefaultMemoryLimit       = "CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT"
 	EnvK8sDisableMemoryFloor       = "CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR"
+	EnvK8sOperator                 = "CONTAINARIUM_K8S_OPERATOR"
 )
 
 // K8s defaults applied by LoadK8s when the variable is unset.
@@ -106,6 +107,11 @@ type K8s struct {
 	// DisableDefaultMemoryFloor turns the floor off entirely.
 	// (EnvK8sDisableMemoryFloor)
 	DisableDefaultMemoryFloor bool
+
+	// OperatorEnabled starts the Box CRD controller (issue #995) alongside the
+	// imperative API, so `kubectl apply -f box.yaml` and GitOps create boxes
+	// declaratively. Off by default. (EnvK8sOperator)
+	OperatorEnabled bool
 }
 
 // LoadK8s reads the CONTAINARIUM_K8S_* namespace from the environment once,
@@ -128,6 +134,7 @@ func LoadK8s() K8s {
 		DefaultMemoryRequest:      getString(EnvK8sDefaultMemoryRequest, ""),
 		DefaultMemoryLimit:        getString(EnvK8sDefaultMemoryLimit, ""),
 		DisableDefaultMemoryFloor: getBool(EnvK8sDisableMemoryFloor),
+		OperatorEnabled:           getBool(EnvK8sOperator),
 	}
 }
 
