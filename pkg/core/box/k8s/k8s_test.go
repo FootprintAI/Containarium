@@ -424,6 +424,47 @@ func TestPVCObjectBuilderDefaults(t *testing.T) {
 	}
 }
 
+// TestParseDiskQuantityValidK8s verifies a well-formed K8s quantity passes
+// through unchanged.
+func TestParseDiskQuantityValidK8s(t *testing.T) {
+	q := parseDiskQuantity("10Gi")
+	if q.String() != "10Gi" {
+		t.Errorf("parseDiskQuantity(%q) = %q, want %q", "10Gi", q.String(), "10Gi")
+	}
+}
+
+// TestParseDiskQuantityIncusStyle verifies an incus-style two-letter suffix
+// ("50GB", the CLI's own default disk size) normalizes to the K8s
+// single-letter equivalent instead of failing to parse.
+func TestParseDiskQuantityIncusStyle(t *testing.T) {
+	q := parseDiskQuantity("50GB")
+	if q.String() != "50G" {
+		t.Errorf("parseDiskQuantity(%q) = %q, want %q", "50GB", q.String(), "50G")
+	}
+}
+
+// TestParseDiskQuantityGarbageFallsBackToDefault is the regression test for
+// #973: a disk string that is neither a valid K8s quantity nor a
+// recognizable incus-style size must never panic the daemon — it degrades to
+// defaultDisk.
+func TestParseDiskQuantityGarbageFallsBackToDefault(t *testing.T) {
+	q := parseDiskQuantity("not-a-size")
+	if q.String() != defaultDisk {
+		t.Errorf("parseDiskQuantity(%q) = %q, want default %q", "not-a-size", q.String(), defaultDisk)
+	}
+}
+
+// TestPVCObjectBuilderIncusStyleDisk verifies pvcObject itself (the
+// CreateContainer path that panicked in #973) never panics on an incus-style
+// disk string and produces the normalized K8s quantity.
+func TestPVCObjectBuilderIncusStyleDisk(t *testing.T) {
+	pvc := pvcObject("tenant-carol", "carol", "standard", "50GB")
+	q := pvc.Spec.Resources.Requests["storage"]
+	if q.String() != "50G" {
+		t.Errorf("storage request = %q, want %q", q.String(), "50G")
+	}
+}
+
 // TestCreateProvisionsPVC verifies that Create provisions a PVC when
 // StorageClass is configured.
 func TestCreateProvisionsPVC(t *testing.T) {

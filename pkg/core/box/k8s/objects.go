@@ -2,6 +2,8 @@ package k8s
 
 import (
 	"fmt"
+	"log"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -84,12 +86,10 @@ func hostKeySecretName(tenant string) string { return tenant + "-host-key" }
 
 // pvcObject builds the PersistentVolumeClaim for the box's data volume.
 // storageClass "" disables PVC provisioning (caller must not call this).
-// disk is the requested size (e.g. "20Gi"); defaults to defaultDisk when empty.
+// disk is the requested size (e.g. "20Gi"); defaults to defaultDisk when empty
+// or unparseable (see parseDiskQuantity).
 func pvcObject(ns, tenant, storageClass, disk string) *corev1.PersistentVolumeClaim {
-	if disk == "" {
-		disk = defaultDisk
-	}
-	quantity := resource.MustParse(disk)
+	quantity := parseDiskQuantity(disk)
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName,
@@ -111,6 +111,51 @@ func pvcObject(ns, tenant, storageClass, disk string) *corev1.PersistentVolumeCl
 	// Config.StorageClass semantics), so this branch is defensive-only.
 	pvc.Spec.StorageClassName = &storageClass
 	return pvc
+}
+
+// parseDiskQuantity resolves a caller-supplied disk size into a valid K8s
+// resource.Quantity, never panicking regardless of what the caller sent
+// (#973: an incus-style "50GB" — the CLI's own default — reached
+// resource.MustParse and killed the daemon; this is the CreateContainer
+// request path, so a bad string is remote-triggerable by any authenticated
+// caller). Empty defaults to defaultDisk. A valid K8s quantity ("20Gi")
+// passes straight through. An incus-style quantity (two-letter GB/MB/KB/...
+// suffix, decimal scale) is normalized to the K8s single-letter equivalent
+// (same decimal scale, so this is a straight rewrite, not a unit
+// conversion) and reparsed. Anything else — including total garbage —
+// degrades to defaultDisk with a log line, mirroring resourceRequirements'
+// lenient handling of invalid CPU/Memory strings elsewhere in this file.
+func parseDiskQuantity(disk string) resource.Quantity {
+	if disk == "" {
+		disk = defaultDisk
+	}
+	if q, err := resource.ParseQuantity(disk); err == nil {
+		return q
+	}
+	if normalized, ok := normalizeIncusDiskSuffix(disk); ok {
+		if q, err := resource.ParseQuantity(normalized); err == nil {
+			return q
+		}
+	}
+	log.Printf("[k8s] invalid disk quantity %q; falling back to default %q", disk, defaultDisk)
+	// defaultDisk is a package constant known to be a valid quantity, so
+	// MustParse here can't panic on caller input.
+	return resource.MustParse(defaultDisk)
+}
+
+// normalizeIncusDiskSuffix rewrites an incus-style two-letter decimal size
+// suffix (KB/MB/GB/TB/PB/EB) into the single-letter K8s equivalent
+// (K/M/G/T/P/E). Incus's GB etc. are decimal (10^3-scaled), matching K8s's
+// unsuffixed-i letters exactly, so no scale conversion is needed — just the
+// suffix rewrite. Returns ok=false when disk doesn't end in one of these
+// suffixes (e.g. it's already a K8s quantity, or garbage).
+func normalizeIncusDiskSuffix(disk string) (normalized string, ok bool) {
+	for _, suf := range []string{"KB", "MB", "GB", "TB", "PB", "EB"} {
+		if strings.HasSuffix(disk, suf) {
+			return strings.TrimSuffix(disk, suf) + suf[:1], true
+		}
+	}
+	return "", false
 }
 
 func int64p(i int64) *int64 { return &i }
