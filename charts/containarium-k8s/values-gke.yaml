@@ -1,0 +1,30 @@
+# Values preset for GKE (managed Kubernetes on Google Cloud).
+#
+# Runs the whole agent-box stack on managed nodes, fronted by a Google Cloud
+# L4 LoadBalancer — no sentinel, no bare-metal. The cluster's own control
+# plane, node autoscaling, and disk provisioning are the shared infra;
+# Containarium is the access + lifecycle layer on top.
+#
+#   helm install containarium ./charts/containarium-k8s \
+#     -f charts/containarium-k8s/values-gke.yaml \
+#     --set daemon.jwtSecret="$(openssl rand -hex 24)"
+#
+# Prereqs: a GKE cluster (Standard or Autopilot) and the agent-sandbox
+# controller. See docs/EKS-GKE-DEPLOY.md for the full walkthrough.
+
+gateway:
+  service:
+    # One public SSH endpoint, provisioned as a Google Cloud L4 LoadBalancer.
+    type: LoadBalancer
+    port: 22
+    annotations:
+      # Regional external passthrough L4 LB (backend-service based, the modern
+      # replacement for target-pool LBs).
+      cloud.google.com/l4-rbs: "enabled"
+      # For a VPC-internal gateway instead of a public one, drop the line above
+      # and use:
+      #   networking.gke.io/load-balancer-type: "Internal"
+
+# Balanced persistent disk for each box's workspace. GKE ships this class by
+# default; use "premium-rwo" for SSD-backed disks.
+storageClass: "standard-rwo"

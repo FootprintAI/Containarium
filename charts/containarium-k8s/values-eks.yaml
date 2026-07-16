@@ -1,0 +1,31 @@
+# Values preset for EKS (managed Kubernetes on AWS).
+#
+# Runs the whole agent-box stack on managed nodes, fronted by an AWS Network
+# Load Balancer — no sentinel, no bare-metal. The cluster's own control plane,
+# node autoscaling (managed node groups / Karpenter), and EBS provisioning are
+# the shared infra; Containarium is the access + lifecycle layer on top.
+#
+#   helm install containarium ./charts/containarium-k8s \
+#     -f charts/containarium-k8s/values-eks.yaml \
+#     --set daemon.jwtSecret="$(openssl rand -hex 24)"
+#
+# Prereqs: an EKS cluster, the AWS Load Balancer Controller (provisions the
+# NLB from the Service annotations below), the EBS CSI driver plus a "gp3"
+# StorageClass, and the agent-sandbox controller. See docs/EKS-GKE-DEPLOY.md.
+
+gateway:
+  service:
+    # One public SSH endpoint, provisioned as an AWS Network Load Balancer via
+    # the AWS Load Balancer Controller.
+    type: LoadBalancer
+    port: 22
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "external"
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+      # Public NLB; switch to "internal" for a VPC-private gateway.
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+
+# EBS gp3 volume for each box's workspace. Requires the EBS CSI driver and a
+# StorageClass named "gp3" (EKS does not create one by default — see the deploy
+# guide for the one-object StorageClass to apply).
+storageClass: "gp3"

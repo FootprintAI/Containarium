@@ -6,7 +6,8 @@ metadata:
   namespace: {{ .Values.gateway.namespace }}
   labels:
     {{- include "containarium-k8s.labels" . | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
+  {{- $svcAnnotations := mustMergeOverwrite (deepCopy (.Values.commonAnnotations | default dict)) (.Values.gateway.service.annotations | default dict) }}
+  {{- with $svcAnnotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}

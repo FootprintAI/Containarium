@@ -27,11 +27,16 @@ gateway:
   # -- Deploy sshpiper as part of this chart. Set false to bring your own.
   enabled: true
   service:
-    # -- Use NodePort for kind / LoadBalancer for cloud clusters
+    # -- NodePort for kind; LoadBalancer for cloud. See values-gke.yaml /
+    # values-eks.yaml for ready-made managed-Kubernetes presets.
     type: NodePort
     port: 22
     # -- NodePort for kind (access via localhost:32022)
     nodePort: 32022
+    # -- Extra annotations for the gateway Service. This is where cloud
+    # LoadBalancer knobs go (NLB type on EKS, L4 mode / internal on GKE);
+    # merged over commonAnnotations. See the cloud value presets.
+    annotations: {}
   sshpiper:
     # -- Containarium's own gateway image (pinned upstream sshpiperd release +
     # kubernetes-plugin entrypoint), published per Containarium release by
