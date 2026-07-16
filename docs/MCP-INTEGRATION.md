@@ -347,9 +347,17 @@ The MCP server is configured through environment variables:
 
 | Variable | Required | Description | Example |
 |----------|----------|-------------|---------|
-| `CONTAINARIUM_SERVER_URL` | Yes | REST API base URL | `http://localhost:8080` |
-| `CONTAINARIUM_JWT_TOKEN` | Yes | JWT authentication token | `eyJhbGci...` |
+| `CONTAINARIUM_SERVER_URL` | Yes* | REST API base URL | `http://localhost:8080` |
+| `CONTAINARIUM_JWT_TOKEN` | Yes** | JWT authentication token, captured once at startup | `eyJhbGci...` |
+| `CONTAINARIUM_JWT_TOKEN_FILE` | Yes** | Path to a file holding the JWT; re-read on every request, so rotating the token is `mv newtoken oldpath` — no restart needed. Alternative to `CONTAINARIUM_JWT_TOKEN`; set at most one. | `/etc/containarium/mcp-token` |
 | `CONTAINARIUM_DEBUG` | No | Enable debug logging | `true` or `false` |
+| `CONTAINARIUM_KEYS_DIR` | No | Directory the server writes ephemeral SSH private keys to (from container-creation tools). Defaults to `$HOME/.containarium/keys`. | `/home/mcp/.containarium/keys` |
+
+\* Optional only when `~/.containarium/credentials.json` (written by
+`containarium login`) has a `default_server`.
+\*\* One of `CONTAINARIUM_JWT_TOKEN` / `CONTAINARIUM_JWT_TOKEN_FILE` is
+required unless that same credentials file supplies a token for the
+resolved server.
 
 ### JWT Token Requirements
 
