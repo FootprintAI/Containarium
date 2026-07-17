@@ -1030,8 +1030,16 @@ type SystemInfo struct {
 	// fleet's running versions + drift are visible via get_system_info and
 	// /v1/backends without SSHing each host. See #354.
 	DaemonVersion string `protobuf:"bytes,21,opt,name=daemon_version,json=daemonVersion,proto3" json:"daemon_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Public SSH entrypoint (the sentinel host) clients dial to reach this
+	// backend's containers — the daemon's advertised --ssh-host. **Empty means
+	// this backend advertises NO external SSH entrypoint** (direct / in-network
+	// mode: reach containers by IP, or deploy through an in-network pipeline).
+	// Surfaced so an agent can tell, from get_system_info alone, whether an
+	// external SSH/deploy entrypoint exists and what host it is — instead of
+	// assuming a sentinel that may not exist. See #1011.
+	SshIngressHost string `protobuf:"bytes,22,opt,name=ssh_ingress_host,json=sshIngressHost,proto3" json:"ssh_ingress_host,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SystemInfo) Reset() {
@@ -1207,6 +1215,13 @@ func (x *SystemInfo) GetOtelCollectorEndpoint() string {
 func (x *SystemInfo) GetDaemonVersion() string {
 	if x != nil {
 		return x.DaemonVersion
+	}
+	return ""
+}
+
+func (x *SystemInfo) GetSshIngressHost() string {
+	if x != nil {
+		return x.SshIngressHost
 	}
 	return ""
 }
@@ -4522,7 +4537,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xd0\x06\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xfa\x06\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -4548,7 +4563,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\n" +
 	"backend_id\x18\x13 \x01(\tR\tbackendId\x126\n" +
 	"\x17otel_collector_endpoint\x18\x14 \x01(\tR\x15otelCollectorEndpoint\x12%\n" +
-	"\x0edaemon_version\x18\x15 \x01(\tR\rdaemonVersion\"\x97\x02\n" +
+	"\x0edaemon_version\x18\x15 \x01(\tR\rdaemonVersion\x12(\n" +
+	"\x10ssh_ingress_host\x18\x16 \x01(\tR\x0esshIngressHost\"\x97\x02\n" +
 	"\aGPUInfo\x122\n" +
 	"\x06vendor\x18\x01 \x01(\x0e2\x1a.containarium.v1.GPUVendorR\x06vendor\x12/\n" +
 	"\x05model\x18\x02 \x01(\x0e2\x19.containarium.v1.GPUModelR\x05model\x12\x1d\n" +

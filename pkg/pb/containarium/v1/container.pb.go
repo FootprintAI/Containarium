@@ -1537,8 +1537,16 @@ type DebugContainerResponse struct {
 	// Daemon version (containarium binary) that generated this report.
 	// Pair with source_repo to read code at the exact commit/tag.
 	DaemonVersion string `protobuf:"bytes,9,opt,name=daemon_version,json=daemonVersion,proto3" json:"daemon_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Public SSH entrypoint (the sentinel host) clients dial to reach
+	// containers on this backend — the daemon's advertised --ssh-host.
+	// **Empty means this backend advertises NO external SSH entrypoint**
+	// (direct / in-network mode: reach the container by IP, or deploy through
+	// an in-network pipeline). When empty, the sentinel-side remediation hints
+	// don't apply — there is no sentinel to check. Lets an agent stop hunting
+	// for a jump host that doesn't exist. See #1011.
+	SshIngressHost string `protobuf:"bytes,10,opt,name=ssh_ingress_host,json=sshIngressHost,proto3" json:"ssh_ingress_host,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DebugContainerResponse) Reset() {
@@ -1630,6 +1638,13 @@ func (x *DebugContainerResponse) GetSourceRepo() string {
 func (x *DebugContainerResponse) GetDaemonVersion() string {
 	if x != nil {
 		return x.DaemonVersion
+	}
+	return ""
+}
+
+func (x *DebugContainerResponse) GetSshIngressHost() string {
+	if x != nil {
+		return x.SshIngressHost
 	}
 	return ""
 }
@@ -4531,7 +4546,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12;\n" +
 	"\ametrics\x18\x02 \x01(\v2!.containarium.v1.ContainerMetricsR\ametrics\"3\n" +
 	"\x15DebugContainerRequest\x12\x1a\n" +
-	"\busername\x18\x01 \x01(\tR\busername\"\x8c\x03\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"\xb6\x03\n" +
 	"\x16DebugContainerResponse\x12'\n" +
 	"\x0fcontainer_state\x18\x01 \x01(\tR\x0econtainerState\x12(\n" +
 	"\x10host_user_exists\x18\x02 \x01(\bR\x0ehostUserExists\x12&\n" +
@@ -4542,7 +4557,9 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\fnext_actions\x18\a \x03(\tR\vnextActions\x12\x1f\n" +
 	"\vsource_repo\x18\b \x01(\tR\n" +
 	"sourceRepo\x12%\n" +
-	"\x0edaemon_version\x18\t \x01(\tR\rdaemonVersion\"J\n" +
+	"\x0edaemon_version\x18\t \x01(\tR\rdaemonVersion\x12(\n" +
+	"\x10ssh_ingress_host\x18\n" +
+	" \x01(\tR\x0esshIngressHost\"J\n" +
 	"\x16DeleteContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\"Z\n" +

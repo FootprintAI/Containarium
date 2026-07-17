@@ -69,6 +69,11 @@ func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugConta
 
 	resp.RecentSshdRejections = recentSshdLines(req.Username, 8)
 
+	// Advertised SSH entrypoint (sentinel host), or empty for direct/in-network
+	// mode. Populated before diagnose() so the remediation hints can drop the
+	// sentinel boilerplate when there is no sentinel to check (#1011).
+	resp.SshIngressHost = s.sshHost
+
 	resp.LikelyCause, resp.NextActions = diagnose(req.Username, resp)
 
 	resp.SourceRepo = SourceRepo
@@ -248,20 +253,38 @@ func diagnose(username string, r *pb.DebugContainerResponse) (string, []string) 
 			return "sshd reports the user as invalid (account exists but not allowed)",
 				[]string{"check AllowUsers in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d/"}
 		case strings.Contains(lower, "accepted publickey"):
-			return "sshd accepted publickey for this user recently — the path through sshd works; if your client still fails, the problem is in the sshpiper hop or the client's own ssh options",
+			if host := strings.TrimSpace(r.SshIngressHost); host != "" {
+				return "sshd accepted publickey for this user recently — the path through sshd works; if your client still fails, the problem is in the sentinel/sshpiper hop or the client's own ssh options",
+					[]string{
+						fmt.Sprintf("retry with: ssh -i <key> -o IdentitiesOnly=yes %s@%s", username, host),
+						fmt.Sprintf("check sshpiper sync on the sentinel %s (the user must appear in /etc/sshpiper/users/%s/)", host, username),
+					}
+			}
+			return "sshd accepted publickey for this user recently — the path through sshd works. This backend advertises no external SSH entrypoint (direct/in-network mode): there is no sentinel/sshpiper hop to check",
 				[]string{
-					"verify you used: ssh -i <key> -o IdentitiesOnly=yes <user>@<sentinel-host>",
-					"check sshpiper sync on the sentinel (the user must appear in /etc/sshpiper/users/<user>/)",
+					"connect directly to the container's IP (see ip_address in its container record); no sentinel fronts this backend",
+					"if you reach this backend through an in-network CI/CD pipeline, verify that path — external SSH from outside the backend's network isn't the route here",
 				}
 		}
 	}
 
-	return "no obvious host-side problem; check sentinel-side state (sshpiper sync, failtoban ban table) — these are not visible to the daemon yet",
+	// No host-side problem found. Whether there's a sentinel to check next
+	// depends on ssh_ingress_host — don't emit sentinel boilerplate when this
+	// backend advertises no external entrypoint (#1011).
+	if host := strings.TrimSpace(r.SshIngressHost); host != "" {
+		return fmt.Sprintf("no obvious host-side problem; check sentinel-side state on %s (sshpiper sync, fail2ban ban table) — these are not visible to the daemon yet", host),
+			[]string{
+				fmt.Sprintf("verify the user appears in the sentinel's /etc/sshpiper/users/%s/ (sshpiper sync is on a 2 min interval)", username),
+				"verify your client IP is not in the sentinel's fail2ban ban table",
+				fmt.Sprintf("retry with: ssh -i <key> -o IdentitiesOnly=yes %s@%s", username, host),
+				"for deeper investigation, see source_repo + daemon_version in this report — grep internal/sentinel/ for the keysync code path",
+			}
+	}
+	return "no obvious host-side problem, and this backend advertises no external SSH entrypoint (ssh_ingress_host is empty: direct/in-network mode) — there is no sentinel to check",
 		[]string{
-			"verify the user appears in the sentinel's /etc/sshpiper/users/<user>/ (sshpiper sync is on a 2 min interval)",
-			"verify your laptop IP is not in the sentinel's failtoban ban table",
-			"retry with: ssh -i <key> -o IdentitiesOnly=yes <user>@<sentinel-host>",
-			"for deeper investigation, see source_repo + daemon_version in this report — grep internal/sentinel/ for the keysync code path",
+			"connect directly to the container's IP (see ip_address in its container record); no sentinel/sshpiper fronts this backend",
+			"if this backend is deployed to via an in-network CI/CD pipeline, route through that pipeline — external SSH isn't the path here",
+			"if you expected an external SSH host, the daemon's --ssh-host is unset; set it so ssh_ingress_host is advertised",
 		}
 }
 

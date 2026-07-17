@@ -505,6 +505,15 @@ message DebugContainerResponse {
   // Daemon version (containarium binary) that generated this report.
   // Pair with source_repo to read code at the exact commit/tag.
   string daemon_version = 9;
+
+  // Public SSH entrypoint (the sentinel host) clients dial to reach
+  // containers on this backend — the daemon's advertised --ssh-host.
+  // **Empty means this backend advertises NO external SSH entrypoint**
+  // (direct / in-network mode: reach the container by IP, or deploy through
+  // an in-network pipeline). When empty, the sentinel-side remediation hints
+  // don't apply — there is no sentinel to check. Lets an agent stop hunting
+  // for a jump host that doesn't exist. See #1011.
+  string ssh_ingress_host = 10;
 }
 
 // DeleteContainerRequest is the request to delete a container

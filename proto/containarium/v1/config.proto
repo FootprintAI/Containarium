@@ -203,6 +203,15 @@ message SystemInfo {
   // fleet's running versions + drift are visible via get_system_info and
   // /v1/backends without SSHing each host. See #354.
   string daemon_version = 21;
+
+  // Public SSH entrypoint (the sentinel host) clients dial to reach this
+  // backend's containers — the daemon's advertised --ssh-host. **Empty means
+  // this backend advertises NO external SSH entrypoint** (direct / in-network
+  // mode: reach containers by IP, or deploy through an in-network pipeline).
+  // Surfaced so an agent can tell, from get_system_info alone, whether an
+  // external SSH/deploy entrypoint exists and what host it is — instead of
+  // assuming a sentinel that may not exist. See #1011.
+  string ssh_ingress_host = 22;
 }
 
 // GPU vendor enum

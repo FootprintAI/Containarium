@@ -252,7 +252,11 @@ func (s *Server) registerTools() {
 				"    …\" reason\n\n" +
 				"Returns a JSON object with: containerState, hostUserExists, hostUserShell, " +
 				"hostUserShellExists, recentSshdRejections, likelyCause, nextActions, " +
-				"sourceRepo, daemonVersion. When the structured fields are inconclusive, " +
+				"sourceRepo, daemonVersion, and sshIngressHost — the advertised public " +
+					"SSH entrypoint (sentinel host); EMPTY means NO external SSH entrypoint " +
+					"(direct/in-network mode), so next_actions drop the sentinel hints and " +
+					"there is no jump host to chase (reach the container by IP or its " +
+					"in-network deploy pipeline). When the structured fields are inconclusive, " +
 				"use sourceRepo + daemonVersion to fetch the daemon's source and dig " +
 				"deeper (grep internal/sentinel/, pkg/core/, etc.). Read-only — no side effects.",
 			InputSchema: map[string]interface{}{

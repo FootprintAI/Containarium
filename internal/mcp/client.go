@@ -1445,6 +1445,10 @@ type DebugContainerResponse struct {
 	NextActions          []string `json:"nextActions"`
 	SourceRepo           string   `json:"sourceRepo,omitempty"`
 	DaemonVersion        string   `json:"daemonVersion,omitempty"`
+	// SSHIngressHost is the advertised public SSH entrypoint (sentinel host),
+	// or empty for direct/in-network mode (no external SSH entrypoint — reach
+	// the container by IP or via an in-network deploy pipeline). See #1011.
+	SSHIngressHost string `json:"sshIngressHost,omitempty"`
 }
 
 type DeleteContainerResponse struct {
@@ -1654,4 +1658,10 @@ type SystemInfo struct {
 	// daemon has no OTel collector. Surfaced so an agent can configure
 	// docker-in-LXC apps that don't inherit the env-stamped value. #370.
 	OTelCollectorEndpoint string `json:"otelCollectorEndpoint"`
+	// SSHIngressHost is the advertised public SSH entrypoint (sentinel host)
+	// clients dial to reach this backend's containers, or empty for
+	// direct/in-network mode (no external SSH entrypoint). Lets an agent tell
+	// whether an external SSH/deploy entrypoint exists and what host it is,
+	// instead of assuming a sentinel that may not exist. See #1011.
+	SSHIngressHost string `json:"sshIngressHost,omitempty"`
 }

@@ -7674,6 +7674,10 @@
         "daemonVersion": {
           "type": "string",
           "description": "Daemon version (containarium binary) that generated this report.\nPair with source_repo to read code at the exact commit/tag."
+        },
+        "sshIngressHost": {
+          "type": "string",
+          "description": "Public SSH entrypoint (the sentinel host) clients dial to reach\ncontainers on this backend — the daemon's advertised --ssh-host.\n**Empty means this backend advertises NO external SSH entrypoint**\n(direct / in-network mode: reach the container by IP, or deploy through\nan in-network pipeline). When empty, the sentinel-side remediation hints\ndon't apply — there is no sentinel to check. Lets an agent stop hunting\nfor a jump host that doesn't exist. See #1011."
         }
       },
       "title": "DebugContainerResponse is the structured diagnostic report"
@@ -11398,6 +11402,10 @@
         "daemonVersion": {
           "type": "string",
           "description": "Containarium daemon version of this backend (e.g. \"0.21.0\"), so the\nfleet's running versions + drift are visible via get_system_info and\n/v1/backends without SSHing each host. See #354."
+        },
+        "sshIngressHost": {
+          "type": "string",
+          "description": "Public SSH entrypoint (the sentinel host) clients dial to reach this\nbackend's containers — the daemon's advertised --ssh-host. **Empty means\nthis backend advertises NO external SSH entrypoint** (direct / in-network\nmode: reach containers by IP, or deploy through an in-network pipeline).\nSurfaced so an agent can tell, from get_system_info alone, whether an\nexternal SSH/deploy entrypoint exists and what host it is — instead of\nassuming a sentinel that may not exist. See #1011."
         }
       },
       "title": "SystemInfo contains information about the host system"

@@ -2287,6 +2287,10 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// This backend's daemon version, so the fleet's running versions +
 		// drift are visible via get_system_info / /v1/backends. See #354.
 		DaemonVersion: version.GetVersion(),
+		// Advertised public SSH entrypoint (sentinel host), or empty for
+		// direct/in-network mode — so an agent can tell from get_system_info
+		// whether an external SSH/deploy entrypoint exists. See #1011.
+		SshIngressHost: s.sshHost,
 	}
 
 	// Populate GPU info
