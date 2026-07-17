@@ -836,7 +836,12 @@ skipAppHosting:
 	// postgresConnString was set by app hosting setup above, or from config
 	if postgresConnString == "" {
 		postgresConnString = os.Getenv("CONTAINARIUM_POSTGRES_URL")
-		if postgresConnString == "" {
+		// The 10.100.0.2 default is the LXC deployment's Incus-hosted Postgres;
+		// the K8s runtime has no such host. Defaulting to it there makes the
+		// daemon block on startup dialing an unreachable address (#1007), so
+		// skip the default on K8s — an unset URL just disables the
+		// (LXC-oriented) collaborator store instead.
+		if postgresConnString == "" && config.Runtime != RuntimeK8s {
 			postgresConnString = "postgres://containarium:containarium@10.100.0.2:5432/containarium?sslmode=disable" // #nosec G101 -- default dev credentials for local Incus container Postgres
 		}
 	}

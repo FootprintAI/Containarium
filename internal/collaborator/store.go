@@ -48,8 +48,12 @@ func NewStore(ctx context.Context, connectionString string) (*Store, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Test the connection
-	if err := pool.Ping(ctx); err != nil {
+	// Test the connection under a bounded deadline. pgx's dial has no timeout of
+	// its own, so an unreachable Postgres would otherwise block here forever —
+	// which stalls daemon startup before it binds its servers (#1007).
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
