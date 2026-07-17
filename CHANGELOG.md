@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-07-17
+
+### Added
+
+- **Box CRD operator** (#996) — agent boxes can be declared as Kubernetes
+  custom resources (`containarium.dev/v1alpha1`, kind `Box`): `kubectl apply -f
+  box.yaml` and `containarium create` converge on one resource and one reconcile
+  loop, so the CLI, `kubectl`, and GitOps all drive one builder. Opt-in via the
+  chart's `operator.enabled`; the imperative API is unchanged when it's off.
+- **Developer-box mode** (#993) — a box can run an interactive SSH login shell
+  instead of the forced-command MCP endpoint (`AGENTBOX_MODE=shell`, or the
+  chart's `agentBox.mode` / `values-devbox.yaml`). Opt-in; the MCP-locked
+  default is unchanged.
+- **EKS/GKE reference architecture** (#992) — run the stack on managed
+  Kubernetes behind a cloud LoadBalancer, with ready-made `values-gke.yaml` /
+  `values-eks.yaml` / `values-devbox.yaml` presets and a deploy guide
+  (`docs/EKS-GKE-DEPLOY.md`). The sentinel becomes the optional multi-cluster
+  federation path.
+- **Sentinel → in-cluster gateway SSH chain** (#981–#984) — one public SSH
+  address fronts in-cluster gateways across the fleet: a backend-advertised
+  ingress port, box-metadata `/authorized-keys`, sentinel-key authorization at
+  the in-cluster gateway, and a tunnel dial-map for K8s gateways.
+- **Daemon container image** (#1006) — `ghcr.io/footprintai/containarium` is now
+  built and published per release, mirroring the sidecar images. Previously the
+  containarium-k8s chart referenced a daemon image no CI produced, so
+  `helm install` could not pull it; the chart is now Helm-deployable.
+- A Dockerfile for `cmd/mcp-server` (#987) for the Glama-marketplace build.
+
+### Fixed
+
+- The daemon no longer hangs at startup on the Kubernetes runtime: it defaulted
+  the collaborator store's Postgres URL to the LXC deployment's host and pinged
+  it without a timeout, blocking before the gRPC/REST servers bound. It now
+  skips that default on K8s and bounds the ping to 5s (#1008).
+- The containarium-k8s chart now invokes the `daemon` subcommand (was `serve`)
+  and its health probes hit `/health` (was `/healthz`) — latent bugs exposed
+  once a real daemon image existed (#1006).
+- The Box CRD applies without kubectl's `unrecognized format "int64"` warning
+  (#998).
+- `debug_container` no longer reports a container missing when it lives on a
+  different backend than the daemon answering the request (#1002).
+- The daemon no longer panics on incus-style disk quantities; they are
+  normalized instead (#988).
+- The per-box data PVC mounts at `/home/agent/workspace` rather than over
+  `/home/agent`, so SSH auth on storage-backed boxes keeps working (#989).
+- ZAP security scans fail fast when ZAP isn't installed, instead of a 120s
+  timeout (#991).
+
+### Changed
+
+- Internal: the K8s `gatewayRouter` seam was formalized (#985); the sentinel
+  proxyproto test pins the USE policy for the go-proxyproto v0.15.0 bump (#986);
+  routine dependency bumps (#937, #938, #940, #941, #942).
+- Docs: the EKS/GKE developer-box section (#994), KIND-QUICKSTART drift fixes
+  (#990), and the mcp-server env-var schema for the Glama build spec (#1000).
+
 ## [0.52.1] - 2026-07-15
 
 ### Fixed
