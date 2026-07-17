@@ -464,6 +464,65 @@ This is safe for multi-tenant deployments: the listener binds inside the box's n
 
 > **Note:** There is no single-command solution today for "create an in-box listener reachable inside the box from an outside SSH session" — this requires a design change to run an sshd inside each box. See [issue #808](https://github.com/FootprintAI/Containarium/issues/808) for discussion.
 
+### Per-source-IP rate limit on the sentinel (bursty SSH automation)
+
+The public SSH gateway (SSHPiper "sentinel") enforces a **per-source-IP
+connection limit**. A burst of short-lived SSH connections from one IP — a CI
+deploy loop, say — can trip it: the first several succeed, then subsequent ones
+are dropped mid-handshake with a bare `Connection closed by <sentinel> port 22`
+(the TCP + SSH KEX complete, then the sentinel closes the stream), and it
+recovers after a short cooldown. There is no protocol-level way for SSHPiper to
+tell the client "you were rate-limited," so the drop looks like a generic
+connection failure (issue #933).
+
+**Where the limit lives.** It's SSHPiper's built-in "failtoban" limiter, set on
+the `sshpiperd` command line in
+`terraform/modules/containarium/scripts/sshpiper.service.tmpl`:
+
+```
+--max-failures 100      # ban a source IP after this many failed handshakes …
+--ban-duration 5m       # … for this long
+```
+
+Rapid short-lived connections that don't complete a full session can register
+as failures and accumulate toward `--max-failures`, so high-churn automation
+trips it far sooner than a human would.
+
+**The shared-NAT trap.** CI runners commonly egress through a small pool of
+public IPs, so *many independent clients present as one source IP* and share a
+single IP's budget — one saturating client makes every other client on the same
+egress IP fail. Confirm your automation's egress IPs before assuming the limit
+is "too low."
+
+**Diagnose it.** From the backend, `containarium debug_container <user>` reports
+whether the host-side path is healthy and (when a sentinel fronts the backend)
+points at the sentinel's ban table. A drop that only happens under load, only
+from a high-volume source IP, and clears within seconds is this limiter — not
+the container's own `sshd` (whose `MaxStartups` is generous and idle under
+normal load).
+
+**Mitigations.**
+
+- **Raise the limit** for a fleet with heavy SSH automation: increase
+  `--max-failures` (and/or `--ban-duration`) in the sshpiperd unit above and
+  restart `containarium-sentinel`. These are currently baked into the service
+  template; making them tunable module variables is a small follow-up.
+- **Spread egress** across more source IPs so no single IP saturates the budget.
+- **Reuse connections** instead of opening a new SSH per command — SSH
+  `ControlMaster`/`ControlPersist` multiplexes many sessions over one
+  connection, which avoids the burst entirely:
+
+  ```
+  # ~/.ssh/config
+  Host <sentinel-host>
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 60s
+  ```
+
+- **Back off + retry** transient `Connection closed` drops in automation (a
+  single attempt after a brief pause succeeds once the cooldown clears).
+
 ---
 
 ## Best Practices
