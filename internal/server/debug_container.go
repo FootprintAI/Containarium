@@ -9,6 +9,8 @@ import (
 	"os/user"
 	"strings"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -42,6 +44,21 @@ func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugConta
 	resp := &pb.DebugContainerResponse{}
 
 	resp.ContainerState = s.debugContainerState(req.Username)
+
+	// Not found on this backend's local manager — the container may live on
+	// a peer. Forward the whole diagnostic there instead of reporting
+	// "missing" against this host's (irrelevant) host-user/sshd state.
+	if resp.ContainerState == "missing" && s.peerPool != nil {
+		authToken := extractAuthToken(ctx)
+		if peer := s.peerPool.FindContainerPeer(req.Username, authToken); peer != nil {
+			if body, err := peer.ForwardDebugContainer(authToken, req.Username); err == nil {
+				var peerResp pb.DebugContainerResponse
+				if jsonErr := protojson.Unmarshal(body, &peerResp); jsonErr == nil {
+					return &peerResp, nil
+				}
+			}
+		}
+	}
 
 	exists, shell, _ := lookupHostUserShell(req.Username)
 	resp.HostUserExists = exists
