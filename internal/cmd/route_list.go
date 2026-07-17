@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/footprintai/containarium/internal/client"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -40,13 +39,13 @@ func runRouteList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--server is required")
 	}
 
-	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	apiClient, err := newRouteClient()
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer func() { _ = grpcClient.Close() }()
+	defer func() { _ = apiClient.Close() }()
 
-	routes, totalCount, err := grpcClient.ListRoutes("", false)
+	routes, totalCount, err := apiClient.ListRoutes("", false)
 	if err != nil {
 		return fmt.Errorf("failed to list routes: %w", err)
 	}

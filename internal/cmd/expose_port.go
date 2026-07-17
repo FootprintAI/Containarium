@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/pkg/core/expose"
 	"github.com/spf13/cobra"
 )
@@ -55,13 +54,13 @@ func runExposePort(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--server is required")
 	}
 
-	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	apiClient, err := newRouteClient()
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer func() { _ = grpcClient.Close() }()
+	defer func() { _ = apiClient.Close() }()
 
-	res, err := expose.Run(context.Background(), &grpcExposeAdapter{c: grpcClient}, expose.Options{
+	res, err := expose.Run(context.Background(), &exposeAdapter{c: apiClient}, expose.Options{
 		Username:      args[0],
 		ContainerPort: exposePortPort,
 		Domain:        exposePortDomain,
@@ -85,44 +84,6 @@ func runExposePort(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// grpcExposeAdapter implements expose.APIClient against the gRPC client.
-// LookupContainer is implemented via ListContainers + linear scan because
-// the gRPC surface doesn't expose a "by-name" lookup; this is fine for
-// the typical scale (tens of containers) and saves us a new RPC.
-type grpcExposeAdapter struct{ c *client.GRPCClient }
-
-func (a *grpcExposeAdapter) LookupContainer(_ context.Context, username string) (string, string, string, error) {
-	containers, err := a.c.ListContainers()
-	if err != nil {
-		return "", "", "", err
-	}
-	for _, ci := range containers {
-		// Container names follow the "<username>-container" convention
-		// per internal/cmd/list.go; accept either the full name or the
-		// bare username for ergonomic ergonomics.
-		if ci.Name == username || ci.Name == username+"-container" {
-			return ci.Name, ci.IPAddress, ci.State, nil
-		}
-	}
-	return "", "", "", fmt.Errorf("container %q not found", username)
-}
-
-func (a *grpcExposeAdapter) CreateRoute(_ context.Context, p expose.AddRouteParams) (*expose.RouteResult, error) {
-	route, err := a.c.AddRoute(p.Domain, p.TargetIP, p.TargetPort, p.ContainerName, p.Description)
-	if err != nil {
-		return nil, err
-	}
-	// The proto's ProxyRoute response doesn't echo ContainerName or
-	// the request's Domain field (it carries FullDomain); fall back to
-	// what the caller asked for so the result is always populated.
-	domain := route.FullDomain
-	if domain == "" {
-		domain = p.Domain
-	}
-	return &expose.RouteResult{
-		Domain:        domain,
-		ContainerName: p.ContainerName,
-		ContainerIP:   route.ContainerIp,
-		Port:          route.Port,
-	}, nil
-}
+// The expose.APIClient adapter (exposeAdapter) and transport selection
+// (newRouteClient) live in route_client.go and are shared with the
+// route add/list/delete verbs so all of them honor --http (#909).

@@ -1720,3 +1720,113 @@ func (c *HTTPClient) GetLabels(username string) (map[string]string, error) {
 
 	return result.Labels, nil
 }
+
+// --- Proxy routes (#909) ---------------------------------------------------
+//
+// These mirror the GRPCClient route methods 1:1 so the CLI can pick either
+// transport behind one seam. The REST surface already exists via grpc-gateway
+// (GET/POST/DELETE /v1/network/routes[...]); only the typed HTTP client was
+// missing, which made expose-port / route add|list|delete gRPC-only.
+
+// AddRoute registers a domain → target IP:port mapping in the sentinel reverse
+// proxy (POST /v1/network/routes). Mirrors GRPCClient.AddRoute.
+func (c *HTTPClient) AddRoute(domain, targetIP string, targetPort int32, containerName, description string) (*pb.ProxyRoute, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	body := map[string]interface{}{
+		"domain":         domain,
+		"target_ip":      targetIP,
+		"target_port":    targetPort,
+		"container_name": containerName,
+		"description":    description,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/network/routes", body)
+	if err != nil {
+		return nil, fmt.Errorf("add route: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpErr("add route", resp.StatusCode, bodyBytes)
+	}
+	out := &pb.AddRouteResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode add-route response: %w", err)
+	}
+	return out.GetRoute(), nil
+}
+
+// ListRoutes returns the proxy routes (GET /v1/network/routes), optionally
+// filtered by username / active-only via query params. Mirrors
+// GRPCClient.ListRoutes.
+func (c *HTTPClient) ListRoutes(username string, activeOnly bool) ([]*pb.ProxyRoute, int32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	q := url.Values{}
+	if username != "" {
+		q.Set("username", username)
+	}
+	if activeOnly {
+		q.Set("active_only", "true")
+	}
+	path := "/v1/network/routes"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list routes: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, 0, httpErr("list routes", resp.StatusCode, bodyBytes)
+	}
+	out := &pb.GetRoutesResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, 0, fmt.Errorf("decode list-routes response: %w", err)
+	}
+	return out.GetRoutes(), out.GetTotalCount(), nil
+}
+
+// DeleteRoute removes the proxy route for a domain (DELETE
+// /v1/network/routes/{domain}). Mirrors GRPCClient.DeleteRoute.
+func (c *HTTPClient) DeleteRoute(domain string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := "/v1/network/routes/" + url.PathEscape(domain)
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return fmt.Errorf("delete route: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpErr("delete route", resp.StatusCode, bodyBytes)
+	}
+	return nil
+}
+
+// httpErr builds an error from a >=400 REST response, preferring the daemon's
+// {"error": ...} body over a bare status code.
+func httpErr(op string, status int, body []byte) error {
+	var e struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &e) == nil {
+		if e.Error != "" {
+			return fmt.Errorf("%s: %s", op, e.Error)
+		}
+		if e.Message != "" {
+			return fmt.Errorf("%s: %s", op, e.Message)
+		}
+	}
+	return fmt.Errorf("%s: status %d", op, status)
+}

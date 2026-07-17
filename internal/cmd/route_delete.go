@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/footprintai/containarium/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -31,13 +30,13 @@ func runRouteDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--server is required")
 	}
 
-	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	apiClient, err := newRouteClient()
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer func() { _ = grpcClient.Close() }()
+	defer func() { _ = apiClient.Close() }()
 
-	if err := grpcClient.DeleteRoute(domain); err != nil {
+	if err := apiClient.DeleteRoute(domain); err != nil {
 		return fmt.Errorf("failed to delete route: %w", err)
 	}
 

@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/footprintai/containarium/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -63,13 +62,13 @@ func runRouteAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid port: %s", parts[1])
 	}
 
-	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	apiClient, err := newRouteClient()
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer func() { _ = grpcClient.Close() }()
+	defer func() { _ = apiClient.Close() }()
 
-	route, err := grpcClient.AddRoute(domain, targetIP, int32(targetPort), routeAddContainer, routeAddDescription)
+	route, err := apiClient.AddRoute(domain, targetIP, int32(targetPort), routeAddContainer, routeAddDescription)
 	if err != nil {
 		return fmt.Errorf("failed to add route: %w", err)
 	}
