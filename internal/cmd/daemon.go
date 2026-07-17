@@ -587,7 +587,54 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 	log.Printf("Press Ctrl+C to stop")
 
+	// Spot boot-disk recovery (#1010): on an LXC host recreated after a spot
+	// preemption, the containers persist on the ZFS pool but the fresh VM's
+	// /etc/passwd is empty — every pre-preemption tenant is SSH-dark until its
+	// host jump-server account is re-provisioned. Previously this needed a
+	// manual `sync-accounts`; run it automatically on startup instead.
+	// Best-effort, non-blocking, never fatal; only meaningful for the LXC
+	// runtime (k8s has no host jump-server accounts).
+	if runtime != server.RuntimeK8s {
+		go recoverJumpServerAccounts()
+	}
+
 	return dualServer.Start(ctx)
+}
+
+// recoverJumpServerAccounts re-provisions any missing host jump-server accounts
+// from the running containers (spot boot-disk loss recovery, #1010). It waits
+// briefly for incus-autostarted containers to come up, then re-syncs. It never
+// aborts startup: a benign "no key" container (control-plane / CI / workspace
+// boxes) is expected and not treated as failure; a genuine failure (a key was
+// present but the account couldn't be created) is logged as a WARNING so it
+// surfaces rather than staying silent.
+func recoverJumpServerAccounts() {
+	// A just-booted host may still be starting its containers; give them a
+	// moment so ExtractSSHKey can read their keys.
+	time.Sleep(30 * time.Second)
+
+	mgr, err := container.New()
+	if err != nil {
+		log.Printf("[account-sync] skipped (cannot connect to Incus): %v", err)
+		return
+	}
+	res, err := mgr.SyncOwnerAccounts(false /*force*/, false /*dryRun*/, false /*verbose*/)
+	if err != nil {
+		log.Printf("[account-sync] skipped (list containers failed): %v", err)
+		return
+	}
+
+	if len(res.Restored) > 0 {
+		log.Printf("[account-sync] restored %d missing host account(s) on startup (spot boot-disk recovery): %s",
+			len(res.Restored), strings.Join(res.Restored, ", "))
+	} else {
+		log.Printf("[account-sync] host accounts up to date (%d present, %d container(s) without a tenant key)",
+			res.Skipped, len(res.NoKey))
+	}
+	if len(res.Failed) > 0 {
+		log.Printf("[account-sync] WARNING: %d container(s) had an SSH key but the host account could not be created — these tenants are SSH-dark and need attention: %s",
+			len(res.Failed), strings.Join(res.Failed, ", "))
+	}
 }
 
 // generateRandomSecret generates a random secret for development mode

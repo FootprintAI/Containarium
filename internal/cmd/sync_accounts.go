@@ -5,7 +5,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/footprintai/containarium/internal/collaborator"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -60,80 +59,26 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
 	}
 
-	// List all containers
-	containers, err := mgr.List()
+	// Owner accounts: restore the host jump-server user for every persisted
+	// container. The shared helper classifies "no extractable key" (benign —
+	// infra/CP/workspace boxes) separately from real create failures, so the
+	// command no longer fails-closed on the former. See #1010.
+	res, err := mgr.SyncOwnerAccounts(syncForce, syncDryRun, verbose)
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %w", err)
+		return fmt.Errorf("failed to sync owner accounts: %w", err)
 	}
-
-	if len(containers) == 0 {
-		fmt.Println("No containers found.")
-		return nil
-	}
-
-	fmt.Printf("Found %d container(s)\n\n", len(containers))
-
-	var restored, skipped, failed int
-
-	for _, c := range containers {
-		// Extract username from container name (format: username-container)
-		username := strings.TrimSuffix(c.Name, "-container")
-		if username == c.Name {
-			// Container name doesn't follow our naming convention
-			if verbose {
-				fmt.Printf("  Skipping %s: doesn't follow naming convention\n", c.Name)
-			}
-			skipped++
-			continue
-		}
-
-		fmt.Printf("Processing: %s (container: %s)\n", username, c.Name)
-
-		// Check if jump server account already exists
-		if !syncForce && container.UserExists(username) {
-			fmt.Printf("  ✓ Jump server account already exists, skipping\n")
-			skipped++
-			continue
-		}
-
-		// Extract SSH key from container
-		sshKey, err := mgr.ExtractSSHKey(c.Name, username, verbose)
-		if err != nil {
-			fmt.Printf("  ⚠ Failed to extract SSH key: %v\n", err)
-			failed++
-			continue
-		}
-
-		if sshKey == "" {
-			fmt.Printf("  ⚠ No SSH key found in container\n")
-			failed++
-			continue
-		}
-
-		if verbose {
-			// Show truncated key for verification
-			keyPreview := sshKey
-			if len(keyPreview) > 60 {
-				keyPreview = keyPreview[:60] + "..."
-			}
-			fmt.Printf("  Found SSH key: %s\n", keyPreview)
-		}
-
+	for _, u := range res.Restored {
 		if syncDryRun {
-			fmt.Printf("  [DRY RUN] Would create jump server account for %s\n", username)
-			restored++
-			continue
+			fmt.Printf("  [DRY RUN] Would create jump server account for %s\n", u)
+		} else {
+			fmt.Printf("  ✓ Jump server account restored for %s\n", u)
 		}
-
-		// Create jump server account
-		if err := container.CreateJumpServerAccount(username, sshKey, verbose); err != nil {
-			fmt.Printf("  ✗ Failed to create jump server account: %v\n", err)
-			failed++
-			continue
-		}
-
-		fmt.Printf("  ✓ Jump server account restored for %s\n", username)
-		restored++
+	}
+	for _, u := range res.NoKey {
+		fmt.Printf("  – No SSH key in container %s-container (infra/CP/workspace box?) — skipped\n", u)
+	}
+	for _, u := range res.Failed {
+		fmt.Printf("  ✗ Failed to create jump server account for %s\n", u)
 	}
 
 	// Sync collaborator accounts from PostgreSQL
@@ -146,12 +91,13 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 	fmt.Println("==========================================")
 	fmt.Println("Owner Accounts:")
 	if syncDryRun {
-		fmt.Printf("  Would restore: %d accounts\n", restored)
+		fmt.Printf("  Would restore: %d accounts\n", len(res.Restored))
 	} else {
-		fmt.Printf("  Restored:      %d accounts\n", restored)
+		fmt.Printf("  Restored:      %d accounts\n", len(res.Restored))
 	}
-	fmt.Printf("  Skipped:       %d accounts\n", skipped)
-	fmt.Printf("  Failed:        %d accounts\n", failed)
+	fmt.Printf("  Skipped:       %d accounts\n", res.Skipped)
+	fmt.Printf("  No key (ok):   %d accounts\n", len(res.NoKey))
+	fmt.Printf("  Failed:        %d accounts\n", len(res.Failed))
 	fmt.Println()
 	fmt.Println("Collaborator Accounts:")
 	if syncDryRun {
@@ -163,7 +109,10 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Failed:        %d accounts\n", collabFailed)
 	fmt.Println("==========================================")
 
-	totalFailed := failed + collabFailed
+	// Fail-close ONLY on genuine failures (a key existed but the account
+	// couldn't be created) — never on the benign no-key containers, which
+	// previously made a startup hook / CI treat a healthy host as failed.
+	totalFailed := len(res.Failed) + collabFailed
 	if totalFailed > 0 {
 		return fmt.Errorf("%d account(s) failed to sync", totalFailed)
 	}
