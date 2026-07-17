@@ -1,0 +1,61 @@
+name: Build daemon image
+
+# Publishes the Containarium daemon image (the control plane the
+# containarium-k8s chart deploys) on every release tag, mirroring the sidecar
+# images in sidecars.yml. Before this, the chart's daemon.image
+# (ghcr.io/footprintai/containarium) was never built by CI — see #1005.
+on:
+  push:
+    tags:
+      - 'v*'   # e.g. v0.53.0
+
+permissions:
+  contents: read
+  packages: write   # for GHCR push
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          # Minor-series moving tag: 0.53.0 -> v0.53
+          minor="v$(echo "$version" | cut -d. -f1-2)"
+          base="ghcr.io/footprintai/containarium"
+          {
+            echo "version=${version}"
+            # :latest is the chart default (Chart.yaml appVersion: latest);
+            # keep it in sync with the newest release tag.
+            echo "tags=${base}:v${version},${base}:${minor},${base}:latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push daemon image
+        uses: docker/build-push-action@v7
+        with:
+          # Repo root context: the Dockerfile builds ./cmd/containarium.
+          context: .
+          file: ./images/daemon/Dockerfile
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # Build provenance + SBOM (buildx-default on push); explicit so it's
+          # reviewable, matching sidecars.yml.
+          provenance: true
+          sbom: true

@@ -25,7 +25,7 @@ spec:
           image: {{ include "containarium-k8s.daemonImage" . }}
           imagePullPolicy: {{ .Values.daemon.image.pullPolicy }}
           args:
-            - serve
+            - daemon
             - --runtime=k8s
           env:
             - name: CONTAINARIUM_JWT_SECRET
@@ -59,13 +59,13 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: api
             initialDelaySeconds: 10
             periodSeconds: 20
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: api
             initialDelaySeconds: 5
             periodSeconds: 10
