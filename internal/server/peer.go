@@ -781,6 +781,19 @@ func (pc *PeerClient) ForwardGetMetrics(authToken string, username string) ([]by
 	return body, nil
 }
 
+// ForwardDebugContainer fetches a debug diagnostic for a container from a peer.
+func (pc *PeerClient) ForwardDebugContainer(authToken string, username string) ([]byte, error) {
+	path := fmt.Sprintf("/v1/containers/%s/debug", username)
+	body, status, err := pc.ForwardRequest("GET", path, authToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("forward debug to %s: %w", pc.ID, err)
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("peer %s returned status %d for debug", pc.ID, status)
+	}
+	return body, nil
+}
+
 // refreshCachedInfo fetches system info from a peer and caches key fields.
 func (pc *PeerClient) refreshCachedInfo() {
 	body, err := pc.ForwardGetSystemInfo("")
