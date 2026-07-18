@@ -692,7 +692,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					var proxyManager *app.ProxyManager
 
 					if caddyAdminURL != "" {
-						proxyManager = wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv()))
+						proxyManager = byocIngressFromEnv(wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())))
 						// Ensure Caddy has basic server config for routes
 						if err := proxyManager.EnsureServerConfig(); err != nil {
 							log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
@@ -881,7 +881,7 @@ skipAppHosting:
 				log.Printf("Warning: Failed to create route store: %v", err)
 				pool.Close()
 			} else {
-				proxyManager := wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv()))
+				proxyManager := byocIngressFromEnv(wafIngressFromEnv(app.NewProxyManager(caddyAdminURL, config.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())))
 				if err := proxyManager.EnsureServerConfig(); err != nil {
 					log.Printf("Warning: Failed to ensure Caddy server config: %v", err)
 				}
@@ -2368,6 +2368,20 @@ func wafIngressFromEnv(pm *app.ProxyManager) *app.ProxyManager {
 	}
 	log.Printf("Ingress WAF (coraza-caddy) enabled: SecRuleEngine %s — requires a Caddy build with the coraza module", mode)
 	return pm.WithWAF(app.DefaultWAFDirectives(enforce))
+}
+
+// byocIngressFromEnv enables the sentinel-terminate BYOC public-HTTP-ingress
+// plaintext listener (#733 slice 3) when CONTAINARIUM_BYOC_INGRESS_ADDR is set.
+// The value should be a loopback-scoped "127.0.0.1:<port>"; empty (default)
+// leaves the edge config unchanged. Composes with wafIngressFromEnv — either,
+// both, or neither may be applied.
+func byocIngressFromEnv(pm *app.ProxyManager) *app.ProxyManager {
+	addr := strings.TrimSpace(os.Getenv(appconfig.EnvBYOCIngressAddr))
+	if addr == "" {
+		return pm
+	}
+	log.Printf("BYOC public-HTTP-ingress plaintext listener enabled on %s — sentinel terminates TLS and plaintext-forwards over the tunnel (#733)", addr)
+	return pm.WithBYOCIngress(addr)
 }
 
 // envTruthy reports whether an env value is an explicit on-toggle.
