@@ -2,12 +2,12 @@ package incus
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
 // cpuLimit holds the Incus instance-config representation of a CPU request.
-// At most one of Count or Allowance is non-empty:
 //
 //   - Count     → set as `limits.cpu` (whole-core count "2" or CPU set "0-3").
 //   - Allowance → set as `limits.cpu.allowance` (fractional share expressed as
@@ -17,23 +17,33 @@ import (
 // fractional CPU must go through `limits.cpu.allowance`. Passing millicpu
 // notation ("250m") straight to `limits.cpu` is rejected by Incus with
 // "Invalid CPU limit syntax". See issue #401.
+//
+// Fractional requests set BOTH fields: Count is the ceiling whole-core count
+// (so LXCFS has a cpuset to derive an honest /proc/cpuinfo processor count
+// from — allowance-only containers otherwise report the host's full core
+// count, see #1019/#1021) and Allowance is the actual CFS-bandwidth throttle
+// within that visible core count. Whole-core / CPU-set requests set only
+// Count.
 type cpuLimit struct {
 	Count     string
 	Allowance string
 }
 
 // parseCPULimit translates a Containarium CPU request string into the Incus
-// config key it maps to.
+// config key(s) it maps to.
 //
 // Accepted inputs:
 //   - whole-core count:    "1", "4"           → limits.cpu
 //   - CPU set / pinning:   "0-3", "0,2-4"     → limits.cpu (passed through)
-//   - Kubernetes millicpu: "250m" (0.25 core) → limits.cpu.allowance "25%"
-//   - decimal cores:       "0.25", "1.5"      → limits.cpu.allowance "25%" / "150%"
+//   - Kubernetes millicpu: "250m" (0.25 core) → limits.cpu "1" + limits.cpu.allowance "25%"
+//   - decimal cores:       "0.25", "1.5"      → limits.cpu "1"/"2" + limits.cpu.allowance "25%"/"150%"
 //
 // Millicpu / decimals that resolve to a whole number of cores ("1000m",
-// "2.0") map back to limits.cpu as an integer count. An empty request returns
-// a zero cpuLimit (no keys to set).
+// "2.0") map back to limits.cpu as an integer count, with no allowance set.
+// Other fractional requests set both limits.cpu (ceil(cores), so LXCFS can
+// report an honest /proc/cpuinfo processor count) and limits.cpu.allowance
+// (the actual throttle) — see the cpuLimit doc comment. An empty request
+// returns a zero cpuLimit (no keys to set).
 func parseCPULimit(cpu string) (cpuLimit, error) {
 	cpu = strings.TrimSpace(cpu)
 	if cpu == "" {
@@ -73,24 +83,34 @@ func parseCPULimit(cpu string) (cpuLimit, error) {
 		return cpuLimit{Count: strconv.FormatInt(int64(cores), 10)}, nil
 	}
 
-	// Fractional requests become a percentage allowance. 0.25 core → "25%".
+	// Fractional requests become a percentage allowance, plus a whole-core
+	// ceiling count so LXCFS can report an honest /proc/cpuinfo processor
+	// count instead of the host's full core count (#1019/#1021).
+	// 0.25 core → limits.cpu="1", limits.cpu.allowance="25%".
 	pct := cores * 100
-	return cpuLimit{Allowance: strconv.FormatFloat(pct, 'f', -1, 64) + "%"}, nil
+	return cpuLimit{
+		Count:     strconv.FormatInt(int64(math.Ceil(cores)), 10),
+		Allowance: strconv.FormatFloat(pct, 'f', -1, 64) + "%",
+	}, nil
 }
 
 // formatCPULimitFromConfig renders the CPU request stored in an Incus instance
 // config back into the Containarium representation, for display in container
-// info. A whole-core count or set is returned verbatim from `limits.cpu`; a
-// fractional `limits.cpu.allowance` percentage is converted back to Kubernetes
-// millicpu ("25%" → "250m"). A non-percentage (time-slice) allowance has no
-// millicpu equivalent and is returned as-is. Returns "" when neither key is
-// set.
+// info. `limits.cpu.allowance` is checked first and, if present, converted
+// back to Kubernetes millicpu ("25%" → "250m") — fractional requests set both
+// `limits.cpu` (a whole-core ceiling, for LXCFS) and `limits.cpu.allowance`
+// (the actual throttle), and allowance is the precise value; falling back to
+// `limits.cpu` first would display a "250m" request back as "1", losing the
+// fractional precision. `limits.cpu` is used verbatim only when no allowance
+// is set (genuine whole-core count or CPU set/range). A non-percentage
+// (time-slice) allowance has no millicpu equivalent and is returned as-is.
+// Returns "" when neither key is set.
 func formatCPULimitFromConfig(config map[string]string) string {
-	if v, ok := config["limits.cpu"]; ok && v != "" {
-		return v
-	}
 	allowance, ok := config["limits.cpu.allowance"]
 	if !ok || allowance == "" {
+		if v, ok := config["limits.cpu"]; ok && v != "" {
+			return v
+		}
 		return ""
 	}
 	if !strings.HasSuffix(allowance, "%") {
