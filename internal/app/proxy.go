@@ -37,6 +37,20 @@ type ProxyManager struct {
 	// module. wafDirectives is the SecLang the engine loads (CRS + engine mode).
 	wafEnabled    bool
 	wafDirectives string
+	// byocIngressAddr, when non-empty, adds one extra plaintext listener to the
+	// edge server (e.g. "127.0.0.1:8081") that serves the SAME Host-matched
+	// routes as :443 but WITHOUT TLS — the sentinel-terminate BYOC public HTTP
+	// ingress data path (#733 slice 3). On a BYOC host the sentinel terminates
+	// TLS with the wildcard it holds and plaintext-forwards over the tunnel to
+	// this listener, which Host-routes to the box; the host needs no cert.
+	//
+	// MUST be loopback-scoped ("127.0.0.1:<port>") so it is reachable only via
+	// the tunnel client (which dials 127.0.0.1:<port>) and never from the LAN —
+	// it serves tenant routes in the clear. Empty = disabled (default): region
+	// hosts and non-BYOC deployments are byte-identical to before. Because it is
+	// not Caddy's http_port (80), automatic-HTTPS redirects don't apply — the
+	// listener serves the reverse_proxy routes directly as plaintext HTTP.
+	byocIngressAddr string
 }
 
 // RouteProtocol represents the protocol type for a route
@@ -121,6 +135,32 @@ func (p *ProxyManager) WithWAF(directives string) *ProxyManager {
 
 // WAFEnabled reports whether ingress WAF inspection is on.
 func (p *ProxyManager) WAFEnabled() bool { return p.wafEnabled }
+
+// WithBYOCIngress adds a loopback-scoped plaintext ingress listener to the edge
+// server for the sentinel-terminate BYOC public-HTTP-ingress path (#733). addr
+// should be "127.0.0.1:<port>"; an empty addr is a no-op (default: disabled).
+// Returns the manager for chaining. See the byocIngressAddr field doc.
+func (p *ProxyManager) WithBYOCIngress(addr string) *ProxyManager {
+	p.byocIngressAddr = strings.TrimSpace(addr)
+	return p
+}
+
+// BYOCIngressAddr returns the configured plaintext ingress listener address
+// (empty when disabled).
+func (p *ProxyManager) BYOCIngressAddr() string { return p.byocIngressAddr }
+
+// listenAddrs returns the edge server's listen set: always :80 and :443, plus
+// the BYOC plaintext ingress listener when configured (#733 slice 3). Centralised
+// so every place that (re)builds the server config — createHTTPApp and
+// createServerConfig, both reached by the #400 self-heal rebuild — agrees, so a
+// Caddy revert-and-rebuild doesn't silently drop the ingress listener.
+func (p *ProxyManager) listenAddrs() []string {
+	addrs := []string{":80", ":443"}
+	if p.byocIngressAddr != "" {
+		addrs = append(addrs, p.byocIngressAddr)
+	}
+	return addrs
+}
 
 // SetServerName sets the Caddy server name (useful when Caddy uses a custom server name)
 func (p *ProxyManager) SetServerName(name string) {
@@ -760,7 +800,7 @@ func (p *ProxyManager) createHTTPApp() error {
 	httpApp := CaddyHTTPApp{
 		Servers: map[string]*CaddyServerConfig{
 			p.serverName: {
-				Listen: []string{":80", ":443"},
+				Listen: p.listenAddrs(),
 				Routes: []CaddyRouteTyped{},
 			},
 		},
@@ -982,7 +1022,7 @@ func (p *ProxyManager) loadConfig(config map[string]interface{}) error {
 // createServerConfig creates the initial Caddy server configuration
 func (p *ProxyManager) createServerConfig() error {
 	config := CaddyServerConfig{
-		Listen: []string{":80", ":443"},
+		Listen: p.listenAddrs(),
 		Routes: []CaddyRouteTyped{},
 	}
 
