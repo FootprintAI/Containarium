@@ -199,6 +199,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			tunnelServer.OnConnect = manager.OnTunnelConnect
 			tunnelServer.OnDisconnect = manager.OnTunnelDisconnect
 			manager.SetTunnelRegistry(registry)
+			manager.InitBYOCRoutes(sentinel.DefaultBYOCRouteStorePath)
 			manager.SetTunnelPolicy(tunnelPolicy)
 			manager.SetHTTPSListener(connMux.HTTPSChanListener())
 
@@ -285,6 +286,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		tunnelServer.OnConnect = manager.OnTunnelConnect
 		tunnelServer.OnDisconnect = manager.OnTunnelDisconnect
 		manager.SetTunnelRegistry(registry)
+		manager.InitBYOCRoutes(sentinel.DefaultBYOCRouteStorePath)
 		manager.SetTunnelPolicy(tunnelPolicy)
 		manager.SetHTTPSListener(connMux.HTTPSChanListener())
 

@@ -112,6 +112,12 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	// cluster-wide daemon HMAC secret. See TunnelTokenRegisterHandler.
 	mux.Handle("/sentinel/tunnel-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.TunnelTokenRegisterHandler()))
 
+	// Cloud pushes the authoritative BYOC public-ingress bindings
+	// (subdomain → tunnel host) here. Gated by the admin secret (an
+	// authority decision, like tunnel-token registration) — never the
+	// cluster-wide daemon secret. See #733.
+	mux.Handle("/sentinel/byoc-routes", auth.SentinelHMACMiddleware(manager.adminSecret, manager.BYOCRouteRegisterHandler()))
+
 	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
 	// This allows the primary daemon to reach tunnel backends through the sentinel
 	// without needing extra firewall rules for external ports.

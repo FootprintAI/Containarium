@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"strconv"
 	"strings"
@@ -96,6 +97,18 @@ type Manager struct {
 	// primaries instead of going through a loopback TCP proxy listener
 	// — which would collide with the sentinel's own ConnMux on :443.
 	tunnelRegistry *TunnelRegistry
+
+	// byocRoutes holds cloud-pushed BYOC public-ingress bindings
+	// (subdomain → tunnel host). The SNI router consults it to terminate
+	// TLS for a tenant subdomain and plaintext-forward to the box over the
+	// tunnel. Populated ONLY by the admin-secret-gated push endpoint (never
+	// by a host self-announce = anti-hijack). byocRouteStorePath overrides
+	// the default persist path (tests set it). See #733.
+	byocRoutes         *BYOCRouteRegistry
+	byocRouteStorePath string
+	// byocDial opens a plaintext stream to a box over the tunnel for BYOC
+	// ingress. Defaults to tunnelRegistry.DialTunnel; tests inject a fake.
+	byocDial func(spotID string, port int) (net.Conn, error)
 
 	stopMaintenance func() // stops the HTTP/HTTPS maintenance servers
 	certStore       *CertStore
@@ -289,12 +302,13 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		config.RecoveryBackoffMax = config.RecoveryBackoffInitial
 	}
 	m := &Manager{
-		config:    config,
-		provider:  provider,
-		backends:  NewBackendPool(),
-		primaries: NewPrimaryRegistry(),
-		certStore: NewCertStore(),
-		keyStore:  NewKeyStore(),
+		config:     config,
+		provider:   provider,
+		backends:   NewBackendPool(),
+		primaries:  NewPrimaryRegistry(),
+		byocRoutes: NewBYOCRouteRegistry(),
+		certStore:  NewCertStore(),
+		keyStore:   NewKeyStore(),
 	}
 	if raw := os.Getenv(appconfig.EnvSentinelAuthSecret); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {
@@ -370,6 +384,29 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 // the SNI router falls back to TCP-dialing the primary's IP:Port.
 func (m *Manager) SetTunnelRegistry(reg *TunnelRegistry) {
 	m.tunnelRegistry = reg
+}
+
+// InitBYOCRoutes sets the persist path for cloud-pushed BYOC public-ingress
+// bindings and loads any previously-persisted set into the registry, so a
+// restart re-serves tenant subdomains before the cloud's next reconcile tick.
+// A missing/unreadable store is logged and ignored. See #733.
+func (m *Manager) InitBYOCRoutes(storePath string) {
+	if storePath == "" {
+		storePath = DefaultBYOCRouteStorePath
+	}
+	m.byocRouteStorePath = storePath
+	if m.byocRoutes == nil {
+		m.byocRoutes = NewBYOCRouteRegistry()
+	}
+	routes, err := LoadBYOCRouteStore(storePath)
+	if err != nil {
+		log.Printf("[sentinel] WARNING: failed to load persisted byoc routes from %s: %v", storePath, err)
+		return
+	}
+	if len(routes) > 0 {
+		log.Printf("[sentinel] loaded %d persisted byoc route(s) from %s", len(routes), storePath)
+	}
+	m.byocRoutes.ReplaceAll(routes)
 }
 
 // SetTunnelPolicy wires in the token-authorization policy the tunnel
@@ -954,6 +991,18 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 			err error
 		)
 		if peekErr == nil && sni != "" {
+			// BYOC public ingress (#733): a cloud-pushed subdomain binding
+			// for a box on a tunnel host. Unlike the primary path (raw TLS
+			// passthrough to a host that terminates), the BYOC host has no
+			// cert — so the sentinel terminates TLS here with the wildcard
+			// it already holds and plaintext-forwards to the box over the
+			// tunnel. serveBYOCIngress takes over the connection entirely.
+			if m.byocRoutes != nil {
+				if route, ok := m.byocRoutes.Lookup(sni); ok {
+					m.serveBYOCIngress(peekedConn, route)
+					return
+				}
+			}
 			p := m.primaries.LookupByHostname(sni)
 			if p == nil {
 				p = m.primaries.LookupByBaseDomainSuffix(sni)
@@ -996,6 +1045,118 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 		go func() { _, _ = io.Copy(peekedConn, dst); done <- struct{}{} }()
 		<-done
 	}
+}
+
+// serveBYOCIngress serves one public-ingress connection for a BYOC tenant
+// subdomain (#733). Unlike the raw TLS passthrough the primary path uses, the
+// BYOC host has no cert — so the sentinel TERMINATES TLS here with the
+// `*.containarium.dev` wildcard it already syncs (CertStore.GetCertificate),
+// then reverse-proxies the decrypted HTTP to the box by PLAINTEXT-forwarding
+// over the tunnel: every request dials a fresh yamux stream via
+// DialTunnel(spotID, route.Port). The box (and host) need no cert.
+//
+// It takes over conn entirely (terminates + serves), so the caller must return
+// after invoking it rather than falling through to the passthrough copy.
+func (m *Manager) serveBYOCIngress(conn net.Conn, route BYOCRoute) {
+	dial := m.byocDial
+	if dial == nil && m.tunnelRegistry != nil {
+		dial = func(spotID string, port int) (net.Conn, error) {
+			return m.tunnelRegistry.DialTunnel(spotID, port)
+		}
+	}
+	if dial == nil || m.certStore == nil {
+		_ = conn.Close()
+		return
+	}
+
+	tlsConn := tls.Server(conn, &tls.Config{
+		MinVersion:     tls.VersionTLS12,
+		GetCertificate: m.certStore.GetCertificate,
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		_ = tlsConn.Close()
+		return
+	}
+	defer func() { _ = tlsConn.Close() }()
+
+	// Dial target is the box's plaintext HTTP port over the tunnel; spotID is
+	// the tunnel key (mirror the primary path's "tunnel-" prefix stripping).
+	spotID := strings.TrimPrefix(route.BackendID, "tunnel-")
+	proxy := &httputil.ReverseProxy{
+		Director: func(r *http.Request) {
+			// Preserve the client's Host (r.Host) — the box's Caddy routes by
+			// it. The scheme is plaintext over the tunnel; the URL host is a
+			// placeholder (the dial ignores it and routes by spotID).
+			r.URL.Scheme = "http"
+			r.URL.Host = route.Hostname
+		},
+		Transport: &http.Transport{
+			// Every request opens a fresh tunnel stream — DialTunnel routes by
+			// spotID, so the dial address is ignored. No cross-request pooling
+			// over the tunnel (one yamux stream per request; correctness over
+			// throughput for v1).
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return dial(spotID, route.Port)
+			},
+			DisableKeepAlives: true,
+		},
+		ErrorLog: log.Default(),
+	}
+
+	// Serve HTTP over the single terminated-TLS connection. A blocking one-shot
+	// listener hands the conn to http.Server once, then blocks Accept until the
+	// conn closes — so Serve (and this func's deferred Close) doesn't tear the
+	// connection down mid-response. IdleTimeout bounds an idle keep-alive conn
+	// so the serving goroutine can't leak.
+	srv := &http.Server{
+		Handler:           proxy,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	_ = srv.Serve(newOneShotListener(tlsConn))
+}
+
+// oneShotListener feeds a single already-accepted conn to an http.Server, then
+// blocks Accept until that conn closes so Serve stays alive for the whole
+// (possibly keep-alive) connection and returns only once it's done. This avoids
+// the premature teardown a return-ErrClosed-immediately listener causes for a
+// proxied response. See #733.
+type oneShotListener struct {
+	ch     chan net.Conn
+	closed chan struct{}
+	conn   net.Conn
+}
+
+func newOneShotListener(conn net.Conn) *oneShotListener {
+	l := &oneShotListener{ch: make(chan net.Conn, 1), closed: make(chan struct{})}
+	nc := &notifyConn{Conn: conn, closed: l.closed}
+	l.conn = nc
+	l.ch <- nc
+	close(l.ch)
+	return l
+}
+
+func (l *oneShotListener) Accept() (net.Conn, error) {
+	if c, ok := <-l.ch; ok {
+		return c, nil
+	}
+	<-l.closed // block until the served conn is closed, then let Serve return
+	return nil, net.ErrClosed
+}
+func (l *oneShotListener) Close() error   { return nil }
+func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
+
+// notifyConn closes `closed` exactly once when the wrapped conn is closed, so
+// oneShotListener learns the served connection is done.
+type notifyConn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *notifyConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
 }
 
 // writeProxyHeader writes a PROXY v2 header to dst describing the client TCP
