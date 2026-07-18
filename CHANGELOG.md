@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-07-18
+
+### Added
+
+- **BYOC public HTTP ingress — host listener** (#733, slice 3 of 3; opt-in,
+  inert by default). The host daemon's edge Caddy can serve one extra
+  loopback-only **plaintext** listener that Host-routes the same routes as
+  `:443` without TLS — the endpoint the sentinel plaintext-forwards to over the
+  tunnel in the sentinel-terminate model, so the host needs no cert. Enabled
+  only when `CONTAINARIUM_BYOC_INGRESS_ADDR` is set (conventional
+  `127.0.0.1:8081`); empty (default) leaves region hosts and existing
+  deployments byte-identical. End-to-end BYOC public ingress also needs its
+  cloud counterpart and live validation, so the path is not yet active on a
+  fresh deploy.
+
+### Fixed
+
+- **Fractional-CPU limits are enforced again** (#1022). The incus driver now
+  sets `limits.cpu` alongside `limits.cpu.allowance`, so a sub-core CPU request
+  (e.g. `0.5`) is actually capped rather than silently ignored.
+
 ## [0.54.0] - 2026-07-18
 
 ### Added
