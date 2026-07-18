@@ -53,7 +53,24 @@ func TestDiagnose(t *testing.T) {
 			wantFirstHas: "containarium-shell",
 		},
 		{
-			name: "running, all healthy",
+			// Sentinel-fronted backend (ssh_ingress_host advertised): the
+			// diagnosis points at the sentinel-side state to check next (#1011).
+			name: "running, all healthy, sentinel-fronted",
+			report: &pb.DebugContainerResponse{
+				ContainerState:      "running",
+				HostUserExists:      true,
+				HostUserShell:       "/usr/local/bin/containarium-shell",
+				HostUserShellExists: true,
+				SshIngressHost:      "asia-east1.containarium.dev",
+			},
+			wantCause:    "check sentinel-side state",
+			wantActionCt: 4,
+			wantFirstHas: "sshpiper",
+		},
+		{
+			// Direct / in-network backend (no ssh_ingress_host): #1011 suppresses
+			// the sentinel boilerplate — there is no sentinel hop to check.
+			name: "running, all healthy, no ssh ingress host",
 			report: &pb.DebugContainerResponse{
 				ContainerState:      "running",
 				HostUserExists:      true,
@@ -61,7 +78,8 @@ func TestDiagnose(t *testing.T) {
 				HostUserShellExists: true,
 			},
 			wantCause:    "no obvious host-side problem",
-			wantActionCt: 4,
+			wantActionCt: 3,
+			wantFirstHas: "connect directly",
 		},
 		{
 			name: "sshd accepted publickey recently",
