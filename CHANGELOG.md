@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-07-18
+
+### Added
+
+- **BYOC public HTTP ingress — sentinel side** (#733, slice 1 of 3). The
+  sentinel can now serve a tenant subdomain for a box on a tunnel-joined BYOC
+  host: on a cloud-pushed `subdomain → host` binding it terminates TLS with the
+  `*` wildcard cert it already syncs and plaintext-forwards the request to the
+  box over the tunnel, so the host needs no cert of its own. Bindings are
+  cloud-authoritative and pushed over the admin-secret-gated
+  `POST /sentinel/byoc-routes` — a host can never claim a hostname itself
+  (anti-hijack). This ships the **sentinel-side surface only**; the cloud push
+  and host-side box-port plumbing are follow-up slices, so end-to-end BYOC
+  public ingress is not yet complete.
+- **`ssh_ingress_host` on `debug_container` and `get_system_info`** (#1011).
+  Both now report the backend's advertised public SSH entrypoint — or leave it
+  empty to signal there is **no external SSH entrypoint** (direct / in-network
+  mode). `debug_container` drops its generic "check the sentinel" hint when no
+  entrypoint exists, so an agent no longer chases a jump host that isn't there.
+
+### Fixed
+
+- **Spot boot-disk recovery re-provisions host SSH accounts on startup**
+  (#1010). When a spot/preemptible backend is recreated, its boot-disk
+  `/etc/passwd` is wiped while the containers persist on the pool — leaving
+  every pre-preemption box SSH-dark until someone ran `sync-accounts` by hand.
+  The daemon now runs the account sync automatically on startup (LXC runtime,
+  best-effort, non-blocking) and logs any box left without an account. The
+  `sync-accounts` CLI no longer fails-closed on the benign "no key in
+  container" case (control-plane / CI / workspace boxes).
+- **`expose-port` and `route add/list/delete` honor `--http`** (#909). These
+  verbs were gRPC-only and failed with an opaque name-resolver error against a
+  REST control plane; they now select the HTTP client like every other verb
+  (new typed HTTP route methods + a shared transport seam).
+
+### Documentation
+
+- **Sentinel per-source-IP SSH rate limit documented** (#933). Bursty SSH
+  automation through the sentinel could be dropped mid-handshake with no hint
+  that a limit was hit. The SSH guide now documents where the limit lives
+  (`sshpiperd --max-failures` / `--ban-duration`), the shared-NAT amplification,
+  how to tell it apart from the container's own `sshd`, and mitigations
+  (raise the limit, spread egress, or reuse one connection via
+  `ControlMaster`/`ControlPersist`).
+
 ## [0.53.0] - 2026-07-17
 
 ### Added
