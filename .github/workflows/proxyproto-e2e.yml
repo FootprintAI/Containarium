@@ -52,16 +52,22 @@ jobs:
           npm ci
           npm run build
 
-      - name: Run sentinel + app tests
-        # The skipped tests are pre-existing failures on unprivileged Linux
-        # runners (they pass on darwin where loopback aliases are no-ops).
-        # Cause: tunnel_registry.addLoopbackAlias runs `ip addr add` which
-        # needs root, and TestEnableForwardingOnNonLinux has no GOOS guard.
-        # Unrelated to this PR; tracked for a follow-up cleanup.
+      - name: Run unit tests (full tree, minus infra integration)
+        # Runs the WHOLE module's unit tests, not just sentinel+app, so a
+        # regression anywhere — e.g. internal/server's TestDiagnose (#1024),
+        # which slipped onto main precisely because this job only tested
+        # sentinel+app — is gated at PR time. test/integration is excluded: it
+        # needs live infra (incus/storage) not present on the runner and fails
+        # closed without it.
+        #
+        # The -skip list is the pre-existing set that needs root on unprivileged
+        # Linux runners (tunnel_registry.addLoopbackAlias runs `ip addr add`;
+        # TestEnableForwardingOnNonLinux has no GOOS guard). They pass on darwin
+        # where loopback aliases are no-ops. Tracked for a follow-up cleanup.
         run: |
-          go test -v -race -timeout 5m \
+          go test -race -timeout 8m \
             -skip 'TestEnableForwardingOnNonLinux|TestRegisterPropagatesPool|TestTunnelIntegration|TestTunnelEndToEnd|TestConnMuxWithTunnelClient' \
-            ./internal/sentinel/... ./internal/app/...
+            $(go list ./... | grep -v '/test/integration')
 
   real-caddy-e2e:
     name: Real Caddy wire-compat e2e
