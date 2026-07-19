@@ -51,6 +51,10 @@ type MockBackend struct {
 
 	// Phase 3.1 Phase-C — post-pull fingerprint check.
 	GetContainerImageFingerprintFunc func(name string) (string, error)
+
+	// Baked base images (#1037).
+	PublishImageFunc            func(containerName, alias string, properties map[string]string) (string, error)
+	GetImageAliasPropertiesFunc func(alias string) (map[string]string, bool, error)
 }
 
 // NewMockBackend returns a ready-to-use MockBackend with an initialized
@@ -255,6 +259,20 @@ func (m *MockBackend) GetContainerImageFingerprint(name string) (string, error) 
 		return m.GetContainerImageFingerprintFunc(name)
 	}
 	return "", nil
+}
+
+func (m *MockBackend) PublishImage(containerName, alias string, properties map[string]string) (string, error) {
+	if m.PublishImageFunc != nil {
+		return m.PublishImageFunc(containerName, alias, properties)
+	}
+	return "", nil
+}
+
+func (m *MockBackend) GetImageAliasProperties(alias string) (map[string]string, bool, error) {
+	if m.GetImageAliasPropertiesFunc != nil {
+		return m.GetImageAliasPropertiesFunc(alias)
+	}
+	return nil, false, nil
 }
 
 func (m *MockBackend) UpdateContainerConfig(name, key, value string) error {

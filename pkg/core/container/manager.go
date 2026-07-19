@@ -144,6 +144,26 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 
 	isWindows := ostype.IsWindows(opts.OSType)
 
+	// Baked-image fast path (#1037): when an operator has baked a base image
+	// for this exact (source image, podman) combination (`containarium
+	// image-bake`), clone the baked image and skip the multi-minute
+	// in-container package install below — the bake ran the identical
+	// installPackages. Stacks are not baked, so a stack request keeps the
+	// full path. No baked alias (or a lookup error) → today's path,
+	// byte-identical.
+	usingBakedImage := false
+	if opts.Stack == "" && !isWindows {
+		alias := BakedImageAliasFor(image)
+		if props, ok, err := m.incus.GetImageAliasProperties(alias); err == nil && ok &&
+			bakedImageMatches(props, image, opts.EnablePodman) {
+			if opts.Verbose {
+				fmt.Printf("  Using baked base image %s (baked %s)\n", alias, props[bakedPropAt])
+			}
+			image = alias
+			usingBakedImage = true
+		}
+	}
+
 	config := incus.ContainerConfig{
 		Name:                   containerName,
 		Image:                  image,
@@ -316,9 +336,25 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}
 
 	family := ostype.FamilyForOSType(opts.OSType)
-	if err := m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.StackParameters, opts.Username, family); err != nil {
+	if usingBakedImage {
+		// Baked base image (#1037): the bake already ran this exact
+		// installPackages (same image, same podman setting, no stack) into
+		// the image this box was cloned from — the multi-minute in-container
+		// package install is the whole cost the bake exists to skip.
+		if opts.Verbose {
+			fmt.Println("  [5/7] Package install pre-baked into the base image — skipping")
+		}
+	} else if err := m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.StackParameters, opts.Username, family); err != nil {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to install packages: %w", err)
+	}
+
+	// Make podman workloads reboot-durable (#387). Runs on BOTH the baked
+	// and full paths: the rootful half is already enabled in a baked image
+	// (idempotent re-enable, harmless), but the rootless half is per-user
+	// (linger + user service) and can only run once the tenant is known.
+	if opts.EnablePodman {
+		m.enablePodmanRestartDurability(containerName, opts.Username)
 	}
 
 	// Step 6: Create user
@@ -585,11 +621,9 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 			}
 		}
 
-		// Make podman workloads reboot-durable. The LXC already carries
-		// boot.autostart=true, so it comes back after a host reboot/preemption;
-		// these steps ensure podman containers that carry a restart policy
-		// (--restart=always / unless-stopped) come back with it. See issue #387.
-		m.enablePodmanRestartDurability(containerName, username)
+		// Per-user podman reboot durability runs from Create (not here):
+		// installPackages must stay user-independent so BakeBaseImage
+		// (#1037) can run it into a shared base image. See issue #387.
 	}
 
 	sshService := pkgMgr.SSHServiceName()

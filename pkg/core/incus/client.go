@@ -70,6 +70,13 @@ type Backend interface {
 
 	// Image inspection (Phase 3.1 Phase-C)
 	GetContainerImageFingerprint(containerName string) (string, error)
+
+	// Baked base images (#1037): publish a provisioned container as a local
+	// image under a stable alias (re-pointing the alias and reaping the
+	// replaced image on re-bake), and read an alias's image properties so
+	// the create fast-path can check what a baked image contains.
+	PublishImage(containerName, alias string, properties map[string]string) (string, error)
+	GetImageAliasProperties(alias string) (map[string]string, bool, error)
 }
 
 // DiskDevice represents a disk device configuration
@@ -1486,6 +1493,74 @@ func (c *Client) GetContainerImageFingerprint(containerName string) (string, err
 		return "", fmt.Errorf("get instance for fingerprint: %w", err)
 	}
 	return inst.Config["volatile.base_image"], nil
+}
+
+// PublishImage publishes a (stopped) container as a local image and points
+// alias at it (#1037). Re-baking is the expected lifecycle: an existing alias
+// is re-pointed to the fresh image and the replaced image is reaped
+// (best-effort), so the alias is always the newest bake and old bakes don't
+// accumulate. Returns the new image fingerprint.
+func (c *Client) PublishImage(containerName, alias string, properties map[string]string) (string, error) {
+	// Remember the image currently behind the alias so it can be reaped
+	// after the alias moves.
+	var oldFingerprint string
+	if a, _, err := c.server.GetImageAlias(alias); err == nil && a != nil {
+		oldFingerprint = a.Target
+	}
+
+	op, err := c.server.CreateImage(api.ImagesPost{
+		Source: &api.ImagesPostSource{
+			Type: "instance",
+			Name: containerName,
+		},
+		ImagePut: api.ImagePut{Properties: properties},
+	}, nil)
+	if err != nil {
+		return "", fmt.Errorf("publish image from %s: %w", containerName, err)
+	}
+	if err := op.Wait(); err != nil {
+		return "", fmt.Errorf("publish image from %s: %w", containerName, err)
+	}
+	fingerprint, _ := op.Get().Metadata["fingerprint"].(string)
+	if fingerprint == "" {
+		return "", fmt.Errorf("publish image from %s: operation returned no fingerprint", containerName)
+	}
+
+	// Re-point the alias. DeleteImageAlias errors when the alias doesn't
+	// exist — fine either way, CreateImageAlias below is authoritative.
+	_ = c.server.DeleteImageAlias(alias)
+	if err := c.server.CreateImageAlias(api.ImageAliasesPost{
+		ImageAliasesEntry: api.ImageAliasesEntry{
+			Name:                 alias,
+			ImageAliasesEntryPut: api.ImageAliasesEntryPut{Target: fingerprint},
+		},
+	}); err != nil {
+		return "", fmt.Errorf("alias %s -> %s: %w", alias, fingerprint, err)
+	}
+
+	// Reap the replaced image. Best-effort: a failure leaves an unaliased
+	// image behind (disk cost), never a broken alias.
+	if oldFingerprint != "" && oldFingerprint != fingerprint {
+		if delOp, derr := c.server.DeleteImage(oldFingerprint); derr == nil {
+			_ = delOp.Wait()
+		}
+	}
+	return fingerprint, nil
+}
+
+// GetImageAliasProperties resolves a local image alias and returns the
+// image's properties. ok=false (no error) when the alias doesn't exist —
+// callers treat that as "no baked image; use the slow path", not a failure.
+func (c *Client) GetImageAliasProperties(alias string) (map[string]string, bool, error) {
+	a, _, err := c.server.GetImageAlias(alias)
+	if err != nil || a == nil {
+		return nil, false, nil
+	}
+	img, _, err := c.server.GetImage(a.Target)
+	if err != nil {
+		return nil, false, fmt.Errorf("get image %s for alias %s: %w", a.Target, alias, err)
+	}
+	return img.Properties, true, nil
 }
 
 // imageDescriptionFromConfig returns a human-readable label for the image a
