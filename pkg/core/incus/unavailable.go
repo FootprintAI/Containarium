@@ -70,3 +70,9 @@ func (*UnavailableBackend) GetContainerMetrics(string) (*ContainerMetrics, error
 func (*UnavailableBackend) GetContainerImageFingerprint(string) (string, error) {
 	return "", ErrUnavailable
 }
+func (*UnavailableBackend) PublishImage(string, string, map[string]string) (string, error) {
+	return "", ErrUnavailable
+}
+func (*UnavailableBackend) GetImageAliasProperties(string) (map[string]string, bool, error) {
+	return nil, false, ErrUnavailable
+}
