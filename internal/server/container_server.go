@@ -723,7 +723,34 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	// Filter containers
+	// Snapshot in-flight async creations so list state is provisioning-aware
+	// (#1036). GetContainer has reported CREATING/PROVISIONING from this map
+	// since #837; list bypassed it, so a box ~30s into a multi-minute
+	// provisioning run showed raw incus RUNNING to every list consumer
+	// (control-plane state sync, CLI list) — inviting SSH long before the
+	// box was actually ready. Failed creates (Done + Error) stay out of the
+	// list on purpose: their instance is gone, and GetContainer owns
+	// surfacing the ERROR until its cleanup.
+	pendingStates := map[string]pb.ContainerState{}
+	s.pendingMu.RLock()
+	for u, p := range s.pendingCreations {
+		if p.Done {
+			continue
+		}
+		st := pb.ContainerState_CONTAINER_STATE_CREATING
+		if p.Provisioning {
+			st = pb.ContainerState_CONTAINER_STATE_PROVISIONING
+		}
+		pendingStates[u] = st
+	}
+	s.pendingMu.RUnlock()
+
+	// Filter containers. The state filter is NOT applied here: it must match
+	// the provisioning-aware state the response reports (overlaid below),
+	// not the raw incus state — otherwise state=RUNNING would wrongly
+	// include a mid-provisioning box. applyProvisioningOverlay re-applies it
+	// post-overlay for these local entries (peer entries never went through
+	// the state filter — unchanged).
 	var filtered []incus.ContainerInfo
 	for _, c := range containers {
 		// Exclude core containers (postgres, caddy) from user-facing listings
@@ -739,24 +766,6 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 				username = c.Name[:len(c.Name)-10]
 			}
 			if username != req.Username {
-				continue
-			}
-		}
-
-		// Filter by state if specified
-		if req.State != pb.ContainerState_CONTAINER_STATE_UNSPECIFIED {
-			var containerState pb.ContainerState
-			switch c.State {
-			case "Running":
-				containerState = pb.ContainerState_CONTAINER_STATE_RUNNING
-			case "Stopped":
-				containerState = pb.ContainerState_CONTAINER_STATE_STOPPED
-			case "Frozen":
-				containerState = pb.ContainerState_CONTAINER_STATE_FROZEN
-			default:
-				containerState = pb.ContainerState_CONTAINER_STATE_UNSPECIFIED
-			}
-			if containerState != req.State {
 				continue
 			}
 		}
@@ -790,6 +799,9 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		protoContainers = append(protoContainers, pc)
 	}
 
+	protoContainers = applyProvisioningOverlay(protoContainers, pendingStates,
+		req.Username, req.State, len(req.LabelFilter) > 0, s.sshHost)
+
 	// Add containers from peer backends
 	if s.peerPool != nil {
 		authToken := extractAuthToken(ctx)
@@ -807,6 +819,62 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		Containers: protoContainers,
 		TotalCount: safecast.I32(len(protoContainers)),
 	}, nil
+}
+
+// applyProvisioningOverlay makes a list response honest about in-flight async
+// creations (#1036), in three steps:
+//
+//  1. A local entry whose username has a pending creation reports that
+//     pending state (CREATING/PROVISIONING) instead of the raw incus state —
+//     incus says "Running" the moment the instance boots, minutes before
+//     provisioning (package install, key setup) finishes and SSH works.
+//  2. A pending creation with no incus instance yet gets a synthetic entry
+//     (same shape GetContainer synthesizes), so a just-accepted create is
+//     visible in list at all. Synthetics are skipped when a label filter is
+//     in effect: a provisioning box's labels aren't stamped yet, so it can't
+//     genuinely match any label filter.
+//  3. The request's state filter is applied here, against the final overlaid
+//     state (the caller removed it from the raw-incus filtering pass).
+//
+// Pure function over the already-converted local entries so the overlay is
+// unit-testable without an incus-backed Manager.
+func applyProvisioningOverlay(local []*pb.Container, pending map[string]pb.ContainerState,
+	usernameFilter string, stateFilter pb.ContainerState, hasLabelFilter bool, sshHost string) []*pb.Container {
+
+	out := make([]*pb.Container, 0, len(local)+len(pending))
+	seen := make(map[string]bool, len(pending))
+	for _, pc := range local {
+		if st, ok := pending[pc.Username]; ok {
+			pc.State = st
+			seen[pc.Username] = true
+		}
+		if stateFilter != pb.ContainerState_CONTAINER_STATE_UNSPECIFIED && pc.State != stateFilter {
+			continue
+		}
+		out = append(out, pc)
+	}
+
+	if hasLabelFilter {
+		return out
+	}
+	for u, st := range pending {
+		if seen[u] {
+			continue
+		}
+		if usernameFilter != "" && u != usernameFilter {
+			continue
+		}
+		if stateFilter != pb.ContainerState_CONTAINER_STATE_UNSPECIFIED && st != stateFilter {
+			continue
+		}
+		out = append(out, &pb.Container{
+			Name:     u + "-container",
+			Username: u,
+			State:    st,
+			SshHost:  sshHost,
+		})
+	}
+	return out
 }
 
 // GetContainer gets information about a specific container
