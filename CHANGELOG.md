@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-07-20
+
+### Added
+
+- **Baked base images — creates drop from ~3 minutes to roughly
+  clone + boot** (#1037, first slice). `containarium image-bake` runs the
+  exact per-create provisioning (package repos, podman, service
+  enablement) once into a local image under a deterministic alias;
+  stackless creates whose source image + podman setting match the bake's
+  recorded properties clone the baked image and skip the in-container
+  package install — also removing mid-create exposure to distro/repo
+  mirror outages. Opt-in by running `image-bake` on the host; no baked
+  image means the previous behavior, byte-identical. Re-bake on a
+  schedule to pick up security updates (the alias is re-pointed and the
+  replaced image reaped).
+
+### Fixed
+
+- **List responses are honest about provisioning** (#1036). A box
+  mid-provisioning (packages and SSH keys still installing) reported raw
+  incus `RUNNING` in list responses minutes before SSH could work,
+  inviting clients to connect too early — and cleanup deletes after
+  those failed attempts aborted creates that were still in progress.
+  `ListContainers` now reports `CREATING`/`PROVISIONING` from the same
+  pending-creation state `GetContainer` already used (including
+  synthetic entries for creates not yet visible in incus, with the
+  state filter applied to the reported state). `containarium create
+  --wait [--wait-timeout]` adds blocking ergonomics on top of the
+  still-async create, and the MCP create response now says explicitly
+  that provisioning takes minutes and to poll `get_container` until
+  `RUNNING` before SSH.
+
 ## [0.55.1] - 2026-07-19
 
 ### Fixed
