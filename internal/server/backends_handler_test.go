@@ -137,3 +137,37 @@ func TestBackendsHandler_SystemInfoRouting(t *testing.T) {
 		t.Error("expected nil for unknown backend")
 	}
 }
+
+// TestContainerServer_ListBackends_LocalUnhealthy is the #920 regression
+// test: the local backend's Healthy field used to be hardcoded true
+// regardless of actual health. With localHealthCheckFn simulating a
+// wedged local backend (the shape of #755's CPU-starved incusd), the local
+// entry must now report Healthy=false instead of unconditionally healthy —
+// this is the same signal resolvePoolPlacement's auto-placement branch
+// checks (see TestContainerServer_ResolvePoolPlacement/pool_only:_local_unhealthy_falls_through_to_peer
+// in pool_placement_test.go), so the two paths can no longer silently
+// disagree about whether the local backend is fit for work.
+func TestContainerServer_ListBackends_LocalUnhealthy(t *testing.T) {
+	pool := NewPeerPool("local-spot", "", nil, "")
+	s := &ContainerServer{
+		peerPool:           pool,
+		startTime:          time.Now().Add(-time.Minute),
+		localHealthCheckFn: func() bool { return false },
+	}
+	ctx := auth.ContextWithTestSubject(context.Background(), "ops", auth.RoleAdmin)
+
+	resp, err := s.ListBackends(ctx, &pb.ListBackendsRequest{})
+	if err != nil {
+		t.Fatalf("ListBackends: %v", err)
+	}
+	if len(resp.Backends) != 1 {
+		t.Fatalf("expected 1 backend (local only, no peers registered), got %d", len(resp.Backends))
+	}
+	local := resp.Backends[0]
+	if local.Id != "local-spot" || local.Type != "local" {
+		t.Errorf("local backend wrong: id=%q type=%q", local.Id, local.Type)
+	}
+	if local.Healthy {
+		t.Error("local backend should report Healthy=false when localHealthCheckFn reports unhealthy — it used to be hardcoded true (#920)")
+	}
+}
