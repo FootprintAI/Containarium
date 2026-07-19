@@ -1417,6 +1417,11 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 	// their own ssh_keys got no connection guidance at all and tended to go
 	// hunting for the env var and give up (see issue #658).
 	result += "\n\n--- CONNECTING ---\n"
+	result += "⏳ PROVISIONING TAKES MINUTES: the create is async — the box installs\n"
+	result += "packages and SSH keys AFTER this response returns. Poll get_container\n"
+	result += "until state is RUNNING before attempting SSH; an early SSH failure is\n"
+	result += "NOT an error, and deleting the box because of one aborts a create that\n"
+	result += "was still in progress.\n\n"
 	if resp.Container.SSHHost != "" {
 		result += fmt.Sprintf("SSH target: %s@%s  (resolved from ssh_host — no env/config needed)\n",
 			resp.Container.Username, resp.Container.SSHHost)

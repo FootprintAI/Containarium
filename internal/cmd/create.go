@@ -42,6 +42,8 @@ var (
 	createIdleStop           string
 	createDeleteAfterStopped string
 	createStorageClass       string
+	createWait               bool
+	createWaitTimeout        time.Duration
 )
 
 var createCmd = &cobra.Command{
@@ -126,6 +128,8 @@ func init() {
 	createCmd.Flags().StringVar(&createIdleStop, "idle-stop", "", "Birth idle-stop — auto-STOP the box (free CPU/RAM, keep disk; wakes on access) after this long with no activity (Go duration: '20m', '1h'). Enables auto-sleep atomically at create, so a crashed/cancelled job still releases compute — no separate 'toggle_auto_sleep' needed (#524). An active SSH/exec session counts as activity, so a box being debugged is never stopped mid-session. Empty = no auto-sleep.")
 	createCmd.Flags().StringVar(&createDeleteAfterStopped, "delete-after-stopped", "", "Birth stopped→delete — auto-DELETE the box (reclaim disk) once it has been STOPPED this long (Go duration: '6h', '24h'). The second timer of the two-phase lifecycle: pair with --idle-stop to free CPU/RAM fast, then disk after a debug window (#525). The clock resets when the box is woken, so a box you keep investigating is never reaped. Separate opt-in from --idle-stop. Empty = never delete on stop.")
 	createCmd.Flags().StringVar(&createStorageClass, "storage-class", "", "K8s StorageClass for the box's data PVC (K8s backend only). Empty = use the cluster's default StorageClass. Example: 'fast-nvme', 'standard', 'ceph-block'. Ignored on the LXC backend.")
+	createCmd.Flags().BoolVar(&createWait, "wait", false, "Block until the box finishes provisioning (remote mode). A remote create is async: the daemon returns CREATING immediately and provisions for minutes — SSH only works once the state reaches RUNNING. --wait polls the daemon until then (or --wait-timeout), exiting non-zero if provisioning fails. Local mode provisions synchronously; --wait is a no-op there.")
+	createCmd.Flags().DurationVar(&createWaitTimeout, "wait-timeout", 5*time.Minute, "How long --wait polls before giving up (Go duration).")
 }
 
 // validateSSHKeyMode enforces "exactly one of --ssh-key / --no-ssh-key".
@@ -412,6 +416,29 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// --wait (#1036): a remote create is async — the daemon returns CREATING
+	// immediately and provisions (package install, key setup) for minutes.
+	// Poll until the box settles so scripts/agents get blocking ergonomics
+	// without a long-held server connection, and so the summary below prints
+	// the settled state + IP instead of CREATING. Local mode provisions
+	// synchronously inside createLocal, so there is nothing to wait for.
+	if createWait && serverAddr != "" {
+		getFn, closeFn, cerr := containerGetter()
+		if cerr != nil {
+			return cerr
+		}
+		defer closeFn()
+		final, werr := waitForContainerReady(getFn, username, createWaitTimeout)
+		if werr != nil {
+			return werr
+		}
+		if final != nil {
+			info = final
+		}
+	} else if createWait && verbose {
+		fmt.Println("  --wait: local create is synchronous; nothing to wait for")
+	}
+
 	// Success!
 	fmt.Println()
 	fmt.Printf("✓ Container %s created successfully!\n", info.Name)
@@ -619,6 +646,57 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 }
 
 // parseLabels parses labels from key=value format
+// containerGetter builds a GetContainer function against the configured
+// remote (HTTP or gRPC, same mode selection as the create itself), plus a
+// close function for the underlying client. Used by --wait.
+func containerGetter() (func(string) (*incus.ContainerInfo, error), func(), error) {
+	if httpMode {
+		httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		return httpClient.GetContainer, func() { _ = httpClient.Close() }, nil
+	}
+	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to remote server: %w", err)
+	}
+	return grpcClient.GetContainer, func() { _ = grpcClient.Close() }, nil
+}
+
+// waitForContainerReady polls getFn until the box reaches a settled state
+// (#1036). Both clients report the proto enum name ("CONTAINER_STATE_RUNNING",
+// "...PROVISIONING", ...); normalize by trimming the prefix. Transient get
+// errors are tolerated (the box can briefly 404 between the daemon's pending
+// bookkeeping and incus visibility) — only the deadline or an explicit ERROR
+// state ends the wait early.
+func waitForContainerReady(getFn func(string) (*incus.ContainerInfo, error), username string, timeout time.Duration) (*incus.ContainerInfo, error) {
+	const pollInterval = 5 * time.Second
+	deadline := time.Now().Add(timeout)
+	lastState := ""
+	fmt.Printf("Waiting for provisioning to finish (timeout %s)...\n", timeout)
+	for {
+		info, err := getFn(username)
+		if err == nil {
+			state := strings.TrimPrefix(info.State, "CONTAINER_STATE_")
+			if state != lastState {
+				fmt.Printf("  state: %s\n", state)
+				lastState = state
+			}
+			switch state {
+			case "RUNNING", "STOPPED":
+				return info, nil
+			case "ERROR":
+				return nil, fmt.Errorf("provisioning failed for %s: daemon reports ERROR (see the daemon log for the cause)", username)
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out after %s waiting for %s to finish provisioning (last state: %s); the box may still come up — check with 'containarium list'", timeout, username, lastState)
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
 func parseLabels(labelSlice []string) map[string]string {
 	result := make(map[string]string)
 	for _, label := range labelSlice {
