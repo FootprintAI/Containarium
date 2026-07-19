@@ -83,6 +83,11 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  *app.DaemonConfigStore
 	peerPool           *PeerPool
+	// localHealthCheckFn overrides localBackendHealthy's real Incus liveness
+	// probe (#920) — set by tests to simulate a wedged/unresponsive local
+	// backend without a live Incus daemon. nil in production; the real probe
+	// runs.
+	localHealthCheckFn func() bool
 	// capacityStore holds this backend's spare-capacity advertise/withdraw
 	// state + local policy (#680). Lazily initialized so an unwired server
 	// (tests) still answers GetCapacityHeadroom with "not advertised".
@@ -2364,10 +2369,18 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 
 	// Local backend. OS / container count / GPUs come from GetSystemInfo;
 	// uptime from the wired process start time.
+	//
+	// Healthy used to be hardcoded true regardless of actual local health —
+	// #920: an operator-visible "3 backends, all healthy" list_backends
+	// response coexisted with a local backend degraded enough (CPU-starved
+	// incusd, #755) to fail real creates. localBackendHealthy is the same
+	// probe resolvePoolPlacement's local-backend auto-placement branch now
+	// gates on — single source of truth, so this listing and placement can
+	// no longer silently disagree about the local backend's health.
 	local := &pb.BackendInfo{
 		Id:      s.peerPool.LocalBackendID(),
 		Type:    "local",
-		Healthy: true,
+		Healthy: s.localBackendHealthy(),
 		Version: version.GetVersion(),
 	}
 	if !s.startTime.IsZero() {
@@ -3354,7 +3367,19 @@ func (s *ContainerServer) resolvePoolPlacement(req *pb.CreateContainerRequest) e
 	}
 
 	// No explicit backend_id — find a candidate in the requested pool.
-	if s.peerPool.LocalPool() == req.Pool {
+	//
+	// #920: the local backend used to be chosen here UNCONDITIONALLY,
+	// with no health check at all — while the peer branch immediately
+	// below has always required peer.Healthy via HealthyPeersInPool. That
+	// asymmetry let a wedged local backend (e.g. CPU-starved incusd, #755)
+	// keep silently absorbing every no-backend_id create even after it had
+	// already dropped out of ListBackends' fleet view, because the two
+	// call sites disagreed on what "healthy" means for the SAME backend.
+	// localBackendHealthy is now the single source of truth for the local
+	// backend's health, shared with ListBackends (see its local entry) —
+	// if the local backend fails that check, fall through to the
+	// peer-candidate path below exactly as if it weren't in the pool.
+	if s.peerPool.LocalPool() == req.Pool && s.localBackendHealthy() {
 		req.BackendId = s.peerPool.LocalBackendID()
 		return nil
 	}
@@ -3364,6 +3389,64 @@ func (s *ContainerServer) resolvePoolPlacement(req *pb.CreateContainerRequest) e
 	}
 	req.BackendId = candidates[0].ID
 	return nil
+}
+
+// localHealthCheckTimeout bounds localBackendHealthy's liveness probe below
+// — long enough for a briefly busy incusd to answer, short enough that a
+// genuinely wedged daemon (see #755 — CPU-starved incusd from a runaway
+// rsyslog/OOM-crash-loop neighbor) doesn't stall a placement decision for
+// more than a couple of seconds.
+const localHealthCheckTimeout = 3 * time.Second
+
+// localBackendHealthy reports whether this daemon's own LOCAL backend is
+// currently fit to receive newly scheduled work. It is the single source of
+// truth shared by ListBackends (the local entry's Healthy field) and
+// resolvePoolPlacement's local-backend short-circuit (#920) — previously
+// ListBackends hardcoded Healthy=true for local and resolvePoolPlacement
+// didn't check health at all, so the two paths could never actually
+// disagree in a way that would ever surface as a bug: both were simply
+// blind to real local health. This performs the same connectivity probe
+// GetSystemInfo already runs (container list + Incus server info) but skips
+// GetSystemInfo's admin-role gate, since this is an internal call made on
+// behalf of any caller's placement decision, not a fresh RPC.
+//
+// localHealthCheckFn, when set (tests), overrides the real probe.
+func (s *ContainerServer) localBackendHealthy() bool {
+	if s.localHealthCheckFn != nil {
+		return s.localHealthCheckFn()
+	}
+	if s.manager == nil {
+		// No container manager wired (unit-test / non-LXC-runtime
+		// construction) — nothing to probe against; treat as healthy so
+		// tests that don't exercise this signal are unaffected.
+		return true
+	}
+	done := make(chan bool, 1)
+	go func() {
+		if _, err := s.manager.List(); err != nil {
+			done <- false
+			return
+		}
+		client, err := incus.New()
+		if err != nil {
+			done <- false
+			return
+		}
+		if _, err := client.GetServerInfo(); err != nil {
+			done <- false
+			return
+		}
+		done <- true
+	}()
+	select {
+	case healthy := <-done:
+		return healthy
+	case <-time.After(localHealthCheckTimeout):
+		// Didn't answer in time — fail CLOSED (unhealthy) rather than block
+		// the caller indefinitely on a wedged daemon, and rather than
+		// silently treat "didn't check in time" as "must be fine".
+		return false
+	}
 }
 
 // SetRouteCleanupDeps wires the route store + proxy manager so

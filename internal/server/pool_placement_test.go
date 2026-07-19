@@ -210,4 +210,84 @@ func TestContainerServer_ResolvePoolPlacement(t *testing.T) {
 			t.Fatal("expected error when no healthy peers in pool, got nil")
 		}
 	})
+
+	// #920: the local branch above used to pick the local backend
+	// unconditionally — no health check at all — even though the peer
+	// branch (HealthyPeersInPool) has always required peer.Healthy. A
+	// wedged local backend (e.g. CPU-starved incusd, #755) kept silently
+	// absorbing every no-backend_id create in the pool even after it had
+	// already dropped out of the daemon's own ListBackends fleet view. The
+	// following two cases lock down the fix: local health is now checked
+	// via the same localBackendHealthy signal ListBackends uses, and an
+	// unhealthy local backend falls through to a healthy peer instead of
+	// being chosen blindly.
+	t.Run("pool only: local unhealthy falls through to peer", func(t *testing.T) {
+		p := NewPeerPool("local-prod", "", nil, "prod")
+		p.peers["tunnel-prod-1"] = &PeerClient{ID: "tunnel-prod-1", Pool: "prod", Healthy: true}
+		s := &ContainerServer{peerPool: p, localHealthCheckFn: func() bool { return false }}
+
+		req := &pb.CreateContainerRequest{Pool: "prod"}
+		if err := s.resolvePoolPlacement(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.BackendId != "tunnel-prod-1" {
+			t.Errorf("expected fallback to healthy peer tunnel-prod-1, got %q", req.BackendId)
+		}
+	})
+
+	t.Run("pool only: local unhealthy and no healthy peers errors", func(t *testing.T) {
+		p := NewPeerPool("local-prod", "", nil, "prod")
+		// No peers at all in the "prod" pool — local is the only nominal
+		// candidate, and it's unhealthy.
+		s := &ContainerServer{peerPool: p, localHealthCheckFn: func() bool { return false }}
+
+		req := &pb.CreateContainerRequest{Pool: "prod"}
+		err := s.resolvePoolPlacement(req)
+		if err == nil {
+			t.Fatal("expected error when local is unhealthy and no healthy peers exist, got nil")
+		}
+		if req.BackendId != "" {
+			t.Errorf("BackendId should stay unset on failure, got %q", req.BackendId)
+		}
+	})
+
+	t.Run("pool only: local healthy (explicit) still picks local", func(t *testing.T) {
+		p := NewPeerPool("local-prod", "", nil, "prod")
+		p.peers["tunnel-prod-1"] = &PeerClient{ID: "tunnel-prod-1", Pool: "prod", Healthy: true}
+		s := &ContainerServer{peerPool: p, localHealthCheckFn: func() bool { return true }}
+
+		req := &pb.CreateContainerRequest{Pool: "prod"}
+		if err := s.resolvePoolPlacement(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.BackendId != "local-prod" {
+			t.Errorf("expected local-prod (local preferred over peer when healthy), got %q", req.BackendId)
+		}
+	})
+}
+
+// TestContainerServer_LocalBackendHealthy exercises localBackendHealthy's
+// override + nil-manager paths directly (the real Incus-probing path needs
+// a live daemon and isn't covered here — see #920).
+func TestContainerServer_LocalBackendHealthy(t *testing.T) {
+	t.Run("nil manager, no override: healthy", func(t *testing.T) {
+		s := &ContainerServer{}
+		if !s.localBackendHealthy() {
+			t.Error("expected healthy=true when no manager is wired and no override is set")
+		}
+	})
+
+	t.Run("override false wins over nil manager", func(t *testing.T) {
+		s := &ContainerServer{localHealthCheckFn: func() bool { return false }}
+		if s.localBackendHealthy() {
+			t.Error("expected localHealthCheckFn's false to be honored")
+		}
+	})
+
+	t.Run("override true", func(t *testing.T) {
+		s := &ContainerServer{localHealthCheckFn: func() bool { return true }}
+		if !s.localBackendHealthy() {
+			t.Error("expected localHealthCheckFn's true to be honored")
+		}
+	})
 }
