@@ -648,7 +648,9 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 
 	// Resource limits. CPU may be a whole-core count, a CPU set, or a
 	// fractional request (millicpu / decimal) — translate to the correct
-	// Incus key (limits.cpu vs limits.cpu.allowance). See issue #401.
+	// Incus key(s): limits.cpu always, plus limits.cpu.allowance for the
+	// CFS-bandwidth throttle on numeric (non-CPU-set) requests. See
+	// issues #401 and #1029.
 	if config.CPU != "" {
 		cl, err := parseCPULimit(config.CPU)
 		if err != nil {
@@ -1501,10 +1503,11 @@ func imageDescriptionFromConfig(config map[string]string) string {
 }
 
 // SetCPULimit updates a container's CPU limit, translating the request into
-// the correct Incus key — limits.cpu for whole-core counts and CPU sets, or
-// limits.cpu.allowance for fractional requests (millicpu / decimal). It clears
-// the other key first so a fractional→whole-core resize (or vice versa) never
-// leaves a stale, conflicting limit behind. See issue #401.
+// the correct Incus key(s) — limits.cpu for the visible core count/set, plus
+// limits.cpu.allowance for the CFS-bandwidth throttle on numeric requests
+// (whole-core or fractional; CPU-set/pinning notation sets limits.cpu only).
+// It clears both keys first so a resize between request shapes never leaves
+// a stale, conflicting limit behind. See issues #401 and #1029.
 func (c *Client) SetCPULimit(containerName, cpu string) error {
 	cl, err := parseCPULimit(cpu)
 	if err != nil {

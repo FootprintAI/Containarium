@@ -11,16 +11,17 @@ func TestParseCPULimit(t *testing.T) {
 		wantErr       bool
 	}{
 		{name: "empty", cpu: "", wantCount: "", wantAllowance: ""},
-		{name: "whole core", cpu: "1", wantCount: "1"},
-		{name: "multiple cores", cpu: "4", wantCount: "4"},
+		{name: "single core", cpu: "1", wantCount: "1", wantAllowance: "100%"},
+		{name: "multiple cores", cpu: "4", wantCount: "4", wantAllowance: "400%"},
+		{name: "whole host", cpu: "8", wantCount: "8", wantAllowance: "800%"},
 		{name: "cpu range", cpu: "0-3", wantCount: "0-3"},
 		{name: "cpu set", cpu: "0,2-4", wantCount: "0,2-4"},
 		{name: "millicpu quarter core", cpu: "250m", wantCount: "1", wantAllowance: "25%"},
 		{name: "millicpu half core", cpu: "500m", wantCount: "1", wantAllowance: "50%"},
-		{name: "millicpu whole core", cpu: "1000m", wantCount: "1"},
+		{name: "millicpu whole core", cpu: "1000m", wantCount: "1", wantAllowance: "100%"},
 		{name: "millicpu one and a half", cpu: "1500m", wantCount: "2", wantAllowance: "150%"},
 		{name: "decimal quarter core", cpu: "0.25", wantCount: "1", wantAllowance: "25%"},
-		{name: "decimal whole core", cpu: "2.0", wantCount: "2"},
+		{name: "decimal whole core", cpu: "2.0", wantCount: "2", wantAllowance: "200%"},
 		{name: "decimal one and a half", cpu: "1.5", wantCount: "2", wantAllowance: "150%"},
 		{name: "decimal two and a half", cpu: "2.5", wantCount: "3", wantAllowance: "250%"},
 		{name: "whitespace trimmed", cpu: "  250m  ", wantCount: "1", wantAllowance: "25%"},
@@ -66,7 +67,7 @@ func TestFormatCPULimitFromConfig(t *testing.T) {
 		want   string
 	}{
 		{name: "no limits", config: map[string]string{}, want: ""},
-		{name: "whole core", config: map[string]string{"limits.cpu": "4"}, want: "4"},
+		{name: "whole core, no allowance (pre-#1029 config)", config: map[string]string{"limits.cpu": "4"}, want: "4"},
 		{name: "cpu set", config: map[string]string{"limits.cpu": "0-3"}, want: "0-3"},
 		{name: "allowance percentage", config: map[string]string{"limits.cpu.allowance": "25%"}, want: "250m"},
 		{name: "allowance half", config: map[string]string{"limits.cpu.allowance": "50%"}, want: "500m"},
@@ -79,6 +80,16 @@ func TestFormatCPULimitFromConfig(t *testing.T) {
 		},
 		{name: "empty limits.cpu falls through to allowance", config: map[string]string{"limits.cpu": "", "limits.cpu.allowance": "25%"}, want: "250m"},
 		{name: "empty allowance falls through to limits.cpu", config: map[string]string{"limits.cpu": "4", "limits.cpu.allowance": ""}, want: "4"},
+		{
+			name:   "whole-core allowance formats as plain core count, not millicpu (#1029)",
+			config: map[string]string{"limits.cpu": "8", "limits.cpu.allowance": "800%"},
+			want:   "8",
+		},
+		{
+			name:   "single-core allowance formats as plain core count",
+			config: map[string]string{"limits.cpu": "1", "limits.cpu.allowance": "100%"},
+			want:   "1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -90,10 +101,12 @@ func TestFormatCPULimitFromConfig(t *testing.T) {
 	}
 }
 
-// TestCPULimitRoundTrip confirms a fractional request survives the
-// translate-then-read-back cycle as the same millicpu value.
+// TestCPULimitRoundTrip confirms a request survives the
+// translate-then-read-back cycle as the same value: fractional requests as
+// the same millicpu value, whole-core requests as the same plain core count
+// (#1029 — despite now also carrying a limits.cpu.allowance).
 func TestCPULimitRoundTrip(t *testing.T) {
-	for _, in := range []string{"250m", "500m", "1500m"} {
+	for _, in := range []string{"250m", "500m", "1500m", "1", "4", "8"} {
 		cl, err := parseCPULimit(in)
 		if err != nil {
 			t.Fatalf("parseCPULimit(%q): %v", in, err)
