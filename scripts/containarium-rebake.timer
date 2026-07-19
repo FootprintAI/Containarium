@@ -1,0 +1,25 @@
+[Unit]
+Description=Containarium weekly base-image re-bake timer
+Documentation=https://github.com/footprintai/Containarium/issues/1037
+
+[Timer]
+# Fire weekly, early Sunday morning — after the nightly backup window
+# (containarium-backup.timer fires at 02:30). Weekly keeps the baked image's
+# packages at most a week behind the distro's security updates; a create from
+# a baked image never re-runs the package install, so ONLY re-baking picks
+# updates up.
+OnCalendar=Sun *-*-* 03:30:00
+
+# Spread firing up to 30 min so a fleet of backend hosts doesn't all pull
+# from the distro mirrors at the same instant.
+RandomizedDelaySec=1800
+
+# If the host was down Sunday 03:30 (spot preemption, maintenance), catch up
+# on the next boot rather than staying stale until the following Sunday.
+Persistent=true
+
+# Minute granularity is fine for a weekly job.
+AccuracySec=60
+
+[Install]
+WantedBy=timers.target

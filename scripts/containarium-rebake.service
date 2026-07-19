@@ -1,0 +1,32 @@
+[Unit]
+Description=Containarium weekly base-image re-bake
+Documentation=https://github.com/footprintai/Containarium/issues/1037
+# Needs the network (distro mirrors) and local Incus; runs alongside the
+# daemon but doesn't require it — image-bake talks straight to Incus.
+After=network-online.target incus.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Optional overrides (image / podman / os-type flags), e.g.:
+#   REBAKE_FLAGS=--image images:ubuntu/24.04 --podman=true
+# Absent file or empty var = bake the defaults, which match what stackless
+# creates request. To bake several variants, add drop-in ExecStart lines.
+EnvironmentFile=-/etc/containarium/rebake.env
+ExecStart=/bin/sh -c '/usr/local/bin/containarium image-bake ${REBAKE_FLAGS}'
+
+# Root, same as the daemon — image-bake drives Incus (create/exec/publish).
+User=root
+Group=root
+
+# A bake is one full provisioning run (~3-5 min normally). If it takes more
+# than 30 minutes the mirrors are down or the host is wedged — fail loudly
+# rather than block Monday's timer slot; creates keep using the previous
+# bake (the alias only moves on a successful publish).
+TimeoutStartSec=1800
+
+# Journal output: `journalctl -u containarium-rebake` shows the run log.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=containarium-rebake
