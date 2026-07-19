@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.1] - 2026-07-19
+
+### Fixed
+
+- **Whole-core CPU requests are now actually throttled** (#1030). Every
+  whole-number `limits.cpu` request (`1`..`8`) previously set only the
+  cpuset (which cores are visible) with no CFS-bandwidth cap on how much
+  CPU time those cores may consume — only fractional requests (`0.25`,
+  `250m`) got a real throttle. Since every cloud size-tier bundle resolves
+  to a whole-core count, the overwhelming majority of tenant containers
+  had no enforced CPU ceiling at all, letting one noisy tenant starve
+  every other co-located tenant regardless of nominal tier.
+- **Auto-placement no longer picks a backend it would itself report
+  unhealthy** (#1031). `resolvePoolPlacement` picked the local backend
+  unconditionally when a create's pool matched the daemon's local pool,
+  with no health check — while the peer-candidate branch two lines below
+  has always required a healthy peer. A bounded (3s), fail-closed
+  liveness probe now gates both call sites; an unhealthy local backend
+  falls through to a healthy peer instead of being chosen blindly.
+
 ## [0.55.0] - 2026-07-18
 
 ### Added
