@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Internal peer service token now renews instead of expiring after 30
+  days.** The daemon-to-peer admin token (used for peer metrics and the
+  #1029 capacity-ranking probe) was minted once for the 30-day maximum
+  and held forever; a daemon running longer than a month then silently
+  `401`'d every internal peer call — the same silent-credential-death
+  shape as the BYOC driver-token expiry (#903). A shared renewing token
+  source now re-mints ahead of expiry, which also shrinks a leaked
+  internal token's useful life from a month to an hour.
+
 ### Added
 
 - **Opt-in capacity-aware pool placement** (#1029). When a pool create

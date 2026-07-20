@@ -1853,6 +1853,18 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		})
 	}
 
+	// Renewing source for the internal admin ("_system") token the daemon uses
+	// to call peers' admin-only endpoints — peer metrics and the #1029
+	// capacity-ranking probe. Shared by both so neither falls off a one-shot
+	// 30-day token (the silent-401-after-a-month footgun the renewal replaces).
+	// Lazy: no token is minted until a consumer first calls Token().
+	svcTokens := newServiceTokenSource(
+		func() (string, error) {
+			return ds.tokenManager.GenerateToken("_system", []string{"admin"}, serviceTokenTTL)
+		},
+		serviceTokenTTL, serviceTokenRenewBefore,
+	)
+
 	// Start peer discovery for multi-backend support
 	if ds.peerPool != nil {
 		// Phase 0.5: bootstrap the daemon's peer-CA + leaf cert
@@ -1872,10 +1884,13 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// (physical cores) and container lists (committed cores); if minting it
 		// fails, ranking stays off and placement falls back to first-healthy.
 		if ds.config.PlacementCPUAware {
-			if token, err := ds.tokenManager.GenerateToken("_system", []string{"admin"}, 30*24*time.Hour); err != nil {
+			// Prove the token can be minted before arming ranking, so a broken
+			// signer surfaces at boot rather than as silent first-healthy
+			// fallback; the source then renews it for the daemon's lifetime.
+			if _, err := svcTokens.Token(); err != nil {
 				log.Printf("[placement] capacity-aware ranking requested but service token mint failed (%v) — staying on first-healthy placement", err)
 			} else {
-				ds.peerPool.EnableCapacityRanking(token)
+				ds.peerPool.EnableCapacityRanking(svcTokens.Token)
 				log.Printf("[placement] capacity-aware pool ranking enabled: pool creates prefer the least CPU-committed peer")
 			}
 		}
@@ -2026,18 +2041,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 
 	// Start OTel metrics collector if available
 	if ds.metricsCollector != nil {
-		// Wire peer metrics fetcher so peer container metrics are pushed to VictoriaMetrics
+		// Wire peer metrics fetcher so peer container metrics are pushed to
+		// VictoriaMetrics. The renewing token source (built above) replaces the
+		// former one-shot 30-day token, so metrics fetching doesn't 401 after a
+		// month on a long-lived daemon.
 		if ds.peerPool != nil {
-			// Generate a long-lived service token for internal peer API calls
-			serviceToken, err := ds.tokenManager.GenerateToken("_system", []string{"admin"}, 30*24*time.Hour)
-			if err != nil {
-				log.Printf("Warning: failed to generate service token for peer metrics: %v", err)
-			} else {
-				ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
-					Pool:         ds.peerPool,
-					ServiceToken: serviceToken,
-				})
-			}
+			ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
+				Pool:    ds.peerPool,
+				TokenFn: svcTokens.Token,
+			})
 		}
 		// Wire the egress fan-out fetcher (crawler-detection signal) when the
 		// conntrack traffic collector is available.
