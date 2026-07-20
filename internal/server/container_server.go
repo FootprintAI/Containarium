@@ -48,7 +48,21 @@ type PendingCreation struct {
 	Error        error
 	Done         bool
 	Provisioning bool // container is running but installing stack/packages
+	// Cancelled records that a DeleteContainer arrived while this creation
+	// was still in flight (#1035). Provisioning runs for minutes; a delete
+	// pulls the instance out from under the goroutine, which then fails with
+	// "Instance not found" — indistinguishable, in the journal, from a
+	// genuine create failure. Flagging the cancellation lets the goroutine
+	// log what actually happened, and keeps the doomed creation out of the
+	// CREATING/ERROR state that Get/List would otherwise report.
+	Cancelled bool
 }
+
+// active reports whether this creation is still legitimately in flight —
+// neither finished nor cancelled by a delete. Read/List overlays must use
+// this rather than !Done, or a cancelled create keeps reporting CREATING
+// for the rest of its (now pointless) provisioning run.
+func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cancelled }
 
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
@@ -538,12 +552,39 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				s.stampBirthDeleteAfterStopped(info.Ref.Name, req.DeleteAfterStoppedSeconds)
 			}
 
+			// A delete that landed mid-provisioning owns this outcome, not
+			// the creation (#1035): drop the tracking entry and log the one
+			// line that describes what happened. Reporting it as a failure
+			// is what let cleanup deletes masquerade as independent
+			// confirmations of a create bug during cloud#920.
 			s.pendingMu.Lock()
-			if pending, exists := s.pendingCreations[req.Username]; exists {
+			pending, exists := s.pendingCreations[req.Username]
+			cancelled := exists && pending.Cancelled
+			switch {
+			case cancelled:
+				delete(s.pendingCreations, req.Username)
+			case exists:
 				pending.Done = true
 				pending.Error = err
 			}
 			s.pendingMu.Unlock()
+
+			if cancelled {
+				log.Printf("Async container creation for %s cancelled by delete request (provisioning aborted; any error above is a consequence of the delete, not a creation failure)", req.Username)
+				// The delete can land in the narrow window before the
+				// instance exists, in which case it deleted nothing and
+				// this goroutine went on to finish the box. Reap it —
+				// otherwise the caller's delete silently leaves behind the
+				// container it asked to remove.
+				if err == nil && info != nil {
+					if delErr := s.manager.Delete(req.Username, true); delErr != nil {
+						log.Printf("Async container creation for %s completed after its delete; removing it failed: %v", req.Username, delErr)
+					} else {
+						log.Printf("Async container creation for %s completed after its delete; removed the late box", req.Username)
+					}
+				}
+				return
+			}
 
 			if err != nil {
 				log.Printf("Async container creation failed for %s: %v", req.Username, err)
@@ -734,7 +775,7 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 	pendingStates := map[string]pb.ContainerState{}
 	s.pendingMu.RLock()
 	for u, p := range s.pendingCreations {
-		if p.Done {
+		if !p.active() {
 			continue
 		}
 		st := pb.ContainerState_CONTAINER_STATE_CREATING
@@ -894,7 +935,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 	pending, hasPending := s.pendingCreations[req.Username]
 	s.pendingMu.RUnlock()
 
-	if hasPending && !pending.Done {
+	if pending.active() {
 		// Determine if creating or provisioning
 		state := pb.ContainerState_CONTAINER_STATE_CREATING
 		if pending.Provisioning {
@@ -984,6 +1025,17 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
 
+	// Claim any in-flight async creation before touching the instance (#1035).
+	// Provisioning takes minutes, so a delete very often lands mid-run; without
+	// this the goroutine reports the resulting "Instance not found" as
+	// "Async container creation failed", which reads in the journal exactly
+	// like a genuine create bug. Marking first (not after) matters: the
+	// misleading exec errors are produced by the delete itself.
+	cancelledCreate := s.cancelPendingCreation(req.Username)
+	if cancelledCreate {
+		log.Printf("Delete for %s arrived while its creation was still provisioning; cancelling the create", req.Username)
+	}
+
 	// Before deleting, deregister Guacamole connection if this is a Windows VM
 	s.deregisterGuacamoleConnection(req.Username)
 
@@ -992,6 +1044,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 		// owner refs; the backend keeps the namespace + data PVC (its
 		// delete-retains-data contract) and removes the gateway Pipe + Secrets.
 		if err := bb.Delete(ctx, box.BoxRef{Tenant: req.Username}, req.Force); err != nil {
+			s.uncancelPendingCreation(req.Username, cancelledCreate)
 			return nil, fmt.Errorf("failed to delete container: %w", err)
 		}
 		s.cascadeContainerCleanup(ctx, containerName, req.Username)
@@ -1015,9 +1068,11 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 				}
 				_, statusCode, fwdErr := peer.ForwardRequest("DELETE", fmt.Sprintf("/v1/containers/%s%s", req.Username, forceParam), authToken, nil)
 				if fwdErr != nil {
+					s.uncancelPendingCreation(req.Username, cancelledCreate)
 					return nil, fmt.Errorf("failed to delete container on peer %s: %w", peer.ID, fwdErr)
 				}
 				if statusCode >= 400 {
+					s.uncancelPendingCreation(req.Username, cancelledCreate)
 					return nil, fmt.Errorf("peer %s returned status %d for delete", peer.ID, statusCode)
 				}
 				return &pb.DeleteContainerResponse{
@@ -1026,6 +1081,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 				}, nil
 			}
 		}
+		s.uncancelPendingCreation(req.Username, cancelledCreate)
 		return nil, fmt.Errorf("failed to delete container: %w", err)
 	}
 
@@ -1050,6 +1106,38 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 		Message:       fmt.Sprintf("Container for user %s deleted successfully", req.Username),
 		ContainerName: containerName,
 	}, nil
+}
+
+// cancelPendingCreation flags an in-flight async creation for this user as
+// cancelled-by-delete and reports whether it found one (#1035). The creating
+// goroutine can't be aborted mid-step — it's deep inside an image launch or a
+// package install — so cancellation is about attribution, not interruption:
+// the goroutine reads the flag on completion and logs a cancellation instead
+// of a failure, and Get/List stop reporting CREATING for a box that is being
+// torn down.
+func (s *ContainerServer) cancelPendingCreation(username string) bool {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	pending, exists := s.pendingCreations[username]
+	if !exists || pending.Done || pending.Cancelled {
+		return false
+	}
+	pending.Cancelled = true
+	return true
+}
+
+// uncancelPendingCreation reverts a cancellation whose delete then failed, so
+// a creation that is still genuinely running keeps reporting its real state.
+// No-op unless this delete is the one that set the flag.
+func (s *ContainerServer) uncancelPendingCreation(username string, cancelled bool) {
+	if !cancelled {
+		return
+	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if pending, exists := s.pendingCreations[username]; exists {
+		pending.Cancelled = false
+	}
 }
 
 // cascadeContainerCleanup removes the resources that DeleteContainer's

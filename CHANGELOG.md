@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A delete racing an in-flight async create no longer manufactures a
+  fake "Async creation failed"** (#1035). Provisioning runs for minutes,
+  so a delete frequently lands mid-run and pulls the instance out from
+  under the creating goroutine; the resulting `Instance not found` was
+  logged as a creation failure, indistinguishable in the journal from a
+  genuine one. (During one incident investigation this manufactured at
+  least eight false "confirmations" of an already-fixed bug.) The delete
+  now claims the pending creation, which logs a single unambiguous
+  cancellation line, drops out of the `CREATING`/`PROVISIONING` state
+  Get/List report, and reaps the box if the creation happened to finish
+  after its own delete. Genuine failures still surface as `ERROR`.
+- **Delete-cascade tolerates a live SSH session when removing the host
+  user** (#1035). `userdel: user X is currently used by process N` left
+  an orphaned account until the reaper's next tick; the box is already
+  gone at that point, so the remaining session is terminated and
+  `userdel` retried once. Every other `userdel` failure is unchanged.
+
 ## [0.57.0] - 2026-07-20
 
 ### Added
