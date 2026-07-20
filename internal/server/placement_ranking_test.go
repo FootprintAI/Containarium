@@ -99,7 +99,7 @@ func TestResolvePoolPlacement_CapacityRanking(t *testing.T) {
 
 	t.Run("ranking on: least-committed wins", func(t *testing.T) {
 		p := newPool()
-		p.EnableCapacityRanking("service-token")
+		p.EnableCapacityRanking(func() (string, error) { return "service-token", nil })
 		s := &ContainerServer{peerPool: p}
 		req := &pb.CreateContainerRequest{Pool: "demo"}
 		if err := s.resolvePoolPlacement(req); err != nil {
@@ -128,7 +128,7 @@ func TestResolvePoolPlacement_CapacityRanking(t *testing.T) {
 
 	t.Run("ranking on but no healthy peer errors", func(t *testing.T) {
 		p := NewPeerPool("local-prod", "", nil, "prod")
-		p.EnableCapacityRanking("service-token")
+		p.EnableCapacityRanking(func() (string, error) { return "service-token", nil })
 		s := &ContainerServer{peerPool: p}
 		req := &pb.CreateContainerRequest{Pool: "demo"}
 		if err := s.resolvePoolPlacement(req); err == nil {
@@ -137,11 +137,11 @@ func TestResolvePoolPlacement_CapacityRanking(t *testing.T) {
 	})
 }
 
-// TestEnableCapacityRanking_EmptyTokenNoop: an empty token must not flip
+// TestEnableCapacityRanking_NilTokenNoop: a nil token provider must not flip
 // ranking on (we'd fetch nothing and rank on always-unknown capacity).
-func TestEnableCapacityRanking_EmptyTokenNoop(t *testing.T) {
+func TestEnableCapacityRanking_NilTokenNoop(t *testing.T) {
 	p := NewPeerPool("local", "", nil, "prod")
-	p.EnableCapacityRanking("")
+	p.EnableCapacityRanking(nil)
 	if p.CapacityRankingEnabled() {
 		t.Fatal("empty token must leave ranking off")
 	}
