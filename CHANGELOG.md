@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-07-20
+
+### Added
+
+- **Weekly base-image re-bake timer** (#1037, closes its remaining
+  scope). `scripts/containarium-rebake.{service,timer}` re-run
+  `image-bake` every Sunday (with jitter and downtime catch-up) so baked
+  base images keep receiving distro security updates; `docs/IMAGE-BAKE.md`
+  covers baking, the fast-path opt-out, timer install, and staleness
+  checks. A failed re-bake is safe: the image alias only moves on a
+  successful publish.
+
+### Fixed
+
+- **BYOC driver-token auto-refresh no longer silently disabled by a
+  legacy cloud config** (cloud#888/#903). The #557 refresh loop only
+  armed when `cloud.yaml` named a `jwt_secret_file` — a field
+  pre-#557 enrollments never wrote and daemon upgrades never backfilled,
+  so legacy-enrolled hosts' cloud-stored driver tokens silently expired
+  at the 30-day cap and every cloud→host operation failed 401. An empty
+  field now falls back to the default daemon secret path when readable;
+  `cloud enroll --no-driver-token` writes a durable
+  `driver_token_disabled` marker so the explicit opt-out survives; and
+  a daemon that can refresh from neither path logs a loud warning naming
+  the 30-day consequence.
+
 ## [0.56.0] - 2026-07-20
 
 ### Added
