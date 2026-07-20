@@ -948,14 +948,27 @@ skipAppHosting:
 		} else {
 			cloudDeps.Containers = cloudActuator // only set when non-nil (avoid nil-iface trap)
 		}
-		// Driver-token auto-refresh (#557): if cloud.yaml has a JWTSecretFile,
-		// provide a minter so the actuation client keeps the cloud-stored
-		// driver credential from reaching the 30-day OSS cap.
-		if cloudCfg.JWTSecretFile != "" {
-			secretFile := cloudCfg.JWTSecretFile // capture for closure
-			cloudDeps.Driver = func() (string, error) {
-				return cloud.MintDriverToken(secretFile, 30*24*time.Hour)
+		// Driver-token auto-refresh (#557). Gating this on cloud.yaml's
+		// jwt_secret_file alone turned out to be a production trap
+		// (cloud#888/#903 postmortem): a cloud.yaml written by a pre-#557
+		// enroll has no jwt_secret_file, nothing backfills the config on
+		// daemon upgrades, and the refresh loop silently never armed — so
+		// legacy-enrolled hosts' cloud-stored driver tokens all died at the
+		// 30-day cap and every cloud→host driver call 401'd forever. When
+		// the config doesn't name a secret file, fall back to the default
+		// daemon secret path if it's readable; only an explicit
+		// driver_token_disabled opts out of refresh entirely.
+		switch secretFile := cloud.ResolveDriverSecretFile(cloudCfg, nil); {
+		case secretFile != "":
+			if cloudCfg.JWTSecretFile == "" {
+				log.Printf("Cloud driver-token refresh: cloud.yaml has no jwt_secret_file (legacy enroll); falling back to %s", secretFile)
 			}
+			sf := secretFile // capture for closure
+			cloudDeps.Driver = func() (string, error) {
+				return cloud.MintDriverToken(sf, 30*24*time.Hour)
+			}
+		case !cloudCfg.DriverTokenDisabled:
+			log.Printf("WARNING: cloud driver-token refresh DISABLED (no jwt_secret_file in cloud.yaml and no readable %s) — the cloud-stored driver token will expire within 30 days and cloud→host operations will start failing 401; re-run `containarium cloud enroll` to fix", cloud.DefaultDaemonJWTSecretFile)
 		}
 		if cc, nerr := cloud.New(cloudCfg, cloudDeps); nerr != nil {
 			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
