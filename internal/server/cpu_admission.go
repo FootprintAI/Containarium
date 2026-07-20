@@ -82,7 +82,7 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
 	}
 
 	detail := fmt.Sprintf(
-		"host has %.0f physical cores; %.2f already committed + %.2f requested = %.2f would exceed the %.2f× overcommit ceiling (%.2f cores) — projected %.2f×",
+		"host has %.0f logical CPUs; %.2f already committed + %.2f requested = %.2f would exceed the %.2f× overcommit ceiling (%.2f cores) — projected %.2f×",
 		physical, committed, request, committed+request, s.cpuOvercommitFactor, physical*s.cpuOvercommitFactor, ratio)
 
 	if !s.cpuOvercommitEnforce {
@@ -94,10 +94,11 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
 		"CPU capacity exceeded on this backend: %s. Retry on a less-loaded backend/pool or a larger host, or ask an operator to raise the overcommit factor.", detail)
 }
 
-// hostPhysicalCores reports the host's physical core count. The hostCoresFn
-// seam lets tests inject a count without a live Incus daemon (mirrors
-// localHealthCheckFn); in production it reads Incus's own resource inventory,
-// the same source GetSystemInfo uses.
+// hostPhysicalCores reports the host's logical CPU count (vCPUs — Incus's
+// TotalCPUs sums hardware threads, so this counts SMT threads, matching the
+// unit limits.cpu itself uses). The hostCoresFn seam lets tests inject a count
+// without a live Incus daemon (mirrors localHealthCheckFn); in production it
+// reads Incus's own resource inventory, the same source GetSystemInfo uses.
 func (s *ContainerServer) hostPhysicalCores() (float64, error) {
 	if s.hostCoresFn != nil {
 		return s.hostCoresFn()

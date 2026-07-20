@@ -3567,6 +3567,18 @@ func (s *ContainerServer) resolvePoolPlacement(req *pb.CreateContainerRequest) e
 		req.BackendId = s.peerPool.LocalBackendID()
 		return nil
 	}
+	// Capacity-aware ranking (#1029 direction 2): prefer the least-committed
+	// peer instead of an arbitrary (map-order) first-healthy one. Opt-in; when
+	// off, or if no peer's capacity is known yet, this falls back to
+	// first-healthy. See placement_ranking.go.
+	if s.peerPool.CapacityRankingEnabled() {
+		if pick := s.peerPool.PickLeastCommittedInPool(req.Pool); pick != nil {
+			req.BackendId = pick.ID
+			return nil
+		}
+		return fmt.Errorf("no healthy backend found in pool %q", req.Pool)
+	}
+
 	candidates := s.peerPool.HealthyPeersInPool(req.Pool)
 	if len(candidates) == 0 {
 		return fmt.Errorf("no healthy backend found in pool %q", req.Pool)

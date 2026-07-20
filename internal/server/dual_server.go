@@ -111,6 +111,9 @@ type DualServerConfig struct {
 	// CPUOvercommitEnforce actually rejects over-ceiling creates when the gate
 	// is enabled; false keeps it advisory (log-only).
 	CPUOvercommitEnforce bool
+	// PlacementCPUAware ranks pool placement by peer CPU commitment (least
+	// committed wins) instead of first-healthy (#1029 direction 2).
+	PlacementCPUAware bool
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
@@ -1863,6 +1866,20 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		} else {
 			ds.peerPool.StartCertRenewal(ctx)
 		}
+		// Capacity-aware placement ranking (#1029 direction 2). Enable BEFORE
+		// discovery starts so the very first poll already caches peer
+		// commitment. Needs an admin-scoped token to read peers' system-info
+		// (physical cores) and container lists (committed cores); if minting it
+		// fails, ranking stays off and placement falls back to first-healthy.
+		if ds.config.PlacementCPUAware {
+			if token, err := ds.tokenManager.GenerateToken("_system", []string{"admin"}, 30*24*time.Hour); err != nil {
+				log.Printf("[placement] capacity-aware ranking requested but service token mint failed (%v) — staying on first-healthy placement", err)
+			} else {
+				ds.peerPool.EnableCapacityRanking(token)
+				log.Printf("[placement] capacity-aware pool ranking enabled: pool creates prefer the least CPU-committed peer")
+			}
+		}
+
 		ds.peerPool.StartDiscovery(ctx)
 		ds.containerServer.SetPeerPool(ds.peerPool)
 

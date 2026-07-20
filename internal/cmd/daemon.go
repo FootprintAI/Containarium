@@ -58,6 +58,7 @@ var (
 	region               string
 	cpuOvercommitFactor  float64
 	cpuOvercommitEnforce bool
+	placementCPUAware    bool
 	publicHostname       string
 	publicAliases        []string
 	publicBaseDomains    []string
@@ -162,8 +163,9 @@ func init() {
 
 	// Runtime selection
 	daemonCmd.Flags().StringVar(&daemonRuntime, "runtime", "", `Box backend: "lxc" (default) or "k8s". Falls back to CONTAINARIUM_RUNTIME env when unset.`)
-	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed physical-cores × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
+	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed logical-CPUs (vCPUs, incl. SMT threads) × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
 	daemonCmd.Flags().BoolVar(&cpuOvercommitEnforce, "cpu-overcommit-enforce", envBool("CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE", false), "With --cpu-overcommit-factor > 0, actually reject over-ceiling creates. When false (default), the check is advisory (logs what it would reject). Env: CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE (#1029).")
+	daemonCmd.Flags().BoolVar(&placementCPUAware, "placement-cpu-aware", envBool("CONTAINARIUM_PLACEMENT_CPU_AWARE", false), "When a pool create has no explicit backend, place it on the least CPU-committed healthy peer instead of an arbitrary one. Off by default (first-healthy). Env: CONTAINARIUM_PLACEMENT_CPU_AWARE (#1029).")
 }
 
 // envFloat reads name as a float64, returning def when unset or unparseable.
@@ -546,6 +548,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		Region:               region,
 		CPUOvercommitFactor:  cpuOvercommitFactor,
 		CPUOvercommitEnforce: cpuOvercommitEnforce,
+		PlacementCPUAware:    placementCPUAware,
 		PublicHostname:       publicHostname,
 		PublicAliases:        publicAliases,
 		PublicBaseDomains:    resolvePublicBaseDomains(publicBaseDomains, baseDomain),
