@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in capacity-aware pool placement** (#1029). When a pool create
+  has no explicit backend, `--placement-cpu-aware` routes it to the
+  least CPU-committed healthy peer (committed cores / physical cores)
+  instead of an arbitrary first-healthy one, spreading load before the
+  admission gate has to refuse it. The daemon caches each peer's
+  commitment on the existing 30s discovery cadence (no per-create
+  round-trip); peers whose capacity isn't known yet fall back to
+  first-healthy. Off by default; the local-backend preference is
+  unchanged. Env `CONTAINARIUM_PLACEMENT_CPU_AWARE`; see
+  `docs/CPU-CAPACITY-ADMISSION.md`.
 - **Opt-in CPU capacity admission** (#1029). A daemon can now refuse a
   container create that would push its host's committed cores past
   `physical_cores × --cpu-overcommit-factor`, closing the gap where a

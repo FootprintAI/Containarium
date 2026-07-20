@@ -39,6 +39,27 @@ type PeerClient struct {
 	CachedOS             string
 	CachedVersion        string
 	CachedContainerCount int32
+
+	// Cached CPU capacity for placement ranking (#1029 direction 2). Refreshed
+	// on the discovery cadence when capacity ranking is enabled; read by the
+	// placement ranker. All three are written under PeerPool.mu and must be
+	// read under it too (PickLeastCommittedInPool does). CapacityKnown gates
+	// use: until the first successful fetch the peer is treated as
+	// unknown-capacity and ranked after peers whose load we do know.
+	CachedPhysicalCores  float64
+	CachedCommittedCores float64
+	CapacityKnown        bool
+}
+
+// commitRatio reports this peer's CPU overcommit ratio (committed cores /
+// physical cores) and whether it is known. Unknown when no successful capacity
+// fetch has happened yet or the peer reports no cores. Callers must hold the
+// owning PeerPool's lock (fields are written under it).
+func (pc *PeerClient) commitRatio() (float64, bool) {
+	if !pc.CapacityKnown || pc.CachedPhysicalCores <= 0 {
+		return 0, false
+	}
+	return pc.CachedCommittedCores / pc.CachedPhysicalCores, true
 }
 
 // urlScheme returns "http" or "https" — defaults to "http" for
@@ -66,6 +87,36 @@ type PeerPool struct {
 	// 0.5 HTTPS peer-to-peer. Nil when no CA is configured —
 	// peer.go then falls back to plain HTTP (pre-0.5 behavior).
 	pki *peerPKI
+
+	// Capacity-aware placement ranking (#1029 direction 2). When
+	// capacityRanking is true and capacityServiceToken is set, the discovery
+	// loop also refreshes each healthy peer's CPU commitment, and
+	// PickLeastCommittedInPool ranks candidates by it. Both are set once via
+	// EnableCapacityRanking; empty/false leaves placement at first-healthy.
+	capacityRanking      bool
+	capacityServiceToken string
+}
+
+// CapacityRankingEnabled reports whether commitment-ranked placement is active.
+func (p *PeerPool) CapacityRankingEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.capacityRanking
+}
+
+// EnableCapacityRanking turns on per-peer CPU-commitment tracking and
+// commitment-ranked placement (#1029 direction 2). serviceToken is the
+// admin-scoped internal token used to read each peer's system-info (physical
+// cores) and container list (committed cores) — both are admin-only endpoints.
+// A no-op if the token is empty. Idempotent; call once during setup.
+func (p *PeerPool) EnableCapacityRanking(serviceToken string) {
+	if serviceToken == "" {
+		return
+	}
+	p.mu.Lock()
+	p.capacityRanking = true
+	p.capacityServiceToken = serviceToken
+	p.mu.Unlock()
 }
 
 // NewPeerPool creates a new peer pool.
@@ -436,12 +487,67 @@ func (p *PeerPool) discover() {
 	}
 
 	// Cache system info for healthy peers (best-effort, no auth needed for internal calls)
+	rankToken := ""
+	if p.capacityRanking {
+		rankToken = p.capacityServiceToken
+	}
 	for _, pc := range p.peers {
 		if !pc.Healthy {
 			continue
 		}
 		go pc.refreshCachedInfo()
+		// Placement-ranking capacity (#1029 direction 2), best-effort and only
+		// when ranking is enabled — the two extra admin-scoped reads per peer
+		// per tick are wasted work otherwise.
+		if rankToken != "" {
+			go p.refreshPeerCapacity(pc, rankToken)
+		}
 	}
+}
+
+// refreshPeerCapacity fetches a peer's physical core count (system-info) and
+// its committed tenant cores (container list, already core-infra-filtered
+// server-side), then caches them for the placement ranker. Best-effort: on any
+// error the peer keeps its previous cached value (and stays unknown until the
+// first success), so a transient blip never makes it look idle or overloaded.
+// The HTTP calls run without any lock held; only the cache write is guarded.
+func (p *PeerPool) refreshPeerCapacity(pc *PeerClient, serviceToken string) {
+	physical, perr := pc.fetchPhysicalCores(serviceToken)
+	if perr != nil {
+		return
+	}
+	containers, cerr := pc.fetchContainers(serviceToken)
+	if cerr != nil {
+		return
+	}
+	var committed float64
+	for i := range containers {
+		committed += incus.CommittedCores(containers[i].CPU)
+	}
+
+	p.mu.Lock()
+	pc.CachedPhysicalCores = physical
+	pc.CachedCommittedCores = committed
+	pc.CapacityKnown = true
+	p.mu.Unlock()
+}
+
+// fetchPhysicalCores reads a peer's total physical core count from its
+// (admin-only) system-info endpoint.
+func (pc *PeerClient) fetchPhysicalCores(serviceToken string) (float64, error) {
+	body, err := pc.ForwardGetSystemInfo(serviceToken)
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Info struct {
+			TotalCpus int32 `json:"totalCpus"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, err
+	}
+	return float64(result.Info.TotalCpus), nil
 }
 
 // LocalBackendID returns this daemon's backend ID.
