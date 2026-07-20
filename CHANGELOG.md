@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an orphaned account until the reaper's next tick; the box is already
   gone at that point, so the remaining session is terminated and
   `userdel` retried once. Every other `userdel` failure is unchanged.
+- **CPU limits are now a hard CFS quota, not a soft scheduler share**
+  (#1034, completing #1029). `limits.cpu.allowance` was emitted as a
+  percentage (`400%`), which Incus applies only under contention — the
+  cgroup's `cpu.max` stayed `max`, so a single container still burst to
+  the whole host whenever its neighbours were idle. Containarium now
+  emits the time-slice form (`400ms/100ms`), the documented hard-quota
+  syntax, giving a request the bounded entitlement the platform bills
+  and schedules against and matching Kubernetes millicpu semantics.
+  Existing containers keep their percentage allowance until resized;
+  reading a CPU request back understands both forms.
 
 ## [0.57.0] - 2026-07-20
 
