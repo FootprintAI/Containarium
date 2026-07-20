@@ -105,6 +105,12 @@ type DualServerConfig struct {
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
+	// CPUOvercommitFactor is the max CPU overcommit ceiling (committed cores /
+	// physical cores) for create-time admission (#1029). <= 0 disables the gate.
+	CPUOvercommitFactor float64
+	// CPUOvercommitEnforce actually rejects over-ceiling creates when the gate
+	// is enabled; false keeps it advisory (log-only).
+	CPUOvercommitEnforce bool
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
@@ -1812,6 +1818,18 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			region = ds.config.Pool
 		}
 		ds.containerServer.SetCapabilityIdentity(region, ds.config.Pool)
+
+		// CPU capacity admission policy (#1029 direction 2). Off unless an
+		// operator set a factor; logs its posture at boot so an enabled gate
+		// is visible, not silent.
+		ds.containerServer.SetCPUOvercommitPolicy(ds.config.CPUOvercommitFactor, ds.config.CPUOvercommitEnforce)
+		if ds.config.CPUOvercommitFactor > 0 {
+			mode := "advisory (log-only)"
+			if ds.config.CPUOvercommitEnforce {
+				mode = "enforcing"
+			}
+			log.Printf("[cpu-admission] CPU overcommit gate enabled: factor=%.2f× mode=%s", ds.config.CPUOvercommitFactor, mode)
+		}
 
 		// Integrity self-measurement posture (#683): the policy/config state the
 		// daemon folds into its signed self-measurement so the control plane can

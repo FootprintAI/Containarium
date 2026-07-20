@@ -196,3 +196,85 @@ func parseAllowanceCores(allowance string) (float64, bool) {
 	}
 	return quota / period, true
 }
+
+// CommittedCores resolves a Containarium CPU request string — the same form
+// stored on ContainerInfo.CPU — into the number of physical cores it commits,
+// for placement-level capacity accounting (#1029 direction 2). It is the
+// inverse of what CreateContainer wrote:
+//
+//	"4"           → 4     (whole-core; post-#1034 also carries an 800ms/100ms quota)
+//	"250m"        → 0.25  (millicpu)
+//	"1.5"         → 1.5   (decimal)
+//	"400ms/100ms" → 4     (a hard quota read straight back)
+//	"200%"        → 2     (a legacy soft-share allowance)
+//	"0-3"         → 4     (a CPU set / pinning range — its cardinality)
+//	""            → 0     (no limit recorded; contributes nothing to the sum)
+//
+// An unparseable request yields 0 rather than an error: capacity accounting is
+// advisory admission, and a single malformed entry must not make the whole
+// host un-schedulable. A "" / 0 result is deliberately conservative — an
+// unbounded container is under-counted, not over-counted — because the size
+// tiers that drive real tenants always carry an explicit request, so the only
+// things that land here empty are infra/legacy boxes the caller already
+// excludes.
+func CommittedCores(cpuRequest string) float64 {
+	s := strings.TrimSpace(cpuRequest)
+	if s == "" {
+		return 0
+	}
+	// A raw allowance string ("800%", "400ms/100ms") — the value some callers
+	// read straight off limits.cpu.allowance. ContainerInfo.CPU never carries
+	// this form (formatCPULimitFromConfig already normalizes it to "8"/"250m"),
+	// but accepting it keeps the helper total over any CPU/allowance string.
+	// parseAllowanceCores cleanly rejects request-forms ("4", "250m", "0-3"),
+	// which have no "%" and no "/", so they fall through to the request path.
+	if cores, ok := parseAllowanceCores(s); ok {
+		return cores
+	}
+	cl, err := parseCPULimit(s)
+	if err != nil {
+		return 0
+	}
+	if cl.Allowance != "" {
+		if cores, ok := parseAllowanceCores(cl.Allowance); ok {
+			return cores
+		}
+	}
+	// No allowance: Count is either a plain integer count or a CPU set/range
+	// ("0-3", "0,2-4") that parseCPULimit passed through verbatim.
+	return countCPUSet(cl.Count)
+}
+
+// countCPUSet returns the number of cores named by an Incus limits.cpu value:
+// a plain integer count ("8" → 8) or the cardinality of a set/range
+// ("0-3" → 4, "0,2-4" → 4). Malformed fragments are skipped.
+func countCPUSet(spec string) float64 {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return 0
+	}
+	if !strings.ContainsAny(spec, ",-") {
+		if n, err := strconv.Atoi(spec); err == nil && n >= 0 {
+			return float64(n)
+		}
+		return 0
+	}
+	var total float64
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		lo, hi, ok := strings.Cut(part, "-")
+		if !ok {
+			if _, err := strconv.Atoi(part); err == nil {
+				total++
+			}
+			continue
+		}
+		a, aerr := strconv.Atoi(strings.TrimSpace(lo))
+		b, berr := strconv.Atoi(strings.TrimSpace(hi))
+		if aerr != nil || berr != nil || b < a {
+			continue
+		}
+		total += float64(b - a + 1)
+	}
+	return total
+}

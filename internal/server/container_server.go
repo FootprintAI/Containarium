@@ -102,6 +102,15 @@ type ContainerServer struct {
 	// backend without a live Incus daemon. nil in production; the real probe
 	// runs.
 	localHealthCheckFn func() bool
+	// CPU overcommit admission (#1029 direction 2). cpuOvercommitFactor is the
+	// ceiling multiple of physical cores a host may commit; <= 0 disables the
+	// gate (the default). cpuOvercommitEnforce=false makes an enabled gate
+	// advisory (log-only). hostCoresFn is a test seam for the host's physical
+	// core count (mirrors localHealthCheckFn); nil reads Incus in production.
+	// See cpu_admission.go.
+	cpuOvercommitFactor  float64
+	cpuOvercommitEnforce bool
+	hostCoresFn          func() (float64, error)
 	// capacityStore holds this backend's spare-capacity advertise/withdraw
 	// state + local policy (#680). Lazily initialized so an unwired server
 	// (tests) still answers GetCapacityHeadroom with "not advertised".
@@ -454,6 +463,15 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	}
 	if spec.Resources.Disk == "" {
 		spec.Resources.Disk = "50GB"
+	}
+
+	// CPU capacity admission (#1029 direction 2). Runs once the effective CPU
+	// request is known and before any create sink (Box CR / async / sync), so
+	// all three paths are gated uniformly. No-op unless an operator enabled the
+	// gate; peer-routed creates already returned above and are gated by the
+	// target peer's own daemon. See cpu_admission.go.
+	if err := s.admitCPUCapacity(req.Username, spec.Resources.CPU); err != nil {
+		return nil, err
 	}
 
 	// Convergence (#995): when the Box operator is running, the imperative
@@ -3338,6 +3356,16 @@ func (s *ContainerServer) SetStartTime(t time.Time) {
 func (s *ContainerServer) SetCapabilityIdentity(region, reportedClass string) {
 	s.region = region
 	s.reportedClass = reportedClass
+}
+
+// SetCPUOvercommitPolicy configures create-time CPU capacity admission (#1029
+// direction 2). factor is the ceiling multiple of physical cores a host may
+// commit (<= 0 disables the gate — the default); enforce=false makes an
+// enabled gate advisory (log-only). Called once from DualServer setup. See
+// cpu_admission.go.
+func (s *ContainerServer) SetCPUOvercommitPolicy(factor float64, enforce bool) {
+	s.cpuOvercommitFactor = factor
+	s.cpuOvercommitEnforce = enforce
 }
 
 // SetSSHHost wires the public SSH host clients dial to reach this daemon's

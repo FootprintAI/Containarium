@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in CPU capacity admission** (#1029). A daemon can now refuse a
+  container create that would push its host's committed cores past
+  `physical_cores × --cpu-overcommit-factor`, closing the gap where a
+  host could accept far more committed CPU than it physically has and
+  let one tenant starve its co-located neighbours. Off by default
+  (`factor = 0`); `--cpu-overcommit-enforce` gates whether an enabled
+  check rejects (gRPC `ResourceExhausted`) or is advisory (logs what it
+  would reject, for observe-first rollout). The gate is per-host and
+  composes with pools — a peer-routed create is admitted by the target
+  peer's own daemon — excludes core-infra and the tenant being
+  recreated, and fails open if host capacity can't be read. Env
+  fallbacks `CONTAINARIUM_CPU_OVERCOMMIT_FACTOR` /
+  `CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE`; see `docs/CPU-CAPACITY-ADMISSION.md`.
+
 ## [0.58.0] - 2026-07-20
 
 ### Fixed
