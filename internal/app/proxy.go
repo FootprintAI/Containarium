@@ -673,6 +673,84 @@ func (p *ProxyManager) EnsureServerConfig() error {
 		return p.createServerConfig()
 	}
 
+	// The server config already exists — createServerConfig() (a full PUT of
+	// {Listen, Routes: []}) would clobber every route Caddy already holds, so
+	// it must never be called here. Instead reconcile just the listen array:
+	// a host that flips on CONTAINARIUM_BYOC_INGRESS_ADDR (#733 slice 3) after
+	// its edge was already provisioned needs the new loopback listener added
+	// to a live config, and this was the only path that could add it.
+	//
+	// Decode into a minimal struct with only `listen` — CaddyServerConfig.Routes
+	// is []CaddyRouteTyped, whose Handle field is the []CaddyHandler interface
+	// slice encoding/json cannot unmarshal into. A real server with concrete
+	// routes would fail full-struct decode exactly like the ensureHTTPApp bug
+	// this file already carries a regression test for.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read existing server config: %w", err)
+	}
+	var existing struct {
+		Listen []string `json:"listen"`
+	}
+	if err := json.Unmarshal(body, &existing); err != nil {
+		return fmt.Errorf("failed to parse existing server config: %w", err)
+	}
+	return p.ensureListenAddrs(existing.Listen)
+}
+
+// ensureListenAddrs reconciles the live "listen" array against listenAddrs()
+// (:80, :443, plus the BYOC ingress addr when configured). Caddy's admin API
+// lets a PUT target a specific config subpath, so this replaces only the
+// listen array — routes and everything else under this server are untouched.
+func (p *ProxyManager) ensureListenAddrs(current []string) error {
+	want := p.listenAddrs()
+	have := make(map[string]bool, len(current))
+	for _, a := range current {
+		have[a] = true
+	}
+	missing := false
+	for _, a := range want {
+		if !have[a] {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+
+	merged := append([]string{}, current...)
+	for _, a := range want {
+		if !have[a] {
+			merged = append(merged, a)
+			have[a] = true
+		}
+	}
+
+	configJSON, err := json.Marshal(merged)
+	if err != nil {
+		return fmt.Errorf("failed to marshal listen addrs: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/config/apps/http/servers/%s/listen", p.caddyAdminURL, p.serverName)
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(configJSON))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to update listen addrs: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy returned error updating listen addrs (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	log.Printf("Caddy listen addrs updated: %v", merged)
 	return nil
 }
 
