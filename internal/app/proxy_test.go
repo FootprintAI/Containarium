@@ -699,8 +699,10 @@ func TestProxyManager_EnsureHTTPApp_AcceptsExistingConfigWithHandlers(t *testing
 // listenAddrs(). A host that flips on CONTAINARIUM_BYOC_INGRESS_ADDR after its
 // edge was already provisioned would restart, log that the ingress listener
 // was "enabled", and Caddy would silently keep listening on only :80/:443 —
-// the log line lied. This must add the missing listener via a scoped PUT to
-// .../listen, and must NOT touch the server's existing routes.
+// the log line lied. This must add the missing listener via the
+// getFullConfig/loadConfig atomic-swap path (a scoped PUT to .../listen
+// 409s on an already-set key — caught live on the same rollout), and must
+// NOT touch the server's existing routes.
 func TestProxyManager_EnsureServerConfig_AddsBYOCIngressListener_ToExistingConfig(t *testing.T) {
 	cfg := intactConfig()
 	httpApp := cfg["apps"].(map[string]interface{})["http"].(map[string]interface{})
@@ -753,8 +755,8 @@ func TestProxyManager_EnsureServerConfig_AddsBYOCIngressListener_ToExistingConfi
 		t.Errorf("existing route was clobbered: %v", route)
 	}
 
-	if fc.loads != 0 {
-		t.Errorf("expected EnsureServerConfig to use a scoped PUT to .../listen, not a whole-config /load — got %d loads", fc.loads)
+	if fc.loads != 1 {
+		t.Errorf("expected exactly one atomic /load to add the listener, got %d loads", fc.loads)
 	}
 }
 
@@ -769,8 +771,8 @@ func TestProxyManager_EnsureServerConfig_NoBYOCIngress_IsNoOp(t *testing.T) {
 	if err := pm.EnsureServerConfig(); err != nil {
 		t.Fatalf("EnsureServerConfig err = %v", err)
 	}
-	if fc.puts != 0 {
-		t.Errorf("expected no writes when listen is already [:80 :443] and BYOC ingress is off, got %d puts", fc.puts)
+	if fc.puts != 0 || fc.loads != 0 {
+		t.Errorf("expected no writes when listen is already [:80 :443] and BYOC ingress is off, got puts=%d loads=%d", fc.puts, fc.loads)
 	}
 }
 

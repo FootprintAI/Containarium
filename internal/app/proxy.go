@@ -680,11 +680,10 @@ func (p *ProxyManager) EnsureServerConfig() error {
 	// its edge was already provisioned needs the new loopback listener added
 	// to a live config, and this was the only path that could add it.
 	//
-	// Decode into a minimal struct with only `listen` — CaddyServerConfig.Routes
-	// is []CaddyRouteTyped, whose Handle field is the []CaddyHandler interface
-	// slice encoding/json cannot unmarshal into. A real server with concrete
-	// routes would fail full-struct decode exactly like the ensureHTTPApp bug
-	// this file already carries a regression test for.
+	// Decode only `{listen}` from this response — CaddyServerConfig.Routes is
+	// []CaddyRouteTyped, whose Handle field is the []CaddyHandler interface
+	// slice encoding/json cannot unmarshal into (the ensureHTTPApp bug this
+	// file already carries a regression test for).
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read existing server config: %w", err)
@@ -695,61 +694,65 @@ func (p *ProxyManager) EnsureServerConfig() error {
 	if err := json.Unmarshal(body, &existing); err != nil {
 		return fmt.Errorf("failed to parse existing server config: %w", err)
 	}
-	return p.ensureListenAddrs(existing.Listen)
-}
 
-// ensureListenAddrs reconciles the live "listen" array against listenAddrs()
-// (:80, :443, plus the BYOC ingress addr when configured). Caddy's admin API
-// lets a PUT target a specific config subpath, so this replaces only the
-// listen array — routes and everything else under this server are untouched.
-func (p *ProxyManager) ensureListenAddrs(current []string) error {
-	want := p.listenAddrs()
-	have := make(map[string]bool, len(current))
-	for _, a := range current {
+	have := make(map[string]bool, len(existing.Listen))
+	for _, a := range existing.Listen {
 		have[a] = true
 	}
-	missing := false
-	for _, a := range want {
+	for _, a := range p.listenAddrs() {
 		if !have[a] {
-			missing = true
-			break
+			// Only now — an actual gap — pay for the heavier
+			// getFullConfig/loadConfig round trip.
+			return p.addMissingListenAddrs()
 		}
 	}
-	if !missing {
-		return nil
+	return nil
+}
+
+// addMissingListenAddrs adds any of listenAddrs() not already present in the
+// live "listen" array. Goes through getFullConfig/loadConfig — the same
+// GET-mutate-POST/load round trip EnableProxyProtocol uses — rather than a
+// scoped PUT to .../listen: Caddy's admin API rejects a PUT at a path that
+// already holds a value (409 "key already exists"), so a direct PUT only
+// ever works the first time a listen array is set. loadConfig's POST /load
+// is an atomic whole-config swap, so this is race-free and — since only the
+// `listen` key on this one server object is touched — every existing route
+// survives untouched. Working with the raw map[string]interface{} tree also
+// sidesteps the CaddyRouteTyped interface-decode landmine noted above.
+func (p *ProxyManager) addMissingListenAddrs() error {
+	config, err := p.getFullConfig()
+	if err != nil {
+		return fmt.Errorf("get full config: %w", err)
+	}
+	apps := getMapField(config, "apps")
+	httpApp := getMapField(apps, "http")
+	servers := getMapField(httpApp, "servers")
+	srv := getMapField(servers, p.serverName)
+	if srv == nil {
+		return fmt.Errorf("HTTP server %q missing from config", p.serverName)
 	}
 
-	merged := append([]string{}, current...)
-	for _, a := range want {
+	currentRaw, _ := srv["listen"].([]interface{})
+	current := make([]string, 0, len(currentRaw))
+	have := make(map[string]bool, len(currentRaw))
+	for _, a := range currentRaw {
+		s, _ := a.(string)
+		current = append(current, s)
+		have[s] = true
+	}
+
+	merged := current
+	for _, a := range p.listenAddrs() {
 		if !have[a] {
 			merged = append(merged, a)
 			have[a] = true
 		}
 	}
+	srv["listen"] = toAnySlice(merged)
 
-	configJSON, err := json.Marshal(merged)
-	if err != nil {
-		return fmt.Errorf("failed to marshal listen addrs: %w", err)
+	if err := p.loadConfig(config); err != nil {
+		return fmt.Errorf("load config with updated listen addrs: %w", err)
 	}
-
-	url := fmt.Sprintf("%s/config/apps/http/servers/%s/listen", p.caddyAdminURL, p.serverName)
-	req, err := http.NewRequest("PUT", url, bytes.NewReader(configJSON))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to update listen addrs: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("caddy returned error updating listen addrs (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
 	log.Printf("Caddy listen addrs updated: %v", merged)
 	return nil
 }
