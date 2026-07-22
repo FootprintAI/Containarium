@@ -673,6 +673,87 @@ func (p *ProxyManager) EnsureServerConfig() error {
 		return p.createServerConfig()
 	}
 
+	// The server config already exists — createServerConfig() (a full PUT of
+	// {Listen, Routes: []}) would clobber every route Caddy already holds, so
+	// it must never be called here. Instead reconcile just the listen array:
+	// a host that flips on CONTAINARIUM_BYOC_INGRESS_ADDR (#733 slice 3) after
+	// its edge was already provisioned needs the new loopback listener added
+	// to a live config, and this was the only path that could add it.
+	//
+	// Decode only `{listen}` from this response — CaddyServerConfig.Routes is
+	// []CaddyRouteTyped, whose Handle field is the []CaddyHandler interface
+	// slice encoding/json cannot unmarshal into (the ensureHTTPApp bug this
+	// file already carries a regression test for).
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read existing server config: %w", err)
+	}
+	var existing struct {
+		Listen []string `json:"listen"`
+	}
+	if err := json.Unmarshal(body, &existing); err != nil {
+		return fmt.Errorf("failed to parse existing server config: %w", err)
+	}
+
+	have := make(map[string]bool, len(existing.Listen))
+	for _, a := range existing.Listen {
+		have[a] = true
+	}
+	for _, a := range p.listenAddrs() {
+		if !have[a] {
+			// Only now — an actual gap — pay for the heavier
+			// getFullConfig/loadConfig round trip.
+			return p.addMissingListenAddrs()
+		}
+	}
+	return nil
+}
+
+// addMissingListenAddrs adds any of listenAddrs() not already present in the
+// live "listen" array. Goes through getFullConfig/loadConfig — the same
+// GET-mutate-POST/load round trip EnableProxyProtocol uses — rather than a
+// scoped PUT to .../listen: Caddy's admin API rejects a PUT at a path that
+// already holds a value (409 "key already exists"), so a direct PUT only
+// ever works the first time a listen array is set. loadConfig's POST /load
+// is an atomic whole-config swap, so this is race-free and — since only the
+// `listen` key on this one server object is touched — every existing route
+// survives untouched. Working with the raw map[string]interface{} tree also
+// sidesteps the CaddyRouteTyped interface-decode landmine noted above.
+func (p *ProxyManager) addMissingListenAddrs() error {
+	config, err := p.getFullConfig()
+	if err != nil {
+		return fmt.Errorf("get full config: %w", err)
+	}
+	apps := getMapField(config, "apps")
+	httpApp := getMapField(apps, "http")
+	servers := getMapField(httpApp, "servers")
+	srv := getMapField(servers, p.serverName)
+	if srv == nil {
+		return fmt.Errorf("HTTP server %q missing from config", p.serverName)
+	}
+
+	currentRaw, _ := srv["listen"].([]interface{})
+	current := make([]string, 0, len(currentRaw))
+	have := make(map[string]bool, len(currentRaw))
+	for _, a := range currentRaw {
+		s, _ := a.(string)
+		current = append(current, s)
+		have[s] = true
+	}
+
+	merged := current
+	for _, a := range p.listenAddrs() {
+		if !have[a] {
+			merged = append(merged, a)
+			have[a] = true
+		}
+	}
+	srv["listen"] = toAnySlice(merged)
+
+	if err := p.loadConfig(config); err != nil {
+		return fmt.Errorf("load config with updated listen addrs: %w", err)
+	}
+	log.Printf("Caddy listen addrs updated: %v", merged)
 	return nil
 }
 

@@ -44,8 +44,60 @@ type Config struct {
 	// When set, the daemon's cloud actuation client re-mints a fresh driver
 	// token every ~⅔ of the 30-day cap and pushes it to the cloud via
 	// ReportHostStatus so the cloud-stored credential never expires.
-	// Written by `containarium cloud enroll`; empty disables auto-refresh.
+	// Written by `containarium cloud enroll`.
+	//
+	// EMPTY no longer disables auto-refresh (cloud#888/#903 postmortem): a
+	// cloud.yaml written by a pre-#557 enroll has no jwt_secret_file, and
+	// nothing backfills the config on daemon upgrades — so legacy-enrolled
+	// hosts silently never rotated and their cloud-stored driver token died
+	// at the 30-day cap. When empty, the daemon falls back to the default
+	// secret path if it's readable; set DriverTokenDisabled to genuinely
+	// opt out.
 	JWTSecretFile string `yaml:"jwt_secret_file,omitempty"`
+	// DriverTokenDisabled explicitly opts this host out of driver-token
+	// auto-refresh (the durable form of `--no-driver-token`): the cloud
+	// can't place workloads on the host, and the daemon must not push
+	// tokens that would silently re-enable drivability. Distinct from an
+	// EMPTY JWTSecretFile, which legacy enrollments produced without any
+	// intent to opt out.
+	DriverTokenDisabled bool `yaml:"driver_token_disabled,omitempty"`
+}
+
+// DefaultDaemonJWTSecretFile is where the daemon's JWT signing secret lives on
+// a standard install — the daemon-side fallback when cloud.yaml predates
+// jwt_secret_file (see JWTSecretFile), and the enroll CLI's flag default.
+const DefaultDaemonJWTSecretFile = "/etc/containarium/jwt.secret" // #nosec G101 -- a file PATH, not a credential
+
+// ResolveDriverSecretFile decides which JWT-secret path (if any) the daemon
+// should mint driver-token refreshes from (cloud#888/#903 postmortem):
+//
+//   - DriverTokenDisabled → "" (explicit opt-out, the durable
+//     `--no-driver-token`).
+//   - JWTSecretFile set → that path (the post-#557 enroll wrote it).
+//   - JWTSecretFile empty → DefaultDaemonJWTSecretFile IF it exists — a
+//     legacy (pre-#557) cloud.yaml simply predates the field; treating
+//     empty as "disabled" is what let legacy hosts' cloud-stored driver
+//     tokens silently expire at the 30-day cap.
+//   - Otherwise "" (nothing to mint from; caller warns loudly).
+//
+// statFn abstracts os.Stat for tests; pass nil for the real filesystem.
+func ResolveDriverSecretFile(cfg *Config, statFn func(string) error) string {
+	if cfg == nil || cfg.DriverTokenDisabled {
+		return ""
+	}
+	if cfg.JWTSecretFile != "" {
+		return cfg.JWTSecretFile
+	}
+	if statFn == nil {
+		statFn = func(p string) error {
+			_, err := os.Stat(p)
+			return err
+		}
+	}
+	if statFn(DefaultDaemonJWTSecretFile) == nil {
+		return DefaultDaemonJWTSecretFile
+	}
+	return ""
 }
 
 // DefaultPath resolves $HOME/.containarium/cloud.yaml.

@@ -11,10 +11,10 @@ import (
 	"github.com/footprintai/containarium/internal/cloud"
 )
 
-// defaultDaemonJWTSecretFile is where the daemon's JWT signing secret lives on
-// a standard host install — the same secret `cloud enroll` mints the BYOC
-// driver token against so the host's own daemon will accept it.
-const defaultDaemonJWTSecretFile = "/etc/containarium/jwt.secret" // #nosec G101 -- a file PATH, not a credential
+// defaultDaemonJWTSecretFile aliases the cloud package's shared default so
+// the enroll CLI and the daemon-side refresh fallback can never disagree on
+// where the secret lives.
+const defaultDaemonJWTSecretFile = cloud.DefaultDaemonJWTSecretFile
 
 // cloudCmd is the parent for `containarium cloud <verb>` — host enrollment with
 // a cloud control plane (#354, docs/CLOUD-ACTUATION-CLIENT-DESIGN.md). This is
@@ -194,13 +194,18 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 		Insecure:     cloudEnrollInsecure,
 		// Persist the JWT secret path so the daemon can re-mint the driver
 		// token autonomously before it expires (#557). Only set when the
-		// enroll actually minted a driver token (no-driver-token = no refresh).
+		// enroll actually minted a driver token.
 		JWTSecretFile: func() string {
 			if cloudEnrollNoDriverToken || opts.DriverToken == "" {
 				return ""
 			}
 			return cloudEnrollJWTSecretFile
 		}(),
+		// --no-driver-token is a durable opt-out, not just "skip this once":
+		// without the marker, the daemon's legacy-config fallback
+		// (cloud#888/#903) would start pushing driver tokens on the next
+		// restart and silently re-enable cloud drivability.
+		DriverTokenDisabled: cloudEnrollNoDriverToken,
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
