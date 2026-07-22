@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.1] - 2026-07-22
+
+### Fixed
+
+- **BYOC ingress listener now actually appears on an already-provisioned
+  host** (#733 follow-up). `EnsureServerConfig` treated an existing Caddy
+  server config as fully done and never checked whether its listen array
+  matched the configured set — a host that set
+  `CONTAINARIUM_BYOC_INGRESS_ADDR` after its edge was already provisioned
+  would restart, log that the ingress listener was enabled, and Caddy
+  would silently keep listening on only `:80`/`:443`. Caught live during
+  the #733 slice-4 rollout. Fixed with a scoped reconcile that adds only
+  the missing listen entries without touching existing routes.
+- **SSH host-key checking in `transfer.go` upgraded from
+  insecure-ignore to accept-new`** (#1061); `go.mod` bumped to Go
+  1.26.5.
+
 ## [0.59.0] - 2026-07-20
 
 ### Fixed
