@@ -693,6 +693,89 @@ func TestProxyManager_EnsureHTTPApp_AcceptsExistingConfigWithHandlers(t *testing
 	}
 }
 
+// Regression (live-caught during the #733 slice-4 rollout on an already-running
+// BYOC host): EnsureServerConfig used to treat "server config already exists"
+// as fully done, never checking whether its listen array matched
+// listenAddrs(). A host that flips on CONTAINARIUM_BYOC_INGRESS_ADDR after its
+// edge was already provisioned would restart, log that the ingress listener
+// was "enabled", and Caddy would silently keep listening on only :80/:443 —
+// the log line lied. This must add the missing listener via the
+// getFullConfig/loadConfig atomic-swap path (a scoped PUT to .../listen
+// 409s on an already-set key — caught live on the same rollout), and must
+// NOT touch the server's existing routes.
+func TestProxyManager_EnsureServerConfig_AddsBYOCIngressListener_ToExistingConfig(t *testing.T) {
+	cfg := intactConfig()
+	httpApp := cfg["apps"].(map[string]interface{})["http"].(map[string]interface{})
+	servers := httpApp["servers"].(map[string]interface{})
+	srv0 := servers[DefaultCaddyServerName].(map[string]interface{})
+	srv0["routes"] = []interface{}{
+		map[string]interface{}{
+			"@id": "existing.containarium.dev",
+			"match": []interface{}{
+				map[string]interface{}{"host": []interface{}{"existing.containarium.dev"}},
+			},
+			"handle": []interface{}{
+				map[string]interface{}{"handler": "reverse_proxy", "upstreams": []interface{}{
+					map[string]interface{}{"dial": "10.0.0.5:8080"},
+				}},
+			},
+		},
+	}
+
+	srv, fc := newRWFakeCaddy(cfg)
+	defer srv.Close()
+
+	pm := NewProxyManager(srv.URL, "containarium.dev").WithBYOCIngress("127.0.0.1:8081")
+	if err := pm.EnsureServerConfig(); err != nil {
+		t.Fatalf("EnsureServerConfig err = %v", err)
+	}
+
+	gotSrv0 := fc.config["apps"].(map[string]interface{})["http"].(map[string]interface{})["servers"].(map[string]interface{})[DefaultCaddyServerName].(map[string]interface{})
+
+	listen, _ := gotSrv0["listen"].([]interface{})
+	found := false
+	for _, a := range listen {
+		if a == "127.0.0.1:8081" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("listen = %v, want it to include 127.0.0.1:8081 after EnsureServerConfig", listen)
+	}
+	if len(listen) != 3 {
+		t.Errorf("listen = %v, want exactly 3 entries (:80, :443, 127.0.0.1:8081)", listen)
+	}
+
+	routes, _ := gotSrv0["routes"].([]interface{})
+	if len(routes) != 1 {
+		t.Fatalf("routes = %v, want the pre-existing route untouched (len 1)", routes)
+	}
+	route := routes[0].(map[string]interface{})
+	if route["@id"] != "existing.containarium.dev" {
+		t.Errorf("existing route was clobbered: %v", route)
+	}
+
+	if fc.loads != 1 {
+		t.Errorf("expected exactly one atomic /load to add the listener, got %d loads", fc.loads)
+	}
+}
+
+// Companion no-op case: a host with no BYOC ingress configured, and a config
+// already at exactly [:80, :443], must not trigger a spurious write on every
+// daemon restart.
+func TestProxyManager_EnsureServerConfig_NoBYOCIngress_IsNoOp(t *testing.T) {
+	srv, fc := newRWFakeCaddy(intactConfig())
+	defer srv.Close()
+
+	pm := NewProxyManager(srv.URL, "containarium.dev")
+	if err := pm.EnsureServerConfig(); err != nil {
+		t.Fatalf("EnsureServerConfig err = %v", err)
+	}
+	if fc.puts != 0 || fc.loads != 0 {
+		t.Errorf("expected no writes when listen is already [:80 :443] and BYOC ingress is off, got puts=%d loads=%d", fc.puts, fc.loads)
+	}
+}
+
 // TestProxyManager_RemoveTLSSubject_StripsFromAllPolicies covers the
 // container-delete cascade case (#69): when a container is deleted, its
 // hostname must come out of Caddy's TLS automation subjects so Caddy

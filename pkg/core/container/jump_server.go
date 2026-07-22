@@ -124,11 +124,7 @@ func DeleteJumpServerAccount(username string, verbose bool) error {
 
 	// Delete user and home directory - wait for locks to clear
 	if err := waitForLocksAndRun(func() error {
-		cmd := exec.Command("userdel", "-r", username)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to delete user %s: %w\nOutput: %s", username, err, output)
-		}
-		return nil
+		return runUserdel(username, verbose)
 	}, verbose); err != nil {
 		return err
 	}
@@ -138,6 +134,48 @@ func DeleteJumpServerAccount(username string, verbose bool) error {
 	}
 
 	return nil
+}
+
+// runUserdel deletes the account, tolerating the one failure mode that is
+// routine rather than exceptional: `userdel: user X is currently used by
+// process N` (exit 8), which happens whenever the caller still has an SSH
+// session open to the box they just deleted (#1035). The box itself is
+// already gone by the time delete-cascade runs, so any surviving session is
+// a dead shell with nothing behind it — killing it and retrying once is
+// strictly better than leaving an orphaned host account for the reaper.
+//
+// Every other userdel failure propagates unchanged.
+func runUserdel(username string, verbose bool) error {
+	// #nosec G204 -- username is gated by userExists + isValidUsername below
+	out, err := exec.Command("userdel", "-r", username).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if !userdelBusy(out) || !isValidUsername(username) {
+		return fmt.Errorf("failed to delete user %s: %w\nOutput: %s", username, err, out)
+	}
+
+	if verbose {
+		fmt.Printf("  %s still has a live session; terminating it and retrying userdel\n", username)
+	}
+	// pkill exits 1 when nothing matched — a benign race (the session ended
+	// between the two calls), so the status is deliberately ignored.
+	// #nosec G204 -- username validated by isValidUsername above
+	_ = exec.Command("pkill", "-KILL", "-u", username).Run()
+	time.Sleep(500 * time.Millisecond)
+
+	// #nosec G204 -- username validated by isValidUsername above
+	if out, err := exec.Command("userdel", "-r", username).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to delete user %s after terminating its sessions: %w\nOutput: %s", username, err, out)
+	}
+	return nil
+}
+
+// userdelBusy reports whether userdel's output is the "user is currently used
+// by process" refusal. Matched on the message rather than the exit status
+// because shadow-utils reuses exit 8 for a couple of unrelated conditions.
+func userdelBusy(output []byte) bool {
+	return strings.Contains(string(output), "currently used by process")
 }
 
 // EnsureJumpServerAccount creates a host-level user with containarium-shell

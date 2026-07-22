@@ -7,6 +7,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.2] - 2026-07-22
+
+### Fixed
+
+- **BYOC ingress listen-array fix (#733 follow-up), corrected.** v0.59.1's
+  fix used a scoped `PUT .../listen`, which Caddy's admin API rejects with
+  `409 key already exists` once that key already holds a value — so the
+  listener was never actually added on any host past its first-ever
+  provision. Caught live deploying v0.59.1 to a lab BYOC host. Switched to
+  the same `getFullConfig`/`loadConfig` atomic-swap round trip already
+  used elsewhere in this file (`EnableProxyProtocol`); every existing
+  route survives untouched.
+
+## [0.59.1] - 2026-07-22
+
+### Fixed
+
+- **BYOC ingress listener now actually appears on an already-provisioned
+  host** (#733 follow-up). `EnsureServerConfig` treated an existing Caddy
+  server config as fully done and never checked whether its listen array
+  matched the configured set — a host that set
+  `CONTAINARIUM_BYOC_INGRESS_ADDR` after its edge was already provisioned
+  would restart, log that the ingress listener was enabled, and Caddy
+  would silently keep listening on only `:80`/`:443`. Caught live during
+  the #733 slice-4 rollout. Fixed with a scoped reconcile that adds only
+  the missing listen entries without touching existing routes.
+- **SSH host-key checking in `transfer.go` upgraded from
+  insecure-ignore to accept-new`** (#1061); `go.mod` bumped to Go
+  1.26.5.
+
+## [0.59.0] - 2026-07-20
+
+### Fixed
+
+- **Internal peer service token now renews instead of expiring after 30
+  days.** The daemon-to-peer admin token (used for peer metrics and the
+  #1029 capacity-ranking probe) was minted once for the 30-day maximum
+  and held forever; a daemon running longer than a month then silently
+  `401`'d every internal peer call — the same silent-credential-death
+  shape as the BYOC driver-token expiry (#903). A shared renewing token
+  source now re-mints ahead of expiry, which also shrinks a leaked
+  internal token's useful life from a month to an hour.
+
+### Added
+
+- **Opt-in capacity-aware pool placement** (#1029). When a pool create
+  has no explicit backend, `--placement-cpu-aware` routes it to the
+  least CPU-committed healthy peer (committed cores / physical cores)
+  instead of an arbitrary first-healthy one, spreading load before the
+  admission gate has to refuse it. The daemon caches each peer's
+  commitment on the existing 30s discovery cadence (no per-create
+  round-trip); peers whose capacity isn't known yet fall back to
+  first-healthy. Off by default; the local-backend preference is
+  unchanged. Env `CONTAINARIUM_PLACEMENT_CPU_AWARE`; see
+  `docs/CPU-CAPACITY-ADMISSION.md`.
+- **Opt-in CPU capacity admission** (#1029). A daemon can now refuse a
+  container create that would push its host's committed cores past
+  `physical_cores × --cpu-overcommit-factor`, closing the gap where a
+  host could accept far more committed CPU than it physically has and
+  let one tenant starve its co-located neighbours. Off by default
+  (`factor = 0`); `--cpu-overcommit-enforce` gates whether an enabled
+  check rejects (gRPC `ResourceExhausted`) or is advisory (logs what it
+  would reject, for observe-first rollout). The gate is per-host and
+  composes with pools — a peer-routed create is admitted by the target
+  peer's own daemon — excludes core-infra and the tenant being
+  recreated, and fails open if host capacity can't be read. Env
+  fallbacks `CONTAINARIUM_CPU_OVERCOMMIT_FACTOR` /
+  `CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE`; see `docs/CPU-CAPACITY-ADMISSION.md`.
+
+## [0.58.0] - 2026-07-20
+
+### Fixed
+
+- **A delete racing an in-flight async create no longer manufactures a
+  fake "Async creation failed"** (#1035). Provisioning runs for minutes,
+  so a delete frequently lands mid-run and pulls the instance out from
+  under the creating goroutine; the resulting `Instance not found` was
+  logged as a creation failure, indistinguishable in the journal from a
+  genuine one. (During one incident investigation this manufactured at
+  least eight false "confirmations" of an already-fixed bug.) The delete
+  now claims the pending creation, which logs a single unambiguous
+  cancellation line, drops out of the `CREATING`/`PROVISIONING` state
+  Get/List report, and reaps the box if the creation happened to finish
+  after its own delete. Genuine failures still surface as `ERROR`.
+- **Delete-cascade tolerates a live SSH session when removing the host
+  user** (#1035). `userdel: user X is currently used by process N` left
+  an orphaned account until the reaper's next tick; the box is already
+  gone at that point, so the remaining session is terminated and
+  `userdel` retried once. Every other `userdel` failure is unchanged.
+- **CPU limits are now a hard CFS quota, not a soft scheduler share**
+  (#1034, completing #1029). `limits.cpu.allowance` was emitted as a
+  percentage (`400%`), which Incus applies only under contention — the
+  cgroup's `cpu.max` stayed `max`, so a single container still burst to
+  the whole host whenever its neighbours were idle. Containarium now
+  emits the time-slice form (`400ms/100ms`), the documented hard-quota
+  syntax, giving a request the bounded entitlement the platform bills
+  and schedules against and matching Kubernetes millicpu semantics.
+  Existing containers keep their percentage allowance until resized;
+  reading a CPU request back understands both forms.
+
+## [0.57.0] - 2026-07-20
+
+### Added
+
+- **Weekly base-image re-bake timer** (#1037, closes its remaining
+  scope). `scripts/containarium-rebake.{service,timer}` re-run
+  `image-bake` every Sunday (with jitter and downtime catch-up) so baked
+  base images keep receiving distro security updates; `docs/IMAGE-BAKE.md`
+  covers baking, the fast-path opt-out, timer install, and staleness
+  checks. A failed re-bake is safe: the image alias only moves on a
+  successful publish.
+
+### Fixed
+
+- **BYOC driver-token auto-refresh no longer silently disabled by a
+  legacy cloud config** (cloud#888/#903). The #557 refresh loop only
+  armed when `cloud.yaml` named a `jwt_secret_file` — a field
+  pre-#557 enrollments never wrote and daemon upgrades never backfilled,
+  so legacy-enrolled hosts' cloud-stored driver tokens silently expired
+  at the 30-day cap and every cloud→host operation failed 401. An empty
+  field now falls back to the default daemon secret path when readable;
+  `cloud enroll --no-driver-token` writes a durable
+  `driver_token_disabled` marker so the explicit opt-out survives; and
+  a daemon that can refresh from neither path logs a loud warning naming
+  the 30-day consequence.
+
 ## [0.56.0] - 2026-07-20
 
 ### Added
