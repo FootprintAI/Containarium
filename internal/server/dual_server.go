@@ -105,6 +105,15 @@ type DualServerConfig struct {
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
+	// CPUOvercommitFactor is the max CPU overcommit ceiling (committed cores /
+	// physical cores) for create-time admission (#1029). <= 0 disables the gate.
+	CPUOvercommitFactor float64
+	// CPUOvercommitEnforce actually rejects over-ceiling creates when the gate
+	// is enabled; false keeps it advisory (log-only).
+	CPUOvercommitEnforce bool
+	// PlacementCPUAware ranks pool placement by peer CPU commitment (least
+	// committed wins) instead of first-healthy (#1029 direction 2).
+	PlacementCPUAware bool
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
@@ -948,14 +957,27 @@ skipAppHosting:
 		} else {
 			cloudDeps.Containers = cloudActuator // only set when non-nil (avoid nil-iface trap)
 		}
-		// Driver-token auto-refresh (#557): if cloud.yaml has a JWTSecretFile,
-		// provide a minter so the actuation client keeps the cloud-stored
-		// driver credential from reaching the 30-day OSS cap.
-		if cloudCfg.JWTSecretFile != "" {
-			secretFile := cloudCfg.JWTSecretFile // capture for closure
-			cloudDeps.Driver = func() (string, error) {
-				return cloud.MintDriverToken(secretFile, 30*24*time.Hour)
+		// Driver-token auto-refresh (#557). Gating this on cloud.yaml's
+		// jwt_secret_file alone turned out to be a production trap
+		// (cloud#888/#903 postmortem): a cloud.yaml written by a pre-#557
+		// enroll has no jwt_secret_file, nothing backfills the config on
+		// daemon upgrades, and the refresh loop silently never armed — so
+		// legacy-enrolled hosts' cloud-stored driver tokens all died at the
+		// 30-day cap and every cloud→host driver call 401'd forever. When
+		// the config doesn't name a secret file, fall back to the default
+		// daemon secret path if it's readable; only an explicit
+		// driver_token_disabled opts out of refresh entirely.
+		switch secretFile := cloud.ResolveDriverSecretFile(cloudCfg, nil); {
+		case secretFile != "":
+			if cloudCfg.JWTSecretFile == "" {
+				log.Printf("Cloud driver-token refresh: cloud.yaml has no jwt_secret_file (legacy enroll); falling back to %s", secretFile)
 			}
+			sf := secretFile // capture for closure
+			cloudDeps.Driver = func() (string, error) {
+				return cloud.MintDriverToken(sf, 30*24*time.Hour)
+			}
+		case !cloudCfg.DriverTokenDisabled:
+			log.Printf("WARNING: cloud driver-token refresh DISABLED (no jwt_secret_file in cloud.yaml and no readable %s) — the cloud-stored driver token will expire within 30 days and cloud→host operations will start failing 401; re-run `containarium cloud enroll` to fix", cloud.DefaultDaemonJWTSecretFile)
 		}
 		if cc, nerr := cloud.New(cloudCfg, cloudDeps); nerr != nil {
 			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
@@ -1800,6 +1822,18 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		ds.containerServer.SetCapabilityIdentity(region, ds.config.Pool)
 
+		// CPU capacity admission policy (#1029 direction 2). Off unless an
+		// operator set a factor; logs its posture at boot so an enabled gate
+		// is visible, not silent.
+		ds.containerServer.SetCPUOvercommitPolicy(ds.config.CPUOvercommitFactor, ds.config.CPUOvercommitEnforce)
+		if ds.config.CPUOvercommitFactor > 0 {
+			mode := "advisory (log-only)"
+			if ds.config.CPUOvercommitEnforce {
+				mode = "enforcing"
+			}
+			log.Printf("[cpu-admission] CPU overcommit gate enabled: factor=%.2f× mode=%s", ds.config.CPUOvercommitFactor, mode)
+		}
+
 		// Integrity self-measurement posture (#683): the policy/config state the
 		// daemon folds into its signed self-measurement so the control plane can
 		// detect tampering of a backend's control plane. Generic, integrity-
@@ -1819,6 +1853,18 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		})
 	}
 
+	// Renewing source for the internal admin ("_system") token the daemon uses
+	// to call peers' admin-only endpoints — peer metrics and the #1029
+	// capacity-ranking probe. Shared by both so neither falls off a one-shot
+	// 30-day token (the silent-401-after-a-month footgun the renewal replaces).
+	// Lazy: no token is minted until a consumer first calls Token().
+	svcTokens := newServiceTokenSource(
+		func() (string, error) {
+			return ds.tokenManager.GenerateToken("_system", []string{"admin"}, serviceTokenTTL)
+		},
+		serviceTokenTTL, serviceTokenRenewBefore,
+	)
+
 	// Start peer discovery for multi-backend support
 	if ds.peerPool != nil {
 		// Phase 0.5: bootstrap the daemon's peer-CA + leaf cert
@@ -1832,6 +1878,23 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		} else {
 			ds.peerPool.StartCertRenewal(ctx)
 		}
+		// Capacity-aware placement ranking (#1029 direction 2). Enable BEFORE
+		// discovery starts so the very first poll already caches peer
+		// commitment. Needs an admin-scoped token to read peers' system-info
+		// (physical cores) and container lists (committed cores); if minting it
+		// fails, ranking stays off and placement falls back to first-healthy.
+		if ds.config.PlacementCPUAware {
+			// Prove the token can be minted before arming ranking, so a broken
+			// signer surfaces at boot rather than as silent first-healthy
+			// fallback; the source then renews it for the daemon's lifetime.
+			if _, err := svcTokens.Token(); err != nil {
+				log.Printf("[placement] capacity-aware ranking requested but service token mint failed (%v) — staying on first-healthy placement", err)
+			} else {
+				ds.peerPool.EnableCapacityRanking(svcTokens.Token)
+				log.Printf("[placement] capacity-aware pool ranking enabled: pool creates prefer the least CPU-committed peer")
+			}
+		}
+
 		ds.peerPool.StartDiscovery(ctx)
 		ds.containerServer.SetPeerPool(ds.peerPool)
 
@@ -1978,18 +2041,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 
 	// Start OTel metrics collector if available
 	if ds.metricsCollector != nil {
-		// Wire peer metrics fetcher so peer container metrics are pushed to VictoriaMetrics
+		// Wire peer metrics fetcher so peer container metrics are pushed to
+		// VictoriaMetrics. The renewing token source (built above) replaces the
+		// former one-shot 30-day token, so metrics fetching doesn't 401 after a
+		// month on a long-lived daemon.
 		if ds.peerPool != nil {
-			// Generate a long-lived service token for internal peer API calls
-			serviceToken, err := ds.tokenManager.GenerateToken("_system", []string{"admin"}, 30*24*time.Hour)
-			if err != nil {
-				log.Printf("Warning: failed to generate service token for peer metrics: %v", err)
-			} else {
-				ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
-					Pool:         ds.peerPool,
-					ServiceToken: serviceToken,
-				})
-			}
+			ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
+				Pool:    ds.peerPool,
+				TokenFn: svcTokens.Token,
+			})
 		}
 		// Wire the egress fan-out fetcher (crawler-detection signal) when the
 		// conntrack traffic collector is available.

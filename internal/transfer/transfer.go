@@ -123,15 +123,21 @@ func (o *Options) resolve() error {
 
 // sshBaseArgs returns the constant prefix used by every ssh invocation in
 // this package. Always uses IdentitiesOnly=yes to avoid the failtoban budget
-// burn the demo flow uncovered (see PR #132). Strict host key checking is
-// disabled because container-side host keys regenerate on every recreate.
+// burn the demo flow uncovered (see PR #132). Host key checking uses
+// accept-new (trust-on-first-use) against the default ~/.ssh/known_hosts,
+// matching connectcore.BuildSSHArgs and internal/mcp/sshexec.go's
+// tofuHostKeyCallback — the same pattern this codebase already uses for
+// other automated/agent-driven SSH flows. A first connection to a host
+// pins its key; a later mismatch (a real MITM, or a container recreated
+// with a fresh host key) is rejected rather than silently trusted. On a
+// legitimate recreate, the fix is the same one-line `ssh-keygen -R <host>`
+// any SSH user already knows — not a reason to disable checking outright.
 func (o *Options) sshBaseArgs() []string {
 	return []string{
 		"-i", o.KeyPath,
 		"-o", "IdentitiesOnly=yes",
 		"-o", "PreferredAuthentications=publickey",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=15",
 	}

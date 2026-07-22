@@ -39,6 +39,27 @@ type PeerClient struct {
 	CachedOS             string
 	CachedVersion        string
 	CachedContainerCount int32
+
+	// Cached CPU capacity for placement ranking (#1029 direction 2). Refreshed
+	// on the discovery cadence when capacity ranking is enabled; read by the
+	// placement ranker. All three are written under PeerPool.mu and must be
+	// read under it too (PickLeastCommittedInPool does). CapacityKnown gates
+	// use: until the first successful fetch the peer is treated as
+	// unknown-capacity and ranked after peers whose load we do know.
+	CachedPhysicalCores  float64
+	CachedCommittedCores float64
+	CapacityKnown        bool
+}
+
+// commitRatio reports this peer's CPU overcommit ratio (committed cores /
+// physical cores) and whether it is known. Unknown when no successful capacity
+// fetch has happened yet or the peer reports no cores. Callers must hold the
+// owning PeerPool's lock (fields are written under it).
+func (pc *PeerClient) commitRatio() (float64, bool) {
+	if !pc.CapacityKnown || pc.CachedPhysicalCores <= 0 {
+		return 0, false
+	}
+	return pc.CachedCommittedCores / pc.CachedPhysicalCores, true
 }
 
 // urlScheme returns "http" or "https" — defaults to "http" for
@@ -66,6 +87,40 @@ type PeerPool struct {
 	// 0.5 HTTPS peer-to-peer. Nil when no CA is configured —
 	// peer.go then falls back to plain HTTP (pre-0.5 behavior).
 	pki *peerPKI
+
+	// Capacity-aware placement ranking (#1029 direction 2). When
+	// capacityRanking is true and capacityTokenFn is set, the discovery loop
+	// also refreshes each healthy peer's CPU commitment, and
+	// PickLeastCommittedInPool ranks candidates by it. Both are set once via
+	// EnableCapacityRanking; unset leaves placement at first-healthy.
+	// capacityTokenFn returns the renewing internal admin token (see
+	// serviceTokenSource) — a func, not a stored string, so the daemon can't
+	// fall off a one-shot token after 30 days.
+	capacityRanking bool
+	capacityTokenFn func() (string, error)
+}
+
+// CapacityRankingEnabled reports whether commitment-ranked placement is active.
+func (p *PeerPool) CapacityRankingEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.capacityRanking
+}
+
+// EnableCapacityRanking turns on per-peer CPU-commitment tracking and
+// commitment-ranked placement (#1029 direction 2). tokenFn returns the
+// admin-scoped internal token used to read each peer's system-info (physical
+// cores) and container list (committed cores) — both admin-only endpoints —
+// and is expected to renew the token itself (serviceTokenSource). A no-op if
+// tokenFn is nil. Idempotent; call once during setup.
+func (p *PeerPool) EnableCapacityRanking(tokenFn func() (string, error)) {
+	if tokenFn == nil {
+		return
+	}
+	p.mu.Lock()
+	p.capacityRanking = true
+	p.capacityTokenFn = tokenFn
+	p.mu.Unlock()
 }
 
 // NewPeerPool creates a new peer pool.
@@ -436,12 +491,72 @@ func (p *PeerPool) discover() {
 	}
 
 	// Cache system info for healthy peers (best-effort, no auth needed for internal calls)
+	var rankTokenFn func() (string, error)
+	if p.capacityRanking {
+		rankTokenFn = p.capacityTokenFn // copy the func under the lock; call it in the goroutine
+	}
 	for _, pc := range p.peers {
 		if !pc.Healthy {
 			continue
 		}
 		go pc.refreshCachedInfo()
+		// Placement-ranking capacity (#1029 direction 2), best-effort and only
+		// when ranking is enabled — the two extra admin-scoped reads per peer
+		// per tick are wasted work otherwise.
+		if rankTokenFn != nil {
+			go p.refreshPeerCapacity(pc, rankTokenFn)
+		}
 	}
+}
+
+// refreshPeerCapacity fetches a peer's physical core count (system-info) and
+// its committed tenant cores (container list, already core-infra-filtered
+// server-side), then caches them for the placement ranker. Best-effort: on any
+// error the peer keeps its previous cached value (and stays unknown until the
+// first success), so a transient blip never makes it look idle or overloaded.
+// The HTTP calls run without any lock held; only the cache write is guarded.
+func (p *PeerPool) refreshPeerCapacity(pc *PeerClient, tokenFn func() (string, error)) {
+	serviceToken, err := tokenFn()
+	if err != nil {
+		log.Printf("[placement] capacity probe for %s skipped: internal token unavailable: %v", pc.ID, err)
+		return
+	}
+	physical, perr := pc.fetchPhysicalCores(serviceToken)
+	if perr != nil {
+		return
+	}
+	containers, cerr := pc.fetchContainers(serviceToken)
+	if cerr != nil {
+		return
+	}
+	var committed float64
+	for i := range containers {
+		committed += incus.CommittedCores(containers[i].CPU)
+	}
+
+	p.mu.Lock()
+	pc.CachedPhysicalCores = physical
+	pc.CachedCommittedCores = committed
+	pc.CapacityKnown = true
+	p.mu.Unlock()
+}
+
+// fetchPhysicalCores reads a peer's total physical core count from its
+// (admin-only) system-info endpoint.
+func (pc *PeerClient) fetchPhysicalCores(serviceToken string) (float64, error) {
+	body, err := pc.ForwardGetSystemInfo(serviceToken)
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Info struct {
+			TotalCpus int32 `json:"totalCpus"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, err
+	}
+	return float64(result.Info.TotalCpus), nil
 }
 
 // LocalBackendID returns this daemon's backend ID.
@@ -980,8 +1095,27 @@ func (pp *PeerPool) PeerTerminalURL(username, authToken string) (string, error) 
 
 // PeerMetricsFetcherAdapter adapts PeerPool to the metrics.PeerMetricsFetcher interface.
 type PeerMetricsFetcherAdapter struct {
-	Pool         *PeerPool
-	ServiceToken string // JWT token for authenticating internal requests to peers
+	Pool *PeerPool
+	// TokenFn mints/returns the internal admin JWT for peer calls when the
+	// caller passes no auth token. Backed by a renewing serviceTokenSource so
+	// a long-lived daemon never falls off a one-shot token. May be nil (then
+	// only an explicit authToken is used).
+	TokenFn func() (string, error)
+}
+
+// serviceToken returns the internal token from TokenFn, or "" if unset/failed.
+// Callers treat "" as "no token" and skip (peer admin endpoints will 401),
+// which is the same best-effort posture as before — never a hard failure.
+func (a *PeerMetricsFetcherAdapter) serviceToken() string {
+	if a.TokenFn == nil {
+		return ""
+	}
+	tok, err := a.TokenFn()
+	if err != nil {
+		log.Printf("[peer-metrics] internal service token unavailable: %v", err)
+		return ""
+	}
+	return tok
 }
 
 // FetchPeerMetrics implements metrics.PeerMetricsFetcher.
@@ -993,7 +1127,7 @@ func (a *PeerMetricsFetcherAdapter) FetchPeerMetrics(authToken string) []peerMet
 	// Use service token if no auth token provided
 	token := authToken
 	if token == "" {
-		token = a.ServiceToken
+		token = a.serviceToken()
 	}
 	peers := a.Pool.Peers()
 	if len(peers) == 0 {
@@ -1054,7 +1188,7 @@ func (a *PeerMetricsFetcherAdapter) FetchPeerSystemMetrics(authToken string) []m
 	}
 	token := authToken
 	if token == "" {
-		token = a.ServiceToken
+		token = a.serviceToken()
 	}
 	for _, peer := range a.Pool.Peers() {
 		if !peer.Healthy {

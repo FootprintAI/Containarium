@@ -31,35 +31,38 @@ import (
 )
 
 var (
-	daemonAddress      string
-	daemonPort         int
-	daemonHTTPPort     int
-	enableMTLS         bool
-	enableREST         bool
-	daemonCertsDir     string
-	jwtSecret          string
-	jwtSecretFile      string
-	swaggerDir         string
-	networkSubnet      string
-	skipInfraInit      bool
-	standaloneMode     bool
-	enableAppHosting   bool
-	postgresConnString string
-	baseDomain         string
-	caddyAdminURL      string
-	caddyCertDir       string
-	alertWebhookURL    string
-	alertWebhookSecret string
-	sentinelURL        string
-	sshHost            string
-	peerAddrs          []string
-	localBackendID     string
-	pool               string
-	region             string
-	publicHostname     string
-	publicAliases      []string
-	publicBaseDomains  []string
-	publicPort         int
+	daemonAddress        string
+	daemonPort           int
+	daemonHTTPPort       int
+	enableMTLS           bool
+	enableREST           bool
+	daemonCertsDir       string
+	jwtSecret            string
+	jwtSecretFile        string
+	swaggerDir           string
+	networkSubnet        string
+	skipInfraInit        bool
+	standaloneMode       bool
+	enableAppHosting     bool
+	postgresConnString   string
+	baseDomain           string
+	caddyAdminURL        string
+	caddyCertDir         string
+	alertWebhookURL      string
+	alertWebhookSecret   string
+	sentinelURL          string
+	sshHost              string
+	peerAddrs            []string
+	localBackendID       string
+	pool                 string
+	region               string
+	cpuOvercommitFactor  float64
+	cpuOvercommitEnforce bool
+	placementCPUAware    bool
+	publicHostname       string
+	publicAliases        []string
+	publicBaseDomains    []string
+	publicPort           int
 
 	proxyProtocol        bool
 	proxyProtocolTrusted []string
@@ -160,6 +163,30 @@ func init() {
 
 	// Runtime selection
 	daemonCmd.Flags().StringVar(&daemonRuntime, "runtime", "", `Box backend: "lxc" (default) or "k8s". Falls back to CONTAINARIUM_RUNTIME env when unset.`)
+	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed logical-CPUs (vCPUs, incl. SMT threads) × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
+	daemonCmd.Flags().BoolVar(&cpuOvercommitEnforce, "cpu-overcommit-enforce", envBool("CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE", false), "With --cpu-overcommit-factor > 0, actually reject over-ceiling creates. When false (default), the check is advisory (logs what it would reject). Env: CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE (#1029).")
+	daemonCmd.Flags().BoolVar(&placementCPUAware, "placement-cpu-aware", envBool("CONTAINARIUM_PLACEMENT_CPU_AWARE", false), "When a pool create has no explicit backend, place it on the least CPU-committed healthy peer instead of an arbitrary one. Off by default (first-healthy). Env: CONTAINARIUM_PLACEMENT_CPU_AWARE (#1029).")
+}
+
+// envFloat reads name as a float64, returning def when unset or unparseable.
+func envFloat(name string, def float64) float64 {
+	if v := os.Getenv(name); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
+// envBool reads name as a bool (strconv.ParseBool), returning def when unset or
+// unparseable.
+func envBool(name string, def bool) bool {
+	if v := os.Getenv(name); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -519,6 +546,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		LocalBackendID:       resolveBackendID(localBackendID),
 		Pool:                 pool,
 		Region:               region,
+		CPUOvercommitFactor:  cpuOvercommitFactor,
+		CPUOvercommitEnforce: cpuOvercommitEnforce,
+		PlacementCPUAware:    placementCPUAware,
 		PublicHostname:       publicHostname,
 		PublicAliases:        publicAliases,
 		PublicBaseDomains:    resolvePublicBaseDomains(publicBaseDomains, baseDomain),
