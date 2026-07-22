@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -99,6 +100,20 @@ func TestDefaultSyncExcludes_BlocksEnvFiles(t *testing.T) {
 		assert.False(t, matchesAny(p, DefaultSyncExcludes),
 			"DefaultSyncExcludes should not filter %q", p)
 	}
+}
+
+// TestSshBaseArgs_HostKeyCheckingIsAcceptNew locks in the fix for the
+// security-sweep finding (issue #1060): host key checking must use
+// accept-new against the default known_hosts, matching the pattern
+// connectcore.BuildSSHArgs and sshexec.go's tofuHostKeyCallback already
+// use elsewhere in this codebase — never StrictHostKeyChecking=no, and
+// never a UserKnownHostsFile=/dev/null that would make accept-new a no-op.
+func TestSshBaseArgs_HostKeyCheckingIsAcceptNew(t *testing.T) {
+	opt := &Options{KeyPath: "/k/id"}
+	joined := strings.Join(opt.sshBaseArgs(), " ")
+	assert.Contains(t, joined, "StrictHostKeyChecking=accept-new")
+	assert.NotContains(t, joined, "StrictHostKeyChecking=no")
+	assert.NotContains(t, joined, "UserKnownHostsFile=/dev/null")
 }
 
 // keep these vars used so go vet doesn't complain
