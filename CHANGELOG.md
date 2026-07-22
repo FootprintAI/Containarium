@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.2] - 2026-07-22
+
+### Fixed
+
+- **BYOC ingress listen-array fix (#733 follow-up), corrected.** v0.59.1's
+  fix used a scoped `PUT .../listen`, which Caddy's admin API rejects with
+  `409 key already exists` once that key already holds a value — so the
+  listener was never actually added on any host past its first-ever
+  provision. Caught live deploying v0.59.1 to a lab BYOC host. Switched to
+  the same `getFullConfig`/`loadConfig` atomic-swap round trip already
+  used elsewhere in this file (`EnableProxyProtocol`); every existing
+  route survives untouched.
+
 ## [0.59.1] - 2026-07-22
 
 ### Fixed
