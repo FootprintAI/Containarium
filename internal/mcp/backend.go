@@ -83,6 +83,13 @@ type API interface {
 	DebugContainer(username string) (*DebugContainerResponse, error)
 	TriggerUpgrade(backendID string, force bool) (*TriggerUpgradeResponse, error)
 	GetUpgradeStatus(upgradeID string) (*UpgradeStatusResponse, error)
+	// SetMetricsExport / GetMetricsExport (#1069) toggle and inspect
+	// opt-in export of this host's infra metrics to its cloud's native
+	// monitoring. Host-level like GetSystemInfo — the credential probe
+	// (GCP ADC) is specific to the box the daemon runs on, so it has no
+	// tenant-safe meaning on the hosted control plane.
+	SetMetricsExport(enabled bool, provider string) (*SetMetricsExportResponse, error)
+	GetMetricsExport() (*GetMetricsExportResponse, error)
 	// InstallZap downloads and installs OWASP ZAP into this host's
 	// security container. Host-level — a daemon manages exactly one
 	// security container, so there's no per-tenant scoping.
@@ -145,6 +152,14 @@ func (cloudClient) GetUpgradeStatus(string) (*UpgradeStatusResponse, error) {
 
 func (cloudClient) InstallZap() (*InstallZapResponse, error) {
 	return nil, errUnsupportedOnCloud("install_zap", "the platform provisions ZAP on managed hosts")
+}
+
+func (cloudClient) SetMetricsExport(bool, string) (*SetMetricsExportResponse, error) {
+	return nil, errUnsupportedOnCloud("set_metrics_export", "the credential probe is specific to a BYOC host; run this against the host's own daemon")
+}
+
+func (cloudClient) GetMetricsExport() (*GetMetricsExportResponse, error) {
+	return nil, errUnsupportedOnCloud("get_metrics_export", "")
 }
 
 // newBackend builds the API the handlers use, classifying the target from the

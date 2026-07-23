@@ -889,6 +889,74 @@ func (c *Client) GetSystemInfo() (*GetSystemInfoResponse, error) {
 	return &resp, nil
 }
 
+// metricsExportProviderWireName maps the CLI-facing lowercase provider
+// name ("gcp") to the full CloudMetricsProvider enum name the wire
+// protocol (protojson) expects. Mirrors internal/cmd/monitoring_export.go's
+// parseMetricsExportProvider without importing pkg/pb — this package
+// deliberately keeps its own plain-struct wire types rather than the
+// generated proto types (see the ListBackendsResponse comment above).
+func metricsExportProviderWireName(provider string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "gcp":
+		return "CLOUD_METRICS_PROVIDER_GCP", nil
+	case "aws":
+		// Passed through deliberately — the daemon's Unimplemented for
+		// AWS is the single source of truth, not a second copy of the
+		// allow-list here.
+		return "CLOUD_METRICS_PROVIDER_AWS", nil
+	default:
+		return "", fmt.Errorf("unknown cloud metrics export provider %q (supported: gcp)", provider)
+	}
+}
+
+// SetMetricsExport enables or disables opt-in export of host/container
+// infra metrics to the host cloud's native monitoring (#1069). provider
+// is required when enabled=true ("gcp"; "aws" is accepted and rejected
+// server-side with Unimplemented) and ignored when disabling.
+func (c *Client) SetMetricsExport(enabled bool, provider string) (*SetMetricsExportResponse, error) {
+	wireProvider := "CLOUD_METRICS_PROVIDER_UNSPECIFIED"
+	if enabled {
+		wp, err := metricsExportProviderWireName(provider)
+		if err != nil {
+			return nil, err
+		}
+		wireProvider = wp
+	}
+
+	body, err := json.Marshal(map[string]interface{}{
+		"enabled":  enabled,
+		"provider": wireProvider,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	respBody, err := c.doRequest("POST", "/v1/system/metrics-export", body)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp SetMetricsExportResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetMetricsExport returns the current cloud-native metrics export
+// configuration and last-known health (#1069).
+func (c *Client) GetMetricsExport() (*GetMetricsExportResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/system/metrics-export", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp GetMetricsExportResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // LatestReleaseResponse is the GET /v1/releases/latest body (#354).
 type LatestReleaseResponse struct {
 	LatestRelease   string `json:"latestRelease"`
@@ -1499,6 +1567,28 @@ type GetMetricsResponse struct {
 
 type GetSystemInfoResponse struct {
 	Info SystemInfo `json:"info"`
+}
+
+// SetMetricsExportResponse mirrors the wire response of
+// ContainerService.SetMetricsExport (#1069).
+type SetMetricsExportResponse struct {
+	Message         string `json:"message"`
+	Enabled         bool   `json:"enabled"`
+	Provider        string `json:"provider"`
+	IntervalSeconds int32  `json:"intervalSeconds"`
+}
+
+// GetMetricsExportResponse mirrors the wire response of
+// ContainerService.GetMetricsExport (#1069). LastSuccessAt, LastError,
+// and ExportFailures are zero-valued until the metrics collector
+// (#1070/#1071) is wired.
+type GetMetricsExportResponse struct {
+	Enabled         bool      `json:"enabled"`
+	Provider        string    `json:"provider"`
+	IntervalSeconds int32     `json:"intervalSeconds"`
+	LastSuccessAt   string    `json:"lastSuccessAt,omitempty"`
+	LastError       string    `json:"lastError,omitempty"`
+	ExportFailures  flexInt64 `json:"exportFailures,omitempty"`
 }
 
 // ListBackendsResponse mirrors the /v1/backends wire shape — the proto-first

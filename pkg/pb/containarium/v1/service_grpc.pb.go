@@ -56,6 +56,8 @@ const (
 	ContainerService_TriggerUpgrade_FullMethodName           = "/containarium.v1.ContainerService/TriggerUpgrade"
 	ContainerService_GetUpgradeStatus_FullMethodName         = "/containarium.v1.ContainerService/GetUpgradeStatus"
 	ContainerService_GetMonitoringInfo_FullMethodName        = "/containarium.v1.ContainerService/GetMonitoringInfo"
+	ContainerService_SetMetricsExport_FullMethodName         = "/containarium.v1.ContainerService/SetMetricsExport"
+	ContainerService_GetMetricsExport_FullMethodName         = "/containarium.v1.ContainerService/GetMetricsExport"
 	ContainerService_CreateAlertRule_FullMethodName          = "/containarium.v1.ContainerService/CreateAlertRule"
 	ContainerService_ListAlertRules_FullMethodName           = "/containarium.v1.ContainerService/ListAlertRules"
 	ContainerService_GetAlertRule_FullMethodName             = "/containarium.v1.ContainerService/GetAlertRule"
@@ -245,6 +247,22 @@ type ContainerServiceClient interface {
 	GetUpgradeStatus(ctx context.Context, in *GetUpgradeStatusRequest, opts ...grpc.CallOption) (*GetUpgradeStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
+	// SetMetricsExport enables or disables opt-in export of host/container
+	// infra metrics to the host cloud's native monitoring (GCP Cloud
+	// Monitoring in the MVP; AWS is a reserved enum value that returns
+	// UNIMPLEMENTED). Enabling validates the provider and, for GCP, resolves
+	// Application Default Credentials with the monitoring-write scope as a
+	// synchronous dry run — a host with no usable ADC gets FAILED_PRECONDITION
+	// with an IAM remediation hint and nothing is persisted or started.
+	// Disabling stops emission within one export interval. Neither direction
+	// requires a daemon restart. #1069 delivers the toggle, config
+	// persistence, and the credential probe; the metrics collector itself
+	// lands with #1070/#1071.
+	SetMetricsExport(ctx context.Context, in *SetMetricsExportRequest, opts ...grpc.CallOption) (*SetMetricsExportResponse, error)
+	// GetMetricsExport returns the current cloud-native metrics export
+	// configuration and last-known health (last success time, last error,
+	// failure count — populated once #1070/#1071 wire the collector).
+	GetMetricsExport(ctx context.Context, in *GetMetricsExportRequest, opts ...grpc.CallOption) (*GetMetricsExportResponse, error)
 	// CreateAlertRule creates a new custom alert rule
 	CreateAlertRule(ctx context.Context, in *CreateAlertRuleRequest, opts ...grpc.CallOption) (*CreateAlertRuleResponse, error)
 	// ListAlertRules lists all alert rules
@@ -665,6 +683,26 @@ func (c *containerServiceClient) GetMonitoringInfo(ctx context.Context, in *GetM
 	return out, nil
 }
 
+func (c *containerServiceClient) SetMetricsExport(ctx context.Context, in *SetMetricsExportRequest, opts ...grpc.CallOption) (*SetMetricsExportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetMetricsExportResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetMetricsExport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetMetricsExport(ctx context.Context, in *GetMetricsExportRequest, opts ...grpc.CallOption) (*GetMetricsExportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMetricsExportResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetMetricsExport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) CreateAlertRule(ctx context.Context, in *CreateAlertRuleRequest, opts ...grpc.CallOption) (*CreateAlertRuleResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateAlertRuleResponse)
@@ -987,6 +1025,22 @@ type ContainerServiceServer interface {
 	GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
+	// SetMetricsExport enables or disables opt-in export of host/container
+	// infra metrics to the host cloud's native monitoring (GCP Cloud
+	// Monitoring in the MVP; AWS is a reserved enum value that returns
+	// UNIMPLEMENTED). Enabling validates the provider and, for GCP, resolves
+	// Application Default Credentials with the monitoring-write scope as a
+	// synchronous dry run — a host with no usable ADC gets FAILED_PRECONDITION
+	// with an IAM remediation hint and nothing is persisted or started.
+	// Disabling stops emission within one export interval. Neither direction
+	// requires a daemon restart. #1069 delivers the toggle, config
+	// persistence, and the credential probe; the metrics collector itself
+	// lands with #1070/#1071.
+	SetMetricsExport(context.Context, *SetMetricsExportRequest) (*SetMetricsExportResponse, error)
+	// GetMetricsExport returns the current cloud-native metrics export
+	// configuration and last-known health (last success time, last error,
+	// failure count — populated once #1070/#1071 wire the collector).
+	GetMetricsExport(context.Context, *GetMetricsExportRequest) (*GetMetricsExportResponse, error)
 	// CreateAlertRule creates a new custom alert rule
 	CreateAlertRule(context.Context, *CreateAlertRuleRequest) (*CreateAlertRuleResponse, error)
 	// ListAlertRules lists all alert rules
@@ -1147,6 +1201,12 @@ func (UnimplementedContainerServiceServer) GetUpgradeStatus(context.Context, *Ge
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
+}
+func (UnimplementedContainerServiceServer) SetMetricsExport(context.Context, *SetMetricsExportRequest) (*SetMetricsExportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMetricsExport not implemented")
+}
+func (UnimplementedContainerServiceServer) GetMetricsExport(context.Context, *GetMetricsExportRequest) (*GetMetricsExportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMetricsExport not implemented")
 }
 func (UnimplementedContainerServiceServer) CreateAlertRule(context.Context, *CreateAlertRuleRequest) (*CreateAlertRuleResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateAlertRule not implemented")
@@ -1880,6 +1940,42 @@ func _ContainerService_GetMonitoringInfo_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_SetMetricsExport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMetricsExportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetMetricsExport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetMetricsExport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetMetricsExport(ctx, req.(*SetMetricsExportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetMetricsExport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMetricsExportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetMetricsExport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetMetricsExport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetMetricsExport(ctx, req.(*GetMetricsExportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_CreateAlertRule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateAlertRuleRequest)
 	if err := dec(in); err != nil {
@@ -2304,6 +2400,14 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetMonitoringInfo",
 			Handler:    _ContainerService_GetMonitoringInfo_Handler,
+		},
+		{
+			MethodName: "SetMetricsExport",
+			Handler:    _ContainerService_SetMetricsExport_Handler,
+		},
+		{
+			MethodName: "GetMetricsExport",
+			Handler:    _ContainerService_GetMetricsExport_Handler,
 		},
 		{
 			MethodName: "CreateAlertRule",

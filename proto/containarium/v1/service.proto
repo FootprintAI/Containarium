@@ -610,6 +610,43 @@ service ContainerService {
     };
   }
 
+  // SetMetricsExport enables or disables opt-in export of host/container
+  // infra metrics to the host cloud's native monitoring (GCP Cloud
+  // Monitoring in the MVP; AWS is a reserved enum value that returns
+  // UNIMPLEMENTED). Enabling validates the provider and, for GCP, resolves
+  // Application Default Credentials with the monitoring-write scope as a
+  // synchronous dry run — a host with no usable ADC gets FAILED_PRECONDITION
+  // with an IAM remediation hint and nothing is persisted or started.
+  // Disabling stops emission within one export interval. Neither direction
+  // requires a daemon restart. #1069 delivers the toggle, config
+  // persistence, and the credential probe; the metrics collector itself
+  // lands with #1070/#1071.
+  rpc SetMetricsExport(SetMetricsExportRequest) returns (SetMetricsExportResponse) {
+    option (google.api.http) = {
+      post: "/v1/system/metrics-export"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Enable or disable cloud-native metrics export";
+      description: "Opt-in export of host/container infra metrics to the host cloud's native monitoring (GCP Cloud Monitoring in the MVP). Enabling probes Application Default Credentials (monitoring-write scope) before persisting anything; a host with no resolvable ADC fails with FAILED_PRECONDITION and an IAM remediation hint. Disabling stops emission within one export interval. AWS is reserved and returns UNIMPLEMENTED.";
+      tags: "Monitoring";
+    };
+  }
+
+  // GetMetricsExport returns the current cloud-native metrics export
+  // configuration and last-known health (last success time, last error,
+  // failure count — populated once #1070/#1071 wire the collector).
+  rpc GetMetricsExport(GetMetricsExportRequest) returns (GetMetricsExportResponse) {
+    option (google.api.http) = {
+      get: "/v1/system/metrics-export"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get cloud-native metrics export status";
+      description: "Returns whether cloud-native metrics export is enabled, the configured provider, the export interval, and last-known health (populated once the collector lands in #1070/#1071).";
+      tags: "Monitoring";
+    };
+  }
+
   // CreateAlertRule creates a new custom alert rule
   rpc CreateAlertRule(CreateAlertRuleRequest) returns (CreateAlertRuleResponse) {
     option (google.api.http) = {
