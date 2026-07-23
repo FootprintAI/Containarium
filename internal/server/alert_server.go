@@ -35,7 +35,14 @@ func (s *ContainerServer) SetAlertManager(store *alert.Store, manager *alert.Man
 	s.alertWebhookURL = webhookURL
 	s.alertWebhookSecret = webhookSecret
 	s.coreServices = coreServices
-	s.daemonConfigStore = daemonConfigStore
+	// Nil-guarded: the field is an interface (daemonConfigKV), and
+	// wrapping a nil *app.DaemonConfigStore would defeat every
+	// `!= nil` check downstream. SetDaemonConfigStore wires it much
+	// earlier in startup; this assignment is kept for callers that
+	// only go through the alert path.
+	if daemonConfigStore != nil {
+		s.daemonConfigStore = daemonConfigStore
+	}
 }
 
 // SetAlertDeliveryStore sets the delivery store for recording webhook delivery attempts

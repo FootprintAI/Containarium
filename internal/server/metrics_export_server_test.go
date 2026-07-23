@@ -413,3 +413,95 @@ func TestSetMetricsExport_NoSinkRegistered_Unimplemented(t *testing.T) {
 		t.Fatalf("error = %v, want Unimplemented", err)
 	}
 }
+
+// fakeDaemonConfigKV backs daemonConfigKV with an in-memory map so
+// persist/resume tests cover the real store round trip without
+// Postgres.
+type fakeDaemonConfigKV struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func (f *fakeDaemonConfigKV) Get(ctx context.Context, key string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.m[key], nil
+}
+
+func (f *fakeDaemonConfigKV) Set(ctx context.Context, key, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.m == nil {
+		f.m = map[string]string{}
+	}
+	f.m[key] = value
+	return nil
+}
+
+// TestStartMetricsExportIfEnabled_ResumesFromPersistedConfig pins the
+// restart round trip end to end: enable on one server persists to the
+// store; a fresh server sharing that store (a restarted daemon) must
+// resume the collector from StartMetricsExportIfEnabled alone, with no
+// operator re-enable.
+func TestStartMetricsExportIfEnabled_ResumesFromPersistedConfig(t *testing.T) {
+	kv := &fakeDaemonConfigKV{}
+
+	first, _ := newMetricsExportTestServer(nil)
+	first.daemonConfigStore = kv
+	if _, err := first.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{
+		Enabled:  true,
+		Provider: pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP,
+	}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	restarted, _ := newMetricsExportTestServer(nil)
+	restarted.daemonConfigStore = kv
+	restarted.StartMetricsExportIfEnabled(context.Background())
+
+	restarted.metricsExportMu.RLock()
+	running := restarted.metricsExportCollector
+	restarted.metricsExportMu.RUnlock()
+	if running == nil {
+		t.Fatal("restarted server did not resume the export collector from the persisted config")
+	}
+
+	got, err := restarted.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("GetMetricsExport after resume: %v", err)
+	}
+	if !got.Enabled || got.Provider != pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP {
+		t.Errorf("after resume: enabled=%v provider=%v, want enabled GCP", got.Enabled, got.Provider)
+	}
+}
+
+// TestMetricsExport_LateStoreWiring_NotCachedAsDisabled pins the exact
+// live-caught #1070 bug: StartMetricsExportIfEnabled used to run before
+// the daemon-config store was wired (it arrived only via
+// SetAlertManager, much later in NewDualServer), hydrate the disabled
+// default from the nil store, and cache it as loaded — so both resume
+// AND every later status read reported disabled even though the DB row
+// said enabled. A nil-store hydration must not poison the config once
+// the store shows up.
+func TestMetricsExport_LateStoreWiring_NotCachedAsDisabled(t *testing.T) {
+	kv := &fakeDaemonConfigKV{}
+	kv.m = map[string]string{
+		cloudexport.ConfigStoreKey: `{"enabled":true,"provider":1,"interval_seconds":60}`,
+	}
+
+	s, _ := newMetricsExportTestServer(nil)
+	// Startup ordering bug: resume runs with no store wired. It must
+	// no-op without caching "disabled" as authoritative.
+	s.StartMetricsExportIfEnabled(context.Background())
+
+	// Store gets wired later in startup.
+	s.daemonConfigStore = kv
+
+	got, err := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("GetMetricsExport: %v", err)
+	}
+	if !got.Enabled {
+		t.Fatal("persisted enabled=true was shadowed by a cached nil-store hydration")
+	}
+}

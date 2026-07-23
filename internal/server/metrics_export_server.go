@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -52,11 +53,42 @@ func (s *ContainerServer) metricsExportSink(provider pb.CloudMetricsProvider) cl
 	return s.metricsExportSinks[provider]
 }
 
+// daemonConfigKV is the narrow slice of *app.DaemonConfigStore the
+// server actually uses (per-key get/set of daemon_config rows). An
+// interface rather than the concrete Postgres type so tests can back
+// it with an in-memory map and cover the persist/resume round trip —
+// coverage the concrete type made impossible, which is how the
+// hydrate-before-wiring ordering bug shipped unnoticed.
+type daemonConfigKV interface {
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key, value string) error
+}
+
+// SetDaemonConfigStore wires the persistent daemon-config store the
+// metrics export config survives restarts through. NewDualServer MUST
+// call this before StartMetricsExportIfEnabled — the resume path
+// hydrates from this store, and hydrating before it is wired reads the
+// disabled default instead of the operator's persisted enable (the
+// #1070 live test on a GCP backend caught exactly that ordering: the
+// store used to be assigned only much later, via SetAlertManager, so
+// resume-on-restart never fired). Nil is ignored so a daemon without
+// Postgres keeps the in-memory-only behavior without a typed-nil
+// interface sneaking past the != nil checks.
+func (s *ContainerServer) SetDaemonConfigStore(store *app.DaemonConfigStore) {
+	if store == nil {
+		return
+	}
+	s.daemonConfigStore = store
+}
+
 // getMetricsExportConfig returns the current cloud metrics export
 // config, hydrating from the persisted store on first access so a
 // daemon restart doesn't silently forget an enabled export. Once
 // loaded, the in-memory copy is authoritative — SetMetricsExport keeps
-// it and the store in sync on every write.
+// it and the store in sync on every write. When no store is wired
+// (yet), the defaults are returned WITHOUT being cached as loaded, so
+// a store wired later in startup is still consulted on the next read
+// rather than being shadowed by a poisoned "disabled" copy.
 func (s *ContainerServer) getMetricsExportConfig(ctx context.Context) cloudexport.Config {
 	s.metricsExportMu.RLock()
 	loaded := s.metricsExportConfigLoaded
@@ -67,14 +99,15 @@ func (s *ContainerServer) getMetricsExportConfig(ctx context.Context) cloudexpor
 	}
 
 	cfg = cloudexport.DefaultConfig()
-	if s.daemonConfigStore != nil {
-		if raw, err := s.daemonConfigStore.Get(ctx, cloudexport.ConfigStoreKey); err == nil && raw != "" {
-			var persisted cloudexport.Config
-			if jsonErr := json.Unmarshal([]byte(raw), &persisted); jsonErr == nil {
-				cfg = persisted
-			} else {
-				log.Printf("Warning: failed to parse persisted metrics export config, using defaults: %v", jsonErr)
-			}
+	if s.daemonConfigStore == nil {
+		return cfg
+	}
+	if raw, err := s.daemonConfigStore.Get(ctx, cloudexport.ConfigStoreKey); err == nil && raw != "" {
+		var persisted cloudexport.Config
+		if jsonErr := json.Unmarshal([]byte(raw), &persisted); jsonErr == nil {
+			cfg = persisted
+		} else {
+			log.Printf("Warning: failed to parse persisted metrics export config, using defaults: %v", jsonErr)
 		}
 	}
 
