@@ -2,10 +2,12 @@ package cloudexport
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	mexporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
+	gcpdetector "go.opentelemetry.io/contrib/detectors/gcp"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"golang.org/x/oauth2/google"
 )
 
@@ -30,12 +32,47 @@ type gcpSink struct{}
 // NewGCPSink returns the GCP Sink implementation.
 func NewGCPSink() Sink { return &gcpSink{} }
 
-// NewExporter is not yet implemented — the Cloud Monitoring OTel
-// exporter and the CloudExportCollector that would call this land with
-// #1070/#1071. #1069 only needs Probe to gate the enable-time
-// credential check.
+// NewExporter builds the OTel SDK metric exporter that pushes to Google
+// Cloud Monitoring (CreateTimeSeries) via the official
+// opentelemetry-operations-go bridge. Authentication is ADC only — the
+// exporter's monitoring client resolves the same Application Default
+// Credentials that Probe validated at enable time; no key file is ever
+// read here. This is the sole place in the daemon that imports the GCP
+// exporter SDK — everything else sees the Sink interface.
 func (g *gcpSink) NewExporter(ctx context.Context, cfg SinkConfig) (sdkmetric.Exporter, error) {
-	return nil, errors.New("cloudexport: gcp exporter not yet implemented (lands with #1070/#1071)")
+	opts := []mexporter.Option{
+		// Do not create/patch metric descriptors on every push — the
+		// series names are fixed and self-describing, and skipping
+		// descriptor writes keeps the write path to CreateTimeSeries
+		// only (fewer API calls, fewer IAM surfaces).
+		mexporter.WithDisableCreateMetricDescriptors(),
+	}
+	// Empty ProjectID lets the exporter/resource detector infer the
+	// project from the GCE metadata server (the common on-VM case).
+	if cfg.ProjectID != "" {
+		opts = append(opts, mexporter.WithProjectID(cfg.ProjectID))
+	}
+	if len(cfg.MonitoringClientOptions) > 0 {
+		opts = append(opts, mexporter.WithMonitoringClientOptions(cfg.MonitoringClientOptions...))
+	}
+
+	exporter, err := mexporter.New(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("cloudexport: build GCP Cloud Monitoring exporter: %w", err)
+	}
+	return exporter, nil
+}
+
+// DetectResource resolves this host's GCP monitored-resource identity so
+// exported series land tagged as a gce_instance in Metrics Explorer. It
+// uses the OTel contrib GCP resource detector; off GCP (or with the
+// metadata server unreachable) it returns whatever partial resource the
+// detector can assemble, which the exporter maps to a generic resource
+// rather than failing the whole export. gcpSink is the only type that
+// touches the GCP detector — the collector consumes the resulting
+// vendor-neutral *resource.Resource.
+func (g *gcpSink) DetectResource(ctx context.Context) (*resource.Resource, error) {
+	return resource.New(ctx, resource.WithDetectors(gcpdetector.NewDetector()))
 }
 
 // Probe resolves ADC with the Cloud Monitoring write scope and confirms

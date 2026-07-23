@@ -253,6 +253,17 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// SetMetricsExport always falls through the nil-sink path and
 	// returns Unimplemented even with valid GCP credentials.
 	containerServer.SetMetricsExportSinks(defaultMetricsExportSinks())
+	// Wire the persisted daemon-config store BEFORE resuming export —
+	// resume hydrates the enabled/provider flags from it. The store
+	// used to reach the ContainerServer only via SetAlertManager, far
+	// later in startup, so this hydration always read the disabled
+	// default and resume-on-restart silently never fired (caught live
+	// on a GCP backend while validating #1070).
+	containerServer.SetDaemonConfigStore(config.DaemonConfigStore)
+	// Resume host-series export (#1070) if it was enabled before a
+	// restart. Best-effort — a failure here (e.g. ADC no longer
+	// resolvable) is logged, never fatal to boot.
+	containerServer.StartMetricsExportIfEnabled(context.Background())
 
 	// Create token manager. Refuses to start if the JWT secret is
 	// shorter than auth.MinSecretKeyLen — fail-closed on weak crypto

@@ -1,0 +1,363 @@
+package cloudexport
+
+import (
+	"context"
+	"errors"
+	"sort"
+	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
+
+// fakeSources is a Sources whose SystemResources snapshot and error are
+// fully controlled by the test. AllContainerMetrics is present to
+// satisfy the interface (the #1070 host collector never calls it).
+type fakeSources struct {
+	sr  *SystemResources
+	err error
+}
+
+func (f *fakeSources) SystemResources(ctx context.Context) (*SystemResources, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.sr, nil
+}
+
+func (f *fakeSources) AllContainerMetrics(ctx context.Context) (map[string]*pb.ContainerMetrics, error) {
+	return nil, nil
+}
+
+func sampleResources() *SystemResources {
+	return &SystemResources{
+		CPULoad1Min:      1.5,
+		CPULoad5Min:      2.5,
+		CPULoad15Min:     3.5,
+		MemoryUsedBytes:  4 << 30,
+		MemoryTotalBytes: 16 << 30,
+		DiskUsedBytes:    100 << 30,
+		DiskTotalBytes:   500 << 30,
+		ContainerCount:   7,
+	}
+}
+
+func sampleLabels() Labels {
+	return Labels{BackendID: "backend-xyz", Hostname: "host-1", Region: "us-central1"}
+}
+
+// collectOnce stands up a ManualReader-backed MeterProvider through the
+// same buildMeterProvider path the production PeriodicReader uses, then
+// pulls exactly one collection so tests can assert on the emitted series.
+func collectOnce(t *testing.T, sources Sources, labels Labels) metricdata.ResourceMetrics {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{Sources: sources, Labels: labels})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	return rm
+}
+
+// flattenGauges returns every emitted gauge datapoint as (name, value,
+// attributes), independent of whether it was float64 or int64.
+type point struct {
+	name  string
+	fval  float64
+	ival  int64
+	isInt bool
+	attrs attribute.Set
+}
+
+func flattenGauges(t *testing.T, rm metricdata.ResourceMetrics) []point {
+	t.Helper()
+	var pts []point
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch g := m.Data.(type) {
+			case metricdata.Gauge[float64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, fval: dp.Value, attrs: dp.Attributes})
+				}
+			case metricdata.Gauge[int64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, ival: dp.Value, isInt: true, attrs: dp.Attributes})
+				}
+			default:
+				t.Fatalf("metric %q is not a gauge (%T) — the allowlist is gauge-only", m.Name, m.Data)
+			}
+		}
+	}
+	return pts
+}
+
+// TestExportedSeries_MatchesAllowlistGolden is the golden test: the exact
+// set of series names and per-series values emitted for one snapshot.
+// Any drift — an added series, a removed one, a renamed instrument, a
+// wrong value mapping — fails here.
+func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
+	rm := collectOnce(t, &fakeSources{sr: sampleResources()}, sampleLabels())
+	pts := flattenGauges(t, rm)
+
+	got := map[string]point{}
+	for _, p := range pts {
+		if _, dup := got[p.name]; dup {
+			t.Fatalf("series %q emitted more than once", p.name)
+		}
+		got[p.name] = p
+	}
+
+	type want struct {
+		isInt bool
+		fval  float64
+		ival  int64
+	}
+	golden := map[string]want{
+		MetricCPULoad1m:      {fval: 1.5},
+		MetricCPULoad5m:      {fval: 2.5},
+		MetricCPULoad15m:     {fval: 3.5},
+		MetricMemoryUsed:     {isInt: true, ival: 4 << 30},
+		MetricMemoryTotal:    {isInt: true, ival: 16 << 30},
+		MetricDiskUsed:       {isInt: true, ival: 100 << 30},
+		MetricDiskTotal:      {isInt: true, ival: 500 << 30},
+		MetricContainerCount: {isInt: true, ival: 7},
+	}
+
+	if len(got) != len(golden) {
+		var names []string
+		for n := range got {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		t.Fatalf("emitted %d series %v, want exactly %d (the allowlist)", len(got), names, len(golden))
+	}
+
+	for name, w := range golden {
+		p, ok := got[name]
+		if !ok {
+			t.Errorf("missing allowlisted series %q", name)
+			continue
+		}
+		if p.isInt != w.isInt {
+			t.Errorf("series %q int-ness mismatch: got isInt=%v want %v", name, p.isInt, w.isInt)
+			continue
+		}
+		if w.isInt && p.ival != w.ival {
+			t.Errorf("series %q = %d, want %d", name, p.ival, w.ival)
+		}
+		if !w.isInt && p.fval != w.fval {
+			t.Errorf("series %q = %v, want %v", name, p.fval, w.fval)
+		}
+	}
+}
+
+// TestNoTenantLabels asserts every emitted series carries exactly the
+// three allowlisted labels and nothing else — no org/tenant identifier —
+// even when a hostile Sources snapshot exists. The labels come from the
+// collector's fixed identity, not from Sources, so there is structurally
+// no channel to inject one; this test locks that in.
+func TestNoTenantLabels(t *testing.T) {
+	rm := collectOnce(t, &fakeSources{sr: sampleResources()}, sampleLabels())
+	pts := flattenGauges(t, rm)
+	if len(pts) == 0 {
+		t.Fatal("no series emitted")
+	}
+
+	allowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+	}
+	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid"}
+
+	for _, p := range pts {
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			wantVal, ok := allowed[key]
+			if !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+				continue
+			}
+			if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+			seen[key] = true
+		}
+		if len(seen) != len(allowed) {
+			t.Errorf("series %q has %d allowlisted labels, want all %d", p.name, len(seen), len(allowed))
+		}
+	}
+}
+
+// TestSourceErrorSkipsTickWithoutPanic asserts that a Sources error mid-
+// tick is skipped cleanly: no panic, no crash, and no series emitted for
+// that tick (so no stale values reach the cloud).
+func TestSourceErrorSkipsTickWithoutPanic(t *testing.T) {
+	rm := collectOnce(t, &fakeSources{err: errors.New("incus unavailable")}, sampleLabels())
+	pts := flattenGauges(t, rm)
+	if len(pts) != 0 {
+		t.Fatalf("expected no series on a Sources error, got %d", len(pts))
+	}
+}
+
+// TestNilSnapshotSkipsTick guards the nil-without-error edge: a Sources
+// that returns (nil, nil) is skipped, not dereferenced.
+func TestNilSnapshotSkipsTick(t *testing.T) {
+	rm := collectOnce(t, &fakeSources{sr: nil}, sampleLabels())
+	pts := flattenGauges(t, rm)
+	if len(pts) != 0 {
+		t.Fatalf("expected no series on a nil snapshot, got %d", len(pts))
+	}
+}
+
+// recordingExporter is a fake sdkmetric.Exporter that counts Export
+// calls and captures the last batch, letting the lifecycle test observe
+// a tick and confirm emission stops after Stop.
+type recordingExporter struct {
+	exports  int
+	last     metricdata.ResourceMetrics
+	failNext bool
+}
+
+func (r *recordingExporter) Temporality(k sdkmetric.InstrumentKind) metricdata.Temporality {
+	return sdkmetric.DefaultTemporalitySelector(k)
+}
+func (r *recordingExporter) Aggregation(k sdkmetric.InstrumentKind) sdkmetric.Aggregation {
+	return sdkmetric.DefaultAggregationSelector(k)
+}
+func (r *recordingExporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) error {
+	if r.failNext {
+		r.failNext = false
+		return errors.New("simulated export failure")
+	}
+	r.exports++
+	r.last = *rm
+	return nil
+}
+func (r *recordingExporter) ForceFlush(ctx context.Context) error { return nil }
+func (r *recordingExporter) Shutdown(ctx context.Context) error   { return nil }
+
+// TestEnableDisableRebuild is the toggle lifecycle: enable → observe
+// series via a forced flush → disable → assert the reader is shut down
+// and no further observations happen.
+func TestEnableDisableRebuild(t *testing.T) {
+	ctx := context.Background()
+	exp := &recordingExporter{}
+	c := NewCollector(CollectorOptions{
+		Sources:  &fakeSources{sr: sampleResources()},
+		Exporter: exp,
+		Labels:   sampleLabels(),
+	})
+
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Start is idempotent.
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+
+	if err := c.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+	if exp.exports == 0 {
+		t.Fatal("expected at least one export after ForceFlush")
+	}
+	if got := len(flattenGauges(t, exp.last)); got != 8 {
+		t.Fatalf("expected 8 host series exported, got %d", got)
+	}
+
+	if err := c.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	countAfterStop := exp.exports
+
+	// After disable, a flush is a no-op and no further observations
+	// reach the exporter.
+	if err := c.ForceFlush(ctx); err != nil {
+		t.Fatalf("post-stop ForceFlush: %v", err)
+	}
+	if exp.exports != countAfterStop {
+		t.Fatalf("export happened after Stop: %d -> %d", countAfterStop, exp.exports)
+	}
+	// Stop is idempotent.
+	if err := c.Stop(ctx); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+}
+
+// TestHealthTracksExportOutcome asserts GetMetricsExport's health fields
+// are wired to real export outcomes: a success sets last_success_at and
+// clears last_error; a failure increments export_failures and records
+// last_error.
+func TestHealthTracksExportOutcome(t *testing.T) {
+	ctx := context.Background()
+	exp := &recordingExporter{}
+	c := NewCollector(CollectorOptions{
+		Sources:  &fakeSources{sr: sampleResources()},
+		Exporter: exp,
+		Labels:   sampleLabels(),
+	})
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = c.Stop(ctx) }()
+
+	if err := c.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+	last, lastErr, fails := c.Health()
+	if last.IsZero() {
+		t.Error("expected last_success_at set after a successful export")
+	}
+	if lastErr != "" {
+		t.Errorf("expected no last_error after success, got %q", lastErr)
+	}
+	if fails != 0 {
+		t.Errorf("expected 0 failures, got %d", fails)
+	}
+
+	exp.failNext = true
+	_ = c.ForceFlush(ctx)
+	_, lastErr, fails = c.Health()
+	if fails != 1 {
+		t.Errorf("expected 1 export failure, got %d", fails)
+	}
+	if lastErr == "" {
+		t.Error("expected last_error set after a failed export")
+	}
+}
+
+// TestIntervalFloor asserts the sub-minute cost guard: a config below the
+// floor is clamped up to MinIntervalSeconds.
+func TestIntervalFloor(t *testing.T) {
+	for _, in := range []int32{0, 1, 30, 59} {
+		c := NewCollector(CollectorOptions{IntervalSeconds: in})
+		if got := c.interval; got != MinIntervalSeconds*time.Second {
+			t.Errorf("IntervalSeconds=%d -> interval %v, want floored to %ds", in, got, MinIntervalSeconds)
+		}
+	}
+	c := NewCollector(CollectorOptions{IntervalSeconds: 120})
+	if got := c.interval; got != 120*time.Second {
+		t.Errorf("IntervalSeconds=120 -> interval %v, want 120s", got)
+	}
+}
