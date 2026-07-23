@@ -35,7 +35,7 @@ jobs:
         run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/containarium/
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
 

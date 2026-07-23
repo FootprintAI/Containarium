@@ -54,7 +54,7 @@ jobs:
       - name: Set up Node
         # agent-runtime is a Node/TS sibling package (the in-box agent loop);
         # `make bundle-agent-runtime` runs npm ci + tsc and tars it.
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
 
