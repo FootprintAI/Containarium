@@ -14,6 +14,32 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// TestDefaultMetricsExportSinks_RegistersGCP pins exactly the gap a PR
+// review of #1069 found: NewDualServer must actually call
+// SetMetricsExportSinks(defaultMetricsExportSinks()) at startup, or
+// every real daemon returns Unimplemented for GCP regardless of valid
+// credentials — a failure mode the handler tests above can't catch
+// because they inject a fake sink directly into a bare ContainerServer.
+// This test pins defaultMetricsExportSinks' own contract (GCP
+// registered, AWS deliberately absent); dual_server.go wiring it into
+// NewDualServer is a one-line call, verified by reading the source
+// rather than booting a full daemon (NewContainerServer needs a real
+// incus/runtime backend unavailable in unit tests).
+func TestDefaultMetricsExportSinks_RegistersGCP(t *testing.T) {
+	sinks := defaultMetricsExportSinks()
+
+	gcpSink, ok := sinks[pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP]
+	if !ok || gcpSink == nil {
+		t.Fatalf("defaultMetricsExportSinks() has no GCP sink registered: %+v", sinks)
+	}
+	if _, aws := sinks[pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_AWS]; aws {
+		t.Errorf("AWS should not be registered yet (no Sink implementation) — SetMetricsExport's enum check must reject it before any sink lookup")
+	}
+	if len(sinks) != 1 {
+		t.Errorf("defaultMetricsExportSinks() = %d entries, want exactly 1 (GCP only)", len(sinks))
+	}
+}
+
 // fakeMetricsExportSink lets handler tests control Probe's outcome
 // without touching real GCP ADC.
 type fakeMetricsExportSink struct {

@@ -13,13 +13,28 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// defaultMetricsExportSinks is the production sink registry passed to
+// SetMetricsExportSinks by NewDualServer at startup. Extracted to its
+// own named, unit-tested function rather than an inline map literal at
+// the call site — a PR review of #1069 caught exactly this call being
+// silently absent from production startup (sinks only ever injected by
+// hand in tests), which made every real daemon return Unimplemented
+// for GCP regardless of valid credentials. AWS has no Sink
+// implementation yet and is intentionally left unregistered — the
+// enum-validation check in SetMetricsExport rejects it before any sink
+// lookup happens.
+func defaultMetricsExportSinks() map[pb.CloudMetricsProvider]cloudexport.Sink {
+	return map[pb.CloudMetricsProvider]cloudexport.Sink{
+		pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP: cloudexport.NewGCPSink(),
+	}
+}
+
 // SetMetricsExportSinks wires the provider -> Sink map consulted by
 // SetMetricsExport's enable-time credential probe. Called once by
-// DualServer at startup with the real gcpSink (internal/metrics/
-// cloudexport.NewGCPSink()); tests inject fakes so the probe never
-// touches real GCP ADC. A provider absent from the map (including AWS,
-// which has no Sink implementation yet) makes SetMetricsExport return
-// Unimplemented.
+// DualServer at startup with defaultMetricsExportSinks(); tests inject
+// fakes so the probe never touches real GCP ADC. A provider absent from
+// the map (including AWS, which has no Sink implementation yet) makes
+// SetMetricsExport return Unimplemented.
 func (s *ContainerServer) SetMetricsExportSinks(sinks map[pb.CloudMetricsProvider]cloudexport.Sink) {
 	s.metricsExportMu.Lock()
 	defer s.metricsExportMu.Unlock()
