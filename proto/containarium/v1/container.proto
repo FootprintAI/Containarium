@@ -967,6 +967,84 @@ message GetMonitoringInfoResponse {
   string victoria_metrics_url = 3;
 }
 
+// CloudMetricsProvider identifies which host cloud's native monitoring
+// receives the opt-in export (#1069). Typed so the toggle can never be a
+// magic string. AWS is reserved for a future Sink implementation;
+// SetMetricsExport rejects it with UNIMPLEMENTED until one exists.
+enum CloudMetricsProvider {
+  // Unset. SetMetricsExport rejects this with INVALID_ARGUMENT when
+  // enabled=true; GetMetricsExport returns it when export has never been
+  // configured.
+  CLOUD_METRICS_PROVIDER_UNSPECIFIED = 0;
+
+  // Google Cloud Monitoring (Cloud Operations). The only implemented
+  // provider in the MVP.
+  CLOUD_METRICS_PROVIDER_GCP = 1;
+
+  // Amazon CloudWatch. Reserved — no Sink implementation yet;
+  // SetMetricsExport returns UNIMPLEMENTED.
+  CLOUD_METRICS_PROVIDER_AWS = 2;
+}
+
+// SetMetricsExportRequest enables or disables cloud-native metrics export.
+// Enabling with provider=GCP triggers a synchronous Application Default
+// Credentials probe (monitoring-write scope) before anything is persisted
+// or started; enabling with an unresolvable ADC fails the call and leaves
+// the prior config untouched.
+message SetMetricsExportRequest {
+  // Desired state. true enables export (provider is required and is
+  // probed before persisting). false disables it; provider is ignored.
+  bool enabled = 1;
+
+  // Target cloud provider. Required when enabled=true. Must not be
+  // CLOUD_METRICS_PROVIDER_UNSPECIFIED (INVALID_ARGUMENT) or
+  // CLOUD_METRICS_PROVIDER_AWS (UNIMPLEMENTED — MVP is GCP-only).
+  CloudMetricsProvider provider = 2;
+}
+
+// SetMetricsExportResponse reports the effective state after the toggle.
+message SetMetricsExportResponse {
+  // Operator-facing summary of what changed (e.g. "cloud metrics export
+  // enabled for gcp").
+  string message = 1;
+
+  // The effective config after the call — mirrors GetMetricsExportResponse.
+  bool enabled = 2;
+  CloudMetricsProvider provider = 3;
+  int32 interval_seconds = 4;
+}
+
+// GetMetricsExportRequest requests the current cloud-native metrics
+// export configuration and health.
+message GetMetricsExportRequest {}
+
+// GetMetricsExportResponse reports the current cloud-native metrics
+// export configuration and last-known health. last_success_at,
+// last_error, and export_failures are zero-valued until the collector
+// (#1070/#1071) is wired — #1069 delivers the toggle, config
+// persistence, and enable-time credential probe only.
+message GetMetricsExportResponse {
+  // Whether export is currently enabled.
+  bool enabled = 1;
+
+  // The configured provider. CLOUD_METRICS_PROVIDER_UNSPECIFIED when
+  // export has never been configured on this host.
+  CloudMetricsProvider provider = 2;
+
+  // Export interval in seconds. Fixed default 60 in the MVP; #1069 does
+  // not expose a knob to change it.
+  int32 interval_seconds = 3;
+
+  // Wall-clock time of the last successful export batch.
+  google.protobuf.Timestamp last_success_at = 4;
+
+  // Human-readable detail of the most recent export failure, if any.
+  string last_error = 5;
+
+  // Count of failed export batches since the exporter was last (re)built.
+  int64 export_failures = 6;
+}
+
 // MoveContainerRequest is the source-side request to migrate a
 // container to a peer daemon.
 message MoveContainerRequest {

@@ -259,6 +259,66 @@ func (DeletePolicy) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_container_proto_rawDescGZIP(), []int{3}
 }
 
+// CloudMetricsProvider identifies which host cloud's native monitoring
+// receives the opt-in export (#1069). Typed so the toggle can never be a
+// magic string. AWS is reserved for a future Sink implementation;
+// SetMetricsExport rejects it with UNIMPLEMENTED until one exists.
+type CloudMetricsProvider int32
+
+const (
+	// Unset. SetMetricsExport rejects this with INVALID_ARGUMENT when
+	// enabled=true; GetMetricsExport returns it when export has never been
+	// configured.
+	CloudMetricsProvider_CLOUD_METRICS_PROVIDER_UNSPECIFIED CloudMetricsProvider = 0
+	// Google Cloud Monitoring (Cloud Operations). The only implemented
+	// provider in the MVP.
+	CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP CloudMetricsProvider = 1
+	// Amazon CloudWatch. Reserved — no Sink implementation yet;
+	// SetMetricsExport returns UNIMPLEMENTED.
+	CloudMetricsProvider_CLOUD_METRICS_PROVIDER_AWS CloudMetricsProvider = 2
+)
+
+// Enum value maps for CloudMetricsProvider.
+var (
+	CloudMetricsProvider_name = map[int32]string{
+		0: "CLOUD_METRICS_PROVIDER_UNSPECIFIED",
+		1: "CLOUD_METRICS_PROVIDER_GCP",
+		2: "CLOUD_METRICS_PROVIDER_AWS",
+	}
+	CloudMetricsProvider_value = map[string]int32{
+		"CLOUD_METRICS_PROVIDER_UNSPECIFIED": 0,
+		"CLOUD_METRICS_PROVIDER_GCP":         1,
+		"CLOUD_METRICS_PROVIDER_AWS":         2,
+	}
+)
+
+func (x CloudMetricsProvider) Enum() *CloudMetricsProvider {
+	p := new(CloudMetricsProvider)
+	*p = x
+	return p
+}
+
+func (x CloudMetricsProvider) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CloudMetricsProvider) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_container_proto_enumTypes[4].Descriptor()
+}
+
+func (CloudMetricsProvider) Type() protoreflect.EnumType {
+	return &file_containarium_v1_container_proto_enumTypes[4]
+}
+
+func (x CloudMetricsProvider) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CloudMetricsProvider.Descriptor instead.
+func (CloudMetricsProvider) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{4}
+}
+
 // ResourceLimits defines resource constraints for a container
 type ResourceLimits struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -4091,6 +4151,275 @@ func (x *GetMonitoringInfoResponse) GetVictoriaMetricsUrl() string {
 	return ""
 }
 
+// SetMetricsExportRequest enables or disables cloud-native metrics export.
+// Enabling with provider=GCP triggers a synchronous Application Default
+// Credentials probe (monitoring-write scope) before anything is persisted
+// or started; enabling with an unresolvable ADC fails the call and leaves
+// the prior config untouched.
+type SetMetricsExportRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Desired state. true enables export (provider is required and is
+	// probed before persisting). false disables it; provider is ignored.
+	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Target cloud provider. Required when enabled=true. Must not be
+	// CLOUD_METRICS_PROVIDER_UNSPECIFIED (INVALID_ARGUMENT) or
+	// CLOUD_METRICS_PROVIDER_AWS (UNIMPLEMENTED — MVP is GCP-only).
+	Provider      CloudMetricsProvider `protobuf:"varint,2,opt,name=provider,proto3,enum=containarium.v1.CloudMetricsProvider" json:"provider,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetMetricsExportRequest) Reset() {
+	*x = SetMetricsExportRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetMetricsExportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetMetricsExportRequest) ProtoMessage() {}
+
+func (x *SetMetricsExportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetMetricsExportRequest.ProtoReflect.Descriptor instead.
+func (*SetMetricsExportRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *SetMetricsExportRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *SetMetricsExportRequest) GetProvider() CloudMetricsProvider {
+	if x != nil {
+		return x.Provider
+	}
+	return CloudMetricsProvider_CLOUD_METRICS_PROVIDER_UNSPECIFIED
+}
+
+// SetMetricsExportResponse reports the effective state after the toggle.
+type SetMetricsExportResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Operator-facing summary of what changed (e.g. "cloud metrics export
+	// enabled for gcp").
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// The effective config after the call — mirrors GetMetricsExportResponse.
+	Enabled         bool                 `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Provider        CloudMetricsProvider `protobuf:"varint,3,opt,name=provider,proto3,enum=containarium.v1.CloudMetricsProvider" json:"provider,omitempty"`
+	IntervalSeconds int32                `protobuf:"varint,4,opt,name=interval_seconds,json=intervalSeconds,proto3" json:"interval_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SetMetricsExportResponse) Reset() {
+	*x = SetMetricsExportResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetMetricsExportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetMetricsExportResponse) ProtoMessage() {}
+
+func (x *SetMetricsExportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetMetricsExportResponse.ProtoReflect.Descriptor instead.
+func (*SetMetricsExportResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *SetMetricsExportResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *SetMetricsExportResponse) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *SetMetricsExportResponse) GetProvider() CloudMetricsProvider {
+	if x != nil {
+		return x.Provider
+	}
+	return CloudMetricsProvider_CLOUD_METRICS_PROVIDER_UNSPECIFIED
+}
+
+func (x *SetMetricsExportResponse) GetIntervalSeconds() int32 {
+	if x != nil {
+		return x.IntervalSeconds
+	}
+	return 0
+}
+
+// GetMetricsExportRequest requests the current cloud-native metrics
+// export configuration and health.
+type GetMetricsExportRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMetricsExportRequest) Reset() {
+	*x = GetMetricsExportRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMetricsExportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMetricsExportRequest) ProtoMessage() {}
+
+func (x *GetMetricsExportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMetricsExportRequest.ProtoReflect.Descriptor instead.
+func (*GetMetricsExportRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{55}
+}
+
+// GetMetricsExportResponse reports the current cloud-native metrics
+// export configuration and last-known health. last_success_at,
+// last_error, and export_failures are zero-valued until the collector
+// (#1070/#1071) is wired — #1069 delivers the toggle, config
+// persistence, and enable-time credential probe only.
+type GetMetricsExportResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether export is currently enabled.
+	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// The configured provider. CLOUD_METRICS_PROVIDER_UNSPECIFIED when
+	// export has never been configured on this host.
+	Provider CloudMetricsProvider `protobuf:"varint,2,opt,name=provider,proto3,enum=containarium.v1.CloudMetricsProvider" json:"provider,omitempty"`
+	// Export interval in seconds. Fixed default 60 in the MVP; #1069 does
+	// not expose a knob to change it.
+	IntervalSeconds int32 `protobuf:"varint,3,opt,name=interval_seconds,json=intervalSeconds,proto3" json:"interval_seconds,omitempty"`
+	// Wall-clock time of the last successful export batch.
+	LastSuccessAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_success_at,json=lastSuccessAt,proto3" json:"last_success_at,omitempty"`
+	// Human-readable detail of the most recent export failure, if any.
+	LastError string `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// Count of failed export batches since the exporter was last (re)built.
+	ExportFailures int64 `protobuf:"varint,6,opt,name=export_failures,json=exportFailures,proto3" json:"export_failures,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GetMetricsExportResponse) Reset() {
+	*x = GetMetricsExportResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMetricsExportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMetricsExportResponse) ProtoMessage() {}
+
+func (x *GetMetricsExportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMetricsExportResponse.ProtoReflect.Descriptor instead.
+func (*GetMetricsExportResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *GetMetricsExportResponse) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *GetMetricsExportResponse) GetProvider() CloudMetricsProvider {
+	if x != nil {
+		return x.Provider
+	}
+	return CloudMetricsProvider_CLOUD_METRICS_PROVIDER_UNSPECIFIED
+}
+
+func (x *GetMetricsExportResponse) GetIntervalSeconds() int32 {
+	if x != nil {
+		return x.IntervalSeconds
+	}
+	return 0
+}
+
+func (x *GetMetricsExportResponse) GetLastSuccessAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastSuccessAt
+	}
+	return nil
+}
+
+func (x *GetMetricsExportResponse) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *GetMetricsExportResponse) GetExportFailures() int64 {
+	if x != nil {
+		return x.ExportFailures
+	}
+	return 0
+}
+
 // MoveContainerRequest is the source-side request to migrate a
 // container to a peer daemon.
 type MoveContainerRequest struct {
@@ -4126,7 +4455,7 @@ type MoveContainerRequest struct {
 
 func (x *MoveContainerRequest) Reset() {
 	*x = MoveContainerRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[53]
+	mi := &file_containarium_v1_container_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4138,7 +4467,7 @@ func (x *MoveContainerRequest) String() string {
 func (*MoveContainerRequest) ProtoMessage() {}
 
 func (x *MoveContainerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[53]
+	mi := &file_containarium_v1_container_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4151,7 +4480,7 @@ func (x *MoveContainerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveContainerRequest.ProtoReflect.Descriptor instead.
 func (*MoveContainerRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{53}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *MoveContainerRequest) GetUsername() string {
@@ -4214,7 +4543,7 @@ type MoveContainerResponse struct {
 
 func (x *MoveContainerResponse) Reset() {
 	*x = MoveContainerResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[54]
+	mi := &file_containarium_v1_container_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4226,7 +4555,7 @@ func (x *MoveContainerResponse) String() string {
 func (*MoveContainerResponse) ProtoMessage() {}
 
 func (x *MoveContainerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[54]
+	mi := &file_containarium_v1_container_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4239,7 +4568,7 @@ func (x *MoveContainerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveContainerResponse.ProtoReflect.Descriptor instead.
 func (*MoveContainerResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{54}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *MoveContainerResponse) GetMessage() string {
@@ -4300,7 +4629,7 @@ type AdoptMigratedContainerRequest struct {
 
 func (x *AdoptMigratedContainerRequest) Reset() {
 	*x = AdoptMigratedContainerRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[55]
+	mi := &file_containarium_v1_container_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4312,7 +4641,7 @@ func (x *AdoptMigratedContainerRequest) String() string {
 func (*AdoptMigratedContainerRequest) ProtoMessage() {}
 
 func (x *AdoptMigratedContainerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[55]
+	mi := &file_containarium_v1_container_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4325,7 +4654,7 @@ func (x *AdoptMigratedContainerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdoptMigratedContainerRequest.ProtoReflect.Descriptor instead.
 func (*AdoptMigratedContainerRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{55}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *AdoptMigratedContainerRequest) GetUsername() string {
@@ -4357,7 +4686,7 @@ type AdoptMigratedContainerResponse struct {
 
 func (x *AdoptMigratedContainerResponse) Reset() {
 	*x = AdoptMigratedContainerResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[56]
+	mi := &file_containarium_v1_container_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4369,7 +4698,7 @@ func (x *AdoptMigratedContainerResponse) String() string {
 func (*AdoptMigratedContainerResponse) ProtoMessage() {}
 
 func (x *AdoptMigratedContainerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[56]
+	mi := &file_containarium_v1_container_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4382,7 +4711,7 @@ func (x *AdoptMigratedContainerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdoptMigratedContainerResponse.ProtoReflect.Descriptor instead.
 func (*AdoptMigratedContainerResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{56}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *AdoptMigratedContainerResponse) GetMessage() string {
@@ -4715,7 +5044,24 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vgrafana_url\x18\x02 \x01(\tR\n" +
 	"grafanaUrl\x120\n" +
-	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl\"\xd9\x01\n" +
+	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl\"v\n" +
+	"\x17SetMetricsExportRequest\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12A\n" +
+	"\bprovider\x18\x02 \x01(\x0e2%.containarium.v1.CloudMetricsProviderR\bprovider\"\xbc\x01\n" +
+	"\x18SetMetricsExportResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\x12A\n" +
+	"\bprovider\x18\x03 \x01(\x0e2%.containarium.v1.CloudMetricsProviderR\bprovider\x12)\n" +
+	"\x10interval_seconds\x18\x04 \x01(\x05R\x0fintervalSeconds\"\x19\n" +
+	"\x17GetMetricsExportRequest\"\xae\x02\n" +
+	"\x18GetMetricsExportResponse\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12A\n" +
+	"\bprovider\x18\x02 \x01(\x0e2%.containarium.v1.CloudMetricsProviderR\bprovider\x12)\n" +
+	"\x10interval_seconds\x18\x03 \x01(\x05R\x0fintervalSeconds\x12B\n" +
+	"\x0flast_success_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\rlastSuccessAt\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x05 \x01(\tR\tlastError\x12'\n" +
+	"\x0fexport_failures\x18\x06 \x01(\x03R\x0eexportFailures\"\xd9\x01\n" +
 	"\x14MoveContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12*\n" +
 	"\x11target_backend_id\x18\x02 \x01(\tR\x0ftargetBackendId\x12%\n" +
@@ -4755,7 +5101,11 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x1cCONTAINER_STATE_PROVISIONING\x10\x06\x1a\x10\x8a\xb5\x18\fProvisioning*J\n" +
 	"\fDeletePolicy\x12\x1d\n" +
 	"\x19DELETE_POLICY_UNSPECIFIED\x10\x00\x12\x1b\n" +
-	"\x17DELETE_POLICY_PROTECTED\x10\x01:B\n" +
+	"\x17DELETE_POLICY_PROTECTED\x10\x01*~\n" +
+	"\x14CloudMetricsProvider\x12&\n" +
+	"\"CLOUD_METRICS_PROVIDER_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aCLOUD_METRICS_PROVIDER_GCP\x10\x01\x12\x1e\n" +
+	"\x1aCLOUD_METRICS_PROVIDER_AWS\x10\x02:B\n" +
 	"\n" +
 	"state_name\x12!.google.protobuf.EnumValueOptions\x18ц\x03 \x01(\tR\tstateNameBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
@@ -4771,120 +5121,129 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_container_proto_rawDescData
 }
 
-var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
+var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
 var file_containarium_v1_container_proto_goTypes = []any{
 	(OSType)(0),                              // 0: containarium.v1.OSType
 	(AccessType)(0),                          // 1: containarium.v1.AccessType
 	(ContainerState)(0),                      // 2: containarium.v1.ContainerState
 	(DeletePolicy)(0),                        // 3: containarium.v1.DeletePolicy
-	(*ResourceLimits)(nil),                   // 4: containarium.v1.ResourceLimits
-	(*NetworkInfo)(nil),                      // 5: containarium.v1.NetworkInfo
-	(*Container)(nil),                        // 6: containarium.v1.Container
-	(*ContainerMetrics)(nil),                 // 7: containarium.v1.ContainerMetrics
-	(*CreateContainerRequest)(nil),           // 8: containarium.v1.CreateContainerRequest
-	(*CreateContainerResponse)(nil),          // 9: containarium.v1.CreateContainerResponse
-	(*ListContainersRequest)(nil),            // 10: containarium.v1.ListContainersRequest
-	(*ListContainersResponse)(nil),           // 11: containarium.v1.ListContainersResponse
-	(*GetContainerRequest)(nil),              // 12: containarium.v1.GetContainerRequest
-	(*GetContainerResponse)(nil),             // 13: containarium.v1.GetContainerResponse
-	(*DebugContainerRequest)(nil),            // 14: containarium.v1.DebugContainerRequest
-	(*DebugContainerResponse)(nil),           // 15: containarium.v1.DebugContainerResponse
-	(*DeleteContainerRequest)(nil),           // 16: containarium.v1.DeleteContainerRequest
-	(*DeleteContainerResponse)(nil),          // 17: containarium.v1.DeleteContainerResponse
-	(*StartContainerRequest)(nil),            // 18: containarium.v1.StartContainerRequest
-	(*StartContainerResponse)(nil),           // 19: containarium.v1.StartContainerResponse
-	(*StopContainerRequest)(nil),             // 20: containarium.v1.StopContainerRequest
-	(*StopContainerResponse)(nil),            // 21: containarium.v1.StopContainerResponse
-	(*ToggleMonitoringRequest)(nil),          // 22: containarium.v1.ToggleMonitoringRequest
-	(*ToggleMonitoringResponse)(nil),         // 23: containarium.v1.ToggleMonitoringResponse
-	(*ToggleAutoSleepRequest)(nil),           // 24: containarium.v1.ToggleAutoSleepRequest
-	(*ToggleAutoSleepResponse)(nil),          // 25: containarium.v1.ToggleAutoSleepResponse
-	(*SetContainerTTLRequest)(nil),           // 26: containarium.v1.SetContainerTTLRequest
-	(*SetContainerTTLResponse)(nil),          // 27: containarium.v1.SetContainerTTLResponse
-	(*SetContainerDeletePolicyRequest)(nil),  // 28: containarium.v1.SetContainerDeletePolicyRequest
-	(*SetContainerDeletePolicyResponse)(nil), // 29: containarium.v1.SetContainerDeletePolicyResponse
-	(*SetContainerAttributionRequest)(nil),   // 30: containarium.v1.SetContainerAttributionRequest
-	(*SetContainerAttributionResponse)(nil),  // 31: containarium.v1.SetContainerAttributionResponse
-	(*AddSSHKeyRequest)(nil),                 // 32: containarium.v1.AddSSHKeyRequest
-	(*AddSSHKeyResponse)(nil),                // 33: containarium.v1.AddSSHKeyResponse
-	(*RemoveSSHKeyRequest)(nil),              // 34: containarium.v1.RemoveSSHKeyRequest
-	(*RemoveSSHKeyResponse)(nil),             // 35: containarium.v1.RemoveSSHKeyResponse
-	(*GetMetricsRequest)(nil),                // 36: containarium.v1.GetMetricsRequest
-	(*GetMetricsResponse)(nil),               // 37: containarium.v1.GetMetricsResponse
-	(*ResizeContainerRequest)(nil),           // 38: containarium.v1.ResizeContainerRequest
-	(*ResizeContainerResponse)(nil),          // 39: containarium.v1.ResizeContainerResponse
-	(*Collaborator)(nil),                     // 40: containarium.v1.Collaborator
-	(*AddCollaboratorRequest)(nil),           // 41: containarium.v1.AddCollaboratorRequest
-	(*AddCollaboratorResponse)(nil),          // 42: containarium.v1.AddCollaboratorResponse
-	(*RemoveCollaboratorRequest)(nil),        // 43: containarium.v1.RemoveCollaboratorRequest
-	(*RemoveCollaboratorResponse)(nil),       // 44: containarium.v1.RemoveCollaboratorResponse
-	(*ListCollaboratorsRequest)(nil),         // 45: containarium.v1.ListCollaboratorsRequest
-	(*ListCollaboratorsResponse)(nil),        // 46: containarium.v1.ListCollaboratorsResponse
-	(*CleanupDiskRequest)(nil),               // 47: containarium.v1.CleanupDiskRequest
-	(*CleanupDiskResponse)(nil),              // 48: containarium.v1.CleanupDiskResponse
-	(*InstallStackRequest)(nil),              // 49: containarium.v1.InstallStackRequest
-	(*InstallStackResponse)(nil),             // 50: containarium.v1.InstallStackResponse
-	(*StackParameter)(nil),                   // 51: containarium.v1.StackParameter
-	(*StackInfo)(nil),                        // 52: containarium.v1.StackInfo
-	(*ListStacksRequest)(nil),                // 53: containarium.v1.ListStacksRequest
-	(*ListStacksResponse)(nil),               // 54: containarium.v1.ListStacksResponse
-	(*GetMonitoringInfoRequest)(nil),         // 55: containarium.v1.GetMonitoringInfoRequest
-	(*GetMonitoringInfoResponse)(nil),        // 56: containarium.v1.GetMonitoringInfoResponse
-	(*MoveContainerRequest)(nil),             // 57: containarium.v1.MoveContainerRequest
-	(*MoveContainerResponse)(nil),            // 58: containarium.v1.MoveContainerResponse
-	(*AdoptMigratedContainerRequest)(nil),    // 59: containarium.v1.AdoptMigratedContainerRequest
-	(*AdoptMigratedContainerResponse)(nil),   // 60: containarium.v1.AdoptMigratedContainerResponse
-	nil,                                      // 61: containarium.v1.Container.LabelsEntry
-	nil,                                      // 62: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                      // 63: containarium.v1.CreateContainerRequest.StackParametersEntry
-	nil,                                      // 64: containarium.v1.ListContainersRequest.LabelFilterEntry
-	nil,                                      // 65: containarium.v1.SetContainerAttributionRequest.LabelsEntry
-	nil,                                      // 66: containarium.v1.SetContainerAttributionResponse.LabelsEntry
-	(*timestamppb.Timestamp)(nil),            // 67: google.protobuf.Timestamp
-	(*descriptorpb.EnumValueOptions)(nil),    // 68: google.protobuf.EnumValueOptions
+	(CloudMetricsProvider)(0),                // 4: containarium.v1.CloudMetricsProvider
+	(*ResourceLimits)(nil),                   // 5: containarium.v1.ResourceLimits
+	(*NetworkInfo)(nil),                      // 6: containarium.v1.NetworkInfo
+	(*Container)(nil),                        // 7: containarium.v1.Container
+	(*ContainerMetrics)(nil),                 // 8: containarium.v1.ContainerMetrics
+	(*CreateContainerRequest)(nil),           // 9: containarium.v1.CreateContainerRequest
+	(*CreateContainerResponse)(nil),          // 10: containarium.v1.CreateContainerResponse
+	(*ListContainersRequest)(nil),            // 11: containarium.v1.ListContainersRequest
+	(*ListContainersResponse)(nil),           // 12: containarium.v1.ListContainersResponse
+	(*GetContainerRequest)(nil),              // 13: containarium.v1.GetContainerRequest
+	(*GetContainerResponse)(nil),             // 14: containarium.v1.GetContainerResponse
+	(*DebugContainerRequest)(nil),            // 15: containarium.v1.DebugContainerRequest
+	(*DebugContainerResponse)(nil),           // 16: containarium.v1.DebugContainerResponse
+	(*DeleteContainerRequest)(nil),           // 17: containarium.v1.DeleteContainerRequest
+	(*DeleteContainerResponse)(nil),          // 18: containarium.v1.DeleteContainerResponse
+	(*StartContainerRequest)(nil),            // 19: containarium.v1.StartContainerRequest
+	(*StartContainerResponse)(nil),           // 20: containarium.v1.StartContainerResponse
+	(*StopContainerRequest)(nil),             // 21: containarium.v1.StopContainerRequest
+	(*StopContainerResponse)(nil),            // 22: containarium.v1.StopContainerResponse
+	(*ToggleMonitoringRequest)(nil),          // 23: containarium.v1.ToggleMonitoringRequest
+	(*ToggleMonitoringResponse)(nil),         // 24: containarium.v1.ToggleMonitoringResponse
+	(*ToggleAutoSleepRequest)(nil),           // 25: containarium.v1.ToggleAutoSleepRequest
+	(*ToggleAutoSleepResponse)(nil),          // 26: containarium.v1.ToggleAutoSleepResponse
+	(*SetContainerTTLRequest)(nil),           // 27: containarium.v1.SetContainerTTLRequest
+	(*SetContainerTTLResponse)(nil),          // 28: containarium.v1.SetContainerTTLResponse
+	(*SetContainerDeletePolicyRequest)(nil),  // 29: containarium.v1.SetContainerDeletePolicyRequest
+	(*SetContainerDeletePolicyResponse)(nil), // 30: containarium.v1.SetContainerDeletePolicyResponse
+	(*SetContainerAttributionRequest)(nil),   // 31: containarium.v1.SetContainerAttributionRequest
+	(*SetContainerAttributionResponse)(nil),  // 32: containarium.v1.SetContainerAttributionResponse
+	(*AddSSHKeyRequest)(nil),                 // 33: containarium.v1.AddSSHKeyRequest
+	(*AddSSHKeyResponse)(nil),                // 34: containarium.v1.AddSSHKeyResponse
+	(*RemoveSSHKeyRequest)(nil),              // 35: containarium.v1.RemoveSSHKeyRequest
+	(*RemoveSSHKeyResponse)(nil),             // 36: containarium.v1.RemoveSSHKeyResponse
+	(*GetMetricsRequest)(nil),                // 37: containarium.v1.GetMetricsRequest
+	(*GetMetricsResponse)(nil),               // 38: containarium.v1.GetMetricsResponse
+	(*ResizeContainerRequest)(nil),           // 39: containarium.v1.ResizeContainerRequest
+	(*ResizeContainerResponse)(nil),          // 40: containarium.v1.ResizeContainerResponse
+	(*Collaborator)(nil),                     // 41: containarium.v1.Collaborator
+	(*AddCollaboratorRequest)(nil),           // 42: containarium.v1.AddCollaboratorRequest
+	(*AddCollaboratorResponse)(nil),          // 43: containarium.v1.AddCollaboratorResponse
+	(*RemoveCollaboratorRequest)(nil),        // 44: containarium.v1.RemoveCollaboratorRequest
+	(*RemoveCollaboratorResponse)(nil),       // 45: containarium.v1.RemoveCollaboratorResponse
+	(*ListCollaboratorsRequest)(nil),         // 46: containarium.v1.ListCollaboratorsRequest
+	(*ListCollaboratorsResponse)(nil),        // 47: containarium.v1.ListCollaboratorsResponse
+	(*CleanupDiskRequest)(nil),               // 48: containarium.v1.CleanupDiskRequest
+	(*CleanupDiskResponse)(nil),              // 49: containarium.v1.CleanupDiskResponse
+	(*InstallStackRequest)(nil),              // 50: containarium.v1.InstallStackRequest
+	(*InstallStackResponse)(nil),             // 51: containarium.v1.InstallStackResponse
+	(*StackParameter)(nil),                   // 52: containarium.v1.StackParameter
+	(*StackInfo)(nil),                        // 53: containarium.v1.StackInfo
+	(*ListStacksRequest)(nil),                // 54: containarium.v1.ListStacksRequest
+	(*ListStacksResponse)(nil),               // 55: containarium.v1.ListStacksResponse
+	(*GetMonitoringInfoRequest)(nil),         // 56: containarium.v1.GetMonitoringInfoRequest
+	(*GetMonitoringInfoResponse)(nil),        // 57: containarium.v1.GetMonitoringInfoResponse
+	(*SetMetricsExportRequest)(nil),          // 58: containarium.v1.SetMetricsExportRequest
+	(*SetMetricsExportResponse)(nil),         // 59: containarium.v1.SetMetricsExportResponse
+	(*GetMetricsExportRequest)(nil),          // 60: containarium.v1.GetMetricsExportRequest
+	(*GetMetricsExportResponse)(nil),         // 61: containarium.v1.GetMetricsExportResponse
+	(*MoveContainerRequest)(nil),             // 62: containarium.v1.MoveContainerRequest
+	(*MoveContainerResponse)(nil),            // 63: containarium.v1.MoveContainerResponse
+	(*AdoptMigratedContainerRequest)(nil),    // 64: containarium.v1.AdoptMigratedContainerRequest
+	(*AdoptMigratedContainerResponse)(nil),   // 65: containarium.v1.AdoptMigratedContainerResponse
+	nil,                                      // 66: containarium.v1.Container.LabelsEntry
+	nil,                                      // 67: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                      // 68: containarium.v1.CreateContainerRequest.StackParametersEntry
+	nil,                                      // 69: containarium.v1.ListContainersRequest.LabelFilterEntry
+	nil,                                      // 70: containarium.v1.SetContainerAttributionRequest.LabelsEntry
+	nil,                                      // 71: containarium.v1.SetContainerAttributionResponse.LabelsEntry
+	(*timestamppb.Timestamp)(nil),            // 72: google.protobuf.Timestamp
+	(*descriptorpb.EnumValueOptions)(nil),    // 73: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
 	2,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
-	4,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
-	5,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	61, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	5,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
+	6,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
+	66, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
 	0,  // 4: containarium.v1.Container.os_type:type_name -> containarium.v1.OSType
 	1,  // 5: containarium.v1.Container.access_type:type_name -> containarium.v1.AccessType
-	67, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	67, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
+	72, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	72, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
 	3,  // 8: containarium.v1.Container.delete_policy:type_name -> containarium.v1.DeletePolicy
-	4,  // 9: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	62, // 10: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	5,  // 9: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
+	67, // 10: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
 	0,  // 11: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
-	63, // 12: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
-	6,  // 13: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
+	68, // 12: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
+	7,  // 13: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
 	2,  // 14: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	64, // 15: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
-	6,  // 16: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
-	6,  // 17: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
-	7,  // 18: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	6,  // 19: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
-	6,  // 20: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
-	67, // 21: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	69, // 15: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	7,  // 16: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
+	7,  // 17: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
+	8,  // 18: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	7,  // 19: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
+	7,  // 20: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
+	72, // 21: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
 	3,  // 22: containarium.v1.SetContainerDeletePolicyRequest.delete_policy:type_name -> containarium.v1.DeletePolicy
 	3,  // 23: containarium.v1.SetContainerDeletePolicyResponse.delete_policy:type_name -> containarium.v1.DeletePolicy
-	65, // 24: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
-	66, // 25: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
-	7,  // 26: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	6,  // 27: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
-	40, // 28: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
-	40, // 29: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
-	6,  // 30: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
-	6,  // 31: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
-	51, // 32: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
-	52, // 33: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
-	68, // 34: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	35, // [35:35] is the sub-list for method output_type
-	35, // [35:35] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	34, // [34:35] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	70, // 24: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
+	71, // 25: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
+	8,  // 26: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	7,  // 27: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
+	41, // 28: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
+	41, // 29: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
+	7,  // 30: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
+	7,  // 31: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
+	52, // 32: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
+	53, // 33: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
+	4,  // 34: containarium.v1.SetMetricsExportRequest.provider:type_name -> containarium.v1.CloudMetricsProvider
+	4,  // 35: containarium.v1.SetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
+	4,  // 36: containarium.v1.GetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
+	72, // 37: containarium.v1.GetMetricsExportResponse.last_success_at:type_name -> google.protobuf.Timestamp
+	73, // 38: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	39, // [39:39] is the sub-list for method output_type
+	39, // [39:39] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	38, // [38:39] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }
@@ -4897,8 +5256,8 @@ func file_containarium_v1_container_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   63,
+			NumEnums:      5,
+			NumMessages:   67,
 			NumExtensions: 1,
 			NumServices:   0,
 		},

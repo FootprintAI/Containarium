@@ -423,6 +423,35 @@ func (s *Server) registerTools() {
 			Handler: handleToggleMonitoring,
 		},
 		{
+			Name:        "set_metrics_export",
+			Description: "Enable or disable opt-in export of this host's infra metrics to its cloud's native monitoring (GCP Cloud Monitoring in the MVP; disabled by default). Enabling probes the host's credentials synchronously before persisting anything — on GCP this resolves Application Default Credentials with the monitoring-write scope; a host with no usable ADC fails with an actionable error and nothing is exported. Disabling stops emission within one export interval. No daemon restart required either way. Host-level — not available on the hosted control plane, run it against the host's own daemon.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"enabled": map[string]interface{}{
+						"type":        "boolean",
+						"description": "true to enable export (provider is required), false to disable it (provider is ignored)",
+					},
+					"provider": map[string]interface{}{
+						"type":        "string",
+						"description": "Cloud provider to export to. Required when enabled=true. Only \"gcp\" is implemented; \"aws\" is a reserved value the daemon rejects with an unimplemented error.",
+						"enum":        []string{"gcp", "aws"},
+					},
+				},
+				"required": []string{"enabled"},
+			},
+			Handler: handleSetMetricsExport,
+		},
+		{
+			Name:        "get_metrics_export",
+			Description: "Get the current cloud-native metrics export configuration and last-known health for this host (enabled, provider, interval, last success time, last error, failure count). Host-level — not available on the hosted control plane, run it against the host's own daemon.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleGetMetricsExport,
+		},
+		{
 			Name:        "delete_container",
 			Description: "Delete a container permanently",
 			InputSchema: map[string]interface{}{
@@ -1266,6 +1295,12 @@ func toolScopeAssignments() map[string]string {
 		"get_upgrade_status": auth.ScopeContainersRead,
 		"list_backends":      auth.ScopeContainersRead,
 		"get_backend":        auth.ScopeContainersRead,
+		// cloud-native metrics export toggle — a system/daemon-level
+		// setting, scoped the same as its closest sibling
+		// (toggle_monitoring / get_system_info) rather than introducing
+		// a new scope for one feature.
+		"set_metrics_export": auth.ScopeContainersWrite,
+		"get_metrics_export": auth.ScopeContainersRead,
 		// validate-gpu creates+deletes a throwaway container (a write op);
 		// the daemon additionally enforces admin role.
 		"backend_validate_gpu": auth.ScopeContainersWrite,
@@ -1685,6 +1720,52 @@ func handleToggleMonitoring(client API, args map[string]interface{}) (string, er
 		return "", fmt.Errorf("failed to toggle monitoring: %w", err)
 	}
 	return fmt.Sprintf("✅ %s (monitoring_enabled=%v)", resp.Message, resp.MonitoringEnabled), nil
+}
+
+// handleSetMetricsExport is a thin wrapper over client.SetMetricsExport
+// (#1069) — the same client method the CLI's `containarium monitoring
+// export enable/disable` calls (internal/cmd/monitoring_export.go),
+// per the repo's CLI-first convention.
+func handleSetMetricsExport(client API, args map[string]interface{}) (string, error) {
+	enabled, ok := args["enabled"].(bool)
+	if !ok {
+		return "", fmt.Errorf("enabled (bool) is required")
+	}
+	provider, _ := args["provider"].(string)
+	if enabled && provider == "" {
+		return "", fmt.Errorf("provider is required when enabled=true (e.g. \"gcp\")")
+	}
+
+	resp, err := client.SetMetricsExport(enabled, provider)
+	if err != nil {
+		return "", fmt.Errorf("failed to set metrics export: %w", err)
+	}
+	return fmt.Sprintf("✅ %s (enabled=%v, provider=%s, interval_seconds=%d)",
+		resp.Message, resp.Enabled, resp.Provider, resp.IntervalSeconds), nil
+}
+
+// handleGetMetricsExport is a thin wrapper over client.GetMetricsExport
+// (#1069) — the same client method the CLI's `containarium monitoring
+// export status` calls.
+func handleGetMetricsExport(client API, args map[string]interface{}) (string, error) {
+	resp, err := client.GetMetricsExport()
+	if err != nil {
+		return "", fmt.Errorf("failed to get metrics export status: %w", err)
+	}
+	if !resp.Enabled {
+		return "cloud metrics export: disabled", nil
+	}
+	msg := fmt.Sprintf("cloud metrics export: enabled (provider=%s, interval_seconds=%d)", resp.Provider, resp.IntervalSeconds)
+	if resp.LastSuccessAt != "" {
+		msg += fmt.Sprintf(", last_success_at=%s", resp.LastSuccessAt)
+	}
+	if resp.LastError != "" {
+		msg += fmt.Sprintf(", last_error=%s", resp.LastError)
+	}
+	if resp.ExportFailures > 0 {
+		msg += fmt.Sprintf(", export_failures=%d", resp.ExportFailures)
+	}
+	return msg, nil
 }
 
 func handleDeleteContainer(client API, args map[string]interface{}) (string, error) {

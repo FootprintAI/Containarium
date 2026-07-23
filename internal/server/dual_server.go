@@ -249,6 +249,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		return nil, fmt.Errorf("failed to create container server: %w", err)
 	}
 
+	// Wire the real cloud-metrics-export sinks (#1069). Without this,
+	// SetMetricsExport always falls through the nil-sink path and
+	// returns Unimplemented even with valid GCP credentials.
+	containerServer.SetMetricsExportSinks(defaultMetricsExportSinks())
+
 	// Create token manager. Refuses to start if the JWT secret is
 	// shorter than auth.MinSecretKeyLen — fail-closed on weak crypto
 	// (audit finding A-MED-2).

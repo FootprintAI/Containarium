@@ -240,6 +240,32 @@ func (c *GRPCClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	return resp.Message, resp.MonitoringEnabled, nil
 }
 
+// SetMetricsExport enables or disables opt-in export of host/container
+// infra metrics to the host cloud's native monitoring (#1069). Enabling
+// requires a supported provider and passes the daemon's synchronous
+// credential probe (e.g. GCP ADC resolution); a failed probe or an
+// unsupported provider (AWS, UNSPECIFIED) returns the daemon's error
+// unwrapped so the CLI can render the gRPC code (FailedPrecondition /
+// InvalidArgument / Unimplemented) directly.
+func (c *GRPCClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProvider) (*pb.SetMetricsExportResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return c.client.SetMetricsExport(ctx, &pb.SetMetricsExportRequest{
+		Enabled:  enabled,
+		Provider: provider,
+	})
+}
+
+// GetMetricsExport returns the current cloud-native metrics export
+// configuration and last-known health (#1069).
+func (c *GRPCClient) GetMetricsExport() (*pb.GetMetricsExportResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	return c.client.GetMetricsExport(ctx, &pb.GetMetricsExportRequest{})
+}
+
 // ToggleAutoSleep writes the per-container auto-sleep opt-in metadata.
 // idleThresholdMinutes is ignored when enabled is false; 0 means
 // "leave the existing key or fall back to the 15-minute default".
