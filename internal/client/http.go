@@ -616,6 +616,88 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	return result.Message, result.MonitoringEnabled, nil
 }
 
+// SetMetricsExport enables or disables opt-in export of host/container
+// infra metrics to the host cloud's native monitoring (#1069) via HTTP.
+// Enabling with an unresolvable provider credential (e.g. no GCP ADC)
+// or an unsupported provider (AWS, UNSPECIFIED) fails with the
+// server's error message intact — grpc-gateway maps FAILED_PRECONDITION
+// and INVALID_ARGUMENT to HTTP 400 and UNIMPLEMENTED to HTTP 501, but
+// the CLI only needs the message text, which carries the IAM
+// remediation hint for the credential-probe case.
+func (c *HTTPClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProvider) (*pb.SetMetricsExportResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	body := map[string]interface{}{
+		"enabled": enabled,
+		// Emit the enum by its proto JSON name so grpc-gateway decodes it
+		// into the CloudMetricsProvider enum.
+		"provider": provider.String(),
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/system/metrics-export", body)
+	if err != nil {
+		return nil, fmt.Errorf("set metrics export: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotImplemented {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		msg := "server does not support this metrics export provider"
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			msg = errResp.Error
+		}
+		return nil, status.Error(codes.Unimplemented, msg)
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("set metrics export: status %d", resp.StatusCode)
+	}
+
+	out := &pb.SetMetricsExportResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// GetMetricsExport returns the current cloud-native metrics export
+// configuration and last-known health via HTTP (#1069).
+func (c *HTTPClient) GetMetricsExport() (*pb.GetMetricsExportResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/system/metrics-export", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get metrics export: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("get metrics export: status %d", resp.StatusCode)
+	}
+
+	out := &pb.GetMetricsExportResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // RefreshToken exchanges a refresh token for a new
 // (access, refresh) pair. Unauthenticated endpoint —
 // the refresh token in the body IS the credential.

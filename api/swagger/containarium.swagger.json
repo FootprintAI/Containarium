@@ -4751,6 +4751,63 @@
         ]
       }
     },
+    "/v1/system/metrics-export": {
+      "get": {
+        "summary": "Get cloud-native metrics export status",
+        "description": "Returns whether cloud-native metrics export is enabled, the configured provider, the export interval, and last-known health (populated once the collector lands in #1070/#1071).",
+        "operationId": "ContainerService_GetMetricsExport",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetMetricsExportResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Monitoring"
+        ]
+      },
+      "post": {
+        "summary": "Enable or disable cloud-native metrics export",
+        "description": "Opt-in export of host/container infra metrics to the host cloud's native monitoring (GCP Cloud Monitoring in the MVP). Enabling probes Application Default Credentials (monitoring-write scope) before persisting anything; a host with no resolvable ADC fails with FAILED_PRECONDITION and an IAM remediation hint. Disabling stops emission within one export interval. AWS is reserved and returns UNIMPLEMENTED.",
+        "operationId": "ContainerService_SetMetricsExport",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetMetricsExportResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "SetMetricsExportRequest enables or disables cloud-native metrics export.\nEnabling with provider=GCP triggers a synchronous Application Default\nCredentials probe (monitoring-write scope) before anything is persisted\nor started; enabling with an unresolvable ADC fails the call and leaves\nthe prior config untouched.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetMetricsExportRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Monitoring"
+        ]
+      }
+    },
     "/v1/system/monitoring": {
       "get": {
         "summary": "Get monitoring information",
@@ -6802,6 +6859,16 @@
       },
       "title": "CleanupDiskResponse is the response from cleaning up disk space"
     },
+    "CloudMetricsProvider": {
+      "type": "string",
+      "enum": [
+        "CLOUD_METRICS_PROVIDER_UNSPECIFIED",
+        "CLOUD_METRICS_PROVIDER_GCP",
+        "CLOUD_METRICS_PROVIDER_AWS"
+      ],
+      "default": "CLOUD_METRICS_PROVIDER_UNSPECIFIED",
+      "description": "CloudMetricsProvider identifies which host cloud's native monitoring\nreceives the opt-in export (#1069). Typed so the toggle can never be a\nmagic string. AWS is reserved for a future Sink implementation;\nSetMetricsExport rejects it with UNIMPLEMENTED until one exists.\n\n - CLOUD_METRICS_PROVIDER_UNSPECIFIED: Unset. SetMetricsExport rejects this with INVALID_ARGUMENT when\nenabled=true; GetMetricsExport returns it when export has never been\nconfigured.\n - CLOUD_METRICS_PROVIDER_GCP: Google Cloud Monitoring (Cloud Operations). The only implemented\nprovider in the MVP.\n - CLOUD_METRICS_PROVIDER_AWS: Amazon CloudWatch. Reserved — no Sink implementation yet;\nSetMetricsExport returns UNIMPLEMENTED."
+    },
     "Collaborator": {
       "type": "object",
       "properties": {
@@ -8519,6 +8586,39 @@
         }
       },
       "description": "GetLatestReleaseResponse reports the latest published release vs the\nrunning daemon version. See #354."
+    },
+    "GetMetricsExportResponse": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether export is currently enabled."
+        },
+        "provider": {
+          "$ref": "#/definitions/CloudMetricsProvider",
+          "description": "The configured provider. CLOUD_METRICS_PROVIDER_UNSPECIFIED when\nexport has never been configured on this host."
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Export interval in seconds. Fixed default 60 in the MVP; #1069 does\nnot expose a knob to change it."
+        },
+        "lastSuccessAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Wall-clock time of the last successful export batch."
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Human-readable detail of the most recent export failure, if any."
+        },
+        "exportFailures": {
+          "type": "string",
+          "format": "int64",
+          "description": "Count of failed export batches since the exporter was last (re)built."
+        }
+      },
+      "description": "GetMetricsExportResponse reports the current cloud-native metrics\nexport configuration and last-known health. last_success_at,\nlast_error, and export_failures are zero-valued until the collector\n(#1070/#1071) is wired — #1069 delivers the toggle, config\npersistence, and enable-time credential probe only."
     },
     "GetMetricsResponse": {
       "type": "object",
@@ -10966,6 +11066,41 @@
         }
       },
       "description": "SetContainerTTLResponse reports the new TTL state."
+    },
+    "SetMetricsExportRequest": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Desired state. true enables export (provider is required and is\nprobed before persisting). false disables it; provider is ignored."
+        },
+        "provider": {
+          "$ref": "#/definitions/CloudMetricsProvider",
+          "description": "Target cloud provider. Required when enabled=true. Must not be\nCLOUD_METRICS_PROVIDER_UNSPECIFIED (INVALID_ARGUMENT) or\nCLOUD_METRICS_PROVIDER_AWS (UNIMPLEMENTED — MVP is GCP-only)."
+        }
+      },
+      "description": "SetMetricsExportRequest enables or disables cloud-native metrics export.\nEnabling with provider=GCP triggers a synchronous Application Default\nCredentials probe (monitoring-write scope) before anything is persisted\nor started; enabling with an unresolvable ADC fails the call and leaves\nthe prior config untouched."
+    },
+    "SetMetricsExportResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary of what changed (e.g. \"cloud metrics export\nenabled for gcp\")."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "The effective config after the call — mirrors GetMetricsExportResponse."
+        },
+        "provider": {
+          "$ref": "#/definitions/CloudMetricsProvider"
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "description": "SetMetricsExportResponse reports the effective state after the toggle."
     },
     "SetNetworkPolicyRequest": {
       "type": "object",

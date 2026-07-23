@@ -23,6 +23,7 @@ import (
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/integrity"
+	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
@@ -97,6 +98,20 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  *app.DaemonConfigStore
 	peerPool           *PeerPool
+	// Cloud-native metrics export (#1069). metricsExportMu guards the
+	// in-memory config so SetMetricsExport/GetMetricsExport round-trip
+	// without a daemon restart; daemonConfigStore (when present) makes
+	// the toggle survive one. metricsExportSinks maps a provider enum
+	// value to its Sink so the enable-time credential probe is
+	// injectable in tests without touching real GCP ADC. Both are wired
+	// once at startup (DualServer calls SetMetricsExportSinks with the
+	// real gcpSink) and otherwise left nil, which GetMetricsExport
+	// treats as "never configured" and SetMetricsExport treats as
+	// Unimplemented for that provider.
+	metricsExportMu           sync.RWMutex
+	metricsExportConfig       cloudexport.Config
+	metricsExportConfigLoaded bool
+	metricsExportSinks        map[pb.CloudMetricsProvider]cloudexport.Sink
 	// localHealthCheckFn overrides localBackendHealthy's real Incus liveness
 	// probe (#920) — set by tests to simulate a wedged/unresponsive local
 	// backend without a live Incus daemon. nil in production; the real probe
