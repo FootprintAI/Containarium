@@ -9,8 +9,10 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // defaultMetricsExportSinks is the production sink registry passed to
@@ -140,6 +142,10 @@ func (s *ContainerServer) SetMetricsExport(ctx context.Context, req *pb.SetMetri
 			current.IntervalSeconds = cloudexport.DefaultIntervalSeconds
 		}
 		s.saveMetricsExportConfig(ctx, current)
+		// Stop the running collector — emission ends within one
+		// interval (in practice immediately: Shutdown flushes then
+		// halts the reader).
+		s.swapMetricsExportCollector(ctx, nil)
 		return &pb.SetMetricsExportResponse{
 			Message:         "cloud metrics export disabled",
 			Enabled:         false,
@@ -172,6 +178,19 @@ func (s *ContainerServer) SetMetricsExport(ctx context.Context, req *pb.SetMetri
 		Provider:        req.Provider,
 		IntervalSeconds: cloudexport.DefaultIntervalSeconds,
 	}
+
+	// Build and start the real host-series collector before persisting
+	// "enabled" — a build/start failure (exporter construction, Incus
+	// dial) returns an error and leaves the prior state untouched, same
+	// fail-closed posture as the probe above.
+	collector, err := s.buildCollector(ctx, newCfg, sink)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "cloud metrics export could not start: %v", err)
+	}
+	if err := collector.Start(ctx); err != nil {
+		return nil, status.Errorf(codes.Internal, "cloud metrics export failed to start: %v", err)
+	}
+	s.swapMetricsExportCollector(ctx, collector)
 	s.saveMetricsExportConfig(ctx, newCfg)
 
 	return &pb.SetMetricsExportResponse{
@@ -182,22 +201,129 @@ func (s *ContainerServer) SetMetricsExport(ctx context.Context, req *pb.SetMetri
 	}, nil
 }
 
+// buildCollector routes to the test seam when set, else the real
+// Incus-backed builder.
+func (s *ContainerServer) buildCollector(ctx context.Context, cfg cloudexport.Config, sink cloudexport.Sink) (*cloudexport.CloudExportCollector, error) {
+	if s.metricsExportBuilder != nil {
+		return s.metricsExportBuilder(ctx, cfg, sink)
+	}
+	return s.buildMetricsExportCollector(ctx, cfg, sink)
+}
+
+// buildMetricsExportCollector assembles (but does not start) a host-
+// series collector for cfg: the production Sources adapter over the
+// daemon's Manager/Incus, the provider exporter from sink.NewExporter,
+// the provider's monitored-resource identity (gce_instance for GCP) when
+// the sink offers one, and the fixed backend_id/hostname/region label
+// set. Returns an error if the daemon lacks a Manager or the exporter
+// can't be built.
+func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg cloudexport.Config, sink cloudexport.Sink) (*cloudexport.CloudExportCollector, error) {
+	if s.manager == nil {
+		return nil, fmt.Errorf("no container manager wired")
+	}
+	sources, err := newServerMetricsSources(s.manager)
+	if err != nil {
+		return nil, err
+	}
+	exporter, err := sink.NewExporter(ctx, cloudexport.SinkConfig{})
+	if err != nil {
+		return nil, fmt.Errorf("build exporter: %w", err)
+	}
+
+	var res *resource.Resource
+	if rp, ok := sink.(cloudexport.ResourceProvider); ok {
+		if r, derr := rp.DetectResource(ctx); derr == nil {
+			res = r
+		} else {
+			log.Printf("Warning: metrics export resource detection failed, using default resource: %v", derr)
+		}
+	}
+
+	return cloudexport.NewCollector(cloudexport.CollectorOptions{
+		Sources:  sources,
+		Exporter: exporter,
+		Resource: res,
+		Labels: cloudexport.Labels{
+			BackendID: s.localBackendID(),
+			Hostname:  sources.Hostname(),
+			Region:    s.region,
+		},
+		IntervalSeconds: cfg.IntervalSeconds,
+	}), nil
+}
+
+// swapMetricsExportCollector installs newC as the running collector
+// (nil to stop entirely) and shuts down whatever was running before,
+// outside the lock so a slow Stop never blocks a concurrent
+// GetMetricsExport read.
+func (s *ContainerServer) swapMetricsExportCollector(ctx context.Context, newC *cloudexport.CloudExportCollector) {
+	s.metricsExportMu.Lock()
+	old := s.metricsExportCollector
+	s.metricsExportCollector = newC
+	s.metricsExportMu.Unlock()
+	if old != nil {
+		_ = old.Stop(ctx)
+	}
+}
+
+// StartMetricsExportIfEnabled resumes export on daemon startup when the
+// persisted config says it was enabled — so an operator who enabled
+// export before a restart doesn't silently lose it. Best-effort: a
+// build/start failure (e.g. ADC no longer resolvable) is logged and the
+// daemon boots normally; the operator re-enables to retry. Called once
+// by DualServer after SetMetricsExportSinks.
+func (s *ContainerServer) StartMetricsExportIfEnabled(ctx context.Context) {
+	cfg := s.getMetricsExportConfig(ctx)
+	if !cfg.Enabled {
+		return
+	}
+	sink := s.metricsExportSink(cfg.Provider)
+	if sink == nil {
+		log.Printf("Warning: metrics export was enabled for %s but no sink is registered; not resuming", metricsExportProviderLabel(cfg.Provider))
+		return
+	}
+	collector, err := s.buildCollector(ctx, cfg, sink)
+	if err != nil {
+		log.Printf("Warning: could not resume metrics export on startup: %v", err)
+		return
+	}
+	if err := collector.Start(ctx); err != nil {
+		log.Printf("Warning: could not start resumed metrics export collector: %v", err)
+		return
+	}
+	s.swapMetricsExportCollector(ctx, collector)
+	log.Printf("Resumed cloud metrics export for %s", metricsExportProviderLabel(cfg.Provider))
+}
+
 // GetMetricsExport reports the current cloud metrics export
 // configuration and last-known health. last_success_at, last_error, and
-// export_failures are zero-valued until the collector (#1070/#1071) is
-// wired — #1069 delivers the toggle, config persistence, and the
-// enable-time credential probe only.
+// export_failures come from the running collector (#1070); when export
+// is disabled (no collector) they are zero-valued.
 func (s *ContainerServer) GetMetricsExport(ctx context.Context, req *pb.GetMetricsExportRequest) (*pb.GetMetricsExportResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
 
 	cfg := s.getMetricsExportConfig(ctx)
-	return &pb.GetMetricsExportResponse{
+	resp := &pb.GetMetricsExportResponse{
 		Enabled:         cfg.Enabled,
 		Provider:        cfg.Provider,
 		IntervalSeconds: cfg.IntervalSeconds,
-	}, nil
+	}
+
+	s.metricsExportMu.RLock()
+	collector := s.metricsExportCollector
+	s.metricsExportMu.RUnlock()
+	if collector != nil {
+		lastSuccess, lastErr, failures := collector.Health()
+		if !lastSuccess.IsZero() {
+			resp.LastSuccessAt = timestamppb.New(lastSuccess)
+		}
+		resp.LastError = lastErr
+		resp.ExportFailures = failures
+	}
+
+	return resp, nil
 }
 
 func metricsExportProviderLabel(p pb.CloudMetricsProvider) string {

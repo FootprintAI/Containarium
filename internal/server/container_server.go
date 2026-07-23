@@ -112,6 +112,17 @@ type ContainerServer struct {
 	metricsExportConfig       cloudexport.Config
 	metricsExportConfigLoaded bool
 	metricsExportSinks        map[pb.CloudMetricsProvider]cloudexport.Sink
+	// metricsExportCollector is the running host-series export pipeline
+	// (#1070), non-nil only while export is enabled. SetMetricsExport
+	// starts it on enable and stops it on disable; GetMetricsExport reads
+	// its health. Guarded by metricsExportMu, same as the config/sinks it
+	// lives beside — one lock for the whole export subsystem.
+	metricsExportCollector *cloudexport.CloudExportCollector
+	// metricsExportBuilder is a test seam over buildMetricsExportCollector:
+	// the real builder dials Incus and needs a live Manager, so server-
+	// level tests inject a fake that returns a collector over fake
+	// sources/exporter. nil in production (the real builder runs).
+	metricsExportBuilder func(ctx context.Context, cfg cloudexport.Config, sink cloudexport.Sink) (*cloudexport.CloudExportCollector, error)
 	// localHealthCheckFn overrides localBackendHealthy's real Incus liveness
 	// probe (#920) — set by tests to simulate a wedged/unresponsive local
 	// backend without a live Incus daemon. nil in production; the real probe

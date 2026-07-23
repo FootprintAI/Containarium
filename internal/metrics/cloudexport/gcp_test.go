@@ -3,12 +3,19 @@ package cloudexport
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	monitoringpb "cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	apioption "google.golang.org/api/option"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // fakeTokenSource lets tests simulate a credential that resolves but
@@ -99,14 +106,110 @@ func TestProbe_ADC(t *testing.T) {
 	}
 }
 
-// TestGCPSink_NewExporter_NotYetImplemented locks the #1069 scope
-// decision: the actual Cloud Monitoring exporter lands with
-// #1070/#1071, so NewExporter must fail loudly (not silently no-op)
-// until then.
-func TestGCPSink_NewExporter_NotYetImplemented(t *testing.T) {
+// fakeMetricServer is an in-process Cloud Monitoring gRPC server: it
+// records the CreateTimeSeries requests the real exporter code path
+// sends, so the exporter can be exercised end-to-end without touching
+// GCP.
+type fakeMetricServer struct {
+	monitoringpb.UnimplementedMetricServiceServer
+	mu       sync.Mutex
+	requests []*monitoringpb.CreateTimeSeriesRequest
+}
+
+func (f *fakeMetricServer) CreateTimeSeries(ctx context.Context, req *monitoringpb.CreateTimeSeriesRequest) (*emptypb.Empty, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requests = append(f.requests, req)
+	return &emptypb.Empty{}, nil
+}
+
+func (f *fakeMetricServer) received() []*monitoringpb.CreateTimeSeriesRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*monitoringpb.CreateTimeSeriesRequest(nil), f.requests...)
+}
+
+// startFakeMonitoring spins up the fake Cloud Monitoring server on a
+// loopback listener and returns it plus an insecure client option
+// pointed at it.
+func startFakeMonitoring(t *testing.T) (*fakeMetricServer, apioption.ClientOption) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	fake := &fakeMetricServer{}
+	srv := grpc.NewServer()
+	monitoringpb.RegisterMetricServiceServer(srv, fake)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial fake monitoring: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return fake, apioption.WithGRPCConn(conn)
+}
+
+// TestGCPSink_NewExporter_PushesToFakeMonitoring is the #1070
+// replacement for the #1069 not-yet-implemented placeholder: NewExporter
+// must now return a real, usable sdkmetric.Exporter, and driving the
+// CloudExportCollector against it must land a CreateTimeSeries batch
+// carrying the allowlisted host series at the fake Cloud Monitoring
+// endpoint — the real exporter code path, only the Google endpoint faked.
+func TestGCPSink_NewExporter_PushesToFakeMonitoring(t *testing.T) {
+	ctx := context.Background()
+	fake, clientOpt := startFakeMonitoring(t)
+
 	sink := NewGCPSink()
-	_, err := sink.NewExporter(context.Background(), SinkConfig{})
-	if err == nil {
-		t.Fatal("expected NewExporter to error until #1070/#1071 wire the real exporter")
+	exp, err := sink.NewExporter(ctx, SinkConfig{
+		ProjectID:               "test-project",
+		MonitoringClientOptions: []apioption.ClientOption{clientOpt},
+	})
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	if exp == nil {
+		t.Fatal("NewExporter returned a nil exporter")
+	}
+
+	c := NewCollector(CollectorOptions{
+		Sources:  &fakeSources{sr: sampleResources()},
+		Exporter: exp,
+		Labels:   sampleLabels(),
+	})
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = c.Stop(ctx) }()
+
+	if err := c.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+
+	reqs := fake.received()
+	if len(reqs) == 0 {
+		t.Fatal("fake Cloud Monitoring received no CreateTimeSeries request")
+	}
+	var haveHostSeries bool
+	for _, r := range reqs {
+		for _, ts := range r.GetTimeSeries() {
+			if strings.Contains(ts.GetMetric().GetType(), "containarium.host.") {
+				haveHostSeries = true
+			}
+		}
+	}
+	if !haveHostSeries {
+		t.Errorf("no containarium.host.* series in the CreateTimeSeries batches: %v", reqs)
+	}
+}
+
+// TestGCPSink_ImplementsResourceProvider asserts the GCP sink supplies a
+// monitored-resource detector (so series land as gce_instance), keeping
+// the GCP detector import contained to gcp.go.
+func TestGCPSink_ImplementsResourceProvider(t *testing.T) {
+	if _, ok := NewGCPSink().(ResourceProvider); !ok {
+		t.Fatal("gcpSink must implement ResourceProvider for gce_instance tagging")
 	}
 }

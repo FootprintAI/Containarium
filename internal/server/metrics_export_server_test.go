@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -56,14 +58,74 @@ func (f *fakeMetricsExportSink) Probe(ctx context.Context) error {
 	return f.probeErr
 }
 
+// fakeExportSources is a cloudexport.Sources with no Incus dependency,
+// so a server-level enable test can start a real collector in-process.
+type fakeExportSources struct{}
+
+func (fakeExportSources) SystemResources(ctx context.Context) (*cloudexport.SystemResources, error) {
+	return &cloudexport.SystemResources{ContainerCount: 3, MemoryTotalBytes: 1 << 30}, nil
+}
+func (fakeExportSources) AllContainerMetrics(ctx context.Context) (map[string]*pb.ContainerMetrics, error) {
+	return nil, nil
+}
+
+// fakeExportExporter is a no-network sdkmetric.Exporter that counts
+// pushes and can be told to fail the next one, so the server-level test
+// can exercise the health-field wiring end to end.
+type fakeExportExporter struct {
+	mu       sync.Mutex
+	exports  int
+	failNext bool
+}
+
+func (e *fakeExportExporter) Temporality(k sdkmetric.InstrumentKind) metricdata.Temporality {
+	return sdkmetric.DefaultTemporalitySelector(k)
+}
+func (e *fakeExportExporter) Aggregation(k sdkmetric.InstrumentKind) sdkmetric.Aggregation {
+	return sdkmetric.DefaultAggregationSelector(k)
+}
+func (e *fakeExportExporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.failNext {
+		e.failNext = false
+		return errors.New("simulated export failure")
+	}
+	e.exports++
+	return nil
+}
+func (e *fakeExportExporter) ForceFlush(ctx context.Context) error { return nil }
+func (e *fakeExportExporter) Shutdown(ctx context.Context) error   { return nil }
+
+// fakeCollectorBuilder returns a metricsExportBuilder that stands up a
+// real CloudExportCollector over the given exporter and a no-Incus
+// Sources, and (optionally) captures it so a test can drive ForceFlush.
+func fakeCollectorBuilder(exp sdkmetric.Exporter, capture **cloudexport.CloudExportCollector) func(context.Context, cloudexport.Config, cloudexport.Sink) (*cloudexport.CloudExportCollector, error) {
+	return func(ctx context.Context, cfg cloudexport.Config, sink cloudexport.Sink) (*cloudexport.CloudExportCollector, error) {
+		c := cloudexport.NewCollector(cloudexport.CollectorOptions{
+			Sources:         fakeExportSources{},
+			Exporter:        exp,
+			Labels:          cloudexport.Labels{BackendID: "backend-test"},
+			IntervalSeconds: cfg.IntervalSeconds,
+		})
+		if capture != nil {
+			*capture = c
+		}
+		return c, nil
+	}
+}
+
 // newMetricsExportTestServer builds a bare ContainerServer wired with a
-// fake GCP sink so SetMetricsExport's probe never touches the network.
+// fake GCP sink so SetMetricsExport's probe never touches the network,
+// and a fake collector builder so enabling starts a real in-process
+// collector without Incus.
 func newMetricsExportTestServer(gcpProbeErr error) (*ContainerServer, *fakeMetricsExportSink) {
 	sink := &fakeMetricsExportSink{probeErr: gcpProbeErr}
 	s := &ContainerServer{}
 	s.SetMetricsExportSinks(map[pb.CloudMetricsProvider]cloudexport.Sink{
 		pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP: sink,
 	})
+	s.metricsExportBuilder = fakeCollectorBuilder(&fakeExportExporter{}, nil)
 	return s, sink
 }
 
@@ -233,6 +295,107 @@ func TestSetMetricsExport_EnableDisableStatusRoundTrip(t *testing.T) {
 	// enabled flips.
 	if afterDisable.Provider != pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP {
 		t.Errorf("status after disable dropped the provider: got %v, want it to stay GCP", afterDisable.Provider)
+	}
+}
+
+// TestSetMetricsExport_StartsAndStopsCollector is the #1070 wiring: an
+// enable actually starts a running collector, and a disable stops it —
+// GetMetricsExport is no longer a config echo but reflects a live
+// pipeline.
+func TestSetMetricsExport_StartsAndStopsCollector(t *testing.T) {
+	s, _ := newMetricsExportTestServer(nil)
+
+	s.metricsExportMu.RLock()
+	if s.metricsExportCollector != nil {
+		t.Fatal("collector should be nil before enable")
+	}
+	s.metricsExportMu.RUnlock()
+
+	if _, err := s.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{
+		Enabled:  true,
+		Provider: pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP,
+	}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	s.metricsExportMu.RLock()
+	running := s.metricsExportCollector
+	s.metricsExportMu.RUnlock()
+	if running == nil {
+		t.Fatal("enable did not start a collector")
+	}
+
+	if _, err := s.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{Enabled: false}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	s.metricsExportMu.RLock()
+	stopped := s.metricsExportCollector
+	s.metricsExportMu.RUnlock()
+	if stopped != nil {
+		t.Fatal("disable did not stop the collector")
+	}
+}
+
+// TestGetMetricsExport_ReflectsRealHealth locks the second #1070 gap:
+// last_success_at / last_error / export_failures come from the running
+// collector, not the zero-value stub #1069 shipped.
+func TestGetMetricsExport_ReflectsRealHealth(t *testing.T) {
+	sink := &fakeMetricsExportSink{}
+	exp := &fakeExportExporter{}
+	var collector *cloudexport.CloudExportCollector
+
+	s := &ContainerServer{}
+	s.SetMetricsExportSinks(map[pb.CloudMetricsProvider]cloudexport.Sink{
+		pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP: sink,
+	})
+	s.metricsExportBuilder = fakeCollectorBuilder(exp, &collector)
+
+	if _, err := s.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{
+		Enabled:  true,
+		Provider: pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP,
+	}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	defer func() { _, _ = s.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{Enabled: false}) }()
+
+	// Before any export tick, health is zero-valued.
+	before, err := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if before.LastSuccessAt != nil || before.ExportFailures != 0 || before.LastError != "" {
+		t.Errorf("expected zero health before first tick, got %+v", before)
+	}
+
+	// Force a successful export.
+	if err := collector.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("force flush: %v", err)
+	}
+	afterSuccess, err := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if afterSuccess.LastSuccessAt == nil {
+		t.Error("expected last_success_at set after a successful export")
+	}
+	if afterSuccess.ExportFailures != 0 {
+		t.Errorf("expected 0 failures after success, got %d", afterSuccess.ExportFailures)
+	}
+
+	// Force a failing export.
+	exp.mu.Lock()
+	exp.failNext = true
+	exp.mu.Unlock()
+	_ = collector.ForceFlush(context.Background())
+	afterFail, err := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if afterFail.ExportFailures != 1 {
+		t.Errorf("expected 1 export failure, got %d", afterFail.ExportFailures)
+	}
+	if afterFail.LastError == "" {
+		t.Error("expected last_error set after a failed export")
 	}
 }
 
