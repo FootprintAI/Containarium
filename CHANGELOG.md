@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-07-23
+
+### Added
+
+- **Cloud-native metrics export (opt-in): toggle, provider enum, and
+  credential probe** (#1069, PR #1075). New
+  `containarium monitoring export enable|disable|status` CLI (with
+  matching gRPC/REST endpoints and MCP tool) controlling opt-in export
+  of host infra metrics to the host cloud's native monitoring. GCP is
+  the MVP provider (typed `CloudMetricsProvider` enum, AWS reserved).
+  Enabling synchronously probes Application Default Credentials with
+  the monitoring-write scope and fails closed with a remediation hint —
+  nothing is enabled or exported on a host without usable credentials.
+  Disabled by default, reversible any time, no daemon restart required.
+- **Host-level series now actually export to GCP Cloud Monitoring**
+  (#1070, PR #1076). A dedicated OTel pipeline (separate from the
+  daemon's internal VictoriaMetrics collector) pushes eight allowlisted
+  host gauges — `containarium.host.cpu.load_1m/_5m/_15m`,
+  `.memory.used_bytes/.total_bytes`, `.disk.used_bytes/.total_bytes`,
+  and `.container.count` — every 60s as `workload.googleapis.com/*`
+  series on the `gce_instance` monitored resource. Labels are
+  restricted to `backend_id`/`hostname`/`region`; structurally no
+  org/tenant identifiers. Export state persists in `daemon_config` and
+  resumes automatically after a daemon restart (startup-ordering bug
+  caught and fixed during live validation on a GCP backend).
+  `monitoring export status` reports real health: last success time,
+  last error, and failure count. Keeps host load visible and alertable
+  from the provider's monitoring even when the host-local metrics
+  stack is degraded.
+
+### Internal
+
+- Dependency bumps: `google.golang.org/grpc` 1.82.1 (#1046),
+  `google.golang.org/api` 0.289.0 (#1048), `sigs.k8s.io/agent-sandbox`
+  0.5.2 (#1047), `actions/setup-go` v7 (#1044), `actions/setup-python`
+  v7 (#1045), `actions/setup-node` v7 (#1043).
+
 ## [0.59.2] - 2026-07-22
 
 ### Fixed
