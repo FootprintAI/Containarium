@@ -667,3 +667,121 @@ func TestMetricsExport_LateStoreWiring_NotCachedAsDisabled(t *testing.T) {
 		t.Fatal("persisted enabled=true was shadowed by a cached nil-store hydration")
 	}
 }
+
+// TestCurrentExportLabels pins the label snapshot a collector is built
+// with: it must read the daemon's identity as of the call, so identity
+// wired after the ContainerServer is constructed (as DualServer.Start
+// does) is reflected — not frozen at construction. This is the #1080
+// invariant: the resumed and runtime-enabled collectors share this one
+// snapshot function, so both carry the same backend_id/region.
+func TestCurrentExportLabels(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(*ContainerServer)
+		wantBackID string
+		wantRegion string
+	}{
+		{
+			name: "pooled backend with region -> real identity",
+			setup: func(s *ContainerServer) {
+				s.SetPeerPool(NewPeerPool("backend-live-7", "", nil, "us-central1"))
+				s.SetCapabilityIdentity("us-central1", "us-central1")
+			},
+			wantBackID: "backend-live-7",
+			wantRegion: "us-central1",
+		},
+		{
+			name: "identity applied after construction is reflected (not frozen early)",
+			setup: func(s *ContainerServer) {
+				// Emulate DualServer.Start wiring identity onto an
+				// already-constructed server, the exact sequence the
+				// #1080 fix depends on.
+				s.SetCapabilityIdentity("eu-west1", "eu-west1")
+				s.SetPeerPool(NewPeerPool("backend-eu-2", "", nil, "eu-west1"))
+			},
+			wantBackID: "backend-eu-2",
+			wantRegion: "eu-west1",
+		},
+		{
+			name:       "no pool, empty region -> documented single-host placeholder",
+			setup:      func(s *ContainerServer) {},
+			wantBackID: "local",
+			wantRegion: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &ContainerServer{}
+			tc.setup(s)
+			got := s.currentExportLabels("host-1")
+			if got.BackendID != tc.wantBackID || got.Region != tc.wantRegion {
+				t.Errorf("currentExportLabels() = {backend_id:%q region:%q}, want {backend_id:%q region:%q}",
+					got.BackendID, got.Region, tc.wantBackID, tc.wantRegion)
+			}
+			if got.Hostname != "host-1" {
+				t.Errorf("hostname = %q, want the passed-in host-1", got.Hostname)
+			}
+		})
+	}
+}
+
+// TestStartMetricsExportIfEnabled_ResumeCapturesLiveIdentity is the
+// #1080 regression. The live bug: StartMetricsExportIfEnabled ran inline
+// in NewDualServer, before SetPeerPool/SetCapabilityIdentity, so the
+// resumed collector snapshotted the "local"/"" placeholders instead of
+// the daemon's real backend_id/region — every daemon restart re-emitted
+// the host's series under a second identity, splitting dashboards and
+// alerts keyed on backend_id. This drives the real resume path and
+// observes, via the builder seam, exactly the identity the collector is
+// built with. The fix sequences resume after identity is wired
+// (DualServer.Start), so the "identity wired" case is the post-fix world
+// and the "identity absent" case documents what the old ordering emitted.
+func TestStartMetricsExportIfEnabled_ResumeCapturesLiveIdentity(t *testing.T) {
+	newEnabledResumeServer := func() (*ContainerServer, *cloudexport.Labels) {
+		s := &ContainerServer{}
+		s.SetMetricsExportSinks(map[pb.CloudMetricsProvider]cloudexport.Sink{
+			pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP: &fakeMetricsExportSink{},
+		})
+		s.daemonConfigStore = &fakeDaemonConfigKV{m: map[string]string{
+			cloudexport.ConfigStoreKey: `{"enabled":true,"provider":1,"interval_seconds":60}`,
+		}}
+		captured := &cloudexport.Labels{}
+		s.metricsExportBuilder = func(ctx context.Context, cfg cloudexport.Config, sink cloudexport.Sink) (*cloudexport.CloudExportCollector, error) {
+			// Snapshot identity the same way the real
+			// buildMetricsExportCollector does, at invoke time.
+			*captured = s.currentExportLabels("host-1")
+			return cloudexport.NewCollector(cloudexport.CollectorOptions{
+				Sources:  fakeExportSources{},
+				Exporter: &fakeExportExporter{},
+				Labels:   *captured,
+			}), nil
+		}
+		return s, captured
+	}
+
+	t.Run("identity wired before resume -> real labels (post-#1080-fix ordering)", func(t *testing.T) {
+		s, captured := newEnabledResumeServer()
+		s.SetPeerPool(NewPeerPool("backend-live-7", "", nil, "us-central1"))
+		s.SetCapabilityIdentity("us-central1", "us-central1")
+
+		s.StartMetricsExportIfEnabled(context.Background())
+
+		if captured.BackendID != "backend-live-7" || captured.Region != "us-central1" {
+			t.Fatalf("resumed collector labels = {backend_id:%q region:%q}, want the daemon's live identity {backend-live-7 us-central1}",
+				captured.BackendID, captured.Region)
+		}
+	})
+
+	t.Run("identity absent -> placeholder labels (the pre-fix NewDualServer ordering)", func(t *testing.T) {
+		s, captured := newEnabledResumeServer()
+		// No SetPeerPool / SetCapabilityIdentity: reproduces resume
+		// running before the daemon's identity was wired.
+		s.StartMetricsExportIfEnabled(context.Background())
+
+		if captured.BackendID != "local" || captured.Region != "" {
+			t.Fatalf("with identity unwired, labels = {backend_id:%q region:%q}, want the placeholder {local \"\"} the #1080 bug emitted",
+				captured.BackendID, captured.Region)
+		}
+	})
+}

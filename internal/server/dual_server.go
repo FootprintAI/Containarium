@@ -260,10 +260,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// default and resume-on-restart silently never fired (caught live
 	// on a GCP backend while validating #1070).
 	containerServer.SetDaemonConfigStore(config.DaemonConfigStore)
-	// Resume host-series export (#1070) if it was enabled before a
-	// restart. Best-effort — a failure here (e.g. ADC no longer
-	// resolvable) is logged, never fatal to boot.
-	containerServer.StartMetricsExportIfEnabled(context.Background())
+	// NOTE: metrics-export resume (StartMetricsExportIfEnabled) is
+	// deliberately NOT called here. The resumed collector snapshots the
+	// daemon's backend_id/region at build time, and neither is populated
+	// this early in NewDualServer — localBackendID() returns "local" and
+	// region is "" until SetPeerPool / SetCapabilityIdentity run in
+	// Start(). Resuming here re-emitted every host's series under a second
+	// ("local"/"") identity after each restart, splitting dashboards and
+	// alerts keyed on backend_id (#1080). Resume is sequenced in Start()
+	// after identity is wired instead.
 
 	// Create token manager. Refuses to start if the JWT secret is
 	// shorter than auth.MinSecretKeyLen — fail-closed on weak crypto
@@ -1946,6 +1951,17 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			// Enable terminal WebSocket proxying to peer backends
 			ds.gatewayServer.SetTerminalPeerProxy(ds.peerPool)
 		}
+	}
+
+	// Resume cloud host-series export (#1070) if it was enabled before a
+	// restart. Sequenced here — after SetCapabilityIdentity and, when
+	// pooled, SetPeerPool above — so the resumed collector snapshots the
+	// daemon's real backend_id/region rather than the "local"/"" placeholders
+	// it captured when this ran inline in NewDualServer before identity was
+	// wired (#1080). Best-effort: a failure (e.g. ADC no longer resolvable)
+	// is logged, never fatal to boot.
+	if ds.containerServer != nil {
+		ds.containerServer.StartMetricsExportIfEnabled(ctx)
 	}
 
 	// Start traffic collector if available

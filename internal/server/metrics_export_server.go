@@ -66,10 +66,11 @@ type daemonConfigKV interface {
 }
 
 // SetDaemonConfigStore wires the persistent daemon-config store the
-// metrics export config survives restarts through. NewDualServer MUST
-// call this before StartMetricsExportIfEnabled — the resume path
-// hydrates from this store, and hydrating before it is wired reads the
-// disabled default instead of the operator's persisted enable (the
+// metrics export config survives restarts through. This MUST run before
+// the resume path (StartMetricsExportIfEnabled, sequenced in
+// DualServer.Start) — the resume path hydrates from this store, and
+// hydrating before it is wired reads the disabled default instead of the
+// operator's persisted enable (the
 // #1070 live test on a GCP backend caught exactly that ordering: the
 // store used to be assigned only much later, via SetAlertManager, so
 // resume-on-restart never fired). Nil is ignored so a daemon without
@@ -289,18 +290,33 @@ func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg c
 	}
 
 	return cloudexport.NewCollector(cloudexport.CollectorOptions{
-		Sources:  sources,
-		Exporter: exporter,
-		Resource: res,
-		Labels: cloudexport.Labels{
-			BackendID:     s.localBackendID(),
-			Hostname:      sources.Hostname(),
-			Region:        s.region,
-			DaemonVersion: version.GetVersion(),
-		},
+		Sources:         sources,
+		Exporter:        exporter,
+		Resource:        res,
+		Labels:          s.currentExportLabels(sources.Hostname()),
 		IntervalSeconds: cfg.IntervalSeconds,
 		Groups:          cfg.Groups,
 	}), nil
+}
+
+// currentExportLabels snapshots the daemon's identity labels for a
+// metrics-export collector at the moment it is built: the real backend
+// id and operator-set region as they stand now, plus the given hostname.
+// Both the runtime enable path (SetMetricsExport) and the startup resume
+// path (StartMetricsExportIfEnabled) capture labels through here, so a
+// resumed collector carries the same identity a runtime-enabled one
+// would — provided resume runs after the daemon's identity is wired
+// (SetCapabilityIdentity / SetPeerPool in DualServer.Start). Resume is
+// sequenced there, not inline in NewDualServer, precisely so this
+// snapshot sees the real identity and not the "local"/"" placeholders
+// localBackendID()/region return before identity init (#1080).
+func (s *ContainerServer) currentExportLabels(hostname string) cloudexport.Labels {
+	return cloudexport.Labels{
+		BackendID:     s.localBackendID(),
+		Hostname:      hostname,
+		Region:        s.region,
+		DaemonVersion: version.GetVersion(),
+	}
 }
 
 // swapMetricsExportCollector installs newC as the running collector
