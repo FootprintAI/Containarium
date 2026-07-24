@@ -247,13 +247,14 @@ func (c *GRPCClient) ToggleMonitoring(username string, enabled bool) (string, bo
 // unsupported provider (AWS, UNSPECIFIED) returns the daemon's error
 // unwrapped so the CLI can render the gRPC code (FailedPrecondition /
 // InvalidArgument / Unimplemented) directly.
-func (c *GRPCClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProvider) (*pb.SetMetricsExportResponse, error) {
+func (c *GRPCClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProvider, groups []pb.CloudMetricsGroup) (*pb.SetMetricsExportResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	return c.client.SetMetricsExport(ctx, &pb.SetMetricsExportRequest{
 		Enabled:  enabled,
 		Provider: provider,
+		Groups:   groups,
 	})
 }
 

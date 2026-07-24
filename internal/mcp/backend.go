@@ -88,7 +88,7 @@ type API interface {
 	// monitoring. Host-level like GetSystemInfo — the credential probe
 	// (GCP ADC) is specific to the box the daemon runs on, so it has no
 	// tenant-safe meaning on the hosted control plane.
-	SetMetricsExport(enabled bool, provider string) (*SetMetricsExportResponse, error)
+	SetMetricsExport(enabled bool, provider string, groups []string) (*SetMetricsExportResponse, error)
 	GetMetricsExport() (*GetMetricsExportResponse, error)
 	// InstallZap downloads and installs OWASP ZAP into this host's
 	// security container. Host-level — a daemon manages exactly one
@@ -154,7 +154,7 @@ func (cloudClient) InstallZap() (*InstallZapResponse, error) {
 	return nil, errUnsupportedOnCloud("install_zap", "the platform provisions ZAP on managed hosts")
 }
 
-func (cloudClient) SetMetricsExport(bool, string) (*SetMetricsExportResponse, error) {
+func (cloudClient) SetMetricsExport(bool, string, []string) (*SetMetricsExportResponse, error) {
 	return nil, errUnsupportedOnCloud("set_metrics_export", "the credential probe is specific to a BYOC host; run this against the host's own daemon")
 }
 

@@ -319,6 +319,78 @@ func (CloudMetricsProvider) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_container_proto_rawDescGZIP(), []int{4}
 }
 
+// CloudMetricsGroup names an independently enableable set of exported
+// series (#1081). Export is organized into groups so the billed sample
+// surface — custom metrics are billed per ingested sample — stays a
+// deliberate, per-group choice rather than an all-or-nothing switch.
+// Typed so a group can never be a magic string. Absent/empty on the wire
+// means "host only" (CLOUD_METRICS_GROUP_HOST), which is exactly the
+// v0.60.0 behavior a persisted config resumes into.
+type CloudMetricsGroup int32
+
+const (
+	// Unset. Never a valid element of an explicit groups list;
+	// SetMetricsExport rejects a request whose groups contain it. An empty
+	// groups list (not a list of UNSPECIFIED) is what means "default to
+	// host".
+	CloudMetricsGroup_CLOUD_METRICS_GROUP_UNSPECIFIED CloudMetricsGroup = 0
+	// Host-infrastructure series (CPU load, memory, disk, container count)
+	// — the complete #1070 allowlist. The default when no group is named.
+	CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST CloudMetricsGroup = 1
+	// Per-container series. Reserved by #1081 as an enableable group; the
+	// series themselves land in #1071/#1072, so enabling it today exports
+	// no additional series.
+	CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER CloudMetricsGroup = 2
+	// Platform-level series (API request/error counts, provisioning
+	// outcomes, peer connectivity). Reserved by #1081 as an enableable
+	// group; the series themselves land in #1082/#1083/#1084, so enabling
+	// it today exports no additional series.
+	CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM CloudMetricsGroup = 3
+)
+
+// Enum value maps for CloudMetricsGroup.
+var (
+	CloudMetricsGroup_name = map[int32]string{
+		0: "CLOUD_METRICS_GROUP_UNSPECIFIED",
+		1: "CLOUD_METRICS_GROUP_HOST",
+		2: "CLOUD_METRICS_GROUP_CONTAINER",
+		3: "CLOUD_METRICS_GROUP_PLATFORM",
+	}
+	CloudMetricsGroup_value = map[string]int32{
+		"CLOUD_METRICS_GROUP_UNSPECIFIED": 0,
+		"CLOUD_METRICS_GROUP_HOST":        1,
+		"CLOUD_METRICS_GROUP_CONTAINER":   2,
+		"CLOUD_METRICS_GROUP_PLATFORM":    3,
+	}
+)
+
+func (x CloudMetricsGroup) Enum() *CloudMetricsGroup {
+	p := new(CloudMetricsGroup)
+	*p = x
+	return p
+}
+
+func (x CloudMetricsGroup) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CloudMetricsGroup) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_container_proto_enumTypes[5].Descriptor()
+}
+
+func (CloudMetricsGroup) Type() protoreflect.EnumType {
+	return &file_containarium_v1_container_proto_enumTypes[5]
+}
+
+func (x CloudMetricsGroup) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CloudMetricsGroup.Descriptor instead.
+func (CloudMetricsGroup) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{5}
+}
+
 // ResourceLimits defines resource constraints for a container
 type ResourceLimits struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -4164,7 +4236,13 @@ type SetMetricsExportRequest struct {
 	// Target cloud provider. Required when enabled=true. Must not be
 	// CLOUD_METRICS_PROVIDER_UNSPECIFIED (INVALID_ARGUMENT) or
 	// CLOUD_METRICS_PROVIDER_AWS (UNIMPLEMENTED — MVP is GCP-only).
-	Provider      CloudMetricsProvider `protobuf:"varint,2,opt,name=provider,proto3,enum=containarium.v1.CloudMetricsProvider" json:"provider,omitempty"`
+	Provider CloudMetricsProvider `protobuf:"varint,2,opt,name=provider,proto3,enum=containarium.v1.CloudMetricsProvider" json:"provider,omitempty"`
+	// The metric groups to export (#1081). Enables exactly these groups;
+	// an empty list defaults to [CLOUD_METRICS_GROUP_HOST], preserving the
+	// v0.60.0 host-only behavior. Every element must be a defined group
+	// other than CLOUD_METRICS_GROUP_UNSPECIFIED (INVALID_ARGUMENT
+	// otherwise). Ignored when enabled=false.
+	Groups        []CloudMetricsGroup `protobuf:"varint,3,rep,packed,name=groups,proto3,enum=containarium.v1.CloudMetricsGroup" json:"groups,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4213,6 +4291,13 @@ func (x *SetMetricsExportRequest) GetProvider() CloudMetricsProvider {
 	return CloudMetricsProvider_CLOUD_METRICS_PROVIDER_UNSPECIFIED
 }
 
+func (x *SetMetricsExportRequest) GetGroups() []CloudMetricsGroup {
+	if x != nil {
+		return x.Groups
+	}
+	return nil
+}
+
 // SetMetricsExportResponse reports the effective state after the toggle.
 type SetMetricsExportResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -4223,8 +4308,12 @@ type SetMetricsExportResponse struct {
 	Enabled         bool                 `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	Provider        CloudMetricsProvider `protobuf:"varint,3,opt,name=provider,proto3,enum=containarium.v1.CloudMetricsProvider" json:"provider,omitempty"`
 	IntervalSeconds int32                `protobuf:"varint,4,opt,name=interval_seconds,json=intervalSeconds,proto3" json:"interval_seconds,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The effective set of enabled metric groups after the call (#1081),
+	// normalized: an omitted/empty request list resolves to
+	// [CLOUD_METRICS_GROUP_HOST].
+	Groups        []CloudMetricsGroup `protobuf:"varint,5,rep,packed,name=groups,proto3,enum=containarium.v1.CloudMetricsGroup" json:"groups,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SetMetricsExportResponse) Reset() {
@@ -4283,6 +4372,13 @@ func (x *SetMetricsExportResponse) GetIntervalSeconds() int32 {
 		return x.IntervalSeconds
 	}
 	return 0
+}
+
+func (x *SetMetricsExportResponse) GetGroups() []CloudMetricsGroup {
+	if x != nil {
+		return x.Groups
+	}
+	return nil
 }
 
 // GetMetricsExportRequest requests the current cloud-native metrics
@@ -4344,8 +4440,12 @@ type GetMetricsExportResponse struct {
 	LastError string `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	// Count of failed export batches since the exporter was last (re)built.
 	ExportFailures int64 `protobuf:"varint,6,opt,name=export_failures,json=exportFailures,proto3" json:"export_failures,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The set of enabled metric groups (#1081). Normalized: a host that has
+	// never configured groups (or a v0.60.0 config with none persisted)
+	// reports [CLOUD_METRICS_GROUP_HOST].
+	Groups        []CloudMetricsGroup `protobuf:"varint,7,rep,packed,name=groups,proto3,enum=containarium.v1.CloudMetricsGroup" json:"groups,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetMetricsExportResponse) Reset() {
@@ -4418,6 +4518,13 @@ func (x *GetMetricsExportResponse) GetExportFailures() int64 {
 		return x.ExportFailures
 	}
 	return 0
+}
+
+func (x *GetMetricsExportResponse) GetGroups() []CloudMetricsGroup {
+	if x != nil {
+		return x.Groups
+	}
+	return nil
 }
 
 // MoveContainerRequest is the source-side request to migrate a
@@ -5044,16 +5151,18 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vgrafana_url\x18\x02 \x01(\tR\n" +
 	"grafanaUrl\x120\n" +
-	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl\"v\n" +
+	"\x14victoria_metrics_url\x18\x03 \x01(\tR\x12victoriaMetricsUrl\"\xb2\x01\n" +
 	"\x17SetMetricsExportRequest\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12A\n" +
-	"\bprovider\x18\x02 \x01(\x0e2%.containarium.v1.CloudMetricsProviderR\bprovider\"\xbc\x01\n" +
+	"\bprovider\x18\x02 \x01(\x0e2%.containarium.v1.CloudMetricsProviderR\bprovider\x12:\n" +
+	"\x06groups\x18\x03 \x03(\x0e2\".containarium.v1.CloudMetricsGroupR\x06groups\"\xf8\x01\n" +
 	"\x18SetMetricsExportResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12A\n" +
 	"\bprovider\x18\x03 \x01(\x0e2%.containarium.v1.CloudMetricsProviderR\bprovider\x12)\n" +
-	"\x10interval_seconds\x18\x04 \x01(\x05R\x0fintervalSeconds\"\x19\n" +
-	"\x17GetMetricsExportRequest\"\xae\x02\n" +
+	"\x10interval_seconds\x18\x04 \x01(\x05R\x0fintervalSeconds\x12:\n" +
+	"\x06groups\x18\x05 \x03(\x0e2\".containarium.v1.CloudMetricsGroupR\x06groups\"\x19\n" +
+	"\x17GetMetricsExportRequest\"\xea\x02\n" +
 	"\x18GetMetricsExportResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12A\n" +
 	"\bprovider\x18\x02 \x01(\x0e2%.containarium.v1.CloudMetricsProviderR\bprovider\x12)\n" +
@@ -5061,7 +5170,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x0flast_success_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\rlastSuccessAt\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\x05 \x01(\tR\tlastError\x12'\n" +
-	"\x0fexport_failures\x18\x06 \x01(\x03R\x0eexportFailures\"\xd9\x01\n" +
+	"\x0fexport_failures\x18\x06 \x01(\x03R\x0eexportFailures\x12:\n" +
+	"\x06groups\x18\a \x03(\x0e2\".containarium.v1.CloudMetricsGroupR\x06groups\"\xd9\x01\n" +
 	"\x14MoveContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12*\n" +
 	"\x11target_backend_id\x18\x02 \x01(\tR\x0ftargetBackendId\x12%\n" +
@@ -5105,7 +5215,12 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x14CloudMetricsProvider\x12&\n" +
 	"\"CLOUD_METRICS_PROVIDER_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCLOUD_METRICS_PROVIDER_GCP\x10\x01\x12\x1e\n" +
-	"\x1aCLOUD_METRICS_PROVIDER_AWS\x10\x02:B\n" +
+	"\x1aCLOUD_METRICS_PROVIDER_AWS\x10\x02*\x9b\x01\n" +
+	"\x11CloudMetricsGroup\x12#\n" +
+	"\x1fCLOUD_METRICS_GROUP_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18CLOUD_METRICS_GROUP_HOST\x10\x01\x12!\n" +
+	"\x1dCLOUD_METRICS_GROUP_CONTAINER\x10\x02\x12 \n" +
+	"\x1cCLOUD_METRICS_GROUP_PLATFORM\x10\x03:B\n" +
 	"\n" +
 	"state_name\x12!.google.protobuf.EnumValueOptions\x18ц\x03 \x01(\tR\tstateNameBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
@@ -5121,7 +5236,7 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_container_proto_rawDescData
 }
 
-var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
 var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
 var file_containarium_v1_container_proto_goTypes = []any{
 	(OSType)(0),                              // 0: containarium.v1.OSType
@@ -5129,121 +5244,125 @@ var file_containarium_v1_container_proto_goTypes = []any{
 	(ContainerState)(0),                      // 2: containarium.v1.ContainerState
 	(DeletePolicy)(0),                        // 3: containarium.v1.DeletePolicy
 	(CloudMetricsProvider)(0),                // 4: containarium.v1.CloudMetricsProvider
-	(*ResourceLimits)(nil),                   // 5: containarium.v1.ResourceLimits
-	(*NetworkInfo)(nil),                      // 6: containarium.v1.NetworkInfo
-	(*Container)(nil),                        // 7: containarium.v1.Container
-	(*ContainerMetrics)(nil),                 // 8: containarium.v1.ContainerMetrics
-	(*CreateContainerRequest)(nil),           // 9: containarium.v1.CreateContainerRequest
-	(*CreateContainerResponse)(nil),          // 10: containarium.v1.CreateContainerResponse
-	(*ListContainersRequest)(nil),            // 11: containarium.v1.ListContainersRequest
-	(*ListContainersResponse)(nil),           // 12: containarium.v1.ListContainersResponse
-	(*GetContainerRequest)(nil),              // 13: containarium.v1.GetContainerRequest
-	(*GetContainerResponse)(nil),             // 14: containarium.v1.GetContainerResponse
-	(*DebugContainerRequest)(nil),            // 15: containarium.v1.DebugContainerRequest
-	(*DebugContainerResponse)(nil),           // 16: containarium.v1.DebugContainerResponse
-	(*DeleteContainerRequest)(nil),           // 17: containarium.v1.DeleteContainerRequest
-	(*DeleteContainerResponse)(nil),          // 18: containarium.v1.DeleteContainerResponse
-	(*StartContainerRequest)(nil),            // 19: containarium.v1.StartContainerRequest
-	(*StartContainerResponse)(nil),           // 20: containarium.v1.StartContainerResponse
-	(*StopContainerRequest)(nil),             // 21: containarium.v1.StopContainerRequest
-	(*StopContainerResponse)(nil),            // 22: containarium.v1.StopContainerResponse
-	(*ToggleMonitoringRequest)(nil),          // 23: containarium.v1.ToggleMonitoringRequest
-	(*ToggleMonitoringResponse)(nil),         // 24: containarium.v1.ToggleMonitoringResponse
-	(*ToggleAutoSleepRequest)(nil),           // 25: containarium.v1.ToggleAutoSleepRequest
-	(*ToggleAutoSleepResponse)(nil),          // 26: containarium.v1.ToggleAutoSleepResponse
-	(*SetContainerTTLRequest)(nil),           // 27: containarium.v1.SetContainerTTLRequest
-	(*SetContainerTTLResponse)(nil),          // 28: containarium.v1.SetContainerTTLResponse
-	(*SetContainerDeletePolicyRequest)(nil),  // 29: containarium.v1.SetContainerDeletePolicyRequest
-	(*SetContainerDeletePolicyResponse)(nil), // 30: containarium.v1.SetContainerDeletePolicyResponse
-	(*SetContainerAttributionRequest)(nil),   // 31: containarium.v1.SetContainerAttributionRequest
-	(*SetContainerAttributionResponse)(nil),  // 32: containarium.v1.SetContainerAttributionResponse
-	(*AddSSHKeyRequest)(nil),                 // 33: containarium.v1.AddSSHKeyRequest
-	(*AddSSHKeyResponse)(nil),                // 34: containarium.v1.AddSSHKeyResponse
-	(*RemoveSSHKeyRequest)(nil),              // 35: containarium.v1.RemoveSSHKeyRequest
-	(*RemoveSSHKeyResponse)(nil),             // 36: containarium.v1.RemoveSSHKeyResponse
-	(*GetMetricsRequest)(nil),                // 37: containarium.v1.GetMetricsRequest
-	(*GetMetricsResponse)(nil),               // 38: containarium.v1.GetMetricsResponse
-	(*ResizeContainerRequest)(nil),           // 39: containarium.v1.ResizeContainerRequest
-	(*ResizeContainerResponse)(nil),          // 40: containarium.v1.ResizeContainerResponse
-	(*Collaborator)(nil),                     // 41: containarium.v1.Collaborator
-	(*AddCollaboratorRequest)(nil),           // 42: containarium.v1.AddCollaboratorRequest
-	(*AddCollaboratorResponse)(nil),          // 43: containarium.v1.AddCollaboratorResponse
-	(*RemoveCollaboratorRequest)(nil),        // 44: containarium.v1.RemoveCollaboratorRequest
-	(*RemoveCollaboratorResponse)(nil),       // 45: containarium.v1.RemoveCollaboratorResponse
-	(*ListCollaboratorsRequest)(nil),         // 46: containarium.v1.ListCollaboratorsRequest
-	(*ListCollaboratorsResponse)(nil),        // 47: containarium.v1.ListCollaboratorsResponse
-	(*CleanupDiskRequest)(nil),               // 48: containarium.v1.CleanupDiskRequest
-	(*CleanupDiskResponse)(nil),              // 49: containarium.v1.CleanupDiskResponse
-	(*InstallStackRequest)(nil),              // 50: containarium.v1.InstallStackRequest
-	(*InstallStackResponse)(nil),             // 51: containarium.v1.InstallStackResponse
-	(*StackParameter)(nil),                   // 52: containarium.v1.StackParameter
-	(*StackInfo)(nil),                        // 53: containarium.v1.StackInfo
-	(*ListStacksRequest)(nil),                // 54: containarium.v1.ListStacksRequest
-	(*ListStacksResponse)(nil),               // 55: containarium.v1.ListStacksResponse
-	(*GetMonitoringInfoRequest)(nil),         // 56: containarium.v1.GetMonitoringInfoRequest
-	(*GetMonitoringInfoResponse)(nil),        // 57: containarium.v1.GetMonitoringInfoResponse
-	(*SetMetricsExportRequest)(nil),          // 58: containarium.v1.SetMetricsExportRequest
-	(*SetMetricsExportResponse)(nil),         // 59: containarium.v1.SetMetricsExportResponse
-	(*GetMetricsExportRequest)(nil),          // 60: containarium.v1.GetMetricsExportRequest
-	(*GetMetricsExportResponse)(nil),         // 61: containarium.v1.GetMetricsExportResponse
-	(*MoveContainerRequest)(nil),             // 62: containarium.v1.MoveContainerRequest
-	(*MoveContainerResponse)(nil),            // 63: containarium.v1.MoveContainerResponse
-	(*AdoptMigratedContainerRequest)(nil),    // 64: containarium.v1.AdoptMigratedContainerRequest
-	(*AdoptMigratedContainerResponse)(nil),   // 65: containarium.v1.AdoptMigratedContainerResponse
-	nil,                                      // 66: containarium.v1.Container.LabelsEntry
-	nil,                                      // 67: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                      // 68: containarium.v1.CreateContainerRequest.StackParametersEntry
-	nil,                                      // 69: containarium.v1.ListContainersRequest.LabelFilterEntry
-	nil,                                      // 70: containarium.v1.SetContainerAttributionRequest.LabelsEntry
-	nil,                                      // 71: containarium.v1.SetContainerAttributionResponse.LabelsEntry
-	(*timestamppb.Timestamp)(nil),            // 72: google.protobuf.Timestamp
-	(*descriptorpb.EnumValueOptions)(nil),    // 73: google.protobuf.EnumValueOptions
+	(CloudMetricsGroup)(0),                   // 5: containarium.v1.CloudMetricsGroup
+	(*ResourceLimits)(nil),                   // 6: containarium.v1.ResourceLimits
+	(*NetworkInfo)(nil),                      // 7: containarium.v1.NetworkInfo
+	(*Container)(nil),                        // 8: containarium.v1.Container
+	(*ContainerMetrics)(nil),                 // 9: containarium.v1.ContainerMetrics
+	(*CreateContainerRequest)(nil),           // 10: containarium.v1.CreateContainerRequest
+	(*CreateContainerResponse)(nil),          // 11: containarium.v1.CreateContainerResponse
+	(*ListContainersRequest)(nil),            // 12: containarium.v1.ListContainersRequest
+	(*ListContainersResponse)(nil),           // 13: containarium.v1.ListContainersResponse
+	(*GetContainerRequest)(nil),              // 14: containarium.v1.GetContainerRequest
+	(*GetContainerResponse)(nil),             // 15: containarium.v1.GetContainerResponse
+	(*DebugContainerRequest)(nil),            // 16: containarium.v1.DebugContainerRequest
+	(*DebugContainerResponse)(nil),           // 17: containarium.v1.DebugContainerResponse
+	(*DeleteContainerRequest)(nil),           // 18: containarium.v1.DeleteContainerRequest
+	(*DeleteContainerResponse)(nil),          // 19: containarium.v1.DeleteContainerResponse
+	(*StartContainerRequest)(nil),            // 20: containarium.v1.StartContainerRequest
+	(*StartContainerResponse)(nil),           // 21: containarium.v1.StartContainerResponse
+	(*StopContainerRequest)(nil),             // 22: containarium.v1.StopContainerRequest
+	(*StopContainerResponse)(nil),            // 23: containarium.v1.StopContainerResponse
+	(*ToggleMonitoringRequest)(nil),          // 24: containarium.v1.ToggleMonitoringRequest
+	(*ToggleMonitoringResponse)(nil),         // 25: containarium.v1.ToggleMonitoringResponse
+	(*ToggleAutoSleepRequest)(nil),           // 26: containarium.v1.ToggleAutoSleepRequest
+	(*ToggleAutoSleepResponse)(nil),          // 27: containarium.v1.ToggleAutoSleepResponse
+	(*SetContainerTTLRequest)(nil),           // 28: containarium.v1.SetContainerTTLRequest
+	(*SetContainerTTLResponse)(nil),          // 29: containarium.v1.SetContainerTTLResponse
+	(*SetContainerDeletePolicyRequest)(nil),  // 30: containarium.v1.SetContainerDeletePolicyRequest
+	(*SetContainerDeletePolicyResponse)(nil), // 31: containarium.v1.SetContainerDeletePolicyResponse
+	(*SetContainerAttributionRequest)(nil),   // 32: containarium.v1.SetContainerAttributionRequest
+	(*SetContainerAttributionResponse)(nil),  // 33: containarium.v1.SetContainerAttributionResponse
+	(*AddSSHKeyRequest)(nil),                 // 34: containarium.v1.AddSSHKeyRequest
+	(*AddSSHKeyResponse)(nil),                // 35: containarium.v1.AddSSHKeyResponse
+	(*RemoveSSHKeyRequest)(nil),              // 36: containarium.v1.RemoveSSHKeyRequest
+	(*RemoveSSHKeyResponse)(nil),             // 37: containarium.v1.RemoveSSHKeyResponse
+	(*GetMetricsRequest)(nil),                // 38: containarium.v1.GetMetricsRequest
+	(*GetMetricsResponse)(nil),               // 39: containarium.v1.GetMetricsResponse
+	(*ResizeContainerRequest)(nil),           // 40: containarium.v1.ResizeContainerRequest
+	(*ResizeContainerResponse)(nil),          // 41: containarium.v1.ResizeContainerResponse
+	(*Collaborator)(nil),                     // 42: containarium.v1.Collaborator
+	(*AddCollaboratorRequest)(nil),           // 43: containarium.v1.AddCollaboratorRequest
+	(*AddCollaboratorResponse)(nil),          // 44: containarium.v1.AddCollaboratorResponse
+	(*RemoveCollaboratorRequest)(nil),        // 45: containarium.v1.RemoveCollaboratorRequest
+	(*RemoveCollaboratorResponse)(nil),       // 46: containarium.v1.RemoveCollaboratorResponse
+	(*ListCollaboratorsRequest)(nil),         // 47: containarium.v1.ListCollaboratorsRequest
+	(*ListCollaboratorsResponse)(nil),        // 48: containarium.v1.ListCollaboratorsResponse
+	(*CleanupDiskRequest)(nil),               // 49: containarium.v1.CleanupDiskRequest
+	(*CleanupDiskResponse)(nil),              // 50: containarium.v1.CleanupDiskResponse
+	(*InstallStackRequest)(nil),              // 51: containarium.v1.InstallStackRequest
+	(*InstallStackResponse)(nil),             // 52: containarium.v1.InstallStackResponse
+	(*StackParameter)(nil),                   // 53: containarium.v1.StackParameter
+	(*StackInfo)(nil),                        // 54: containarium.v1.StackInfo
+	(*ListStacksRequest)(nil),                // 55: containarium.v1.ListStacksRequest
+	(*ListStacksResponse)(nil),               // 56: containarium.v1.ListStacksResponse
+	(*GetMonitoringInfoRequest)(nil),         // 57: containarium.v1.GetMonitoringInfoRequest
+	(*GetMonitoringInfoResponse)(nil),        // 58: containarium.v1.GetMonitoringInfoResponse
+	(*SetMetricsExportRequest)(nil),          // 59: containarium.v1.SetMetricsExportRequest
+	(*SetMetricsExportResponse)(nil),         // 60: containarium.v1.SetMetricsExportResponse
+	(*GetMetricsExportRequest)(nil),          // 61: containarium.v1.GetMetricsExportRequest
+	(*GetMetricsExportResponse)(nil),         // 62: containarium.v1.GetMetricsExportResponse
+	(*MoveContainerRequest)(nil),             // 63: containarium.v1.MoveContainerRequest
+	(*MoveContainerResponse)(nil),            // 64: containarium.v1.MoveContainerResponse
+	(*AdoptMigratedContainerRequest)(nil),    // 65: containarium.v1.AdoptMigratedContainerRequest
+	(*AdoptMigratedContainerResponse)(nil),   // 66: containarium.v1.AdoptMigratedContainerResponse
+	nil,                                      // 67: containarium.v1.Container.LabelsEntry
+	nil,                                      // 68: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                      // 69: containarium.v1.CreateContainerRequest.StackParametersEntry
+	nil,                                      // 70: containarium.v1.ListContainersRequest.LabelFilterEntry
+	nil,                                      // 71: containarium.v1.SetContainerAttributionRequest.LabelsEntry
+	nil,                                      // 72: containarium.v1.SetContainerAttributionResponse.LabelsEntry
+	(*timestamppb.Timestamp)(nil),            // 73: google.protobuf.Timestamp
+	(*descriptorpb.EnumValueOptions)(nil),    // 74: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
 	2,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
-	5,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
-	6,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	66, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	6,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
+	7,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
+	67, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
 	0,  // 4: containarium.v1.Container.os_type:type_name -> containarium.v1.OSType
 	1,  // 5: containarium.v1.Container.access_type:type_name -> containarium.v1.AccessType
-	72, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	72, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
+	73, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	73, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
 	3,  // 8: containarium.v1.Container.delete_policy:type_name -> containarium.v1.DeletePolicy
-	5,  // 9: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	67, // 10: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	6,  // 9: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
+	68, // 10: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
 	0,  // 11: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
-	68, // 12: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
-	7,  // 13: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
+	69, // 12: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
+	8,  // 13: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
 	2,  // 14: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	69, // 15: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
-	7,  // 16: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
-	7,  // 17: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
-	8,  // 18: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	7,  // 19: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
-	7,  // 20: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
-	72, // 21: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	70, // 15: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	8,  // 16: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
+	8,  // 17: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
+	9,  // 18: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	8,  // 19: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
+	8,  // 20: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
+	73, // 21: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
 	3,  // 22: containarium.v1.SetContainerDeletePolicyRequest.delete_policy:type_name -> containarium.v1.DeletePolicy
 	3,  // 23: containarium.v1.SetContainerDeletePolicyResponse.delete_policy:type_name -> containarium.v1.DeletePolicy
-	70, // 24: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
-	71, // 25: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
-	8,  // 26: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	7,  // 27: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
-	41, // 28: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
-	41, // 29: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
-	7,  // 30: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
-	7,  // 31: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
-	52, // 32: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
-	53, // 33: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
+	71, // 24: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
+	72, // 25: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
+	9,  // 26: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	8,  // 27: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
+	42, // 28: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
+	42, // 29: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
+	8,  // 30: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
+	8,  // 31: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
+	53, // 32: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
+	54, // 33: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
 	4,  // 34: containarium.v1.SetMetricsExportRequest.provider:type_name -> containarium.v1.CloudMetricsProvider
-	4,  // 35: containarium.v1.SetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
-	4,  // 36: containarium.v1.GetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
-	72, // 37: containarium.v1.GetMetricsExportResponse.last_success_at:type_name -> google.protobuf.Timestamp
-	73, // 38: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	39, // [39:39] is the sub-list for method output_type
-	39, // [39:39] is the sub-list for method input_type
-	39, // [39:39] is the sub-list for extension type_name
-	38, // [38:39] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	5,  // 35: containarium.v1.SetMetricsExportRequest.groups:type_name -> containarium.v1.CloudMetricsGroup
+	4,  // 36: containarium.v1.SetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
+	5,  // 37: containarium.v1.SetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
+	4,  // 38: containarium.v1.GetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
+	73, // 39: containarium.v1.GetMetricsExportResponse.last_success_at:type_name -> google.protobuf.Timestamp
+	5,  // 40: containarium.v1.GetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
+	74, // 41: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	42, // [42:42] is the sub-list for method output_type
+	42, // [42:42] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	41, // [41:42] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }
@@ -5256,7 +5375,7 @@ func file_containarium_v1_container_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
-			NumEnums:      5,
+			NumEnums:      6,
 			NumMessages:   67,
 			NumExtensions: 1,
 			NumServices:   0,

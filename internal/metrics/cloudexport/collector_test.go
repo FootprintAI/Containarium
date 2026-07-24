@@ -162,6 +162,98 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 	}
 }
 
+// collectGroupsOnce stands up a ManualReader-backed MeterProvider for a
+// specific set of enabled groups and pulls one collection, so the
+// per-group golden can assert exactly which series each group emits.
+func collectGroupsOnce(t *testing.T, groups []pb.CloudMetricsGroup, sources Sources, labels Labels) metricdata.ResourceMetrics {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{Sources: sources, Labels: labels, Groups: groups})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	return rm
+}
+
+// TestExportedSeries_PerGroupGolden is the #1081 per-group golden: it
+// pins the exact set of series names each combination of enabled groups
+// emits, so the billed sample surface stays reviewable in one file (the
+// #1070 rule, now scoped per group). host emits the eight-series #1070
+// allowlist; container and platform are reserved by #1081 (their series
+// land in #1071/#1072 and #1082/#1083/#1084 respectively) so they add
+// nothing yet — enabling them today is a deliberate, zero-series opt-in.
+// Any drift in what a group exports fails here.
+func TestExportedSeries_PerGroupGolden(t *testing.T) {
+	host := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST
+	container := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+
+	hostSeries := []string{
+		MetricCPULoad1m, MetricCPULoad5m, MetricCPULoad15m,
+		MetricMemoryUsed, MetricMemoryTotal,
+		MetricDiskUsed, MetricDiskTotal, MetricContainerCount,
+	}
+
+	tests := []struct {
+		name   string
+		groups []pb.CloudMetricsGroup
+		want   []string
+	}{
+		{"default (nil) is host", nil, hostSeries},
+		{"host only", []pb.CloudMetricsGroup{host}, hostSeries},
+		{"container reserved, no series", []pb.CloudMetricsGroup{container}, nil},
+		{"platform reserved, no series", []pb.CloudMetricsGroup{platform}, nil},
+		{"host and platform is host series", []pb.CloudMetricsGroup{host, platform}, hostSeries},
+		{"host and container is host series", []pb.CloudMetricsGroup{host, container}, hostSeries},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rm := collectGroupsOnce(t, tc.groups, &fakeSources{sr: sampleResources()}, sampleLabels())
+			pts := flattenGauges(t, rm)
+
+			got := map[string]bool{}
+			for _, p := range pts {
+				if got[p.name] {
+					t.Fatalf("series %q emitted more than once", p.name)
+				}
+				got[p.name] = true
+			}
+
+			wantSet := map[string]bool{}
+			for _, n := range tc.want {
+				wantSet[n] = true
+			}
+
+			if len(got) != len(wantSet) {
+				var names []string
+				for n := range got {
+					names = append(names, n)
+				}
+				sort.Strings(names)
+				t.Fatalf("groups %v emitted %d series %v, want exactly %d", tc.groups, len(got), names, len(wantSet))
+			}
+			for n := range wantSet {
+				if !got[n] {
+					t.Errorf("groups %v missing expected series %q", tc.groups, n)
+				}
+			}
+			for n := range got {
+				if !wantSet[n] {
+					t.Errorf("groups %v emitted unexpected series %q", tc.groups, n)
+				}
+			}
+		})
+	}
+}
+
 // TestNoTenantLabels asserts every emitted series carries exactly the
 // three allowlisted labels and nothing else — no org/tenant identifier —
 // even when a hostile Sources snapshot exists. The labels come from the

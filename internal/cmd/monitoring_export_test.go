@@ -75,6 +75,84 @@ func TestParseMetricsExportProvider(t *testing.T) {
 	}
 }
 
+// TestParseMetricsExportGroups covers --groups flag parsing: the empty
+// case (omitted ⇒ nil ⇒ server defaults to host), each known group,
+// case-insensitivity and whitespace tolerance, multi-group lists, and
+// the client-side rejection of an unknown group name.
+func TestParseMetricsExportGroups(t *testing.T) {
+	host := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST
+	container := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+
+	tests := []struct {
+		name      string
+		input     string
+		want      []pb.CloudMetricsGroup
+		wantErr   bool
+		errSubstr string
+	}{
+		{name: "empty omits (server defaults host)", input: "", want: nil},
+		{name: "host", input: "host", want: []pb.CloudMetricsGroup{host}},
+		{name: "container", input: "container", want: []pb.CloudMetricsGroup{container}},
+		{name: "platform", input: "platform", want: []pb.CloudMetricsGroup{platform}},
+		{name: "host,platform", input: "host,platform", want: []pb.CloudMetricsGroup{host, platform}},
+		{name: "whitespace tolerated", input: " host , platform ", want: []pb.CloudMetricsGroup{host, platform}},
+		{name: "case-insensitive", input: "HOST,Platform", want: []pb.CloudMetricsGroup{host, platform}},
+		{name: "empty elements skipped", input: "host,,platform", want: []pb.CloudMetricsGroup{host, platform}},
+		{name: "unknown group rejected", input: "host,bogus", wantErr: true, errSubstr: "unknown metric group"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseMetricsExportGroups(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseMetricsExportGroups(%q) = %v, nil; want error containing %q", tc.input, got, tc.errSubstr)
+				}
+				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tc.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("parseMetricsExportGroups(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("parseMetricsExportGroups(%q)[%d] = %v, want %v", tc.input, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestMetricsExportGroupsLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		groups []pb.CloudMetricsGroup
+		want   string
+	}{
+		{"empty is host default", nil, "host"},
+		{"single", []pb.CloudMetricsGroup{pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST}, "host"},
+		{
+			"multi",
+			[]pb.CloudMetricsGroup{
+				pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST,
+				pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM,
+			},
+			"host,platform",
+		},
+	}
+	for _, tc := range tests {
+		if got := metricsExportGroupsLabel(tc.groups); got != tc.want {
+			t.Errorf("metricsExportGroupsLabel(%v) = %q, want %q", tc.groups, got, tc.want)
+		}
+	}
+}
+
 func TestMetricsExportProviderLabel(t *testing.T) {
 	tests := []struct {
 		provider pb.CloudMetricsProvider

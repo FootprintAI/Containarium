@@ -184,7 +184,17 @@ func (s *ContainerServer) SetMetricsExport(ctx context.Context, req *pb.SetMetri
 			Enabled:         false,
 			Provider:        current.Provider,
 			IntervalSeconds: current.IntervalSeconds,
+			// Groups are sticky across a disable (like Provider): report
+			// the persisted selection so a bare re-enable is symmetric.
+			Groups: cloudexport.NormalizeGroups(current.Groups),
 		}, nil
+	}
+
+	// Reject a malformed group selection (UNSPECIFIED or out-of-range)
+	// before the credential probe — a typed-input error is the operator's
+	// mistake, not a precondition failure, and nothing is persisted.
+	if err := cloudexport.ValidateGroups(req.Groups); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid metric groups: %v", err)
 	}
 
 	switch req.Provider {
@@ -210,6 +220,9 @@ func (s *ContainerServer) SetMetricsExport(ctx context.Context, req *pb.SetMetri
 		Enabled:         true,
 		Provider:        req.Provider,
 		IntervalSeconds: cloudexport.DefaultIntervalSeconds,
+		// Persist the normalized selection so the stored form is
+		// deterministic and an absent list is materialized as [HOST].
+		Groups: cloudexport.NormalizeGroups(req.Groups),
 	}
 
 	// Build and start the real host-series collector before persisting
@@ -231,6 +244,7 @@ func (s *ContainerServer) SetMetricsExport(ctx context.Context, req *pb.SetMetri
 		Enabled:         true,
 		Provider:        req.Provider,
 		IntervalSeconds: newCfg.IntervalSeconds,
+		Groups:          newCfg.Groups,
 	}, nil
 }
 
@@ -282,6 +296,7 @@ func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg c
 			Region:    s.region,
 		},
 		IntervalSeconds: cfg.IntervalSeconds,
+		Groups:          cfg.Groups,
 	}), nil
 }
 
@@ -342,6 +357,9 @@ func (s *ContainerServer) GetMetricsExport(ctx context.Context, req *pb.GetMetri
 		Enabled:         cfg.Enabled,
 		Provider:        cfg.Provider,
 		IntervalSeconds: cfg.IntervalSeconds,
+		// Normalized so a never-configured host and a v0.60.0 config (no
+		// persisted groups) both report [HOST] rather than an empty set.
+		Groups: cloudexport.NormalizeGroups(cfg.Groups),
 	}
 
 	s.metricsExportMu.RLock()

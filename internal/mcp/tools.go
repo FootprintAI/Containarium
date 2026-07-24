@@ -437,6 +437,11 @@ func (s *Server) registerTools() {
 						"description": "Cloud provider to export to. Required when enabled=true. Only \"gcp\" is implemented; \"aws\" is a reserved value the daemon rejects with an unimplemented error.",
 						"enum":        []string{"gcp", "aws"},
 					},
+					"groups": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string", "enum": []string{"host", "container", "platform"}},
+						"description": "Metric groups to enable (#1081). Omit to keep host-only (the default). Each group is an independently billed series set; \"container\" and \"platform\" are reserved (their series land in follow-up issues) so enabling them today exports no extra series. Ignored when enabled=false.",
+					},
 				},
 				"required": []string{"enabled"},
 			},
@@ -1735,13 +1740,28 @@ func handleSetMetricsExport(client API, args map[string]interface{}) (string, er
 	if enabled && provider == "" {
 		return "", fmt.Errorf("provider is required when enabled=true (e.g. \"gcp\")")
 	}
+	groups := getStringSliceArg(args, "groups")
 
-	resp, err := client.SetMetricsExport(enabled, provider)
+	resp, err := client.SetMetricsExport(enabled, provider, groups)
 	if err != nil {
 		return "", fmt.Errorf("failed to set metrics export: %w", err)
 	}
-	return fmt.Sprintf("✅ %s (enabled=%v, provider=%s, interval_seconds=%d)",
-		resp.Message, resp.Enabled, resp.Provider, resp.IntervalSeconds), nil
+	return fmt.Sprintf("✅ %s (enabled=%v, provider=%s, groups=%s, interval_seconds=%d)",
+		resp.Message, resp.Enabled, resp.Provider, metricsExportGroupsDisplay(resp.Groups), resp.IntervalSeconds), nil
+}
+
+// metricsExportGroupsDisplay renders the wire group-enum names as the
+// lowercase tokens an operator uses on the CLI (#1081); an empty set
+// shows as "host", the server's effective default.
+func metricsExportGroupsDisplay(groups []string) string {
+	if len(groups) == 0 {
+		return "host"
+	}
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, strings.ToLower(strings.TrimPrefix(g, "CLOUD_METRICS_GROUP_")))
+	}
+	return strings.Join(out, ",")
 }
 
 // handleGetMetricsExport is a thin wrapper over client.GetMetricsExport
@@ -1755,7 +1775,7 @@ func handleGetMetricsExport(client API, args map[string]interface{}) (string, er
 	if !resp.Enabled {
 		return "cloud metrics export: disabled", nil
 	}
-	msg := fmt.Sprintf("cloud metrics export: enabled (provider=%s, interval_seconds=%d)", resp.Provider, resp.IntervalSeconds)
+	msg := fmt.Sprintf("cloud metrics export: enabled (provider=%s, groups=%s, interval_seconds=%d)", resp.Provider, metricsExportGroupsDisplay(resp.Groups), resp.IntervalSeconds)
 	if resp.LastSuccessAt != "" {
 		msg += fmt.Sprintf(", last_success_at=%s", resp.LastSuccessAt)
 	}

@@ -2,6 +2,7 @@ package cloudexport
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -11,6 +12,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // meterName is the instrumentation scope all exported host series are
@@ -81,6 +84,11 @@ type CollectorOptions struct {
 	// IntervalSeconds is the requested export cadence. Clamped up to
 	// MinIntervalSeconds; <= 0 uses MinIntervalSeconds.
 	IntervalSeconds int32
+	// Groups selects which independently-enableable series groups this
+	// collector registers (#1081). Normalized at construction: an empty
+	// selection resolves to [HOST], so a collector built from a v0.60.0
+	// config exports exactly the #1070 host series.
+	Groups []pb.CloudMetricsGroup
 }
 
 // healthState is the collector's live export health, surfaced through
@@ -147,6 +155,7 @@ type CloudExportCollector struct {
 	resource *resource.Resource
 	labels   Labels
 	interval time.Duration
+	groups   []pb.CloudMetricsGroup
 	health   *healthState
 
 	mu      sync.Mutex
@@ -167,6 +176,7 @@ func NewCollector(opts CollectorOptions) *CloudExportCollector {
 		resource: opts.Resource,
 		labels:   opts.Labels,
 		interval: interval,
+		groups:   NormalizeGroups(opts.Groups),
 		health:   &healthState{},
 	}
 }
@@ -239,10 +249,35 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 		mpOpts = append(mpOpts, sdkmetric.WithResource(c.resource))
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
-	if err := registerHostInstruments(mp, c.sources, c.labels); err != nil {
-		return nil, err
+	for _, g := range c.groups {
+		if err := registerGroupInstruments(mp, g, c.sources, c.labels); err != nil {
+			return nil, err
+		}
 	}
 	return mp, nil
+}
+
+// registerGroupInstruments registers exactly the instruments belonging
+// to one metric group (#1081). This is the single dispatch point new
+// groups plug into: host registers the #1070 allowlist; container and
+// platform are reserved enableable groups whose series land in
+// #1071/#1072 and #1082/#1083/#1084 — until then they register nothing,
+// so enabling them is a deliberate zero-series opt-in rather than a
+// no-such-group error. Groups are normalized before they reach here, so
+// UNSPECIFIED never arrives; an unknown value is a programming error.
+func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, labels Labels) error {
+	switch group {
+	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST:
+		return registerHostInstruments(mp, sources, labels)
+	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER:
+		// Reserved: per-container series land in #1071/#1072.
+		return nil
+	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM:
+		// Reserved: platform series land in #1082/#1083/#1084.
+		return nil
+	default:
+		return fmt.Errorf("cloudexport: unregisterable metric group %v", group)
+	}
 }
 
 // registerHostInstruments creates the eight allowlisted host gauges and

@@ -6859,6 +6859,17 @@
       },
       "title": "CleanupDiskResponse is the response from cleaning up disk space"
     },
+    "CloudMetricsGroup": {
+      "type": "string",
+      "enum": [
+        "CLOUD_METRICS_GROUP_UNSPECIFIED",
+        "CLOUD_METRICS_GROUP_HOST",
+        "CLOUD_METRICS_GROUP_CONTAINER",
+        "CLOUD_METRICS_GROUP_PLATFORM"
+      ],
+      "default": "CLOUD_METRICS_GROUP_UNSPECIFIED",
+      "description": "CloudMetricsGroup names an independently enableable set of exported\nseries (#1081). Export is organized into groups so the billed sample\nsurface — custom metrics are billed per ingested sample — stays a\ndeliberate, per-group choice rather than an all-or-nothing switch.\nTyped so a group can never be a magic string. Absent/empty on the wire\nmeans \"host only\" (CLOUD_METRICS_GROUP_HOST), which is exactly the\nv0.60.0 behavior a persisted config resumes into.\n\n - CLOUD_METRICS_GROUP_UNSPECIFIED: Unset. Never a valid element of an explicit groups list;\nSetMetricsExport rejects a request whose groups contain it. An empty\ngroups list (not a list of UNSPECIFIED) is what means \"default to\nhost\".\n - CLOUD_METRICS_GROUP_HOST: Host-infrastructure series (CPU load, memory, disk, container count)\n— the complete #1070 allowlist. The default when no group is named.\n - CLOUD_METRICS_GROUP_CONTAINER: Per-container series. Reserved by #1081 as an enableable group; the\nseries themselves land in #1071/#1072, so enabling it today exports\nno additional series.\n - CLOUD_METRICS_GROUP_PLATFORM: Platform-level series (API request/error counts, provisioning\noutcomes, peer connectivity). Reserved by #1081 as an enableable\ngroup; the series themselves land in #1082/#1083/#1084, so enabling\nit today exports no additional series."
+    },
     "CloudMetricsProvider": {
       "type": "string",
       "enum": [
@@ -8616,6 +8627,13 @@
           "type": "string",
           "format": "int64",
           "description": "Count of failed export batches since the exporter was last (re)built."
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CloudMetricsGroup"
+          },
+          "description": "The set of enabled metric groups (#1081). Normalized: a host that has\nnever configured groups (or a v0.60.0 config with none persisted)\nreports [CLOUD_METRICS_GROUP_HOST]."
         }
       },
       "description": "GetMetricsExportResponse reports the current cloud-native metrics\nexport configuration and last-known health. last_success_at,\nlast_error, and export_failures are zero-valued until the collector\n(#1070/#1071) is wired — #1069 delivers the toggle, config\npersistence, and enable-time credential probe only."
@@ -11077,6 +11095,13 @@
         "provider": {
           "$ref": "#/definitions/CloudMetricsProvider",
           "description": "Target cloud provider. Required when enabled=true. Must not be\nCLOUD_METRICS_PROVIDER_UNSPECIFIED (INVALID_ARGUMENT) or\nCLOUD_METRICS_PROVIDER_AWS (UNIMPLEMENTED — MVP is GCP-only)."
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CloudMetricsGroup"
+          },
+          "description": "The metric groups to export (#1081). Enables exactly these groups;\nan empty list defaults to [CLOUD_METRICS_GROUP_HOST], preserving the\nv0.60.0 host-only behavior. Every element must be a defined group\nother than CLOUD_METRICS_GROUP_UNSPECIFIED (INVALID_ARGUMENT\notherwise). Ignored when enabled=false."
         }
       },
       "description": "SetMetricsExportRequest enables or disables cloud-native metrics export.\nEnabling with provider=GCP triggers a synchronous Application Default\nCredentials probe (monitoring-write scope) before anything is persisted\nor started; enabling with an unresolvable ADC fails the call and leaves\nthe prior config untouched."
@@ -11098,6 +11123,13 @@
         "intervalSeconds": {
           "type": "integer",
           "format": "int32"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CloudMetricsGroup"
+          },
+          "description": "The effective set of enabled metric groups after the call (#1081),\nnormalized: an omitted/empty request list resolves to\n[CLOUD_METRICS_GROUP_HOST]."
         }
       },
       "description": "SetMetricsExportResponse reports the effective state after the toggle."

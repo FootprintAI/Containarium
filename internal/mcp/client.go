@@ -909,11 +909,31 @@ func metricsExportProviderWireName(provider string) (string, error) {
 	}
 }
 
+// metricsExportGroupWireName maps a CLI-facing lowercase metric-group
+// name ("host"/"container"/"platform") to the full CloudMetricsGroup
+// enum name the wire protocol (protojson) expects (#1081). Mirrors
+// internal/cmd/monitoring_export.go's parseMetricsExportGroups without
+// importing pkg/pb — this package keeps its own plain-struct wire types.
+func metricsExportGroupWireName(group string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(group)) {
+	case "host":
+		return "CLOUD_METRICS_GROUP_HOST", nil
+	case "container":
+		return "CLOUD_METRICS_GROUP_CONTAINER", nil
+	case "platform":
+		return "CLOUD_METRICS_GROUP_PLATFORM", nil
+	default:
+		return "", fmt.Errorf("unknown metric group %q (supported: host, container, platform)", group)
+	}
+}
+
 // SetMetricsExport enables or disables opt-in export of host/container
 // infra metrics to the host cloud's native monitoring (#1069). provider
 // is required when enabled=true ("gcp"; "aws" is accepted and rejected
-// server-side with Unimplemented) and ignored when disabling.
-func (c *Client) SetMetricsExport(enabled bool, provider string) (*SetMetricsExportResponse, error) {
+// server-side with Unimplemented) and ignored when disabling. groups
+// (#1081) selects which series sets export ("host"/"container"/
+// "platform"); empty keeps today's host-only default.
+func (c *Client) SetMetricsExport(enabled bool, provider string, groups []string) (*SetMetricsExportResponse, error) {
 	wireProvider := "CLOUD_METRICS_PROVIDER_UNSPECIFIED"
 	if enabled {
 		wp, err := metricsExportProviderWireName(provider)
@@ -923,10 +943,23 @@ func (c *Client) SetMetricsExport(enabled bool, provider string) (*SetMetricsExp
 		wireProvider = wp
 	}
 
-	body, err := json.Marshal(map[string]interface{}{
+	reqBody := map[string]interface{}{
 		"enabled":  enabled,
 		"provider": wireProvider,
-	})
+	}
+	if len(groups) > 0 {
+		wireGroups := make([]string, 0, len(groups))
+		for _, g := range groups {
+			wg, err := metricsExportGroupWireName(g)
+			if err != nil {
+				return nil, err
+			}
+			wireGroups = append(wireGroups, wg)
+		}
+		reqBody["groups"] = wireGroups
+	}
+
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -1572,10 +1605,11 @@ type GetSystemInfoResponse struct {
 // SetMetricsExportResponse mirrors the wire response of
 // ContainerService.SetMetricsExport (#1069).
 type SetMetricsExportResponse struct {
-	Message         string `json:"message"`
-	Enabled         bool   `json:"enabled"`
-	Provider        string `json:"provider"`
-	IntervalSeconds int32  `json:"intervalSeconds"`
+	Message         string   `json:"message"`
+	Enabled         bool     `json:"enabled"`
+	Provider        string   `json:"provider"`
+	IntervalSeconds int32    `json:"intervalSeconds"`
+	Groups          []string `json:"groups,omitempty"`
 }
 
 // GetMetricsExportResponse mirrors the wire response of
@@ -1586,6 +1620,7 @@ type GetMetricsExportResponse struct {
 	Enabled         bool      `json:"enabled"`
 	Provider        string    `json:"provider"`
 	IntervalSeconds int32     `json:"intervalSeconds"`
+	Groups          []string  `json:"groups,omitempty"`
 	LastSuccessAt   string    `json:"lastSuccessAt,omitempty"`
 	LastError       string    `json:"lastError,omitempty"`
 	ExportFailures  flexInt64 `json:"exportFailures,omitempty"`
