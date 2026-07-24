@@ -20,6 +20,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/config"
 	metricsPackage "github.com/footprintai/containarium/internal/metrics"
+	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -609,6 +610,24 @@ func (p *PeerPool) HealthyPeersInPool(pool string) []*PeerClient {
 			continue
 		}
 		result = append(result, peer)
+	}
+	return result
+}
+
+// Snapshot returns a point-in-time health snapshot of every currently
+// registered peer (#1084), for the cloudexport platform group's
+// connectivity series. ID is always the enrolled host name — the
+// enrollment path already forbids org/tenant identifiers in it — so the
+// exported tunnel.state series' peer_id label can never carry a tenant
+// identifier. Isolated from concurrent registry mutation only up to the
+// RLock's hold; a peer registered or removed mid-discovery-churn simply
+// appears or not, same as every other read of p.peers.
+func (p *PeerPool) Snapshot() []cloudexport.PeerState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	result := make([]cloudexport.PeerState, 0, len(p.peers))
+	for _, peer := range p.peers {
+		result = append(result, cloudexport.PeerState{ID: peer.ID, Healthy: peer.Healthy})
 	}
 	return result
 }

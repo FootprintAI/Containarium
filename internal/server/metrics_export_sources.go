@@ -89,9 +89,11 @@ func (s *serverMetricsSources) AllContainerMetrics(ctx context.Context) (map[str
 // serverPlatformSources is the production cloudexport.PlatformSources
 // adapter (#1082): a thin wrapper over the daemon's platformstats.Stats,
 // the same instance the gRPC unary interceptor records into (see
-// DualServer's interceptor chain). No independent state of its own.
+// DualServer's interceptor chain), plus the daemon's *PeerPool (#1084)
+// for connectivity. No independent state of its own.
 type serverPlatformSources struct {
 	stats *platformstats.Stats
+	peers *PeerPool
 }
 
 // APIStats returns the current cumulative API counters. Nil-safe: a
@@ -113,4 +115,14 @@ func (s serverPlatformSources) ProvisionStats() platformstats.ProvisionSnapshot 
 		return platformstats.ProvisionSnapshot{}
 	}
 	return s.stats.SnapshotProvision()
+}
+
+// Peers returns the current peer-health snapshot (#1084). Nil-safe: a
+// ContainerServer without a wired PeerPool degrades to no peers, same
+// as every other seam in this package.
+func (s serverPlatformSources) Peers() []cloudexport.PeerState {
+	if s.peers == nil {
+		return nil
+	}
+	return s.peers.Snapshot()
 }

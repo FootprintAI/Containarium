@@ -69,6 +69,15 @@ const (
 	MetricPlatformProvisionAttempts           = "containarium.platform.provision.attempts"
 	MetricPlatformProvisionFailures           = "containarium.platform.provision.failures"
 	MetricPlatformProvisionDurationSecondsSum = "containarium.platform.provision.duration_seconds_sum"
+
+	// MetricPlatformPeersConnected / MetricPlatformTunnelState are the
+	// platform group's connectivity series (#1084): how many registered
+	// BYOC peers this backend currently sees as healthy, and each one's
+	// individual tunnel up/down state. Complements #1078 (BYOC hosts
+	// can't export themselves) — the GCP primary exports connectivity on
+	// their behalf.
+	MetricPlatformPeersConnected = "containarium.platform.peers.connected"
+	MetricPlatformTunnelState    = "containarium.platform.tunnel.state"
 )
 
 // Label keys — the complete allowlist. No org/tenant identifier ever
@@ -92,6 +101,11 @@ const (
 	// kind of provisioning call this was (platformstats.Operation) —
 	// create or delete, never a per-request identifier.
 	LabelOperation = "operation"
+	// LabelPeerID tags the tunnel.state series with which registered
+	// peer a point is for (#1084). Always the enrolled host name — the
+	// enrollment path forbids org/tenant identifiers in it — never an
+	// org/tenant identifier itself.
+	LabelPeerID = "peer_id"
 )
 
 // Labels is the fixed identity stamped on every exported series. These
@@ -149,6 +163,18 @@ func (l Labels) provisionAttributeSet(op platformstats.Operation) attribute.Set 
 		attribute.String(LabelHostname, l.Hostname),
 		attribute.String(LabelRegion, l.Region),
 		attribute.String(LabelOperation, string(op)),
+	)
+}
+
+// tunnelAttributeSet is the platform tunnel-state label set (backend_id,
+// hostname, region, peer_id) — the host-series identity plus which peer
+// this point is for (#1084).
+func (l Labels) tunnelAttributeSet(peerID string) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelRegion, l.Region),
+		attribute.String(LabelPeerID, peerID),
 	)
 }
 
@@ -357,9 +383,9 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 // to one metric group (#1081). This is the single dispatch point new
 // groups plug into: host registers the #1070 allowlist; container is
 // still reserved (per-container series land in #1071); platform
-// registers the #1082 API-health series when a PlatformSources is
-// wired, and nothing otherwise (#1083/#1084 add more platform series to
-// the same dispatch). Groups are normalized before they reach here, so
+// registers the #1082/#1083/#1084 API-health, provisioning-outcome, and
+// connectivity series when a PlatformSources is wired, and nothing
+// otherwise. Groups are normalized before they reach here, so
 // UNSPECIFIED never arrives; an unknown value is a programming error.
 //
 // Note the heartbeat is deliberately NOT a group: it is registered
@@ -388,12 +414,13 @@ func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetrics
 }
 
 // registerPlatformInstruments creates the platform group's API-health
-// (#1082) and provisioning-outcome (#1083) counters and wires one
-// callback per concern, each pulling a single snapshot per tick.
-// Counters, not gauges: OTel async-counter semantics expect the current
-// cumulative total on every observation (platformstats.Stats already
-// accumulates for the daemon's lifetime), which is exactly what every
-// snapshot here reports.
+// (#1082), provisioning-outcome (#1083), and connectivity (#1084)
+// instruments and wires one callback per concern, each pulling a single
+// snapshot per tick. API-health and provisioning are counters: OTel
+// async-counter semantics expect the current cumulative total on every
+// observation (platformstats.Stats already accumulates for the daemon's
+// lifetime), which is exactly what those snapshots report. Connectivity
+// is gauges: peer health is current state, not an accumulating count.
 func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSources, labels Labels) error {
 	meter := mp.Meter(meterName)
 
@@ -456,6 +483,41 @@ func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSo
 			return nil
 		},
 		attempts, failures, durationSum,
+	)
+	if err != nil {
+		return err
+	}
+
+	peersConnected, err := meter.Int64ObservableGauge(MetricPlatformPeersConnected,
+		metric.WithUnit("{peer}"), metric.WithDescription("Number of registered BYOC peers this backend currently sees as healthy (tunnel up)."))
+	if err != nil {
+		return err
+	}
+	tunnelState, err := meter.Int64ObservableGauge(MetricPlatformTunnelState,
+		metric.WithDescription("Per-peer tunnel state: 1 if the peer is currently healthy, 0 if not. peer_id is the enrolled host name."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			peers := sources.Peers()
+			var connected int64
+			for _, peer := range peers {
+				state := int64(0)
+				if peer.Healthy {
+					connected++
+					state = 1
+				}
+				o.ObserveInt64(tunnelState, state, metric.WithAttributeSet(labels.tunnelAttributeSet(peer.ID)))
+			}
+			// Always observed, even at zero peers — a scalar summary
+			// like the host-series gauges, not a per-key breakdown, so
+			// there is no set of keys to fabricate or omit.
+			o.ObserveInt64(peersConnected, connected, metric.WithAttributeSet(labels.attributeSet()))
+			return nil
+		},
+		peersConnected, tunnelState,
 	)
 	return err
 }

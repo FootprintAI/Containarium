@@ -55,6 +55,17 @@ type Sources interface {
 	AllContainerMetrics(ctx context.Context) (map[string]*pb.ContainerMetrics, error)
 }
 
+// PeerState is a point-in-time health snapshot of one registered peer
+// (#1084), read via PlatformSources.Peers(). ID is the enrolled host
+// name — the enrollment path already forbids org/tenant identifiers in
+// it — so the tunnel.state series' peer_id label can never carry a
+// tenant identifier; the no-tenant-label golden test asserts this stays
+// true on the exported side too.
+type PeerState struct {
+	ID      string
+	Healthy bool
+}
+
 // PlatformSources is the read-side seam over platform-domain facts the
 // platform metric group (#1082/#1083/#1084) observes at each export
 // tick — a snapshot read with no server import, so the collector stays
@@ -69,4 +80,10 @@ type PlatformSources interface {
 	// ProvisionStats returns the current cumulative provisioning
 	// attempt/failure/duration counters by operation (#1083).
 	ProvisionStats() platformstats.ProvisionSnapshot
+
+	// Peers returns a point-in-time snapshot of every currently
+	// registered peer's health (#1084) — whatever is registered at the
+	// instant of the call, with no isolation from concurrent registry
+	// mutation beyond what the underlying registry itself provides.
+	Peers() []PeerState
 }

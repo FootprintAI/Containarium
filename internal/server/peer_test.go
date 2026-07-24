@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+
+	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 )
 
 func TestNewPeerPool(t *testing.T) {
@@ -39,6 +42,68 @@ func TestPeerPool_Get(t *testing.T) {
 	if pool.Get("nonexistent") != nil {
 		t.Error("expected nil for nonexistent peer")
 	}
+}
+
+// TestPeerPool_Snapshot is the design doc's peer-snapshot unit test
+// (#1084): registered healthy/unhealthy peers appear in the snapshot
+// with their correct state, keyed by the enrolled host name (peer.ID),
+// never anything else.
+func TestPeerPool_Snapshot(t *testing.T) {
+	pool := NewPeerPool("local", "", []string{"peer-1", "peer-2"}, "")
+	pool.Get("peer-1").Healthy = true
+	// peer-2 stays unhealthy (zero value) — the point of this fixture is
+	// to exercise both states in one snapshot.
+
+	snap := pool.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("expected 2 peers in snapshot, got %d", len(snap))
+	}
+
+	byID := map[string]cloudexport.PeerState{}
+	for _, s := range snap {
+		byID[s.ID] = s
+	}
+	if p, ok := byID["peer-1"]; !ok || !p.Healthy {
+		t.Errorf("expected peer-1 present and healthy in snapshot, got %+v (ok=%v)", p, ok)
+	}
+	if p, ok := byID["peer-2"]; !ok || p.Healthy {
+		t.Errorf("expected peer-2 present and unhealthy in snapshot, got %+v (ok=%v)", p, ok)
+	}
+}
+
+// TestPeerPool_Snapshot_Empty guards the no-peers case the collector's
+// zero-value test depends on: an empty pool returns an empty (not nil)
+// slice, never a panic.
+func TestPeerPool_Snapshot_Empty(t *testing.T) {
+	pool := NewPeerPool("local", "", nil, "")
+	if snap := pool.Snapshot(); len(snap) != 0 {
+		t.Errorf("expected empty snapshot, got %d entries", len(snap))
+	}
+}
+
+// TestPeerPool_Snapshot_ConcurrentSafe is the design doc's -race
+// requirement: Snapshot() alongside concurrent registry mutation
+// (discovery churn flipping a peer's Healthy field) must not race.
+func TestPeerPool_Snapshot_ConcurrentSafe(t *testing.T) {
+	pool := NewPeerPool("local", "", []string{"peer-1"}, "")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_ = pool.Snapshot()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			pool.mu.Lock()
+			pool.peers["peer-1"].Healthy = !pool.peers["peer-1"].Healthy
+			pool.mu.Unlock()
+		}
+	}()
+	wg.Wait()
 }
 
 func TestPeerClient_ForwardRequest(t *testing.T) {

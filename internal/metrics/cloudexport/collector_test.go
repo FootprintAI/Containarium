@@ -171,6 +171,7 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 type fakePlatformSources struct {
 	api       platformstats.APISnapshot
 	provision platformstats.ProvisionSnapshot
+	peers     []PeerState
 }
 
 func (f *fakePlatformSources) APIStats() platformstats.APISnapshot {
@@ -179,6 +180,10 @@ func (f *fakePlatformSources) APIStats() platformstats.APISnapshot {
 
 func (f *fakePlatformSources) ProvisionStats() platformstats.ProvisionSnapshot {
 	return f.provision
+}
+
+func (f *fakePlatformSources) Peers() []PeerState {
+	return f.peers
 }
 
 // flattenPoints returns every emitted datapoint (gauge OR cumulative
@@ -854,5 +859,224 @@ func TestNoTenantLabels_ProvisionSeries(t *testing.T) {
 		if !seen[LabelOperation] {
 			t.Errorf("series %q missing required label %q", p.name, LabelOperation)
 		}
+	}
+}
+
+// sampleConnectivitySnapshot is a representative peer snapshot for the
+// tests below: one healthy peer, one unhealthy — so both tunnel.state
+// values (1 and 0) and a partial peers.connected count are exercised in
+// one fixture.
+func sampleConnectivitySnapshot() []PeerState {
+	return []PeerState{
+		{ID: "byoc-host-a", Healthy: true},
+		{ID: "byoc-host-b", Healthy: false},
+	}
+}
+
+// pointsByNameAndPeer indexes flattened points by (series name, peer_id
+// label value), the connectivity-series analog of pointsByNameAndClass /
+// pointsByNameAndOperation. Points with no peer_id label (peers.connected)
+// are indexed under the empty string.
+func pointsByNameAndPeer(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		peerID, _ := p.attrs.Value(attribute.Key(LabelPeerID))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][peerID.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_PlatformConnectivity is #1084's acceptance
+// criterion: enabling the platform group with a wired PlatformSources
+// emits containarium.platform.peers.connected as the count of healthy
+// peers, and containarium.platform.tunnel.state as one 0/1 point per
+// registered peer, keyed by peer_id.
+func TestExportedSeries_PlatformConnectivity(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{peers: sampleConnectivitySnapshot()}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNamePeer := pointsByNameAndPeer(pts)
+
+	connected, ok := byNamePeer[MetricPlatformPeersConnected][""]
+	if !ok {
+		t.Fatalf("missing %s", MetricPlatformPeersConnected)
+	}
+	if connected.ival != 1 {
+		t.Errorf("%s = %d, want 1 (one healthy peer of two)", MetricPlatformPeersConnected, connected.ival)
+	}
+
+	wantTunnelState := map[string]int64{"byoc-host-a": 1, "byoc-host-b": 0}
+	for peerID, want := range wantTunnelState {
+		p, ok := byNamePeer[MetricPlatformTunnelState][peerID]
+		if !ok {
+			t.Fatalf("missing %s{peer_id=%q} — an unhealthy peer must still emit an explicit 0 point", MetricPlatformTunnelState, peerID)
+		}
+		if p.ival != want {
+			t.Errorf("%s{peer_id=%q} = %d, want %d", MetricPlatformTunnelState, peerID, p.ival, want)
+		}
+	}
+}
+
+// TestTunnelState_FlipsOnHealthChange locks in the issue's literal
+// acceptance criterion at the collector level: a peer flipping from
+// healthy to unhealthy (and back) between two ticks flips its
+// tunnel.state point accordingly, and peers.connected moves with it.
+// The real end-to-end timing (a stopped tunnel reflected within 2 export
+// intervals) is a live property of the peer-pool health check + export
+// cadence, not reproducible in a unit test — this pins the collector's
+// half of that contract: it always reports whatever PlatformSources
+// currently says, with no caching or debouncing of its own.
+func TestTunnelState_FlipsOnHealthChange(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	src := &fakePlatformSources{peers: []PeerState{{ID: "byoc-host-a", Healthy: true}}}
+
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{Sources: &fakeSources{sr: sampleResources()}, PlatformSources: src, Labels: sampleLabels(), Groups: []pb.CloudMetricsGroup{platform}})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 1): %v", err)
+	}
+	byNamePeer := pointsByNameAndPeer(flattenPoints(t, rm))
+	if p := byNamePeer[MetricPlatformTunnelState]["byoc-host-a"]; p.ival != 1 {
+		t.Fatalf("tick 1: tunnel.state = %d, want 1 (healthy)", p.ival)
+	}
+	if p := byNamePeer[MetricPlatformPeersConnected][""]; p.ival != 1 {
+		t.Fatalf("tick 1: peers.connected = %d, want 1", p.ival)
+	}
+
+	// Tunnel drops.
+	src.peers = []PeerState{{ID: "byoc-host-a", Healthy: false}}
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 2): %v", err)
+	}
+	byNamePeer = pointsByNameAndPeer(flattenPoints(t, rm))
+	if p := byNamePeer[MetricPlatformTunnelState]["byoc-host-a"]; p.ival != 0 {
+		t.Fatalf("tick 2: tunnel.state = %d, want 0 (dropped)", p.ival)
+	}
+	if p := byNamePeer[MetricPlatformPeersConnected][""]; p.ival != 0 {
+		t.Fatalf("tick 2: peers.connected = %d, want 0", p.ival)
+	}
+
+	// Tunnel reconnects.
+	src.peers = []PeerState{{ID: "byoc-host-a", Healthy: true}}
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 3): %v", err)
+	}
+	byNamePeer = pointsByNameAndPeer(flattenPoints(t, rm))
+	if p := byNamePeer[MetricPlatformTunnelState]["byoc-host-a"]; p.ival != 1 {
+		t.Fatalf("tick 3: tunnel.state = %d, want 1 (reconnected)", p.ival)
+	}
+	if p := byNamePeer[MetricPlatformPeersConnected][""]; p.ival != 1 {
+		t.Fatalf("tick 3: peers.connected = %d, want 1", p.ival)
+	}
+}
+
+// TestExportedSeries_PlatformGroup_ConnectivityZeroWhenNotWired guards
+// the zero-peers default: a PlatformSources whose Peers() returns nil
+// (an older adapter, or a backend with no registered peers) must not
+// panic. peers.connected is a scalar summary — unlike the per-key
+// provisioning series, there is no key to fabricate or omit — so it
+// still emits an explicit 0; tunnel.state has no peer to report and
+// emits nothing.
+func TestExportedSeries_PlatformGroup_ConnectivityZeroWhenNotWired(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNamePeer := pointsByNameAndPeer(pts)
+
+	connected, ok := byNamePeer[MetricPlatformPeersConnected][""]
+	if !ok {
+		t.Fatalf("missing %s — must still emit an explicit 0 with zero peers", MetricPlatformPeersConnected)
+	}
+	if connected.ival != 0 {
+		t.Errorf("%s = %d, want 0", MetricPlatformPeersConnected, connected.ival)
+	}
+
+	for _, p := range pts {
+		if p.name == MetricPlatformTunnelState {
+			t.Errorf("tunnel.state emitted a point %+v with zero registered peers", p)
+		}
+	}
+}
+
+// TestNoTenantLabels_ConnectivitySeries locks in #1084's cardinality
+// acceptance criterion: peers.connected carries exactly backend_id/
+// hostname/region (no peer_id — it is a backend-wide scalar);
+// tunnel.state carries exactly backend_id/hostname/region/peer_id, and
+// peer_id is always the enrolled host name passed in by PlatformSources,
+// never an org/tenant identifier.
+func TestNoTenantLabels_ConnectivitySeries(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{peers: sampleConnectivitySnapshot()}, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path"}
+	baseAllowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+	}
+	validPeerIDs := map[string]bool{"byoc-host-a": true, "byoc-host-b": true}
+
+	var sawConnected, sawTunnel bool
+	for _, p := range all {
+		switch p.name {
+		case MetricPlatformPeersConnected:
+			sawConnected = true
+		case MetricPlatformTunnelState:
+			sawTunnel = true
+		default:
+			continue
+		}
+
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelPeerID {
+				if p.name == MetricPlatformPeersConnected {
+					t.Errorf("%s carries peer_id label — it is a backend-wide scalar", MetricPlatformPeersConnected)
+				}
+				if !validPeerIDs[kv.Value.AsString()] {
+					t.Errorf("%s peer_id = %q, want one of the enrolled peer IDs the fixture passed in", p.name, kv.Value.AsString())
+				}
+				continue
+			}
+			if wantVal, ok := baseAllowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range baseAllowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if p.name == MetricPlatformTunnelState && !seen[LabelPeerID] {
+			t.Errorf("series %q missing required label %q", p.name, LabelPeerID)
+		}
+	}
+	if !sawConnected {
+		t.Fatal("no peers.connected series emitted")
+	}
+	if !sawTunnel {
+		t.Fatal("no tunnel.state series emitted")
 	}
 }
