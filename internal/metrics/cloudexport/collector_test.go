@@ -15,12 +15,14 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// fakeSources is a Sources whose SystemResources snapshot and error are
-// fully controlled by the test. AllContainerMetrics is present to
-// satisfy the interface (the #1070 host collector never calls it).
+// fakeSources is a Sources whose SystemResources/AllContainerMetrics
+// snapshots and errors are fully controlled by the test.
 type fakeSources struct {
 	sr  *SystemResources
 	err error
+
+	containers    map[string]*pb.ContainerMetrics
+	containersErr error
 }
 
 func (f *fakeSources) SystemResources(ctx context.Context) (*SystemResources, error) {
@@ -31,7 +33,10 @@ func (f *fakeSources) SystemResources(ctx context.Context) (*SystemResources, er
 }
 
 func (f *fakeSources) AllContainerMetrics(ctx context.Context) (map[string]*pb.ContainerMetrics, error) {
-	return nil, nil
+	if f.containersErr != nil {
+		return nil, f.containersErr
+	}
+	return f.containers, nil
 }
 
 func sampleResources() *SystemResources {
@@ -1079,4 +1084,224 @@ func TestNoTenantLabels_ConnectivitySeries(t *testing.T) {
 	if !sawTunnel {
 		t.Fatal("no tunnel.state series emitted")
 	}
+}
+
+// sampleContainerMetrics is a representative two-container fixture for
+// the #1071 container-series tests below.
+func sampleContainerMetrics() map[string]*pb.ContainerMetrics {
+	return map[string]*pb.ContainerMetrics{
+		"alice-container": {
+			Name:             "alice-container",
+			CpuUsageSeconds:  120,
+			MemoryUsageBytes: 256 << 20,
+			DiskUsageBytes:   2 << 30,
+			NetworkRxBytes:   1000,
+			NetworkTxBytes:   500,
+		},
+		"bob-container": {
+			Name:             "bob-container",
+			CpuUsageSeconds:  30,
+			MemoryUsageBytes: 128 << 20,
+			DiskUsageBytes:   1 << 30,
+			NetworkRxBytes:   200,
+			NetworkTxBytes:   100,
+		},
+	}
+}
+
+// containerMetricNames is the complete #1071 per-container instrument
+// allowlist, used to filter the always-on heartbeat (and, in these
+// container-only-group tests, nothing else) out of flattened points.
+var containerMetricNames = map[string]bool{
+	MetricContainerCPUUsageSeconds:  true,
+	MetricContainerMemoryUsageBytes: true,
+	MetricContainerDiskUsageBytes:   true,
+	MetricContainerNetworkRxBytes:   true,
+	MetricContainerNetworkTxBytes:   true,
+}
+
+// pointsByNameAndContainer indexes flattened points by (series name,
+// container_name label value), the container-series analog of
+// pointsByNameAndOperation / pointsByNameAndPeer.
+func pointsByNameAndContainer(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		name, _ := p.attrs.Value(attribute.Key(LabelContainerName))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][name.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_ContainerGolden is #1071's acceptance criterion:
+// enabling the container group with a wired Sources emits all five
+// per-container series, one point per running container, with the exact
+// values AllContainerMetrics reports.
+func TestExportedSeries_ContainerGolden(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup}, &fakeSources{containers: sampleContainerMetrics()}, nil, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNameContainer := pointsByNameAndContainer(pts)
+
+	type want struct{ cpu, mem, disk, rx, tx int64 }
+	wants := map[string]want{
+		"alice-container": {cpu: 120, mem: 256 << 20, disk: 2 << 30, rx: 1000, tx: 500},
+		"bob-container":   {cpu: 30, mem: 128 << 20, disk: 1 << 30, rx: 200, tx: 100},
+	}
+
+	for containerName, w := range wants {
+		checks := []struct {
+			metric string
+			want   int64
+		}{
+			{MetricContainerCPUUsageSeconds, w.cpu},
+			{MetricContainerMemoryUsageBytes, w.mem},
+			{MetricContainerDiskUsageBytes, w.disk},
+			{MetricContainerNetworkRxBytes, w.rx},
+			{MetricContainerNetworkTxBytes, w.tx},
+		}
+		for _, c := range checks {
+			p, ok := byNameContainer[c.metric][containerName]
+			if !ok {
+				t.Errorf("missing %s{container_name=%q}", c.metric, containerName)
+				continue
+			}
+			if p.ival != c.want {
+				t.Errorf("%s{container_name=%q} = %d, want %d", c.metric, containerName, p.ival, c.want)
+			}
+		}
+	}
+
+	var total int
+	for metricName, byContainer := range byNameContainer {
+		if containerMetricNames[metricName] {
+			total += len(byContainer)
+		}
+	}
+	if total != 10 {
+		t.Errorf("got %d container-series points, want 10 (2 containers x 5 series)", total)
+	}
+}
+
+// TestDeletedContainerSeriesStop is the design doc's explicit acceptance
+// criterion: a container that disappears from AllContainerMetrics (i.e.
+// was deleted) stops emitting at the very next observation — collection
+// re-enumerates live containers every tick, so there is no separate
+// deletion-tracking state to get stale.
+func TestDeletedContainerSeriesStop(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	src := &fakeSources{containers: sampleContainerMetrics()}
+
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{Sources: src, Labels: sampleLabels(), Groups: []pb.CloudMetricsGroup{containerGroup}})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 1): %v", err)
+	}
+	byNameContainer := pointsByNameAndContainer(flattenPoints(t, rm))
+	if _, ok := byNameContainer[MetricContainerCPUUsageSeconds]["bob-container"]; !ok {
+		t.Fatal("tick 1: expected bob-container present before deletion")
+	}
+
+	// bob-container is deleted: the next tick's AllContainerMetrics no
+	// longer reports it.
+	src.containers = map[string]*pb.ContainerMetrics{
+		"alice-container": sampleContainerMetrics()["alice-container"],
+	}
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 2): %v", err)
+	}
+	byNameContainer = pointsByNameAndContainer(flattenPoints(t, rm))
+	for metricName := range containerMetricNames {
+		if _, ok := byNameContainer[metricName]["bob-container"]; ok {
+			t.Errorf("tick 2: %s still reports deleted container bob-container", metricName)
+		}
+		if _, ok := byNameContainer[metricName]["alice-container"]; !ok {
+			t.Errorf("tick 2: %s missing still-live container alice-container", metricName)
+		}
+	}
+}
+
+// TestNoTenantLabels_ContainerSeries locks in #1071's cardinality
+// acceptance criterion: container series carry exactly backend_id +
+// container_name — deliberately narrower than the host/platform series'
+// backend_id/hostname/region, per the design doc's label table.
+func TestNoTenantLabels_ContainerSeries(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup}, &fakeSources{containers: sampleContainerMetrics()}, nil, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	var pts []point
+	for _, p := range all {
+		if containerMetricNames[p.name] {
+			pts = append(pts, p)
+		}
+	}
+	if len(pts) == 0 {
+		t.Fatal("no container series emitted")
+	}
+
+	allowed := map[string]string{LabelBackendID: "backend-xyz"}
+	forbidden := []string{
+		"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path",
+		// Container series are deliberately narrower than host/platform:
+		// no hostname/region.
+		LabelHostname, LabelRegion,
+	}
+
+	for _, p := range pts {
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelContainerName {
+				continue // value asserted by TestExportedSeries_ContainerGolden
+			}
+			if wantVal, ok := allowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range allowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if !seen[LabelContainerName] {
+			t.Errorf("series %q missing required label %q", p.name, LabelContainerName)
+		}
+	}
+}
+
+// TestContainerGroup_SourcesErrorSkipsTickWithoutPanic mirrors the host
+// series' TestSourceErrorSkipsTickWithoutPanic: an AllContainerMetrics
+// error is skipped cleanly for that tick — no panic, no stale points —
+// without suppressing the Sources-independent heartbeat.
+func TestContainerGroup_SourcesErrorSkipsTickWithoutPanic(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup}, &fakeSources{containersErr: errors.New("incus unavailable")}, nil, sampleLabels())
+	pts := flattenPoints(t, rm)
+
+	for _, p := range pts {
+		if containerMetricNames[p.name] {
+			t.Errorf("expected no container series on an AllContainerMetrics error, got %q", p.name)
+		}
+	}
+	heartbeatOf(t, pts) // heartbeat still present; fails if absent.
 }
