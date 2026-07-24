@@ -326,7 +326,7 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 }
 
 // CreateContainer creates a new container
-func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
+func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (resp *pb.CreateContainerResponse, err error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
 		return nil, err
 	}
@@ -510,10 +510,41 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		return nil, err
 	}
 
+	// #1083: everything past this point is a genuine attempt to provision
+	// a container — Box CR, async, or sync. Everything before it (auth,
+	// request validation, pool/peer routing, admission) is a client-side
+	// or routing rejection, not a provisioning attempt, and is
+	// deliberately not counted.
+	//
+	// The defer covers the Box CR and sync paths uniformly via the named
+	// return values (any of their many `return nil, err` statements below
+	// sets `err` before this runs, exactly as if written by hand at each
+	// site). The async path is different: its own synchronous return is
+	// always "accepted" (CREATING, no error), not the real outcome — that
+	// resolves later inside its background goroutine, which records its
+	// own attempt via the same provisionStart. asyncHandledInline, set
+	// once that goroutine is actually spawned, tells this defer to stand
+	// down so the async case isn't double-counted.
+	provisionStart := time.Now()
+	asyncHandledInline := false
+	defer func() {
+		if asyncHandledInline {
+			return
+		}
+		s.platformStats.RecordProvisionAttempt(platformstats.OperationCreate, err == nil, time.Since(provisionStart))
+	}()
+
 	// Convergence (#995): when the Box operator is running, the imperative
 	// create writes a Box CR and the reconciler builds the box — one builder
 	// for both the imperative and declarative (kubectl apply / GitOps) paths.
 	// Returns CREATING regardless of req.Async; the caller polls GET to track it.
+	//
+	// #1083: the top-level defer's success determination for this path means
+	// "the Box CR was accepted by the k8s operator for reconciliation," not
+	// "the box actually finished being built." The real reconciliation
+	// outcome lives in the k8s Box operator's own status/events and is out
+	// of scope for this PR — a future issue could feed that back into
+	// platformStats once the operator exposes it.
 	if s.boxWriter != nil {
 		if err := s.boxWriter.Upsert(ctx, spec); err != nil {
 			return nil, fmt.Errorf("create Box CR for %s: %w", req.Username, err)
@@ -561,6 +592,12 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 		// Start async creation. Use a background context — the request ctx is
 		// cancelled once this handler returns the CREATING response.
+		//
+		// #1083: from here on the goroutine owns recording this attempt's
+		// outcome (its real completion, not this handler's synchronous
+		// "accepted" return) — stand the top-level defer down so it isn't
+		// double-counted.
+		asyncHandledInline = true
 		go func() {
 			info, err := s.boxes().Create(context.Background(), spec)
 
@@ -639,6 +676,15 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				}
 				return
 			}
+
+			// #1083: this is the REAL outcome of an async create — the
+			// synchronous return below is only "accepted", not "succeeded"
+			// (see asyncHandledInline above, which stood the top-level
+			// defer down so this is the only place an async attempt gets
+			// recorded). A cancelled-by-delete run already returned above
+			// without reaching here, matching the existing #1035 rule that
+			// a delete-cancelled create isn't a creation failure.
+			s.platformStats.RecordProvisionAttempt(platformstats.OperationCreate, err == nil, time.Since(provisionStart))
 
 			if err != nil {
 				log.Printf("Async container creation failed for %s: %v", req.Username, err)
@@ -743,7 +789,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// Emit container created event
 	s.emitter.EmitContainerCreated(protoContainer)
 
-	resp := &pb.CreateContainerResponse{
+	resp = &pb.CreateContainerResponse{
 		Container: protoContainer,
 		Message:   fmt.Sprintf("Container %s created successfully", info.Ref.Name),
 	}
@@ -1066,7 +1112,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 }
 
 // DeleteContainer deletes a container
-func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteContainerRequest) (*pb.DeleteContainerResponse, error) {
+func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteContainerRequest) (resp *pb.DeleteContainerResponse, err error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
 		return nil, err
 	}
@@ -1078,6 +1124,17 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 	}
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
+
+	// #1083: everything past this point is a genuine attempt to delete a
+	// container — k8s, peer-forwarded, or local-manager. Auth/validation
+	// above is a client-side rejection, not a provisioning attempt, and is
+	// deliberately not counted. Unlike CreateContainer, delete has no async
+	// path — every branch below resolves synchronously, so one defer over
+	// the named returns covers all three uniformly.
+	provisionStart := time.Now()
+	defer func() {
+		s.platformStats.RecordProvisionAttempt(platformstats.OperationDelete, err == nil, time.Since(provisionStart))
+	}()
 
 	// Claim any in-flight async creation before touching the instance (#1035).
 	// Provisioning takes minutes, so a delete very often lands mid-run; without
@@ -1109,7 +1166,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 		}, nil
 	}
 
-	err := s.manager.Delete(req.Username, req.Force)
+	err = s.manager.Delete(req.Username, req.Force)
 	if err != nil {
 		// Not found locally — try peers
 		if s.peerPool != nil {

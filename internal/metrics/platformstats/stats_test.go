@@ -3,6 +3,7 @@ package platformstats
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 )
@@ -113,5 +114,72 @@ func TestStats_ConcurrentRecordAPIRequest(t *testing.T) {
 	want := int64(goroutines * perGoroutine)
 	if snap.RequestsByClass[CodeClassOK] != want {
 		t.Errorf("requests[ok] = %d, want %d (lost or duplicated increments under concurrency)", snap.RequestsByClass[CodeClassOK], want)
+	}
+}
+
+func TestStats_RecordAndSnapshotProvision(t *testing.T) {
+	s := New()
+
+	snap := s.SnapshotProvision()
+	if snap.Attempts[OperationCreate] != 0 || snap.Failures[OperationDelete] != 0 {
+		t.Fatalf("fresh Stats should snapshot all zero, got %+v", snap)
+	}
+
+	s.RecordProvisionAttempt(OperationCreate, true, 2*time.Second)
+	s.RecordProvisionAttempt(OperationCreate, true, 4*time.Second)
+	s.RecordProvisionAttempt(OperationCreate, false, 1*time.Second)
+	s.RecordProvisionAttempt(OperationDelete, true, 500*time.Millisecond)
+
+	snap = s.SnapshotProvision()
+	if snap.Attempts[OperationCreate] != 3 {
+		t.Errorf("attempts[create] = %d, want 3", snap.Attempts[OperationCreate])
+	}
+	if snap.Failures[OperationCreate] != 1 {
+		t.Errorf("failures[create] = %d, want 1", snap.Failures[OperationCreate])
+	}
+	// 2s + 4s + 1s = 7s across all three create attempts, success or not —
+	// duration is measured regardless of outcome so a slow failure still
+	// shows up in the mean-latency signal.
+	if got, want := snap.DurationSecondsSum[OperationCreate], 7.0; got != want {
+		t.Errorf("durationSecondsSum[create] = %v, want %v", got, want)
+	}
+	if snap.Attempts[OperationDelete] != 1 {
+		t.Errorf("attempts[delete] = %d, want 1", snap.Attempts[OperationDelete])
+	}
+	if snap.Failures[OperationDelete] != 0 {
+		t.Errorf("failures[delete] = %d, want 0 (the one delete succeeded)", snap.Failures[OperationDelete])
+	}
+	if got, want := snap.DurationSecondsSum[OperationDelete], 0.5; got != want {
+		t.Errorf("durationSecondsSum[delete] = %v, want %v", got, want)
+	}
+}
+
+// TestStats_ConcurrentRecordProvisionAttempt mirrors the API-counter
+// concurrency guard for the provisioning counters — run with -race.
+func TestStats_ConcurrentRecordProvisionAttempt(t *testing.T) {
+	s := New()
+	const goroutines = 50
+	const perGoroutine = 100
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perGoroutine; j++ {
+				s.RecordProvisionAttempt(OperationCreate, j%2 == 0, 10*time.Millisecond)
+			}
+		}()
+	}
+	wg.Wait()
+
+	snap := s.SnapshotProvision()
+	wantAttempts := int64(goroutines * perGoroutine)
+	if snap.Attempts[OperationCreate] != wantAttempts {
+		t.Errorf("attempts[create] = %d, want %d", snap.Attempts[OperationCreate], wantAttempts)
+	}
+	wantFailures := int64(goroutines * perGoroutine / 2)
+	if snap.Failures[OperationCreate] != wantFailures {
+		t.Errorf("failures[create] = %d, want %d", snap.Failures[OperationCreate], wantFailures)
 	}
 }

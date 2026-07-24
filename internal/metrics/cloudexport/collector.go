@@ -57,6 +57,18 @@ const (
 	// and server_error classes.
 	MetricPlatformAPIRequests = "containarium.platform.api.requests"
 	MetricPlatformAPIErrors   = "containarium.platform.api.errors"
+
+	// MetricPlatformProvisionAttempts / Failures / DurationSecondsSum are
+	// the platform group's provisioning-outcome series (#1083): a
+	// container create or delete, by operation. Attempts counts every
+	// attempt (success or not); Failures counts the subset that failed;
+	// DurationSecondsSum is the cumulative wall-clock time spent across
+	// all attempts for that operation, regardless of outcome — dividing
+	// it by Attempts in MQL/PromQL gives mean latency without a
+	// per-bucket-billed histogram.
+	MetricPlatformProvisionAttempts           = "containarium.platform.provision.attempts"
+	MetricPlatformProvisionFailures           = "containarium.platform.provision.failures"
+	MetricPlatformProvisionDurationSecondsSum = "containarium.platform.provision.duration_seconds_sum"
 )
 
 // Label keys — the complete allowlist. No org/tenant identifier ever
@@ -76,6 +88,10 @@ const (
 	// fixed-cardinality dimension the design uses instead of a raw route
 	// or gRPC code, which would blow up the billed cost surface.
 	LabelCodeClass = "code_class"
+	// LabelOperation tags the platform provisioning series with which
+	// kind of provisioning call this was (platformstats.Operation) —
+	// create or delete, never a per-request identifier.
+	LabelOperation = "operation"
 )
 
 // Labels is the fixed identity stamped on every exported series. These
@@ -121,6 +137,18 @@ func (l Labels) platformAttributeSet(class platformstats.CodeClass) attribute.Se
 		attribute.String(LabelHostname, l.Hostname),
 		attribute.String(LabelRegion, l.Region),
 		attribute.String(LabelCodeClass, string(class)),
+	)
+}
+
+// provisionAttributeSet is the platform provisioning-outcome label set
+// (backend_id, hostname, region, operation) — the host-series identity
+// plus which operation this point is for.
+func (l Labels) provisionAttributeSet(op platformstats.Operation) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelRegion, l.Region),
+		attribute.String(LabelOperation, string(op)),
 	)
 }
 
@@ -360,12 +388,12 @@ func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetrics
 }
 
 // registerPlatformInstruments creates the platform group's API-health
-// counters (#1082) and wires one callback that pulls a single
-// APISnapshot per tick and observes both series, one point per
-// code_class. Counters, not gauges: OTel async-counter semantics expect
-// the current cumulative total on every observation (platformstats.Stats
-// already accumulates for the daemon's lifetime), which is exactly what
-// APISnapshot reports.
+// (#1082) and provisioning-outcome (#1083) counters and wires one
+// callback per concern, each pulling a single snapshot per tick.
+// Counters, not gauges: OTel async-counter semantics expect the current
+// cumulative total on every observation (platformstats.Stats already
+// accumulates for the daemon's lifetime), which is exactly what every
+// snapshot here reports.
 func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSources, labels Labels) error {
 	meter := mp.Meter(meterName)
 
@@ -392,6 +420,42 @@ func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSo
 			return nil
 		},
 		requests, apiErrors,
+	)
+	if err != nil {
+		return err
+	}
+
+	attempts, err := meter.Int64ObservableCounter(MetricPlatformProvisionAttempts,
+		metric.WithDescription("Cumulative count of container provisioning attempts (create/delete), by operation."))
+	if err != nil {
+		return err
+	}
+	failures, err := meter.Int64ObservableCounter(MetricPlatformProvisionFailures,
+		metric.WithDescription("Cumulative count of container provisioning attempts that failed, by operation."))
+	if err != nil {
+		return err
+	}
+	durationSum, err := meter.Float64ObservableCounter(MetricPlatformProvisionDurationSecondsSum,
+		metric.WithUnit("s"), metric.WithDescription("Cumulative wall-clock time spent on provisioning attempts, by operation — divide by attempts for mean latency."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			snap := sources.ProvisionStats()
+			for op, n := range snap.Attempts {
+				o.ObserveInt64(attempts, n, metric.WithAttributeSet(labels.provisionAttributeSet(op)))
+			}
+			for op, n := range snap.Failures {
+				o.ObserveInt64(failures, n, metric.WithAttributeSet(labels.provisionAttributeSet(op)))
+			}
+			for op, n := range snap.DurationSecondsSum {
+				o.ObserveFloat64(durationSum, n, metric.WithAttributeSet(labels.provisionAttributeSet(op)))
+			}
+			return nil
+		},
+		attempts, failures, durationSum,
 	)
 	return err
 }

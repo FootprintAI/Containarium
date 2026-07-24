@@ -166,14 +166,19 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 	}
 }
 
-// fakePlatformSources is a PlatformSources whose API snapshot is fully
+// fakePlatformSources is a PlatformSources whose snapshots are fully
 // controlled by the test.
 type fakePlatformSources struct {
-	api platformstats.APISnapshot
+	api       platformstats.APISnapshot
+	provision platformstats.ProvisionSnapshot
 }
 
 func (f *fakePlatformSources) APIStats() platformstats.APISnapshot {
 	return f.api
+}
+
+func (f *fakePlatformSources) ProvisionStats() platformstats.ProvisionSnapshot {
+	return f.provision
 }
 
 // flattenPoints returns every emitted datapoint (gauge OR cumulative
@@ -199,6 +204,10 @@ func flattenPoints(t *testing.T, rm metricdata.ResourceMetrics) []point {
 			case metricdata.Sum[int64]:
 				for _, dp := range g.DataPoints {
 					pts = append(pts, point{name: m.Name, ival: dp.Value, isInt: true, attrs: dp.Attributes})
+				}
+			case metricdata.Sum[float64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, fval: dp.Value, attrs: dp.Attributes})
 				}
 			default:
 				t.Fatalf("metric %q has unhandled data type %T", m.Name, m.Data)
@@ -687,6 +696,163 @@ func TestNoTenantLabels_PlatformSeries(t *testing.T) {
 		}
 		if !seen[LabelCodeClass] {
 			t.Errorf("series %q missing required label %q", p.name, LabelCodeClass)
+		}
+	}
+}
+
+// sampleProvisionSnapshot is a representative, non-trivial provisioning
+// snapshot for the tests below — mirrors what Stats.SnapshotProvision()
+// always returns: both operations present, even one with zero failures.
+func sampleProvisionSnapshot() platformstats.ProvisionSnapshot {
+	return platformstats.ProvisionSnapshot{
+		Attempts: map[platformstats.Operation]int64{
+			platformstats.OperationCreate: 10,
+			platformstats.OperationDelete: 4,
+		},
+		Failures: map[platformstats.Operation]int64{
+			platformstats.OperationCreate: 2,
+			platformstats.OperationDelete: 0,
+		},
+		DurationSecondsSum: map[platformstats.Operation]float64{
+			platformstats.OperationCreate: 55.5,
+			platformstats.OperationDelete: 8.0,
+		},
+	}
+}
+
+// pointsByNameAndOperation indexes flattened points by (series name,
+// operation label value), the provisioning-series analog of
+// pointsByNameAndClass.
+func pointsByNameAndOperation(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		op, _ := p.attrs.Value(attribute.Key(LabelOperation))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][op.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_PlatformProvisionOutcome is #1083's acceptance
+// criterion: enabling the platform group with a wired PlatformSources
+// emits containarium.platform.provision.attempts/.failures/
+// .duration_seconds_sum, one point per operation, with the exact
+// cumulative values the snapshot reports — including a zero-failure
+// operation (delete), which must still appear as an explicit 0 point,
+// not be silently absent.
+func TestExportedSeries_PlatformProvisionOutcome(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{provision: sampleProvisionSnapshot()}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNameOp := pointsByNameAndOperation(pts)
+
+	wantAttempts := map[string]int64{"create": 10, "delete": 4}
+	for op, want := range wantAttempts {
+		p, ok := byNameOp[MetricPlatformProvisionAttempts][op]
+		if !ok {
+			t.Fatalf("missing %s{operation=%q}", MetricPlatformProvisionAttempts, op)
+		}
+		if p.ival != want {
+			t.Errorf("%s{operation=%q} = %d, want %d", MetricPlatformProvisionAttempts, op, p.ival, want)
+		}
+	}
+
+	wantFailures := map[string]int64{"create": 2, "delete": 0}
+	for op, want := range wantFailures {
+		p, ok := byNameOp[MetricPlatformProvisionFailures][op]
+		if !ok {
+			t.Fatalf("missing %s{operation=%q} — a zero-failure operation must still emit an explicit 0 point", MetricPlatformProvisionFailures, op)
+		}
+		if p.ival != want {
+			t.Errorf("%s{operation=%q} = %d, want %d", MetricPlatformProvisionFailures, op, p.ival, want)
+		}
+	}
+
+	wantDuration := map[string]float64{"create": 55.5, "delete": 8.0}
+	for op, want := range wantDuration {
+		p, ok := byNameOp[MetricPlatformProvisionDurationSecondsSum][op]
+		if !ok {
+			t.Fatalf("missing %s{operation=%q}", MetricPlatformProvisionDurationSecondsSum, op)
+		}
+		if p.fval != want {
+			t.Errorf("%s{operation=%q} = %v, want %v", MetricPlatformProvisionDurationSecondsSum, op, p.fval, want)
+		}
+	}
+}
+
+// TestExportedSeries_PlatformGroup_ProvisionZeroWhenNotWired guards the
+// "not wired yet" default for the provisioning series specifically: a
+// PlatformSources whose ProvisionStats returns the zero value (as an
+// older adapter or a minimal fake might) must not panic and must not
+// fabricate an operation the snapshot didn't report.
+func TestExportedSeries_PlatformGroup_ProvisionZeroWhenNotWired(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	for _, p := range pts {
+		switch p.name {
+		case MetricPlatformProvisionAttempts, MetricPlatformProvisionFailures, MetricPlatformProvisionDurationSecondsSum:
+			t.Errorf("provisioning series %q emitted a point from a zero-value ProvisionSnapshot", p.name)
+		}
+	}
+}
+
+// TestNoTenantLabels_ProvisionSeries locks in #1083's cardinality
+// acceptance criterion: the provisioning series carry exactly
+// backend_id/hostname/region/operation and nothing else.
+func TestNoTenantLabels_ProvisionSeries(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{provision: sampleProvisionSnapshot()}, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	var pts []point
+	for _, p := range all {
+		switch p.name {
+		case MetricPlatformProvisionAttempts, MetricPlatformProvisionFailures, MetricPlatformProvisionDurationSecondsSum:
+			pts = append(pts, p)
+		}
+	}
+	if len(pts) == 0 {
+		t.Fatal("no provisioning series emitted")
+	}
+
+	allowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+	}
+	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path"}
+
+	for _, p := range pts {
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelOperation {
+				continue // value asserted by TestExportedSeries_PlatformProvisionOutcome
+			}
+			if wantVal, ok := allowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range allowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if !seen[LabelOperation] {
+			t.Errorf("series %q missing required label %q", p.name, LabelOperation)
 		}
 	}
 }

@@ -65,4 +65,8 @@ type PlatformSources interface {
 	// APIStats returns the current cumulative API request/error counters
 	// by code_class (#1082).
 	APIStats() platformstats.APISnapshot
+
+	// ProvisionStats returns the current cumulative provisioning
+	// attempt/failure/duration counters by operation (#1083).
+	ProvisionStats() platformstats.ProvisionSnapshot
 }

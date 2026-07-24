@@ -157,3 +157,122 @@ Record the fired-incident screenshot / link in your operator log.
 - **Multi-cloud:** AWS export is not implemented yet; the equivalent
   there is a CloudWatch "missing data → breaching" alarm on the same
   heartbeat metric once an AWS sink lands.
+
+## Provisioning failure alert (#1083)
+
+**Goal:** page an operator when containers are genuinely failing to
+provision or tear down — not on every failed attempt (a single bad
+request from a client is normal noise) but on a sustained run of
+failures, which points at a real backend problem (image pull outage,
+disk full, k8s operator down).
+
+### The series
+
+| Field | Value |
+|---|---|
+| Metric (OTel instrument) | `containarium.platform.provision.failures` |
+| Cloud Monitoring metric type | `workload.googleapis.com/containarium.platform.provision.failures` |
+| Monitored resource | `gce_instance` |
+| Kind / value | cumulative counter |
+| Labels | `backend_id`, `hostname`, `region`, `operation` (`create` \| `delete`) |
+| Emit cadence | every export interval |
+
+`attempts` and `duration_seconds_sum` (same label set) are exported
+alongside `failures` for rate/latency dashboards, but the alert below
+watches `failures` only — attempts rising is not itself a problem.
+
+### Create the alert policy
+
+Write the policy to a file (`provision-failure-policy.json`), replacing
+`${PROJECT_ID}` and `${CHANNEL_ID}` as above:
+
+```json
+{
+  "displayName": "Containarium provisioning failures (sustained)",
+  "documentation": {
+    "content": "A backend has recorded at least one provisioning failure (create or delete) in every minute of the last 10 minutes. Check the backend's daemon log for the failing operation and username; likely causes are image pull failures, disk/CPU admission rejections, or (for the k8s Box path) the operator being unreachable.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Provisioning failures > 0 for 10m (per backend, per operation)",
+      "conditionThreshold": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.failures\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "600s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "groupByFields": ["metric.label.backend_id", "metric.label.operation"]
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  }
+}
+```
+
+Create it:
+
+```bash
+gcloud alpha monitoring policies create \
+  --project="${PROJECT_ID}" \
+  --policy-from-file=provision-failure-policy.json
+```
+
+### Why these values
+
+- **`ALIGN_DELTA`** turns the cumulative counter into a per-minute
+  increment before thresholding — `conditionThreshold` compares aligned
+  points, not the raw running total, so this fires on *new* failures in
+  each window rather than latching forever once one failure has ever
+  happened.
+- **`duration: 600s`** (10 minutes) matches the acceptance criterion
+  ("failures > 0 for 10 min") and requires the delta to stay above zero
+  for the whole window, so one isolated failed request does not page —
+  it takes a sustained run.
+- **`groupByFields` on `backend_id` and `operation`** keeps `create` and
+  `delete` failures on separate evaluated series and keeps one bad
+  backend from being masked by healthy ones — same per-series semantics
+  as the heartbeat policy above.
+- **No filter on `region`/`hostname`**: those labels ride along on the
+  series for dashboard drill-down but aren't part of the alert's
+  identity — `backend_id` already uniquely identifies the backend.
+
+### Verify (live)
+
+Also not reproducible in CI — verify against a real project:
+
+1. Confirm the series in Metrics Explorer
+   (`workload.googleapis.com/containarium.platform.provision.failures`)
+   is present (it may be flat at 0 if the backend is healthy — that's
+   correct; #1083's collector emits an explicit 0 point rather than
+   omitting the series when there are no failures yet).
+2. Force a sustained failure run (e.g. an admission-gate misconfiguration
+   that rejects every create, or point `--username` requests at a
+   deliberately invalid resource spec) for at least 10 minutes.
+3. Confirm the policy transitions to **firing** and the notification
+   channel pages; confirm it clears once failures stop and `autoClose`
+   elapses.
+
+### Tuning notes
+
+- **Noisy tenants:** if a single misbehaving client is expected to
+  generate occasional failures as normal traffic (bad requests, quota
+  exhaustion), that's `attempts` rising without `failures` rising in
+  lockstep at the same rate — dashboard both series rather than tuning
+  the alert threshold above 0.
+- **Scope to one backend:** add
+  `AND metric.label.backend_id = "<backend-id>"` to the filter, same as
+  the heartbeat policy.

@@ -105,3 +105,12 @@ func (s serverPlatformSources) APIStats() platformstats.APISnapshot {
 	}
 	return s.stats.SnapshotAPI()
 }
+
+// ProvisionStats returns the current cumulative provisioning counters
+// (#1083). Nil-safe for the same reason as APIStats.
+func (s serverPlatformSources) ProvisionStats() platformstats.ProvisionSnapshot {
+	if s.stats == nil {
+		return platformstats.ProvisionSnapshot{}
+	}
+	return s.stats.SnapshotProvision()
+}
