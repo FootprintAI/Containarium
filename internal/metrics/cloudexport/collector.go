@@ -227,6 +227,7 @@ func (c *CloudExportCollector) Start(ctx context.Context) error {
 	)
 	mp, err := c.buildMeterProvider(reader)
 	if err != nil {
+		_ = reader.Shutdown(ctx)
 		return err
 	}
 	c.mp = mp

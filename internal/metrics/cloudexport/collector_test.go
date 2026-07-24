@@ -368,9 +368,10 @@ func TestNilSnapshotSkipsTick(t *testing.T) {
 // calls and captures the last batch, letting the lifecycle test observe
 // a tick and confirm emission stops after Stop.
 type recordingExporter struct {
-	exports  int
-	last     metricdata.ResourceMetrics
-	failNext bool
+	exports   int
+	shutdowns int
+	last      metricdata.ResourceMetrics
+	failNext  bool
 }
 
 func (r *recordingExporter) Temporality(k sdkmetric.InstrumentKind) metricdata.Temporality {
@@ -389,7 +390,35 @@ func (r *recordingExporter) Export(ctx context.Context, rm *metricdata.ResourceM
 	return nil
 }
 func (r *recordingExporter) ForceFlush(ctx context.Context) error { return nil }
-func (r *recordingExporter) Shutdown(ctx context.Context) error   { return nil }
+func (r *recordingExporter) Shutdown(ctx context.Context) error {
+	r.shutdowns++
+	return nil
+}
+
+// TestStartShutsDownReaderWhenProviderBuildFails guards the error path:
+// the PeriodicReader starts a goroutine during construction, so a failed
+// provider build must shut the reader down before returning.
+func TestStartShutsDownReaderWhenProviderBuildFails(t *testing.T) {
+	exp := &recordingExporter{}
+	c := NewCollector(CollectorOptions{
+		Sources:  &fakeSources{sr: sampleResources()},
+		Exporter: exp,
+		Labels:   sampleLabels(),
+	})
+	c.groups = []pb.CloudMetricsGroup{pb.CloudMetricsGroup(999)}
+
+	err := c.Start(context.Background())
+
+	if err == nil {
+		t.Fatal("expected Start to fail for an unknown metric group")
+	}
+	if exp.shutdowns != 1 {
+		t.Fatalf("exporter Shutdown calls = %d, want 1", exp.shutdowns)
+	}
+	if c.started {
+		t.Fatal("collector marked started after provider build failure")
+	}
+}
 
 // TestEnableDisableRebuild is the toggle lifecycle: enable → observe
 // series via a forced flush → disable → assert the reader is shut down
