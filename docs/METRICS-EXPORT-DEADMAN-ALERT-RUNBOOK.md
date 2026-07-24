@@ -34,6 +34,15 @@ heartbeat — a source hiccup is not backend death and must not trip this
 alert. The series stops if and only if the daemon stops exporting: host
 down, daemon down, or the daemon cannot reach Cloud Monitoring.
 
+**This alert does not cover BYOC hosts.** A BYOC daemon's ADC probe fails
+closed (no metadata server on customer hardware), so it never builds an
+export collector and never emits a heartbeat — this is by design (#1078,
+`docs/CLOUD-NATIVE-METRICS-EXPORT-DESIGN.md`). A BYOC peer's liveness is
+instead visible through the *primary's* connectivity series
+(`containarium.platform.tunnel.state`, #1084) — see the provisioning-failure
+alert section below for the same `gcloud`/JSON recipe pattern applied to a
+`tunnel.state = 0` condition instead.
+
 ## Prerequisites
 
 1. Export enabled on the backend and confirmed healthy:
