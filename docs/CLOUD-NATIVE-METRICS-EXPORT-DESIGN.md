@@ -114,7 +114,11 @@ the next interval because collection enumerates live containers each tick.
 4. Disable: rebuilds without the reader; emission stops within one interval.
 5. Host/daemon death: emission stops ⇒ the operator's metric-absence policy on
    `containarium.export.heartbeat` fires. This is the out-of-band property: no
-   component on the host needs to survive for the alert to work.
+   component on the host needs to survive for the alert to work. The heartbeat
+   is emitted on its own callback, independent of `Sources`, so a transient
+   source error skips the host series for a tick but never suppresses the
+   heartbeat — only real daemon/host death does. The exact absence-policy recipe
+   (`gcloud`/JSON) lives in `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`.
 
 ## Contracts
 

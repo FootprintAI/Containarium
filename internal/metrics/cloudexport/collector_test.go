@@ -132,6 +132,9 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 		MetricDiskUsed:       {isInt: true, ival: 100 << 30},
 		MetricDiskTotal:      {isInt: true, ival: 500 << 30},
 		MetricContainerCount: {isInt: true, ival: 7},
+		// Heartbeat/up series (#1072): constant 1, emitted alongside the
+		// host series every tick.
+		MetricHeartbeat: {isInt: true, ival: 1},
 	}
 
 	if len(got) != len(golden) {
@@ -190,6 +193,13 @@ func collectGroupsOnce(t *testing.T, groups []pb.CloudMetricsGroup, sources Sour
 // land in #1071/#1072 and #1082/#1083/#1084 respectively) so they add
 // nothing yet — enabling them today is a deliberate, zero-series opt-in.
 // Any drift in what a group exports fails here.
+//
+// The heartbeat/up series (#1072) is deliberately NOT a group: it is
+// registered unconditionally by buildMeterProvider, independent of which
+// groups are enabled, so it accompanies every combination below —
+// including the reserved-only cases, which therefore emit the heartbeat
+// alone rather than nothing. Each want set below lists the group-specific
+// series; the harness adds the always-on heartbeat before asserting.
 func TestExportedSeries_PerGroupGolden(t *testing.T) {
 	host := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST
 	container := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
@@ -231,6 +241,10 @@ func TestExportedSeries_PerGroupGolden(t *testing.T) {
 			for _, n := range tc.want {
 				wantSet[n] = true
 			}
+			// The heartbeat rides every collector regardless of groups
+			// (registered unconditionally by buildMeterProvider, #1072),
+			// so it is part of the emitted set for every case here.
+			wantSet[MetricHeartbeat] = true
 
 			if len(got) != len(wantSet) {
 				var names []string
@@ -266,14 +280,26 @@ func TestNoTenantLabels(t *testing.T) {
 		t.Fatal("no series emitted")
 	}
 
-	allowed := map[string]string{
+	// Per-series allowlist: host series carry backend_id/hostname/region;
+	// the heartbeat carries backend_id/hostname/daemon_version. Neither
+	// may carry any org/tenant identifier.
+	hostAllowed := map[string]string{
 		LabelBackendID: "backend-xyz",
 		LabelHostname:  "host-1",
 		LabelRegion:    "us-central1",
 	}
+	heartbeatAllowed := map[string]string{
+		LabelBackendID:     "backend-xyz",
+		LabelHostname:      "host-1",
+		LabelDaemonVersion: "", // sampleLabels leaves DaemonVersion empty; value asserted in TestHeartbeatLabels.
+	}
 	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid"}
 
 	for _, p := range pts {
+		allowed := hostAllowed
+		if p.name == MetricHeartbeat {
+			allowed = heartbeatAllowed
+		}
 		iter := p.attrs.Iter()
 		seen := map[string]bool{}
 		for iter.Next() {
@@ -300,25 +326,42 @@ func TestNoTenantLabels(t *testing.T) {
 	}
 }
 
+// hostSeriesCount counts emitted series that are not the heartbeat — the
+// host gauges whose values come from Sources.
+func hostSeriesCount(pts []point) int {
+	n := 0
+	for _, p := range pts {
+		if p.name != MetricHeartbeat {
+			n++
+		}
+	}
+	return n
+}
+
 // TestSourceErrorSkipsTickWithoutPanic asserts that a Sources error mid-
-// tick is skipped cleanly: no panic, no crash, and no series emitted for
-// that tick (so no stale values reach the cloud).
+// tick is skipped cleanly: no panic, no crash, and no host series emitted
+// for that tick (so no stale values reach the cloud). The heartbeat, which
+// does not depend on Sources, still emits — a Sources error is not daemon
+// death and must not trip the dead-man alert.
 func TestSourceErrorSkipsTickWithoutPanic(t *testing.T) {
 	rm := collectOnce(t, &fakeSources{err: errors.New("incus unavailable")}, sampleLabels())
 	pts := flattenGauges(t, rm)
-	if len(pts) != 0 {
-		t.Fatalf("expected no series on a Sources error, got %d", len(pts))
+	if got := hostSeriesCount(pts); got != 0 {
+		t.Fatalf("expected no host series on a Sources error, got %d", got)
 	}
+	heartbeatOf(t, pts) // heartbeat still present; fails if absent.
 }
 
 // TestNilSnapshotSkipsTick guards the nil-without-error edge: a Sources
-// that returns (nil, nil) is skipped, not dereferenced.
+// that returns (nil, nil) is skipped, not dereferenced — again without
+// suppressing the Sources-independent heartbeat.
 func TestNilSnapshotSkipsTick(t *testing.T) {
 	rm := collectOnce(t, &fakeSources{sr: nil}, sampleLabels())
 	pts := flattenGauges(t, rm)
-	if len(pts) != 0 {
-		t.Fatalf("expected no series on a nil snapshot, got %d", len(pts))
+	if got := hostSeriesCount(pts); got != 0 {
+		t.Fatalf("expected no host series on a nil snapshot, got %d", got)
 	}
+	heartbeatOf(t, pts) // heartbeat still present; fails if absent.
 }
 
 // recordingExporter is a fake sdkmetric.Exporter that counts Export
@@ -374,9 +417,11 @@ func TestEnableDisableRebuild(t *testing.T) {
 	if exp.exports == 0 {
 		t.Fatal("expected at least one export after ForceFlush")
 	}
-	if got := len(flattenGauges(t, exp.last)); got != 8 {
-		t.Fatalf("expected 8 host series exported, got %d", got)
+	exported := flattenGauges(t, exp.last)
+	if got := len(exported); got != 9 {
+		t.Fatalf("expected 9 series exported (8 host + heartbeat), got %d", got)
 	}
+	heartbeatOf(t, exported) // the heartbeat rides the same export batch.
 
 	if err := c.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)

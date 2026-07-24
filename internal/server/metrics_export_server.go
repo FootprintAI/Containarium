@@ -10,6 +10,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -261,9 +262,10 @@ func (s *ContainerServer) buildCollector(ctx context.Context, cfg cloudexport.Co
 // series collector for cfg: the production Sources adapter over the
 // daemon's Manager/Incus, the provider exporter from sink.NewExporter,
 // the provider's monitored-resource identity (gce_instance for GCP) when
-// the sink offers one, and the fixed backend_id/hostname/region label
-// set. Returns an error if the daemon lacks a Manager or the exporter
-// can't be built.
+// the sink offers one, and the fixed identity labels (backend_id/hostname/
+// region for the host series; backend_id/hostname/daemon_version for the
+// heartbeat). Returns an error if the daemon lacks a Manager or the
+// exporter can't be built.
 func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg cloudexport.Config, sink cloudexport.Sink) (*cloudexport.CloudExportCollector, error) {
 	if s.manager == nil {
 		return nil, fmt.Errorf("no container manager wired")
@@ -291,9 +293,10 @@ func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg c
 		Exporter: exporter,
 		Resource: res,
 		Labels: cloudexport.Labels{
-			BackendID: s.localBackendID(),
-			Hostname:  sources.Hostname(),
-			Region:    s.region,
+			BackendID:     s.localBackendID(),
+			Hostname:      sources.Hostname(),
+			Region:        s.region,
+			DaemonVersion: version.GetVersion(),
 		},
 		IntervalSeconds: cfg.IntervalSeconds,
 		Groups:          cfg.Groups,
