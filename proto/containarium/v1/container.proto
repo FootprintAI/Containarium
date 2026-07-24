@@ -986,6 +986,36 @@ enum CloudMetricsProvider {
   CLOUD_METRICS_PROVIDER_AWS = 2;
 }
 
+// CloudMetricsGroup names an independently enableable set of exported
+// series (#1081). Export is organized into groups so the billed sample
+// surface — custom metrics are billed per ingested sample — stays a
+// deliberate, per-group choice rather than an all-or-nothing switch.
+// Typed so a group can never be a magic string. Absent/empty on the wire
+// means "host only" (CLOUD_METRICS_GROUP_HOST), which is exactly the
+// v0.60.0 behavior a persisted config resumes into.
+enum CloudMetricsGroup {
+  // Unset. Never a valid element of an explicit groups list;
+  // SetMetricsExport rejects a request whose groups contain it. An empty
+  // groups list (not a list of UNSPECIFIED) is what means "default to
+  // host".
+  CLOUD_METRICS_GROUP_UNSPECIFIED = 0;
+
+  // Host-infrastructure series (CPU load, memory, disk, container count)
+  // — the complete #1070 allowlist. The default when no group is named.
+  CLOUD_METRICS_GROUP_HOST = 1;
+
+  // Per-container series. Reserved by #1081 as an enableable group; the
+  // series themselves land in #1071/#1072, so enabling it today exports
+  // no additional series.
+  CLOUD_METRICS_GROUP_CONTAINER = 2;
+
+  // Platform-level series (API request/error counts, provisioning
+  // outcomes, peer connectivity). Reserved by #1081 as an enableable
+  // group; the series themselves land in #1082/#1083/#1084, so enabling
+  // it today exports no additional series.
+  CLOUD_METRICS_GROUP_PLATFORM = 3;
+}
+
 // SetMetricsExportRequest enables or disables cloud-native metrics export.
 // Enabling with provider=GCP triggers a synchronous Application Default
 // Credentials probe (monitoring-write scope) before anything is persisted
@@ -1000,6 +1030,13 @@ message SetMetricsExportRequest {
   // CLOUD_METRICS_PROVIDER_UNSPECIFIED (INVALID_ARGUMENT) or
   // CLOUD_METRICS_PROVIDER_AWS (UNIMPLEMENTED — MVP is GCP-only).
   CloudMetricsProvider provider = 2;
+
+  // The metric groups to export (#1081). Enables exactly these groups;
+  // an empty list defaults to [CLOUD_METRICS_GROUP_HOST], preserving the
+  // v0.60.0 host-only behavior. Every element must be a defined group
+  // other than CLOUD_METRICS_GROUP_UNSPECIFIED (INVALID_ARGUMENT
+  // otherwise). Ignored when enabled=false.
+  repeated CloudMetricsGroup groups = 3;
 }
 
 // SetMetricsExportResponse reports the effective state after the toggle.
@@ -1012,6 +1049,11 @@ message SetMetricsExportResponse {
   bool enabled = 2;
   CloudMetricsProvider provider = 3;
   int32 interval_seconds = 4;
+
+  // The effective set of enabled metric groups after the call (#1081),
+  // normalized: an omitted/empty request list resolves to
+  // [CLOUD_METRICS_GROUP_HOST].
+  repeated CloudMetricsGroup groups = 5;
 }
 
 // GetMetricsExportRequest requests the current cloud-native metrics
@@ -1043,6 +1085,11 @@ message GetMetricsExportResponse {
 
   // Count of failed export batches since the exporter was last (re)built.
   int64 export_failures = 6;
+
+  // The set of enabled metric groups (#1081). Normalized: a host that has
+  // never configured groups (or a v0.60.0 config with none persisted)
+  // reports [CLOUD_METRICS_GROUP_HOST].
+  repeated CloudMetricsGroup groups = 7;
 }
 
 // MoveContainerRequest is the source-side request to migrate a

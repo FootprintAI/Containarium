@@ -16,6 +16,12 @@ import (
 // allow-list living in the CLI.
 var metricsExportProvider string
 
+// metricsExportGroups backs the --groups flag on `monitoring export
+// enable` (#1081): a comma-separated list of metric groups to enable
+// (host, container, platform). Omitted keeps today's behavior — the
+// server defaults an empty selection to host.
+var metricsExportGroups string
+
 var monitoringExportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Enable, disable, or inspect cloud-native metrics export",
@@ -43,8 +49,11 @@ monitoring-write scope; failure returns an actionable error (with an
 IAM remediation hint) and nothing is enabled. Takes effect immediately,
 no daemon restart required.
 
-Examples:
-  containarium monitoring export enable --provider gcp`,
+Groups (#1081) select which independently-billed series sets export.
+Omit --groups to keep host-only (the default); name others to opt in:
+
+  containarium monitoring export enable --provider gcp
+  containarium monitoring export enable --provider gcp --groups host,platform`,
 	Args: cobra.NoArgs,
 	RunE: runMetricsExportEnable,
 }
@@ -77,6 +86,7 @@ Examples:
 
 func init() {
 	monitoringExportEnableCmd.Flags().StringVar(&metricsExportProvider, "provider", "", "cloud provider to export to (gcp)")
+	monitoringExportEnableCmd.Flags().StringVar(&metricsExportGroups, "groups", "", "comma-separated metric groups to enable (host,container,platform); omit for host only")
 
 	monitoringCmd.AddCommand(monitoringExportCmd)
 	monitoringExportCmd.AddCommand(monitoringExportEnableCmd)
@@ -104,8 +114,65 @@ func parseMetricsExportProvider(s string) (pb.CloudMetricsProvider, error) {
 	}
 }
 
+// parseMetricsExportGroups maps the CLI's comma-separated --groups flag
+// to a typed CloudMetricsGroup list. No magic strings past this boundary
+// — every other layer (client, server, config, collector) speaks the
+// enum. An empty flag returns nil so the server applies its host-only
+// default; an unknown token is rejected here (a client-side typo like
+// "hosts") with the supported list. Whitespace and empty elements are
+// tolerated so `--groups "host, platform"` works.
+func parseMetricsExportGroups(s string) ([]pb.CloudMetricsGroup, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var groups []pb.CloudMetricsGroup
+	for _, tok := range strings.Split(s, ",") {
+		switch strings.ToLower(strings.TrimSpace(tok)) {
+		case "":
+			continue
+		case "host":
+			groups = append(groups, pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST)
+		case "container":
+			groups = append(groups, pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER)
+		case "platform":
+			groups = append(groups, pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM)
+		default:
+			return nil, fmt.Errorf("unknown metric group %q (supported: host, container, platform)", strings.TrimSpace(tok))
+		}
+	}
+	return groups, nil
+}
+
+// metricsExportGroupsLabel renders a group list the way an operator types
+// it back on the CLI (lowercase, comma-separated). An empty list renders
+// as "host" — the server's effective default — so status output never
+// shows a blank group set.
+func metricsExportGroupsLabel(groups []pb.CloudMetricsGroup) string {
+	if len(groups) == 0 {
+		return "host"
+	}
+	labels := make([]string, 0, len(groups))
+	for _, g := range groups {
+		switch g {
+		case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST:
+			labels = append(labels, "host")
+		case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER:
+			labels = append(labels, "container")
+		case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM:
+			labels = append(labels, "platform")
+		default:
+			labels = append(labels, strings.ToLower(g.String()))
+		}
+	}
+	return strings.Join(labels, ",")
+}
+
 func runMetricsExportEnable(cmd *cobra.Command, args []string) error {
 	provider, err := parseMetricsExportProvider(metricsExportProvider)
+	if err != nil {
+		return err
+	}
+	groups, err := parseMetricsExportGroups(metricsExportGroups)
 	if err != nil {
 		return err
 	}
@@ -113,13 +180,13 @@ func runMetricsExportEnable(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--server is required for metrics export (no local fallback)")
 	}
 
-	resp, err := setMetricsExportClient(true, provider)
+	resp, err := setMetricsExportClient(true, provider, groups)
 	if err != nil {
 		return fmt.Errorf("failed to enable cloud metrics export: %w", err)
 	}
 
-	fmt.Printf("✓ cloud metrics export enabled (provider=%s, interval=%ds)\n",
-		metricsExportProviderLabel(resp.Provider), resp.IntervalSeconds)
+	fmt.Printf("✓ cloud metrics export enabled (provider=%s, groups=%s, interval=%ds)\n",
+		metricsExportProviderLabel(resp.Provider), metricsExportGroupsLabel(resp.Groups), resp.IntervalSeconds)
 	if resp.Message != "" {
 		fmt.Println(resp.Message)
 	}
@@ -131,7 +198,7 @@ func runMetricsExportDisable(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--server is required for metrics export (no local fallback)")
 	}
 
-	resp, err := setMetricsExportClient(false, pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_UNSPECIFIED)
+	resp, err := setMetricsExportClient(false, pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_UNSPECIFIED, nil)
 	if err != nil {
 		return fmt.Errorf("failed to disable cloud metrics export: %w", err)
 	}
@@ -158,8 +225,8 @@ func runMetricsExportStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("cloud metrics export: enabled (provider=%s, interval=%ds)\n",
-		metricsExportProviderLabel(resp.Provider), resp.IntervalSeconds)
+	fmt.Printf("cloud metrics export: enabled (provider=%s, groups=%s, interval=%ds)\n",
+		metricsExportProviderLabel(resp.Provider), metricsExportGroupsLabel(resp.Groups), resp.IntervalSeconds)
 	if resp.LastSuccessAt != nil && resp.LastSuccessAt.IsValid() && resp.LastSuccessAt.AsTime().Unix() > 0 {
 		fmt.Printf("  last success: %s\n", resp.LastSuccessAt.AsTime().Local().Format("2006-01-02 15:04:05 MST"))
 	}
@@ -190,21 +257,21 @@ func metricsExportProviderLabel(p pb.CloudMetricsProvider) string {
 // runMonitoringToggle's httpMode branch in internal/cmd/monitoring.go.
 // This is the one function the MCP tool also calls (internal/mcp/tools.go)
 // — CLI-first per the repo convention.
-func setMetricsExportClient(enabled bool, provider pb.CloudMetricsProvider) (*pb.SetMetricsExportResponse, error) {
+func setMetricsExportClient(enabled bool, provider pb.CloudMetricsProvider, groups []pb.CloudMetricsGroup) (*pb.SetMetricsExportResponse, error) {
 	if httpMode {
 		httpClient, err := client.NewHTTPClient(serverAddr, authToken)
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = httpClient.Close() }()
-		return httpClient.SetMetricsExport(enabled, provider)
+		return httpClient.SetMetricsExport(enabled, provider, groups)
 	}
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = grpcClient.Close() }()
-	return grpcClient.SetMetricsExport(enabled, provider)
+	return grpcClient.SetMetricsExport(enabled, provider, groups)
 }
 
 func getMetricsExportClient() (*pb.GetMetricsExportResponse, error) {

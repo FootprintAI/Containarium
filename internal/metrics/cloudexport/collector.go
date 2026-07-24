@@ -2,6 +2,7 @@ package cloudexport
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -11,6 +12,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // meterName is the instrumentation scope all exported host series are
@@ -35,6 +38,15 @@ const (
 	MetricDiskUsed       = "containarium.host.disk.used_bytes"
 	MetricDiskTotal      = "containarium.host.disk.total_bytes"
 	MetricContainerCount = "containarium.host.container.count"
+
+	// MetricHeartbeat is the liveness/up series (#1072): a constant 1
+	// emitted every export interval while the daemon runs. It is the
+	// out-of-band dead-man signal — a metric-absence alert policy in the
+	// cloud provider's monitoring fires when this series stops arriving,
+	// catching the failure class (host or daemon dead / network-
+	// partitioned) that host-local alerting cannot report on because it
+	// fate-shares with the host.
+	MetricHeartbeat = "containarium.export.heartbeat"
 )
 
 // Label keys — the complete allowlist. No org/tenant identifier ever
@@ -45,22 +57,43 @@ const (
 	LabelBackendID = "backend_id"
 	LabelHostname  = "hostname"
 	LabelRegion    = "region"
+	// LabelDaemonVersion tags the heartbeat series only (not the host
+	// series) with the daemon build, so a dead-man alert makes clear which
+	// version stopped reporting.
+	LabelDaemonVersion = "daemon_version"
 )
 
 // Labels is the fixed identity stamped on every exported series. These
-// are host-level facts (which backend, which machine, which region),
-// not per-tick data — so they live on the collector, not in Sources.
+// are host-level facts (which backend, which machine, which region, which
+// daemon build), not per-tick data — so they live on the collector, not
+// in Sources. Not every series carries every field: the host series use
+// backend_id/hostname/region; the heartbeat uses backend_id/hostname/
+// daemon_version.
 type Labels struct {
-	BackendID string
-	Hostname  string
-	Region    string
+	BackendID     string
+	Hostname      string
+	Region        string
+	DaemonVersion string
 }
 
+// attributeSet is the host-series label set (backend_id, hostname,
+// region).
 func (l Labels) attributeSet() attribute.Set {
 	return attribute.NewSet(
 		attribute.String(LabelBackendID, l.BackendID),
 		attribute.String(LabelHostname, l.Hostname),
 		attribute.String(LabelRegion, l.Region),
+	)
+}
+
+// heartbeatAttributeSet is the heartbeat label set (backend_id, hostname,
+// daemon_version) — deliberately distinct from the host-series set: the
+// dead-man alert cares which daemon build went silent, not which region.
+func (l Labels) heartbeatAttributeSet() attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelDaemonVersion, l.DaemonVersion),
 	)
 }
 
@@ -81,6 +114,11 @@ type CollectorOptions struct {
 	// IntervalSeconds is the requested export cadence. Clamped up to
 	// MinIntervalSeconds; <= 0 uses MinIntervalSeconds.
 	IntervalSeconds int32
+	// Groups selects which independently-enableable series groups this
+	// collector registers (#1081). Normalized at construction: an empty
+	// selection resolves to [HOST], so a collector built from a v0.60.0
+	// config exports exactly the #1070 host series.
+	Groups []pb.CloudMetricsGroup
 }
 
 // healthState is the collector's live export health, surfaced through
@@ -147,6 +185,7 @@ type CloudExportCollector struct {
 	resource *resource.Resource
 	labels   Labels
 	interval time.Duration
+	groups   []pb.CloudMetricsGroup
 	health   *healthState
 
 	mu      sync.Mutex
@@ -167,6 +206,7 @@ func NewCollector(opts CollectorOptions) *CloudExportCollector {
 		resource: opts.Resource,
 		labels:   opts.Labels,
 		interval: interval,
+		groups:   NormalizeGroups(opts.Groups),
 		health:   &healthState{},
 	}
 }
@@ -239,10 +279,73 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 		mpOpts = append(mpOpts, sdkmetric.WithResource(c.resource))
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
-	if err := registerHostInstruments(mp, c.sources, c.labels); err != nil {
+	for _, g := range c.groups {
+		if err := registerGroupInstruments(mp, g, c.sources, c.labels); err != nil {
+			return nil, err
+		}
+	}
+	if err := registerHeartbeatInstrument(mp, c.labels); err != nil {
 		return nil, err
 	}
 	return mp, nil
+}
+
+// registerGroupInstruments registers exactly the instruments belonging
+// to one metric group (#1081). This is the single dispatch point new
+// groups plug into: host registers the #1070 allowlist; container and
+// platform are reserved enableable groups whose series land in
+// #1071/#1072 and #1082/#1083/#1084 — until then they register nothing,
+// so enabling them is a deliberate zero-series opt-in rather than a
+// no-such-group error. Groups are normalized before they reach here, so
+// UNSPECIFIED never arrives; an unknown value is a programming error.
+//
+// Note the heartbeat is deliberately NOT a group: it is registered
+// unconditionally by buildMeterProvider alongside (and independent of)
+// whatever groups are enabled, because the dead-man signal must never be
+// gated by group selection or a Sources error (see
+// registerHeartbeatInstrument).
+func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, labels Labels) error {
+	switch group {
+	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST:
+		return registerHostInstruments(mp, sources, labels)
+	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER:
+		// Reserved: per-container series land in #1071/#1072.
+		return nil
+	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM:
+		// Reserved: platform series land in #1082/#1083/#1084.
+		return nil
+	default:
+		return fmt.Errorf("cloudexport: unregisterable metric group %v", group)
+	}
+}
+
+// registerHeartbeatInstrument creates the heartbeat/up gauge (#1072) and
+// wires a callback that observes a constant 1 on every tick, deliberately
+// in its OWN callback with no dependency on Sources. That independence is
+// the dead-man contract: the series is present iff the daemon is alive and
+// its export pipeline is delivering to the cloud, so its absence means
+// exactly one thing — the host or daemon died (or was partitioned from the
+// provider). A transient Sources error (incus briefly unavailable) skips
+// the host series for that tick but must not suppress the heartbeat, or an
+// incus hiccup would masquerade as backend death and page the operator.
+// For the same reason the heartbeat is not modeled as a metric group: it
+// accompanies every collector regardless of which groups are enabled.
+func registerHeartbeatInstrument(mp *sdkmetric.MeterProvider, labels Labels) error {
+	meter := mp.Meter(meterName)
+	heartbeat, err := meter.Int64ObservableGauge(MetricHeartbeat,
+		metric.WithDescription("Liveness heartbeat: constant 1 emitted every export interval while the daemon runs. Absence is the dead-man signal for a metric-absence alert policy."))
+	if err != nil {
+		return err
+	}
+	observeOpt := metric.WithAttributeSet(labels.heartbeatAttributeSet())
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			o.ObserveInt64(heartbeat, 1, observeOpt)
+			return nil
+		},
+		heartbeat,
+	)
+	return err
 }
 
 // registerHostInstruments creates the eight allowlisted host gauges and

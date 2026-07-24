@@ -624,7 +624,7 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 // and INVALID_ARGUMENT to HTTP 400 and UNIMPLEMENTED to HTTP 501, but
 // the CLI only needs the message text, which carries the IAM
 // remediation hint for the credential-probe case.
-func (c *HTTPClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProvider) (*pb.SetMetricsExportResponse, error) {
+func (c *HTTPClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProvider, groups []pb.CloudMetricsGroup) (*pb.SetMetricsExportResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -633,6 +633,17 @@ func (c *HTTPClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProv
 		// Emit the enum by its proto JSON name so grpc-gateway decodes it
 		// into the CloudMetricsProvider enum.
 		"provider": provider.String(),
+	}
+	// Emit groups by their proto JSON names so grpc-gateway decodes the
+	// repeated CloudMetricsGroup enum (#1081). Omitted when empty so a
+	// host-only call stays byte-identical to the pre-groups request and
+	// lets the server apply its host default.
+	if len(groups) > 0 {
+		groupNames := make([]string, 0, len(groups))
+		for _, g := range groups {
+			groupNames = append(groupNames, g.String())
+		}
+		body["groups"] = groupNames
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/system/metrics-export", body)
 	if err != nil {

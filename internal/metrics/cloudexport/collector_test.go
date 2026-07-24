@@ -132,6 +132,9 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 		MetricDiskUsed:       {isInt: true, ival: 100 << 30},
 		MetricDiskTotal:      {isInt: true, ival: 500 << 30},
 		MetricContainerCount: {isInt: true, ival: 7},
+		// Heartbeat/up series (#1072): constant 1, emitted alongside the
+		// host series every tick.
+		MetricHeartbeat: {isInt: true, ival: 1},
 	}
 
 	if len(got) != len(golden) {
@@ -162,6 +165,109 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 	}
 }
 
+// collectGroupsOnce stands up a ManualReader-backed MeterProvider for a
+// specific set of enabled groups and pulls one collection, so the
+// per-group golden can assert exactly which series each group emits.
+func collectGroupsOnce(t *testing.T, groups []pb.CloudMetricsGroup, sources Sources, labels Labels) metricdata.ResourceMetrics {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{Sources: sources, Labels: labels, Groups: groups})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	return rm
+}
+
+// TestExportedSeries_PerGroupGolden is the #1081 per-group golden: it
+// pins the exact set of series names each combination of enabled groups
+// emits, so the billed sample surface stays reviewable in one file (the
+// #1070 rule, now scoped per group). host emits the eight-series #1070
+// allowlist; container and platform are reserved by #1081 (their series
+// land in #1071/#1072 and #1082/#1083/#1084 respectively) so they add
+// nothing yet — enabling them today is a deliberate, zero-series opt-in.
+// Any drift in what a group exports fails here.
+//
+// The heartbeat/up series (#1072) is deliberately NOT a group: it is
+// registered unconditionally by buildMeterProvider, independent of which
+// groups are enabled, so it accompanies every combination below —
+// including the reserved-only cases, which therefore emit the heartbeat
+// alone rather than nothing. Each want set below lists the group-specific
+// series; the harness adds the always-on heartbeat before asserting.
+func TestExportedSeries_PerGroupGolden(t *testing.T) {
+	host := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST
+	container := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+
+	hostSeries := []string{
+		MetricCPULoad1m, MetricCPULoad5m, MetricCPULoad15m,
+		MetricMemoryUsed, MetricMemoryTotal,
+		MetricDiskUsed, MetricDiskTotal, MetricContainerCount,
+	}
+
+	tests := []struct {
+		name   string
+		groups []pb.CloudMetricsGroup
+		want   []string
+	}{
+		{"default (nil) is host", nil, hostSeries},
+		{"host only", []pb.CloudMetricsGroup{host}, hostSeries},
+		{"container reserved, no series", []pb.CloudMetricsGroup{container}, nil},
+		{"platform reserved, no series", []pb.CloudMetricsGroup{platform}, nil},
+		{"host and platform is host series", []pb.CloudMetricsGroup{host, platform}, hostSeries},
+		{"host and container is host series", []pb.CloudMetricsGroup{host, container}, hostSeries},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rm := collectGroupsOnce(t, tc.groups, &fakeSources{sr: sampleResources()}, sampleLabels())
+			pts := flattenGauges(t, rm)
+
+			got := map[string]bool{}
+			for _, p := range pts {
+				if got[p.name] {
+					t.Fatalf("series %q emitted more than once", p.name)
+				}
+				got[p.name] = true
+			}
+
+			wantSet := map[string]bool{}
+			for _, n := range tc.want {
+				wantSet[n] = true
+			}
+			// The heartbeat rides every collector regardless of groups
+			// (registered unconditionally by buildMeterProvider, #1072),
+			// so it is part of the emitted set for every case here.
+			wantSet[MetricHeartbeat] = true
+
+			if len(got) != len(wantSet) {
+				var names []string
+				for n := range got {
+					names = append(names, n)
+				}
+				sort.Strings(names)
+				t.Fatalf("groups %v emitted %d series %v, want exactly %d", tc.groups, len(got), names, len(wantSet))
+			}
+			for n := range wantSet {
+				if !got[n] {
+					t.Errorf("groups %v missing expected series %q", tc.groups, n)
+				}
+			}
+			for n := range got {
+				if !wantSet[n] {
+					t.Errorf("groups %v emitted unexpected series %q", tc.groups, n)
+				}
+			}
+		})
+	}
+}
+
 // TestNoTenantLabels asserts every emitted series carries exactly the
 // three allowlisted labels and nothing else — no org/tenant identifier —
 // even when a hostile Sources snapshot exists. The labels come from the
@@ -174,14 +280,26 @@ func TestNoTenantLabels(t *testing.T) {
 		t.Fatal("no series emitted")
 	}
 
-	allowed := map[string]string{
+	// Per-series allowlist: host series carry backend_id/hostname/region;
+	// the heartbeat carries backend_id/hostname/daemon_version. Neither
+	// may carry any org/tenant identifier.
+	hostAllowed := map[string]string{
 		LabelBackendID: "backend-xyz",
 		LabelHostname:  "host-1",
 		LabelRegion:    "us-central1",
 	}
+	heartbeatAllowed := map[string]string{
+		LabelBackendID:     "backend-xyz",
+		LabelHostname:      "host-1",
+		LabelDaemonVersion: "", // sampleLabels leaves DaemonVersion empty; value asserted in TestHeartbeatLabels.
+	}
 	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid"}
 
 	for _, p := range pts {
+		allowed := hostAllowed
+		if p.name == MetricHeartbeat {
+			allowed = heartbeatAllowed
+		}
 		iter := p.attrs.Iter()
 		seen := map[string]bool{}
 		for iter.Next() {
@@ -208,25 +326,42 @@ func TestNoTenantLabels(t *testing.T) {
 	}
 }
 
+// hostSeriesCount counts emitted series that are not the heartbeat — the
+// host gauges whose values come from Sources.
+func hostSeriesCount(pts []point) int {
+	n := 0
+	for _, p := range pts {
+		if p.name != MetricHeartbeat {
+			n++
+		}
+	}
+	return n
+}
+
 // TestSourceErrorSkipsTickWithoutPanic asserts that a Sources error mid-
-// tick is skipped cleanly: no panic, no crash, and no series emitted for
-// that tick (so no stale values reach the cloud).
+// tick is skipped cleanly: no panic, no crash, and no host series emitted
+// for that tick (so no stale values reach the cloud). The heartbeat, which
+// does not depend on Sources, still emits — a Sources error is not daemon
+// death and must not trip the dead-man alert.
 func TestSourceErrorSkipsTickWithoutPanic(t *testing.T) {
 	rm := collectOnce(t, &fakeSources{err: errors.New("incus unavailable")}, sampleLabels())
 	pts := flattenGauges(t, rm)
-	if len(pts) != 0 {
-		t.Fatalf("expected no series on a Sources error, got %d", len(pts))
+	if got := hostSeriesCount(pts); got != 0 {
+		t.Fatalf("expected no host series on a Sources error, got %d", got)
 	}
+	heartbeatOf(t, pts) // heartbeat still present; fails if absent.
 }
 
 // TestNilSnapshotSkipsTick guards the nil-without-error edge: a Sources
-// that returns (nil, nil) is skipped, not dereferenced.
+// that returns (nil, nil) is skipped, not dereferenced — again without
+// suppressing the Sources-independent heartbeat.
 func TestNilSnapshotSkipsTick(t *testing.T) {
 	rm := collectOnce(t, &fakeSources{sr: nil}, sampleLabels())
 	pts := flattenGauges(t, rm)
-	if len(pts) != 0 {
-		t.Fatalf("expected no series on a nil snapshot, got %d", len(pts))
+	if got := hostSeriesCount(pts); got != 0 {
+		t.Fatalf("expected no host series on a nil snapshot, got %d", got)
 	}
+	heartbeatOf(t, pts) // heartbeat still present; fails if absent.
 }
 
 // recordingExporter is a fake sdkmetric.Exporter that counts Export
@@ -282,9 +417,11 @@ func TestEnableDisableRebuild(t *testing.T) {
 	if exp.exports == 0 {
 		t.Fatal("expected at least one export after ForceFlush")
 	}
-	if got := len(flattenGauges(t, exp.last)); got != 8 {
-		t.Fatalf("expected 8 host series exported, got %d", got)
+	exported := flattenGauges(t, exp.last)
+	if got := len(exported); got != 9 {
+		t.Fatalf("expected 9 series exported (8 host + heartbeat), got %d", got)
 	}
+	heartbeatOf(t, exported) // the heartbeat rides the same export batch.
 
 	if err := c.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)

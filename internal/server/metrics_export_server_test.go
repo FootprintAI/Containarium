@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -411,6 +412,167 @@ func TestSetMetricsExport_NoSinkRegistered_Unimplemented(t *testing.T) {
 	})
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("error = %v, want Unimplemented", err)
+	}
+}
+
+// groupSet turns an unordered slice of groups into a set for
+// order-independent comparison in the group assertions below.
+func groupSet(groups []pb.CloudMetricsGroup) map[pb.CloudMetricsGroup]bool {
+	m := map[pb.CloudMetricsGroup]bool{}
+	for _, g := range groups {
+		m[g] = true
+	}
+	return m
+}
+
+// TestSetMetricsExport_EmptyGroupsDefaultsHost pins the backward-compat
+// acceptance criterion: enabling without naming any groups keeps today's
+// behavior — the effective set is [HOST] on both the enable response and
+// a follow-up status read.
+func TestSetMetricsExport_EmptyGroupsDefaultsHost(t *testing.T) {
+	s, _ := newMetricsExportTestServer(nil)
+
+	resp, err := s.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{
+		Enabled:  true,
+		Provider: pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP,
+		// Groups intentionally omitted.
+	})
+	if err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	wantHost := []pb.CloudMetricsGroup{pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST}
+	if !reflect.DeepEqual(resp.Groups, wantHost) {
+		t.Errorf("enable response groups = %v, want %v", resp.Groups, wantHost)
+	}
+
+	statusResp, err := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !reflect.DeepEqual(statusResp.Groups, wantHost) {
+		t.Errorf("status groups = %v, want %v", statusResp.Groups, wantHost)
+	}
+}
+
+// TestSetMetricsExport_EnablesExactlyRequestedGroups covers the headline
+// #1081 acceptance criterion: --groups host,platform enables exactly
+// those two groups (typed on the wire), reflected on the enable response
+// and the status read.
+func TestSetMetricsExport_EnablesExactlyRequestedGroups(t *testing.T) {
+	s, _ := newMetricsExportTestServer(nil)
+
+	want := groupSet([]pb.CloudMetricsGroup{
+		pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST,
+		pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM,
+	})
+
+	resp, err := s.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{
+		Enabled:  true,
+		Provider: pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP,
+		Groups: []pb.CloudMetricsGroup{
+			pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM,
+			pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST,
+		},
+	})
+	if err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if got := groupSet(resp.Groups); !reflect.DeepEqual(got, want) {
+		t.Errorf("enable response groups = %v, want %v", resp.Groups, want)
+	}
+
+	statusResp, err := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if got := groupSet(statusResp.Groups); !reflect.DeepEqual(got, want) {
+		t.Errorf("status groups = %v, want %v", statusResp.Groups, want)
+	}
+}
+
+// TestSetMetricsExport_RejectsInvalidGroups pins the typed-input guard: a
+// request naming CLOUD_METRICS_GROUP_UNSPECIFIED (or an out-of-range
+// value) is rejected with InvalidArgument before anything is persisted.
+func TestSetMetricsExport_RejectsInvalidGroups(t *testing.T) {
+	s, _ := newMetricsExportTestServer(nil)
+
+	_, err := s.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{
+		Enabled:  true,
+		Provider: pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP,
+		Groups: []pb.CloudMetricsGroup{
+			pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_UNSPECIFIED,
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("error = %v, want InvalidArgument", err)
+	}
+
+	// Nothing persisted: status still reports disabled.
+	statusResp, statusErr := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if statusErr != nil {
+		t.Fatalf("status: %v", statusErr)
+	}
+	if statusResp.Enabled {
+		t.Errorf("export enabled after a rejected groups request, want disabled")
+	}
+}
+
+// TestSetMetricsExport_GroupsPersistAndResume pins that the enabled
+// groups survive a daemon restart exactly like the enable toggle: enable
+// [host,platform] on one server persists to the store; a fresh server
+// sharing that store resumes with both groups.
+func TestSetMetricsExport_GroupsPersistAndResume(t *testing.T) {
+	kv := &fakeDaemonConfigKV{}
+
+	first, _ := newMetricsExportTestServer(nil)
+	first.daemonConfigStore = kv
+	if _, err := first.SetMetricsExport(testCtx(), &pb.SetMetricsExportRequest{
+		Enabled:  true,
+		Provider: pb.CloudMetricsProvider_CLOUD_METRICS_PROVIDER_GCP,
+		Groups: []pb.CloudMetricsGroup{
+			pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST,
+			pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM,
+		},
+	}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	restarted, _ := newMetricsExportTestServer(nil)
+	restarted.daemonConfigStore = kv
+	restarted.StartMetricsExportIfEnabled(context.Background())
+
+	got, err := restarted.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("status after resume: %v", err)
+	}
+	want := groupSet([]pb.CloudMetricsGroup{
+		pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST,
+		pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM,
+	})
+	if gotSet := groupSet(got.Groups); !reflect.DeepEqual(gotSet, want) {
+		t.Errorf("resumed groups = %v, want %v", got.Groups, want)
+	}
+}
+
+// TestGetMetricsExport_V060ConfigDefaultsHost pins the JSON
+// compatibility path: a config persisted by v0.60.0 (no groups field)
+// reports [HOST] rather than an empty group set.
+func TestGetMetricsExport_V060ConfigDefaultsHost(t *testing.T) {
+	kv := &fakeDaemonConfigKV{}
+	kv.m = map[string]string{
+		cloudexport.ConfigStoreKey: `{"enabled":true,"provider":1,"interval_seconds":60}`,
+	}
+
+	s, _ := newMetricsExportTestServer(nil)
+	s.daemonConfigStore = kv
+
+	got, err := s.GetMetricsExport(testCtx(), &pb.GetMetricsExportRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	wantHost := []pb.CloudMetricsGroup{pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST}
+	if !reflect.DeepEqual(got.Groups, wantHost) {
+		t.Errorf("v0.60.0 config groups = %v, want %v", got.Groups, wantHost)
 	}
 }
 
