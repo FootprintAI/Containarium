@@ -1,0 +1,246 @@
+{
+  "displayName": "Containarium backends",
+  "labels": {
+    "containarium": "true"
+  },
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "yPos": 0, "xPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "Host CPU load (1m/5m/15m)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.cpu.load_1m\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.label.instance_id} load_1m"
+              },
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.cpu.load_5m\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.label.instance_id} load_5m"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "yPos": 0, "xPos": 6, "width": 6, "height": 4,
+        "widget": {
+          "title": "Host memory used / total",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.memory.used_bytes\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.label.instance_id} used"
+              },
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.memory.total_bytes\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.label.instance_id} total"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "yPos": 4, "xPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "Host disk used / total",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.disk.used_bytes\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.label.instance_id} used"
+              },
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.disk.total_bytes\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.label.instance_id} total"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "yPos": 4, "xPos": 6, "width": 6, "height": 4,
+        "widget": {
+          "title": "Containers + heartbeat",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.host.container.count\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.label.instance_id} containers"
+              },
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.export.heartbeat\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${metric.label.backend_id} heartbeat"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "yPos": 8, "xPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "Platform: API requests / errors by code_class",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.api.requests\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.code_class"] }
+                  }
+                },
+                "plotType": "STACKED_BAR",
+                "legendTemplate": "requests ${metric.label.code_class}"
+              },
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.api.errors\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.code_class"] }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "errors ${metric.label.code_class}"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "yPos": 8, "xPos": 6, "width": 6, "height": 4,
+        "widget": {
+          "title": "Platform: provisioning attempts / failures by operation",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.attempts\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.operation"] }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "attempts ${metric.label.operation}"
+              },
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.failures\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.operation"] }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "failures ${metric.label.operation}"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "yPos": 12, "xPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "Platform: provisioning mean duration by operation",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.provision.duration_seconds_sum\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "groupByFields": ["metric.label.operation"] }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "duration_seconds_sum rate ${metric.label.operation}"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "yPos": 12, "xPos": 6, "width": 3, "height": 4,
+        "widget": {
+          "title": "Platform: peers connected",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.peers.connected\"",
+                "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            },
+            "sparkChartView": { "sparkChartType": "SPARK_LINE" }
+          }
+        }
+      },
+      {
+        "yPos": 12, "xPos": 9, "width": 3, "height": 4,
+        "widget": {
+          "title": "Platform: per-peer tunnel state",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.tunnel.state\"",
+                    "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN", "groupByFields": ["metric.label.peer_id"] }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${metric.label.peer_id}"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}
