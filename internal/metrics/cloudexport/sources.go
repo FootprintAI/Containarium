@@ -3,6 +3,7 @@ package cloudexport
 import (
 	"context"
 
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -52,4 +53,16 @@ type Sources interface {
 	// container name. Used by the #1071 container-series collector; not
 	// consulted by the #1070 host-series pipeline.
 	AllContainerMetrics(ctx context.Context) (map[string]*pb.ContainerMetrics, error)
+}
+
+// PlatformSources is the read-side seam over platform-domain facts the
+// platform metric group (#1082/#1083/#1084) observes at each export
+// tick — a snapshot read with no server import, so the collector stays
+// unit-testable with a fake. Extended incrementally as more platform
+// series land: #1083 adds provisioning outcomes, #1084 adds peer/tunnel
+// connectivity.
+type PlatformSources interface {
+	// APIStats returns the current cumulative API request/error counters
+	// by code_class (#1082).
+	APIStats() platformstats.APISnapshot
 }

@@ -11,6 +11,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -165,13 +166,58 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 	}
 }
 
+// fakePlatformSources is a PlatformSources whose API snapshot is fully
+// controlled by the test.
+type fakePlatformSources struct {
+	api platformstats.APISnapshot
+}
+
+func (f *fakePlatformSources) APIStats() platformstats.APISnapshot {
+	return f.api
+}
+
+// flattenPoints returns every emitted datapoint (gauge OR cumulative
+// counter) as (name, value, attributes). Separate from flattenGauges
+// (which deliberately fatals on anything but a gauge, locking in that
+// the #1070 host/heartbeat series are gauge-only) because the platform
+// group's api.requests/api.errors are Int64ObservableCounters —
+// asserting on them needs a helper that accepts Sum[int64] too.
+func flattenPoints(t *testing.T, rm metricdata.ResourceMetrics) []point {
+	t.Helper()
+	var pts []point
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch g := m.Data.(type) {
+			case metricdata.Gauge[float64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, fval: dp.Value, attrs: dp.Attributes})
+				}
+			case metricdata.Gauge[int64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, ival: dp.Value, isInt: true, attrs: dp.Attributes})
+				}
+			case metricdata.Sum[int64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, ival: dp.Value, isInt: true, attrs: dp.Attributes})
+				}
+			default:
+				t.Fatalf("metric %q has unhandled data type %T", m.Name, m.Data)
+			}
+		}
+	}
+	return pts
+}
+
 // collectGroupsOnce stands up a ManualReader-backed MeterProvider for a
 // specific set of enabled groups and pulls one collection, so the
 // per-group golden can assert exactly which series each group emits.
-func collectGroupsOnce(t *testing.T, groups []pb.CloudMetricsGroup, sources Sources, labels Labels) metricdata.ResourceMetrics {
+// platformSources may be nil — the platform group registers no
+// instruments without one, matching production's "not wired yet"
+// behavior.
+func collectGroupsOnce(t *testing.T, groups []pb.CloudMetricsGroup, sources Sources, platformSources PlatformSources, labels Labels) metricdata.ResourceMetrics {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
-	c := NewCollector(CollectorOptions{Sources: sources, Labels: labels, Groups: groups})
+	c := NewCollector(CollectorOptions{Sources: sources, PlatformSources: platformSources, Labels: labels, Groups: groups})
 	mp, err := c.buildMeterProvider(reader)
 	if err != nil {
 		t.Fatalf("buildMeterProvider: %v", err)
@@ -226,7 +272,7 @@ func TestExportedSeries_PerGroupGolden(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rm := collectGroupsOnce(t, tc.groups, &fakeSources{sr: sampleResources()}, sampleLabels())
+			rm := collectGroupsOnce(t, tc.groups, &fakeSources{sr: sampleResources()}, nil, sampleLabels())
 			pts := flattenGauges(t, rm)
 
 			got := map[string]bool{}
@@ -496,5 +542,151 @@ func TestIntervalFloor(t *testing.T) {
 	c := NewCollector(CollectorOptions{IntervalSeconds: 120})
 	if got := c.interval; got != 120*time.Second {
 		t.Errorf("IntervalSeconds=120 -> interval %v, want 120s", got)
+	}
+}
+
+// samplePlatformSnapshot is a representative, non-trivial API snapshot
+// for the platform-series tests below.
+func samplePlatformSnapshot() platformstats.APISnapshot {
+	return platformstats.APISnapshot{
+		RequestsByClass: map[platformstats.CodeClass]int64{
+			platformstats.CodeClassOK:          42,
+			platformstats.CodeClassClientError: 3,
+			platformstats.CodeClassServerError: 1,
+		},
+		ErrorsByClass: map[platformstats.CodeClass]int64{
+			platformstats.CodeClassClientError: 3,
+			platformstats.CodeClassServerError: 1,
+		},
+	}
+}
+
+// pointsByNameAndClass indexes flattened points by (series name,
+// code_class label value) for easy per-class assertions.
+func pointsByNameAndClass(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		class, _ := p.attrs.Value(attribute.Key(LabelCodeClass))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][class.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_PlatformAPIHealth is #1082's acceptance criterion:
+// enabling the platform group with a wired PlatformSources emits
+// containarium.platform.api.requests/.errors, one point per code_class,
+// with the exact cumulative values the snapshot reports.
+func TestExportedSeries_PlatformAPIHealth(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{api: samplePlatformSnapshot()}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNameClass := pointsByNameAndClass(pts)
+
+	wantRequests := map[string]int64{"ok": 42, "client_error": 3, "server_error": 1}
+	for class, want := range wantRequests {
+		p, ok := byNameClass[MetricPlatformAPIRequests][class]
+		if !ok {
+			t.Fatalf("missing %s{code_class=%q}", MetricPlatformAPIRequests, class)
+		}
+		if p.ival != want {
+			t.Errorf("%s{code_class=%q} = %d, want %d", MetricPlatformAPIRequests, class, p.ival, want)
+		}
+	}
+
+	// api.errors carries only the error classes — "ok" is never an error
+	// and must not appear as a series point at all.
+	wantErrors := map[string]int64{"client_error": 3, "server_error": 1}
+	for class, want := range wantErrors {
+		p, ok := byNameClass[MetricPlatformAPIErrors][class]
+		if !ok {
+			t.Fatalf("missing %s{code_class=%q}", MetricPlatformAPIErrors, class)
+		}
+		if p.ival != want {
+			t.Errorf("%s{code_class=%q} = %d, want %d", MetricPlatformAPIErrors, class, p.ival, want)
+		}
+	}
+	if _, ok := byNameClass[MetricPlatformAPIErrors]["ok"]; ok {
+		t.Errorf("%s must not emit a code_class=ok point (ok is never an error)", MetricPlatformAPIErrors)
+	}
+}
+
+// TestExportedSeries_PlatformGroupNilSourcesEmitsNothing guards the
+// "not wired yet" default: enabling the platform group without a
+// PlatformSources must emit zero platform series, never panic.
+func TestExportedSeries_PlatformGroupNilSourcesEmitsNothing(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, nil, sampleLabels())
+	pts := flattenPoints(t, rm)
+	for _, p := range pts {
+		if p.name == MetricPlatformAPIRequests || p.name == MetricPlatformAPIErrors {
+			t.Errorf("platform series %q emitted with no PlatformSources wired", p.name)
+		}
+	}
+}
+
+// TestNoTenantLabels_PlatformSeries locks in #1082's cardinality
+// acceptance criterion: the platform API series carry exactly
+// backend_id/hostname/region/code_class and nothing else — no
+// per-route, per-user, or per-org label, even though platformstats
+// itself has no channel to supply one.
+func TestNoTenantLabels_PlatformSeries(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{api: samplePlatformSnapshot()}, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	// Enabling the platform group also emits the always-on heartbeat
+	// (buildMeterProvider registers it unconditionally, independent of
+	// groups) — it has its own label contract and its own test
+	// (TestHeartbeatLabels); only the two platform series belong here.
+	var pts []point
+	for _, p := range all {
+		if p.name == MetricPlatformAPIRequests || p.name == MetricPlatformAPIErrors {
+			pts = append(pts, p)
+		}
+	}
+	if len(pts) == 0 {
+		t.Fatal("no platform series emitted")
+	}
+
+	allowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+		// code_class value varies per point; checked separately below.
+	}
+	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path"}
+
+	for _, p := range pts {
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelCodeClass {
+				continue // value asserted by TestExportedSeries_PlatformAPIHealth
+			}
+			if wantVal, ok := allowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range allowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if !seen[LabelCodeClass] {
+			t.Errorf("series %q missing required label %q", p.name, LabelCodeClass)
+		}
 	}
 }

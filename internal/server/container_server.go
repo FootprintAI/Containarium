@@ -24,6 +24,7 @@ import (
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/integrity"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
@@ -123,6 +124,14 @@ type ContainerServer struct {
 	// level tests inject a fake that returns a collector over fake
 	// sources/exporter. nil in production (the real builder runs).
 	metricsExportBuilder func(ctx context.Context, cfg cloudexport.Config, sink cloudexport.Sink) (*cloudexport.CloudExportCollector, error)
+	// platformStats accumulates platform-domain facts (#1082 API
+	// request/error counts today; #1083/#1084 add more) for the platform
+	// metric group to observe at export tick. Recorded on the gRPC
+	// unary-interceptor hot path (DualServer wires
+	// platformstats.UnaryInterceptor over this same instance), read
+	// through cloudexport.PlatformSources by buildMetricsExportCollector.
+	// Lock-free (atomic counters inside), so no mutex needed here.
+	platformStats *platformstats.Stats
 	// localHealthCheckFn overrides localBackendHealthy's real Incus liveness
 	// probe (#920) — set by tests to simulate a wedged/unresponsive local
 	// backend without a live Incus daemon. nil in production; the real probe
@@ -281,6 +290,7 @@ func NewContainerServer(runtime string) (*ContainerServer, error) {
 		boxWriter:        newBoxWriterIfEnabled(runtime),
 		emitter:          events.NewEmitter(events.GetBus()),
 		pendingCreations: make(map[string]*PendingCreation),
+		platformStats:    platformstats.New(),
 	}, nil
 }
 

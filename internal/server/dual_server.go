@@ -27,6 +27,7 @@ import (
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/metrics"
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/pentest"
@@ -304,13 +305,26 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 		grpcServer = grpc.NewServer(
 			grpc.Creds(creds),
-			grpc.UnaryInterceptor(auth.RequireMTLSUnaryInterceptor()),
+			// Auth interceptor runs OUTER (first): a call mTLS rejects
+			// never reaches the platform-stats interceptor, so
+			// unauthenticated noise never pollutes the platform.api.*
+			// series (#1082) — those series are meant to reflect
+			// application-level API health, not authentication traffic.
+			grpc.ChainUnaryInterceptor(
+				auth.RequireMTLSUnaryInterceptor(),
+				platformstats.UnaryInterceptor(containerServer.platformStats),
+			),
 			grpc.StreamInterceptor(auth.RequireMTLSStreamInterceptor()),
 		)
 		log.Printf("gRPC server: mTLS enabled (interceptor verifies peer cert on every call)")
 	} else {
 		grpcServer = grpc.NewServer(
-			grpc.UnaryInterceptor(authMiddleware.GRPCUnaryInterceptor()),
+			// Same ordering rationale as the mTLS branch above: auth
+			// outer, platform-stats inner.
+			grpc.ChainUnaryInterceptor(
+				authMiddleware.GRPCUnaryInterceptor(),
+				platformstats.UnaryInterceptor(containerServer.platformStats),
+			),
 			grpc.StreamInterceptor(authMiddleware.GRPCStreamInterceptor()),
 		)
 		log.Printf("WARNING: gRPC server running in INSECURE mode")

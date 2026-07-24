@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -47,6 +48,15 @@ const (
 	// partitioned) that host-local alerting cannot report on because it
 	// fate-shares with the host.
 	MetricHeartbeat = "containarium.export.heartbeat"
+
+	// MetricPlatformAPIRequests / MetricPlatformAPIErrors are the
+	// platform group's API-health series (#1082): cumulative counts of
+	// completed API calls (native gRPC + REST-via-grpc-gateway, both
+	// converge on the same interceptor), by coarse code_class. Requests
+	// counts every completed call; errors counts only the client_error
+	// and server_error classes.
+	MetricPlatformAPIRequests = "containarium.platform.api.requests"
+	MetricPlatformAPIErrors   = "containarium.platform.api.errors"
 )
 
 // Label keys — the complete allowlist. No org/tenant identifier ever
@@ -61,6 +71,11 @@ const (
 	// series) with the daemon build, so a dead-man alert makes clear which
 	// version stopped reporting.
 	LabelDaemonVersion = "daemon_version"
+	// LabelCodeClass tags the platform API series with their coarse
+	// outcome bucket (platformstats.CodeClass) — the deliberately small,
+	// fixed-cardinality dimension the design uses instead of a raw route
+	// or gRPC code, which would blow up the billed cost surface.
+	LabelCodeClass = "code_class"
 )
 
 // Labels is the fixed identity stamped on every exported series. These
@@ -97,10 +112,28 @@ func (l Labels) heartbeatAttributeSet() attribute.Set {
 	)
 }
 
+// platformAttributeSet is the platform API-health label set (backend_id,
+// hostname, region, code_class) — the host-series identity plus the
+// per-point outcome class.
+func (l Labels) platformAttributeSet(class platformstats.CodeClass) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelRegion, l.Region),
+		attribute.String(LabelCodeClass, string(class)),
+	)
+}
+
 // CollectorOptions are the construction inputs for a CloudExportCollector.
 type CollectorOptions struct {
 	// Sources is the seam over the daemon's metric collection. Required.
 	Sources Sources
+	// PlatformSources is the read-side seam over platform-domain facts
+	// (#1082/#1083/#1084). Optional — nil means the platform group, if
+	// enabled, registers no instruments (the same "reserved" behavior
+	// container/platform had before any of those issues landed), rather
+	// than erroring.
+	PlatformSources PlatformSources
 	// Exporter is the OTel SDK metric exporter to push batches through
 	// (a provider Sink's NewExporter result in production, a fake in
 	// tests). Required.
@@ -180,13 +213,14 @@ func (h *healthExporter) Export(ctx context.Context, rm *metricdata.ResourceMetr
 // cost surface, and keeping it isolated makes that surface explicit and
 // reviewable in one file.
 type CloudExportCollector struct {
-	sources  Sources
-	exporter sdkmetric.Exporter
-	resource *resource.Resource
-	labels   Labels
-	interval time.Duration
-	groups   []pb.CloudMetricsGroup
-	health   *healthState
+	sources         Sources
+	platformSources PlatformSources
+	exporter        sdkmetric.Exporter
+	resource        *resource.Resource
+	labels          Labels
+	interval        time.Duration
+	groups          []pb.CloudMetricsGroup
+	health          *healthState
 
 	mu      sync.Mutex
 	mp      *sdkmetric.MeterProvider
@@ -201,13 +235,14 @@ func NewCollector(opts CollectorOptions) *CloudExportCollector {
 		interval = floor
 	}
 	return &CloudExportCollector{
-		sources:  opts.Sources,
-		exporter: opts.Exporter,
-		resource: opts.Resource,
-		labels:   opts.Labels,
-		interval: interval,
-		groups:   NormalizeGroups(opts.Groups),
-		health:   &healthState{},
+		sources:         opts.Sources,
+		platformSources: opts.PlatformSources,
+		exporter:        opts.Exporter,
+		resource:        opts.Resource,
+		labels:          opts.Labels,
+		interval:        interval,
+		groups:          NormalizeGroups(opts.Groups),
+		health:          &healthState{},
 	}
 }
 
@@ -280,7 +315,7 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
 	for _, g := range c.groups {
-		if err := registerGroupInstruments(mp, g, c.sources, c.labels); err != nil {
+		if err := registerGroupInstruments(mp, g, c.sources, c.platformSources, c.labels); err != nil {
 			return nil, err
 		}
 	}
@@ -292,11 +327,11 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 
 // registerGroupInstruments registers exactly the instruments belonging
 // to one metric group (#1081). This is the single dispatch point new
-// groups plug into: host registers the #1070 allowlist; container and
-// platform are reserved enableable groups whose series land in
-// #1071/#1072 and #1082/#1083/#1084 — until then they register nothing,
-// so enabling them is a deliberate zero-series opt-in rather than a
-// no-such-group error. Groups are normalized before they reach here, so
+// groups plug into: host registers the #1070 allowlist; container is
+// still reserved (per-container series land in #1071); platform
+// registers the #1082 API-health series when a PlatformSources is
+// wired, and nothing otherwise (#1083/#1084 add more platform series to
+// the same dispatch). Groups are normalized before they reach here, so
 // UNSPECIFIED never arrives; an unknown value is a programming error.
 //
 // Note the heartbeat is deliberately NOT a group: it is registered
@@ -304,7 +339,7 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 // whatever groups are enabled, because the dead-man signal must never be
 // gated by group selection or a Sources error (see
 // registerHeartbeatInstrument).
-func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, labels Labels) error {
+func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, platformSources PlatformSources, labels Labels) error {
 	switch group {
 	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST:
 		return registerHostInstruments(mp, sources, labels)
@@ -312,11 +347,53 @@ func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetrics
 		// Reserved: per-container series land in #1071/#1072.
 		return nil
 	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM:
-		// Reserved: platform series land in #1082/#1083/#1084.
-		return nil
+		if platformSources == nil {
+			// Not wired (e.g. an older daemon build, or a test that
+			// doesn't need it) — deliberate zero-series opt-in, same as
+			// the pre-#1082 "reserved" behavior, never an error.
+			return nil
+		}
+		return registerPlatformInstruments(mp, platformSources, labels)
 	default:
 		return fmt.Errorf("cloudexport: unregisterable metric group %v", group)
 	}
+}
+
+// registerPlatformInstruments creates the platform group's API-health
+// counters (#1082) and wires one callback that pulls a single
+// APISnapshot per tick and observes both series, one point per
+// code_class. Counters, not gauges: OTel async-counter semantics expect
+// the current cumulative total on every observation (platformstats.Stats
+// already accumulates for the daemon's lifetime), which is exactly what
+// APISnapshot reports.
+func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSources, labels Labels) error {
+	meter := mp.Meter(meterName)
+
+	requests, err := meter.Int64ObservableCounter(MetricPlatformAPIRequests,
+		metric.WithDescription("Cumulative count of completed API requests (gRPC + REST-via-gateway), by coarse outcome class."))
+	if err != nil {
+		return err
+	}
+	apiErrors, err := meter.Int64ObservableCounter(MetricPlatformAPIErrors,
+		metric.WithDescription("Cumulative count of completed API requests that resulted in a client or server error, by coarse outcome class."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			snap := sources.APIStats()
+			for class, n := range snap.RequestsByClass {
+				o.ObserveInt64(requests, n, metric.WithAttributeSet(labels.platformAttributeSet(class)))
+			}
+			for class, n := range snap.ErrorsByClass {
+				o.ObserveInt64(apiErrors, n, metric.WithAttributeSet(labels.platformAttributeSet(class)))
+			}
+			return nil
+		},
+		requests, apiErrors,
+	)
+	return err
 }
 
 // registerHeartbeatInstrument creates the heartbeat/up gauge (#1072) and
