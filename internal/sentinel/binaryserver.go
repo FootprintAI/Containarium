@@ -107,6 +107,15 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	mux.Handle("/sentinel/peer-cert", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PeerCertHandler()))
 	mux.Handle("/sentinel/fetch-release", auth.SentinelHMACMiddleware(manager.hmacSecret, fetchReleaseHandler(binaryPath)))
 
+	// Event-driven SSH key resync — a daemon calls this the moment its
+	// host-side authorized_keys set changes, so a freshly created box is
+	// SSH-reachable immediately instead of waiting up to a full keysync
+	// tick (cloud #971). Gated by the same daemon HMAC secret that
+	// authenticates the sentinel's own /authorized-keys pull; it triggers
+	// that pull rather than accepting key material, so it grants no
+	// authority the caller doesn't already have.
+	mux.Handle("/sentinel/keys/resync", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.KeyResyncHandler()))
+
 	// Runtime tunnel-token registration — gated by the separate
 	// admin secret (CONTAINARIUM_SENTINEL_ADMIN_SECRET), not the
 	// cluster-wide daemon HMAC secret. See TunnelTokenRegisterHandler.

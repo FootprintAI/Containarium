@@ -565,6 +565,17 @@ func (p *PeerPool) LocalBackendID() string {
 	return p.localBackendID
 }
 
+// SentinelURL returns the sentinel base URL this daemon was configured with
+// (e.g. "http://10.128.0.5:8888"), or "" when none was set. Nil-safe so
+// callers on an unwired daemon (standalone, tests) can treat "no sentinel"
+// as "nothing to notify".
+func (p *PeerPool) SentinelURL() string {
+	if p == nil {
+		return ""
+	}
+	return p.sentinelURL
+}
+
 // IdentitySigner returns the daemon's node identity key (the
 // sentinel-issued peer leaf) as a crypto.Signer plus the leaf cert
 // PEM, for signing the integrity self-measurement (#683). Returns

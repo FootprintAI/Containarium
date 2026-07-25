@@ -114,6 +114,14 @@ type Manager struct {
 	certStore       *CertStore
 	keyStore        *KeyStore
 
+	// keyResyncGates serializes event-driven key resyncs per backend so a
+	// burst of container creates collapses into the minimum number of
+	// upstream pulls without any caller's key being skipped (cloud #971).
+	// Lazily populated by resyncGate; keyResyncMu guards the map only, not
+	// the per-backend gate locks inside it.
+	keyResyncMu    sync.Mutex
+	keyResyncGates map[string]*keyResyncGate
+
 	// Tunnel/hybrid mode: ConnMux-based HTTPS handling
 	httpsDispatch *dispatchListener // from ConnMux, dispatches to proxy or maintenance
 

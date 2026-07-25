@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A box is now SSH-reachable as soon as it reports RUNNING** — the
+  sentinel learned about a box's SSH key only by polling each backend's
+  `/authorized-keys` on a 2-minute ticker, so a box created just after a
+  tick was RUNNING while sshpiper had no pipe for it and SSH answered
+  `Permission denied (publickey)` for up to two minutes (~50s typical).
+  Anything that trusted RUNNING as "ready" — CI, agents, the documented
+  create→ssh flow — failed its first connection attempts. The daemon now
+  calls a new HMAC-gated `POST /sentinel/keys/resync` whenever its
+  host-side key set changes (container create/delete, `AddSSHKey`,
+  `RemoveSSHKey`), and the sentinel re-pulls that backend's keys and
+  rewrites the sshpiper routing table immediately. Concurrent resyncs for
+  one backend coalesce on "a pull that started after this request
+  arrived", which is guaranteed to include the caller's key — never a
+  time-based skip, which is what would reintroduce the bug. The periodic
+  sync is unchanged and remains the convergence backstop, so a lost or
+  refused notification costs the old latency rather than reachability.
+  Revoked keys likewise stop routing at revocation instead of up to two
+  minutes later.
+
 ## [0.60.0] - 2026-07-23
 
 ### Added
