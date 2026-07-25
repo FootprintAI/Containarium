@@ -225,6 +225,18 @@ message EnrollHostRequest {
   // proxy keys on. The cloud records it to map a container's backend id
   // back to this host. Empty if not (yet) a peer-proxy-routed BYOC backend.
   string oss_backend_id = 3;
+
+  // adopt_foreign acknowledges that this host already runs cloud-managed
+  // containers belonging to OTHER organizations, and enrolls it anyway
+  // (cloud #1006). Default false: the cloud REFUSES such a host with
+  // FailedPrecondition rather than silently claiming it around the existing
+  // residents. Set by `containarium cloud enroll --adopt-foreign`.
+  //
+  // The check runs control-plane-side — the cloud probes this host's daemon
+  // over the sentinel peer-proxy and reads the containers' `cloud_org_id`
+  // labels itself, so the host cannot under-report. The cloud records the
+  // override on its host audit trail.
+  bool adopt_foreign = 4;
 }
 
 message EnrollHostResponse {
