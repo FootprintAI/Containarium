@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live host load per backend in `list_backends` / `GET /v1/backends`** —
+  `BackendInfo` gains a `host_load` block: 1/5/15-minute CPU load averages
+  with the host's core count as the denominator, memory used vs total, disk
+  used vs total, and the sample timestamp. Covers the local daemon and every
+  healthy tunnel-connected peer, so BYOC hosts — which previously had no
+  load signal anywhere in the product — report load like any other backend.
+  Surfaced in `containarium backends list` / `backends get` (new CPU LOAD /
+  MEM / DISK columns) and in the `list_backends` MCP tool.
+
+  No new measurement or transport: `GetSystemInfo` already carried these
+  figures and `ListBackends` already fetched it for the local backend and
+  forwarded it to each peer — the projection into `BackendInfo` was the
+  missing step, which is why capacity and committed sums were visible while
+  actual load was not. This rides the peer fan-out rather than the
+  per-container driver path, so it is independent of BYOC container-metrics
+  work.
+
+  `host_load` is **null, never zeroed**, when no usable sample exists (probe
+  failed, peer unreachable). A host we could not measure must not render as
+  an idle one — that indistinguishability is what made placement decisions
+  blind. Used-byte figures are clamped to `[0, total]` because used and
+  available come from separate probes and a skewed read could otherwise
+  surface a negative "bytes in use".
+
 ### Fixed
 
 - **A box is now SSH-reachable as soon as it reports RUNNING** — the

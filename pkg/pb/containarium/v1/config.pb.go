@@ -2919,8 +2919,19 @@ type BackendInfo struct {
 	// profile has been recorded yet. Lets the control plane place work by
 	// measured class rather than self-reported class alone. See #681.
 	CapabilityProfile *CapabilityProfile `protobuf:"bytes,12,opt,name=capability_profile,json=capabilityProfile,proto3" json:"capability_profile,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// What this host is actually doing right now — measured CPU load, memory
+	// and disk in use — or null when no usable sample could be taken (the
+	// probe failed, or a peer was unreachable this call). Null rather than
+	// zeros so a caller can tell "we don't know" from "idle", which is the
+	// difference between a placement decision and a guess.
+	//
+	// Distinct from the two capacity fields above, and all three are needed to
+	// answer different questions: headroom is what the host *offers*,
+	// capability_profile is what it *can* do, host_load is what it is *doing*.
+	// See cloud #966 / #547.
+	HostLoad      *HostLoad `protobuf:"bytes,13,opt,name=host_load,json=hostLoad,proto3" json:"host_load,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BackendInfo) Reset() {
@@ -3037,6 +3048,145 @@ func (x *BackendInfo) GetCapabilityProfile() *CapabilityProfile {
 	return nil
 }
 
+func (x *BackendInfo) GetHostLoad() *HostLoad {
+	if x != nil {
+		return x.HostLoad
+	}
+	return nil
+}
+
+// HostLoad is a point-in-time sample of a backend host's real resource
+// usage, taken when ListBackends was served.
+//
+// This is the "live usage" half of backend visibility: capacity and
+// committed sums say what has been *allocated* on a host, which can be
+// arbitrarily far from what it is *using*. Without this an operator cannot
+// answer "how loaded is this machine right now?" from the product at all,
+// and placement decisions are made blind to actual load.
+//
+// Every field is measured on the host itself (the same
+// GetSystemResources probe that backs GetSystemInfo), not self-reported
+// policy, so it cannot be inflated by a backend advertising optimistic
+// numbers.
+type HostLoad struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Kernel load averages over 1 / 5 / 15 minutes. Interpret against
+	// cpu_cores: load counts runnable + uninterruptible tasks, so a value at
+	// or below cpu_cores is not saturated, and I/O wait can inflate it
+	// without the CPU being busy.
+	CpuLoad_1M  float64 `protobuf:"fixed64,1,opt,name=cpu_load_1m,json=cpuLoad1m,proto3" json:"cpu_load_1m,omitempty"`
+	CpuLoad_5M  float64 `protobuf:"fixed64,2,opt,name=cpu_load_5m,json=cpuLoad5m,proto3" json:"cpu_load_5m,omitempty"`
+	CpuLoad_15M float64 `protobuf:"fixed64,3,opt,name=cpu_load_15m,json=cpuLoad15m,proto3" json:"cpu_load_15m,omitempty"`
+	// Physical CPU cores on the host — the denominator that makes the load
+	// averages comparable across differently-sized machines.
+	CpuCores int32 `protobuf:"varint,4,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
+	// RAM in use and installed, in bytes.
+	MemoryUsedBytes  int64 `protobuf:"varint,5,opt,name=memory_used_bytes,json=memoryUsedBytes,proto3" json:"memory_used_bytes,omitempty"`
+	MemoryTotalBytes int64 `protobuf:"varint,6,opt,name=memory_total_bytes,json=memoryTotalBytes,proto3" json:"memory_total_bytes,omitempty"`
+	// Disk in use and total, in bytes, for the storage backing containers.
+	DiskUsedBytes  int64 `protobuf:"varint,7,opt,name=disk_used_bytes,json=diskUsedBytes,proto3" json:"disk_used_bytes,omitempty"`
+	DiskTotalBytes int64 `protobuf:"varint,8,opt,name=disk_total_bytes,json=diskTotalBytes,proto3" json:"disk_total_bytes,omitempty"`
+	// RFC3339 timestamp of this sample. Callers should treat a sample as
+	// fresh only for as long as their own polling interval — it is measured
+	// per request, not continuously.
+	SampledAt     string `protobuf:"bytes,9,opt,name=sampled_at,json=sampledAt,proto3" json:"sampled_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostLoad) Reset() {
+	*x = HostLoad{}
+	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostLoad) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostLoad) ProtoMessage() {}
+
+func (x *HostLoad) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostLoad.ProtoReflect.Descriptor instead.
+func (*HostLoad) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *HostLoad) GetCpuLoad_1M() float64 {
+	if x != nil {
+		return x.CpuLoad_1M
+	}
+	return 0
+}
+
+func (x *HostLoad) GetCpuLoad_5M() float64 {
+	if x != nil {
+		return x.CpuLoad_5M
+	}
+	return 0
+}
+
+func (x *HostLoad) GetCpuLoad_15M() float64 {
+	if x != nil {
+		return x.CpuLoad_15M
+	}
+	return 0
+}
+
+func (x *HostLoad) GetCpuCores() int32 {
+	if x != nil {
+		return x.CpuCores
+	}
+	return 0
+}
+
+func (x *HostLoad) GetMemoryUsedBytes() int64 {
+	if x != nil {
+		return x.MemoryUsedBytes
+	}
+	return 0
+}
+
+func (x *HostLoad) GetMemoryTotalBytes() int64 {
+	if x != nil {
+		return x.MemoryTotalBytes
+	}
+	return 0
+}
+
+func (x *HostLoad) GetDiskUsedBytes() int64 {
+	if x != nil {
+		return x.DiskUsedBytes
+	}
+	return 0
+}
+
+func (x *HostLoad) GetDiskTotalBytes() int64 {
+	if x != nil {
+		return x.DiskTotalBytes
+	}
+	return 0
+}
+
+func (x *HostLoad) GetSampledAt() string {
+	if x != nil {
+		return x.SampledAt
+	}
+	return ""
+}
+
 // CapabilityProfile is a backend's hardware capability snapshot recorded at
 // join (and refreshable on demand): the hardware class derived from the host's
 // system info + GPU probe, a lightweight bounded CPU/memory micro-benchmark,
@@ -3086,7 +3236,7 @@ type CapabilityProfile struct {
 
 func (x *CapabilityProfile) Reset() {
 	*x = CapabilityProfile{}
-	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	mi := &file_containarium_v1_config_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3098,7 +3248,7 @@ func (x *CapabilityProfile) String() string {
 func (*CapabilityProfile) ProtoMessage() {}
 
 func (x *CapabilityProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[40]
+	mi := &file_containarium_v1_config_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3111,7 +3261,7 @@ func (x *CapabilityProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilityProfile.ProtoReflect.Descriptor instead.
 func (*CapabilityProfile) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{40}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *CapabilityProfile) GetCpuCores() int32 {
@@ -3226,7 +3376,7 @@ type CapabilityBenchmark struct {
 
 func (x *CapabilityBenchmark) Reset() {
 	*x = CapabilityBenchmark{}
-	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	mi := &file_containarium_v1_config_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3238,7 +3388,7 @@ func (x *CapabilityBenchmark) String() string {
 func (*CapabilityBenchmark) ProtoMessage() {}
 
 func (x *CapabilityBenchmark) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[41]
+	mi := &file_containarium_v1_config_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3251,7 +3401,7 @@ func (x *CapabilityBenchmark) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilityBenchmark.ProtoReflect.Descriptor instead.
 func (*CapabilityBenchmark) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{41}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *CapabilityBenchmark) GetCpuOpsPerSec() int64 {
@@ -3309,7 +3459,7 @@ type CapacityHeadroom struct {
 
 func (x *CapacityHeadroom) Reset() {
 	*x = CapacityHeadroom{}
-	mi := &file_containarium_v1_config_proto_msgTypes[42]
+	mi := &file_containarium_v1_config_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3321,7 +3471,7 @@ func (x *CapacityHeadroom) String() string {
 func (*CapacityHeadroom) ProtoMessage() {}
 
 func (x *CapacityHeadroom) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[42]
+	mi := &file_containarium_v1_config_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3334,7 +3484,7 @@ func (x *CapacityHeadroom) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapacityHeadroom.ProtoReflect.Descriptor instead.
 func (*CapacityHeadroom) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{42}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *CapacityHeadroom) GetAdvertised() bool {
@@ -3413,7 +3563,7 @@ type CapacityPolicy struct {
 
 func (x *CapacityPolicy) Reset() {
 	*x = CapacityPolicy{}
-	mi := &file_containarium_v1_config_proto_msgTypes[43]
+	mi := &file_containarium_v1_config_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3425,7 +3575,7 @@ func (x *CapacityPolicy) String() string {
 func (*CapacityPolicy) ProtoMessage() {}
 
 func (x *CapacityPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[43]
+	mi := &file_containarium_v1_config_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3438,7 +3588,7 @@ func (x *CapacityPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapacityPolicy.ProtoReflect.Descriptor instead.
 func (*CapacityPolicy) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{43}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *CapacityPolicy) GetWindowStartHour() int32 {
@@ -3484,7 +3634,7 @@ type BackendGPU struct {
 
 func (x *BackendGPU) Reset() {
 	*x = BackendGPU{}
-	mi := &file_containarium_v1_config_proto_msgTypes[44]
+	mi := &file_containarium_v1_config_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3496,7 +3646,7 @@ func (x *BackendGPU) String() string {
 func (*BackendGPU) ProtoMessage() {}
 
 func (x *BackendGPU) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[44]
+	mi := &file_containarium_v1_config_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3509,7 +3659,7 @@ func (x *BackendGPU) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendGPU.ProtoReflect.Descriptor instead.
 func (*BackendGPU) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{44}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *BackendGPU) GetVendor() string {
@@ -3542,7 +3692,7 @@ type ListBackendsRequest struct {
 
 func (x *ListBackendsRequest) Reset() {
 	*x = ListBackendsRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[45]
+	mi := &file_containarium_v1_config_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3554,7 +3704,7 @@ func (x *ListBackendsRequest) String() string {
 func (*ListBackendsRequest) ProtoMessage() {}
 
 func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[45]
+	mi := &file_containarium_v1_config_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3567,7 +3717,7 @@ func (x *ListBackendsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackendsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{45}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{46}
 }
 
 // ListBackendsResponse is the response from listing backends
@@ -3581,7 +3731,7 @@ type ListBackendsResponse struct {
 
 func (x *ListBackendsResponse) Reset() {
 	*x = ListBackendsResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[46]
+	mi := &file_containarium_v1_config_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3593,7 +3743,7 @@ func (x *ListBackendsResponse) String() string {
 func (*ListBackendsResponse) ProtoMessage() {}
 
 func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[46]
+	mi := &file_containarium_v1_config_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3606,7 +3756,7 @@ func (x *ListBackendsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackendsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackendsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{46}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListBackendsResponse) GetBackends() []*BackendInfo {
@@ -3631,7 +3781,7 @@ type AdvertiseCapacityRequest struct {
 
 func (x *AdvertiseCapacityRequest) Reset() {
 	*x = AdvertiseCapacityRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[47]
+	mi := &file_containarium_v1_config_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3643,7 +3793,7 @@ func (x *AdvertiseCapacityRequest) String() string {
 func (*AdvertiseCapacityRequest) ProtoMessage() {}
 
 func (x *AdvertiseCapacityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[47]
+	mi := &file_containarium_v1_config_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3656,7 +3806,7 @@ func (x *AdvertiseCapacityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdvertiseCapacityRequest.ProtoReflect.Descriptor instead.
 func (*AdvertiseCapacityRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{47}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *AdvertiseCapacityRequest) GetPolicy() *CapacityPolicy {
@@ -3678,7 +3828,7 @@ type AdvertiseCapacityResponse struct {
 
 func (x *AdvertiseCapacityResponse) Reset() {
 	*x = AdvertiseCapacityResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[48]
+	mi := &file_containarium_v1_config_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3690,7 +3840,7 @@ func (x *AdvertiseCapacityResponse) String() string {
 func (*AdvertiseCapacityResponse) ProtoMessage() {}
 
 func (x *AdvertiseCapacityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[48]
+	mi := &file_containarium_v1_config_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3703,7 +3853,7 @@ func (x *AdvertiseCapacityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdvertiseCapacityResponse.ProtoReflect.Descriptor instead.
 func (*AdvertiseCapacityResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{48}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *AdvertiseCapacityResponse) GetHeadroom() *CapacityHeadroom {
@@ -3735,7 +3885,7 @@ type WithdrawCapacityRequest struct {
 
 func (x *WithdrawCapacityRequest) Reset() {
 	*x = WithdrawCapacityRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[49]
+	mi := &file_containarium_v1_config_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3747,7 +3897,7 @@ func (x *WithdrawCapacityRequest) String() string {
 func (*WithdrawCapacityRequest) ProtoMessage() {}
 
 func (x *WithdrawCapacityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[49]
+	mi := &file_containarium_v1_config_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3760,7 +3910,7 @@ func (x *WithdrawCapacityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WithdrawCapacityRequest.ProtoReflect.Descriptor instead.
 func (*WithdrawCapacityRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{49}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *WithdrawCapacityRequest) GetDrain() bool {
@@ -3801,7 +3951,7 @@ type WithdrawCapacityResponse struct {
 
 func (x *WithdrawCapacityResponse) Reset() {
 	*x = WithdrawCapacityResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[50]
+	mi := &file_containarium_v1_config_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3813,7 +3963,7 @@ func (x *WithdrawCapacityResponse) String() string {
 func (*WithdrawCapacityResponse) ProtoMessage() {}
 
 func (x *WithdrawCapacityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[50]
+	mi := &file_containarium_v1_config_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3826,7 +3976,7 @@ func (x *WithdrawCapacityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WithdrawCapacityResponse.ProtoReflect.Descriptor instead.
 func (*WithdrawCapacityResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{50}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *WithdrawCapacityResponse) GetHeadroom() *CapacityHeadroom {
@@ -3874,7 +4024,7 @@ type GetCapacityHeadroomRequest struct {
 
 func (x *GetCapacityHeadroomRequest) Reset() {
 	*x = GetCapacityHeadroomRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[51]
+	mi := &file_containarium_v1_config_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3886,7 +4036,7 @@ func (x *GetCapacityHeadroomRequest) String() string {
 func (*GetCapacityHeadroomRequest) ProtoMessage() {}
 
 func (x *GetCapacityHeadroomRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[51]
+	mi := &file_containarium_v1_config_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3899,7 +4049,7 @@ func (x *GetCapacityHeadroomRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapacityHeadroomRequest.ProtoReflect.Descriptor instead.
 func (*GetCapacityHeadroomRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{51}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{52}
 }
 
 // GetCapacityHeadroomResponse returns the current headroom snapshot.
@@ -3912,7 +4062,7 @@ type GetCapacityHeadroomResponse struct {
 
 func (x *GetCapacityHeadroomResponse) Reset() {
 	*x = GetCapacityHeadroomResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[52]
+	mi := &file_containarium_v1_config_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3924,7 +4074,7 @@ func (x *GetCapacityHeadroomResponse) String() string {
 func (*GetCapacityHeadroomResponse) ProtoMessage() {}
 
 func (x *GetCapacityHeadroomResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[52]
+	mi := &file_containarium_v1_config_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3937,7 +4087,7 @@ func (x *GetCapacityHeadroomResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapacityHeadroomResponse.ProtoReflect.Descriptor instead.
 func (*GetCapacityHeadroomResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{52}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *GetCapacityHeadroomResponse) GetHeadroom() *CapacityHeadroom {
@@ -3966,7 +4116,7 @@ type ProfileBackendRequest struct {
 
 func (x *ProfileBackendRequest) Reset() {
 	*x = ProfileBackendRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[53]
+	mi := &file_containarium_v1_config_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3978,7 +4128,7 @@ func (x *ProfileBackendRequest) String() string {
 func (*ProfileBackendRequest) ProtoMessage() {}
 
 func (x *ProfileBackendRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[53]
+	mi := &file_containarium_v1_config_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3991,7 +4141,7 @@ func (x *ProfileBackendRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileBackendRequest.ProtoReflect.Descriptor instead.
 func (*ProfileBackendRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{53}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ProfileBackendRequest) GetBackendId() string {
@@ -4020,7 +4170,7 @@ type ProfileBackendResponse struct {
 
 func (x *ProfileBackendResponse) Reset() {
 	*x = ProfileBackendResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[54]
+	mi := &file_containarium_v1_config_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4032,7 +4182,7 @@ func (x *ProfileBackendResponse) String() string {
 func (*ProfileBackendResponse) ProtoMessage() {}
 
 func (x *ProfileBackendResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[54]
+	mi := &file_containarium_v1_config_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4045,7 +4195,7 @@ func (x *ProfileBackendResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileBackendResponse.ProtoReflect.Descriptor instead.
 func (*ProfileBackendResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{54}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ProfileBackendResponse) GetProfile() *CapabilityProfile {
@@ -4074,7 +4224,7 @@ type GetCapabilityProfileRequest struct {
 
 func (x *GetCapabilityProfileRequest) Reset() {
 	*x = GetCapabilityProfileRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[55]
+	mi := &file_containarium_v1_config_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4086,7 +4236,7 @@ func (x *GetCapabilityProfileRequest) String() string {
 func (*GetCapabilityProfileRequest) ProtoMessage() {}
 
 func (x *GetCapabilityProfileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[55]
+	mi := &file_containarium_v1_config_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4099,7 +4249,7 @@ func (x *GetCapabilityProfileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapabilityProfileRequest.ProtoReflect.Descriptor instead.
 func (*GetCapabilityProfileRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{55}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *GetCapabilityProfileRequest) GetBackendId() string {
@@ -4122,7 +4272,7 @@ type GetCapabilityProfileResponse struct {
 
 func (x *GetCapabilityProfileResponse) Reset() {
 	*x = GetCapabilityProfileResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[56]
+	mi := &file_containarium_v1_config_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4134,7 +4284,7 @@ func (x *GetCapabilityProfileResponse) String() string {
 func (*GetCapabilityProfileResponse) ProtoMessage() {}
 
 func (x *GetCapabilityProfileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[56]
+	mi := &file_containarium_v1_config_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4147,7 +4297,7 @@ func (x *GetCapabilityProfileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapabilityProfileResponse.ProtoReflect.Descriptor instead.
 func (*GetCapabilityProfileResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{56}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *GetCapabilityProfileResponse) GetProfile() *CapabilityProfile {
@@ -4216,7 +4366,7 @@ type SelfMeasurement struct {
 
 func (x *SelfMeasurement) Reset() {
 	*x = SelfMeasurement{}
-	mi := &file_containarium_v1_config_proto_msgTypes[57]
+	mi := &file_containarium_v1_config_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4228,7 +4378,7 @@ func (x *SelfMeasurement) String() string {
 func (*SelfMeasurement) ProtoMessage() {}
 
 func (x *SelfMeasurement) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[57]
+	mi := &file_containarium_v1_config_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4241,7 +4391,7 @@ func (x *SelfMeasurement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelfMeasurement.ProtoReflect.Descriptor instead.
 func (*SelfMeasurement) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{57}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *SelfMeasurement) GetHashAlgorithm() string {
@@ -4342,7 +4492,7 @@ type ProgramDigest struct {
 
 func (x *ProgramDigest) Reset() {
 	*x = ProgramDigest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[58]
+	mi := &file_containarium_v1_config_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4354,7 +4504,7 @@ func (x *ProgramDigest) String() string {
 func (*ProgramDigest) ProtoMessage() {}
 
 func (x *ProgramDigest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[58]
+	mi := &file_containarium_v1_config_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4367,7 +4517,7 @@ func (x *ProgramDigest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProgramDigest.ProtoReflect.Descriptor instead.
 func (*ProgramDigest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{58}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ProgramDigest) GetName() string {
@@ -4397,7 +4547,7 @@ type GetSelfMeasurementRequest struct {
 
 func (x *GetSelfMeasurementRequest) Reset() {
 	*x = GetSelfMeasurementRequest{}
-	mi := &file_containarium_v1_config_proto_msgTypes[59]
+	mi := &file_containarium_v1_config_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4409,7 +4559,7 @@ func (x *GetSelfMeasurementRequest) String() string {
 func (*GetSelfMeasurementRequest) ProtoMessage() {}
 
 func (x *GetSelfMeasurementRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[59]
+	mi := &file_containarium_v1_config_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4422,7 +4572,7 @@ func (x *GetSelfMeasurementRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSelfMeasurementRequest.ProtoReflect.Descriptor instead.
 func (*GetSelfMeasurementRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{59}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *GetSelfMeasurementRequest) GetBackendId() string {
@@ -4444,7 +4594,7 @@ type GetSelfMeasurementResponse struct {
 
 func (x *GetSelfMeasurementResponse) Reset() {
 	*x = GetSelfMeasurementResponse{}
-	mi := &file_containarium_v1_config_proto_msgTypes[60]
+	mi := &file_containarium_v1_config_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4456,7 +4606,7 @@ func (x *GetSelfMeasurementResponse) String() string {
 func (*GetSelfMeasurementResponse) ProtoMessage() {}
 
 func (x *GetSelfMeasurementResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_config_proto_msgTypes[60]
+	mi := &file_containarium_v1_config_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4469,7 +4619,7 @@ func (x *GetSelfMeasurementResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSelfMeasurementResponse.ProtoReflect.Descriptor instead.
 func (*GetSelfMeasurementResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_config_proto_rawDescGZIP(), []int{60}
+	return file_containarium_v1_config_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *GetSelfMeasurementResponse) GetMeasurement() *SelfMeasurement {
@@ -4673,7 +4823,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"signatures\"9\n" +
 	"#DeleteNetworkPolicySignatureRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"&\n" +
-	"$DeleteNetworkPolicySignatureResponse\"\xc6\x03\n" +
+	"$DeleteNetworkPolicySignatureResponse\"\xfe\x03\n" +
 	"\vBackendInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -4688,7 +4838,20 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x04gpus\x18\n" +
 	" \x03(\v2\x1b.containarium.v1.BackendGPUR\x04gpus\x12=\n" +
 	"\bheadroom\x18\v \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\x12Q\n" +
-	"\x12capability_profile\x18\f \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\"\x8b\x04\n" +
+	"\x12capability_profile\x18\f \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\x126\n" +
+	"\thost_load\x18\r \x01(\v2\x19.containarium.v1.HostLoadR\bhostLoad\"\xd4\x02\n" +
+	"\bHostLoad\x12\x1e\n" +
+	"\vcpu_load_1m\x18\x01 \x01(\x01R\tcpuLoad1m\x12\x1e\n" +
+	"\vcpu_load_5m\x18\x02 \x01(\x01R\tcpuLoad5m\x12 \n" +
+	"\fcpu_load_15m\x18\x03 \x01(\x01R\n" +
+	"cpuLoad15m\x12\x1b\n" +
+	"\tcpu_cores\x18\x04 \x01(\x05R\bcpuCores\x12*\n" +
+	"\x11memory_used_bytes\x18\x05 \x01(\x03R\x0fmemoryUsedBytes\x12,\n" +
+	"\x12memory_total_bytes\x18\x06 \x01(\x03R\x10memoryTotalBytes\x12&\n" +
+	"\x0fdisk_used_bytes\x18\a \x01(\x03R\rdiskUsedBytes\x12(\n" +
+	"\x10disk_total_bytes\x18\b \x01(\x03R\x0ediskTotalBytes\x12\x1d\n" +
+	"\n" +
+	"sampled_at\x18\t \x01(\tR\tsampledAt\"\x8b\x04\n" +
 	"\x11CapabilityProfile\x12\x1b\n" +
 	"\tcpu_cores\x18\x01 \x01(\x05R\bcpuCores\x12\x1b\n" +
 	"\tcpu_model\x18\x02 \x01(\tR\bcpuModel\x12,\n" +
@@ -4849,7 +5012,7 @@ func file_containarium_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
+var file_containarium_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_containarium_v1_config_proto_goTypes = []any{
 	(GPUVendor)(0),                               // 0: containarium.v1.GPUVendor
 	(GPUModel)(0),                                // 1: containarium.v1.GPUModel
@@ -4896,38 +5059,39 @@ var file_containarium_v1_config_proto_goTypes = []any{
 	(*DeleteNetworkPolicySignatureRequest)(nil),  // 42: containarium.v1.DeleteNetworkPolicySignatureRequest
 	(*DeleteNetworkPolicySignatureResponse)(nil), // 43: containarium.v1.DeleteNetworkPolicySignatureResponse
 	(*BackendInfo)(nil),                          // 44: containarium.v1.BackendInfo
-	(*CapabilityProfile)(nil),                    // 45: containarium.v1.CapabilityProfile
-	(*CapabilityBenchmark)(nil),                  // 46: containarium.v1.CapabilityBenchmark
-	(*CapacityHeadroom)(nil),                     // 47: containarium.v1.CapacityHeadroom
-	(*CapacityPolicy)(nil),                       // 48: containarium.v1.CapacityPolicy
-	(*BackendGPU)(nil),                           // 49: containarium.v1.BackendGPU
-	(*ListBackendsRequest)(nil),                  // 50: containarium.v1.ListBackendsRequest
-	(*ListBackendsResponse)(nil),                 // 51: containarium.v1.ListBackendsResponse
-	(*AdvertiseCapacityRequest)(nil),             // 52: containarium.v1.AdvertiseCapacityRequest
-	(*AdvertiseCapacityResponse)(nil),            // 53: containarium.v1.AdvertiseCapacityResponse
-	(*WithdrawCapacityRequest)(nil),              // 54: containarium.v1.WithdrawCapacityRequest
-	(*WithdrawCapacityResponse)(nil),             // 55: containarium.v1.WithdrawCapacityResponse
-	(*GetCapacityHeadroomRequest)(nil),           // 56: containarium.v1.GetCapacityHeadroomRequest
-	(*GetCapacityHeadroomResponse)(nil),          // 57: containarium.v1.GetCapacityHeadroomResponse
-	(*ProfileBackendRequest)(nil),                // 58: containarium.v1.ProfileBackendRequest
-	(*ProfileBackendResponse)(nil),               // 59: containarium.v1.ProfileBackendResponse
-	(*GetCapabilityProfileRequest)(nil),          // 60: containarium.v1.GetCapabilityProfileRequest
-	(*GetCapabilityProfileResponse)(nil),         // 61: containarium.v1.GetCapabilityProfileResponse
-	(*SelfMeasurement)(nil),                      // 62: containarium.v1.SelfMeasurement
-	(*ProgramDigest)(nil),                        // 63: containarium.v1.ProgramDigest
-	(*GetSelfMeasurementRequest)(nil),            // 64: containarium.v1.GetSelfMeasurementRequest
-	(*GetSelfMeasurementResponse)(nil),           // 65: containarium.v1.GetSelfMeasurementResponse
-	nil,                                          // 66: containarium.v1.WithdrawCapacityResponse.FailedEntry
-	(*ResourceLimits)(nil),                       // 67: containarium.v1.ResourceLimits
-	(OSType)(0),                                  // 68: containarium.v1.OSType
+	(*HostLoad)(nil),                             // 45: containarium.v1.HostLoad
+	(*CapabilityProfile)(nil),                    // 46: containarium.v1.CapabilityProfile
+	(*CapabilityBenchmark)(nil),                  // 47: containarium.v1.CapabilityBenchmark
+	(*CapacityHeadroom)(nil),                     // 48: containarium.v1.CapacityHeadroom
+	(*CapacityPolicy)(nil),                       // 49: containarium.v1.CapacityPolicy
+	(*BackendGPU)(nil),                           // 50: containarium.v1.BackendGPU
+	(*ListBackendsRequest)(nil),                  // 51: containarium.v1.ListBackendsRequest
+	(*ListBackendsResponse)(nil),                 // 52: containarium.v1.ListBackendsResponse
+	(*AdvertiseCapacityRequest)(nil),             // 53: containarium.v1.AdvertiseCapacityRequest
+	(*AdvertiseCapacityResponse)(nil),            // 54: containarium.v1.AdvertiseCapacityResponse
+	(*WithdrawCapacityRequest)(nil),              // 55: containarium.v1.WithdrawCapacityRequest
+	(*WithdrawCapacityResponse)(nil),             // 56: containarium.v1.WithdrawCapacityResponse
+	(*GetCapacityHeadroomRequest)(nil),           // 57: containarium.v1.GetCapacityHeadroomRequest
+	(*GetCapacityHeadroomResponse)(nil),          // 58: containarium.v1.GetCapacityHeadroomResponse
+	(*ProfileBackendRequest)(nil),                // 59: containarium.v1.ProfileBackendRequest
+	(*ProfileBackendResponse)(nil),               // 60: containarium.v1.ProfileBackendResponse
+	(*GetCapabilityProfileRequest)(nil),          // 61: containarium.v1.GetCapabilityProfileRequest
+	(*GetCapabilityProfileResponse)(nil),         // 62: containarium.v1.GetCapabilityProfileResponse
+	(*SelfMeasurement)(nil),                      // 63: containarium.v1.SelfMeasurement
+	(*ProgramDigest)(nil),                        // 64: containarium.v1.ProgramDigest
+	(*GetSelfMeasurementRequest)(nil),            // 65: containarium.v1.GetSelfMeasurementRequest
+	(*GetSelfMeasurementResponse)(nil),           // 66: containarium.v1.GetSelfMeasurementResponse
+	nil,                                          // 67: containarium.v1.WithdrawCapacityResponse.FailedEntry
+	(*ResourceLimits)(nil),                       // 68: containarium.v1.ResourceLimits
+	(OSType)(0),                                  // 69: containarium.v1.OSType
 }
 var file_containarium_v1_config_proto_depIdxs = []int32{
 	6,  // 0: containarium.v1.Config.incus:type_name -> containarium.v1.IncusConfig
-	67, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
+	68, // 1: containarium.v1.Config.default_resources:type_name -> containarium.v1.ResourceLimits
 	7,  // 2: containarium.v1.Config.network:type_name -> containarium.v1.NetworkConfig
 	8,  // 3: containarium.v1.Config.storage:type_name -> containarium.v1.StorageConfig
 	9,  // 4: containarium.v1.Config.security:type_name -> containarium.v1.SecurityConfig
-	68, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
+	69, // 5: containarium.v1.Config.default_os_type:type_name -> containarium.v1.OSType
 	5,  // 6: containarium.v1.GetConfigResponse.config:type_name -> containarium.v1.Config
 	5,  // 7: containarium.v1.UpdateConfigRequest.config:type_name -> containarium.v1.Config
 	5,  // 8: containarium.v1.UpdateConfigResponse.config:type_name -> containarium.v1.Config
@@ -4947,26 +5111,27 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	37, // 22: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
 	37, // 23: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
 	37, // 24: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
-	49, // 25: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	47, // 26: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
-	45, // 27: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
-	46, // 28: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
-	48, // 29: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
-	44, // 30: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	48, // 31: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
-	47, // 32: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	47, // 33: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	66, // 34: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
-	47, // 35: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	45, // 36: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	45, // 37: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	63, // 38: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
-	62, // 39: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
-	40, // [40:40] is the sub-list for method output_type
-	40, // [40:40] is the sub-list for method input_type
-	40, // [40:40] is the sub-list for extension type_name
-	40, // [40:40] is the sub-list for extension extendee
-	0,  // [0:40] is the sub-list for field type_name
+	50, // 25: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	48, // 26: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
+	46, // 27: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
+	45, // 28: containarium.v1.BackendInfo.host_load:type_name -> containarium.v1.HostLoad
+	47, // 29: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
+	49, // 30: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
+	44, // 31: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	49, // 32: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
+	48, // 33: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	48, // 34: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	67, // 35: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
+	48, // 36: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	46, // 37: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	46, // 38: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	64, // 39: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
+	63, // 40: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
+	41, // [41:41] is the sub-list for method output_type
+	41, // [41:41] is the sub-list for method input_type
+	41, // [41:41] is the sub-list for extension type_name
+	41, // [41:41] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
@@ -4981,7 +5146,7 @@ func file_containarium_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_config_proto_rawDesc), len(file_containarium_v1_config_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   62,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

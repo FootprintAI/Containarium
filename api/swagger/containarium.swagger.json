@@ -6516,6 +6516,10 @@
         "capabilityProfile": {
           "$ref": "#/definitions/CapabilityProfile",
           "description": "The backend's hardware capability profile recorded at join (hardware\nclass, a bounded CPU/memory micro-benchmark, and region), or null when no\nprofile has been recorded yet. Lets the control plane place work by\nmeasured class rather than self-reported class alone. See #681."
+        },
+        "hostLoad": {
+          "$ref": "#/definitions/HostLoad",
+          "description": "What this host is actually doing right now — measured CPU load, memory\nand disk in use — or null when no usable sample could be taken (the\nprobe failed, or a peer was unreachable this call). Null rather than\nzeros so a caller can tell \"we don't know\" from \"idle\", which is the\ndifference between a placement decision and a guess.\n\nDistinct from the two capacity fields above, and all three are needed to\nanswer different questions: headroom is what the host *offers*,\ncapability_profile is what it *can* do, host_load is what it is *doing*.\nSee cloud #966 / #547."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
@@ -8995,6 +8999,52 @@
         }
       },
       "description": "HostCapabilityCheck is one line of the `doctor` self-check: a named probe\nwith a pass/fail + human-readable detail. Defined locally here (same field\nnumbers as the cloud's host.proto message) so the vendored actuation proto\nstays self-contained — wire-compatible without vendoring host.proto."
+    },
+    "HostLoad": {
+      "type": "object",
+      "properties": {
+        "cpuLoad1m": {
+          "type": "number",
+          "format": "double",
+          "description": "Kernel load averages over 1 / 5 / 15 minutes. Interpret against\ncpu_cores: load counts runnable + uninterruptible tasks, so a value at\nor below cpu_cores is not saturated, and I/O wait can inflate it\nwithout the CPU being busy."
+        },
+        "cpuLoad5m": {
+          "type": "number",
+          "format": "double"
+        },
+        "cpuLoad15m": {
+          "type": "number",
+          "format": "double"
+        },
+        "cpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Physical CPU cores on the host — the denominator that makes the load\naverages comparable across differently-sized machines."
+        },
+        "memoryUsedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "RAM in use and installed, in bytes."
+        },
+        "memoryTotalBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "diskUsedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Disk in use and total, in bytes, for the storage backing containers."
+        },
+        "diskTotalBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "sampledAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp of this sample. Callers should treat a sample as\nfresh only for as long as their own polling interval — it is measured\nper request, not continuously."
+        }
+      },
+      "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
     },
     "InstallPentestToolRequest": {
       "type": "object",

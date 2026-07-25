@@ -605,9 +605,15 @@ func (s *Server) registerTools() {
 			Name: "list_backends",
 			Description: "List the cluster's backend hosts (the local daemon plus any " +
 				"tunnel-connected peers). Returns id, type (local/tunnel), health, " +
-				"hostname, OS, container count, and GPU inventory per backend. Use " +
-				"this when the agent needs to reason about peer topology — e.g. " +
-				"\"which host has GPU capacity?\" or \"is peer X healthy?\".",
+				"hostname, OS, container count, GPU inventory, and live host load " +
+				"(hostLoad: 1/5/15-minute CPU load averages with the host's core " +
+				"count, plus memory and disk used vs total) per backend. Use " +
+				"this when the agent needs to reason about peer topology or current " +
+				"machine loading — e.g. \"which host has GPU capacity?\", \"is peer X " +
+				"healthy?\", or \"how loaded is this machine right now?\". A backend " +
+				"with no hostLoad block means the load is UNKNOWN (probe failed or " +
+				"peer unreachable), not that the host is idle — never read a missing " +
+				"block as spare capacity.",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},

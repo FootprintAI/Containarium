@@ -19,8 +19,13 @@ var backendsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List backend hosts (local daemon + tunnel peers)",
 	Long: `List all backend hosts registered with the platform daemon. Returns
-id, type (local/tunnel), health, hostname, OS, container count, and
-GPU inventory per backend.
+id, type (local/tunnel), health, hostname, OS, container count, live
+host load (1-minute CPU load average against core count, plus memory
+and disk in use), and GPU inventory per backend.
+
+Live load is measured on each host, including tunnel-connected BYOC
+hosts. A "-" means the daemon had no usable sample for that host —
+unknown, not idle.
 
 The /v1/backends endpoint is HTTP-only (not gRPC), so this command
 requires --server pointing at the daemon's HTTP address.`,
@@ -48,6 +53,23 @@ type backendInfo struct {
 	OS             string       `json:"os,omitempty"`
 	ContainerCount int32        `json:"containerCount"`
 	GPUs           []backendGPU `json:"gpus,omitempty"`
+	// HostLoad is what the machine is actually doing right now, or nil
+	// when the daemon had no usable sample. Nil is meaningful: it means
+	// "unknown", not "idle".
+	HostLoad *hostLoad `json:"hostLoad,omitempty"`
+}
+
+// hostLoad mirrors the BackendInfo.host_load wire shape (cloud #966).
+type hostLoad struct {
+	CPULoad1m        float64 `json:"cpuLoad1m,omitempty"`
+	CPULoad5m        float64 `json:"cpuLoad5m,omitempty"`
+	CPULoad15m       float64 `json:"cpuLoad15m,omitempty"`
+	CPUCores         int32   `json:"cpuCores,omitempty"`
+	MemoryUsedBytes  int64   `json:"memoryUsedBytes,omitempty,string"`
+	MemoryTotalBytes int64   `json:"memoryTotalBytes,omitempty,string"`
+	DiskUsedBytes    int64   `json:"diskUsedBytes,omitempty,string"`
+	DiskTotalBytes   int64   `json:"diskTotalBytes,omitempty,string"`
+	SampledAt        string  `json:"sampledAt,omitempty"`
 }
 
 type backendGPU struct {
@@ -125,9 +147,9 @@ func printBackendsTable(backends []backendInfo) {
 		fmt.Println("No backends registered (running standalone, no peers).")
 		return
 	}
-	fmt.Printf("%-40s %-8s %-10s %-25s %-10s %s\n",
-		"BACKEND ID", "TYPE", "HEALTH", "HOSTNAME", "CONTAINERS", "GPUS")
-	fmt.Println(strings.Repeat("-", 110))
+	fmt.Printf("%-40s %-8s %-10s %-25s %-10s %-10s %-6s %-6s %s\n",
+		"BACKEND ID", "TYPE", "HEALTH", "HOSTNAME", "CONTAINERS", "CPU LOAD", "MEM", "DISK", "GPUS")
+	fmt.Println(strings.Repeat("-", 140))
 	for _, b := range backends {
 		health := "✓"
 		if !b.Healthy {
@@ -145,8 +167,55 @@ func printBackendsTable(backends []backendInfo) {
 		if hostname == "" {
 			hostname = "-"
 		}
-		fmt.Printf("%-40s %-8s %-10s %-25s %-10d %s\n",
-			b.ID, b.Type, health, hostname, b.ContainerCount, gpus)
+		fmt.Printf("%-40s %-8s %-10s %-25s %-10d %-10s %-6s %-6s %s\n",
+			b.ID, b.Type, health, hostname, b.ContainerCount,
+			formatCPULoad(b.HostLoad),
+			formatUsedPercent(b.HostLoad, memoryUsage),
+			formatUsedPercent(b.HostLoad, diskUsage),
+			gpus)
 	}
 	fmt.Printf("\nTotal: %d backend(s)\n", len(backends))
+}
+
+// usageKind selects which of a host's two byte-usage pairs to render.
+type usageKind int
+
+const (
+	memoryUsage usageKind = iota
+	diskUsage
+)
+
+// formatCPULoad renders the 1-minute load average against the host's core
+// count ("6.50/8"), which is the only form in which a load average means
+// anything — the same number is idle on a 64-core host and saturated on a
+// 4-core one.
+//
+// "-" when the daemon had no usable sample. Deliberately not "0.00/0": an
+// unmeasured host must not read as an unloaded one, which is the failure
+// mode that made capacity decisions blind in the first place (cloud #966).
+func formatCPULoad(l *hostLoad) string {
+	if l == nil {
+		return "-"
+	}
+	if l.CPUCores <= 0 {
+		return fmt.Sprintf("%.2f", l.CPULoad1m)
+	}
+	return fmt.Sprintf("%.2f/%d", l.CPULoad1m, l.CPUCores)
+}
+
+// formatUsedPercent renders used-of-total as a whole-number percentage, or
+// "-" when there is no sample (or a zero total, which would divide by zero
+// and means the probe returned nothing usable anyway).
+func formatUsedPercent(l *hostLoad, kind usageKind) string {
+	if l == nil {
+		return "-"
+	}
+	used, total := l.MemoryUsedBytes, l.MemoryTotalBytes
+	if kind == diskUsage {
+		used, total = l.DiskUsedBytes, l.DiskTotalBytes
+	}
+	if total <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d%%", used*100/total)
 }

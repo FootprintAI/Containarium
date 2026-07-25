@@ -1652,6 +1652,27 @@ type Backend struct {
 	OS             string       `json:"os,omitempty"`
 	ContainerCount int32        `json:"containerCount"`
 	GPUs           []BackendGPU `json:"gpus,omitempty"`
+	// HostLoad is what this machine is actually doing right now, absent
+	// when the daemon had no usable sample (cloud #966). Absent means
+	// "unknown", not "idle" — an agent reading this must not treat a
+	// missing block as a host with spare capacity.
+	HostLoad *BackendHostLoad `json:"hostLoad,omitempty"`
+}
+
+// BackendHostLoad mirrors BackendInfo.host_load: measured live usage for one
+// backend host, including tunnel-connected BYOC hosts. Distinct from any
+// capacity/committed figure — those say what has been allocated, this says
+// what is being used.
+type BackendHostLoad struct {
+	CPULoad1m        float64   `json:"cpuLoad1m,omitempty"`
+	CPULoad5m        float64   `json:"cpuLoad5m,omitempty"`
+	CPULoad15m       float64   `json:"cpuLoad15m,omitempty"`
+	CPUCores         int32     `json:"cpuCores,omitempty"`
+	MemoryUsedBytes  flexInt64 `json:"memoryUsedBytes,omitempty"`
+	MemoryTotalBytes flexInt64 `json:"memoryTotalBytes,omitempty"`
+	DiskUsedBytes    flexInt64 `json:"diskUsedBytes,omitempty"`
+	DiskTotalBytes   flexInt64 `json:"diskTotalBytes,omitempty"`
+	SampledAt        string    `json:"sampledAt,omitempty"`
 }
 
 type BackendGPU struct {

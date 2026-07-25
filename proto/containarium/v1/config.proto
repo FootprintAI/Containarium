@@ -614,6 +614,58 @@ message BackendInfo {
   // profile has been recorded yet. Lets the control plane place work by
   // measured class rather than self-reported class alone. See #681.
   CapabilityProfile capability_profile = 12;
+
+  // What this host is actually doing right now — measured CPU load, memory
+  // and disk in use — or null when no usable sample could be taken (the
+  // probe failed, or a peer was unreachable this call). Null rather than
+  // zeros so a caller can tell "we don't know" from "idle", which is the
+  // difference between a placement decision and a guess.
+  //
+  // Distinct from the two capacity fields above, and all three are needed to
+  // answer different questions: headroom is what the host *offers*,
+  // capability_profile is what it *can* do, host_load is what it is *doing*.
+  // See cloud #966 / #547.
+  HostLoad host_load = 13;
+}
+
+// HostLoad is a point-in-time sample of a backend host's real resource
+// usage, taken when ListBackends was served.
+//
+// This is the "live usage" half of backend visibility: capacity and
+// committed sums say what has been *allocated* on a host, which can be
+// arbitrarily far from what it is *using*. Without this an operator cannot
+// answer "how loaded is this machine right now?" from the product at all,
+// and placement decisions are made blind to actual load.
+//
+// Every field is measured on the host itself (the same
+// GetSystemResources probe that backs GetSystemInfo), not self-reported
+// policy, so it cannot be inflated by a backend advertising optimistic
+// numbers.
+message HostLoad {
+  // Kernel load averages over 1 / 5 / 15 minutes. Interpret against
+  // cpu_cores: load counts runnable + uninterruptible tasks, so a value at
+  // or below cpu_cores is not saturated, and I/O wait can inflate it
+  // without the CPU being busy.
+  double cpu_load_1m = 1;
+  double cpu_load_5m = 2;
+  double cpu_load_15m = 3;
+
+  // Physical CPU cores on the host — the denominator that makes the load
+  // averages comparable across differently-sized machines.
+  int32 cpu_cores = 4;
+
+  // RAM in use and installed, in bytes.
+  int64 memory_used_bytes = 5;
+  int64 memory_total_bytes = 6;
+
+  // Disk in use and total, in bytes, for the storage backing containers.
+  int64 disk_used_bytes = 7;
+  int64 disk_total_bytes = 8;
+
+  // RFC3339 timestamp of this sample. Callers should treat a sample as
+  // fresh only for as long as their own polling interval — it is measured
+  // per request, not continuously.
+  string sampled_at = 9;
 }
 
 // CapabilityProfile is a backend's hardware capability snapshot recorded at

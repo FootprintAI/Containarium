@@ -2694,6 +2694,10 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			local.Os = sysResp.Info.Os
 			local.ContainerCount = sysResp.Info.ContainersRunning
 			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
+			// The same SystemInfo already carries the host's measured load
+			// and memory/disk usage; surface it instead of discarding it
+			// (cloud #966). Null when the probe produced nothing usable.
+			local.HostLoad = hostLoadFromSystemInfo(sysResp.Info, time.Now())
 		}
 	}
 	// Surface the local backend's spare-capacity advertisement (#680). Only
@@ -2733,6 +2737,12 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 					pi.Version = peerResp.Info.DaemonVersion
 					pi.ContainerCount = peerResp.Info.ContainersRunning
 					pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
+					// Live load for peers — including BYOC tunnel hosts,
+					// which had no load signal anywhere in the product
+					// (cloud #966). This rides the peer fan-out that
+					// already works, so it does not depend on the BYOC
+					// driver-token path that cloud #933 is stuck on.
+					pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
 				}
 			}
 		}
@@ -3280,6 +3290,56 @@ func backendGPUsFromSystemInfo(info *pb.SystemInfo) []*pb.BackendGPU {
 		})
 	}
 	return out
+}
+
+// hostLoadFromSystemInfo projects a SystemInfo's measured host sample onto
+// the BackendInfo live-usage wire shape (cloud #966 — the unshipped "live
+// usage" half of #547).
+//
+// No new measurement or transport: GetSystemInfo already carries the host's
+// load averages and memory/disk figures, and ListBackends already fetches it
+// for the local backend and forwards it to every healthy peer. This is the
+// projection that was missing, which is why capacity and committed were
+// visible while actual load was not.
+//
+// Returns nil — not a zero-valued HostLoad — when there is no usable sample.
+// GetSystemInfo swallows a failed GetSystemResources probe and substitutes an
+// empty struct, so zeros mean "the probe failed" at least as often as they
+// mean "idle", and a UI that renders 0% CPU / 0 bytes used for a struggling
+// host is worse than one that renders nothing. total_memory_bytes is the
+// discriminator: every real host has some.
+func hostLoadFromSystemInfo(info *pb.SystemInfo, sampledAt time.Time) *pb.HostLoad {
+	if info == nil || info.TotalMemoryBytes <= 0 {
+		return nil
+	}
+	return &pb.HostLoad{
+		CpuLoad_1M:       info.CpuLoad_1Min,
+		CpuLoad_5M:       info.CpuLoad_5Min,
+		CpuLoad_15M:      info.CpuLoad_15Min,
+		CpuCores:         info.TotalCpus,
+		MemoryUsedBytes:  usedFromTotalAndAvailable(info.TotalMemoryBytes, info.AvailableMemoryBytes),
+		MemoryTotalBytes: info.TotalMemoryBytes,
+		DiskUsedBytes:    usedFromTotalAndAvailable(info.TotalDiskBytes, info.AvailableDiskBytes),
+		DiskTotalBytes:   info.TotalDiskBytes,
+		SampledAt:        sampledAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// usedFromTotalAndAvailable converts the (total, available) pair SystemInfo
+// reports into the (used) figure an operator reads, clamped to [0, total].
+// The clamp matters because the two numbers come from separate probes on the
+// host: a skewed or partial read can make available exceed total, and a
+// negative "bytes in use" rendered in a dashboard reads as a product bug
+// rather than as the bad sample it is.
+func usedFromTotalAndAvailable(total, available int64) int64 {
+	used := total - available
+	if used < 0 {
+		return 0
+	}
+	if used > total {
+		return total
+	}
+	return used
 }
 
 // mapGPUVendor maps a vendor string to the proto enum.
