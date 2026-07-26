@@ -10,13 +10,47 @@
 // importable from the cross-platform internal/cloud.
 package hostcheck
 
-// Check is one capability-self-check result. Required=true means a failure
-// blocks the host from running the daemon's per-tenant user management.
+// CheckKind separates the two question types so a functional pass is never
+// mistaken for a security pass. A string rather than an int enum because it
+// crosses to the cloud inside a check name (see WireName) until the proto
+// gains a typed field.
+//
+// Declared here rather than beside the posture checks because this file has
+// no build constraint: the Windows stub build must still see the type.
+type CheckKind string
+
+const (
+	// KindCapability — "can the daemon operate here" (run.go).
+	KindCapability CheckKind = "capability"
+	// KindPosture — "is this host hardened" (posture.go).
+	KindPosture CheckKind = "posture"
+)
+
+// Check is one self-check result. Required=true means a failure blocks the
+// host from running the daemon's per-tenant user management.
 type Check struct {
 	Name     string
 	OK       bool
 	Required bool
 	Detail   string
+	// Kind separates "can the daemon operate here" (KindCapability) from
+	// "is this host hardened" (KindPosture, #1103). The zero value reads as
+	// capability so every pre-existing construction site keeps its meaning
+	// without being touched.
+	Kind CheckKind
+}
+
+// WireName is the check's name as reported to the control plane. Posture
+// checks are prefixed so the two groups stay distinguishable across a wire
+// format that currently carries only {name, ok, detail} — without it a
+// hardening warning would be indistinguishable from a capability failure in
+// the cloud's stored self-check, which is exactly the conflation #1103 is
+// about. Replace with a typed proto field when the contract gains one.
+func (c Check) WireName() string {
+	if c.Kind == KindPosture {
+		return "posture: " + c.Name
+	}
+	return c.Name
 }
 
 // AllRequiredPass reports whether every required check in cs passed. Used by

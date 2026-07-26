@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`containarium doctor` now reports host security posture**, as its own
+  advisory section alongside the existing capability checks. For BYOC the
+  machine is the customer's, from an image we did not build, so "can this
+  host run workloads" and "is it safe to run them here" are different
+  questions — and until now only the first was ever asked. The new group
+  covers data-volume encryption (dm-crypt), Secure Boot, auditd, sshd
+  hardening (`PermitRootLogin` / `PasswordAuthentication`), unattended
+  security upgrades, and whether the cloud metadata endpoint is reachable
+  from the host. The daemon reports them to the control plane through the
+  existing status probe, so a control plane records posture per host with
+  no contract change.
+
+  Two properties worth knowing. **A check that cannot gather evidence
+  reports unmet, never a pass** — the point is to distinguish what we can
+  attest from what we cannot, and a check that passed on no evidence would
+  manufacture the assurance it is supposed to establish. So an ordinary
+  unhardened host will show several unmet items, including ones that may
+  well be fine (provider-managed disk encryption, for instance, is
+  invisible from inside the guest and is reported as unobservable rather
+  than absent). **Nothing here blocks anything**: posture checks are
+  advisory, `doctor`'s exit code is unchanged, and the daemon's
+  `self_check_ok` is still derived from the capability checks alone.
+
 ### Fixed
 
 - **A box is now SSH-reachable as soon as it reports RUNNING** — the

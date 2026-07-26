@@ -51,10 +51,47 @@ func hostDoctorChecks() []hostcheck.Check { return hostcheck.Run() }
 func runDoctor(cmd *cobra.Command, args []string) error {
 	checks := hostDoctorChecks()
 	failed := printDoctor(checks)
+
+	// Host security posture (#1103), printed as its own section and NOT
+	// folded into `failed`. The separation is the point: for BYOC the
+	// machine is the customer's, so "can run workloads" and "is safe to
+	// run them on" are different questions and a functional pass must not
+	// read as a security pass. Whether a posture miss should block is an
+	// open product decision, so nothing here changes the exit code.
+	printPosture(hostcheck.RunPosture())
+
 	if failed > 0 {
 		return fmt.Errorf("doctor: %d required check(s) failed — this host cannot run the daemon's user management until fixed (see prd daemon-deploy-contract)", failed)
 	}
 	return nil
+}
+
+// printPosture renders the posture group. Returns nothing on purpose —
+// there is no count to act on, because no posture result gates anything.
+func printPosture(checks []hostcheck.Check) {
+	if len(checks) == 0 {
+		return
+	}
+	unmet := 0
+	fmt.Println()
+	fmt.Println("Host security posture (advisory — does not affect the exit code):")
+	for _, c := range checks {
+		mark := "✓"
+		if !c.OK {
+			mark = "!"
+			unmet++
+		}
+		line := fmt.Sprintf("  %s %s", mark, c.Name)
+		if c.Detail != "" {
+			line += " — " + c.Detail
+		}
+		fmt.Println(line)
+	}
+	if unmet > 0 {
+		fmt.Printf("\n  %d posture item(s) unmet or unverifiable. A check that could not gather\n"+
+			"  evidence reports unmet rather than passing, so this list is what we can and\n"+
+			"  cannot attest about this host — not a claim that each one is misconfigured.\n", unmet)
+	}
 }
 
 // logStartupSelfCheck runs the host capability self-check at daemon boot and
