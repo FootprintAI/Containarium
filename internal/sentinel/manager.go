@@ -340,7 +340,7 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		}
 		m.adminSecret = []byte(raw)
 	} else {
-		log.Printf("[sentinel] CONTAINARIUM_SENTINEL_ADMIN_SECRET is unset — /sentinel/tunnel-tokens is disabled (fresh tunnel-join tokens can only be added by restarting the sentinel with --tunnel-token-policy)")
+		log.Printf("[sentinel] WARNING: CONTAINARIUM_SENTINEL_ADMIN_SECRET is unset — /sentinel/tunnel-tokens is disabled (fresh tunnel-join tokens can only be added by restarting the sentinel with --tunnel-token-policy), AND /peer/ now rejects every request with 401 (#1102). If a control plane drives tunnel-joined backends through this sentinel, set this secret or those backends become undrivable.")
 	}
 
 	// Phase 0.5: peer-CA bootstrap. Operators provision a single
