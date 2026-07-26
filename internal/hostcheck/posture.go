@@ -115,7 +115,7 @@ func runPosture(p posturePaths) []Check {
 func diskEncryptionCheck(p posturePaths) Check {
 	c := Check{Name: "data volume encrypted (dm-crypt)"}
 
-	mounts, err := os.ReadFile(p.procMounts)
+	mounts, err := os.ReadFile(p.procMounts) // #nosec G304 -- package-owned constant (/proc/mounts), overridden only by tests
 	if err != nil {
 		c.Detail = fmt.Sprintf("could not determine: reading %s: %v", p.procMounts, err)
 		return c
@@ -126,8 +126,8 @@ func diskEncryptionCheck(p posturePaths) Check {
 		return c
 	}
 
-	dmName := strings.TrimPrefix(dev, "/dev/")
-	uuid, err := os.ReadFile(filepath.Join(p.sysBlock, dmName, "dm", "uuid"))
+	dmName := resolveDMName(dev)
+	uuid, err := os.ReadFile(filepath.Join(p.sysBlock, dmName, "dm", "uuid")) // #nosec G304,G703 -- resolveDMName Base()-bounds dmName to a single path segment so no traversal is reachable; gosec cannot see that through the call. sysBlock is a package-owned constant.
 	if err != nil {
 		// Not a device-mapper device at all — a plain partition. That is a
 		// definite negative for guest-visible encryption, not an unknown.
@@ -170,6 +170,29 @@ func deviceForPath(procMounts, target string) (device, mountPoint string) {
 	return device, mountPoint
 }
 
+// resolveDMName maps a device path from /proc/mounts to the name
+// /sys/block is keyed by.
+//
+// Not cosmetic. /sys/block uses the KERNEL name (dm-0), while /proc/mounts
+// usually carries the device-mapper ALIAS (/dev/mapper/cryptdata), a symlink
+// to it. Without resolving, /sys/block/mapper/cryptdata does not exist and
+// every LUKS host reports "not dm-crypt" — a false negative on exactly the
+// hosts that ARE encrypted, which is the worst direction for this check to be
+// wrong in. Best-effort: an unresolvable path falls through to Base and simply
+// misses, i.e. no worse than not trying.
+//
+// Base() also bounds the result to a single path segment, so a hostile
+// /proc/mounts line cannot traverse out of the sysBlock root. /proc/mounts is
+// kernel-owned so that is defence in depth, but this runs as root and the
+// bound is one call.
+func resolveDMName(dev string) string {
+	resolved := dev
+	if r, err := filepath.EvalSymlinks(dev); err == nil {
+		resolved = r
+	}
+	return filepath.Base(resolved)
+}
+
 // --- secure boot -----------------------------------------------------
 
 // secureBootCheck reads the EFI SecureBoot variable. Absence of the
@@ -195,7 +218,8 @@ func secureBootCheck(p posturePaths) Check {
 		c.Detail = "could not determine: no SecureBoot-* efivar present"
 		return c
 	}
-	raw, err := os.ReadFile(filepath.Join(p.efiVars, name))
+	// Base() bounds the ReadDir-derived name to one segment.
+	raw, err := os.ReadFile(filepath.Join(p.efiVars, filepath.Base(name))) // #nosec G304 -- efiVars is a package-owned constant; name is Base()-bounded
 	if err != nil {
 		c.Detail = fmt.Sprintf("could not determine: reading %s: %v", name, err)
 		return c
@@ -231,7 +255,7 @@ func parseSecureBootVar(raw []byte) (enabled, ok bool) {
 // in fact running auditd.
 func auditdCheck(p posturePaths) Check {
 	c := Check{Name: "auditd running"}
-	data, err := os.ReadFile(p.auditdPID)
+	data, err := os.ReadFile(p.auditdPID) // #nosec G304 -- package-owned constant (/run/auditd.pid), overridden only by tests
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.Detail = "no " + p.auditdPID + ": auditd is not running, so host-level audit trail is absent"
@@ -293,7 +317,7 @@ func sshdConfigCheck(p posturePaths) Check {
 // override the main file — get this order backwards and the check
 // reports the overridden value.
 func readSSHDConfig(mainPath, dropInDir string) (string, error) {
-	main, err := os.ReadFile(mainPath)
+	main, err := os.ReadFile(mainPath) // #nosec G304 -- mainPath is a package-owned constant (/etc/ssh/sshd_config), overridden only by tests
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", mainPath, err)
 	}
@@ -308,7 +332,7 @@ func readSSHDConfig(mainPath, dropInDir string) (string, error) {
 		}
 		sort.Strings(names) // sshd globs *.conf; lexical order is what it gets
 		for _, n := range names {
-			d, rerr := os.ReadFile(filepath.Join(dropInDir, n))
+			d, rerr := os.ReadFile(filepath.Join(dropInDir, filepath.Base(n))) // #nosec G304 -- dropInDir is a package-owned constant; n is Base()-bounded
 			if rerr != nil {
 				continue
 			}
@@ -357,7 +381,7 @@ func sshdDirective(config, key, def string) string {
 // the equivalent mechanism differs (dnf-automatic, etc.).
 func unattendedUpgradesCheck(p posturePaths) Check {
 	c := Check{Name: "unattended security upgrades enabled"}
-	data, err := os.ReadFile(p.aptPeriodic)
+	data, err := os.ReadFile(p.aptPeriodic) // #nosec G304 -- package-owned constant, overridden only by tests
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.Detail = "could not determine: " + p.aptPeriodic +

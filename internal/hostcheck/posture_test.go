@@ -129,10 +129,12 @@ tmpfs /run tmpfs rw 0 0
 }
 
 func TestDiskEncryptionCheck(t *testing.T) {
+	// /sys/block is keyed by the kernel name, so this is the shape a real
+	// host presents once the mapper alias has been resolved.
 	t.Run("dm-crypt passes", func(t *testing.T) {
 		p, _ := tempPaths(t)
-		write(t, p.procMounts, "/dev/mapper/cryptdata /var/lib/incus ext4 rw 0 0\n")
-		write(t, filepath.Join(p.sysBlock, "mapper/cryptdata/dm/uuid"), "CRYPT-LUKS2-abc123-cryptdata\n")
+		write(t, p.procMounts, "/dev/dm-0 /var/lib/incus ext4 rw 0 0\n")
+		write(t, filepath.Join(p.sysBlock, "dm-0/dm/uuid"), "CRYPT-LUKS2-abc123-cryptdata\n")
 
 		c := diskEncryptionCheck(p)
 		if !c.OK {
@@ -159,8 +161,8 @@ func TestDiskEncryptionCheck(t *testing.T) {
 
 	t.Run("non-crypt device-mapper fails", func(t *testing.T) {
 		p, _ := tempPaths(t)
-		write(t, p.procMounts, "/dev/mapper/vg-lv /var/lib/incus ext4 rw 0 0\n")
-		write(t, filepath.Join(p.sysBlock, "mapper/vg-lv/dm/uuid"), "LVM-xyz\n")
+		write(t, p.procMounts, "/dev/dm-1 /var/lib/incus ext4 rw 0 0\n")
+		write(t, filepath.Join(p.sysBlock, "dm-1/dm/uuid"), "LVM-xyz\n")
 
 		if c := diskEncryptionCheck(p); c.OK {
 			t.Errorf("plain LVM must not pass as encrypted: %s", c.Detail)
@@ -444,5 +446,44 @@ func TestRun_UnchangedByPosture(t *testing.T) {
 		if c.Kind == KindPosture {
 			t.Errorf("Run() returned posture check %q — posture belongs to RunPosture()", c.Name)
 		}
+	}
+}
+
+// TestResolveDMName is the regression test for the real-host bug that the
+// security scanner's taint warning led to. /proc/mounts carries the
+// device-mapper ALIAS (/dev/mapper/cryptdata), a symlink to the kernel name
+// (/dev/dm-0), and /sys/block only knows the latter. Without resolution every
+// LUKS host reported "not dm-crypt" — a false negative on precisely the hosts
+// that are encrypted.
+//
+// Driven directly rather than through diskEncryptionCheck because
+// deviceForPath only accepts /dev/-prefixed devices, and a test cannot create
+// symlinks under the real /dev.
+func TestResolveDMName(t *testing.T) {
+	dir := t.TempDir()
+	kernelDev := filepath.Join(dir, "dm-0")
+	aliasDir := filepath.Join(dir, "mapper")
+	aliasDev := filepath.Join(aliasDir, "cryptdata")
+	write(t, kernelDev, "")
+	if err := os.MkdirAll(aliasDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(kernelDev, aliasDev); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := resolveDMName(aliasDev), "dm-0"; got != want {
+		t.Errorf("resolveDMName(mapper alias) = %q, want %q — /sys/block is keyed by the kernel name", got, want)
+	}
+	if got, want := resolveDMName(kernelDev), "dm-0"; got != want {
+		t.Errorf("resolveDMName(kernel name) = %q, want %q", got, want)
+	}
+	// Unresolvable path: no panic, no traversal, just the last segment.
+	if got, want := resolveDMName("/dev/does-not-exist"), "does-not-exist"; got != want {
+		t.Errorf("resolveDMName(missing) = %q, want %q", got, want)
+	}
+	// Traversal attempt is bounded to one segment.
+	if got := resolveDMName("/dev/../../etc/passwd"); strings.Contains(got, "/") {
+		t.Errorf("resolveDMName must return a single path segment, got %q", got)
 	}
 }
