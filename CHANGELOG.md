@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`containarium doctor` now reports host security posture**, as its own
+  advisory section alongside the existing capability checks. For BYOC the
+  machine is the customer's, from an image we did not build, so "can this
+  host run workloads" and "is it safe to run them here" are different
+  questions — and until now only the first was ever asked. The new group
+  covers data-volume encryption (dm-crypt), Secure Boot, auditd, sshd
+  hardening (`PermitRootLogin` / `PasswordAuthentication`), unattended
+  security upgrades, and whether the cloud metadata endpoint is reachable
+  from the host. The daemon reports them to the control plane through the
+  existing status probe, so a control plane records posture per host with
+  no contract change.
+
+  Two properties worth knowing. **A check that cannot gather evidence
+  reports unmet, never a pass** — the point is to distinguish what we can
+  attest from what we cannot, and a check that passed on no evidence would
+  manufacture the assurance it is supposed to establish. So an ordinary
+  unhardened host will show several unmet items, including ones that may
+  well be fine (provider-managed disk encryption, for instance, is
+  invisible from inside the guest and is reported as unobservable rather
+  than absent). **Nothing here blocks anything**: posture checks are
+  advisory, `doctor`'s exit code is unchanged, and the daemon's
+  `self_check_ok` is still derived from the capability checks alone.
+
+### Fixed
+
+- **A box is now SSH-reachable as soon as it reports RUNNING** — the
+  sentinel learned about a box's SSH key only by polling each backend's
+  `/authorized-keys` on a 2-minute ticker, so a box created just after a
+  tick was RUNNING while sshpiper had no pipe for it and SSH answered
+  `Permission denied (publickey)` for up to two minutes (~50s typical).
+  Anything that trusted RUNNING as "ready" — CI, agents, the documented
+  create→ssh flow — failed its first connection attempts. The daemon now
+  calls a new HMAC-gated `POST /sentinel/keys/resync` whenever its
+  host-side key set changes (container create/delete, `AddSSHKey`,
+  `RemoveSSHKey`), and the sentinel re-pulls that backend's keys and
+  rewrites the sshpiper routing table immediately. Concurrent resyncs for
+  one backend coalesce on "a pull that started after this request
+  arrived", which is guaranteed to include the caller's key — never a
+  time-based skip, which is what would reintroduce the bug. The periodic
+  sync is unchanged and remains the convergence backstop, so a lost or
+  refused notification costs the old latency rather than reachability.
+  Revoked keys likewise stop routing at revocation instead of up to two
+  minutes later.
+
 ### Security
 
 - **The sentinel's peer proxy now requires authentication.**
@@ -36,26 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   become undrivable. The sentinel logs this loudly at startup when the
   secret is absent.
 
-### Fixed
-
-- **A box is now SSH-reachable as soon as it reports RUNNING** — the
-  sentinel learned about a box's SSH key only by polling each backend's
-  `/authorized-keys` on a 2-minute ticker, so a box created just after a
-  tick was RUNNING while sshpiper had no pipe for it and SSH answered
-  `Permission denied (publickey)` for up to two minutes (~50s typical).
-  Anything that trusted RUNNING as "ready" — CI, agents, the documented
-  create→ssh flow — failed its first connection attempts. The daemon now
-  calls a new HMAC-gated `POST /sentinel/keys/resync` whenever its
-  host-side key set changes (container create/delete, `AddSSHKey`,
-  `RemoveSSHKey`), and the sentinel re-pulls that backend's keys and
-  rewrites the sshpiper routing table immediately. Concurrent resyncs for
-  one backend coalesce on "a pull that started after this request
-  arrived", which is guaranteed to include the caller's key — never a
-  time-based skip, which is what would reintroduce the bug. The periodic
-  sync is unchanged and remains the convergence backstop, so a lost or
-  refused notification costs the old latency rather than reachability.
-  Revoked keys likewise stop routing at revocation instead of up to two
-  minutes later.
 
 ## [0.60.0] - 2026-07-23
 
