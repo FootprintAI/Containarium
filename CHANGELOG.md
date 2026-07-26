@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The sentinel's peer proxy now requires authentication.**
+  `/peer/<backend-id>/*` on the sentinel's binary-server port forwards to
+  that backend's daemon, and was the only route on that mux registered
+  with no middleware while every neighbouring `/sentinel/*` route was
+  HMAC-gated. The backend-id namespace on a sentinel is flat and global,
+  so anything able to reach that port could address every tunnel-joined
+  backend the sentinel fronts, across all organizations — enumerating
+  them and probing whatever each daemon exposes pre-auth. The daemon's
+  own authentication still stood behind it, so this was a
+  lateral-movement surface rather than an open door, but it is the layer
+  meant to stop the probing. It is now gated by the sentinel **admin**
+  secret, the same authority secret `/sentinel/tunnel-tokens` and
+  `/sentinel/byoc-routes` already use. Rejections are also uniform now:
+  an unknown backend id and a malformed path return a byte-identical 404
+  that no longer echoes the requested id back, so an authorized caller
+  cannot map a sentinel's backends by diffing error responses.
+
+  **Operator action required before upgrading.** A sentinel with no
+  `CONTAINARIUM_SENTINEL_ADMIN_SECRET` set now rejects every `/peer/`
+  request with 401 — fail-closed, since a fail-open fallback would skip
+  the fix precisely on the hosts whose operator never configured the
+  secret. If a control plane drives tunnel-joined backends through this
+  sentinel, set that secret **and** make sure the caller signs its
+  `/peer/` requests before rolling this out; otherwise those backends
+  become undrivable. The sentinel logs this loudly at startup when the
+  secret is absent.
+
 ### Fixed
 
 - **A box is now SSH-reachable as soon as it reports RUNNING** — the
