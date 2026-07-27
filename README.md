@@ -23,7 +23,7 @@ curl https://blog.example.com → hello world
 
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
-[![Containarium demo: prompt → live HTTPS Python app](docs/images/demo-preview.gif)](https://youtu.be/IBDDD_tb8FY)
+[![Containarium demo: one command to install, then an AI agent turns a fresh box into a live HTTPS app](docs/images/demo-preview.gif)](https://youtu.be/IBDDD_tb8FY)
 
 🌐 **Project site:** [containarium.dev](https://containarium.dev) · 🎬 **55s demo:** [youtu.be/IBDDD_tb8FY](https://youtu.be/IBDDD_tb8FY) · 🚀 **Live app:** [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev)
 
