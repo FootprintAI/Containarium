@@ -60,8 +60,7 @@ You bring the agent. We run the box.
 ### 1. Self-host on a fresh Ubuntu VM (5 minutes)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh \
-  | sudo bash
+curl -fsSL https://containarium.dev/install.sh | sudo bash
 ```
 
 That installs Containarium + Incus + dependencies, starts the daemon,
@@ -578,8 +577,7 @@ least-privilege scope catalog.
 ### Manual install (recommended for getting started)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh \
-  | sudo bash
+curl -fsSL https://containarium.dev/install.sh | sudo bash
 ```
 
 See [`hacks/README.md`](hacks/README.md) for what the script does.
