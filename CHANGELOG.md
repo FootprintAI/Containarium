@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-07-27
+
 ### Added
+
+- **Cloud metrics export now covers the platform domain, not just the
+  host.** v0.60.0 shipped the export toggle and the host series; this
+  round adds the groups that make an exported dashboard answer
+  operational questions rather than just "is the box alive":
+  a **heartbeat** series with a dead-man alert recipe, so the failure
+  class where the host or daemon simply dies is caught by metric
+  *absence* rather than going unnoticed (#1090); **API health** —
+  requests and errors bucketed by `code_class` via grpc-gateway's own
+  status mapping (#1092); **provisioning outcomes** — attempts,
+  failures and duration keyed by `create`/`delete` (#1094);
+  **connectivity** — healthy peer count plus each peer's tunnel
+  up/down state, which is how a BYOC peer gets represented at all
+  given it cannot export for itself (#1095); and **per-container**
+  CPU/memory/disk/network series, the last unimplemented piece of the
+  export design (#1098).
+
+- **`containarium cloud enroll --adopt-foreign`** — acknowledges, in
+  one explicit flag, that the host being enrolled already runs
+  cloud-managed containers belonging to another organization. The
+  control-plane half refuses such a host by default; this is the
+  operator's deliberate override. Note the flag must be in operators'
+  hands *before* the control-plane guard is deployed, since the guard
+  fails closed and this is the only way past it (#1104).
 
 - **`containarium doctor` now reports host security posture**, as its own
   advisory section alongside the existing capability checks. For BYOC the
@@ -30,9 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invisible from inside the guest and is reported as unobservable rather
   than absent). **Nothing here blocks anything**: posture checks are
   advisory, `doctor`'s exit code is unchanged, and the daemon's
-  `self_check_ok` is still derived from the capability checks alone.
+  `self_check_ok` is still derived from the capability checks alone (#1106).
 
 ### Fixed
+
+- **A resumed metrics export no longer re-emits under a placeholder
+  identity.** A daemon that resumed export on restart published its
+  host series as `backend_id="local", region=""` instead of its real
+  identity, splitting the host across two `backend_id` streams and
+  silently dropping it from any dashboard or alert keyed on
+  `backend_id` — the failure was invisible precisely where it
+  mattered. Export now waits until identity is wired (#1087).
 
 - **A box is now SSH-reachable as soon as it reports RUNNING** — the
   sentinel learned about a box's SSH key only by polling each backend's
@@ -51,7 +85,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sync is unchanged and remains the convergence backstop, so a lost or
   refused notification costs the old latency rather than reachability.
   Revoked keys likewise stop routing at revocation instead of up to two
-  minutes later.
+  minutes later (#1100).
+
+### Documentation
+
+- Cloud-native metrics export: PRD for application-domain metrics
+  (#1086), the platform-domain metric-group design (#1088), the
+  committed GCM dashboard's platform group plus quickstart (#1096),
+  the BYOC no-export posture with a corrected heartbeat claim (#1097),
+  and a bare-VM quickstart carrying a real measured cost estimate
+  (#1099).
 
 ### Security
 
@@ -80,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sentinel, set that secret **and** make sure the caller signs its
   `/peer/` requests before rolling this out; otherwise those backends
   become undrivable. The sentinel logs this loudly at startup when the
-  secret is absent.
+  secret is absent (#1105).
 
 
 ## [0.60.0] - 2026-07-23
