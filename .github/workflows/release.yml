@@ -5,6 +5,23 @@ on:
     tags:
       - 'v*'   # e.g. v0.16.4
 
+  # Rehearsal trigger (#1119 follow-up). A tag push is currently the ONLY
+  # way these builds ever run, so the two release incidents this repo has
+  # recorded (v0.47.0's Windows cross-compile break, v0.48.0's web-ui build
+  # failure) were both invisible until the real release build failed — with a
+  # burned tag as the cost. This lets the identical build run on any ref
+  # WITHOUT publishing anything.
+  #
+  # Deliberately publish-free: nothing here pushes an image, uploads an
+  # artifact, or creates a Release. Publishing stays exclusively on tag push,
+  # so a rehearsal cannot become an accidental release.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build as (without v prefix), e.g. 0.61.0. Build only — publishes nothing.'
+        required: false
+        default: '0.0.0-dryrun'
+
 permissions:
   contents: write
 
@@ -27,9 +44,16 @@ jobs:
         # still triggers buf generate; installing it satisfies that.
         run: go install github.com/bufbuild/buf/cmd/buf@latest
 
-      - name: Get version from tag
+      - name: Get version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        # Tag push -> the tag. Rehearsal -> the dispatch input, since
+        # github.ref is a branch there and would yield a nonsense version.
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Compile eBPF network-policy object (#627)
         # Builds internal/netbpf/netpolicy.bpf.o so the next `make` invocation
@@ -149,6 +173,9 @@ jobs:
           EOF
 
       - name: Create GitHub Release
+        # Tag pushes only. A rehearsal builds every artifact above and stops
+        # here — that is the whole point of the workflow_dispatch trigger.
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
@@ -244,6 +271,10 @@ jobs:
         run: ls -lh dist/
 
       - name: Upload bundle to release
+        # Tag pushes only — same guard as the Release step in the job above.
+        # Without it a rehearsal would still attempt a real upload, which is
+        # exactly the accidental publish this trigger is designed to prevent.
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}

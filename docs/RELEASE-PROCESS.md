@@ -93,12 +93,33 @@ permanently on PyPI, whereas on GitHub it only costs a dead tag (as with
 v0.48.0 below).
 
 That asymmetry is the reason not to push a tag "to see if the build
-works". Note there is currently **no way to exercise these builds
-without publishing**: only `distros-py-release.yml` has a
-`workflow_dispatch` trigger (for recovering from a PyPI infra blip, and
-it publishes too). The other three are tag-push only. So the tag push
-*is* the test, which is exactly why steps 1-3 above — merged, green,
-version bumped — are not optional ceremony.
+works" — and the reason you don't have to.
+
+### Rehearsing a release build without publishing
+
+`release.yml`, `containarium-daemon.yml` and `sidecars.yml` each accept
+a `workflow_dispatch` trigger that runs the **identical** build against
+any ref and publishes nothing: no Release, no artifact upload, no image
+push. Use it before tagging, especially when the diff touches the build
+itself (new `cmd/` files, web-ui changes, Dockerfiles, `Makefile`).
+
+```bash
+gh workflow run release.yml --ref main -f version=0.61.0-rc
+gh workflow run containarium-daemon.yml --ref main -f version=0.61.0-rc
+gh workflow run sidecars.yml --ref main -f version=0.61.0-rc
+```
+
+`version` is optional (defaults to `0.0.0-dryrun`) and only labels the
+build — nothing is published under it. Publishing is gated on the ref
+being a tag, so a rehearsal cannot become an accidental release.
+
+This directly covers the two incidents below: both were build failures
+invisible until a real tag had already been pushed, costing a burned
+tag. A rehearsal on the merge commit would have caught either one.
+
+**`distros-py-release.yml` is the exception** — its `workflow_dispatch`
+exists for recovering from a PyPI infra blip and it **does** publish. Do
+not use it as a rehearsal.
 
 ## Why step 5 matters: two real incidents
 
