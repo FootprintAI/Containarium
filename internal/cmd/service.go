@@ -146,7 +146,7 @@ func ensureDaemonUnitAndSecret() error {
 	// install. Every other entry (/var/lib/incus, /etc, /home, /var/log, ...) already
 	// exists; /opt/containarium is the daemon's state dir and may not, so create it
 	// here — the same one place the unit that references it is authored.
-	if err := os.MkdirAll("/opt/containarium", 0755); err != nil {
+	if err := os.MkdirAll("/opt/containarium", 0750); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 	// #nosec G306 -- systemd unit, world-readable config by convention; no secrets
