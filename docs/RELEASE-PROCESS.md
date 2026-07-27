@@ -62,15 +62,64 @@ anyway; it's the only thing a non-release build has to go on.
    git tag v0.48.2
    git push origin v0.48.2
    ```
-4. This triggers `release.yml`, which runs `make build-release` (10
-   artifacts: the CLI for linux/darwin-amd64/darwin-arm64/windows, the
-   MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64,
-   plus a generated `SHA256SUMS.txt`) and publishes them as a GitHub
-   Release attached to the tag.
-5. **Verify the release actually built and published** — don't treat a
-   pushed tag as done. Check the Release page has all expected
-   artifacts and `SHA256SUMS.txt`, and that `containarium version` on a
-   freshly downloaded binary reports the new tag.
+4. This triggers **four** workflows, not one — see [What a tag
+   push actually publishes](#what-a-tag-push-actually-publishes) below.
+   Pushing the tag is the point of no return for all of them.
+5. **Verify every one of them actually built and published** — don't
+   treat a pushed tag as done. Check the Release page has all expected
+   artifacts and `SHA256SUMS.txt`, that `containarium version` on a
+   freshly downloaded binary reports the new tag, and that the image
+   and PyPI publishes succeeded.
+
+## What a tag push actually publishes
+
+A `v*` tag fires **four** workflows in parallel. Three of them publish
+to places you cannot un-publish from, so read this before pushing a tag
+rather than after.
+
+| Workflow | What it publishes | Where | Reversible? |
+| --- | --- | --- | --- |
+| `release.yml` | 14 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows, MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
+| `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
+| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
+| `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
+
+The PyPI one deserves particular care: per `TELEMETRY-DISTRO-DESIGN.md`
+decision D5 the distro version tracks the project version, so **every**
+`v*.*.*` tag publishes a matching `containarium-telemetry` release. A
+version number, once used on PyPI, is burned — you cannot re-upload it
+after deleting it. A botched tag therefore costs a version number
+permanently on PyPI, whereas on GitHub it only costs a dead tag (as with
+v0.48.0 below).
+
+That asymmetry is the reason not to push a tag "to see if the build
+works" — and the reason you don't have to.
+
+### Rehearsing a release build without publishing
+
+`release.yml`, `containarium-daemon.yml` and `sidecars.yml` each accept
+a `workflow_dispatch` trigger that runs the **identical** build against
+any ref and publishes nothing: no Release, no artifact upload, no image
+push. Use it before tagging, especially when the diff touches the build
+itself (new `cmd/` files, web-ui changes, Dockerfiles, `Makefile`).
+
+```bash
+gh workflow run release.yml --ref main -f version=0.61.0-rc
+gh workflow run containarium-daemon.yml --ref main -f version=0.61.0-rc
+gh workflow run sidecars.yml --ref main -f version=0.61.0-rc
+```
+
+`version` is optional (defaults to `0.0.0-dryrun`) and only labels the
+build — nothing is published under it. Publishing is gated on the ref
+being a tag, so a rehearsal cannot become an accidental release.
+
+This directly covers the two incidents below: both were build failures
+invisible until a real tag had already been pushed, costing a burned
+tag. A rehearsal on the merge commit would have caught either one.
+
+**`distros-py-release.yml` is the exception** — its `workflow_dispatch`
+exists for recovering from a PyPI infra blip and it **does** publish. Do
+not use it as a rehearsal.
 
 ## Why step 5 matters: two real incidents
 

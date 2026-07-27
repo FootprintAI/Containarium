@@ -141,6 +141,14 @@ func ensureDaemonUnitAndSecret() error {
 	} else {
 		log.Printf("JWT secret already exists: %s", jwtPath)
 	}
+	// ProtectSystem=strict makes systemd fail namespace setup (status=226/NAMESPACE)
+	// if any ReadWritePaths entry is missing, crash-looping the daemon on a fresh
+	// install. Every other entry (/var/lib/incus, /etc, /home, /var/log, ...) already
+	// exists; /opt/containarium is the daemon's state dir and may not, so create it
+	// here — the same one place the unit that references it is authored.
+	if err := os.MkdirAll("/opt/containarium", 0750); err != nil {
+		return fmt.Errorf("failed to create state directory: %w", err)
+	}
 	// #nosec G306 -- systemd unit, world-readable config by convention; no secrets
 	if err := os.WriteFile(systemdServicePath, []byte(systemdServiceTemplate), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
