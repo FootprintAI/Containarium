@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	cloud.google.com/go/compute v1.65.0
 	cloud.google.com/go/monitoring v1.30.0
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.58.0
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.59.0
 	github.com/blang/semver/v4 v4.0.0
 	github.com/cilium/ebpf v0.22.0
 	github.com/footprintai/go-certs v0.0.4
@@ -54,7 +54,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.34.0 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.58.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.59.0 // indirect
 	github.com/apex/log v1.9.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
