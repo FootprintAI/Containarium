@@ -62,15 +62,43 @@ anyway; it's the only thing a non-release build has to go on.
    git tag v0.48.2
    git push origin v0.48.2
    ```
-4. This triggers `release.yml`, which runs `make build-release` (10
-   artifacts: the CLI for linux/darwin-amd64/darwin-arm64/windows, the
-   MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64,
-   plus a generated `SHA256SUMS.txt`) and publishes them as a GitHub
-   Release attached to the tag.
-5. **Verify the release actually built and published** — don't treat a
-   pushed tag as done. Check the Release page has all expected
-   artifacts and `SHA256SUMS.txt`, and that `containarium version` on a
-   freshly downloaded binary reports the new tag.
+4. This triggers **four** workflows, not one — see [What a tag
+   push actually publishes](#what-a-tag-push-actually-publishes) below.
+   Pushing the tag is the point of no return for all of them.
+5. **Verify every one of them actually built and published** — don't
+   treat a pushed tag as done. Check the Release page has all expected
+   artifacts and `SHA256SUMS.txt`, that `containarium version` on a
+   freshly downloaded binary reports the new tag, and that the image
+   and PyPI publishes succeeded.
+
+## What a tag push actually publishes
+
+A `v*` tag fires **four** workflows in parallel. Three of them publish
+to places you cannot un-publish from, so read this before pushing a tag
+rather than after.
+
+| Workflow | What it publishes | Where | Reversible? |
+| --- | --- | --- | --- |
+| `release.yml` | 14 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows, MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
+| `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
+| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
+| `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
+
+The PyPI one deserves particular care: per `TELEMETRY-DISTRO-DESIGN.md`
+decision D5 the distro version tracks the project version, so **every**
+`v*.*.*` tag publishes a matching `containarium-telemetry` release. A
+version number, once used on PyPI, is burned — you cannot re-upload it
+after deleting it. A botched tag therefore costs a version number
+permanently on PyPI, whereas on GitHub it only costs a dead tag (as with
+v0.48.0 below).
+
+That asymmetry is the reason not to push a tag "to see if the build
+works". Note there is currently **no way to exercise these builds
+without publishing**: only `distros-py-release.yml` has a
+`workflow_dispatch` trigger (for recovering from a PyPI infra blip, and
+it publishes too). The other three are tag-push only. So the tag push
+*is* the test, which is exactly why steps 1-3 above — merged, green,
+version bumped — are not optional ceremony.
 
 ## Why step 5 matters: two real incidents
 
