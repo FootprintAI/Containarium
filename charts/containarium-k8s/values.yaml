@@ -68,6 +68,13 @@ tenantNamespacePrefix: "tenant-"
 # Empty = no PVC (box data is ephemeral). Use "standard" for kind.
 storageClass: ""
 
+# -- RuntimeClass every box pod is scheduled under.
+# Empty (default) = the cluster's default runtime, `runc`, which shares the host
+# kernel. Set to "runsc" to run boxes inside a gVisor sandbox instead; that
+# requires a RuntimeClass named "runsc" in the cluster AND gVisor installed on
+# every node the daemon schedules onto, or box pods will not start.
+runtimeClass: ""
+
 # -- Annotations to add to all resources
 commonAnnotations: {}
 
