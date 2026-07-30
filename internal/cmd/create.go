@@ -12,6 +12,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
+	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -57,7 +58,7 @@ The container will be created with:
   - SSH server configured
   - User account with sudo privileges
   - Configurable resource limits
-  - Optional software stack (nodejs, python, golang, rust, datascience, devops, database, fullstack)
+  - Optional software stack (see --stack for the available ids and what each one is)
 
 Examples:
   # Create container with default settings
@@ -85,6 +86,37 @@ Examples:
 	RunE: runCreate,
 }
 
+// stackFlagUsage builds the --stack usage string from the live stack catalog,
+// rendering each id with its human name: "database (Database Clients)".
+//
+// Two reasons not to hard-code the list. It drifts -- the previous literal named
+// eight stacks while the catalog shipped fifteen, so docker, the gpu variants,
+// android and kind-kubeflow were undiscoverable from the CLI. And an id alone can
+// actively mislead: "database" reads as "give this container a database" when the
+// stack installs PostgreSQL/MySQL/Redis *clients* and no server, which is silent
+// until something in the container reaches for a server that was never part of the
+// deal (#1128). The name disambiguates it at the point of use.
+//
+// Reads through stacks.GetDefault(), so an operator's /etc/containarium/stacks.yaml
+// is reflected too rather than the compiled-in default being asserted over it.
+func stackFlagUsage() string {
+	all := stacks.GetDefault().GetAllStacks()
+	if len(all) == 0 {
+		// Catalog unreadable (malformed override with no embedded fallback);
+		// a usable flag with a vague description beats a panic in init().
+		return "Software stack to install"
+	}
+	parts := make([]string, 0, len(all))
+	for _, s := range all {
+		if s.Name == "" || s.Name == s.ID {
+			parts = append(parts, s.ID)
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", s.ID, s.Name))
+	}
+	return "Software stack to install: " + strings.Join(parts, ", ")
+}
+
 func init() {
 	rootCmd.AddCommand(createCmd)
 
@@ -104,7 +136,7 @@ func init() {
 	createCmd.Flags().StringVar(&staticIP, "static-ip", "", "Static IP address (e.g., 10.100.0.100) - empty for DHCP")
 	createCmd.Flags().StringVar(&containerImage, "image", "images:ubuntu/24.04", "Container image to use")
 	createCmd.Flags().BoolVar(&enablePodman, "podman", true, "Enable Podman support (nesting)")
-	createCmd.Flags().StringVar(&stackID, "stack", "", "Software stack to install (nodejs, python, golang, rust, datascience, devops, database, fullstack)")
+	createCmd.Flags().StringVar(&stackID, "stack", "", stackFlagUsage())
 	createCmd.Flags().StringSliceVar(&gpuDevices, "gpu", nil, "GPU device(s) for passthrough — index ('0') or PCI address. Repeat or comma-separate for multiple GPUs (e.g., --gpu 0 --gpu 1 or --gpu 0,1)")
 	createCmd.Flags().StringSliceVar(&labels, "labels", []string{}, "Labels in key=value format (can be specified multiple times)")
 	createCmd.Flags().BoolVar(&forceRecreate, "force", false, "Delete and recreate if container already exists")
