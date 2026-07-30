@@ -324,6 +324,15 @@ test-e2e-gcloud: ## Run end-to-end test using gcloud (alternative method)
 	fi
 	@cd test/integration && go test -v -run TestE2ERebootPersistence -timeout 45m
 
+test-e2e-installer: ## Run installer quickstart E2E on a bare GCE VM (install.sh --quickstart)
+	@echo "==> Running installer --quickstart E2E on a fresh Ubuntu VM..."
+	@if [ -z "$$GCP_PROJECT" ]; then \
+		echo "Error: GCP_PROJECT environment variable not set"; \
+		echo "Set it to your GCP project ID: export GCP_PROJECT=your-project-id"; \
+		exit 1; \
+	fi
+	@cd test/integration && go test -v -run TestE2EInstallerQuickstart -timeout 40m
+
 test-all: test-short test-integration ## Run all tests
 
 test-coverage: test ## Run tests and show coverage report

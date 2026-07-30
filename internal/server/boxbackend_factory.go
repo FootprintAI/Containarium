@@ -109,6 +109,7 @@ func newK8sBackend() (box.BoxBackend, error) {
 		BoxImage:                  cfg.BoxImage,
 		BoxMode:                   cfg.BoxMode,
 		StorageClass:              cfg.StorageClass,
+		RuntimeClass:              cfg.RuntimeClass,
 		GatewayUpstreamPublicKey:  cfg.GatewayUpstreamPublicKey,
 		GatewayUpstreamKeySecret:  cfg.GatewayUpstreamKeySecret,
 		InsecureIgnoreHostKey:     cfg.InsecureIgnoreHostKey,
