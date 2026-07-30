@@ -121,6 +121,17 @@ func init() {
 	quickstartCmd.Flags().BoolVar(&qsSkipInclude, "no-ssh-include", false, "Skip appending the Include line to ~/.ssh/config (still writes ~/.containarium/ssh_config)")
 }
 
+// Seams: the side-effecting steps (daemon RPCs + the agent exec) are indirected
+// through function vars so an integration test can substitute fakes and drive
+// the whole orchestration — step order, flag wiring, file writes, the launched
+// argv — without a daemon or a real agent. Production uses the real functions.
+var (
+	qsStepCreate      = runCreate
+	qsStepSSHConfig   = runSSHConfigSync
+	qsStepExposePort  = runExposePort
+	qsStepLaunchAgent = launchAgent
+)
+
 func runQuickstart(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
@@ -182,7 +193,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	cpuLimit = qsCPU
 	memoryLimit = qsMemory
 	enablePodman = true
-	if err := runCreate(cmd, args); err != nil {
+	if err := qsStepCreate(cmd, args); err != nil {
 		if !isAlreadyExists(err) {
 			return fmt.Errorf("create: %w", err)
 		}
@@ -194,7 +205,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	sshConfigSentinel = qsSentinel
 	sshConfigIdentity = sshIdentity // "" when the user brought their own key
 	sshConfigOutPath = filepath.Join(home, ".containarium", "ssh_config")
-	if err := runSSHConfigSync(cmd, nil); err != nil {
+	if err := qsStepSSHConfig(cmd, nil); err != nil {
 		return fmt.Errorf("ssh-config sync: %w", err)
 	}
 	chownUnderHome(sshConfigOutPath, uid, gid)
@@ -243,7 +254,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 				exposePortPort = qsExposePort
 				exposePortDomain = qsDomain
 				exposePortDescription = "quickstart build"
-				if err := runExposePort(cmd, []string{name}); err != nil {
+				if err := qsStepExposePort(cmd, []string{name}); err != nil {
 					return fmt.Errorf("pre-expose: %w", err)
 				}
 			}
@@ -253,7 +264,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 		if launching {
 			// Hand off: replace this process with the user's agent so they land
 			// straight in the session, already working. Never returns on success.
-			return launchAgent(qsAgent, instruction)
+			return qsStepLaunchAgent(qsAgent, instruction)
 		}
 		// --no-launch: print the exact command instead of exec'ing it.
 		spec := agentSpecs[qsAgent]
