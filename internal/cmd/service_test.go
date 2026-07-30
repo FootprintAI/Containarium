@@ -3,11 +3,47 @@
 package cmd
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/hostcheck"
 )
+
+// TestSystemdServiceDoesNotHardRequireIncus guards the boot-resilience contract.
+//
+// With Requires=incus.service, a transient incus failure at boot fails
+// containarium.service's *start job*. Restart=on-failure does not retry job
+// failures, so the daemon stays dead even after incus recovers seconds later --
+// observed on a pool member, where it means silently dropping out of the pool
+// until a human notices. After= alone gives the ordering; Wants= keeps a bad
+// incus start from being terminal, and Restart=on-failure handles "not ready yet".
+func TestSystemdServiceDoesNotHardRequireIncus(t *testing.T) {
+	var after, requires, wants []string
+	for _, line := range strings.Split(systemdServiceTemplate, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "#"):
+			continue
+		case strings.HasPrefix(line, "After="):
+			after = strings.Fields(strings.TrimPrefix(line, "After="))
+		case strings.HasPrefix(line, "Requires="):
+			requires = strings.Fields(strings.TrimPrefix(line, "Requires="))
+		case strings.HasPrefix(line, "Wants="):
+			wants = strings.Fields(strings.TrimPrefix(line, "Wants="))
+		}
+	}
+	if slices.Contains(requires, "incus.service") {
+		t.Error("systemdServiceTemplate has Requires=incus.service; use Wants= so a " +
+			"transient incus failure does not permanently kill the daemon's start job")
+	}
+	if !slices.Contains(wants, "incus.service") {
+		t.Errorf("systemdServiceTemplate should declare Wants=incus.service, got Wants=%v", wants)
+	}
+	if !slices.Contains(after, "incus.service") {
+		t.Errorf("systemdServiceTemplate must keep After=incus.service for ordering, got After=%v", after)
+	}
+}
 
 // TestSystemdServiceReadWritePathsCoverDoctorContract guards against the unit's
 // ProtectSystem=strict sandbox drifting away from the paths the daemon's own

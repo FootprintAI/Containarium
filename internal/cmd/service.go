@@ -19,7 +19,13 @@ const systemdServiceTemplate = `[Unit]
 Description=Containarium Container Management Daemon
 Documentation=https://github.com/footprintai/Containarium
 After=network.target incus.service
-Requires=incus.service
+# Wants=, not Requires=. A Requires= dependency that fails takes this unit's
+# start job down with it, and a *job* failure is not something Restart=on-failure
+# retries -- so a single transient incus hiccup at boot leaves the daemon dead
+# until someone notices, which on a pool member means silently dropping out of
+# the pool. After= still guarantees ordering, and Restart=on-failure covers the
+# "incus not ready yet" case by retrying the daemon itself.
+Wants=incus.service
 StartLimitIntervalSec=0
 
 [Service]

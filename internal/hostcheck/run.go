@@ -58,7 +58,7 @@ func Run() []Check {
 	// 4. The definitive capability-trap test: create + delete a throwaway user.
 	checks = append(checks, useraddProbe())
 
-	// 5. incus present (the unit Requires=incus.service).
+	// 5. incus present (the unit orders itself After=/Wants=incus.service).
 	_, err := exec.LookPath("incus")
 	checks = append(checks, Check{
 		Name: "incus binary present", OK: err == nil, Required: true,

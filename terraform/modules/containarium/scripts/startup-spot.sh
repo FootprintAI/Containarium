@@ -863,7 +863,10 @@ if [ -f /usr/local/bin/containarium ]; then
 Description=Containarium Container Management Daemon
 Documentation=https://github.com/footprintai/Containarium
 After=network.target incus.service
-Requires=incus.service
+# Wants=, not Requires= -- a failed Requires= dependency kills this unit's start
+# job, and job failures are not retried by Restart=on-failure. See the comment on
+# systemdServiceTemplate in internal/cmd/service.go.
+Wants=incus.service
 StartLimitIntervalSec=0
 
 [Service]
