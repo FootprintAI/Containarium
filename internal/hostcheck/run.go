@@ -27,9 +27,14 @@ var RequiredCaps = []struct {
 // DaemonWritablePaths must be writable for the daemon (the unit's
 // ReadWritePaths) plus /var/log — useradd touches /var/log/lastlog, the
 // "second, independent trap" the deploy contract calls out.
+// /var/lib/containarium holds the backup sidecar index and staged dumps
+// (pkg/core/backup writes there for every destination, not just LOCAL), so the
+// daemon needs it writable or every backup fails EROFS under
+// ProtectSystem=strict.
 var DaemonWritablePaths = []string{
 	"/var/lib/incus", "/etc/containarium", "/etc", "/home",
-	"/var/lock", "/run/lock", "/opt/containarium", "/var/log",
+	"/var/lock", "/run/lock", "/opt/containarium", "/var/lib/containarium",
+	"/var/log",
 }
 
 // Run executes every host capability check and returns the results. Pure of
@@ -58,7 +63,7 @@ func Run() []Check {
 	// 4. The definitive capability-trap test: create + delete a throwaway user.
 	checks = append(checks, useraddProbe())
 
-	// 5. incus present (the unit Requires=incus.service).
+	// 5. incus present (the unit orders itself After=/Wants=incus.service).
 	_, err := exec.LookPath("incus")
 	checks = append(checks, Check{
 		Name: "incus binary present", OK: err == nil, Required: true,

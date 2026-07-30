@@ -694,6 +694,13 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 			if err == nil && info != nil {
 				s.refreshContainerIPMap()
 				s.emitter.EmitContainerCreated(toProtoContainer(info))
+				// Same SSH-readiness push as the sync path (cloud #971).
+				// It matters more here: this is the path the cloud control
+				// plane uses, so this is the transition the caller sees as
+				// CREATING → RUNNING and immediately tries to SSH into.
+				// context.Background() because the request context died
+				// with the CREATING response long before this ran.
+				s.notifySentinelKeyChange(context.Background(), "create_container "+req.Username)
 			}
 		}()
 
@@ -788,6 +795,12 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 
 	// Emit container created event
 	s.emitter.EmitContainerCreated(protoContainer)
+
+	// Push the new box's SSH key into the sentinel's sshpiper routing table
+	// before returning, so RUNNING actually means SSH-reachable (cloud
+	// #971). Without this the caller races a 2-minute keysync tick and its
+	// first connections get `Permission denied (publickey)`.
+	s.notifySentinelKeyChange(ctx, "create_container "+req.Username)
 
 	resp = &pb.CreateContainerResponse{
 		Container: protoContainer,
@@ -1160,6 +1173,9 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 		}
 		s.cascadeContainerCleanup(ctx, containerName, req.Username)
 		s.emitter.EmitContainerDeleted(containerName)
+		// Retire the box's sshpiper pipe now, not on the next tick — see
+		// the LXC delete path below for why (cloud #971).
+		s.notifySentinelKeyChange(ctx, "delete_container "+req.Username)
 		return &pb.DeleteContainerResponse{
 			Message:       fmt.Sprintf("Container for user %s deleted successfully", req.Username),
 			ContainerName: containerName,
@@ -1208,6 +1224,13 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 
 	// Emit container deleted event
 	s.emitter.EmitContainerDeleted(containerName)
+
+	// Drop the box's pipe from the sentinel's routing table now rather than
+	// leaving it live until the next tick (cloud #971 is the same clock,
+	// read from the other end: a deleted box's key stays routable for up to
+	// two minutes). Apply()'s stale-dir prune (#835) does the removal; this
+	// just stops it waiting on the timer.
+	s.notifySentinelKeyChange(ctx, "delete_container "+req.Username)
 
 	// Refresh the collector's IP map so the deleted container's IP
 	// is no longer claimed in source-IP attribution.
@@ -2119,8 +2142,10 @@ func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAut
 //
 // The intended use case is recovery after a lost ephemeral key: an
 // agent or operator generates a fresh keypair locally, calls this RPC
-// with the public half, and within ~2 minutes (next sentinel keysync
-// tick) the new key is live for SSH access.
+// with the public half, and the key is live for SSH by the time this
+// returns — the sentinel is told to re-pull immediately rather than
+// the caller waiting out the keysync tick (cloud #971). If the
+// sentinel is unreachable the key still goes live on that next tick.
 //
 // Idempotent — a key already present is a no-op success.
 func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyRequest) (*pb.AddSSHKeyResponse, error) {
@@ -2149,8 +2174,10 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 		total = 0
 	}
 
+	s.notifySentinelKeyChange(ctx, "add_ssh_key "+req.Username)
+
 	return &pb.AddSSHKeyResponse{
-		Message:   fmt.Sprintf("SSH key added for %s (sentinel keysync will propagate within ~2m)", req.Username),
+		Message:   fmt.Sprintf("SSH key added for %s (sentinel resynced; falls back to the periodic keysync if it was unreachable)", req.Username),
 		TotalKeys: total,
 	}, nil
 }
@@ -2180,6 +2207,10 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		log.Printf("[remove-ssh-key] count after remove failed for %s: %v", req.Username, err)
 		total = 0
 	}
+
+	// A revoked key that stays in sshpiper's table is still a working
+	// credential, so this one is worth not leaving on a timer.
+	s.notifySentinelKeyChange(ctx, "remove_ssh_key "+req.Username)
 
 	return &pb.RemoveSSHKeyResponse{
 		Message:   fmt.Sprintf("SSH key removed for %s", req.Username),

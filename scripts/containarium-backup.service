@@ -32,4 +32,21 @@ SyslogIdentifier=containarium-backup
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/var/lib/containarium /etc/containarium /tmp
+
+# StateDirectory= makes systemd create /var/lib/containarium before the unit
+# runs and grants it write access. Nothing else on the host does: hacks/install.sh
+# declares DATA_DIR=/var/lib/containarium but never creates it, and the only
+# `mkdir -p /var/lib/containarium` in the tree runs *inside* a container via
+# incus exec, not on the host. Without this, ProtectSystem=strict fails the
+# mount-namespace setup before ExecStart ever runs ("Failed to set up mount
+# namespacing: /var/lib/containarium: No such file or directory",
+# status=226/NAMESPACE) -- and merely marking the path ignore-if-absent would
+# instead let the unit start with the directory read-only, so the backup index
+# could not be written.
+StateDirectory=containarium
+StateDirectoryMode=0750
+
+# -/var/lib/containarium is belt-and-braces: StateDirectory= already creates and
+# grants it, and the "-" (ignore-if-absent) means this entry can never itself be
+# the thing that fails namespace setup.
+ReadWritePaths=-/var/lib/containarium /etc/containarium /tmp

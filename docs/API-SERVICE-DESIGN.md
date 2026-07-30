@@ -286,7 +286,9 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 [Unit]
 Description=Containarium Container Management Daemon
 After=network.target incus.service
-Requires=incus.service
+# Wants=, not Requires= -- a failed Requires= dependency kills this unit's
+# start job, and job failures are not retried by Restart=on-failure.
+Wants=incus.service
 
 [Service]
 Type=simple

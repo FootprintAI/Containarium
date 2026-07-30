@@ -8162,6 +8162,10 @@
         "ossBackendId": {
           "type": "string",
           "description": "oss_backend_id is the id this host's tunnel registered under at the\nsentinel (its `pool join` spot-id) — what the sentinel `/peer/\u003cid\u003e/`\nproxy keys on. The cloud records it to map a container's backend id\nback to this host. Empty if not (yet) a peer-proxy-routed BYOC backend."
+        },
+        "adoptForeign": {
+          "type": "boolean",
+          "description": "adopt_foreign acknowledges that this host already runs cloud-managed\ncontainers belonging to OTHER organizations, and enrolls it anyway\n(cloud #1006). Default false: the cloud REFUSES such a host with\nFailedPrecondition rather than silently claiming it around the existing\nresidents. Set by `containarium cloud enroll --adopt-foreign`.\n\nThe check runs control-plane-side — the cloud probes this host's daemon\nover the sentinel peer-proxy and reads the containers' `cloud_org_id`\nlabels itself, so the host cannot under-report. The cloud records the\noverride on its host audit trail."
         }
       },
       "description": "EnrollHostRequest carries the single-use join token a BYO host redeems to\nregister itself with the cloud (BYO-compute report path). Unlike every other\nActuationService RPC this one is NOT host-bearer authed — the host row\ndoesn't exist yet; the cloud validates + single-use-redeems the token."

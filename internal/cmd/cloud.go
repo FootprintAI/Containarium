@@ -63,6 +63,7 @@ var (
 	cloudEnrollBackendID     string
 	cloudEnrollNoDriverToken bool
 	cloudEnrollDriverTTL     time.Duration
+	cloudEnrollAdoptForeign  bool
 )
 
 var cloudEnrollCmd = &cobra.Command{
@@ -113,6 +114,7 @@ func init() {
 	cloudEnrollCmd.Flags().StringVar(&cloudEnrollBackendID, "oss-backend-id", "", "this host's tunnel/`pool join` spot-id (what the sentinel peer-proxy keys on); enables the cloud to route container ops to this host")
 	cloudEnrollCmd.Flags().BoolVar(&cloudEnrollNoDriverToken, "no-driver-token", false, "enroll without minting a driver token (host registers + heartbeats but the cloud cannot place workloads on it)")
 	cloudEnrollCmd.Flags().DurationVar(&cloudEnrollDriverTTL, "driver-token-ttl", 30*24*time.Hour, "driver token lifetime (capped at the daemon max, 30d); re-run `cloud enroll` before it expires to rotate")
+	cloudEnrollCmd.Flags().BoolVar(&cloudEnrollAdoptForeign, "adopt-foreign", false, "enroll even if this host already runs cloud-managed containers belonging to OTHER organizations (the cloud refuses by default); only use when the co-residency is understood and intended")
 	_ = cloudEnrollCmd.MarkFlagRequired("control-plane")
 	_ = cloudEnrollCmd.MarkFlagRequired("token-file")
 }
@@ -163,7 +165,14 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 	// isn't readable (e.g. not running as root, or a non-BYOC host), we warn and
 	// enroll without it — the host still registers + heartbeats, it just isn't
 	// cloud-drivable. --no-driver-token skips minting entirely.
-	opts := cloud.EnrollOptions{OSSBackendID: strings.TrimSpace(cloudEnrollBackendID)}
+	opts := cloud.EnrollOptions{
+		OSSBackendID: strings.TrimSpace(cloudEnrollBackendID),
+		// The cloud refuses to claim a host that already runs other orgs'
+		// cloud-managed containers (cloud #1006); --adopt-foreign is the
+		// operator's explicit acknowledgement. The cloud decides and audits —
+		// this only forwards the consent.
+		AdoptForeign: cloudEnrollAdoptForeign,
+	}
 	if !cloudEnrollNoDriverToken {
 		driverTok, mintErr := mintDriverToken(cloudEnrollJWTSecretFile, cloudEnrollDriverTTL)
 		switch {
