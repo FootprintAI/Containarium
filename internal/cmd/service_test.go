@@ -52,6 +52,45 @@ func TestBackupUnitStateDirectory(t *testing.T) {
 	}
 }
 
+// TestDaemonUnitGrantsBackupStateDir guards the daemon's ability to write its
+// backup state. pkg/core/backup MkdirAll+WriteFiles under
+// /var/lib/containarium/backups on *every* destination (a GCS backup is staged
+// locally first), plus the sidecar index, list, and restore temp files. That is
+// the daemon process, under ProtectSystem=strict -- so without an explicit grant
+// /var/lib is read-only and every backup fails EROFS. Nothing else on the host
+// creates the directory, hence StateDirectory= rather than a bare path grant.
+func TestDaemonUnitGrantsBackupStateDir(t *testing.T) {
+	var stateDir string
+	var rwFields []string
+	for _, line := range strings.Split(systemdServiceTemplate, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "#"):
+			continue
+		case strings.HasPrefix(line, "StateDirectory="):
+			stateDir = strings.TrimPrefix(line, "StateDirectory=")
+		case strings.HasPrefix(line, "ReadWritePaths="):
+			rwFields = strings.Fields(strings.TrimPrefix(line, "ReadWritePaths="))
+		}
+	}
+	if stateDir != "containarium" {
+		t.Errorf("expected StateDirectory=containarium so systemd creates and grants "+
+			"/var/lib/containarium for the backup service, got %q", stateDir)
+	}
+	granted := false
+	for _, f := range rwFields {
+		if strings.TrimPrefix(f, "-") == "/var/lib/containarium" {
+			granted = true
+			if !strings.HasPrefix(f, "-") {
+				t.Errorf("/var/lib/containarium should be ignore-if-absent (\"-\" prefixed) in ReadWritePaths, got %q", f)
+			}
+		}
+	}
+	if !granted {
+		t.Errorf("ReadWritePaths does not mention /var/lib/containarium: %v", rwFields)
+	}
+}
+
 // TestOptContainariumIsIgnoreIfAbsent pins the "-" prefix on the one
 // ReadWritePaths entry Containarium owns rather than inherits.
 //

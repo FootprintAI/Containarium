@@ -881,7 +881,17 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/var/lib/incus /etc/containarium /etc /home /var/lock /run/lock -/opt/containarium /var/log
+ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock -/opt/containarium /var/log
+
+# StateDirectory= makes systemd create /var/lib/containarium (0750, root) before
+# the daemon starts and grants it write access. The backup service writes there
+# on every destination -- pkg/core/backup stages the dump and its sidecar index
+# under /var/lib/containarium/backups even for GCS -- and nothing else on the
+# host creates that directory, so without this ProtectSystem=strict makes those
+# writes fail EROFS. The "-" on the ReadWritePaths entry above keeps that
+# (now redundant) grant from ever being the thing that fails namespace setup.
+StateDirectory=containarium
+StateDirectoryMode=0750
 
 StandardOutput=journal
 StandardError=journal
