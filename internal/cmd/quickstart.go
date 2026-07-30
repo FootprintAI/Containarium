@@ -479,13 +479,16 @@ func (s agentSpec) pretty(instruction string) string {
 // deterministic wiring output.
 var supportedAgents = []string{"claude", "gemini", "codex"}
 
-// agentSpecs is the adapter table. All three take the opening instruction as a
-// positional arg to seed an interactive session.
-//
-// TODO(quickstart): confirm the exact opening-prompt invocation for gemini and
-// codex against their shipping CLIs before release (claude's positional prompt
-// is confirmed). If a CLI wants a flag (e.g. `-p`), adjust launchArgs — the
-// wiring/tests around it don't change.
+// agentSpecs is the adapter table. Invocations are confirmed against each
+// shipping CLI:
+//   - claude: `claude "<prompt>"` — positional prompt seeds an interactive
+//     session (Claude Code); MCP read from ~/.claude.json.
+//   - gemini: `gemini -i "<prompt>"` — --prompt-interactive: "execute prompt
+//     and continue in interactive mode"; MCP read from ~/.gemini/settings.json
+//     (top-level mcpServers object, same JSON shape as claude).
+//   - codex:  `codex "<prompt>"` — positional [PROMPT], "optional user prompt
+//     to start the session" (codex-rs tui Cli); MCP read from
+//     ~/.codex/config.toml ([mcp_servers.<id>] with command/args).
 var agentSpecs = map[string]agentSpec{
 	"claude": {
 		bin:           "claude",
@@ -497,7 +500,7 @@ var agentSpecs = map[string]agentSpec{
 	},
 	"gemini": {
 		bin:           "gemini",
-		launchArgs:    func(p string) []string { return []string{p} },
+		launchArgs:    func(p string) []string { return []string{"-i", p} },
 		mcpConfigPath: func(h string) string { return filepath.Join(h, ".gemini", "settings.json") },
 		wireMCP: func(path, name, host string) (bool, error) {
 			return mergeMCPServerJSON(path, "mcpServers", name, host)

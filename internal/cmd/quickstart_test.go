@@ -321,6 +321,40 @@ func TestResolveSSHKey(t *testing.T) {
 	})
 }
 
+// TestAgentLaunchContract pins the confirmed per-agent invocation + MCP config
+// location so a future edit can't silently regress them. Values verified
+// against each shipping CLI (see agentSpecs doc comment).
+func TestAgentLaunchContract(t *testing.T) {
+	home := "/home/u"
+	cases := []struct {
+		agent    string
+		wantArgs []string
+		wantPath string
+	}{
+		{"claude", []string{"do it"}, "/home/u/.claude.json"},
+		{"gemini", []string{"-i", "do it"}, "/home/u/.gemini/settings.json"},
+		{"codex", []string{"do it"}, "/home/u/.codex/config.toml"},
+	}
+	for _, c := range cases {
+		t.Run(c.agent, func(t *testing.T) {
+			spec, ok := agentSpecs[c.agent]
+			if !ok {
+				t.Fatalf("no spec for %q", c.agent)
+			}
+			if got := spec.launchArgs("do it"); strings.Join(got, "\x00") != strings.Join(c.wantArgs, "\x00") {
+				t.Fatalf("launchArgs = %v, want %v", got, c.wantArgs)
+			}
+			if got := spec.mcpConfigPath(home); got != c.wantPath {
+				t.Fatalf("mcpConfigPath = %q, want %q", got, c.wantPath)
+			}
+		})
+	}
+	// The advertised set is exactly these three.
+	if strings.Join(supportedAgents, ",") != "claude,gemini,codex" {
+		t.Fatalf("supportedAgents = %v, want [claude gemini codex]", supportedAgents)
+	}
+}
+
 func TestResolveAgentUnknown(t *testing.T) {
 	if _, err := resolveAgent("cursor"); err == nil {
 		t.Fatal("expected an error for an unsupported agent")
