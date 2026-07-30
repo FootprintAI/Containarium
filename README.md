@@ -23,7 +23,7 @@ curl https://blog.example.com → hello world
 
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
-[![Containarium demo: one command to install, then an AI agent turns a fresh box into a live HTTPS app](docs/images/demo-preview.gif)](https://youtu.be/IBDDD_tb8FY)
+[![Containarium quickstart: one command turns a fresh box into SSH + a wired agent + a live HTTPS app](docs/images/quickstart.gif)](https://youtu.be/IBDDD_tb8FY)
 
 🌐 **Project site:** [containarium.dev](https://containarium.dev) · 🎬 **55s demo:** [youtu.be/IBDDD_tb8FY](https://youtu.be/IBDDD_tb8FY) · 🚀 **Live app:** [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev)
 
@@ -58,8 +58,6 @@ You bring the agent. We run the box.
 ## Quick start
 
 ### One command (requires containarium ≥ v0.62)
-
-![containarium quickstart — one command: box, SSH, agent, live URL](docs/images/quickstart.gif)
 
 `quickstart` collapses the five steps below into a single idempotent command —
 create the box, wire SSH and your agent (`claude` / `gemini` / `codex`), and,
