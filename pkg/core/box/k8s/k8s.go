@@ -64,6 +64,18 @@ type Config struct {
 	// StorageClass is reserved for the box PVC (not wired in this slice).
 	StorageClass string
 
+	// RuntimeClass names the Kubernetes RuntimeClass every box pod is scheduled
+	// under. Empty (the default) leaves RuntimeClassName unset, so pods run on
+	// the cluster's default container runtime — `runc`, sharing the host
+	// kernel. Set it to "runsc" on a node pool that has gVisor installed to put
+	// boxes behind a userspace kernel instead.
+	//
+	// This is daemon-wide, not per box: the runtime is a property of the node
+	// pool the daemon schedules onto. Per-box runtime selection is a separate,
+	// unshipped design (a typed runtime_class on the container spec) gated on
+	// the gVisor feasibility benchmark.
+	RuntimeClass string
+
 	// DefaultMemoryRequest / DefaultMemoryLimit override the built-in per-box
 	// memory floor applied when a box's spec carries no valid memory quantity.
 	// The request (scheduler reservation) is kept below the limit (hard cap) so
@@ -263,7 +275,8 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if boxMode == "" {
 		boxMode = b.cfg.BoxMode
 	}
-	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults(), boxMode), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	opts := podOptions{BoxMode: boxMode, RuntimeClass: b.cfg.RuntimeClass}
+	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults(), opts), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure sandbox: %w", err)
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op
