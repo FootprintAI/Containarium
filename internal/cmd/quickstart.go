@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/spf13/cobra"
 )
 
@@ -102,7 +103,7 @@ The build step lives here, on the laptop where your agent and key are.`,
 func init() {
 	rootCmd.AddCommand(quickstartCmd)
 
-	quickstartCmd.Flags().StringVar(&qsSSHKeyPath, "ssh-key", "", "Path to SSH public key seeded into the box (required)")
+	quickstartCmd.Flags().StringVar(&qsSSHKeyPath, "ssh-key", "", "Path to SSH public key to seed into the box. Optional: if omitted, quickstart reuses your existing ~/.ssh key or generates a managed one (containarium_ed25519) — the private key stays on your laptop.")
 	quickstartCmd.Flags().StringVar(&qsStack, "stack", "fullstack", "Software stack to install in the box (default fullstack so a web build has node/npm ready)")
 	quickstartCmd.Flags().StringVar(&qsCPU, "cpu", "4", "CPU cores for the box")
 	quickstartCmd.Flags().StringVar(&qsMemory, "memory", "4GB", "Memory for the box")
@@ -118,8 +119,6 @@ func init() {
 	quickstartCmd.Flags().StringVar(&qsAgentName, "agent-name", "containarium-box", "Name of the MCP server entry written into agent configs")
 	quickstartCmd.Flags().BoolVar(&qsSkipMCP, "no-mcp", false, "Skip writing any agent MCP config")
 	quickstartCmd.Flags().BoolVar(&qsSkipInclude, "no-ssh-include", false, "Skip appending the Include line to ~/.ssh/config (still writes ~/.containarium/ssh_config)")
-
-	_ = quickstartCmd.MarkFlagRequired("ssh-key")
 }
 
 func runQuickstart(cmd *cobra.Command, args []string) error {
@@ -137,6 +136,15 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	home, uid, gid, err := invokingUserHome()
 	if err != nil {
 		return fmt.Errorf("resolve invoking user home: %w", err)
+	}
+
+	// Skip bring-your-own-ssh-key: with no --ssh-key, reuse the user's
+	// existing ~/.ssh key or generate a managed one. The private key never
+	// leaves the laptop; sshIdentity feeds ssh_config's IdentityFile so
+	// `ssh <box>` works without the user touching a key at all.
+	pubKey, sshIdentity, generatedKey, err := resolveSSHKey(home, qsSSHKeyPath)
+	if err != nil {
+		return fmt.Errorf("resolve SSH key: %w", err)
 	}
 
 	launching := qsPrompt != "" && !qsNoLaunch
@@ -160,7 +168,16 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	// re-run is a no-op on an existing box rather than a destructive recreate;
 	// swallow the "already exists" error to stay idempotent.
 	fmt.Println("① create box")
-	sshKeyPath = qsSSHKeyPath
+	if qsSSHKeyPath == "" {
+		chownUnderHome(pubKey, uid, gid)
+		chownUnderHome(sshIdentity, uid, gid)
+		if generatedKey {
+			fmt.Printf("  generated managed SSH key %s\n", sshIdentity)
+		} else {
+			fmt.Printf("  using existing SSH key %s\n", pubKey)
+		}
+	}
+	sshKeyPath = pubKey
 	stackID = qsStack
 	cpuLimit = qsCPU
 	memoryLimit = qsMemory
@@ -175,6 +192,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	// ── Step 2: ssh_config + Include ────────────────────────────────────
 	fmt.Println("\n② wire SSH")
 	sshConfigSentinel = qsSentinel
+	sshConfigIdentity = sshIdentity // "" when the user brought their own key
 	sshConfigOutPath = filepath.Join(home, ".containarium", "ssh_config")
 	if err := runSSHConfigSync(cmd, nil); err != nil {
 		return fmt.Errorf("ssh-config sync: %w", err)
@@ -268,6 +286,23 @@ func invokingUserHome() (home string, uid, gid int, err error) {
 		return "", 0, 0, e
 	}
 	return h, -1, -1, nil
+}
+
+// resolveSSHKey picks the public key to seed into the box. If the user passed
+// --ssh-key, use it verbatim (no managed identity — ssh_config falls back to
+// the default identities). Otherwise reuse an existing personal ~/.ssh key or
+// generate a containarium-managed one under <home>/.ssh, returning the private-
+// key path (identity) so ssh_config can point IdentityFile at it. Idempotent:
+// a second run locates the key the first run generated instead of regenerating.
+func resolveSSHKey(home, userProvided string) (pubPath, identity string, generated bool, err error) {
+	if userProvided != "" {
+		return userProvided, "", false, nil
+	}
+	pp, _, gen, err := sshkey.LocateOrGenerate(sshkey.LocateOpts{HomeDir: home})
+	if err != nil {
+		return "", "", false, err
+	}
+	return pp, strings.TrimSuffix(pp, ".pub"), gen, nil
 }
 
 // chownUnderHome best-effort restores ownership to the invoking user for a

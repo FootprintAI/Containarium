@@ -271,6 +271,56 @@ func TestBuildInstruction(t *testing.T) {
 	}
 }
 
+func TestResolveSSHKey(t *testing.T) {
+	t.Run("user-provided key is used verbatim, no managed identity", func(t *testing.T) {
+		pub, identity, generated, err := resolveSSHKey(t.TempDir(), "/home/alice/.ssh/mine.pub")
+		if err != nil {
+			t.Fatalf("resolveSSHKey: %v", err)
+		}
+		if pub != "/home/alice/.ssh/mine.pub" {
+			t.Fatalf("pub = %q, want the provided path", pub)
+		}
+		if identity != "" {
+			t.Fatalf("identity = %q, want empty for a user-provided key", identity)
+		}
+		if generated {
+			t.Fatal("must not generate when a key is provided")
+		}
+	})
+
+	t.Run("no key → generate managed, then reuse (idempotent)", func(t *testing.T) {
+		home := t.TempDir()
+
+		pub, identity, generated, err := resolveSSHKey(home, "")
+		if err != nil {
+			t.Fatalf("first resolveSSHKey: %v", err)
+		}
+		if !generated {
+			t.Fatal("expected a key to be generated on first run")
+		}
+		if !strings.HasSuffix(pub, ".pub") {
+			t.Fatalf("pub path %q should end in .pub", pub)
+		}
+		if identity != strings.TrimSuffix(pub, ".pub") {
+			t.Fatalf("identity %q should be the private-key path of %q", identity, pub)
+		}
+		if _, err := os.Stat(identity); err != nil {
+			t.Fatalf("private key not written at %s: %v", identity, err)
+		}
+
+		pub2, identity2, generated2, err := resolveSSHKey(home, "")
+		if err != nil {
+			t.Fatalf("second resolveSSHKey: %v", err)
+		}
+		if generated2 {
+			t.Fatal("second run must reuse the key, not regenerate")
+		}
+		if pub2 != pub || identity2 != identity {
+			t.Fatalf("second run returned different paths: (%q,%q) vs (%q,%q)", pub2, identity2, pub, identity)
+		}
+	})
+}
+
 func TestResolveAgentUnknown(t *testing.T) {
 	if _, err := resolveAgent("cursor"); err == nil {
 		t.Fatal("expected an error for an unsupported agent")
