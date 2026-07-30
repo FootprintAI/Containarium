@@ -447,7 +447,11 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if cp := strings.TrimSpace(poolJoinCloudControlPlane); cp != "" {
 		fmt.Println()
 		if err := cloudEnrollAfterPoolJoin(cmd, cp, poolJoinToken, "tunnel-"+spotID, poolJoinCloudInsecure); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ cloud enrollment failed (%v)\n  the tunnel is joined regardless; re-run `containarium cloud enroll --control-plane %s --token-file <token-file> --oss-backend-id tunnel-%s` once fixed\n", err, cp, spotID)
+			// A refusal here is expected when the host already runs other orgs'
+			// cloud-managed containers (cloud #1006) — surface --adopt-foreign
+			// as the deliberate way through, since the automated join
+			// intentionally never sets it.
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ cloud enrollment failed (%v)\n  the tunnel is joined regardless; re-run `containarium cloud enroll --control-plane %s --token-file <token-file> --oss-backend-id tunnel-%s` once fixed\n  (if the cloud refused because this host already runs OTHER organizations' containers, add --adopt-foreign only if that co-residency is intended)\n", err, cp, spotID)
 		}
 	}
 

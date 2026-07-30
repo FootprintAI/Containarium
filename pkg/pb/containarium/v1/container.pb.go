@@ -1024,7 +1024,9 @@ type CreateContainerRequest struct {
 	// If empty, DHCP will assign an IP automatically
 	StaticIp string `protobuf:"bytes,8,opt,name=static_ip,json=staticIp,proto3" json:"static_ip,omitempty"`
 	// Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
-	// See available stacks in configs/stacks.yaml
+	// Run `containarium create --help` for the ids and what each one installs; the
+	// catalog itself is pkg/core/stacks/stacks.yaml, overridable per host at
+	// /etc/containarium/stacks.yaml.
 	Stack string `protobuf:"bytes,9,opt,name=stack,proto3" json:"stack,omitempty"`
 	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
 	//

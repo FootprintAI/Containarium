@@ -784,7 +784,18 @@ type EnrollHostRequest struct {
 	// sentinel (its `pool join` spot-id) — what the sentinel `/peer/<id>/`
 	// proxy keys on. The cloud records it to map a container's backend id
 	// back to this host. Empty if not (yet) a peer-proxy-routed BYOC backend.
-	OssBackendId  string `protobuf:"bytes,3,opt,name=oss_backend_id,json=ossBackendId,proto3" json:"oss_backend_id,omitempty"`
+	OssBackendId string `protobuf:"bytes,3,opt,name=oss_backend_id,json=ossBackendId,proto3" json:"oss_backend_id,omitempty"`
+	// adopt_foreign acknowledges that this host already runs cloud-managed
+	// containers belonging to OTHER organizations, and enrolls it anyway
+	// (cloud #1006). Default false: the cloud REFUSES such a host with
+	// FailedPrecondition rather than silently claiming it around the existing
+	// residents. Set by `containarium cloud enroll --adopt-foreign`.
+	//
+	// The check runs control-plane-side — the cloud probes this host's daemon
+	// over the sentinel peer-proxy and reads the containers' `cloud_org_id`
+	// labels itself, so the host cannot under-report. The cloud records the
+	// override on its host audit trail.
+	AdoptForeign  bool `protobuf:"varint,4,opt,name=adopt_foreign,json=adoptForeign,proto3" json:"adopt_foreign,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -838,6 +849,13 @@ func (x *EnrollHostRequest) GetOssBackendId() string {
 		return x.OssBackendId
 	}
 	return ""
+}
+
+func (x *EnrollHostRequest) GetAdoptForeign() bool {
+	if x != nil {
+		return x.AdoptForeign
+	}
+	return false
 }
 
 type EnrollHostResponse struct {
@@ -1186,12 +1204,13 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x0fAssignmentBatch\x12C\n" +
 	"\vassignments\x18\x01 \x03(\v2!.containarium.cloud.v1.AssignmentR\vassignments\x12=\n" +
 	"\fgenerated_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt\x12O\n" +
-	"\x10network_policies\x18\x03 \x03(\v2$.containarium.cloud.v1.NetworkPolicyR\x0fnetworkPolicies\"{\n" +
+	"\x10network_policies\x18\x03 \x03(\v2$.containarium.cloud.v1.NetworkPolicyR\x0fnetworkPolicies\"\xa0\x01\n" +
 	"\x11EnrollHostRequest\x12\x1d\n" +
 	"\n" +
 	"join_token\x18\x01 \x01(\tR\tjoinToken\x12!\n" +
 	"\fdriver_token\x18\x02 \x01(\tR\vdriverToken\x12$\n" +
-	"\x0eoss_backend_id\x18\x03 \x01(\tR\fossBackendId\"-\n" +
+	"\x0eoss_backend_id\x18\x03 \x01(\tR\fossBackendId\x12#\n" +
+	"\radopt_foreign\x18\x04 \x01(\bR\fadoptForeign\"-\n" +
 	"\x12EnrollHostResponse\x12\x17\n" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\"Q\n" +
 	"\x13HostCapabilityCheck\x12\x12\n" +

@@ -35,9 +35,21 @@ func (DefaultStatusProbe) Probe(_ context.Context) (HostStatus, error) {
 	totalDisk, availDisk := diskGB()
 	gpuCount, gpuSpec := gpuInfo()
 	raw := hostcheck.Run()
-	checks := make([]HostCheck, 0, len(raw))
+	// Host security posture (#1103) rides along in the same self-check
+	// list, which is what makes this additive: the cloud already stores
+	// Checks per host, so it records posture with no contract change.
+	//
+	// SelfCheckOK below is deliberately derived from `raw` ONLY. Posture
+	// checks are advisory, and folding them in would flip healthy hosts
+	// to self_check_ok=false — turning a hardening advisory into a
+	// scheduling signal, which is the product decision #1103 leaves open.
+	posture := hostcheck.RunPosture()
+	checks := make([]HostCheck, 0, len(raw)+len(posture))
 	for _, c := range raw {
-		checks = append(checks, HostCheck{Name: c.Name, OK: c.OK, Detail: c.Detail})
+		checks = append(checks, HostCheck{Name: c.WireName(), OK: c.OK, Detail: c.Detail})
+	}
+	for _, c := range posture {
+		checks = append(checks, HostCheck{Name: c.WireName(), OK: c.OK, Detail: c.Detail})
 	}
 	return HostStatus{
 		AgentVersion:  version.GetVersion(),

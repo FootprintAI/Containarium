@@ -26,6 +26,9 @@ type fakeActuation struct {
 	enrollHostID    string
 	enrollDriverTok string
 	enrollBackendID string
+	// enrollAdoptForeign records the #1006 acknowledgement flag, so a test can
+	// prove `cloud enroll --adopt-foreign` actually reaches the control plane.
+	enrollAdoptForeign bool
 	// enrollHostIDOverride, when set, makes EnrollHost return this id instead
 	// of the join token's own embedded id — simulating a cloud #572 re-enroll,
 	// where the cloud resolves to a pre-existing host row with a different id.
@@ -43,6 +46,7 @@ func (f *fakeActuation) EnrollHost(_ context.Context, req *cloudv1.EnrollHostReq
 	f.enrollToken = req.GetJoinToken()
 	f.enrollDriverTok = req.GetDriverToken()
 	f.enrollBackendID = req.GetOssBackendId()
+	f.enrollAdoptForeign = req.GetAdoptForeign()
 	id := req.GetJoinToken()
 	if i := indexByte(id, '.'); i >= 0 {
 		id = id[:i]

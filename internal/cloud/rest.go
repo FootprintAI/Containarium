@@ -125,6 +125,7 @@ func enrollREST(ctx context.Context, controlPlane, joinToken string, opts Enroll
 		JoinToken:    joinToken,
 		DriverToken:  opts.DriverToken,
 		OssBackendId: opts.OSSBackendID,
+		AdoptForeign: opts.AdoptForeign,
 	}, &resp); err != nil {
 		return "", "", fmt.Errorf("cloud: enroll (REST): %w", err)
 	}
