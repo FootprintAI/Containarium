@@ -89,10 +89,19 @@ var (
 	once           sync.Once
 )
 
-// DefaultConfigPaths are the default locations to search for stacks.yaml
+// DefaultConfigPaths are the default locations to search for stacks.yaml,
+// tried in order before falling back to the embedded catalog.
+//
+// "./configs/stacks.yaml" used to be listed here and was removed deliberately.
+// It resolved only when the process CWD happened to be a repo checkout, so the
+// CLI's stack list depended on the directory it was run from — and the repo copy
+// had drifted badly from the embedded one (5 stacks missing, and every
+// rhel_packages/rhel_pre_install/rhel_post_install override absent, which made
+// RHEL installs silently fall back to Debian package names). The embedded catalog
+// plus the /etc/containarium override covers every real case; the repo copy is
+// gone. See #1131.
 var DefaultConfigPaths = []string{
 	"/etc/containarium/stacks.yaml",
-	"./configs/stacks.yaml",
 	"./stacks.yaml",
 }
 
