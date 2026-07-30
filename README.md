@@ -57,6 +57,25 @@ You bring the agent. We run the box.
 
 ## Quick start
 
+### One command (requires containarium ≥ v0.62)
+
+![containarium quickstart — one command: box, SSH, agent, live URL](docs/images/quickstart.gif)
+
+`quickstart` collapses the five steps below into a single idempotent command —
+create the box, wire SSH and your agent (`claude` / `gemini` / `codex`), and,
+with `--prompt`, build and serve a site:
+
+```bash
+containarium quickstart alice --server <your-vm> \
+  --prompt "a coffee-shop landing page" --domain coffee.example.com
+```
+
+No `--ssh-key`? It reuses your `~/.ssh` key or generates a managed one. On a
+fresh VM the installer can bootstrap it too:
+`curl -fsSL https://containarium.dev/install.sh | sudo bash -s -- --quickstart alice`.
+
+Prefer to see each piece, or drive it by hand? The same five steps, explicitly:
+
 ### 1. Self-host on a fresh Ubuntu VM (5 minutes)
 
 ```bash
