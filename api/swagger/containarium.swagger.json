@@ -7479,7 +7479,7 @@
         },
         "stack": {
           "type": "string",
-          "title": "Software stack to install (optional, e.g., \"nodejs\", \"python\", \"fullstack\")\nSee available stacks in configs/stacks.yaml"
+          "description": "Software stack to install (optional, e.g., \"nodejs\", \"python\", \"fullstack\")\nRun `containarium create --help` for the ids and what each one installs; the\ncatalog itself is pkg/core/stacks/stacks.yaml, overridable per host at\n/etc/containarium/stacks.yaml."
         },
         "gpu": {
           "type": "string",

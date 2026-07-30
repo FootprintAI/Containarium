@@ -2,7 +2,10 @@
 Description=Containarium Container Management Daemon
 Documentation=https://github.com/footprintai/Containarium
 After=network.target incus.service
-Requires=incus.service
+# Wants=, not Requires= -- a failed Requires= dependency kills this unit's start
+# job, and job failures are not retried by Restart=on-failure. See the comment on
+# systemdServiceTemplate in internal/cmd/service.go.
+Wants=incus.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -27,7 +30,17 @@ ProtectHome=false
 # /opt/containarium - runtime state/assets
 # This set MUST match internal/hostcheck.DaemonWritablePaths; a path the doctor
 # requires but ProtectSystem=strict denies makes the host boot DEGRADED.
-ReadWritePaths=/var/lib/incus /etc/containarium /etc /home /var/lock /run/lock /var/log /opt/containarium
+ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock /var/log -/opt/containarium
+
+# StateDirectory= makes systemd create /var/lib/containarium (0750, root) before
+# the daemon starts and grants it write access. The backup service writes there
+# on every destination -- pkg/core/backup stages the dump and its sidecar index
+# under /var/lib/containarium/backups even for GCS -- and nothing else on the
+# host creates that directory, so without this ProtectSystem=strict makes those
+# writes fail EROFS. The "-" on the ReadWritePaths entry above keeps that
+# (now redundant) grant from ever being the thing that fails namespace setup.
+StateDirectory=containarium
+StateDirectoryMode=0750
 
 StandardOutput=journal
 StandardError=journal

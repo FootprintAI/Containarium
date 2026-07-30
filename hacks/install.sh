@@ -8,6 +8,17 @@
 #   curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh | sudo bash
 #   or
 #   sudo ./hacks/install.sh
+#
+# Bootstrap a first box in the same step (server-side):
+#   curl -fsSL .../install.sh | sudo bash -s -- --quickstart alice
+#
+#   --quickstart installs everything, then creates the box <name>. The SSH key
+#   is OPTIONAL: pass --ssh-pubkey "ssh-ed25519 AAAA… you@laptop" (or --ssh-key
+#   <path>) to seed one, or omit it for a keyless platform-managed box you
+#   attach a key to later. It does NOT wire SSH / your agent — those configure
+#   your LAPTOP, so the installer prints the command to finish there
+#   (`containarium quickstart … --server <this-host>`). See
+#   `containarium quickstart --help`.
 
 set -e
 
@@ -24,6 +35,12 @@ INCUS_VERSION_REQUIRED="6.19"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/containarium"
 DATA_DIR="/var/lib/containarium"
+
+# --quickstart bootstrap options (parsed from CLI args; empty = off)
+QUICKSTART_NAME=""
+QUICKSTART_SSH_KEY=""
+QUICKSTART_SSH_PUBKEY=""
+QUICKSTART_STACK="fullstack"
 
 # Helper functions
 log_info() {
@@ -149,9 +166,20 @@ EOF
     INCUS_VERSION=$(incus --version | cut -d'-' -f1)
     log_success "Incus $INCUS_VERSION installed"
 
-    # Check if initialization is needed
+    # Check if initialization is needed.
+    #
+    # A freshly-installed Incus daemon answers `incus info` immediately, but it
+    # has NO storage pool or network yet. Testing `incus info` alone therefore
+    # misreports a brand-new install as "already initialized", skips
+    # `incus admin init`, and leaves the daemon pool-less — so the first
+    # container create fails much later with "Storage pool not found". Require a
+    # storage pool to exist before treating Incus as initialized.
     if ! incus info &> /dev/null; then
         log_info "Initializing Incus with default settings..."
+        incus admin init --auto
+        log_success "Incus initialized"
+    elif ! incus storage list --format csv 2>/dev/null | grep -q .; then
+        log_warn "Incus daemon is up but has no storage pool; initializing..."
         incus admin init --auto
         log_success "Incus initialized"
     else
@@ -381,8 +409,154 @@ print_completion_message() {
     echo ""
 }
 
+print_usage() {
+    cat <<'EOF'
+Containarium installer
+
+Usage: install.sh [--quickstart <name> (--ssh-key <path> | --ssh-pubkey "<key>")]
+                  [--stack <stack>]
+
+  --quickstart <name>     After installing, create a first box named <name>.
+  --ssh-key <path>        Optional. Path (on THIS host) to the SSH public key.
+  --ssh-pubkey "<key>"    Optional. SSH public key contents inline (one-liners).
+  --stack <stack>         Box software stack (default: fullstack).
+  -h, --help              Show this help.
+
+With no flags the installer just installs Containarium + Incus and sets up the
+daemon. --quickstart additionally creates the first box. The SSH key is
+optional — omit it for a keyless platform-managed box (attach a key later).
+Finishing (SSH + agent wiring) happens on your laptop; the installer prints
+that command.
+EOF
+}
+
+# parse_args reads the optional --quickstart bootstrap flags. Unknown args are
+# warned about, not fatal, so the base install still proceeds.
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --quickstart)     QUICKSTART_NAME="$2"; shift 2 ;;
+            --quickstart=*)   QUICKSTART_NAME="${1#*=}"; shift ;;
+            --ssh-key)        QUICKSTART_SSH_KEY="$2"; shift 2 ;;
+            --ssh-key=*)      QUICKSTART_SSH_KEY="${1#*=}"; shift ;;
+            --ssh-pubkey)     QUICKSTART_SSH_PUBKEY="$2"; shift 2 ;;
+            --ssh-pubkey=*)   QUICKSTART_SSH_PUBKEY="${1#*=}"; shift ;;
+            --stack)          QUICKSTART_STACK="$2"; shift 2 ;;
+            --stack=*)        QUICKSTART_STACK="${1#*=}"; shift ;;
+            -h|--help)        print_usage; exit 0 ;;
+            *)                log_warn "Ignoring unknown argument: $1"; shift ;;
+        esac
+    done
+}
+
+# start_daemon best-effort starts the systemd service. Local-mode `create`
+# drives Incus directly and doesn't require it, but starting it here means the
+# REST API is up for the laptop step that follows.
+start_daemon() {
+    if command -v systemctl &> /dev/null; then
+        systemctl start containarium 2>/dev/null || true
+    fi
+}
+
+# run_quickstart_bootstrap creates the first box when --quickstart was given.
+# Server-side only: it does NOT sync ssh_config or write agent MCP config —
+# those belong to the laptop. Idempotent: an existing box is not fatal.
+run_quickstart_bootstrap() {
+    [ -z "$QUICKSTART_NAME" ] && return 0
+
+    # The SSH key is OPTIONAL. If given, seed it so the owner has SSH access
+    # immediately. If not, create a keyless (platform-managed) box: it's still
+    # reachable via the daemon / incus exec, and a key can be attached later
+    # from the laptop (`containarium collaborator add …`), so we never block a
+    # fresh-VM bootstrap on the user having pasted a key.
+    local keyfile="" tmpkey="" keyless=0
+    if [ -n "$QUICKSTART_SSH_PUBKEY" ]; then
+        tmpkey=$(mktemp)
+        printf '%s\n' "$QUICKSTART_SSH_PUBKEY" > "$tmpkey"
+        keyfile="$tmpkey"
+    elif [ -n "$QUICKSTART_SSH_KEY" ]; then
+        keyfile="$QUICKSTART_SSH_KEY"
+    fi
+
+    if [ -n "$keyfile" ] && [ ! -f "$keyfile" ]; then
+        log_error "SSH public key not found: $keyfile"
+        [ -n "$tmpkey" ] && rm -f "$tmpkey"
+        exit 1
+    fi
+
+    start_daemon
+
+    # `if !` so a non-zero exit (e.g. box already exists) doesn't trip set -e.
+    if [ -n "$keyfile" ]; then
+        log_info "Quickstart: creating first box '$QUICKSTART_NAME' (stack: $QUICKSTART_STACK)..."
+        if ! "$INSTALL_DIR/containarium" create "$QUICKSTART_NAME" \
+                --ssh-key "$keyfile" --stack "$QUICKSTART_STACK"; then
+            log_warn "create did not succeed — the box may already exist; continuing"
+        else
+            log_success "Box '$QUICKSTART_NAME' created"
+        fi
+    else
+        keyless=1
+        log_info "Quickstart: creating first box '$QUICKSTART_NAME' with no SSH key (platform-managed; stack: $QUICKSTART_STACK)..."
+        if ! "$INSTALL_DIR/containarium" create "$QUICKSTART_NAME" \
+                --no-ssh-key --stack "$QUICKSTART_STACK"; then
+            log_warn "create did not succeed — the box may already exist; continuing"
+        else
+            log_success "Box '$QUICKSTART_NAME' created (keyless)"
+        fi
+    fi
+
+    [ -n "$tmpkey" ] && rm -f "$tmpkey"
+    print_quickstart_next_steps "$keyless"
+}
+
+# print_quickstart_next_steps tells the user how to finish from their laptop,
+# where their agent and API key live (the installer can't do this on the VM).
+# $1 = keyless (1 if the box was created with no SSH key).
+print_quickstart_next_steps() {
+    local keyless="${1:-0}"
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$ip" ] && ip="<this-host>"
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo -e "${GREEN}  Box '$QUICKSTART_NAME' is up. Finish on your LAPTOP:${NC}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    if [ "$keyless" = "1" ]; then
+        echo "  This box was created keyless (platform-managed access). To get"
+        echo "  SSH access, attach your key from your laptop:"
+        echo ""
+        echo "  containarium collaborator add $QUICKSTART_NAME \$USER \\"
+        echo "    --ssh-key ~/.ssh/id_ed25519.pub --server $ip"
+        echo ""
+        echo "  Then wire your agent (claude/gemini/codex):"
+        echo "  containarium quickstart $QUICKSTART_NAME --server $ip"
+        echo ""
+        echo "  (Meanwhile the box is reachable now via the daemon / incus exec.)"
+    else
+        echo "  # wires SSH + your agent (claude/gemini/codex) to the box:"
+        echo "  containarium quickstart $QUICKSTART_NAME \\"
+        echo "    --ssh-key ~/.ssh/id_ed25519.pub \\"
+        echo "    --server $ip"
+        echo ""
+        echo "  # …or build + go live in one step:"
+        echo "  containarium quickstart $QUICKSTART_NAME \\"
+        echo "    --ssh-key ~/.ssh/id_ed25519.pub --server $ip \\"
+        echo "    --prompt \"a landing page for my coffee shop\" \\"
+        echo "    --domain coffee.example.com --agent claude"
+        echo ""
+        echo "  (Your agent + API key stay on your laptop — pure BYOA.)"
+    fi
+    echo ""
+}
+
 # Main installation flow
 main() {
+    parse_args "$@"
+
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
     echo "  Containarium Installation Script"
@@ -402,6 +576,7 @@ main() {
     setup_firewall
     generate_initial_token
     print_completion_message
+    run_quickstart_bootstrap
 }
 
 # Run main function

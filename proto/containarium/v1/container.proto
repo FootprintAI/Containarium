@@ -314,7 +314,9 @@ message CreateContainerRequest {
   string static_ip = 8;
 
   // Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
-  // See available stacks in configs/stacks.yaml
+  // Run `containarium create --help` for the ids and what each one installs; the
+  // catalog itself is pkg/core/stacks/stacks.yaml, overridable per host at
+  // /etc/containarium/stacks.yaml.
   string stack = 9;
 
   // GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
