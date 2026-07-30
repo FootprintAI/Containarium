@@ -10,6 +10,34 @@ import (
 	"github.com/footprintai/containarium/internal/hostcheck"
 )
 
+// TestOptContainariumIsIgnoreIfAbsent pins the "-" prefix on the one
+// ReadWritePaths entry Containarium owns rather than inherits.
+//
+// ProtectSystem=strict makes systemd build the unit's mount namespace before
+// the daemon executes, and a listed path that does not exist fails that setup
+// with status=226/NAMESPACE -- an opaque crashloop naming neither the path nor
+// the setting. Every other entry is a standard system directory that already
+// exists; /opt/containarium is ours and may not. `service install` / `pool
+// join` create it, but a hand-installed unit (scripts/containarium.service,
+// the Terraform startup scripts) has no such guarantee, so the prefix is what
+// degrades that case into a legible `containarium doctor` finding.
+func TestOptContainariumIsIgnoreIfAbsent(t *testing.T) {
+	var fields []string
+	for _, line := range strings.Split(systemdServiceTemplate, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ReadWritePaths=") {
+			fields = strings.Fields(strings.TrimPrefix(line, "ReadWritePaths="))
+			break
+		}
+	}
+	if len(fields) == 0 {
+		t.Fatal("systemdServiceTemplate has no ReadWritePaths= line")
+	}
+	if !slices.Contains(fields, "-/opt/containarium") {
+		t.Errorf("expected -/opt/containarium (ignore-if-absent) in ReadWritePaths, got %v", fields)
+	}
+}
+
 // TestSystemdServiceDoesNotHardRequireIncus guards the boot-resilience contract.
 //
 // With Requires=incus.service, a transient incus failure at boot fails
@@ -65,7 +93,10 @@ func TestSystemdServiceReadWritePathsCoverDoctorContract(t *testing.T) {
 	}
 	granted := make(map[string]bool)
 	for _, p := range strings.Fields(strings.TrimPrefix(rwLine, "ReadWritePaths=")) {
-		granted[p] = true
+		// A leading "-" means "ignore if absent" (systemd.exec(5)); it is a
+		// modifier, not part of the path, and the doctor contract is about
+		// the path itself.
+		granted[strings.TrimPrefix(p, "-")] = true
 	}
 	for _, required := range hostcheck.DaemonWritablePaths {
 		if !granted[required] {
