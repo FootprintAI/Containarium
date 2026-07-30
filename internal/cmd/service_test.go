@@ -52,6 +52,50 @@ func TestBackupUnitStateDirectory(t *testing.T) {
 	}
 }
 
+// TestEnsureDaemonOwnedDirsCreatesThem covers the install-time half of the
+// contract: these paths are Required in hostcheck.DaemonWritablePaths AND listed
+// in the unit's ReadWritePaths, so if they are absent the doctor fails (aborting
+// `pool join`, which runs its self-check after ensureDaemonUnitAndSecret) and
+// systemd fails namespace setup with 226/NAMESPACE.
+func TestEnsureDaemonOwnedDirsCreatesThem(t *testing.T) {
+	root := t.TempDir()
+	if err := ensureDaemonOwnedDirs(root); err != nil {
+		t.Fatalf("ensureDaemonOwnedDirs: %v", err)
+	}
+	for _, dir := range daemonOwnedDirs {
+		fi, err := os.Stat(filepath.Join(root, dir))
+		if err != nil {
+			t.Errorf("%s was not created: %v", dir, err)
+			continue
+		}
+		if !fi.IsDir() {
+			t.Errorf("%s exists but is not a directory", dir)
+		}
+	}
+	// `pool join` is documented idempotent, so re-running must not error.
+	if err := ensureDaemonOwnedDirs(root); err != nil {
+		t.Errorf("second call should be idempotent, got: %v", err)
+	}
+}
+
+// TestDaemonOwnedDirsCoverContainariumOwnedWritablePaths is the join between the
+// doctor contract and what we create. Any Required writable path under a
+// Containarium-owned prefix must be in daemonOwnedDirs — otherwise the doctor
+// demands a directory nothing creates, and `pool join` aborts on a fresh host.
+// System paths (/etc, /home, /var/log, ...) are deliberately excluded: we must
+// not create or re-mode those.
+func TestDaemonOwnedDirsCoverContainariumOwnedWritablePaths(t *testing.T) {
+	for _, required := range hostcheck.DaemonWritablePaths {
+		if required != "/opt/containarium" && required != "/var/lib/containarium" {
+			continue // inherited from the base system
+		}
+		if !slices.Contains(daemonOwnedDirs, required) {
+			t.Errorf("hostcheck.DaemonWritablePaths requires %q but daemonOwnedDirs does not "+
+				"create it; the doctor would fail and pool join would abort on a fresh host", required)
+		}
+	}
+}
+
 // TestDaemonUnitGrantsBackupStateDir guards the daemon's ability to write its
 // backup state. pkg/core/backup MkdirAll+WriteFiles under
 // /var/lib/containarium/backups on *every* destination (a GCS backup is staged
