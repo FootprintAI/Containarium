@@ -166,9 +166,20 @@ EOF
     INCUS_VERSION=$(incus --version | cut -d'-' -f1)
     log_success "Incus $INCUS_VERSION installed"
 
-    # Check if initialization is needed
+    # Check if initialization is needed.
+    #
+    # A freshly-installed Incus daemon answers `incus info` immediately, but it
+    # has NO storage pool or network yet. Testing `incus info` alone therefore
+    # misreports a brand-new install as "already initialized", skips
+    # `incus admin init`, and leaves the daemon pool-less — so the first
+    # container create fails much later with "Storage pool not found". Require a
+    # storage pool to exist before treating Incus as initialized.
     if ! incus info &> /dev/null; then
         log_info "Initializing Incus with default settings..."
+        incus admin init --auto
+        log_success "Incus initialized"
+    elif ! incus storage list --format csv 2>/dev/null | grep -q .; then
+        log_warn "Incus daemon is up but has no storage pool; initializing..."
         incus admin init --auto
         log_success "Incus initialized"
     else
