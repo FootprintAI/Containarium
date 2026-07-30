@@ -335,6 +335,8 @@ func ensureSSHInclude(sshConfigPath, includePath string, uid, gid int) (bool, er
 	}
 	chownUnderHome(dir, uid, gid)
 
+	// #nosec G304 -- sshConfigPath is the caller's own ~/.ssh/config, not
+	// attacker-controlled.
 	existing, err := os.ReadFile(sshConfigPath)
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
@@ -350,7 +352,7 @@ func ensureSSHInclude(sshConfigPath, includePath string, uid, gid int) (bool, er
 	// Prepend so the Include wins over later `Host *` catch-alls (OpenSSH
 	// takes the first value for most keywords).
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Include %s\n", includePath))
+	fmt.Fprintf(&b, "Include %s\n", includePath)
 	if len(existing) > 0 {
 		if existing[len(existing)-1] != '\n' {
 			b.WriteByte('\n')
@@ -380,6 +382,8 @@ type mcpServerEntry struct {
 // share the "mcpServers" object shape.
 func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 	root := map[string]any{}
+	// #nosec G304 -- path is the caller's own agent config under $HOME, not
+	// attacker-controlled.
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
@@ -389,7 +393,7 @@ func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 			}
 		}
 	case os.IsNotExist(err):
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return false, err
 		}
 	default:
@@ -427,6 +431,8 @@ func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 // rules), so they need no TOML escaping here.
 func codexAppendMCP(path, name, sshHost string) (bool, error) {
 	header := fmt.Sprintf("[mcp_servers.%s]", name)
+	// #nosec G304 -- path is the caller's own ~/.codex/config.toml, not
+	// attacker-controlled.
 	existing, err := os.ReadFile(path)
 	switch {
 	case err == nil:
@@ -434,7 +440,7 @@ func codexAppendMCP(path, name, sshHost string) (bool, error) {
 			return false, nil
 		}
 	case os.IsNotExist(err):
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return false, err
 		}
 	default:
@@ -451,7 +457,7 @@ func codexAppendMCP(path, name, sshHost string) (bool, error) {
 	}
 	b.WriteString(header + "\n")
 	b.WriteString("command = \"ssh\"\n")
-	b.WriteString(fmt.Sprintf("args = [%q, \"agent-box\"]\n", sshHost))
+	fmt.Fprintf(&b, "args = [%q, \"agent-box\"]\n", sshHost)
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return false, err
@@ -566,6 +572,9 @@ func launchAgent(agent, instruction string) error {
 	}
 	argv := append([]string{spec.bin}, spec.launchArgs(instruction)...)
 	fmt.Printf("  launching %s on the task…\n\n", spec.bin)
+	// #nosec G204 -- launching the user-selected local agent is the whole point
+	// (BYOA); bin is resolved from the fixed agentSpecs allowlist via LookPath,
+	// not from arbitrary user input.
 	return syscall.Exec(bin, argv, os.Environ())
 }
 
