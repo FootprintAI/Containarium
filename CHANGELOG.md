@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`connect` uses a short-lived SSH certificate when the server can sign one.**
+  The MCP `connect` tool authorized a managed long-lived key on the box and
+  dialed with it. That leaves a durable credential on every box an agent has
+  ever touched, and those copies drift — after a host restart a box can be left
+  with stale `authorized_keys` and no working login.
+
+  Against a control plane that signs SSH certificates, `connect` now generates a
+  throwaway keypair, has it signed for exactly that box, and uses a certificate
+  that expires in minutes. Nothing is installed on the box, so nothing is left
+  behind and nothing goes stale. The ephemeral key lives in a `0700` directory
+  for the duration of the call and is removed when it returns.
+
+  **Capability-detected, not configured.** A plain daemon has no signing
+  endpoint, and a flag describing which kind of server you pointed at is a flag
+  you will get wrong — so `connect` tries to issue and falls back to the managed
+  key when the endpoint is absent. Existing deployments are unaffected. A server
+  that *can* sign and then fails is surfaced rather than silently downgraded:
+  falling back there would install a long-lived key to paper over a
+  control-plane fault and never mention it.
+
 ### Fixed
 
 - **Sentinel no longer tears down a backend's own reconnect (#769).** After a

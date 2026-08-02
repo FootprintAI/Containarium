@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -52,17 +53,42 @@ func handleConnect(client API, args map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	// Reuse (or generate once) the managed key the `ssh setup` flow uses,
-	// so the operator never hand-manages a key. The MCP server runs on the
-	// operator's machine, so this is the same key material the CLI sees.
-	pubPath, pub, _, err := sshkey.LocateOrGenerate(sshkey.LocateOpts{})
-	if err != nil {
-		return "", fmt.Errorf("locate or generate managed key: %w", err)
-	}
-	privPath := strings.TrimSuffix(pubPath, ".pub")
+	// Prefer a short-lived certificate when the server can sign one: nothing
+	// is installed on the box, so nothing is left behind and nothing goes
+	// stale after a host restart. Capability-detected — a plain daemon has no
+	// signing endpoint, and falls through to the managed key below.
+	//
+	// `pub` stays empty on the certificate path; it is only used to report
+	// which key was authorized, and on this path none was.
+	var (
+		privPath string
+		pub      string
+		cert     *issuedCert
+	)
+	cert, err = issueCertForBox(client, target.User)
+	switch {
+	case err == nil:
+		defer cert.Cleanup()
+		privPath = cert.PrivateKeyPath
+	case errors.Is(err, errCertUnsupported):
+		// Reuse (or generate once) the managed key the `ssh setup` flow uses,
+		// so the operator never hand-manages a key. The MCP server runs on the
+		// operator's machine, so this is the same key material the CLI sees.
+		var pubPath string
+		pubPath, pub, _, err = sshkey.LocateOrGenerate(sshkey.LocateOpts{})
+		if err != nil {
+			return "", fmt.Errorf("locate or generate managed key: %w", err)
+		}
+		privPath = strings.TrimSuffix(pubPath, ".pub")
 
-	if err := mcpAuthorizeKey(client, box, pub); err != nil {
-		return "", fmt.Errorf("authorize key on %q: %w", box, err)
+		if err := mcpAuthorizeKey(client, box, pub); err != nil {
+			return "", fmt.Errorf("authorize key on %q: %w", box, err)
+		}
+	default:
+		// The server COULD sign and something went wrong. Falling back here
+		// would install a long-lived key to paper over a control-plane fault
+		// and never mention it, so surface it instead.
+		return "", fmt.Errorf("issue certificate for %q: %w", box, err)
 	}
 
 	// Tier 2 — stateful tmux session on the box. State (cd, exports,
@@ -84,6 +110,16 @@ func handleConnect(client API, args map[string]interface{}) (string, error) {
 	if execCmd == "" {
 		// Config mode: hand the ready invocation back for the human to run.
 		sshArgs := connectcore.BuildSSHArgs(target, privPath, execCmd)
+		if cert != nil {
+			// The identity is deleted when this call returns, so a copied
+			// command would fail later with an unexplained "no such file".
+			// Say so rather than hand over an invocation that quietly rots.
+			return fmt.Sprintf(
+				"✓ %s is ready — issued %s (no key installed on the box).\n"+
+					"This certificate lives only for the duration of this call; run `connect` with `exec` to use it,\n"+
+					"or re-run `connect` when you want a fresh one for your terminal.\n",
+				box, certTTLNote(cert, time.Now())), nil
+		}
 		fp, _ := sshkey.Fingerprint(pub)
 		return fmt.Sprintf(
 			"✓ %s is ready — key %s authorized.\nRun this in your terminal:\n\n    ssh %s\n",

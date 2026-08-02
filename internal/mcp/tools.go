@@ -955,7 +955,11 @@ func (s *Server) registerTools() {
 				"name: the command runs inside a named tmux session ON THE BOX, so a later call " +
 				"with the same `session` sees the same shell — `cd /app` then `pwd` returns " +
 				"/app. A human can `tmux attach` to that session too. The SSH target is the " +
-				"box's ssh_host (or its IP if the daemon reports none) and its SSH username.",
+				"box's ssh_host (or its IP if the daemon reports none) and its SSH username.\n\n" +
+				"Credential: against a control plane that can sign SSH certificates, connect uses a " +
+				"short-lived certificate scoped to this box and installs NOTHING on it — nothing to " +
+				"rotate and nothing left behind after a restart. Against a plain daemon it falls back " +
+				"to authorizing a managed key, as before. You do not configure which; it is detected.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
