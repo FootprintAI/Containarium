@@ -25,10 +25,19 @@ type TunnelServer struct {
 	OnConnect    func(spot *TunnelSpot)
 	OnDisconnect func(spot *TunnelSpot)
 
-	// Active proxy listeners per spot (spotID -> list of listeners)
+	// Active proxy listeners per spot. Keyed by spotID and tagged with the
+	// registration generation that installed them, so a superseded watcher
+	// cannot close the listeners belonging to the registration that replaced
+	// it (#769).
 	mu        sync.Mutex
-	proxies   map[string][]net.Listener
+	proxies   map[string]proxySet
 	cancelCtx context.CancelFunc
+}
+
+// proxySet is one registration's listeners plus the generation that owns them.
+type proxySet struct {
+	gen       uint64
+	listeners []net.Listener
 }
 
 // NewTunnelServer creates a new tunnel server with a token-bound pool
@@ -43,7 +52,7 @@ func NewTunnelServer(listenAddr string, policy *TokenPolicy, registry *TunnelReg
 		listenAddr: listenAddr,
 		policy:     policy,
 		registry:   registry,
-		proxies:    make(map[string][]net.Listener),
+		proxies:    make(map[string]proxySet),
 	}
 }
 
@@ -133,7 +142,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// Register in the registry (assigns loopback alias)
-	localIP, err := ts.registry.Register(hs, session)
+	localIP, gen, err := ts.registry.Register(hs, session)
 	if err != nil {
 		log.Printf("[tunnel-server] registration failed for %s: %v", hs.SpotID, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
@@ -170,7 +179,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		}
 		loopbackPorts = filtered
 	}
-	ts.startProxies(ctx, hs.SpotID, localIP, externalPort, loopbackPorts, session)
+	ts.startProxies(ctx, hs.SpotID, gen, localIP, externalPort, loopbackPorts, session)
 
 	// Notify manager
 	spot := ts.registry.Get(hs.SpotID)
@@ -178,8 +187,10 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		ts.OnConnect(spot)
 	}
 
-	// Monitor session — when it closes, clean up
-	go ts.monitorSession(hs.SpotID, session)
+	// Monitor session — when it closes, clean up. The generation is what
+	// keeps this cleanup from firing against a LATER registration of the same
+	// spot (#769).
+	go ts.monitorSession(hs.SpotID, gen, session)
 }
 
 // startProxies opens a local TCP listener on localIP:port for each port.
@@ -188,11 +199,18 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 // it falls back to 127.0.0.1.
 // For the health port (8080), it also binds on 0.0.0.0:externalPort so that
 // the primary daemon on another VM can reach this tunnel backend's API.
-func (ts *TunnelServer) startProxies(ctx context.Context, spotID, localIP string, externalPort int, ports []int, session *yamux.Session) {
+func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uint64, localIP string, externalPort int, ports []int, session *yamux.Session) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	// Close any existing proxies for this spot
+	// Close any existing proxies for this spot — this registration supersedes
+	// whatever was there.
+	if existing, ok := ts.proxies[spotID]; ok && existing.gen > gen {
+		// A newer registration already installed its listeners while we were
+		// getting here; ours are the stale ones. Bail rather than clobber.
+		log.Printf("[tunnel-server] not installing proxies for spot %q gen=%d — gen=%d is already current", spotID, gen, existing.gen)
+		return
+	}
 	ts.closeProxiesLocked(spotID)
 
 	var listeners []net.Listener
@@ -236,7 +254,7 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID, localIP string
 			}
 		}
 	}
-	ts.proxies[spotID] = listeners
+	ts.proxies[spotID] = proxySet{gen: gen, listeners: listeners}
 }
 
 // proxyLoop accepts connections on the local listener and forwards them
@@ -298,26 +316,52 @@ func (ts *TunnelServer) proxyConnection(localConn net.Conn, port int, session *y
 }
 
 // monitorSession watches for the yamux session to close and triggers cleanup.
-func (ts *TunnelServer) monitorSession(spotID string, session *yamux.Session) {
+// monitorSession waits for one registration's session to end and tears that
+// registration down.
+//
+// gen is load-bearing. A reconnecting spot (the normal case after a backend
+// reboot or spot preemption) re-registers under the same spotID, and
+// TunnelRegistry.Register closes the PREVIOUS session to do it — which wakes
+// this goroutine for the old session. Running the ordinary cleanup then would
+// close the fresh listeners, drop the loopback alias, and strip the backend's
+// users out of the sshpiper config, leaving a live tunnel that nothing routes
+// over until someone restarts the sentinel by hand. That is #769.
+//
+// So every step here is conditional on this generation still being the current
+// one, and the check happens under the same lock as the mutation it guards.
+func (ts *TunnelServer) monitorSession(spotID string, gen uint64, session *yamux.Session) {
 	// Wait for the session to close (this blocks until the underlying conn dies
 	// or the session is explicitly closed)
 	<-session.CloseChan()
 
-	log.Printf("[tunnel-server] spot %q session closed, cleaning up", spotID)
-
-	// Get spot info before unregistering (for callback)
-	spot := ts.registry.Get(spotID)
-
-	// Close proxy listeners
+	// Close proxy listeners — only the ones this generation installed.
 	ts.mu.Lock()
-	ts.closeProxiesLocked(spotID)
+	current, ok := ts.proxies[spotID]
+	superseded := ok && current.gen != gen
+	if !superseded {
+		ts.closeProxiesLocked(spotID)
+	}
 	ts.mu.Unlock()
 
-	// Unregister from registry (removes loopback alias)
-	ts.registry.Unregister(spotID)
+	if superseded {
+		log.Printf("[tunnel-server] spot %q session gen=%d closed but gen=%d is already serving — leaving it alone (reconnect, not a disconnect)",
+			spotID, gen, current.gen)
+		return
+	}
+
+	// Unregister from registry (removes loopback alias) — again only if this
+	// generation is still the registered one. A nil result means a newer
+	// registration owns the spot and there is nothing to tear down.
+	spot := ts.registry.UnregisterIfCurrent(spotID, gen)
+	if spot == nil {
+		log.Printf("[tunnel-server] spot %q session gen=%d closed but the registration was superseded — no cleanup", spotID, gen)
+		return
+	}
+
+	log.Printf("[tunnel-server] spot %q session gen=%d closed, cleaning up", spotID, gen)
 
 	// Notify manager
-	if spot != nil && ts.OnDisconnect != nil {
+	if ts.OnDisconnect != nil {
 		ts.OnDisconnect(spot)
 	}
 }
@@ -333,8 +377,8 @@ func isClosedErr(err error) bool {
 }
 
 func (ts *TunnelServer) closeProxiesLocked(spotID string) {
-	if listeners, ok := ts.proxies[spotID]; ok {
-		for _, ln := range listeners {
+	if set, ok := ts.proxies[spotID]; ok {
+		for _, ln := range set.listeners {
 			_ = ln.Close()
 		}
 		delete(ts.proxies, spotID)

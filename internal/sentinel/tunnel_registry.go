@@ -36,13 +36,34 @@ type TunnelSpot struct {
 	PublicAliases     []string
 	PublicBaseDomains []string
 	PublicPort        int
+
+	// Generation distinguishes successive registrations of the SAME spotID.
+	// A spot that reconnects (the normal case after a backend reboot or spot
+	// preemption) replaces its own entry, and the goroutines watching the
+	// PREVIOUS session are still alive and about to wake up. Without a way to
+	// tell "my registration" from "the one that replaced me", that stale
+	// watcher tears down the fresh one — see UnregisterIfCurrent (#769).
+	Generation uint64
 }
+
+// addLoopbackAliasFn / removeLoopbackAliasFn are indirection seams over the
+// `ip addr` calls. Configuring a loopback alias needs CAP_NET_ADMIN, which a
+// unit test does not have and should not need in order to exercise
+// registration bookkeeping — the same reason isAlreadyExistsErr was split out
+// below. Production always uses the real functions.
+var (
+	addLoopbackAliasFn    = addLoopbackAlias
+	removeLoopbackAliasFn = removeLoopbackAlias
+)
 
 // TunnelRegistry tracks connected tunnel clients and assigns loopback aliases.
 type TunnelRegistry struct {
 	mu      sync.RWMutex
 	spots   map[string]*TunnelSpot
 	usedIPs map[byte]string // octet -> spotID
+	// nextGen hands out registration generations. Monotonic across all
+	// spots; only comparisons within one spotID are meaningful.
+	nextGen uint64
 }
 
 // NewTunnelRegistry creates a new TunnelRegistry.
@@ -58,7 +79,7 @@ func NewTunnelRegistry() *TunnelRegistry {
 // Pool, PublicHostname, PublicAliases, PublicPort are read off the
 // handshake; PublicHostname being set means the sentinel will promote
 // this tunnel into a primary registry entry on connect.
-func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (string, error) {
+func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (string, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -70,7 +91,9 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 	var octet byte
 	if old, ok := r.spots[spotID]; ok {
 		log.Printf("[tunnel-registry] spot %q reconnecting, reusing IP %s", spotID, old.LocalIP)
-		_ = old.Session.Close()
+		if old.Session != nil {
+			_ = old.Session.Close()
+		}
 		localIP = old.LocalIP
 		for o, id := range r.usedIPs {
 			if id == spotID {
@@ -83,16 +106,19 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 		var err error
 		octet, err = r.allocateOctet(spotID)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		localIP = fmt.Sprintf("127.0.0.%d", octet)
-		if err := addLoopbackAlias(localIP); err != nil {
+		if err := addLoopbackAliasFn(localIP); err != nil {
 			delete(r.usedIPs, octet)
-			return "", fmt.Errorf("add loopback alias %s: %w", localIP, err)
+			return "", 0, fmt.Errorf("add loopback alias %s: %w", localIP, err)
 		}
 	}
 
 	externalPort := ExternalPortBase + int(octet)
+
+	r.nextGen++
+	gen := r.nextGen
 
 	spot := &TunnelSpot{
 		ID:                spotID,
@@ -106,11 +132,44 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 		PublicBaseDomains: hs.PublicBaseDomains,
 		PublicPort:        hs.PublicPort,
 		Connected:         time.Now(),
+		Generation:        gen,
 	}
 	r.spots[spotID] = spot
 
-	log.Printf("[tunnel-registry] registered spot %q at %s (ports: %v, pool: %q, primary_host: %q)", spotID, localIP, hs.Ports, hs.Pool, hs.PublicHostname)
-	return localIP, nil
+	log.Printf("[tunnel-registry] registered spot %q at %s gen=%d (ports: %v, pool: %q, primary_host: %q)", spotID, localIP, gen, hs.Ports, hs.Pool, hs.PublicHostname)
+	return localIP, gen, nil
+}
+
+// UnregisterIfCurrent removes the spot ONLY when the registered entry is still
+// generation gen, and reports the spot it removed (nil when it removed
+// nothing).
+//
+// This is the fix for #769's "stale forwarding after a backend reboot". When a
+// spot reconnects, Register closes the previous yamux session and installs a
+// fresh entry under the same spotID. That close wakes the goroutine monitoring
+// the OLD session, which then runs its ordinary disconnect cleanup — closing
+// proxy listeners, dropping the loopback alias, removing the backend's users
+// from the sshpiper config — except the thing it tears down is now the LIVE
+// registration that replaced it. The tunnel is up, and nothing routes over it
+// until the sentinel is restarted by hand.
+//
+// The generation check makes the compare-and-remove atomic under the registry
+// lock, so a superseded watcher can observe that it no longer owns the entry
+// and leave it alone.
+func (r *TunnelRegistry) UnregisterIfCurrent(spotID string, gen uint64) *TunnelSpot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	spot, ok := r.spots[spotID]
+	if !ok {
+		return nil
+	}
+	if spot.Generation != gen {
+		log.Printf("[tunnel-registry] ignoring cleanup for superseded spot %q gen=%d (current gen=%d)", spotID, gen, spot.Generation)
+		return nil
+	}
+	r.unregisterLocked(spotID)
+	return spot
 }
 
 // UnregisterAll iterates every registered spot and unregisters it.
@@ -138,14 +197,21 @@ func (r *TunnelRegistry) UnregisterAll() {
 func (r *TunnelRegistry) Unregister(spotID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.unregisterLocked(spotID)
+}
 
+// unregisterLocked is the shared body of Unregister / UnregisterIfCurrent.
+// Caller holds r.mu.
+func (r *TunnelRegistry) unregisterLocked(spotID string) {
 	spot, ok := r.spots[spotID]
 	if !ok {
 		return
 	}
 
-	_ = spot.Session.Close()
-	removeLoopbackAlias(spot.LocalIP)
+	if spot.Session != nil {
+		_ = spot.Session.Close()
+	}
+	removeLoopbackAliasFn(spot.LocalIP)
 	delete(r.spots, spotID)
 
 	for octet, id := range r.usedIPs {
@@ -155,7 +221,7 @@ func (r *TunnelRegistry) Unregister(spotID string) {
 		}
 	}
 
-	log.Printf("[tunnel-registry] unregistered spot %q (was at %s)", spotID, spot.LocalIP)
+	log.Printf("[tunnel-registry] unregistered spot %q gen=%d (was at %s)", spotID, spot.Generation, spot.LocalIP)
 }
 
 // DialTunnel opens a yamux stream to the spot's local service on the given

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sentinel no longer tears down a backend's own reconnect (#769).** After a
+  backend host reboots — a routine event when it runs on preemptible capacity
+  — it reconnects its tunnel under the same spot id. `TunnelRegistry.Register`
+  closes the previous yamux session in order to replace the entry, and that
+  close woke the goroutine monitoring the OLD session, which then ran its
+  ordinary disconnect cleanup against the registration that had just replaced
+  it: proxy listeners closed, loopback alias removed, the spot unregistered,
+  and `OnDisconnect` fired, which strips that backend's users out of the
+  sshpiper config. The tunnel was up and healthy; nothing routed over it. SSH
+  to that host's containers stayed broken until an operator restarted the
+  sentinel by hand.
+
+  Each registration now carries a generation, and every teardown step is
+  conditional on that generation still being the current one — checked under
+  the same lock as the mutation it guards, so a superseded watcher cannot race
+  a fresh registration. A genuine disconnect is unaffected and still cleans up
+  fully. A reconnect now re-keys on its own (keysync applies immediately on
+  connect), so the manual `systemctl restart` workaround is no longer needed.
+
 ### Added
 
 - **Live host load per backend in `list_backends` / `GET /v1/backends`** —

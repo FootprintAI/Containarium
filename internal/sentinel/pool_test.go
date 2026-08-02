@@ -151,7 +151,7 @@ func TestOnTunnelConnect_PeerOnlyDoesNotPromote(t *testing.T) {
 // into the TunnelSpot.
 func TestRegisterPropagatesPool(t *testing.T) {
 	r := NewTunnelRegistry()
-	_, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
+	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
 	assert.NoError(t, err)
 
 	spot := r.Get("spot-1")
@@ -159,7 +159,7 @@ func TestRegisterPropagatesPool(t *testing.T) {
 	assert.Equal(t, Pool("prod"), spot.Pool)
 
 	// Empty pool stays empty (back-compat).
-	_, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil)
+	_, _, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, Pool(""), r.Get("spot-2").Pool)
 }
