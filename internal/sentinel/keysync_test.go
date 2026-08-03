@@ -117,7 +117,7 @@ func TestKeyStore_YAMLConfigGeneration(t *testing.T) {
 		{Username: "alice", AuthorizedKeys: "ssh-ed25519 AAAA_alice"},
 		{Username: "bob", AuthorizedKeys: "ssh-rsa AAAA_bob"},
 	}
-	backendIP := "10.130.0.15"
+	backendIP := "192.0.2.15"
 
 	// Simulate the YAML generation from Apply()
 	var lines []string
@@ -149,7 +149,7 @@ func TestKeyStore_YAMLConfigGeneration(t *testing.T) {
 	if !strings.Contains(yaml, "username: \"bob\"") {
 		t.Error("YAML missing bob")
 	}
-	if !strings.Contains(yaml, "host: 10.130.0.15:22") {
+	if !strings.Contains(yaml, "host: 192.0.2.15:22") {
 		t.Error("YAML missing backend host")
 	}
 	if !strings.Contains(yaml, "ignore_hostkey: true") {
@@ -233,4 +233,63 @@ func TestKeyStore_PushSentinelKey(t *testing.T) {
 
 	// Verify the mock server works
 	_ = receivedKey
+}
+
+// TestRenderSSHPiperConfig pins the generated sshpiper YAML directly (the real
+// function, not a mirror). The no-CA case must be byte-identical to the
+// historical output — Apply skips the rewrite when bytes are unchanged, so any
+// drift there would churn the live config. The CA case is additive: every pipe
+// gains trusted_user_ca_keys while keeping its authorized_keys.
+func TestRenderSSHPiperConfig(t *testing.T) {
+	routes := []userRoute{
+		{username: "alice", authorizedKeys: "ssh-ed25519 AAAA_alice", backendIP: "192.0.2.15"},
+		{username: "bob", authorizedKeys: "ssh-rsa AAAA_bob", backendIP: "192.0.2.15"},
+	}
+
+	t.Run("no CA installed — byte-identical to authorized_keys-only output", func(t *testing.T) {
+		const golden = `version: "1.0"
+pipes:
+  - from:
+      - username: "alice"
+        authorized_keys:
+          - /etc/sshpiper/users/alice/authorized_keys
+    to:
+      host: 192.0.2.15:22
+      username: "alice"
+      ignore_hostkey: true
+      private_key: /etc/sshpiper/upstream_key
+  - from:
+      - username: "bob"
+        authorized_keys:
+          - /etc/sshpiper/users/bob/authorized_keys
+    to:
+      host: 192.0.2.15:22
+      username: "bob"
+      ignore_hostkey: true
+      private_key: /etc/sshpiper/upstream_key
+`
+		if got := string(renderSSHPiperConfig(routes, "")); got != golden {
+			t.Errorf("no-CA output drifted from historical config.\n--- got ---\n%s\n--- want ---\n%s", got, golden)
+		}
+	})
+
+	t.Run("CA installed — additive: every pipe trusts the CA and keeps authorized_keys", func(t *testing.T) {
+		const caPath = "/etc/sshpiper/trusted_user_ca_keys"
+		out := string(renderSSHPiperConfig(routes, caPath))
+		if c := strings.Count(out, "trusted_user_ca_keys:"); c != len(routes) {
+			t.Errorf("expected trusted_user_ca_keys in each of %d pipes, got %d", len(routes), c)
+		}
+		if c := strings.Count(out, "- "+caPath); c != len(routes) {
+			t.Errorf("expected the CA keys path in each of %d pipes, got %d", len(routes), c)
+		}
+		if c := strings.Count(out, "authorized_keys:"); c != len(routes) {
+			t.Errorf("authorized_keys must be retained in each pipe (additive), got %d", c)
+		}
+		// The CA line belongs inside the `from:` matcher, before `to:`.
+		fromIdx := strings.Index(out, "trusted_user_ca_keys:")
+		toIdx := strings.Index(out, "    to:")
+		if fromIdx < 0 || toIdx < 0 || fromIdx > toIdx {
+			t.Error("trusted_user_ca_keys must appear within the from: block, before to:")
+		}
+	})
 }
