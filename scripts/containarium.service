@@ -28,9 +28,13 @@ ProtectHome=false
 # /var/lock, /run/lock - for useradd flock serialization
 # /var/log - useradd touches /var/log/lastlog (the "second capability trap")
 # /opt/containarium - runtime state/assets
+# /mnt/incus-data - the daemon writes containarium-recovery.yaml here when the
+#   persistent disk is mounted (see saveRecoveryConfigToPersistentStorage in
+#   internal/cmd/daemon.go and DefaultRecoveryConfigPath in internal/cmd/recover.go).
+#   "-" prefixed because the mount is optional; the daemon stat-gates the write.
 # This set MUST match internal/hostcheck.DaemonWritablePaths; a path the doctor
 # requires but ProtectSystem=strict denies makes the host boot DEGRADED.
-ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock /var/log -/opt/containarium
+ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock /var/log -/opt/containarium -/mnt/incus-data
 
 # StateDirectory= makes systemd create /var/lib/containarium (0750, root) before
 # the daemon starts and grants it write access. The backup service writes there
