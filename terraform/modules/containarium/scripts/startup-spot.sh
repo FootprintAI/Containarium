@@ -881,7 +881,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock -/opt/containarium /var/log
+ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock -/opt/containarium /var/log -/mnt/incus-data
 
 # StateDirectory= makes systemd create /var/lib/containarium (0750, root) before
 # the daemon starts and grants it write access. The backup service writes there
