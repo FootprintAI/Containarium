@@ -1464,7 +1464,19 @@ skipAppHosting:
 		// up.
 		if mgr := containerServer.GetManager(); mgr != nil {
 			gatewayServer.SetContainerExistsFn(func(username string) bool {
-				return mgr.ContainerExists(username + "-container")
+				// Owner "<o>" → container "<o>-container". Collaborator jump
+				// accounts are "<o>-container-<c>" and map to the SAME
+				// "<o>-container"; the bare `username+"-container"` synthesises
+				// "<o>-container-<c>-container", which never exists, so every
+				// collaborator was misclassified as an orphan and stripped from
+				// keysync → sshpiperd denied it (#1140). Accept either.
+				if mgr.ContainerExists(username + "-container") {
+					return true
+				}
+				if c, ok := container.CollaboratorJumpAccountContainer(username); ok {
+					return mgr.ContainerExists(c)
+				}
+				return false
 			})
 		}
 
@@ -2058,7 +2070,16 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.containerServer != nil {
 		if mgr := ds.containerServer.GetManager(); mgr != nil {
 			go container.RunOrphanReaper(ctx, func(username string) bool {
-				return mgr.ContainerExists(username + "-container")
+				// Same collaborator-aware mapping as the keysync filter above
+				// (#1140): without it a live collaborator jump account
+				// "<o>-container-<c>" is misread as an orphan and userdel'd.
+				if mgr.ContainerExists(username + "-container") {
+					return true
+				}
+				if c, ok := container.CollaboratorJumpAccountContainer(username); ok {
+					return mgr.ContainerExists(c)
+				}
+				return false
 			})
 		}
 	}

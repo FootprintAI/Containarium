@@ -291,6 +291,29 @@ func (cm *CollaboratorManager) removeCollaboratorUser(containerName, accountName
 	return nil
 }
 
+// CollaboratorJumpAccountContainer maps a COLLABORATOR jump-server account name
+// back to the owner container it grants access to. Collaborator accounts are
+// named "<owner>-container-<collaborator>" (see AddCollaborator); the container
+// is "<owner>-container". Returns (containerName, true) for a collaborator
+// account, or ("", false) for anything else (e.g. a bare owner account
+// "<owner>", which callers resolve with the usual "<owner>-container").
+//
+// This exists because the /authorized-keys orphan filter and the orphan reaper
+// (internal/server/dual_server.go) derived the container as
+// `username+"-container"` for EVERY jump account. That is right for owners but
+// yields "<owner>-container-<collab>-container" for collaborators — a name that
+// never exists — so every collaborator was misclassified as an orphan: filtered
+// out of the sentinel keysync (→ sshpiperd "no pipe" → publickey denied) AND
+// eligible for reaping. #1140.
+func CollaboratorJumpAccountContainer(jumpUser string) (string, bool) {
+	const infix = "-container-"
+	i := strings.Index(jumpUser, infix)
+	if i < 0 {
+		return "", false
+	}
+	return jumpUser[:i+len("-container")], true
+}
+
 // ListCollaborators returns all collaborators for a container
 func (cm *CollaboratorManager) ListCollaborators(ownerUsername string) ([]*collaborator.Collaborator, error) {
 	containerName := ownerUsername + "-container"
