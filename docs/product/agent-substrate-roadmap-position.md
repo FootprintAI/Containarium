@@ -86,26 +86,68 @@ RAM-snapshot fast resume on the LXC path. That is a losing race against
 Firecracker and against the CRD simultaneously.
 
 **The seam is the moat.** The value we alone can claim: one control
-plane, one tenancy model, one audit trail, one identity surface, across
-both. A customer with a cluster *and* a GPU box under a desk gets one
-platform. Nobody else in that table can say it.
+plane, one tenancy model, one identity surface, across both. A customer
+with a cluster *and* a GPU box under a desk gets one platform. Nobody
+else in that table can say it. (Note "one audit trail" is deliberately
+absent from that list — see below.)
 
-## The uncomfortable open question
+## The formerly-open question: does the trust fabric port to K8s?
 
-Our stated differentiators — per-tenant eBPF egress policy
-(`internal/netbpf`), audit-to-Postgres, scope-gated JWTs, KMS — are
-described in `docs/AGENT-SKILLS-CREWS-DESIGN.md` as "the trust fabric,
-and that is the moat." Almost all of it is **LXC-path-native**. On the
-K8s path, eBPF policy becomes NetworkPolicy, which agent-sandbox
-already does default-deny.
+> **Answered 2026-08-07** by reading `internal/netbpf`, `internal/audit`,
+> `internal/auth`, the secrets path, and `pkg/core/box/k8s/` side by side.
+> This section previously said the answer was unknown and was the
+> highest-value thing to find out. It is now known.
 
-So the barbell only holds if the trust fabric genuinely ports to K8s.
-If it doesn't, the two tracks aren't one product with two backends —
-they're two products, and the "one control plane" claim is marketing
-rather than architecture. **I don't currently know which it is, and I
-think that's the highest-value thing to find out before committing the
-roadmap.** It's a day or two of reading `internal/netbpf` and the K8s
-box path side by side, not a quarter of work.
+**Partially — and the split is clean: control plane ports, data plane
+does not.**
+
+### Ports (backend-agnostic by construction)
+
+| Primitive | Why it ports |
+| --- | --- |
+| Scope-gated JWTs | 101 `RequireScope` call sites; `internal/auth` has no backend import. Enforced before dispatch. |
+| API-level audit | Invoked at the gRPC handler layer (`container_server.go`, `agent_server.go`); `internal/audit` core is backend-neutral. |
+| Secrets / KMS **at rest** | `pkg/core/secrets` imports no incus. Envelope encryption, KMS, audit-on-read all portable. |
+
+### Does not port (incus-typed, not config-gated)
+
+| Gap | Evidence |
+| --- | --- |
+| **eBPF network policy** | `NetworkPolicyEnforcer`'s inspector is `ListContainers() ([]incus.ContainerInfo, error)`; it resolves container-name → host veth ifindex and attaches TCX. Constructed with `networkIncusClient` (`dual_server.go:1303`). No K8s branch exists. |
+| **SSH session audit** | `audit.NewSSHCollector(incusClient *incus.Client, …)`. On K8s you get API-call audit but no in-box SSH login audit. |
+| **Tenant secret delivery** | `incus config set environment.<NAME>=…`, reconciler holds `*incus.Client`. The K8s backend mounts Secrets only for authorized_keys and host keys. |
+
+These are **type-level** dependencies on `pkg/core/incus`, not feature
+flags. They cannot be switched on for K8s; they'd have to be rebuilt
+against a K8s-native mechanism.
+
+### What K8s has instead
+
+Not nothing: `objects.go:221` creates a per-tenant-namespace
+`default-deny` NetworkPolicy — ingress SSH-only, egress DNS-only. That's
+a credible floor. But it is **static**, written once at box-create and
+never driven by `NetworkPolicyService`. So the per-tenant egress
+allowlist, virtual-patch deny rules (#660), and traffic-flow accounting
+(#627) have no K8s expression at all.
+
+### What this means for the barbell
+
+The barbell holds, but the claim needs narrowing: **one product with two
+backends at the control plane; two products at the data plane.** "One
+control plane, one tenancy model, one identity surface" is accurate.
+"One audit trail" is not — it is true for API calls and false for
+in-box sessions. Marketing and the sales pitch should say the narrower
+thing.
+
+The asymmetry favours us more than expected: the *hard* part — identity,
+authz, secrets-at-rest — is already portable. What doesn't port is
+enforcement *mechanism*, which is exactly where K8s has its own native
+idiom to bind to rather than reimplement. That is the "inherit, don't
+invent" posture this note already argues for, so the gaps are consistent
+with the strategy rather than a refutation of it.
+
+Gaps tracked as #1188 (policy-driven K8s NetworkPolicy), #1189 (in-box
+session audit on K8s), #1190 (tenant secret delivery on K8s).
 
 ## What this note deliberately does not say
 
