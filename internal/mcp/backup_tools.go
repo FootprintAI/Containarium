@@ -99,6 +99,38 @@ func backupTools() []Tool {
 			},
 			Handler: handleRestoreBackup,
 		},
+		{
+			Name: "verify_backup",
+			Description: "Prove a backup is restorable, not merely intact. The recorded " +
+				"SHA-256 shows the bytes are unchanged; it cannot show the dump will " +
+				"load. Verification restores the dump into a throwaway database inside " +
+				"the target container, sanity-checks it, and drops the scratch " +
+				"database. NON-DESTRUCTIVE to the source: the container the backup " +
+				"came from is never touched, and a target that resolves to it is " +
+				"refused. A dump that fails to load is reported as a failed " +
+				"verification with the engine's own error, not as a tool error. The " +
+				"outcome is recorded on the backup as audit evidence. Mirrors " +
+				"`containarium backup verify`.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id": map[string]interface{}{
+						"type":        "string",
+						"description": "Backup ID to verify (see list_backups).",
+					},
+					"target_username": map[string]interface{}{
+						"type":        "string",
+						"description": "Tenant whose container is used as the throwaway restore target. Must differ from the backup's own tenant.",
+					},
+					"db_password": map[string]interface{}{
+						"type":        "string",
+						"description": "Postgres password on the target. Omit for peer/trust auth.",
+					},
+				},
+				"required": []string{"id", "target_username"},
+			},
+			Handler: handleVerifyBackup,
+		},
 	}
 }
 
@@ -166,6 +198,45 @@ func handleRestoreBackup(client API, args map[string]interface{}) (string, error
 		return "", err
 	}
 	return fmt.Sprintf("✅ %s\n", resp.Message), nil
+}
+
+func handleVerifyBackup(client API, args map[string]interface{}) (string, error) {
+	resp, err := client.VerifyBackup(VerifyBackupRequest{
+		ID:             getStringArg(args, "id", ""),
+		TargetUsername: getStringArg(args, "target_username", ""),
+		Connection: &PgConnectionBody{
+			Password: getStringArg(args, "db_password", ""),
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	v := resp.Verification
+	if v == nil {
+		return "", fmt.Errorf("daemon returned no verification result")
+	}
+	passed := v.Result == "VERIFICATION_RESULT_PASSED"
+	if passed {
+		fmt.Fprintf(&b, "✅ %s\n\n", resp.Message)
+	} else {
+		fmt.Fprintf(&b, "❌ %s\n\n", resp.Message)
+	}
+	for _, c := range v.Checks {
+		mark := "✓"
+		if !c.Passed {
+			mark = "✗"
+		}
+		fmt.Fprintf(&b, "  %s %-18s %s\n", mark, c.Name, c.Detail)
+	}
+	fmt.Fprintf(&b, "\n  target: %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	fmt.Fprintf(&b, "  when:   %s", v.VerifiedAt)
+	if v.VerifiedBy != "" {
+		fmt.Fprintf(&b, " by %s", v.VerifiedBy)
+	}
+	b.WriteString("\n")
+	return b.String(), nil
 }
 
 // backupDestLabel renders the proto enum name as a short label.
