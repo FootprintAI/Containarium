@@ -34,6 +34,16 @@ cat > "$WRAPPER_SCRIPT" << 'SHELLEOF'
 
 USERNAME="$(whoami)"
 CONTAINER="${USERNAME}-container"
+# Collaborator jump accounts are "<owner>-container-<collab>" (see
+# CollaboratorManager.AddCollaborator); the container they access is
+# "<owner>-container", NOT "<login>-container". Owner logins never contain the
+# "-container-" infix, so they are unaffected. Without this a collaborator
+# session resolves to "<owner>-container-<collab>-container" and dies with
+# "Container ... not found" — the SSH-session half of the #1140 fix (the other
+# half is the keysync orphan filter, fixed separately).
+case "$USERNAME" in
+    *-container-*) CONTAINER="${USERNAME%-container-*}-container" ;;
+esac
 
 # Check if container exists and is running
 if ! sudo incus info "$CONTAINER" &>/dev/null; then
