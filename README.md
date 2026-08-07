@@ -463,7 +463,8 @@ The sentinel itself is e2-micro (free tier). It:
 
 VictoriaMetrics + Grafana auto-provisioned. Per-container CPU,
 memory, disk, network. Alerting via webhooks. SSH audit logs per
-user.
+user (LXC backend; the Kubernetes backend records control-plane API
+audit but not in-box SSH sessions — see #1189).
 
 ### Security primitives
 
