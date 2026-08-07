@@ -763,6 +763,11 @@ and your data on your infra.
 
 Where Containarium has been demonstrated live:
 
+- **2026-08 — COSCUP, Taipei.** *An SSH-native agent runtime, built
+  because our hardware was sitting idle* — where utilisation goes on AI
+  and VM fleets, why one VM per developer stopped paying for itself, and
+  how LXC + sshpiper + persistent disk became Containarium.
+  [Slides (PDF)](docs/talks/2026-08-coscup-containarium.pdf).
 - **2026-06-04 — AI Agent Night, Taipei.** When the grand-prize
   giveaway (a custom vibe-keyboard) hit a snag — the event had no way
   to run the lucky draw — we fired up Containarium and vibe-coded a
