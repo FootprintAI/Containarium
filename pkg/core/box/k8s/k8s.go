@@ -513,15 +513,50 @@ func (b *Backend) GetMeta(ctx context.Context, ref box.BoxRef) (map[string]strin
 	return metaFromAnnotations(sb.Annotations), nil
 }
 
-// stateOf maps a Sandbox onto the proto state. spec.operatingMode is the
-// desired state (Suspended → STOPPED, the CR-native replicas=0); within
-// Running, the controller-set conditions distinguish a Ready pod (RUNNING)
-// from one still coming up (PROVISIONING). Finished means the pod hit a
-// terminal phase — for a long-lived SSH box that is effectively stopped.
+// stateOf maps a Sandbox onto the proto state, preferring *observed* status
+// over *desired* spec.
+//
+// spec.operatingMode is only a request. Reporting STOPPED the moment Stop()
+// writes it — as this function used to — tells a caller polling for shutdown
+// that the box is down while its pod is still terminating. agent-sandbox
+// >= 0.5.4 makes the observation available: the Suspended condition is always
+// present after the first reconcile, True only once the backing Pod is
+// actually gone (reason PodTerminated), and False while it is still going away
+// (reason PodTerminating). See #1186.
+//
+// Version skew is deliberate here: bumping the Go module upgrades the API
+// types, not the controller running in a cluster. Against a 0.5.3 controller
+// the condition is absent, so we fall back to the old spec-derived answer
+// rather than reporting a box that never stops. An Unknown condition (reason
+// PodStateUnknown — the controller failed to reconcile the Pod) is treated the
+// same way: no usable observation, so trust the request.
+//
+// Within Running, Ready distinguishes a live pod (RUNNING) from one still
+// coming up (PROVISIONING). Finished means the pod hit a terminal phase —
+// for a long-lived SSH box that is effectively stopped.
 func stateOf(sb *sandboxv1beta1.Sandbox) pb.ContainerState {
-	if sb.Spec.OperatingMode == sandboxv1beta1.SandboxOperatingModeSuspended {
+	suspendRequested := sb.Spec.OperatingMode == sandboxv1beta1.SandboxOperatingModeSuspended
+	suspended := apimeta.FindStatusCondition(sb.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended))
+
+	switch {
+	case suspended == nil, suspended.Status == metav1.ConditionUnknown:
+		// No usable observation (pre-0.5.4 controller, or reconcile failed) —
+		// fall back to the desired state.
+		if suspendRequested {
+			return pb.ContainerState_CONTAINER_STATE_STOPPED
+		}
+	case suspended.Status == metav1.ConditionTrue:
+		// Observed suspended: the pod is genuinely gone.
 		return pb.ContainerState_CONTAINER_STATE_STOPPED
+	case suspended.Status == metav1.ConditionFalse:
+		// Not suspended yet. If a suspend was requested, the pod is still
+		// terminating — report RUNNING, not STOPPED, so a caller waiting for
+		// shutdown keeps waiting instead of acting on a box that is still up.
+		if suspendRequested {
+			return pb.ContainerState_CONTAINER_STATE_RUNNING
+		}
 	}
+
 	if apimeta.IsStatusConditionTrue(sb.Status.Conditions, string(sandboxv1beta1.SandboxConditionFinished)) {
 		return pb.ContainerState_CONTAINER_STATE_STOPPED
 	}
