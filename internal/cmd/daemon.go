@@ -31,38 +31,39 @@ import (
 )
 
 var (
-	daemonAddress        string
-	daemonPort           int
-	daemonHTTPPort       int
-	enableMTLS           bool
-	enableREST           bool
-	daemonCertsDir       string
-	jwtSecret            string
-	jwtSecretFile        string
-	swaggerDir           string
-	networkSubnet        string
-	skipInfraInit        bool
-	standaloneMode       bool
-	enableAppHosting     bool
-	postgresConnString   string
-	baseDomain           string
-	caddyAdminURL        string
-	caddyCertDir         string
-	alertWebhookURL      string
-	alertWebhookSecret   string
-	sentinelURL          string
-	sshHost              string
-	peerAddrs            []string
-	localBackendID       string
-	pool                 string
-	region               string
-	cpuOvercommitFactor  float64
-	cpuOvercommitEnforce bool
-	placementCPUAware    bool
-	publicHostname       string
-	publicAliases        []string
-	publicBaseDomains    []string
-	publicPort           int
+	daemonAddress          string
+	daemonPort             int
+	daemonHTTPPort         int
+	enableMTLS             bool
+	enableREST             bool
+	daemonCertsDir         string
+	jwtSecret              string
+	jwtSecretFile          string
+	swaggerDir             string
+	networkSubnet          string
+	skipInfraInit          bool
+	requireIsolatedStorage bool
+	standaloneMode         bool
+	enableAppHosting       bool
+	postgresConnString     string
+	baseDomain             string
+	caddyAdminURL          string
+	caddyCertDir           string
+	alertWebhookURL        string
+	alertWebhookSecret     string
+	sentinelURL            string
+	sshHost                string
+	peerAddrs              []string
+	localBackendID         string
+	pool                   string
+	region                 string
+	cpuOvercommitFactor    float64
+	cpuOvercommitEnforce   bool
+	placementCPUAware      bool
+	publicHostname         string
+	publicAliases          []string
+	publicBaseDomains      []string
+	publicPort             int
 
 	proxyProtocol        bool
 	proxyProtocolTrusted []string
@@ -132,6 +133,7 @@ func init() {
 	// Infrastructure settings
 	daemonCmd.Flags().StringVar(&networkSubnet, "network-subnet", "10.100.0.1/24", "IPv4 subnet for container network (CIDR format, e.g., 10.100.0.1/24)")
 	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
+	daemonCmd.Flags().BoolVar(&requireIsolatedStorage, "require-isolated-storage", false, "Refuse to start on a storage pool that does not give each container its own volume. The dir driver puts every tenant rootfs on one filesystem, so they share one journal and one tenant's writeback can stall another tenant's fsync (see #1206). Off by default: a shared journal is harmless on a dev host or a single-tenant box. Turn it on for backends running mutually untrusting tenants.")
 	daemonCmd.Flags().BoolVar(&standaloneMode, "standalone", false, "Standalone mode: skip core containers (PostgreSQL, Caddy) and start immediately")
 
 	// App hosting settings
@@ -233,6 +235,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// running on a host without incus (k8s runtime).
 	if !skipInfraInit && incusClient != nil {
 		log.Printf("Initializing infrastructure...")
+		// Decide up front what happens if the storage pool doesn't isolate
+		// tenant volumes: warn, or refuse to come up (#1206).
+		incusClient.SetStoragePolicy(incus.StoragePolicyFromRequireFlag(requireIsolatedStorage))
 		networkConfig := incus.NetworkConfig{
 			Name:        "incusbr0",
 			IPv4Address: networkSubnet,
@@ -254,8 +259,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			networkSubnet = actual
 		}
 		log.Printf("  Network: incusbr0 (%s)", networkSubnet)
-		storageDriver := incusClient.GetStorageDriver("default")
-		log.Printf("  Storage: default (%s)", storageDriver)
+		// Report the isolation property alongside the driver name so the
+		// startup banner answers "can one tenant stall another's fsync?"
+		// rather than only "which driver is this?" (#1206).
+		storageDriver := incus.StorageDriver(incusClient.GetStorageDriver("default"))
+		log.Printf("  Storage: default (%s, %s)", storageDriver, storageDriver.Isolation())
 		log.Printf("  Profile: default (configured)")
 	}
 
