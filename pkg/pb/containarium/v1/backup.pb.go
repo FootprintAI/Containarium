@@ -84,6 +84,63 @@ func (BackupDestination) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{0}
 }
 
+// VerificationResult is the outcome of a restore test. A backup whose
+// bytes are intact but which cannot be loaded by the engine is FAILED —
+// that distinction is the whole point of verification (see #1159).
+type VerificationResult int32
+
+const (
+	// Never verified, or the outcome could not be determined.
+	VerificationResult_VERIFICATION_RESULT_UNSPECIFIED VerificationResult = 0
+	// The dump restored into a scratch database and passed every
+	// engine-appropriate sanity check.
+	VerificationResult_VERIFICATION_RESULT_PASSED VerificationResult = 1
+	// The dump could not be restored, or restored but failed a sanity
+	// check. `error` carries the engine's own message.
+	VerificationResult_VERIFICATION_RESULT_FAILED VerificationResult = 2
+)
+
+// Enum value maps for VerificationResult.
+var (
+	VerificationResult_name = map[int32]string{
+		0: "VERIFICATION_RESULT_UNSPECIFIED",
+		1: "VERIFICATION_RESULT_PASSED",
+		2: "VERIFICATION_RESULT_FAILED",
+	}
+	VerificationResult_value = map[string]int32{
+		"VERIFICATION_RESULT_UNSPECIFIED": 0,
+		"VERIFICATION_RESULT_PASSED":      1,
+		"VERIFICATION_RESULT_FAILED":      2,
+	}
+)
+
+func (x VerificationResult) Enum() *VerificationResult {
+	p := new(VerificationResult)
+	*p = x
+	return p
+}
+
+func (x VerificationResult) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (VerificationResult) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_backup_proto_enumTypes[1].Descriptor()
+}
+
+func (VerificationResult) Type() protoreflect.EnumType {
+	return &file_containarium_v1_backup_proto_enumTypes[1]
+}
+
+func (x VerificationResult) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use VerificationResult.Descriptor instead.
+func (VerificationResult) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{1}
+}
+
 // BackupRecord is the metadata index entry for one stored dump. The dump
 // itself lives at `location`; this record is persisted as a small JSON
 // sidecar in the daemon's backup directory so `ListBackups` works without
@@ -109,7 +166,20 @@ type BackupRecord struct {
 	// for GCS.
 	Location string `protobuf:"bytes,8,opt,name=location,proto3" json:"location,omitempty"`
 	// Database engine. "postgres" is the only engine in v1.
-	Engine        string `protobuf:"bytes,9,opt,name=engine,proto3" json:"engine,omitempty"`
+	Engine string `protobuf:"bytes,9,opt,name=engine,proto3" json:"engine,omitempty"`
+	// Outcome of the most recent restore test, unset until the backup has
+	// been verified. A recorded sha256 proves the bytes are intact; only
+	// this proves the dump is restorable (#1159).
+	LastVerification *BackupVerification `protobuf:"bytes,10,opt,name=last_verification,json=lastVerification,proto3" json:"last_verification,omitempty"`
+	// Number of user relations (tables and partitioned tables, excluding
+	// system catalogs) in the source database at dump time — the manifest
+	// a restore test compares the restored schema against.
+	//
+	// Optional because it is absent on backups taken before verification
+	// existed, and because a source that cannot be queried still produces
+	// a valid dump. Unset means "no manifest": verification records what
+	// it found but has nothing to compare it to.
+	RelationCount *int64 `protobuf:"varint,11,opt,name=relation_count,json=relationCount,proto3,oneof" json:"relation_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -207,6 +277,206 @@ func (x *BackupRecord) GetEngine() string {
 	return ""
 }
 
+func (x *BackupRecord) GetLastVerification() *BackupVerification {
+	if x != nil {
+		return x.LastVerification
+	}
+	return nil
+}
+
+func (x *BackupRecord) GetRelationCount() int64 {
+	if x != nil && x.RelationCount != nil {
+		return *x.RelationCount
+	}
+	return 0
+}
+
+// VerificationCheck is one engine-appropriate assertion made during a
+// restore test, recorded individually so the evidence shows *what* was
+// checked rather than just a pass/fail bit.
+type VerificationCheck struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Check identifier, e.g. "restore", "connect", "relation_count".
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Whether this individual check passed.
+	Passed bool `protobuf:"varint,2,opt,name=passed,proto3" json:"passed,omitempty"`
+	// Human-readable outcome, e.g. "42 relations in scratch database".
+	// For a failing check this carries the engine's own error text.
+	Detail        string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerificationCheck) Reset() {
+	*x = VerificationCheck{}
+	mi := &file_containarium_v1_backup_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerificationCheck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerificationCheck) ProtoMessage() {}
+
+func (x *VerificationCheck) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_backup_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerificationCheck.ProtoReflect.Descriptor instead.
+func (*VerificationCheck) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *VerificationCheck) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *VerificationCheck) GetPassed() bool {
+	if x != nil {
+		return x.Passed
+	}
+	return false
+}
+
+func (x *VerificationCheck) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+// BackupVerification is the audit artifact for one restore test: who ran
+// it, when, against what, and what the engine said. Persisted on the
+// BackupRecord so `ListBackups` can answer "last verified" and so the
+// evidence outlives the run that produced it (ISO 27001 A.8.13 wants
+// backups *tested*, not just taken).
+type BackupVerification struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// RFC3339 UTC timestamp of when verification completed.
+	VerifiedAt string `protobuf:"bytes,1,opt,name=verified_at,json=verifiedAt,proto3" json:"verified_at,omitempty"`
+	// Outcome.
+	Result VerificationResult `protobuf:"varint,2,opt,name=result,proto3,enum=containarium.v1.VerificationResult" json:"result,omitempty"`
+	// The engine's own error when result is FAILED — pg_restore's own
+	// message, so an operator sees why the dump would not load rather
+	// than a wrapper's summary. Empty on success. This is engine stderr
+	// captured verbatim: it is persisted and returned over the API, so
+	// treat it with the same care as any other diagnostic output.
+	Error string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	// Container the dump was restored into. Always distinct from the
+	// container the backup was taken from.
+	TargetContainer string `protobuf:"bytes,4,opt,name=target_container,json=targetContainer,proto3" json:"target_container,omitempty"`
+	// Throwaway database created for the test and dropped afterwards.
+	ScratchDatabase string `protobuf:"bytes,5,opt,name=scratch_database,json=scratchDatabase,proto3" json:"scratch_database,omitempty"`
+	// Wall-clock duration of the restore test.
+	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	// Authenticated subject that requested verification, for the "who"
+	// half of the audit record. Empty when unauthenticated (dev mode).
+	VerifiedBy string `protobuf:"bytes,7,opt,name=verified_by,json=verifiedBy,proto3" json:"verified_by,omitempty"`
+	// Individual checks performed, in execution order.
+	Checks        []*VerificationCheck `protobuf:"bytes,8,rep,name=checks,proto3" json:"checks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackupVerification) Reset() {
+	*x = BackupVerification{}
+	mi := &file_containarium_v1_backup_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackupVerification) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackupVerification) ProtoMessage() {}
+
+func (x *BackupVerification) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_backup_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackupVerification.ProtoReflect.Descriptor instead.
+func (*BackupVerification) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *BackupVerification) GetVerifiedAt() string {
+	if x != nil {
+		return x.VerifiedAt
+	}
+	return ""
+}
+
+func (x *BackupVerification) GetResult() VerificationResult {
+	if x != nil {
+		return x.Result
+	}
+	return VerificationResult_VERIFICATION_RESULT_UNSPECIFIED
+}
+
+func (x *BackupVerification) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *BackupVerification) GetTargetContainer() string {
+	if x != nil {
+		return x.TargetContainer
+	}
+	return ""
+}
+
+func (x *BackupVerification) GetScratchDatabase() string {
+	if x != nil {
+		return x.ScratchDatabase
+	}
+	return ""
+}
+
+func (x *BackupVerification) GetDurationMs() int64 {
+	if x != nil {
+		return x.DurationMs
+	}
+	return 0
+}
+
+func (x *BackupVerification) GetVerifiedBy() string {
+	if x != nil {
+		return x.VerifiedBy
+	}
+	return ""
+}
+
+func (x *BackupVerification) GetChecks() []*VerificationCheck {
+	if x != nil {
+		return x.Checks
+	}
+	return nil
+}
+
 // PgConnection carries the connection parameters pg_dump / pg_restore use
 // *inside the container*. Defaults target a per-container local Postgres
 // reached over loopback. db_password is never logged and is passed to the
@@ -237,7 +507,7 @@ type PgConnection struct {
 
 func (x *PgConnection) Reset() {
 	*x = PgConnection{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[1]
+	mi := &file_containarium_v1_backup_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -249,7 +519,7 @@ func (x *PgConnection) String() string {
 func (*PgConnection) ProtoMessage() {}
 
 func (x *PgConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[1]
+	mi := &file_containarium_v1_backup_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -262,7 +532,7 @@ func (x *PgConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PgConnection.ProtoReflect.Descriptor instead.
 func (*PgConnection) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PgConnection) GetDatabase() string {
@@ -321,7 +591,7 @@ type CreateBackupRequest struct {
 
 func (x *CreateBackupRequest) Reset() {
 	*x = CreateBackupRequest{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[2]
+	mi := &file_containarium_v1_backup_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -333,7 +603,7 @@ func (x *CreateBackupRequest) String() string {
 func (*CreateBackupRequest) ProtoMessage() {}
 
 func (x *CreateBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[2]
+	mi := &file_containarium_v1_backup_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -346,7 +616,7 @@ func (x *CreateBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBackupRequest.ProtoReflect.Descriptor instead.
 func (*CreateBackupRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CreateBackupRequest) GetUsername() string {
@@ -402,7 +672,7 @@ type CreateBackupResponse struct {
 
 func (x *CreateBackupResponse) Reset() {
 	*x = CreateBackupResponse{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[3]
+	mi := &file_containarium_v1_backup_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -414,7 +684,7 @@ func (x *CreateBackupResponse) String() string {
 func (*CreateBackupResponse) ProtoMessage() {}
 
 func (x *CreateBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[3]
+	mi := &file_containarium_v1_backup_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -427,7 +697,7 @@ func (x *CreateBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBackupResponse.ProtoReflect.Descriptor instead.
 func (*CreateBackupResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{3}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CreateBackupResponse) GetMessage() string {
@@ -470,7 +740,7 @@ type ListBackupsRequest struct {
 
 func (x *ListBackupsRequest) Reset() {
 	*x = ListBackupsRequest{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[4]
+	mi := &file_containarium_v1_backup_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -482,7 +752,7 @@ func (x *ListBackupsRequest) String() string {
 func (*ListBackupsRequest) ProtoMessage() {}
 
 func (x *ListBackupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[4]
+	mi := &file_containarium_v1_backup_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -495,7 +765,7 @@ func (x *ListBackupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackupsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{4}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListBackupsRequest) GetUsername() string {
@@ -514,7 +784,7 @@ type ListBackupsResponse struct {
 
 func (x *ListBackupsResponse) Reset() {
 	*x = ListBackupsResponse{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[5]
+	mi := &file_containarium_v1_backup_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -526,7 +796,7 @@ func (x *ListBackupsResponse) String() string {
 func (*ListBackupsResponse) ProtoMessage() {}
 
 func (x *ListBackupsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[5]
+	mi := &file_containarium_v1_backup_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -539,7 +809,7 @@ func (x *ListBackupsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackupsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{5}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListBackupsResponse) GetRecords() []*BackupRecord {
@@ -559,7 +829,7 @@ type GetBackupRequest struct {
 
 func (x *GetBackupRequest) Reset() {
 	*x = GetBackupRequest{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[6]
+	mi := &file_containarium_v1_backup_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -571,7 +841,7 @@ func (x *GetBackupRequest) String() string {
 func (*GetBackupRequest) ProtoMessage() {}
 
 func (x *GetBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[6]
+	mi := &file_containarium_v1_backup_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -584,7 +854,7 @@ func (x *GetBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBackupRequest.ProtoReflect.Descriptor instead.
 func (*GetBackupRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{6}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetBackupRequest) GetId() string {
@@ -603,7 +873,7 @@ type GetBackupResponse struct {
 
 func (x *GetBackupResponse) Reset() {
 	*x = GetBackupResponse{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[7]
+	mi := &file_containarium_v1_backup_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -615,7 +885,7 @@ func (x *GetBackupResponse) String() string {
 func (*GetBackupResponse) ProtoMessage() {}
 
 func (x *GetBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[7]
+	mi := &file_containarium_v1_backup_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -628,7 +898,7 @@ func (x *GetBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBackupResponse.ProtoReflect.Descriptor instead.
 func (*GetBackupResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{7}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetBackupResponse) GetRecord() *BackupRecord {
@@ -659,7 +929,7 @@ type RestoreBackupRequest struct {
 
 func (x *RestoreBackupRequest) Reset() {
 	*x = RestoreBackupRequest{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[8]
+	mi := &file_containarium_v1_backup_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -671,7 +941,7 @@ func (x *RestoreBackupRequest) String() string {
 func (*RestoreBackupRequest) ProtoMessage() {}
 
 func (x *RestoreBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[8]
+	mi := &file_containarium_v1_backup_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -684,7 +954,7 @@ func (x *RestoreBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreBackupRequest.ProtoReflect.Descriptor instead.
 func (*RestoreBackupRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{8}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RestoreBackupRequest) GetId() string {
@@ -717,7 +987,7 @@ type RestoreBackupResponse struct {
 
 func (x *RestoreBackupResponse) Reset() {
 	*x = RestoreBackupResponse{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[9]
+	mi := &file_containarium_v1_backup_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +999,7 @@ func (x *RestoreBackupResponse) String() string {
 func (*RestoreBackupResponse) ProtoMessage() {}
 
 func (x *RestoreBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[9]
+	mi := &file_containarium_v1_backup_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -742,7 +1012,7 @@ func (x *RestoreBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreBackupResponse.ProtoReflect.Descriptor instead.
 func (*RestoreBackupResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{9}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RestoreBackupResponse) GetMessage() string {
@@ -750,6 +1020,144 @@ func (x *RestoreBackupResponse) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+// VerifyBackupRequest restore-tests a stored dump: it loads the dump into
+// a throwaway database inside a *target* container and runs
+// engine-appropriate sanity checks, then drops the scratch database.
+//
+// The target is always a container other than the one the backup came
+// from — verification must never touch the source database. Supply a
+// disposable container as the target; the daemon rejects a request whose
+// target resolves to the source container.
+type VerifyBackupRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Backup to verify.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Tenant whose container is used as the throwaway restore target.
+	// Required, and must differ from the backup's own tenant container.
+	TargetUsername string `protobuf:"bytes,2,opt,name=target_username,json=targetUsername,proto3" json:"target_username,omitempty"`
+	// Connection parameters for the *target* container's Postgres. The
+	// scratch database name is generated by the daemon, so
+	// connection.database is ignored here.
+	Connection    *PgConnection `protobuf:"bytes,3,opt,name=connection,proto3" json:"connection,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyBackupRequest) Reset() {
+	*x = VerifyBackupRequest{}
+	mi := &file_containarium_v1_backup_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyBackupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyBackupRequest) ProtoMessage() {}
+
+func (x *VerifyBackupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_backup_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyBackupRequest.ProtoReflect.Descriptor instead.
+func (*VerifyBackupRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *VerifyBackupRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *VerifyBackupRequest) GetTargetUsername() string {
+	if x != nil {
+		return x.TargetUsername
+	}
+	return ""
+}
+
+func (x *VerifyBackupRequest) GetConnection() *PgConnection {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+type VerifyBackupResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Operator-facing summary, e.g. "verification passed: <id>".
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// The verification artifact, including per-check detail and the
+	// engine's own error on failure.
+	Verification *BackupVerification `protobuf:"bytes,2,opt,name=verification,proto3" json:"verification,omitempty"`
+	// The backup record with last_verification updated.
+	Record        *BackupRecord `protobuf:"bytes,3,opt,name=record,proto3" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyBackupResponse) Reset() {
+	*x = VerifyBackupResponse{}
+	mi := &file_containarium_v1_backup_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyBackupResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyBackupResponse) ProtoMessage() {}
+
+func (x *VerifyBackupResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_backup_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyBackupResponse.ProtoReflect.Descriptor instead.
+func (*VerifyBackupResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *VerifyBackupResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *VerifyBackupResponse) GetVerification() *BackupVerification {
+	if x != nil {
+		return x.Verification
+	}
+	return nil
+}
+
+func (x *VerifyBackupResponse) GetRecord() *BackupRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
 }
 
 // DeleteBackupRequest removes a stored dump and its index entry.
@@ -762,7 +1170,7 @@ type DeleteBackupRequest struct {
 
 func (x *DeleteBackupRequest) Reset() {
 	*x = DeleteBackupRequest{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[10]
+	mi := &file_containarium_v1_backup_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -774,7 +1182,7 @@ func (x *DeleteBackupRequest) String() string {
 func (*DeleteBackupRequest) ProtoMessage() {}
 
 func (x *DeleteBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[10]
+	mi := &file_containarium_v1_backup_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -787,7 +1195,7 @@ func (x *DeleteBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBackupRequest.ProtoReflect.Descriptor instead.
 func (*DeleteBackupRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{10}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeleteBackupRequest) GetId() string {
@@ -806,7 +1214,7 @@ type DeleteBackupResponse struct {
 
 func (x *DeleteBackupResponse) Reset() {
 	*x = DeleteBackupResponse{}
-	mi := &file_containarium_v1_backup_proto_msgTypes[11]
+	mi := &file_containarium_v1_backup_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -818,7 +1226,7 @@ func (x *DeleteBackupResponse) String() string {
 func (*DeleteBackupResponse) ProtoMessage() {}
 
 func (x *DeleteBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_backup_proto_msgTypes[11]
+	mi := &file_containarium_v1_backup_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -831,7 +1239,7 @@ func (x *DeleteBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBackupResponse.ProtoReflect.Descriptor instead.
 func (*DeleteBackupResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeleteBackupResponse) GetMessage() string {
@@ -845,7 +1253,7 @@ var File_containarium_v1_backup_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xa6\x02\n" +
+	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xb7\x03\n" +
 	"\fBackupRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
@@ -857,7 +1265,27 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x06sha256\x18\x06 \x01(\tR\x06sha256\x12D\n" +
 	"\vdestination\x18\a \x01(\x0e2\".containarium.v1.BackupDestinationR\vdestination\x12\x1a\n" +
 	"\blocation\x18\b \x01(\tR\blocation\x12\x16\n" +
-	"\x06engine\x18\t \x01(\tR\x06engine\"\x82\x01\n" +
+	"\x06engine\x18\t \x01(\tR\x06engine\x12P\n" +
+	"\x11last_verification\x18\n" +
+	" \x01(\v2#.containarium.v1.BackupVerificationR\x10lastVerification\x12*\n" +
+	"\x0erelation_count\x18\v \x01(\x03H\x00R\rrelationCount\x88\x01\x01B\x11\n" +
+	"\x0f_relation_count\"W\n" +
+	"\x11VerificationCheck\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06passed\x18\x02 \x01(\bR\x06passed\x12\x16\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xdc\x02\n" +
+	"\x12BackupVerification\x12\x1f\n" +
+	"\vverified_at\x18\x01 \x01(\tR\n" +
+	"verifiedAt\x12;\n" +
+	"\x06result\x18\x02 \x01(\x0e2#.containarium.v1.VerificationResultR\x06result\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12)\n" +
+	"\x10target_container\x18\x04 \x01(\tR\x0ftargetContainer\x12)\n" +
+	"\x10scratch_database\x18\x05 \x01(\tR\x0fscratchDatabase\x12\x1f\n" +
+	"\vduration_ms\x18\x06 \x01(\x03R\n" +
+	"durationMs\x12\x1f\n" +
+	"\vverified_by\x18\a \x01(\tR\n" +
+	"verifiedBy\x12:\n" +
+	"\x06checks\x18\b \x03(\v2\".containarium.v1.VerificationCheckR\x06checks\"\x82\x01\n" +
 	"\fPgConnection\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x12\n" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12\x1a\n" +
@@ -892,7 +1320,17 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"connection\x12\x14\n" +
 	"\x05clean\x18\x03 \x01(\bR\x05clean\"1\n" +
 	"\x15RestoreBackupResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"%\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\x8d\x01\n" +
+	"\x13VerifyBackupRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
+	"\x0ftarget_username\x18\x02 \x01(\tR\x0etargetUsername\x12=\n" +
+	"\n" +
+	"connection\x18\x03 \x01(\v2\x1d.containarium.v1.PgConnectionR\n" +
+	"connection\"\xb0\x01\n" +
+	"\x14VerifyBackupResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12G\n" +
+	"\fverification\x18\x02 \x01(\v2#.containarium.v1.BackupVerificationR\fverification\x125\n" +
+	"\x06record\x18\x03 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\"%\n" +
 	"\x13DeleteBackupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"0\n" +
 	"\x14DeleteBackupResponse\x12\x18\n" +
@@ -900,8 +1338,11 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x11BackupDestination\x12\"\n" +
 	"\x1eBACKUP_DESTINATION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18BACKUP_DESTINATION_LOCAL\x10\x01\x12\x1a\n" +
-	"\x16BACKUP_DESTINATION_GCS\x10\x022\x9e\n" +
-	"\n" +
+	"\x16BACKUP_DESTINATION_GCS\x10\x02*y\n" +
+	"\x12VerificationResult\x12#\n" +
+	"\x1fVERIFICATION_RESULT_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aVERIFICATION_RESULT_PASSED\x10\x01\x12\x1e\n" +
+	"\x1aVERIFICATION_RESULT_FAILED\x10\x022\xc0\r\n" +
 	"\rBackupService\x12\xfb\x02\n" +
 	"\fCreateBackup\x12$.containarium.v1.CreateBackupRequest\x1a%.containarium.v1.CreateBackupResponse\"\x9d\x02\x92A\x83\x02\n" +
 	"\aBackups\x12\x0fCreate a backup\x1a\xe6\x01Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.\x82\xd3\xe4\x93\x02\x10:\x01*\"\v/v1/backups\x12\xd3\x01\n" +
@@ -910,7 +1351,9 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\tGetBackup\x12!.containarium.v1.GetBackupRequest\x1a\".containarium.v1.GetBackupResponse\"d\x92AI\n" +
 	"\aBackups\x12\fGet a backup\x1a0Returns the metadata for a single stored backup.\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/backups/{id}\x12\x88\x02\n" +
 	"\rRestoreBackup\x12%.containarium.v1.RestoreBackupRequest\x1a&.containarium.v1.RestoreBackupResponse\"\xa7\x01\x92A\x80\x01\n" +
-	"\aBackups\x12\x10Restore a backup\x1acStreams a stored dump back into a container's database via pg_restore. Destructive when clean=true.\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/backups/{id}/restore\x12\xf2\x01\n" +
+	"\aBackups\x12\x10Restore a backup\x1acStreams a stored dump back into a container's database via pg_restore. Destructive when clean=true.\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/backups/{id}/restore\x12\x9f\x03\n" +
+	"\fVerifyBackup\x12$.containarium.v1.VerifyBackupRequest\x1a%.containarium.v1.VerifyBackupResponse\"\xc1\x02\x92A\x9b\x02\n" +
+	"\aBackups\x12\x0fVerify a backup\x1a\xfe\x01Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/backups/{id}/verify\x12\xf2\x01\n" +
 	"\fDeleteBackup\x12$.containarium.v1.DeleteBackupRequest\x1a%.containarium.v1.DeleteBackupResponse\"\x94\x01\x92Ay\n" +
 	"\aBackups\x12\x0fDelete a backup\x1a]Deletes a stored dump and its metadata. Retention enforcement is the caller's responsibility.\x82\xd3\xe4\x93\x02\x12*\x10/v1/backups/{id}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
@@ -926,47 +1369,60 @@ func file_containarium_v1_backup_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_backup_proto_rawDescData
 }
 
-var file_containarium_v1_backup_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_containarium_v1_backup_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_containarium_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_containarium_v1_backup_proto_goTypes = []any{
 	(BackupDestination)(0),        // 0: containarium.v1.BackupDestination
-	(*BackupRecord)(nil),          // 1: containarium.v1.BackupRecord
-	(*PgConnection)(nil),          // 2: containarium.v1.PgConnection
-	(*CreateBackupRequest)(nil),   // 3: containarium.v1.CreateBackupRequest
-	(*CreateBackupResponse)(nil),  // 4: containarium.v1.CreateBackupResponse
-	(*ListBackupsRequest)(nil),    // 5: containarium.v1.ListBackupsRequest
-	(*ListBackupsResponse)(nil),   // 6: containarium.v1.ListBackupsResponse
-	(*GetBackupRequest)(nil),      // 7: containarium.v1.GetBackupRequest
-	(*GetBackupResponse)(nil),     // 8: containarium.v1.GetBackupResponse
-	(*RestoreBackupRequest)(nil),  // 9: containarium.v1.RestoreBackupRequest
-	(*RestoreBackupResponse)(nil), // 10: containarium.v1.RestoreBackupResponse
-	(*DeleteBackupRequest)(nil),   // 11: containarium.v1.DeleteBackupRequest
-	(*DeleteBackupResponse)(nil),  // 12: containarium.v1.DeleteBackupResponse
+	(VerificationResult)(0),       // 1: containarium.v1.VerificationResult
+	(*BackupRecord)(nil),          // 2: containarium.v1.BackupRecord
+	(*VerificationCheck)(nil),     // 3: containarium.v1.VerificationCheck
+	(*BackupVerification)(nil),    // 4: containarium.v1.BackupVerification
+	(*PgConnection)(nil),          // 5: containarium.v1.PgConnection
+	(*CreateBackupRequest)(nil),   // 6: containarium.v1.CreateBackupRequest
+	(*CreateBackupResponse)(nil),  // 7: containarium.v1.CreateBackupResponse
+	(*ListBackupsRequest)(nil),    // 8: containarium.v1.ListBackupsRequest
+	(*ListBackupsResponse)(nil),   // 9: containarium.v1.ListBackupsResponse
+	(*GetBackupRequest)(nil),      // 10: containarium.v1.GetBackupRequest
+	(*GetBackupResponse)(nil),     // 11: containarium.v1.GetBackupResponse
+	(*RestoreBackupRequest)(nil),  // 12: containarium.v1.RestoreBackupRequest
+	(*RestoreBackupResponse)(nil), // 13: containarium.v1.RestoreBackupResponse
+	(*VerifyBackupRequest)(nil),   // 14: containarium.v1.VerifyBackupRequest
+	(*VerifyBackupResponse)(nil),  // 15: containarium.v1.VerifyBackupResponse
+	(*DeleteBackupRequest)(nil),   // 16: containarium.v1.DeleteBackupRequest
+	(*DeleteBackupResponse)(nil),  // 17: containarium.v1.DeleteBackupResponse
 }
 var file_containarium_v1_backup_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.BackupRecord.destination:type_name -> containarium.v1.BackupDestination
-	2,  // 1: containarium.v1.CreateBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	0,  // 2: containarium.v1.CreateBackupRequest.destination:type_name -> containarium.v1.BackupDestination
-	1,  // 3: containarium.v1.CreateBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	1,  // 4: containarium.v1.CreateBackupResponse.records:type_name -> containarium.v1.BackupRecord
-	1,  // 5: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
-	1,  // 6: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	2,  // 7: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	3,  // 8: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
-	5,  // 9: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
-	7,  // 10: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
-	9,  // 11: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
-	11, // 12: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
-	4,  // 13: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
-	6,  // 14: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
-	8,  // 15: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
-	10, // 16: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
-	12, // 17: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
-	13, // [13:18] is the sub-list for method output_type
-	8,  // [8:13] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	4,  // 1: containarium.v1.BackupRecord.last_verification:type_name -> containarium.v1.BackupVerification
+	1,  // 2: containarium.v1.BackupVerification.result:type_name -> containarium.v1.VerificationResult
+	3,  // 3: containarium.v1.BackupVerification.checks:type_name -> containarium.v1.VerificationCheck
+	5,  // 4: containarium.v1.CreateBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	0,  // 5: containarium.v1.CreateBackupRequest.destination:type_name -> containarium.v1.BackupDestination
+	2,  // 6: containarium.v1.CreateBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	2,  // 7: containarium.v1.CreateBackupResponse.records:type_name -> containarium.v1.BackupRecord
+	2,  // 8: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
+	2,  // 9: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	5,  // 10: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	5,  // 11: containarium.v1.VerifyBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	4,  // 12: containarium.v1.VerifyBackupResponse.verification:type_name -> containarium.v1.BackupVerification
+	2,  // 13: containarium.v1.VerifyBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	6,  // 14: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
+	8,  // 15: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
+	10, // 16: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
+	12, // 17: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
+	14, // 18: containarium.v1.BackupService.VerifyBackup:input_type -> containarium.v1.VerifyBackupRequest
+	16, // 19: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
+	7,  // 20: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
+	9,  // 21: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
+	11, // 22: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
+	13, // 23: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
+	15, // 24: containarium.v1.BackupService.VerifyBackup:output_type -> containarium.v1.VerifyBackupResponse
+	17, // 25: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
+	20, // [20:26] is the sub-list for method output_type
+	14, // [14:20] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_backup_proto_init() }
@@ -974,13 +1430,14 @@ func file_containarium_v1_backup_proto_init() {
 	if File_containarium_v1_backup_proto != nil {
 		return
 	}
+	file_containarium_v1_backup_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_backup_proto_rawDesc), len(file_containarium_v1_backup_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   12,
+			NumEnums:      2,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

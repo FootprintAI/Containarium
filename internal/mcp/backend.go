@@ -50,6 +50,7 @@ type API interface {
 	CreateBackup(req CreateBackupRequest) (*CreateBackupResponse, error)
 	ListBackups(username string) (*ListBackupsResponse, error)
 	RestoreBackup(req RestoreBackupRequest) (*RestoreBackupResponse, error)
+	VerifyBackup(req VerifyBackupRequest) (*VerifyBackupResponse, error)
 
 	// Secrets / KMS.
 	SetSecret(username, name, value string) (*SecretResponse, error)

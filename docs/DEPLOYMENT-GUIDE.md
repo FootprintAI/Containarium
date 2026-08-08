@@ -508,7 +508,8 @@ Located at `terraform/gce/scripts/startup.sh`, this runs **once** when the VM bo
 # What it does:
 1. Updates system packages
 2. Installs Incus
-3. Initializes Incus (creates storage pool, network)
+3. Initializes Incus (creates storage pool, network) — the pool's driver is a
+   tenant-isolation decision, see [Backend storage-driver selection](BACKEND-STORAGE-DRIVER.md)
 4. Loads kernel modules (overlay, br_netfilter for Docker)
 5. Configures sysctl
 6. Hardens SSH

@@ -1341,7 +1341,11 @@ func toolScopeAssignments() map[string]string {
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
-		"list_backups":   auth.ScopeBackupsRead,
+		// A restore test writes (creates and drops a scratch database in
+		// the target container), so it needs the write scope even though
+		// it never mutates the backup itself.
+		"verify_backup": auth.ScopeBackupsWrite,
+		"list_backups":  auth.ScopeBackupsRead,
 		// KMS envelope-encryption administration (admin-only)
 		"kms_status":              auth.ScopeKMSAdmin,
 		"kms_envelope_coverage":   auth.ScopeKMSAdmin,
