@@ -164,11 +164,37 @@ wired via `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_{PUBLIC_KEY,KEY_SECRET}`.
 
 Per tenant namespace:
 
-- **Default-deny ingress**, single allow rule: TCP/22 *from the sshpiper pod
-  only* (matched by `agent-gateway` namespace + pod label).
-- **Default-deny egress**, allowlist: cluster DNS + the control-plane API
-  endpoint. This is the K8s expression of the eBPF egress allowlist shipped
-  on the LXC backend.
+> ⚠️ **This section described the intended design; the shipped code is weaker.**
+> Corrected 2026-08-08 after reading `pkg/core/box/k8s/objects.go:221-245`
+> against it. The gap is tracked as **#1193**. What follows now describes what
+> actually ships, with the intent noted where they differ.
+
+**Intended:** default-deny ingress with a single allow rule — TCP/22 *from the
+sshpiper pod only* (matched by `agent-gateway` namespace + pod label) — and
+default-deny egress allowlisting cluster DNS plus the control-plane API
+endpoint.
+
+**Shipped** (one `default-deny` NetworkPolicy per tenant namespace,
+`objects.go:221`, created at `k8s.go:265`):
+
+- Its `podSelector` correctly scopes the policy to the tenant's box pods.
+- The **ingress rule carries `ports` but no `from`**, which per the
+  NetworkPolicy spec matches *all* sources. TCP/22 is therefore reachable from
+  anywhere the CNI permits — the `agent-gateway` namespace + pod-label
+  selector does not exist in code.
+- The **egress rule carries `ports` but no `to`**, so DNS (UDP/TCP 53) is
+  allowed to any destination rather than to cluster DNS.
+- There is **no control-plane API egress rule at all**.
+
+SSH authentication still gates entry to a box, so this is missing
+defense-in-depth rather than an open door — but in the namespace-per-tenant
+model, one tenant's pod can currently open TCP/22 to another tenant's box.
+See #1193 for the fix and its tests.
+
+This is also **not** the K8s expression of the eBPF egress allowlist: it is a
+static object written once at box-create and never reconciled against
+`NetworkPolicyService`. Tenant egress policy is not enforced on this backend
+at all — see #1188.
 
 ## Mapping to the existing (LXC) architecture
 
@@ -178,7 +204,7 @@ Per tenant namespace:
 | sshpiper on sentinel :22 | sshpiper Deployment + LB Service :22 |
 | sentinel key-sync → YAML | controller → `Pipe` CRD + Secret |
 | LXC box per tenant | agent-sandbox `Sandbox` CR (pod `box`) per tenant namespace |
-| eBPF deny-by-default + egress allowlist | default-deny NetworkPolicy + egress allowlist |
+| eBPF deny-by-default + egress allowlist, driven by `NetworkPolicyService` | static `default-deny` NetworkPolicy, **not** policy-driven (#1188), and weaker than documented (#1193) |
 | sshd 2222 (mgmt) vs sshpiper 22 | mgmt via `kubectl`/RBAC; sshpiper owns 22 |
 
 ## CLI-first surface
