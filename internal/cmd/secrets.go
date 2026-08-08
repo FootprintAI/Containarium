@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -186,42 +187,39 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--server is required for secrets commands")
 	}
 
+	// Both transports return []*pb.SecretMetadata, so the two branches
+	// differ only in how the client is built — the rendering is shared.
+	// It used to be duplicated, and the copies had drifted: the HTTP one
+	// read `updated_at` from an untyped map while grpc-gateway emits
+	// `updatedAt`, so its UPDATED column printed <nil> (#1219).
+	var list []*pb.SecretMetadata
 	if httpMode {
 		h, err := client.NewHTTPClient(serverAddr, authToken)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = h.Close() }()
-		list, err := h.ListSecrets(username)
+		if list, err = h.ListSecrets(username); err != nil {
+			return err
+		}
+	} else {
+		g, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if err != nil {
 			return err
 		}
-		if len(list) == 0 {
-			fmt.Printf("(no secrets for %s)\n", username)
-			return nil
+		defer func() { _ = g.Close() }()
+		if list, err = g.ListSecrets(username); err != nil {
+			return err
 		}
-		fmt.Printf("%-32s %-8s %s\n", "NAME", "VERSION", "UPDATED")
-		for _, row := range list {
-			fmt.Printf("%-32s %-8v %v\n", row["name"], row["version"], row["updated_at"])
-		}
-		return nil
 	}
-	g, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = g.Close() }()
-	list, err := g.ListSecrets(username)
-	if err != nil {
-		return err
-	}
+
 	if len(list) == 0 {
 		fmt.Printf("(no secrets for %s)\n", username)
 		return nil
 	}
 	fmt.Printf("%-32s %-8s %s\n", "NAME", "VERSION", "UPDATED")
 	for _, row := range list {
-		fmt.Printf("%-32s %-8d %s\n", row.Name, row.Version, strings.TrimSuffix(row.UpdatedAt, "Z"))
+		fmt.Printf("%-32s %-8d %s\n", row.GetName(), row.GetVersion(), strings.TrimSuffix(row.GetUpdatedAt(), "Z"))
 	}
 	return nil
 }
