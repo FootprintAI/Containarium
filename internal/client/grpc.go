@@ -842,6 +842,18 @@ func (c *GRPCClient) RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBac
 	return resp, nil
 }
 
+// VerifyBackup restore-tests a stored dump via gRPC.
+func (c *GRPCClient) VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // a restore test is a full restore
+	defer cancel()
+
+	resp, err := c.backupClient.VerifyBackup(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify backup: %w", err)
+	}
+	return resp, nil
+}
+
 // DeleteBackup removes a stored dump and its index entry via gRPC.
 func (c *GRPCClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
