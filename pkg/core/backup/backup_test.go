@@ -27,10 +27,14 @@ type fakeOps struct {
 	// for these specific database names — lets tests exercise CreateAll's
 	// partial-failure path without failing every database.
 	failDatabases map[string]bool
+
+	// relationCount is returned as stdout for the user-relation manifest
+	// query Create records at dump time (#1159).
+	relationCount string
 }
 
 func newFakeOps(payload []byte) *fakeOps {
-	return &fakeOps{dumpPayload: payload, written: map[string][]byte{}}
+	return &fakeOps{dumpPayload: payload, written: map[string][]byte{}, relationCount: "7"}
 }
 
 func (f *fakeOps) Exec(container string, command []string) error {
@@ -41,6 +45,11 @@ func (f *fakeOps) Exec(container string, command []string) error {
 func (f *fakeOps) ExecWithOutput(container string, command []string) (string, string, error) {
 	f.execLog = append(f.execLog, strings.Join(command, " "))
 	full := strings.Join(command, " ")
+	// The relation-manifest query (#1159) also runs via `psql -Atc`, so
+	// match on the catalog it reads rather than on the flag.
+	if strings.Contains(full, "pg_class") {
+		return f.relationCount, "", nil
+	}
 	if strings.Contains(full, "psql") && strings.Contains(full, "-Atc") {
 		if f.listDatabasesErr != nil {
 			return "", "connection refused", f.listDatabasesErr
