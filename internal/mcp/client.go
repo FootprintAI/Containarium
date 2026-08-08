@@ -795,14 +795,31 @@ func (c *Client) GetSecret(username, name string) (string, error) {
 	return resp.Value, nil
 }
 
+// SecretMetadata mirrors the proto SecretMetadata on the response side.
+// Values are never included — they are readable only via GetSecret,
+// per-name and audit-logged.
+//
+// The tags are lowerCamelCase because grpc-gateway is configured with
+// UseProtoNames=false, so protojson emits `createdAt` / `updatedAt`.
+// Reading these through an untyped map is what hid #1219: the CLI looked
+// up `updated_at`, a key the daemon never sends.
+type SecretMetadata struct {
+	Username  string `json:"username"`
+	Name      string `json:"name"`
+	Version   int32  `json:"version"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+	Delivery  string `json:"delivery"`
+}
+
 // ListSecrets returns metadata for every tenant secret.
-func (c *Client) ListSecrets(username string) ([]map[string]interface{}, error) {
+func (c *Client) ListSecrets(username string) ([]SecretMetadata, error) {
 	respBody, err := c.doRequest("GET", fmt.Sprintf("/v1/secrets/%s", username), nil)
 	if err != nil {
 		return nil, err
 	}
 	var resp struct {
-		Secrets []map[string]interface{} `json:"secrets"`
+		Secrets []SecretMetadata `json:"secrets"`
 	}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -1617,8 +1634,12 @@ type ResizeContainerResponse struct {
 }
 
 type SecretResponse struct {
-	Message string                 `json:"message"`
-	Secret  map[string]interface{} `json:"secret"`
+	Message string `json:"message"`
+	// The created/updated secret's metadata (never its value). Typed for
+	// the same reason as ListSecrets (#1219): the gateway emits
+	// lowerCamelCase, and a map hides a key mismatch until someone reads
+	// a blank field.
+	Secret SecretMetadata `json:"secret"`
 }
 
 type RefreshSecretsResponse struct {

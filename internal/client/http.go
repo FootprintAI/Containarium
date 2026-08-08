@@ -901,7 +901,14 @@ func (c *HTTPClient) GetSecret(username, name string) (string, error) {
 // ListSecrets returns metadata for every secret owned by the tenant.
 // Each entry is the name/version/timestamps tuple — values are only
 // readable via GetSecret per-name.
-func (c *HTTPClient) ListSecrets(username string) ([]map[string]interface{}, error) {
+//
+// Decoded with protojson into the generated SecretMetadata, matching what
+// GRPCClient.ListSecrets returns, so both transports hand callers the
+// same type. The previous []map[string]interface{} return let a
+// field-name mismatch pass unnoticed: grpc-gateway is configured with
+// UseProtoNames=false, so it emits `updatedAt`, while the CLI read
+// `updated_at` and printed <nil> (#1219).
+func (c *HTTPClient) ListSecrets(username string) ([]*pb.SecretMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	path := fmt.Sprintf("/v1/secrets/%s", url.PathEscape(username))
@@ -914,11 +921,14 @@ func (c *HTTPClient) ListSecrets(username string) ([]map[string]interface{}, err
 	if resp.StatusCode >= 400 {
 		return nil, parseErr(b, resp.StatusCode, "list secrets")
 	}
-	var result struct {
-		Secrets []map[string]interface{} `json:"secrets"`
+	var result pb.ListSecretsResponse
+	// Unknown fields are tolerated so a newer daemon adding a field does
+	// not break an older CLI; a malformed body is still an error, which
+	// the old code discarded.
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(b, &result); err != nil {
+		return nil, fmt.Errorf("decode secrets response: %w", err)
 	}
-	_ = json.Unmarshal(b, &result)
-	return result.Secrets, nil
+	return result.GetSecrets(), nil
 }
 
 // DeleteSecret removes a tenant secret via HTTP.
