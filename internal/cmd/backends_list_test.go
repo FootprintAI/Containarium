@@ -116,3 +116,88 @@ func TestBackendInfo_DecodesWithoutHostLoad(t *testing.T) {
 		t.Fatalf("formatCPULoad = %q, want %q", got, "-")
 	}
 }
+
+// TestBackendInfo_DecodesStorageWireShape locks the CLI's view of the
+// BackendInfo.storage contract. The struct is hand-maintained here on purpose
+// (see backendInfo's comment), so a server-side rename has to fail loudly
+// rather than silently blanking the column.
+func TestBackendInfo_DecodesStorageWireShape(t *testing.T) {
+	body := `{"backends":[{"id":"b1","type":"local","healthy":true,"storage":{
+		"pool":"default","driver":"STORAGE_DRIVER_DIR",
+		"isolation":"STORAGE_ISOLATION_SHARED_FILESYSTEM","driverName":"dir"}}]}`
+
+	var parsed backendsListResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	s := parsed.Backends[0].Storage
+	if s == nil {
+		t.Fatal("Storage is nil after decoding a response that carries it")
+	}
+	if s.DriverName != "dir" {
+		t.Errorf("DriverName = %q, want %q", s.DriverName, "dir")
+	}
+	if s.Isolation != "STORAGE_ISOLATION_SHARED_FILESYSTEM" {
+		t.Errorf("Isolation = %q", s.Isolation)
+	}
+}
+
+// TestFormatStorage covers what an operator actually reads in the table.
+//
+// The two cases that matter most are the flag on a shared-filesystem pool
+// (the #1206 exposure) and "-" for a backend that reported nothing. An
+// unmeasured pool must not render as a safe-looking value — the same rule
+// formatCPULoad already follows.
+func TestFormatStorage(t *testing.T) {
+	tests := []struct {
+		name    string
+		storage *backendStorage
+		want    string
+	}{
+		{
+			name:    "no report renders as unknown, not as safe",
+			storage: nil,
+			want:    "-",
+		},
+		{
+			name:    "an isolating pool renders plainly",
+			storage: &backendStorage{DriverName: "zfs", Isolation: "STORAGE_ISOLATION_PER_CONTAINER"},
+			want:    "zfs",
+		},
+		{
+			name:    "a shared-filesystem pool is flagged",
+			storage: &backendStorage{DriverName: "dir", Isolation: "STORAGE_ISOLATION_SHARED_FILESYSTEM"},
+			want:    "dir ⚠",
+		},
+		{
+			name:    "an unclassified driver is marked as unverified, not flagged as shared",
+			storage: &backendStorage{DriverName: "future-fs", Isolation: "STORAGE_ISOLATION_UNKNOWN_DRIVER"},
+			want:    "future-fs ?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatStorage(tt.storage); got != tt.want {
+				t.Errorf("formatStorage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSharedFilesystemBackends counts the backends an operator needs to act
+// on, which is what drives the table footer. A backend that reported nothing
+// must NOT be counted — "unknown" is not "exposed", and inflating the count
+// with unknowns would make the warning untrustworthy.
+func TestSharedFilesystemBackends(t *testing.T) {
+	backends := []backendInfo{
+		{ID: "a", Storage: &backendStorage{DriverName: "zfs", Isolation: "STORAGE_ISOLATION_PER_CONTAINER"}},
+		{ID: "b", Storage: &backendStorage{DriverName: "dir", Isolation: "STORAGE_ISOLATION_SHARED_FILESYSTEM"}},
+		{ID: "c", Storage: nil},
+		{ID: "d", Storage: &backendStorage{DriverName: "dir", Isolation: "STORAGE_ISOLATION_SHARED_FILESYSTEM"}},
+		{ID: "e", Storage: &backendStorage{DriverName: "x", Isolation: "STORAGE_ISOLATION_UNKNOWN_DRIVER"}},
+	}
+	if got := sharedFilesystemBackends(backends); got != 2 {
+		t.Errorf("sharedFilesystemBackends() = %d, want 2", got)
+	}
+}

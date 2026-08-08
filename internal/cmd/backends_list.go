@@ -57,6 +57,19 @@ type backendInfo struct {
 	// when the daemon had no usable sample. Nil is meaningful: it means
 	// "unknown", not "idle".
 	HostLoad *hostLoad `json:"hostLoad,omitempty"`
+	// Storage is the pool backing this backend's containers and whether it
+	// isolates tenant volumes, or nil when the backend reported none. Nil is
+	// meaningful: "we don't know", not "isolated". See #1209 / #1206.
+	Storage *backendStorage `json:"storage,omitempty"`
+}
+
+// backendStorage mirrors the BackendInfo.storage wire shape (#1209).
+// Enums arrive as their protojson string names.
+type backendStorage struct {
+	Pool       string `json:"pool,omitempty"`
+	Driver     string `json:"driver,omitempty"`
+	Isolation  string `json:"isolation,omitempty"`
+	DriverName string `json:"driverName,omitempty"`
 }
 
 // hostLoad mirrors the BackendInfo.host_load wire shape (cloud #966).
@@ -147,9 +160,9 @@ func printBackendsTable(backends []backendInfo) {
 		fmt.Println("No backends registered (running standalone, no peers).")
 		return
 	}
-	fmt.Printf("%-40s %-8s %-10s %-25s %-10s %-10s %-6s %-6s %s\n",
-		"BACKEND ID", "TYPE", "HEALTH", "HOSTNAME", "CONTAINERS", "CPU LOAD", "MEM", "DISK", "GPUS")
-	fmt.Println(strings.Repeat("-", 140))
+	fmt.Printf("%-40s %-8s %-10s %-25s %-10s %-10s %-6s %-6s %-12s %s\n",
+		"BACKEND ID", "TYPE", "HEALTH", "HOSTNAME", "CONTAINERS", "CPU LOAD", "MEM", "DISK", "STORAGE", "GPUS")
+	fmt.Println(strings.Repeat("-", 155))
 	for _, b := range backends {
 		health := "✓"
 		if !b.Healthy {
@@ -167,14 +180,26 @@ func printBackendsTable(backends []backendInfo) {
 		if hostname == "" {
 			hostname = "-"
 		}
-		fmt.Printf("%-40s %-8s %-10s %-25s %-10d %-10s %-6s %-6s %s\n",
+		fmt.Printf("%-40s %-8s %-10s %-25s %-10d %-10s %-6s %-6s %-12s %s\n",
 			b.ID, b.Type, health, hostname, b.ContainerCount,
 			formatCPULoad(b.HostLoad),
 			formatUsedPercent(b.HostLoad, memoryUsage),
 			formatUsedPercent(b.HostLoad, diskUsage),
+			formatStorage(b.Storage),
 			gpus)
 	}
 	fmt.Printf("\nTotal: %d backend(s)\n", len(backends))
+
+	// The exposure is invisible until tenants are concurrently busy, and idle
+	// metrics on a shared-filesystem pool look BETTER than the alternatives.
+	// So say it outright rather than leaving a glyph in a column to be
+	// noticed. See #1206.
+	if n := sharedFilesystemBackends(backends); n > 0 {
+		fmt.Printf("\n⚠  %d backend(s) on a shared-filesystem storage pool (dir).\n", n)
+		fmt.Printf("   Every tenant rootfs shares one filesystem journal, so one tenant's\n")
+		fmt.Printf("   writeback can stall another tenant's fsync. Idle benchmarks will not\n")
+		fmt.Printf("   show this. See docs/BACKEND-STORAGE-DRIVER.md and issue #1206.\n")
+	}
 }
 
 // usageKind selects which of a host's two byte-usage pairs to render.
@@ -218,4 +243,50 @@ func formatUsedPercent(l *hostLoad, kind usageKind) string {
 		return "-"
 	}
 	return fmt.Sprintf("%d%%", used*100/total)
+}
+
+// Isolation values as they arrive over protojson.
+const (
+	isolationPerContainer     = "STORAGE_ISOLATION_PER_CONTAINER"
+	isolationSharedFilesystem = "STORAGE_ISOLATION_SHARED_FILESYSTEM"
+	isolationUnknownDriver    = "STORAGE_ISOLATION_UNKNOWN_DRIVER"
+)
+
+// formatStorage renders the storage column: the driver name, flagged when the
+// pool does not isolate tenant volumes.
+//
+// "-" when the backend reported nothing. Deliberately not a driver guess: an
+// unmeasured pool must not read as a safe one, the same rule formatCPULoad
+// follows for an unmeasured host.
+func formatStorage(s *backendStorage) string {
+	if s == nil || s.DriverName == "" {
+		return "-"
+	}
+	switch s.Isolation {
+	case isolationSharedFilesystem:
+		return s.DriverName + " ⚠"
+	case isolationUnknownDriver:
+		// Read, but not a driver we classify — flag it as unverified rather
+		// than asserting the shared-journal mechanism we have not established
+		// for it.
+		return s.DriverName + " ?"
+	default:
+		return s.DriverName
+	}
+}
+
+// sharedFilesystemBackends counts backends positively known to be on a
+// shared-filesystem pool.
+//
+// Backends that reported nothing, and drivers we could not classify, are NOT
+// counted: "unknown" is not "exposed", and padding the count with unknowns
+// would make the warning something operators learn to ignore.
+func sharedFilesystemBackends(backends []backendInfo) int {
+	n := 0
+	for _, b := range backends {
+		if b.Storage != nil && b.Storage.Isolation == isolationSharedFilesystem {
+			n++
+		}
+	}
+	return n
 }

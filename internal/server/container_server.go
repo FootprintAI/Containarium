@@ -2596,6 +2596,14 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		SshIngressHost: s.sshHost,
 	}
 
+	// The storage pool backing this backend's containers, and whether it
+	// isolates tenant volumes (#1209). Left null when the pool can't be read:
+	// an unread pool must not be reported as isolated. Carried on SystemInfo
+	// so peers report it through the fan-out ListBackends already uses.
+	if driver, derr := client.PoolDriver("default"); derr == nil {
+		info.Storage = backendStorageFromPool("default", driver)
+	}
+
 	// Populate GPU info
 	for _, gpu := range sysResources.GPUs {
 		info.Gpus = append(info.Gpus, &pb.GPUInfo{
@@ -2698,6 +2706,11 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			// and memory/disk usage; surface it instead of discarding it
 			// (cloud #966). Null when the probe produced nothing usable.
 			local.HostLoad = hostLoadFromSystemInfo(sysResp.Info, time.Now())
+			// Which storage pool backs this host's containers, and whether it
+			// isolates tenant volumes (#1209). GetSystemInfo already measured
+			// it; pass it straight through, null included, so "unreadable"
+			// stays distinguishable from "isolated".
+			local.Storage = sysResp.Info.Storage
 		}
 	}
 	// Surface the local backend's spare-capacity advertisement (#680). Only
@@ -2743,6 +2756,11 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 					// already works, so it does not depend on the BYOC
 					// driver-token path that cloud #933 is stuck on.
 					pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
+					// Peers report their own pool's driver + isolation over
+					// the same fan-out, so a BYOC tunnel host on a shared
+					// filesystem is visible from the fleet view rather than
+					// only in that host's own startup log (#1209).
+					pi.Storage = peerResp.Info.Storage
 				}
 			}
 		}

@@ -6577,9 +6577,35 @@
         "hostLoad": {
           "$ref": "#/definitions/HostLoad",
           "description": "What this host is actually doing right now — measured CPU load, memory\nand disk in use — or null when no usable sample could be taken (the\nprobe failed, or a peer was unreachable this call). Null rather than\nzeros so a caller can tell \"we don't know\" from \"idle\", which is the\ndifference between a placement decision and a guess.\n\nDistinct from the two capacity fields above, and all three are needed to\nanswer different questions: headroom is what the host *offers*,\ncapability_profile is what it *can* do, host_load is what it is *doing*.\nSee cloud #966 / #547."
+        },
+        "storage": {
+          "$ref": "#/definitions/BackendStorage",
+          "description": "The storage pool backing this backend's containers, and whether it\nisolates tenant volumes. Null when the pool could not be read — an\nunread pool must not be reported as isolated. See #1209 / #1206."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
+    },
+    "BackendStorage": {
+      "type": "object",
+      "properties": {
+        "pool": {
+          "type": "string",
+          "description": "Storage pool name (e.g. \"default\")."
+        },
+        "driver": {
+          "$ref": "#/definitions/StorageDriver",
+          "description": "The pool's driver as a typed constant."
+        },
+        "isolation": {
+          "$ref": "#/definitions/StorageIsolation",
+          "description": "Whether this pool isolates tenant volumes."
+        },
+        "driverName": {
+          "type": "string",
+          "description": "The raw driver string incus reported (e.g. \"zfs\", \"dir\", or a driver\npredating this enum). Always populated when the pool was read, so a\nSTORAGE_DRIVER_OTHER value is still actionable."
+        }
+      },
+      "description": "BackendStorage describes the storage pool backing a backend's containers.\nSurfaced through ListBackends so an operator can answer \"which of my\nbackends can have one tenant stall another's fsync?\" from the product,\nrather than by reading a daemon startup log on each host. See #1209."
     },
     "BackupDestination": {
       "type": "string",
@@ -11596,6 +11622,31 @@
       },
       "description": "StopEgressProxyResponse is the (empty) ack for a teardown."
     },
+    "StorageDriver": {
+      "type": "string",
+      "enum": [
+        "STORAGE_DRIVER_UNSPECIFIED",
+        "STORAGE_DRIVER_ZFS",
+        "STORAGE_DRIVER_BTRFS",
+        "STORAGE_DRIVER_LVM",
+        "STORAGE_DRIVER_CEPH",
+        "STORAGE_DRIVER_DIR",
+        "STORAGE_DRIVER_OTHER"
+      ],
+      "default": "STORAGE_DRIVER_UNSPECIFIED",
+      "description": "StorageDriver identifies the incus storage-pool driver backing a backend's\ncontainers. An enum rather than a bare string so callers switch on typed\nconstants; the raw driver name travels alongside in BackendStorage for\ndrivers we do not have a constant for.\n\n - STORAGE_DRIVER_OTHER: A pool driver we read successfully but do not classify. Distinct from\nUNSPECIFIED, which means we could not read the pool at all."
+    },
+    "StorageIsolation": {
+      "type": "string",
+      "enum": [
+        "STORAGE_ISOLATION_UNSPECIFIED",
+        "STORAGE_ISOLATION_PER_CONTAINER",
+        "STORAGE_ISOLATION_SHARED_FILESYSTEM",
+        "STORAGE_ISOLATION_UNKNOWN_DRIVER"
+      ],
+      "default": "STORAGE_ISOLATION_UNSPECIFIED",
+      "description": "StorageIsolation says whether a storage pool hands each container its own\nfilesystem, or puts every container on one shared filesystem.\n\nThis is the property behind #1206. On a shared filesystem every tenant\nrootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;\next4's default data=ordered mode writes back a transaction's dirty data\nwhile holding the journal lock, so one tenant's buffered writes block\nanother tenant's fsync() — measured at 17 ms -\u003e 11,885 ms with the host and\nthe physical device both idle. A tenant degrades its neighbours by writing\nnormally, which makes this an isolation property, not a performance one.\n\n - STORAGE_ISOLATION_UNSPECIFIED: Not known — the pool could not be read. Deliberately distinct from\nSHARED_FILESYSTEM: an unread pool must not be reported as either safe or\nunsafe.\n - STORAGE_ISOLATION_PER_CONTAINER: Each container gets its own dataset / subvolume / logical volume, so\ntenants share no filesystem journal.\n - STORAGE_ISOLATION_SHARED_FILESYSTEM: Every container's rootfs is on one filesystem — one journal, and\ncross-tenant fsync stalls.\n - STORAGE_ISOLATION_UNKNOWN_DRIVER: The driver was read but is not one we classify, so we cannot vouch for it\neither way. Distinct from UNSPECIFIED (pool unreadable) and from\nSHARED_FILESYSTEM (positively known to share)."
+    },
     "SuppressPentestFindingBody": {
       "type": "object",
       "properties": {
@@ -11736,6 +11787,10 @@
         "sshIngressHost": {
           "type": "string",
           "description": "Public SSH entrypoint (the sentinel host) clients dial to reach this\nbackend's containers — the daemon's advertised --ssh-host. **Empty means\nthis backend advertises NO external SSH entrypoint** (direct / in-network\nmode: reach containers by IP, or deploy through an in-network pipeline).\nSurfaced so an agent can tell, from get_system_info alone, whether an\nexternal SSH/deploy entrypoint exists and what host it is — instead of\nassuming a sentinel that may not exist. See #1011."
+        },
+        "storage": {
+          "$ref": "#/definitions/BackendStorage",
+          "description": "The storage pool backing this backend's containers, and whether that\npool isolates tenant volumes. Null when the pool could not be read —\n\"we don't know\" must stay distinguishable from \"isolated\". Carried on\nSystemInfo so peers report it through the GetSystemInfo fan-out that\nListBackends already uses, BYOC tunnel hosts included. See #1209."
         }
       },
       "title": "SystemInfo contains information about the host system"
