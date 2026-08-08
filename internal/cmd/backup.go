@@ -21,6 +21,7 @@ the ISO 27001 A.8.13 control mapping.
   containarium backup create alice --database app --dest gcs --gcs-bucket gs://my-backups/pg --server <host>
   containarium backup list alice --server <host>
   containarium backup restore alice-app-20260605T130405Z --clean --server <host>
+  containarium backup verify alice-app-20260605T130405Z --target scratch --server <host>
   containarium backup delete alice-app-20260605T130405Z --server <host>`,
 }
 
@@ -36,9 +37,14 @@ type backupAPI interface {
 	ListBackups(username string) ([]*pb.BackupRecord, error)
 	GetBackup(id string) (*pb.BackupRecord, error)
 	RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBackupResponse, error)
+	VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error)
 	DeleteBackup(id string) (*pb.DeleteBackupResponse, error)
 	Close() error
 }
+
+// newBackupClientFn is the seam tests substitute to exercise a backup
+// command's output and exit-code handling without a live daemon.
+var newBackupClientFn = newBackupClient
 
 func newBackupClient() (backupAPI, error) {
 	if serverAddr == "" {
