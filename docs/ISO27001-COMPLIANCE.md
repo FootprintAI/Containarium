@@ -84,7 +84,7 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | A.8.12 | Data leakage prevention | Partial | `.gitignore` for secrets, file-based secret storage | Gap: no DLP tooling |
 | A.8.13 | Information backup | Partial | ZFS snapshots, GCP disk persistence on STOP | Gap: no documented backup schedule or restore testing |
 | A.8.14 | Redundancy | Present | Sentinel HA with auto-recovery (`internal/sentinel/`, `docs/SENTINEL-DESIGN.md`) | ~85s recovery time |
-| A.8.15 | Logging | Present | stdout/stderr via systemd, OpenTelemetry (`internal/metrics/otel.go`), conntrack (`internal/traffic/`), centralized audit log in PostgreSQL (`internal/audit/`) with HTTP request + event bus persistence | — |
+| A.8.15 | Logging | Partial | stdout/stderr via systemd, OpenTelemetry (`internal/metrics/otel.go`), conntrack (`internal/traffic/`), centralized audit log in PostgreSQL (`internal/audit/`) with HTTP request + event bus persistence. **Control-plane API audit covers both backends; in-box SSH session audit is LXC-only** — the collector takes an `*incus.Client` (`internal/audit/ssh_collector.go`), so boxes on the Kubernetes backend record who called the API but not who logged in (#1189). | Needs: session audit on the K8s backend |
 | A.8.16 | Monitoring activities | Partial | OpenTelemetry metrics, Grafana dashboards, traffic monitoring | Gap: no SIEM integration, no alerting rules |
 | A.8.17 | Clock synchronization | Missing | No NTP configuration documented | Needs: document NTP/chrony setup on VMs |
 | A.8.20 | Network security | Present | GCP firewall rules (`terraform/modules/containarium/main.tf`), source IP restrictions, SSH jump architecture | Well implemented |
@@ -116,6 +116,7 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | H3 | A.8.5 | Implement MFA for admin access | — | `internal/auth/` |
 | ~~H4~~ | ~~A.8.15~~ | ~~Add centralized, tamper-proof audit logging~~ | Done | `internal/audit/` (store, HTTP middleware, event subscriber) |
 | H5 | A.5.24 | Write incident response plan | — | `docs/INCIDENT-RESPONSE.md` |
+| H8 | A.8.15 | Extend in-box SSH session audit to the Kubernetes backend — H4 shipped the central store and control-plane API audit, but the session collector is incus-typed, so K8s boxes log API calls and not logins (#1189) | — | `internal/audit/ssh_collector.go`, `pkg/core/box/k8s/` |
 | ~~H6~~ | ~~A.8.8~~ | ~~Add automated dependency scanning to CI~~ | Done | `.github/dependabot.yml`, `.github/workflows/security.yml` (Trivy + govulncheck) |
 | ~~H7~~ | ~~A.8.25~~ | ~~Add SAST to CI pipeline~~ | Done | `.github/workflows/security.yml` (gosec with SARIF upload) |
 
