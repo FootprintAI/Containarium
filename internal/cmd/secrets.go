@@ -140,8 +140,8 @@ func runSecretsSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	deliverySuffix := ""
-	if meta != nil && meta.Delivery != "" && meta.Delivery != "env" {
-		deliverySuffix = fmt.Sprintf(" delivery=%s", meta.Delivery)
+	if label := secretDeliveryLabel(meta.GetDeliveryMode()); label != "" && label != "env" {
+		deliverySuffix = fmt.Sprintf(" delivery=%s", label)
 	}
 	fmt.Printf("✓ %s (version=%d%s)\n", msg, meta.Version, deliverySuffix)
 	return nil
@@ -288,4 +288,24 @@ func runSecretsRefresh(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("✓ %s (stamped=%d)\n", msg, stamped)
 	return nil
+}
+
+// secretDeliveryLabel renders the delivery enum as the short operator-facing
+// word ("env" / "file" / "compose") rather than its proto name. Mirrors
+// destLabel in backup.go.
+//
+// Reads the typed field rather than the deprecated `delivery` string: both
+// are populated and always agree, but the string is the one scheduled for
+// removal, so new reads go through the enum.
+func secretDeliveryLabel(d pb.SecretDelivery) string {
+	switch d {
+	case pb.SecretDelivery_SECRET_DELIVERY_ENV:
+		return "env"
+	case pb.SecretDelivery_SECRET_DELIVERY_FILE:
+		return "file"
+	case pb.SecretDelivery_SECRET_DELIVERY_COMPOSE:
+		return "compose"
+	default:
+		return ""
+	}
 }

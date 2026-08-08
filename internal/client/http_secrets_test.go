@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // TestListSecretsDecodesGatewayCamelCase is the regression guard for
@@ -32,7 +34,8 @@ func TestListSecretsDecodesGatewayCamelCase(t *testing.T) {
 	      "version": 3,
 	      "createdAt": "2026-08-01T10:00:00Z",
 	      "updatedAt": "2026-08-07T12:30:00Z",
-	      "delivery": "compose"
+	      "delivery": "compose",
+	      "deliveryMode": "SECRET_DELIVERY_COMPOSE"
 	    },
 	    {
 	      "username": "alice",
@@ -40,7 +43,8 @@ func TestListSecretsDecodesGatewayCamelCase(t *testing.T) {
 	      "version": 1,
 	      "createdAt": "2026-08-02T09:00:00Z",
 	      "updatedAt": "2026-08-02T09:00:00Z",
-	      "delivery": "env"
+	      "delivery": "env",
+	      "deliveryMode": "SECRET_DELIVERY_ENV"
 	    }
 	  ]
 	}`
@@ -86,8 +90,19 @@ func TestListSecretsDecodesGatewayCamelCase(t *testing.T) {
 	if first.GetCreatedAt() != "2026-08-01T10:00:00Z" {
 		t.Errorf("CreatedAt = %q", first.GetCreatedAt())
 	}
+	// The typed field is the one new code reads.
+	if first.GetDeliveryMode() != pb.SecretDelivery_SECRET_DELIVERY_COMPOSE {
+		t.Errorf("DeliveryMode = %v, want SECRET_DELIVERY_COMPOSE", first.GetDeliveryMode())
+	}
+	// The legacy string must keep decoding alongside it. This assertion
+	// deliberately reads the deprecated field: the enum migration's whole
+	// contract is that responses populate both and they always agree, so
+	// dropping this check would remove the only guard on the half of that
+	// promise existing REST/MCP clients actually depend on.
+	//nolint:staticcheck // SA1019: exercising the deprecated field is the point
 	if first.GetDelivery() != "compose" {
-		t.Errorf("Delivery = %q, want compose", first.GetDelivery())
+		//nolint:staticcheck // SA1019: see above
+		t.Errorf("legacy Delivery = %q, want compose — back-compat broken", first.GetDelivery())
 	}
 
 	if list[1].GetName() != "DB_PASSWORD" || list[1].GetVersion() != 1 {
