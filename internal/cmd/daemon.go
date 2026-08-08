@@ -22,6 +22,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -863,11 +864,26 @@ func resolvePublicBaseDomains(public []string, base string) []string {
 // saveRecoveryConfigToPersistentStorage saves recovery config to persistent disk
 // This enables auto-recovery after instance recreation
 func saveRecoveryConfigToPersistentStorage(networkCIDR, baseDomain, caddyAdminURL, jwtSecretFile string, appHosting bool) error {
-	// Only save if the persistent storage path exists
-	persistentDir := "/mnt/incus-data"
+	// Only save if the persistent storage path exists.
+	persistentDir := hostcheck.DefaultRecoveryDir
 	if _, err := os.Stat(persistentDir); os.IsNotExist(err) {
-		// Persistent storage not mounted, skip
+		// Nothing provisioned there at all — no recovery config to write.
 		return nil
+	}
+	// os.Stat proves the directory exists; it cannot prove the directory
+	// is durable. Any host where this path exists for an incidental
+	// reason — a leftover mkdir from the startup script, a partial
+	// migration — used to be treated as persistent storage, and the
+	// config was written to the boot disk and destroyed by exactly the
+	// event it exists to survive (#1154).
+	//
+	// The write still goes ahead: it remains useful for an in-place
+	// daemon restart, and skipping it would lose that for no gain. What
+	// changes is that the host no longer reports silent success — the
+	// condition is logged here and surfaced as a `containarium doctor`
+	// check, so it is visible before a recovery rather than during one.
+	if warning := hostcheck.DescribeDurability(persistentDir); warning != "" {
+		log.Print(warning)
 	}
 
 	// Try to get ZFS source from current storage pool

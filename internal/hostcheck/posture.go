@@ -55,6 +55,7 @@ type posturePaths struct {
 	sshdConfigDir  string // /etc/ssh/sshd_config.d
 	aptPeriodic    string // /etc/apt/apt.conf.d/20auto-upgrades
 	incusDataDir   string // /var/lib/incus — the volume that holds tenant data
+	recoveryDir    string // /mnt/incus-data — where containarium-recovery.yaml is written (#1154)
 	metadataDialer func() error
 }
 
@@ -68,6 +69,7 @@ func defaultPosturePaths() posturePaths {
 		sshdConfigDir:  "/etc/ssh/sshd_config.d",
 		aptPeriodic:    "/etc/apt/apt.conf.d/20auto-upgrades",
 		incusDataDir:   "/var/lib/incus",
+		recoveryDir:    DefaultRecoveryDir,
 		metadataDialer: dialMetadataServer,
 	}
 }
@@ -92,6 +94,7 @@ func runPosture(p posturePaths) []Check {
 		sshdConfigCheck(p),
 		unattendedUpgradesCheck(p),
 		metadataReachableCheck(p),
+		recoveryConfigDurableCheck(p),
 	}
 	for i := range checks {
 		checks[i].Kind = KindPosture
