@@ -28,6 +28,29 @@ func detectZFSContainersDataset() bool {
 // Client wraps the Incus API client
 type Client struct {
 	server incus.InstanceServer
+
+	// storagePolicy decides what EnsureStorage does when a pool does not
+	// isolate tenant volumes (#1206). Zero value warns, which preserves the
+	// pre-existing behaviour for dev hosts and single-tenant boxes.
+	storagePolicy StoragePolicy
+
+	// storageProbe overrides host detection during driver selection. Nil uses
+	// DefaultStorageProbe.
+	storageProbe *StorageProbe
+}
+
+// SetStoragePolicy sets what EnsureStorage does when a storage pool does not
+// isolate tenant volumes: warn (the default) or refuse. See #1206.
+func (c *Client) SetStoragePolicy(p StoragePolicy) {
+	c.storagePolicy = p
+}
+
+// probe returns the host storage probe, defaulting to the real one.
+func (c *Client) probe() StorageProbe {
+	if c.storageProbe != nil {
+		return *c.storageProbe
+	}
+	return DefaultStorageProbe()
 }
 
 // Backend is the interface satisfied by *Client. Consumers depend on it (or a
@@ -1876,10 +1899,19 @@ func (c *Client) EnsureNetwork(config NetworkConfig) (string, error) {
 	return config.Name, nil
 }
 
-// EnsureStorage creates a storage pool if it doesn't exist.
-// It auto-detects ZFS pools: if a ZFS pool named "incus-local" exists with a
-// "containers" dataset, it creates a ZFS-backed Incus storage pool using it.
-// Otherwise, falls back to a directory-backed pool.
+// EnsureStorage creates a storage pool if it doesn't exist, preferring a
+// driver that gives every container its own volume.
+//
+// Selection order is zfs, then btrfs, then dir — see SelectStorageDriver. The
+// `dir` driver is a last resort because it puts every tenant rootfs on one
+// filesystem, so they share one journal and one tenant's writeback stalls
+// another tenant's fsync (#1206). Landing on it produces a loud warning, or a
+// hard failure under StoragePolicyRequireIsolation.
+//
+// An already-existing pool is re-checked rather than accepted silently: a
+// backend provisioned on `dir` before this change never re-runs selection, so
+// without the re-check it would stay quiet forever.
+//
 // Returns the storage pool name.
 func (c *Client) EnsureStorage(name string) (string, error) {
 	if name == "" {
@@ -1894,27 +1926,25 @@ func (c *Client) EnsureStorage(name string) (string, error) {
 
 	for _, p := range pools {
 		if p == name {
-			// Pool exists, return it
-			return name, nil
+			return name, c.reviewExistingStorage(name)
 		}
 	}
 
-	// Auto-detect ZFS pool: check if "incus-local/containers" dataset exists
-	driver := "dir"
-	config := map[string]string{}
-	if detectZFSContainersDataset() {
-		driver = "zfs"
-		config["source"] = "incus-local/containers"
-		log.Printf("  Auto-detected ZFS dataset incus-local/containers, using ZFS driver")
-	} else {
-		log.Printf("  No ZFS dataset found, using dir driver")
+	choice := SelectStorageDriver(c.probe())
+	warning, err := reviewStoragePool(c.storagePolicy, name, choice.Driver)
+	if err != nil {
+		return "", err
+	}
+	log.Printf("  Storage: creating pool %q on the %s driver — %s", name, choice.Driver, choice.Reason)
+	if warning != "" {
+		log.Print(warning)
 	}
 
 	poolReq := api.StoragePoolsPost{
 		Name:   name,
-		Driver: driver,
+		Driver: string(choice.Driver),
 		StoragePoolPut: api.StoragePoolPut{
-			Config: config,
+			Config: choice.Config,
 		},
 	}
 
@@ -1923,6 +1953,28 @@ func (c *Client) EnsureStorage(name string) (string, error) {
 	}
 
 	return name, nil
+}
+
+// reviewExistingStorage applies the isolation policy to a pool that already
+// exists. A pool we cannot read is reported as unchecked rather than warned
+// about under a guessed driver — saying "we could not check" is honest;
+// warning about a driver we did not actually observe is not.
+func (c *Client) reviewExistingStorage(name string) error {
+	pool, _, err := c.server.GetStoragePool(name)
+	if err != nil {
+		log.Printf("  Note: storage pool %q exists but could not be read, so its tenant-isolation "+
+			"property was not checked: %v", name, err)
+		return nil
+	}
+
+	warning, err := reviewStoragePool(c.storagePolicy, name, StorageDriver(pool.Driver))
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		log.Print(warning)
+	}
+	return nil
 }
 
 // GetStorageDriver returns the driver type ("zfs", "dir", etc.) for the named pool.
