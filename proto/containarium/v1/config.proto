@@ -212,6 +212,80 @@ message SystemInfo {
   // external SSH/deploy entrypoint exists and what host it is — instead of
   // assuming a sentinel that may not exist. See #1011.
   string ssh_ingress_host = 22;
+
+  // The storage pool backing this backend's containers, and whether that
+  // pool isolates tenant volumes. Null when the pool could not be read —
+  // "we don't know" must stay distinguishable from "isolated". Carried on
+  // SystemInfo so peers report it through the GetSystemInfo fan-out that
+  // ListBackends already uses, BYOC tunnel hosts included. See #1209.
+  BackendStorage storage = 23;
+}
+
+// StorageDriver identifies the incus storage-pool driver backing a backend's
+// containers. An enum rather than a bare string so callers switch on typed
+// constants; the raw driver name travels alongside in BackendStorage for
+// drivers we do not have a constant for.
+enum StorageDriver {
+  STORAGE_DRIVER_UNSPECIFIED = 0;
+  STORAGE_DRIVER_ZFS = 1;
+  STORAGE_DRIVER_BTRFS = 2;
+  STORAGE_DRIVER_LVM = 3;
+  STORAGE_DRIVER_CEPH = 4;
+  STORAGE_DRIVER_DIR = 5;
+
+  // A pool driver we read successfully but do not classify. Distinct from
+  // UNSPECIFIED, which means we could not read the pool at all.
+  STORAGE_DRIVER_OTHER = 6;
+}
+
+// StorageIsolation says whether a storage pool hands each container its own
+// filesystem, or puts every container on one shared filesystem.
+//
+// This is the property behind #1206. On a shared filesystem every tenant
+// rootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;
+// ext4's default data=ordered mode writes back a transaction's dirty data
+// while holding the journal lock, so one tenant's buffered writes block
+// another tenant's fsync() — measured at 17 ms -> 11,885 ms with the host and
+// the physical device both idle. A tenant degrades its neighbours by writing
+// normally, which makes this an isolation property, not a performance one.
+enum StorageIsolation {
+  // Not known — the pool could not be read. Deliberately distinct from
+  // SHARED_FILESYSTEM: an unread pool must not be reported as either safe or
+  // unsafe.
+  STORAGE_ISOLATION_UNSPECIFIED = 0;
+
+  // Each container gets its own dataset / subvolume / logical volume, so
+  // tenants share no filesystem journal.
+  STORAGE_ISOLATION_PER_CONTAINER = 1;
+
+  // Every container's rootfs is on one filesystem — one journal, and
+  // cross-tenant fsync stalls.
+  STORAGE_ISOLATION_SHARED_FILESYSTEM = 2;
+
+  // The driver was read but is not one we classify, so we cannot vouch for it
+  // either way. Distinct from UNSPECIFIED (pool unreadable) and from
+  // SHARED_FILESYSTEM (positively known to share).
+  STORAGE_ISOLATION_UNKNOWN_DRIVER = 3;
+}
+
+// BackendStorage describes the storage pool backing a backend's containers.
+// Surfaced through ListBackends so an operator can answer "which of my
+// backends can have one tenant stall another's fsync?" from the product,
+// rather than by reading a daemon startup log on each host. See #1209.
+message BackendStorage {
+  // Storage pool name (e.g. "default").
+  string pool = 1;
+
+  // The pool's driver as a typed constant.
+  StorageDriver driver = 2;
+
+  // Whether this pool isolates tenant volumes.
+  StorageIsolation isolation = 3;
+
+  // The raw driver string incus reported (e.g. "zfs", "dir", or a driver
+  // predating this enum). Always populated when the pool was read, so a
+  // STORAGE_DRIVER_OTHER value is still actionable.
+  string driver_name = 4;
 }
 
 // GPU vendor enum
@@ -626,6 +700,11 @@ message BackendInfo {
   // capability_profile is what it *can* do, host_load is what it is *doing*.
   // See cloud #966 / #547.
   HostLoad host_load = 13;
+
+  // The storage pool backing this backend's containers, and whether it
+  // isolates tenant volumes. Null when the pool could not be read — an
+  // unread pool must not be reported as isolated. See #1209 / #1206.
+  BackendStorage storage = 14;
 }
 
 // HostLoad is a point-in-time sample of a backend host's real resource
