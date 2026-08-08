@@ -474,6 +474,28 @@ type BackupRecord struct {
 	Destination string `json:"destination"`
 	Location    string `json:"location"`
 	Engine      string `json:"engine"`
+
+	LastVerification *BackupVerification `json:"lastVerification,omitempty"`
+}
+
+// VerificationCheck is one assertion made during a restore test.
+type VerificationCheck struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
+}
+
+// BackupVerification mirrors the proto BackupVerification: the audit
+// artifact for one restore test.
+type BackupVerification struct {
+	VerifiedAt      string              `json:"verifiedAt"`
+	Result          string              `json:"result"`
+	Error           string              `json:"error,omitempty"`
+	TargetContainer string              `json:"targetContainer"`
+	ScratchDatabase string              `json:"scratchDatabase"`
+	DurationMS      string              `json:"durationMs"` // int64 → string in proto JSON
+	VerifiedBy      string              `json:"verifiedBy,omitempty"`
+	Checks          []VerificationCheck `json:"checks,omitempty"`
 }
 
 // CreateBackupResponse is the result of a backup create.
@@ -523,6 +545,33 @@ func (c *Client) ListBackups(username string) (*ListBackupsResponse, error) {
 		return nil, err
 	}
 	var resp ListBackupsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// VerifyBackupRequest is the body for POST /v1/backups/{id}/verify.
+type VerifyBackupRequest struct {
+	ID             string            `json:"id"`
+	TargetUsername string            `json:"target_username"`
+	Connection     *PgConnectionBody `json:"connection,omitempty"`
+}
+
+// VerifyBackupResponse is the result of a restore test.
+type VerifyBackupResponse struct {
+	Message      string              `json:"message"`
+	Verification *BackupVerification `json:"verification"`
+	Record       *BackupRecord       `json:"record"`
+}
+
+// VerifyBackup restore-tests a stored dump against a throwaway target.
+func (c *Client) VerifyBackup(req VerifyBackupRequest) (*VerifyBackupResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/backups/"+req.ID+"/verify", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp VerifyBackupResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
