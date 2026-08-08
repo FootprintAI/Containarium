@@ -37,7 +37,7 @@ func TestKeyNeverRendersMaterial(t *testing.T) {
 
 	renderings := map[string]string{
 		"%v":       fmt.Sprintf("%v", k),
-		"%s":       fmt.Sprintf("%s", k),
+		"%s":       fmt.Sprintf("key=%s", k),
 		"%+v":      fmt.Sprintf("%+v", k),
 		"%#v":      fmt.Sprintf("%#v", k),
 		"%q":       fmt.Sprintf("%q", k),

@@ -44,6 +44,12 @@ func NewFileKeyProvider(dir string) (*FileKeyProvider, error) {
 	}
 	// An existing directory may have been created with looser
 	// permissions; tighten rather than trust.
+	//
+	// #nosec G302 -- 0700 is the tightest usable mode for a *directory*:
+	// the owner execute bit is what allows traversing into it to open the
+	// key files. The 0600 the rule wants would make the directory
+	// unopenable. Group and other are already excluded, which is the
+	// property that matters for key custody.
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("secure keys directory: %w", err)
 	}
@@ -89,6 +95,9 @@ func (p *FileKeyProvider) Wrap(ctx context.Context, tenantID string) (Key, KeyRe
 	// O_EXCL so two concurrent creates for the same tenant cannot race
 	// into two different keys, one of which would silently win and leave
 	// the other's dataset unopenable.
+	// #nosec G304 -- path comes from p.keyPath(tenantID), which rejects
+	// separators and ".." and joins onto p.dir, so it cannot escape the
+	// keys directory. It is never caller-supplied.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
