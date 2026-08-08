@@ -79,14 +79,19 @@ func (c *HTTPClient) Close() error {
 }
 
 // doRequest performs an HTTP request with authentication
-func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
+// body is the encoded JSON request body, or nil for a bodyless request.
+//
+// It is []byte rather than interface{} deliberately. The old signature
+// marshalled whatever it was handed, so handing it an already-encoded
+// []byte silently base64-encoded the payload into a JSON string and the
+// daemon rejected it with `proto: syntax error (line 1:1): unexpected
+// token "<base64>"` — three client methods shipped broken that way
+// (#887). Taking bytes makes that mistake unrepresentable: callers encode
+// exactly once, at a site where the payload's type is known.
+func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
-		jsonBody, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		bodyReader = bytes.NewReader(jsonBody)
+		bodyReader = bytes.NewReader(body)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
@@ -288,48 +293,48 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	resources := map[string]string{
-		"cpu":    cpu,
-		"memory": memory,
-		"disk":   disk,
+	req := createContainerRequest{
+		Username: username,
+		Resources: containerResources{
+			CPU:          cpu,
+			Memory:       memory,
+			Disk:         disk,
+			StorageClass: storageClass,
+		},
+		SSHKeys:      sshKeys,
+		Image:        image,
+		EnablePodman: enablePodman,
+		Stack:        stack,
+		GPUs:         gpus,
+		OSType:       osType,
+		Monitoring:   monitoring,
+		Pool:         pool,
+		BackendID:    backendID,
 	}
-	if storageClass != "" {
-		resources["storageClass"] = storageClass
-	}
-	reqBody := map[string]interface{}{
-		"username":     username,
-		"resources":    resources,
-		"sshKeys":      sshKeys,
-		"image":        image,
-		"enablePodman": enablePodman,
-		"stack":        stack,
-		"gpus":         gpus,
-		"osType":       osType,
-		"monitoring":   monitoring,
-		"pool":         pool,
-		"backendId":    backendID,
-	}
+	// The four git fields travel together: all present (even when empty)
+	// when a source is given, all absent otherwise.
 	if git.Source != "" {
-		reqBody["gitSource"] = git.Source
-		reqBody["gitRef"] = git.Ref
-		reqBody["gitCredential"] = git.Credential
-		reqBody["workspacePath"] = git.WorkspacePath
+		req.GitSource = &git.Source
+		req.GitRef = &git.Ref
+		req.GitCredential = &git.Credential
+		req.WorkspacePath = &git.WorkspacePath
 	}
-	// Birth TTL (#523): only include when set, so an unset TTL stays absent
-	// on the wire (0 = no TTL) rather than forcing a "ttlSeconds":0 the
-	// daemon would treat the same but that needlessly differs from a plain
-	// create's body.
+	// Birth TTL (#523), idle-stop (#524), stopped→delete (#525): only
+	// included when set, so an unset value stays absent on the wire
+	// (0 = disabled) rather than forcing a key the daemon would treat the
+	// same but that needlessly differs from a plain create's body.
 	if ttlSeconds > 0 {
-		reqBody["ttlSeconds"] = ttlSeconds
+		req.TTLSeconds = ttlSeconds
 	}
-	// Birth idle-stop (#524): same posture — only include when enabling
-	// auto-sleep, so a plain create's body is unchanged.
 	if idleStopMinutes > 0 {
-		reqBody["idleStopMinutes"] = idleStopMinutes
+		req.IdleStopMinutes = idleStopMinutes
 	}
-	// Birth stopped→delete (#525): same posture.
 	if deleteAfterStoppedSeconds > 0 {
-		reqBody["deleteAfterStoppedSeconds"] = deleteAfterStoppedSeconds
+		req.DeleteAfterStoppedSeconds = deleteAfterStoppedSeconds
+	}
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/containers", reqBody)
@@ -357,9 +362,12 @@ func (c *HTTPClient) ToggleAutoSleep(username string, enabled bool, idleThreshol
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/auto-sleep", url.PathEscape(username))
-	body := map[string]interface{}{
-		"enabled":                enabled,
-		"idle_threshold_minutes": idleThresholdMinutes,
+	body, err := json.Marshal(toggleAutoSleepRequest{
+		Enabled:              enabled,
+		IdleThresholdMinutes: idleThresholdMinutes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
@@ -398,7 +406,10 @@ func (c *HTTPClient) SetContainerTTL(username string, durationSeconds int64) (*p
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/ttl", url.PathEscape(username))
-	body := map[string]interface{}{"duration_seconds": durationSeconds}
+	body, err := json.Marshal(setContainerTTLRequest{DurationSeconds: durationSeconds})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, fmt.Errorf("set ttl: %w", err)
@@ -441,7 +452,10 @@ func (c *HTTPClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	// Emit the enum by its proto JSON name so grpc-gateway decodes it into the
 	// DeletePolicy enum (it accepts the string form; a bare int would also work
 	// but the name is self-documenting on the wire).
-	body := map[string]interface{}{"delete_policy": policy.String()}
+	body, err := json.Marshal(setContainerDeletePolicyRequest{DeletePolicy: policy.String()})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, fmt.Errorf("set delete policy: %w", err)
@@ -479,7 +493,10 @@ func (c *HTTPClient) SetContainerAttribution(username string, labels map[string]
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/attribution", url.PathEscape(username))
-	body := map[string]interface{}{"labels": labels}
+	body, err := json.Marshal(setContainerAttributionRequest{Labels: labels})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, fmt.Errorf("set attribution: %w", err)
@@ -519,9 +536,12 @@ func (c *HTTPClient) StartContainer(username string, waitForReady bool, readyTim
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/start", url.PathEscape(username))
-	body := map[string]interface{}{
-		"wait_for_ready":        waitForReady,
-		"ready_timeout_seconds": readyTimeoutSeconds,
+	body, err := json.Marshal(startContainerRequest{
+		WaitForReady:        waitForReady,
+		ReadyTimeoutSeconds: readyTimeoutSeconds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
@@ -553,7 +573,10 @@ func (c *HTTPClient) StopContainer(username string, force bool) (*pb.StopContain
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/stop", url.PathEscape(username))
-	body := map[string]interface{}{"force": force}
+	body, err := json.Marshal(stopContainerRequest{Force: force})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, fmt.Errorf("stop container: %w", err)
@@ -585,7 +608,7 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/monitoring", url.PathEscape(username))
-	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	body, err := json.Marshal(toggleMonitoringRequest{Enabled: enabled})
 	if err != nil {
 		return "", false, fmt.Errorf("marshal request: %w", err)
 	}
@@ -628,22 +651,19 @@ func (c *HTTPClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProv
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	body := map[string]interface{}{
-		"enabled": enabled,
-		// Emit the enum by its proto JSON name so grpc-gateway decodes it
-		// into the CloudMetricsProvider enum.
-		"provider": provider.String(),
+	// Emit the enums by their proto JSON names so grpc-gateway decodes
+	// them into CloudMetricsProvider / CloudMetricsGroup (#1081).
+	groupNames := make([]string, 0, len(groups))
+	for _, g := range groups {
+		groupNames = append(groupNames, g.String())
 	}
-	// Emit groups by their proto JSON names so grpc-gateway decodes the
-	// repeated CloudMetricsGroup enum (#1081). Omitted when empty so a
-	// host-only call stays byte-identical to the pre-groups request and
-	// lets the server apply its host default.
-	if len(groups) > 0 {
-		groupNames := make([]string, 0, len(groups))
-		for _, g := range groups {
-			groupNames = append(groupNames, g.String())
-		}
-		body["groups"] = groupNames
+	body, err := json.Marshal(setMetricsExportRequest{
+		Enabled:  enabled,
+		Provider: provider.String(),
+		Groups:   groupNames,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/system/metrics-export", body)
 	if err != nil {
@@ -716,7 +736,14 @@ func (c *HTTPClient) GetMetricsExport() (*pb.GetMetricsExportResponse, error) {
 func (c *HTTPClient) RefreshToken(refreshTok string) (string, string, int64, int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	body := map[string]string{"refresh_token": refreshTok}
+	// #nosec G117 -- the refresh token IS this request's payload: the
+	// caller trades it for a new access token, so it has to be
+	// marshalled and sent. It travels over the client's HTTPS transport
+	// and is never logged (doRequest logs the path, not the body).
+	body, err := json.Marshal(refreshTokenRequest{RefreshToken: refreshTok})
+	if err != nil {
+		return "", "", 0, 0, fmt.Errorf("marshal request: %w", err)
+	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/tokens/refresh", body)
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("refresh token: %w", err)
@@ -794,12 +821,13 @@ func (c *HTTPClient) ListRevokedTokens(limit int32, includeExpired bool, jtiPref
 func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	body := map[string]string{"jti": jti}
-	if reason != "" {
-		body["reason"] = reason
-	}
-	if expiresAt != "" {
-		body["expires_at"] = expiresAt
+	body, err := json.Marshal(revokeTokenRequest{
+		JTI:       jti,
+		Reason:    reason,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/tokens/revoke", body)
 	if err != nil {
@@ -824,15 +852,15 @@ func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) 
 func (c *HTTPClient) SetSecret(username, name, value, delivery string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	payload := map[string]string{
-		"username": username,
-		"name":     name,
-		"value":    value,
+	body, err := json.Marshal(setSecretRequest{
+		Username: username,
+		Name:     name,
+		Value:    value,
+		Delivery: delivery,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
-	if delivery != "" {
-		payload["delivery"] = delivery
-	}
-	body, _ := json.Marshal(payload)
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/secrets", body)
 	if err != nil {
 		return "", fmt.Errorf("set secret: %w", err)
@@ -952,10 +980,10 @@ func (c *HTTPClient) ResizeContainer(username, cpu, memory, disk string) (string
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/resize", url.PathEscape(username))
-	body, err := json.Marshal(map[string]string{
-		"cpu":    cpu,
-		"memory": memory,
-		"disk":   disk,
+	body, err := json.Marshal(resizeContainerRequest{
+		CPU:    cpu,
+		Memory: memory,
+		Disk:   disk,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
@@ -1023,11 +1051,15 @@ func (c *HTTPClient) StartEgressProxy(containerName string, upstreamPort, proxyP
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/network/egress-proxy", map[string]interface{}{
-		"containerName": containerName,
-		"upstreamPort":  upstreamPort,
-		"proxyPort":     proxyPort,
+	body, err := json.Marshal(startEgressProxyRequest{
+		ContainerName: containerName,
+		UpstreamPort:  upstreamPort,
+		ProxyPort:     proxyPort,
 	})
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/network/egress-proxy", body)
 	if err != nil {
 		return "", fmt.Errorf("failed to start egress proxy: %w", err)
 	}
@@ -1155,8 +1187,9 @@ func (c *HTTPClient) InstallStack(username, stackID string) error {
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/install-stack", url.PathEscape(username))
-	reqBody := map[string]interface{}{
-		"stackId": stackID,
+	reqBody, err := json.Marshal(installStackRequest{StackID: stackID})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPost, path, reqBody)
@@ -1254,13 +1287,16 @@ func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/recipes/%s/deploy", url.PathEscape(recipeID))
-	body := map[string]interface{}{
-		"recipe_id":  recipeID,
-		"name":       name,
-		"gpu":        gpu,
-		"backend_id": backendID,
-		"pool":       pool,
-		"parameters": params,
+	body, err := json.Marshal(deployRecipeRequest{
+		RecipeID:   recipeID,
+		Name:       name,
+		GPU:        gpu,
+		BackendID:  backendID,
+		Pool:       pool,
+		Parameters: params,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
@@ -1331,11 +1367,14 @@ func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON string) (
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/agent-skills/%s/run", url.PathEscape(skillID))
-	body := map[string]interface{}{
-		"skill_id":   skillID,
-		"backend_id": backendID,
-		"pool":       pool,
-		"input_json": inputJSON,
+	body, err := json.Marshal(runAgentSkillRequest{
+		SkillID:   skillID,
+		BackendID: backendID,
+		Pool:      pool,
+		InputJSON: inputJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
@@ -1359,9 +1398,12 @@ func (c *HTTPClient) EnqueueAgentTask(skillID, inputJSON string) (*pb.EnqueueAge
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	body := map[string]interface{}{
-		"skill_id":   skillID,
-		"input_json": inputJSON,
+	body, err := json.Marshal(enqueueAgentTaskRequest{
+		SkillID:   skillID,
+		InputJSON: inputJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/agent-tasks", body)
 	if err != nil {
@@ -1386,11 +1428,14 @@ func (c *HTTPClient) StartAgentWorker(skillID, backendID, pool, workerID string)
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/agent-skills/%s/worker", url.PathEscape(skillID))
-	body := map[string]interface{}{
-		"skill_id":   skillID,
-		"backend_id": backendID,
-		"pool":       pool,
-		"worker_id":  workerID,
+	body, err := json.Marshal(startAgentWorkerRequest{
+		SkillID:   skillID,
+		BackendID: backendID,
+		Pool:      pool,
+		WorkerID:  workerID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
@@ -1415,10 +1460,13 @@ func (c *HTTPClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/agent-skills/%s/call", url.PathEscape(toPeerID))
-	body := map[string]interface{}{
-		"from_skill_id": fromSkillID,
-		"to_peer_id":    toPeerID,
-		"input_json":    inputJSON,
+	body, err := json.Marshal(sendAgentTaskRequest{
+		FromSkillID: fromSkillID,
+		ToPeerID:    toPeerID,
+		InputJSON:   inputJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
@@ -1482,11 +1530,14 @@ func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON string) (*pb.Cre
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	path := fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(crewID))
-	body := map[string]interface{}{
-		"crew_id":    crewID,
-		"backend_id": backendID,
-		"pool":       pool,
-		"input_json": inputJSON,
+	body, err := json.Marshal(runCrewRequest{
+		CrewID:    crewID,
+		BackendID: backendID,
+		Pool:      pool,
+		InputJSON: inputJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
@@ -1771,8 +1822,9 @@ func (c *HTTPClient) SetLabels(username string, labels map[string]string) error 
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/labels", url.PathEscape(username))
-	reqBody := map[string]interface{}{
-		"labels": labels,
+	reqBody, err := json.Marshal(setLabelsRequest{Labels: labels})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
 	}
 
 	resp, err := c.doRequest(ctx, http.MethodPut, path, reqBody)
@@ -1854,12 +1906,15 @@ func (c *HTTPClient) AddRoute(domain, targetIP string, targetPort int32, contain
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	body := map[string]interface{}{
-		"domain":         domain,
-		"target_ip":      targetIP,
-		"target_port":    targetPort,
-		"container_name": containerName,
-		"description":    description,
+	body, err := json.Marshal(addRouteRequest{
+		Domain:        domain,
+		TargetIP:      targetIP,
+		TargetPort:    targetPort,
+		ContainerName: containerName,
+		Description:   description,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/network/routes", body)
 	if err != nil {
