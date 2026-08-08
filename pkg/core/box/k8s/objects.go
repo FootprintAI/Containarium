@@ -215,14 +215,62 @@ func secretObject(ns, tenant string, boxKeys, clientKeys []string) *corev1.Secre
 	}
 }
 
-// networkPolicyObject is the default-deny posture: deny all ingress/egress
-// except SSH ingress on :22 and DNS egress. (Gateway-only ingress narrowing and
-// the egress allowlist land with the gateway wiring; this is the v1 floor.)
-func networkPolicyObject(ns, tenant string) *networkingv1.NetworkPolicy {
+// nsNameLabel is the well-known label the kubelet stamps on every Namespace
+// with its own name (Kubernetes >= 1.21). Selecting on it is more robust than
+// requiring operators to hand-label namespaces, which our own manifests do but
+// a hand-rolled install may not.
+const nsNameLabel = "kubernetes.io/metadata.name"
+
+// sshpiperNameLabel matches the gateway Deployment's pod label as shipped in
+// deploy/k8s/sshpiper/30-deployment.yaml. A gateway deployed by other means
+// MUST carry this label or the ingress rule below will not admit it.
+const sshpiperNameLabel = "app.kubernetes.io/name"
+
+// dnsNamespace is where cluster DNS is assumed to run. Standard for
+// CoreDNS/kube-dns; a cluster that runs DNS elsewhere needs this widened or
+// box DNS resolution will fail closed.
+const dnsNamespace = "kube-system"
+
+// networkPolicyObject is the per-tenant default-deny posture: deny all
+// ingress/egress except SSH from the gateway and DNS to cluster DNS.
+//
+// Both rules carry peer selectors deliberately. A NetworkPolicy rule that
+// specifies only `ports` and omits `from`/`to` matches *every* source or
+// destination — so the earlier port-only form left tenant boxes reachable on
+// :22 from any pod in the cluster, and allowed port-53 egress to arbitrary
+// nameservers (a clean DNS-exfiltration channel out of a sandbox running
+// untrusted agent code). See #1193; this completes the narrowing that the v1
+// floor deferred.
+//
+// gatewayNS is the namespace holding the sshpiper Deployment (the daemon's
+// GatewayNamespace config, default "agent-gateway"). When it is empty the
+// ingress rule falls back to port-only — routing is disabled in that
+// configuration anyway (see gateway_sshpiper.go), and emitting a selector that
+// matches nothing would make the box unreachable rather than merely unrouted.
+func networkPolicyObject(ns, tenant, gatewayNS string) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	udp := corev1.ProtocolUDP
 	dnsPort := intstr.FromInt(53)
 	ssh := intstr.FromInt(sshPort)
+
+	ingress := networkingv1.NetworkPolicyIngressRule{
+		Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &ssh}},
+	}
+	if gatewayNS != "" {
+		// One peer with both selectors set = AND: pods matching the pod
+		// selector *within* namespaces matching the namespace selector. Two
+		// separate peers would be OR, which would admit any pod in the gateway
+		// namespace and any sshpiper-labelled pod anywhere.
+		ingress.From = []networkingv1.NetworkPolicyPeer{{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{nsNameLabel: gatewayNS},
+			},
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{sshpiperNameLabel: "sshpiper"},
+			},
+		}}
+	}
+
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "default-deny", Namespace: ns, Labels: boxLabels(tenant)},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -231,10 +279,13 @@ func networkPolicyObject(ns, tenant string) *networkingv1.NetworkPolicy {
 				networkingv1.PolicyTypeIngress,
 				networkingv1.PolicyTypeEgress,
 			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &ssh}},
-			}},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{ingress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{nsNameLabel: dnsNamespace},
+					},
+				}},
 				Ports: []networkingv1.NetworkPolicyPort{
 					{Protocol: &udp, Port: &dnsPort},
 					{Protocol: &tcp, Port: &dnsPort},
