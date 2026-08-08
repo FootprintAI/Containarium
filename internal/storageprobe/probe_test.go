@@ -199,3 +199,69 @@ type countingWriter struct {
 func (c *countingWriter) Write(p []byte) (int, error) { c.bytes += int64(len(p)); return len(p), nil }
 func (c *countingWriter) Sync() error                 { c.syncs++; return nil }
 func (c *countingWriter) Truncate(int64) error        { return nil }
+
+// TestClassify_SevereRequiresAbsoluteLatencyNotJustRatio guards against a
+// ratio-only verdict, which real measurement showed mis-ranks a healthy host.
+//
+// A migrated backend under heavy load measured 15.6 ms idle → 318 ms under
+// four busy co-tenants: a ratio of 20.4x, but 51x *better* in absolute terms
+// than the backend #1206 was filed about (16,179 ms at half that load).
+// Calling that `severe` puts a host where builds are fine in the same bucket
+// as one where they stall for 20 seconds.
+//
+// The flaw is structural: a ratio has no scale. 20x on a 15 ms baseline is
+// 318 ms; 20x on a 1,000 ms baseline is 20 s. Same ratio, different problem.
+func TestClassify_SevereRequiresAbsoluteLatencyNotJustRatio(t *testing.T) {
+	ms := func(d int) Result {
+		return Result{Ops: 50, Total: time.Duration(d) * time.Millisecond}
+	}
+
+	tests := []struct {
+		name        string
+		baseline    Result
+		underLoad   Result
+		wantVerdict Verdict
+	}{
+		{
+			// The case measured on the migrated host. High ratio, but
+			// sub-second latency — an operator should not be paged for this.
+			name:        "high ratio but sub-second latency is degraded, not severe",
+			baseline:    ms(15),
+			underLoad:   ms(350), // 23.3x ratio, 7 ms/op — comfortably past the ratio threshold
+			wantVerdict: VerdictDegraded,
+		},
+		{
+			// The original incident: high ratio AND multi-second latency.
+			name:        "high ratio with multi-second latency stays severe",
+			baseline:    ms(17),
+			underLoad:   ms(11885),
+			wantVerdict: VerdictSevere,
+		},
+		{
+			// Absolute latency alone must not trigger severe either: a pool
+			// that is uniformly slow but unaffected by neighbours is not a
+			// contention failure, which is the whole point of the ratio.
+			name:        "slow but stable stays isolated despite high absolute latency",
+			baseline:    ms(9000),
+			underLoad:   ms(9500),
+			wantVerdict: VerdictIsolated,
+		},
+		{
+			// Right at the ratio threshold with a large absolute number.
+			name:        "threshold ratio with seconds-scale latency is severe",
+			baseline:    ms(500),
+			underLoad:   ms(10000),
+			wantVerdict: VerdictSevere,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(tt.baseline, tt.underLoad)
+			if got.Verdict != tt.wantVerdict {
+				t.Errorf("Verdict = %v, want %v (ratio %.1f, under-load %v)",
+					got.Verdict, tt.wantVerdict, got.Ratio, tt.underLoad.PerOp())
+			}
+		})
+	}
+}

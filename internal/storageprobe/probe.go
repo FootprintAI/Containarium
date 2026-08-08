@@ -88,6 +88,21 @@ func (v Verdict) String() string {
 const (
 	degradedRatio = 3.0
 	severeRatio   = 20.0
+
+	// severeMinPerOp is the absolute floor a verdict must also clear before it
+	// can be called severe.
+	//
+	// A ratio has no scale, and that turns out to matter. Benchmarking a
+	// migrated backend under four busy co-tenants measured 15.6 ms idle ->
+	// 318 ms under load: a 20.4x ratio, but 51x *better* in absolute terms
+	// than the host #1206 was filed about (16,179 ms at half the load).
+	// Ratio-only logic called that severe, putting a host where builds are
+	// fine in the same bucket as one where they stall for 20 seconds.
+	//
+	// 50 ms per fsync is roughly where a build stops feeling slow and starts
+	// looking hung. The #1206 incident sat at ~238 ms per op, far past it;
+	// the migrated host sits at ~6 ms, far below.
+	severeMinPerOp = 50 * time.Millisecond
 )
 
 // Assessment is the outcome of comparing a baseline to an under-load run.
@@ -114,7 +129,11 @@ func Classify(baseline, underLoad Result) Assessment {
 
 	a.Ratio = float64(underLoad.PerOp()) / float64(base)
 	switch {
-	case a.Ratio >= severeRatio:
+	case a.Ratio >= severeRatio && underLoad.PerOp() >= severeMinPerOp:
+		// Both conditions are required. A large ratio over a tiny baseline
+		// still leaves latency an operator would not notice; a large absolute
+		// latency that co-tenant load did not cause is not a contention
+		// failure at all. See severeMinPerOp.
 		a.Verdict = VerdictSevere
 	case a.Ratio >= degradedRatio:
 		a.Verdict = VerdictDegraded

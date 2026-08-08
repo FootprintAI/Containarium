@@ -63,16 +63,32 @@ because it is the rootfs that tenants share.
 
 ## Verdicts
 
-| verdict | ratio | meaning |
+| verdict | condition | meaning |
 | --- | --- | --- |
-| `isolated` | < 3x | co-tenant load did not meaningfully affect fsync latency |
-| `degraded` | 3–20x | a real slowdown, short of a shared-journal collapse |
-| `severe` | ≥ 20x | fsync latency collapsed — the shared-journal signature |
+| `isolated` | ratio < 3x | co-tenant load did not meaningfully affect fsync latency |
+| `degraded` | ratio 3–20x, **or** a high ratio whose absolute latency is still small | a real slowdown, short of a shared-journal collapse |
+| `severe` | ratio ≥ 20x **and** ≥ 50 ms per fsync under load | fsync latency collapsed — the shared-journal signature |
 | `unknown` | — | baseline unusable. **Not a pass.** |
 
 The gap between the `isolated` and `severe` thresholds is deliberately wide.
 The tight-fsync load that did *not* reproduce the bug still reached ~1.9x, and
 a probe that flagged ordinary load variance is one operators learn to ignore.
+
+**`severe` needs both a ratio and an absolute number, because a ratio has no
+scale.** A migrated backend measured 15.6 ms idle → 318 ms under four busy
+co-tenants: a 20.4x ratio, but 51x *better* in absolute terms than the host
+that prompted this work. Ratio alone called that `severe`, which would have
+put a machine where builds are fine in the same bucket as one where they stall
+for 20 seconds. 20x on a 15 ms baseline is 318 ms; 20x on a 1,000 ms baseline
+is 20 s — the same ratio, a different problem.
+
+## Take enough samples
+
+The distribution has a long tail by construction, so a small sample lies. A
+three-sample run of the scaling curve above produced a **non-monotonic**
+result — four busy tenants appearing better than two — purely from two
+outliers. Six samples produced a clean monotonic curve. Treat any single run
+as indicative, not conclusive, and compare medians as well as means.
 
 ## Limitations
 
