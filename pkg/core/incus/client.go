@@ -1977,6 +1977,22 @@ func (c *Client) reviewExistingStorage(name string) error {
 	return nil
 }
 
+// PoolDriver returns the typed driver for the named pool, and an error when
+// the pool could not be read.
+//
+// Distinct from GetStorageDriver, which collapses a read failure into the
+// "unknown" string. Callers that put the driver on the wire need to tell "we
+// could not read the pool" apart from "we read it and it is a driver we don't
+// classify" — reporting the first as the second would let an unreadable pool
+// look like an observed one. See #1209.
+func (c *Client) PoolDriver(name string) (StorageDriver, error) {
+	pool, _, err := c.server.GetStoragePool(name)
+	if err != nil {
+		return "", fmt.Errorf("read storage pool %s: %w", name, err)
+	}
+	return StorageDriver(pool.Driver), nil
+}
+
 // GetStorageDriver returns the driver type ("zfs", "dir", etc.) for the named pool.
 // Returns "unknown" if the pool cannot be found.
 func (c *Client) GetStorageDriver(name string) string {
