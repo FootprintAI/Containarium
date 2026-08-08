@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -81,6 +82,18 @@ type Record struct {
 	Destination Destination `json:"destination"`
 	Location    string      `json:"location"`
 	Engine      string      `json:"engine"`
+
+	// LastVerification is the outcome of the most recent restore test,
+	// nil until the backup has been verified. SHA256 proves the bytes
+	// are intact; only this proves the dump is restorable (#1159).
+	LastVerification *Verification `json:"last_verification,omitempty"`
+
+	// RelationCount is the number of user relations in the source
+	// database at dump time — the manifest a restore test compares the
+	// restored schema against. Nil when no manifest was captured (a
+	// backup taken before verification existed, or a source that could
+	// not be queried).
+	RelationCount *int64 `json:"relation_count,omitempty"`
 }
 
 // PgConn carries the connection parameters pg_dump / pg_restore use
@@ -201,16 +214,29 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 		return nil, fmt.Errorf("pg_dump produced an empty archive (check database name and credentials)")
 	}
 
+	// Record the source's user-relation count as a manifest for later
+	// restore tests to compare against. Best-effort: a source that
+	// cannot be queried still produced a valid dump, so a failure here
+	// leaves the manifest unset rather than failing the backup.
+	var relationCount *int64
+	if n, err := m.countUserRelations(opts.ContainerName, conn, conn.Database); err != nil {
+		log.Printf("[backup] could not record relation manifest for %s/%s: %v (verification will have nothing to compare against)",
+			opts.Username, conn.Database, err)
+	} else {
+		relationCount = &n
+	}
+
 	sum := sha256.Sum256(data)
 	record := &Record{
-		ID:          id,
-		Username:    opts.Username,
-		Database:    conn.Database,
-		CreatedAt:   m.now().UTC(),
-		SizeBytes:   int64(len(data)),
-		SHA256:      hex.EncodeToString(sum[:]),
-		Destination: opts.Destination,
-		Engine:      EnginePostgres,
+		ID:            id,
+		Username:      opts.Username,
+		Database:      conn.Database,
+		CreatedAt:     m.now().UTC(),
+		SizeBytes:     int64(len(data)),
+		SHA256:        hex.EncodeToString(sum[:]),
+		Destination:   opts.Destination,
+		Engine:        EnginePostgres,
+		RelationCount: relationCount,
 	}
 
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
@@ -397,33 +423,11 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		return err
 	}
 
-	// Fetch the dump bytes to the host.
-	var data []byte
-	switch r.Destination {
-	case DestGCS:
-		if m.uploader == nil {
-			return fmt.Errorf("cannot restore GCS backup: no object-store uploader configured")
-		}
-		tmp := filepath.Join(m.dir, "."+r.ID+".restore.tmp")
-		if err := m.uploader.Download(r.Location, tmp); err != nil {
-			return fmt.Errorf("failed to download %s: %w", r.Location, err)
-		}
-		data, err = os.ReadFile(tmp) // #nosec G304 -- tmp is filepath.Join(m.dir, ...) with a validated record id
-		_ = os.Remove(tmp)
-		if err != nil {
-			return fmt.Errorf("failed to read downloaded dump: %w", err)
-		}
-	default:
-		data, err = os.ReadFile(r.Location)
-		if err != nil {
-			return fmt.Errorf("failed to read dump %s: %w", r.Location, err)
-		}
-	}
-
-	// Integrity check before we overwrite a live database.
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != r.SHA256 {
-		return fmt.Errorf("dump integrity check failed: sha256 %s != recorded %s (corruption or tampering)", got, r.SHA256)
+	// Fetch the dump bytes to the host and integrity-check them before
+	// we overwrite a live database.
+	data, err := m.fetchDump(r)
+	if err != nil {
+		return err
 	}
 
 	conn := opts.Conn.withDefaults()
@@ -450,6 +454,41 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		return fmt.Errorf("pg_restore failed: %w: %s", err, strings.TrimSpace(stderr))
 	}
 	return nil
+}
+
+// fetchDump pulls a record's dump bytes to the host (downloading from the
+// object store for off-host destinations) and verifies them against the
+// recorded SHA-256. Shared by Restore and Verify so the integrity gate
+// cannot drift between the two paths.
+func (m *Manager) fetchDump(r *Record) ([]byte, error) {
+	var data []byte
+	var err error
+	switch r.Destination {
+	case DestGCS:
+		if m.uploader == nil {
+			return nil, fmt.Errorf("cannot read GCS backup: no object-store uploader configured")
+		}
+		tmp := filepath.Join(m.dir, "."+r.ID+".restore.tmp")
+		if err := m.uploader.Download(r.Location, tmp); err != nil {
+			return nil, fmt.Errorf("failed to download %s: %w", r.Location, err)
+		}
+		data, err = os.ReadFile(tmp) // #nosec G304 -- tmp is filepath.Join(m.dir, ...) with a validated record id
+		_ = os.Remove(tmp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read downloaded dump: %w", err)
+		}
+	default:
+		data, err = os.ReadFile(r.Location)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read dump %s: %w", r.Location, err)
+		}
+	}
+
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != r.SHA256 {
+		return nil, fmt.Errorf("dump integrity check failed: sha256 %s != recorded %s (corruption or tampering)", got, r.SHA256)
+	}
+	return data, nil
 }
 
 func (m *Manager) sidecarPath(id string) string { return filepath.Join(m.dir, id+".meta.json") }
