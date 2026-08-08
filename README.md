@@ -463,7 +463,8 @@ The sentinel itself is e2-micro (free tier). It:
 
 VictoriaMetrics + Grafana auto-provisioned. Per-container CPU,
 memory, disk, network. Alerting via webhooks. SSH audit logs per
-user.
+user (LXC backend; the Kubernetes backend records control-plane API
+audit but not in-box SSH sessions — see #1189).
 
 ### Security primitives
 
@@ -767,7 +768,7 @@ Where Containarium has been demonstrated live:
   because our hardware was sitting idle* — where utilisation goes on AI
   and VM fleets, why one VM per developer stopped paying for itself, and
   how LXC + sshpiper + persistent disk became Containarium.
-  [Slides (PDF)](docs/talks/2026-08-coscup-containarium.pdf).
+  [Slides](https://containarium.dev/talks/coscup2026).
 - **2026-06-04 — AI Agent Night, Taipei.** When the grand-prize
   giveaway (a custom vibe-keyboard) hit a snag — the event had no way
   to run the lucky draw — we fired up Containarium and vibe-coded a
