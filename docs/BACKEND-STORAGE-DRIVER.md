@@ -81,16 +81,66 @@ upgrade.
 
 ## Moving an existing backend off `dir`
 
-There is no in-place conversion. The pool has to be recreated and the
-containers migrated:
+There is no in-place conversion — the pool has to be recreated. Which
+procedure applies depends on whether the tenants on the host carry durable
+data.
 
-1. Back up every tenant on the host (`scripts/backup-all-tenants.sh`).
-2. Provision the new backing store — a ZFS dataset at
-   `incus-local/containers`, or a btrfs filesystem mounted at
-   `/var/lib/incus/storage-pools`.
-3. Recreate the pool (see `containarium recover --storage-driver`).
-4. Restore the tenants (`scripts/restore-tenant.sh`).
+> **Whichever path you take, the platform's own core services live on the
+> same `default` pool as tenants** — core Postgres, Caddy, VictoriaMetrics,
+> the security container and the OTel collector. Destroying the pool
+> destroys them too. "Tenants are disposable" is not the same as "nothing
+> here needs backing up."
 
-Verify afterwards by re-running the reproduction from #1206: the ratio
-between the idle probe and the under-load probe is the signal, not either
-number on its own.
+### Path A — disposable tenants (CI runners, ephemeral sandboxes)
+
+Recreate the pool **in place, under the same name**. Because the pool is
+still called `default`, newly created containers land on it with no code or
+config change.
+
+1. Attach the new disk to the host and create the backing store on it — a
+   ZFS pool with an `incus-local/containers` dataset, or a btrfs filesystem
+   mounted at `/var/lib/incus/storage-pools`.
+2. **Back up the platform Postgres** — see
+   [DB-BACKUP-OPERATIONS.md](DB-BACKUP-OPERATIONS.md). This holds
+   app-hosting state, metering and audit data, and it is the step that
+   cannot be redone afterwards.
+3. If Let's Encrypt rate limits are a concern, note the Caddy certificate
+   state first (see [CADDY-SETUP.md](CADDY-SETUP.md)) — certs are
+   re-issuable, but not indefinitely.
+4. Destroy and recreate the `default` pool on the new disk. The daemon
+   selects a per-container-volume driver automatically once the backing
+   store exists; start it with `--require-isolated-storage` so a silent
+   fallback to `dir` fails loudly instead.
+5. Let core services and tenants be recreated, then restore Postgres.
+
+### Path B — tenants with durable data
+
+Run two pools side by side and move tenants across one at a time, so there
+is no fleet-wide outage and rollback is per tenant:
+
+```bash
+incus storage create isolated zfs source=<dataset>
+incus move <container> --storage isolated     # per tenant
+```
+
+This currently needs the storage pool name to be configurable, which it is
+not yet — every container-creation path is pinned to the pool literally
+named `default`, so newly created tenants would land back on `dir` and the
+migration would silently undo itself. Tracked as issue #1213; do not use
+Path B until it lands.
+
+### Verifying, either way
+
+Use the **ratio** between a quiet baseline and a probe taken under
+co-tenant load. A single number is not a signal — a `dir` pool measured at
+rest is the fastest storage in the fleet.
+
+```bash
+containarium storage-probe probe          # quiet baseline, box B
+containarium storage-probe load           # co-tenant load, box A
+containarium storage-probe probe          # again in box B, while A runs
+containarium storage-probe compare --baseline-ms <quiet> --under-load-ms <loaded>
+```
+
+See [STORAGE-CONTENTION-PROBE.md](STORAGE-CONTENTION-PROBE.md) and issue
+#1206.
