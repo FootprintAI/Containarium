@@ -142,6 +142,17 @@ type setMetricsExportRequest struct {
 }
 
 // refreshTokenRequest is POST /v1/tokens/refresh.
+//
+// The credential in the body is the entire point of this endpoint: the
+// caller trades a refresh token for a new access token, so the token has
+// to be marshalled and sent. gosec flags any marshalled field whose name
+// looks like a secret, which is a useful default and a false positive
+// here.
+//
+// Naming it something bland to dodge the rule would be worse: the field
+// really does carry a credential, and a reader should see that. Note it
+// is only ever sent over the client's HTTPS transport, and never logged —
+// doRequest logs the path, not the body.
 type refreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }

@@ -736,6 +736,10 @@ func (c *HTTPClient) GetMetricsExport() (*pb.GetMetricsExportResponse, error) {
 func (c *HTTPClient) RefreshToken(refreshTok string) (string, string, int64, int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// #nosec G117 -- the refresh token IS this request's payload: the
+	// caller trades it for a new access token, so it has to be
+	// marshalled and sent. It travels over the client's HTTPS transport
+	// and is never logged (doRequest logs the path, not the body).
 	body, err := json.Marshal(refreshTokenRequest{RefreshToken: refreshTok})
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("marshal request: %w", err)
