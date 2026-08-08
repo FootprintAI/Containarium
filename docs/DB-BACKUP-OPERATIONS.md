@@ -58,6 +58,10 @@ containarium backup get <tenant>-app-<timestamp> --server <host>
 # Restore in place (DESTRUCTIVE with --clean: drops objects first).
 containarium backup restore <tenant>-app-<timestamp> --clean --server <host>
 
+# Restore-test a dump against a throwaway target (never touches the source).
+containarium backup verify <tenant>-app-<timestamp> \
+  --target <scratch-tenant> --server <host>
+
 # Delete a stored dump + its index entry (retention; see below).
 containarium backup delete <tenant>-app-<timestamp> --server <host>
 ```
@@ -67,7 +71,8 @@ Connection defaults target a per-container local Postgres: user
 `--db-user/--db-host/--db-port` as needed.
 
 The same operations are available as MCP tools (`create_backup`,
-`list_backups`, `restore_backup`) and over REST (`/v1/backups`) — they
+`list_backups`, `restore_backup`, `verify_backup`) and over REST
+(`/v1/backups`) — they
 all call the one `BackupService`, so an agent, a human shell, and CI have
 an identical surface.
 
@@ -184,31 +189,80 @@ containarium backup list --server <host> --http \
 
 ## Restore test — the control an auditor actually checks
 
-ISO 27001 **A.8.13** does not credit untested backups. Run this on a
-schedule (quarterly is typical) and keep the output as evidence.
+ISO 27001 **A.8.13** does not credit untested backups, and a checksum is
+not a restore test. `sha256` proves the dump bytes have not changed; it
+cannot prove the dump will load. The failure modes that actually bite all
+hash perfectly well:
+
+- a dump taken against a wedged database,
+- a schema the target engine version cannot load,
+- a truncated logical export.
+
+`containarium backup verify` answers the question the checksum cannot, by
+actually restoring the dump:
 
 ```bash
-# 1. Pick the latest backup for a tenant.
+# Restore-test the latest backup against a throwaway container.
 ID=$(containarium backup list <tenant> --server <host> | awk 'NR==2{print $1}')
-
-# 2. Restore into a throwaway database, NOT the live one.
-containarium backup restore "$ID" --database app_restore_test \
-  --clean --server <host>
-
-# 3. Inside the container, sanity-check row counts / a known invariant,
-#    then drop the test database. Record PASS/FAIL + timestamp + ID.
+containarium backup verify "$ID" --target <scratch-tenant> --server <host>
 ```
 
-Restore always verifies the dump's SHA-256 against the recorded checksum
-before it touches the database — a mismatch aborts the restore with a
-"integrity check failed" error rather than loading corrupt data.
+```
+  ✓ integrity          sha256 matches recorded checksum (41231 bytes)
+  ✓ scratch_database   created containarium_verify_...
+  ✓ restore            dump loaded into containarium_verify_...
+  ✓ relation_count     42 user relations, matching the source at dump time
+
+  target:  <scratch-container> (scratch db containarium_verify_..., dropped)
+  when:    2026-08-08T05:12:44Z  by ops@example.com
+  elapsed: 4182ms
+
+✓ verification passed: <tenant>-app-20260605T130405Z
+```
+
+What it does, and the properties that matter for the control:
+
+- **The source container is never touched.** The dump is loaded into a
+  scratch database inside the `--target` container. If `--target`
+  resolves to the container the backup came from, verification refuses to
+  run rather than restoring over live data.
+- **The scratch database is disposable.** It is created for the test and
+  dropped on the way out — on the failing path too, so a failed
+  verification does not leave debris in the target.
+- **A failed restore is a result, not a crash.** The engine's own error
+  is captured verbatim and recorded. The command exits non-zero so a
+  scheduled run fails loudly.
+- **The restored schema is compared against a manifest.** Every backup
+  records the source's *user* relation count at dump time; verification
+  compares what actually landed against it. This is what catches a
+  truncated export — a dump that hashes correctly and restores without a
+  single engine error, but arrives short. Backups taken before this
+  existed carry no manifest: they still verify, and the evidence says
+  plainly that there was nothing to compare against.
+- **The outcome is recorded on the backup.** `backup list` grows a
+  `VERIFIED` column (`never` / `pass <ts>` / `FAIL <ts>`), and the full
+  artifact — who ran it, when, against what, per-check detail — is
+  retrievable from `backup get`.
+
+Pick any container with a Postgres and spare capacity as the target; a
+disposable one you create for the purpose is the cleanest choice, since
+verification only needs the engine, never the target's own data.
+
+> **Scope note.** The platform does not yet *provision* the throwaway
+> target for you — you supply it. Platform-provisioned ephemeral
+> verification containers are tracked separately; see #1159 for the
+> rationale.
+
+Restore (`backup restore`) shares the same integrity gate: the SHA-256 is
+checked before the dump touches the database, and a mismatch aborts
+rather than loading corrupt data.
 
 ## ISO 27001 control mapping
 
 | Control | How this feature satisfies it |
 |---|---|
 | **A.8.13 Information backup** | Scheduled logical dumps, off-host, with documented retention and a tested-restore procedure. |
-| **A.8.13 (tested)** | `backup restore` into a scratch DB + checksum verification; keep run output as evidence. |
+| **A.8.13 (tested)** | `backup verify` restore-tests the dump against a throwaway target and records the outcome — who, when, target, per-check detail, and the engine's own error on failure — on the backup record itself. The evidence is retrievable via `backup get` / `backup list`, so the control is backed by a stored artifact rather than by a saved terminal transcript. |
 | **A.5.30 / A.8.14 ICT readiness for continuity** | Off-host dumps + `DISASTER-RECOVERY.md` reconstitute service after host loss. |
 | **A.8.24 Use of cryptography (at rest)** | Dumps inherit GCS default encryption (or CMEK); the host backup dir inherits disk encryption. |
 | **A.8.12 / A.5.34 Data leakage / PII** | Per-tenant isolation bounds blast radius; `backups:read`/`backups:write` scopes gate access; `get_secret`-style passwords never hit argv or logs. |
@@ -228,12 +282,14 @@ before it touches the database — a mismatch aborts the restore with a
 
 ## Quick reference
 
-- **CLI**: `containarium backup create|list|get|restore|delete`
+- **CLI**: `containarium backup create|list|get|restore|verify|delete`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
-- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`
-- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/delete)
+- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup`
+- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)
-- **Integrity**: SHA-256 recorded at create, verified at restore
+- **Integrity**: SHA-256 recorded at create, verified at restore *and* at verify
+- **Restorability**: `backup verify` — a restore test against a throwaway
+  target; last-verified state shows in `backup list`
 - **Host backup dir**: `/var/lib/containarium/backups` (override with `CONTAINARIUM_BACKUP_DIR`)
 - **GCS requirement**: the daemon host needs `gcloud` on `PATH`; without it the daemon serves LOCAL backups and rejects GCS with a clear error
 - **Engine**: PostgreSQL (v1)

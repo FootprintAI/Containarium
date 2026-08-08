@@ -23,6 +23,7 @@ const (
 	BackupService_ListBackups_FullMethodName   = "/containarium.v1.BackupService/ListBackups"
 	BackupService_GetBackup_FullMethodName     = "/containarium.v1.BackupService/GetBackup"
 	BackupService_RestoreBackup_FullMethodName = "/containarium.v1.BackupService/RestoreBackup"
+	BackupService_VerifyBackup_FullMethodName  = "/containarium.v1.BackupService/VerifyBackup"
 	BackupService_DeleteBackup_FullMethodName  = "/containarium.v1.BackupService/DeleteBackup"
 )
 
@@ -43,6 +44,8 @@ type BackupServiceClient interface {
 	GetBackup(ctx context.Context, in *GetBackupRequest, opts ...grpc.CallOption) (*GetBackupResponse, error)
 	// RestoreBackup loads a stored dump back into a container's database.
 	RestoreBackup(ctx context.Context, in *RestoreBackupRequest, opts ...grpc.CallOption) (*RestoreBackupResponse, error)
+	// VerifyBackup restore-tests a stored dump against a throwaway target.
+	VerifyBackup(ctx context.Context, in *VerifyBackupRequest, opts ...grpc.CallOption) (*VerifyBackupResponse, error)
 	// DeleteBackup removes a stored dump and its index entry.
 	DeleteBackup(ctx context.Context, in *DeleteBackupRequest, opts ...grpc.CallOption) (*DeleteBackupResponse, error)
 }
@@ -95,6 +98,16 @@ func (c *backupServiceClient) RestoreBackup(ctx context.Context, in *RestoreBack
 	return out, nil
 }
 
+func (c *backupServiceClient) VerifyBackup(ctx context.Context, in *VerifyBackupRequest, opts ...grpc.CallOption) (*VerifyBackupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyBackupResponse)
+	err := c.cc.Invoke(ctx, BackupService_VerifyBackup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *backupServiceClient) DeleteBackup(ctx context.Context, in *DeleteBackupRequest, opts ...grpc.CallOption) (*DeleteBackupResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteBackupResponse)
@@ -122,6 +135,8 @@ type BackupServiceServer interface {
 	GetBackup(context.Context, *GetBackupRequest) (*GetBackupResponse, error)
 	// RestoreBackup loads a stored dump back into a container's database.
 	RestoreBackup(context.Context, *RestoreBackupRequest) (*RestoreBackupResponse, error)
+	// VerifyBackup restore-tests a stored dump against a throwaway target.
+	VerifyBackup(context.Context, *VerifyBackupRequest) (*VerifyBackupResponse, error)
 	// DeleteBackup removes a stored dump and its index entry.
 	DeleteBackup(context.Context, *DeleteBackupRequest) (*DeleteBackupResponse, error)
 	mustEmbedUnimplementedBackupServiceServer()
@@ -145,6 +160,9 @@ func (UnimplementedBackupServiceServer) GetBackup(context.Context, *GetBackupReq
 }
 func (UnimplementedBackupServiceServer) RestoreBackup(context.Context, *RestoreBackupRequest) (*RestoreBackupResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RestoreBackup not implemented")
+}
+func (UnimplementedBackupServiceServer) VerifyBackup(context.Context, *VerifyBackupRequest) (*VerifyBackupResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VerifyBackup not implemented")
 }
 func (UnimplementedBackupServiceServer) DeleteBackup(context.Context, *DeleteBackupRequest) (*DeleteBackupResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteBackup not implemented")
@@ -242,6 +260,24 @@ func _BackupService_RestoreBackup_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BackupService_VerifyBackup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyBackupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BackupServiceServer).VerifyBackup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BackupService_VerifyBackup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BackupServiceServer).VerifyBackup(ctx, req.(*VerifyBackupRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BackupService_DeleteBackup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteBackupRequest)
 	if err := dec(in); err != nil {
@@ -282,6 +318,10 @@ var BackupService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RestoreBackup",
 			Handler:    _BackupService_RestoreBackup_Handler,
+		},
+		{
+			MethodName: "VerifyBackup",
+			Handler:    _BackupService_VerifyBackup_Handler,
 		},
 		{
 			MethodName: "DeleteBackup",
