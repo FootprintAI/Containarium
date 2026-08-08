@@ -7685,6 +7685,14 @@
             "type": "string"
           },
           "description": "GPU device IDs for passthrough — one entry per GPU to attach (device\nindex like \"0\"/\"1\" or PCI address like \"0000:0b:00.0\"). Supersedes the\nsingular `gpu` field: when non-empty `gpu` is ignored; when empty a\nnon-empty `gpu` is treated as a single-element list. Each device is\nresolved to a stable PCI address at create time."
+        },
+        "encrypted": {
+          "type": "boolean",
+          "description": "Encrypt the container's ZFS dataset with a tenant-scoped key rather\nthan the pool-wide key, so a co-tenant — or host root, once the\ncontainer is stopped and the key unloaded — sees ciphertext.\n\nRequires the daemon to be wired with a KeyProvider. Without one the\nrequest fails with FAILED_PRECONDITION; it never falls back to\nplaintext, because a create that silently ignores this flag would\nhand the caller an encryption guarantee they do not have.\n\nDefault false: existing containers keep their current posture\n(pool-level encryption, or none). See\ndocs/ZFS-PER-CONTAINER-ENCRYPTION-DESIGN.md."
+        },
+        "tenantId": {
+          "type": "string",
+          "description": "Tenant that owns this container, scoping the encryption key: all of\na tenant's containers share one ZFS encryptionroot, and different\ntenants always have distinct ones.\n\nThe OSS daemon is single-tenant and accepts only \"\" or \"default\",\nrejecting anything else with INVALID_ARGUMENT; the multi-tenant\ncloud daemon accepts any non-empty value. The field is defined here\nso the wire shape stays stable across the OSS → cloud transition\nrather than changing when tenancy lands."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"

@@ -34,6 +34,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/stacks"
+	"github.com/footprintai/containarium/pkg/core/zfskey"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
@@ -80,7 +81,13 @@ type ContainerServer struct {
 	// imperative create path write a Box CR instead of calling boxBackend
 	// directly — the operator then reconciles it, so both the imperative and
 	// declarative paths converge on one builder (#995, slice 4).
-	boxWriter           *controller.BoxWriter
+	boxWriter *controller.BoxWriter
+	// keyProvider supplies per-tenant ZFS encryption keys. Nil on a
+	// daemon with no key custody configured — which is every OSS daemon
+	// today — in which case an encrypted create is refused rather than
+	// silently producing plaintext (#1198). The lifecycle hooks that
+	// consume it land in #1199/#1201.
+	keyProvider         zfskey.KeyProvider
 	collaboratorManager *container.CollaboratorManager
 	emitter             *events.Emitter
 	pendingCreations    map[string]*PendingCreation
@@ -360,6 +367,16 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// 0 = never delete on stop; > 0 reaps a box left stopped that long.
 	if req.DeleteAfterStoppedSeconds < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "delete_after_stopped_seconds must be >= 0, got %d", req.DeleteAfterStoppedSeconds)
+	}
+	// Per-tenant dataset encryption (#1198): refuse before provisioning
+	// anything. A create that accepts encrypted=true and then produces a
+	// plaintext dataset is worse than a rejected one — the caller would
+	// believe they had encryption at rest.
+	if err := validateTenantID(req.TenantId); err != nil {
+		return nil, err
+	}
+	if err := validateEncryption(req, s.keyProvider); err != nil {
+		return nil, err
 	}
 
 	// Pool resolution — if a pool is requested, either validate that

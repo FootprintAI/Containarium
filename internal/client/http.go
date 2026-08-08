@@ -282,6 +282,22 @@ func (c *HTTPClient) ListContainers() ([]incus.ContainerInfo, error) {
 // parameters. Zero value (Source == "") means "no git source" and the
 // daemon skips provisioning. Kept as a struct so CreateContainer's
 // already-long signature doesn't grow four more positional strings.
+// EncryptionOpts carries the per-tenant dataset-encryption request
+// (#1198). Bundled into a struct rather than added as two more
+// positional parameters: CreateContainer already takes eighteen, and a
+// bare `encrypted bool` would sit next to `monitoring bool` where a
+// transposed argument compiles cleanly and silently creates the wrong
+// container.
+type EncryptionOpts struct {
+	// Encrypted requests a tenant-scoped ZFS key for this container's
+	// dataset. The daemon rejects it with FAILED_PRECONDITION when no
+	// KeyProvider is configured — it never falls back to plaintext.
+	Encrypted bool
+	// TenantID scopes the key. Empty or "default" on a single-tenant
+	// daemon; any other value is rejected there with INVALID_ARGUMENT.
+	TenantID string
+}
+
 type GitSourceOpts struct {
 	Source        string // clone URL; empty disables git provisioning
 	Ref           string // SHA / branch / tag / refs/pull/N/merge; empty = default branch
@@ -289,7 +305,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -310,6 +326,8 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Monitoring:   monitoring,
 		Pool:         pool,
 		BackendID:    backendID,
+		Encrypted:    enc.Encrypted,
+		TenantID:     enc.TenantID,
 	}
 	// The four git fields travel together: all present (even when empty)
 	// when a source is given, all absent otherwise.

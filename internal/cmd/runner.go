@@ -377,14 +377,15 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				"",   // stack
 				nil,  // gpus
 				ostype.OSTypeFromString("ubuntu"),
-				false,                  // monitoring
-				"",                     // pool
-				"",                     // backend-id
-				client.GitSourceOpts{}, // no git-source for runner boxes
-				0,                      // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
-				0,                      // idle-stop: runner boxes are long-lived; not auto-slept
-				0,                      // delete-after-stopped: not applicable to runner boxes
-				"",                     // storage-class: runner boxes use cluster default
+				false,                   // monitoring
+				"",                      // pool
+				"",                      // backend-id
+				client.GitSourceOpts{},  // no git-source for runner boxes
+				0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
+				0,                       // idle-stop: runner boxes are long-lived; not auto-slept
+				0,                       // delete-after-stopped: not applicable to runner boxes
+				"",                      // storage-class: runner boxes use cluster default
+				client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
 			)
 			if err != nil {
 				return "", "", err
@@ -418,11 +419,12 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			false,
 			"",
 			"",
-			client.GitSourceOpts{}, // no git-source for runner boxes
-			0,                      // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
-			0,                      // idle-stop: runner boxes are long-lived; not auto-slept
-			0,                      // delete-after-stopped: not applicable to runner boxes
-			"",                     // storage-class: runner boxes use cluster default
+			client.GitSourceOpts{},  // no git-source for runner boxes
+			0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
+			0,                       // idle-stop: runner boxes are long-lived; not auto-slept
+			0,                       // delete-after-stopped: not applicable to runner boxes
+			"",                      // storage-class: runner boxes use cluster default
+			client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
 		)
 		if err != nil {
 			return "", "", err

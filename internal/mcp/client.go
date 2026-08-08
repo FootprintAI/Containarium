@@ -1568,6 +1568,16 @@ type CreateContainerRequest struct {
 	// docs/OTEL-COLLECTOR-DESIGN.md for the full design.
 	Monitoring bool `json:"monitoring,omitempty"`
 
+	// Encrypted requests a tenant-scoped ZFS key for the container's
+	// dataset instead of the pool-wide key (#1198). The daemon refuses
+	// the create with FAILED_PRECONDITION when no KeyProvider is
+	// configured — it never falls back to plaintext.
+	Encrypted bool `json:"encrypted,omitempty"`
+
+	// TenantID scopes the encryption key. A single-tenant daemon accepts
+	// only an empty value or "default".
+	TenantID string `json:"tenantId,omitempty"`
+
 	// Pool selects placement by pool tag. When set with an empty
 	// BackendID, the daemon picks any healthy backend in the pool.
 	// When set with BackendID, the daemon validates that BackendID

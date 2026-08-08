@@ -63,6 +63,11 @@ type createContainerRequest struct {
 	GitCredential *string `json:"gitCredential,omitempty"`
 	WorkspacePath *string `json:"workspacePath,omitempty"`
 
+	// Per-tenant dataset encryption (#1198). Absent unless requested, so
+	// a plain create's body is unchanged.
+	Encrypted bool   `json:"encrypted,omitempty"`
+	TenantID  string `json:"tenantId,omitempty"`
+
 	// Birth TTL (#523), idle-stop (#524), stopped→delete (#525): absent
 	// unless enabled, so a plain create's body is unchanged.
 	TTLSeconds                int64 `json:"ttlSeconds,omitempty"`

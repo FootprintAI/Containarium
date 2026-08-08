@@ -196,6 +196,14 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Opt the container into application-emitted OpenTelemetry. When true, the daemon stamps the LXC with OTEL_EXPORTER_OTLP_ENDPOINT (and related env vars) pointing at the platform's core OTel collector, so any OTel SDK inside the container ships telemetry without app-side configuration. Default false. The daemon's own cgroup-level metrics for the container (CPU/mem/disk/net) are independent of this flag and continue for every container regardless.",
 					},
+					"encrypted": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Encrypt the container's ZFS dataset with a tenant-scoped key rather than the pool-wide key, so a co-tenant — or host root once the box is stopped — sees ciphertext. Requires the daemon to have a KeyProvider configured: without one the create is REFUSED (FAILED_PRECONDITION) rather than silently producing an unencrypted container. Default false. Mirrors `containarium create --encrypted`.",
+					},
+					"tenant_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Tenant that owns the container, scoping its encryption key. A single-tenant daemon accepts only an empty value or 'default' and rejects anything else with INVALID_ARGUMENT.",
+					},
 					"pool": map[string]interface{}{
 						"type":        "string",
 						"description": "Place the container on any healthy backend tagged with this pool (e.g., 'demo', 'lab', 'prod'). When omitted, the request lands on the primary/local backend. Use list_backends to see available pools. Mutually exclusive with backend_id unless the chosen backend is already in this pool (the daemon validates consistency).",
@@ -1402,6 +1410,8 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		GPU:          getStringArg(args, "gpu", ""),
 		GPUs:         getStringSliceArg(args, "gpus"),
 		Monitoring:   getBoolArg(args, "monitoring", false),
+		Encrypted:    getBoolArg(args, "encrypted", false),
+		TenantID:     getStringArg(args, "tenant_id", ""),
 		Pool:         getStringArg(args, "pool", ""),
 		BackendID:    getStringArg(args, "backend_id", ""),
 	}
