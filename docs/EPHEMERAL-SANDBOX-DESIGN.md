@@ -4,6 +4,16 @@
 > the CubeSandbox comparison ([readme](https://github.com/TencentCloud/CubeSandbox))
 > — their `<60ms` MicroVM cold-start exposes a workload Containarium
 > doesn't serve today: short-lived per-task agent sandboxes.
+>
+> **Scope: the LXC backend only** (clarified 2026-08-09). This note predates
+> the Kubernetes backend and its warm-pool machinery. On K8s the equivalent
+> already exists upstream — `kubernetes-sigs/agent-sandbox` ships warm pools,
+> pod snapshots, and over-creation guards, and adopting them is tracked as
+> #1226. Per the "inherit, don't invent" split in
+> [`product/agent-substrate-roadmap-position.md`](product/agent-substrate-roadmap-position.md),
+> we should not design a second warm-pool mechanism for K8s. What this note
+> covers — a warm pool on bare LXC hosts with no cluster — is the substrate
+> nobody else serves, and is the part still worth building ourselves.
 
 ## Where we are today
 
