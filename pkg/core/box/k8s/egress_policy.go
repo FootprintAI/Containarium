@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -9,6 +10,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -224,4 +227,57 @@ func parsePort(s string) (int32, error) {
 		return 0, fmt.Errorf("invalid port %q", s)
 	}
 	return int32(n), nil
+}
+
+// ApplyTenantEgress reconciles a tenant namespace's NetworkPolicy so it
+// permits the tenant's egress allowlist on top of the default-deny floor
+// (#1188).
+//
+// Passing no rules is how a policy is REMOVED, and it reverts to the floor —
+// DNS only — never to allow-all. That direction matters more than the
+// feature: a removal that widened access would be a silent privilege
+// escalation triggered by a delete.
+//
+// Refuses outright when any rule cannot be faithfully expressed, rather than
+// applying the part it understood. A partially-applied egress policy permits
+// traffic the tenant asked to block, and does so while reporting success.
+func (b *Backend) ApplyTenantEgress(ctx context.Context, tenant string, rules []*pb.ACLRule) error {
+	if tenant == "" {
+		return fmt.Errorf("k8s: tenant is required")
+	}
+
+	compiled, unsupported := compileEgressRules(rules)
+	if len(unsupported) > 0 {
+		parts := make([]string, 0, len(unsupported))
+		for _, u := range unsupported {
+			parts = append(parts, u.String())
+		}
+		return fmt.Errorf("k8s: refusing to apply a partial egress policy for tenant %q — "+
+			"%d rule(s) have no NetworkPolicy expression and applying the rest would permit "+
+			"traffic the policy denies: %s", tenant, len(unsupported), strings.Join(parts, "; "))
+	}
+
+	ns := b.cfg.TenantNamespacePrefix + tenant
+	desired := networkPolicyObject(ns, tenant, b.cfg.GatewayNamespace, compiled...)
+
+	policies := b.clientset.NetworkingV1().NetworkPolicies(ns)
+	existing, err := policies.Get(ctx, desired.Name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if _, err := policies.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
+				return fmt.Errorf("k8s: create networkpolicy for tenant %q: %w", tenant, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("k8s: read networkpolicy for tenant %q: %w", tenant, err)
+	}
+
+	// Update in place, preserving resourceVersion so a concurrent writer is
+	// detected rather than silently overwritten.
+	updated := existing.DeepCopy()
+	updated.Spec = desired.Spec
+	if _, err := policies.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("k8s: update networkpolicy for tenant %q: %w", tenant, err)
+	}
+	return nil
 }
