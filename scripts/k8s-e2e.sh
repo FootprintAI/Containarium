@@ -36,15 +36,52 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> creating kind cluster '$CLUSTER'"
-kind create cluster --name "$CLUSTER" --wait 120s
+# kind's default CNI (kindnet) does NOT enforce NetworkPolicy, so a cluster
+# built with it silently passes every isolation assertion — the per-tenant
+# default-deny policy is created and then ignored. That is how #1195 (ingress
+# restricted to the sshpiper pod, egress to cluster DNS) merged on a green
+# e2e that could not have failed. See #1234.
+#
+# Calico enforces NetworkPolicy, so the isolation cases below are real. Set
+# E2E_CNI=kindnet to opt out (faster startup, but NetworkPolicy assertions
+# become vacuous — the e2e skips them rather than passing them falsely).
+E2E_CNI="${E2E_CNI:-calico}"
+
+echo "==> creating kind cluster '$CLUSTER' (cni=$E2E_CNI)"
+if [ "$E2E_CNI" = "calico" ]; then
+  KIND_CFG="$(mktemp)"
+  cat >"$KIND_CFG" <<'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"
+EOF
+  # --wait is pointless before a CNI exists: nodes stay NotReady until Calico
+  # lands, so wait for node readiness after installing it instead.
+  kind create cluster --name "$CLUSTER" --config "$KIND_CFG"
+  rm -f "$KIND_CFG"
+
+  echo "==> installing Calico (NetworkPolicy enforcement)"
+  kubectl apply -f "${CALICO_MANIFEST:-https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml}"
+  kubectl -n kube-system rollout status daemonset/calico-node --timeout=300s
+  kubectl wait --for=condition=ready node --all --timeout=180s
+else
+  kind create cluster --name "$CLUSTER" --wait 120s
+fi
 
 # The box backend declares agent-sandbox Sandbox CRs; the agent-sandbox
 # controller (kubernetes-sigs/agent-sandbox) owns the pod + Service under
 # them, so it must run in the cluster for the lifecycle e2e to converge.
-# Note: v0.5.1's install asset is manifest.yaml (their README still says
-# sandbox-with-extensions.yaml, which 404s).
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
+# Note: the install asset is manifest.yaml (their README says
+# sandbox-with-extensions.yaml, which 404s for this release).
+#
+# Keep this in step with the sigs.k8s.io/agent-sandbox version in go.mod.
+# Skew matters: 0.5.4 is the release that makes the Suspended condition
+# always present, which stateOf now reads (#1186). Pinned at v0.5.1 the e2e
+# exercised only the pre-0.5.4 fallback path, so the new behavior was never
+# covered here.
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.4}"
 echo "==> installing agent-sandbox controller ${AGENT_SANDBOX_VERSION}"
 command -v kubectl >/dev/null || { echo "kubectl is required to install the agent-sandbox controller" >&2; exit 1; }
 kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
