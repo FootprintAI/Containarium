@@ -76,11 +76,16 @@ jobs:
       - name: Run the ZFS encryption integration tests
         run: |
           set -euo pipefail
+          # Two invocations because the -run patterns differ: internal/server
+          # has unrelated TestIntegration_* tests that this lane should not
+          # be responsible for, so it is scoped to the encryption ones.
+          #
           # pkg/core/zfscrypt: the ZFS semantics the package assumes.
-          # internal/server:   the lifecycle hooks that production calls.
           sudo -E env "PATH=$PATH" go test -tags=zfs -v -count=1 -timeout 10m \
-            ./pkg/core/zfscrypt/ ./internal/server/ \
-            -run 'TestIntegration' | tee zfs-test.log
+            ./pkg/core/zfscrypt/ -run 'TestIntegration' | tee zfs-test.log
+          # internal/server: the lifecycle hooks production actually calls.
+          sudo -E env "PATH=$PATH" go test -tags=zfs -v -count=1 -timeout 10m \
+            ./internal/server/ -run 'TestIntegrationEncryption' | tee -a zfs-test.log
 
       # A skip here means the environment check above passed but the test
       # decided otherwise — a contradiction worth failing on rather than

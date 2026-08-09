@@ -113,8 +113,13 @@ func TestIntegrationEncryption_PostStopLeavesCiphertext(t *testing.T) {
 	dataset := h.createBox(t, ctx, "box-alice", "alice")
 	zfspool.Run(t, "zfs", "set", "compression=off", dataset)
 
+	// Distinct prefixes, and the search uses the FULL prefixed string.
+	// Searching for the bare shared suffix would find it inside the
+	// control's plaintext — which sits unencrypted on this same vdev — and
+	// report the encrypted dataset as leaking when it had not.
+	encCanary := append([]byte("ENCRD-"), hookCanary...)
 	secret := filepath.Join(h.pool.Mount, "box-alice", "secret.txt")
-	if err := os.WriteFile(secret, hookCanary, 0o600); err != nil {
+	if err := os.WriteFile(secret, encCanary, 0o600); err != nil {
 		t.Fatalf("write canary: %v", err)
 	}
 
@@ -149,7 +154,7 @@ func TestIntegrationEncryption_PostStopLeavesCiphertext(t *testing.T) {
 			status, zfscrypt.KeyUnavailable)
 	}
 
-	if h.pool.ContainsPlaintext(t, hookCanary) {
+	if h.pool.ContainsPlaintext(t, encCanary) {
 		t.Error("the stopped container's data was found verbatim in the raw vdev — PostStop did " +
 			"not leave it as ciphertext (#1201)")
 	}
