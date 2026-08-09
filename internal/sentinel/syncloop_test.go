@@ -80,6 +80,31 @@ func TestSyncRetryDelays_AreNonDecreasingAndCapped(t *testing.T) {
 	}
 }
 
+// The invariant the whole design rests on, checked across the range of
+// intervals a loop could plausibly be configured with rather than just the
+// two in use today.
+//
+// If a burst ever outlived its interval, time.Ticker would buffer a tick
+// (its channel holds one) and fire it the instant the burst returned —
+// stacking a fresh cycle straight onto the previous one and running two
+// overlapping schedules against the same backend.
+func TestSyncRetryDelays_BurstNeverExceedsInterval(t *testing.T) {
+	for _, interval := range []time.Duration{
+		time.Second, 10 * time.Second, 30 * time.Second, time.Minute,
+		2 * time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour,
+		3 * time.Hour, 6 * time.Hour, 24 * time.Hour,
+	} {
+		var total time.Duration
+		for _, d := range syncRetryDelays(interval) {
+			total += d
+		}
+		if total >= interval {
+			t.Errorf("interval=%s burst=%s — the burst must stay strictly under the interval, "+
+				"or ticks buffer and cycles stack", interval, total)
+		}
+	}
+}
+
 // An interval shorter than the first retry gets no burst at all, rather
 // than a retry scheduled after the next tick would already have run.
 func TestSyncRetryDelays_ShortIntervalGetsNoBurst(t *testing.T) {
