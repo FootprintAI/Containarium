@@ -1,6 +1,9 @@
 package incus
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // #1213: every root-disk construction hardcoded the pool literally named
 // "default", so a backend migrated onto an isolated storage pool silently
@@ -126,4 +129,55 @@ func TestRootDiskForPool(t *testing.T) {
 			t.Errorf("the existing device map was mutated in place: %v", existing)
 		}
 	})
+}
+
+// buildContainerDataset is the daemon's understanding of where incus puts a
+// container's ZFS dataset. It is extracted from the quota-headroom path
+// rather than newly derived, because that path has computed this string on
+// real hosts for a long time — the value of pinning it here is that the next
+// caller (per-tenant encryption's dataset resolver, snapshot/rollback RPCs)
+// reuses the exercised version instead of rebuilding it from the docs.
+func TestBuildContainerDataset(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		poolSource string
+		poolName   string
+		container  string
+		want       string
+	}{
+		{
+			// The normal case: the incus pool records the ZFS pool it sits on.
+			name: "pool with an explicit source", poolSource: "tank", poolName: "default",
+			container: "alice-container", want: "tank/containers/containers/alice-container",
+		},
+		{
+			// A pool created without an explicit source uses its own name.
+			name: "pool without a source falls back to its name", poolSource: "", poolName: "default",
+			container: "alice-container", want: "default/containers/containers/alice-container",
+		},
+		{
+			// A source that is itself a nested dataset is used verbatim.
+			name: "nested source", poolSource: "tank/incus", poolName: "default",
+			container: "bob", want: "tank/incus/containers/containers/bob",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := buildContainerDataset(tc.poolSource, tc.poolName, tc.container); got != tc.want {
+				t.Errorf("buildContainerDataset(%q, %q, %q) = %q, want %q",
+					tc.poolSource, tc.poolName, tc.container, got, tc.want)
+			}
+		})
+	}
+}
+
+// The doubled segment is load-bearing and looks like a typo, so it gets its
+// own assertion: incus nests instance datasets under a `containers` child of
+// the pool's own `containers` dataset. "Simplifying" it would point every
+// caller at a dataset that does not exist.
+func TestBuildContainerDataset_KeepsTheDoubledContainersSegment(t *testing.T) {
+	got := buildContainerDataset("tank", "default", "alice")
+	if !strings.Contains(got, "/containers/containers/") {
+		t.Errorf("dataset = %q — the doubled segment is incus's actual layout, not a typo; "+
+			"removing it names a dataset that does not exist", got)
+	}
 }

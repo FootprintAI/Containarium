@@ -1798,6 +1798,47 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	return nil
 }
 
+// ContainerDataset resolves the ZFS dataset backing a container's rootfs.
+//
+// Extracted from the quota-headroom path, which has computed this on real
+// hosts since long before it was needed elsewhere — so this is the daemon's
+// existing, exercised understanding of the layout rather than a fresh guess
+// at it. Anything that needs to name a container's dataset (per-tenant
+// encryption's dataset resolver, snapshot/rollback RPCs) should use this
+// rather than rebuild the string.
+//
+// Empty pool uses the configured storage pool.
+func (c *Client) ContainerDataset(containerName, pool string) (string, error) {
+	if containerName == "" {
+		return "", fmt.Errorf("container name is required")
+	}
+	if pool == "" {
+		pool = c.StoragePool()
+	}
+
+	poolConfig, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return "", fmt.Errorf("failed to get storage pool %s: %w", pool, err)
+	}
+	return buildContainerDataset(poolConfig.Config["source"], poolConfig.Name, containerName), nil
+}
+
+// buildContainerDataset is the pure half, so the layout can be tested without
+// an Incus server.
+//
+// The doubled "containers/containers" is not a typo: incus nests its instance
+// datasets under a `containers` child of the pool's own `containers` dataset.
+// It is preserved exactly as the quota path has always produced it — changing
+// it would silently point every caller at a dataset that does not exist.
+func buildContainerDataset(poolSource, poolName, containerName string) string {
+	zfsPool := poolSource
+	if zfsPool == "" {
+		// A pool created without an explicit source uses its own name.
+		zfsPool = poolName
+	}
+	return fmt.Sprintf("%s/containers/containers/%s", zfsPool, containerName)
+}
+
 // ensureZFSQuotaHeadroom checks if the container's ZFS dataset is at quota and
 // temporarily expands it to the target size so Incus can write its backup.yaml.
 func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) error {
@@ -1805,20 +1846,10 @@ func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) 
 		pool = c.StoragePool()
 	}
 
-	// Determine the ZFS dataset name: <zfs-pool>/containers/containers/<name>
-	// Get the ZFS pool name from the Incus storage pool source
-	poolConfig, _, err := c.server.GetStoragePool(pool)
+	dataset, err := c.ContainerDataset(containerName, pool)
 	if err != nil {
-		return fmt.Errorf("failed to get storage pool %s: %w", pool, err)
+		return err
 	}
-
-	zfsPool := poolConfig.Config["source"]
-	if zfsPool == "" {
-		// Try pool name as ZFS pool name
-		zfsPool = poolConfig.Name
-	}
-
-	dataset := fmt.Sprintf("%s/containers/containers/%s", zfsPool, containerName)
 
 	// Set the ZFS quota to the target size directly
 	cmd := exec.Command("zfs", "set", fmt.Sprintf("quota=%s", targetSize), dataset)
