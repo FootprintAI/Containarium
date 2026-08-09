@@ -12,10 +12,12 @@
 # agent-sandbox controller; the e2e itself talks to the apiserver via
 # client-go.
 #
-# Note: kind's default CNI (kindnet) does NOT enforce NetworkPolicy, so this
-# suite asserts the reconciler creates the right objects + the pod lifecycle,
-# not egress *enforcement*. Testing NetworkPolicy enforcement needs a
-# Calico-backed kind config — tracked as a follow-up.
+# CNI: kind's default (kindnet) does NOT enforce NetworkPolicy, so this suite
+# used to assert only that the reconciler creates the right objects — the
+# policy itself was never exercised. It now builds the cluster with Calico by
+# default (E2E_CNI below) so enforcement is actually tested; set
+# E2E_CNI=kindnet for a faster local loop, and the enforcement test SKIPS
+# rather than passing vacuously (#1234).
 set -euo pipefail
 
 CLUSTER="${KIND_CLUSTER:-containarium-k8s-e2e}"
