@@ -20,10 +20,10 @@ import (
 // the default path byte-for-byte unchanged while the encrypted path is
 // still being built out.
 //
-// NOT VERIFIED against real ZFS — see #1200 and the pkg/core/zfscrypt
-// package doc. These tests prove the orchestration (what runs, in what
-// order, and what happens on failure); they cannot prove ZFS behaves as
-// assumed.
+// The ZFS behaviour these hooks depend on is verified against a real pool
+// (#1200) — see the pkg/core/zfscrypt package doc. The tests here prove
+// only the orchestration: what runs, in what order, and what happens on
+// failure.
 
 // keyRefConfigKey is the Incus config key the durable KeyRef is stored
 // under, so a restarted daemon — or a migration destination — can

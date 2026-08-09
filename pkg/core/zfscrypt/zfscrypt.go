@@ -7,22 +7,30 @@
 //
 // # Verification status
 //
-// The command forms below are derived from the design doc and the ZFS
-// documentation, and are exercised in tests against a fake runner. They
-// have NOT been executed against a real pool — see #1200: no reachable
-// environment can host one (the dev box is an LXC container with no zfs
-// device registered and no /dev/kvm). A fake agreeing with itself proves
-// the orchestration, not the ZFS semantics.
+// VERIFIED against a real pool (#1200). The unit tests here drive a fake
+// runner and prove only the orchestration — what runs, in what order, and
+// what happens on failure. The claims about what ZFS itself does are
+// exercised by zfscrypt_integration_test.go (build tag `zfs`), which runs
+// this same code against a file-backed pool in CI.
 //
-// Every assumption about what `zfs` does is therefore called out at the
-// call site, so a reviewer with a real pool can check them one by one
-// rather than re-deriving them. The unverified assumptions are:
+// Confirmed there, each previously assumed and now demonstrated:
 //
 //   - `-o keylocation=file:///dev/stdin` with the raw key on stdin loads
-//     a key without it ever touching argv or a temp file.
+//     a key without it ever touching argv or a temp file, and a WRONG key
+//     is refused rather than silently accepted.
 //   - `zfs unload-key` fails, rather than succeeding silently, while a
-//     dataset under the encryptionroot is still mounted.
-//   - `keystatus` reports exactly "available" or "unavailable".
+//     dataset under the encryptionroot is still mounted — and fails with a
+//     message isKeyInUse below recognises.
+//   - `keystatus` reports exactly "available" or "unavailable", and "-"
+//     for an unencrypted dataset.
+//
+// Also learned there, and relied on by the pre-start hook: `zfs load-key`
+// makes a dataset readable but does NOT remount it. Mounting is Incus's
+// job, which is why the hook only loads the key.
+//
+// The headline property — a stopped container's dataset is ciphertext,
+// including to host root — is asserted against the raw vdev bytes, with a
+// positive control proving the search can detect plaintext at all.
 package zfscrypt
 
 import (
@@ -127,10 +135,10 @@ func (m *Manager) CreateEncrypted(ctx context.Context, dataset string, key zfske
 		return fmt.Errorf("refusing to create %s with an empty key", dataset)
 	}
 
-	// ASSUMPTION (unverified against a real pool, #1200): passing the
-	// raw key on stdin with keylocation=file:///dev/stdin is accepted by
-	// `zfs create`, and keyformat=raw expects exactly 32 bytes — which
-	// zfskey.Key already guarantees.
+	// VERIFIED on a real pool (#1200): passing the raw key on stdin with
+	// keylocation=file:///dev/stdin is accepted by `zfs create`, and
+	// keyformat=raw expects exactly 32 bytes — which zfskey.Key already
+	// guarantees.
 	_, stderr, err := m.run.Run(ctx, key.Bytes(),
 		"create",
 		"-o", "encryption=on",
@@ -194,11 +202,11 @@ func (m *Manager) UnloadKey(ctx context.Context, dataset string) error {
 
 	_, stderr, err := m.run.Run(ctx, nil, "unload-key", dataset)
 	if err != nil {
-		// ASSUMPTION (unverified, #1200): ZFS refuses with a
+		// VERIFIED on a real pool (#1200): ZFS refuses with a
 		// "busy"/"in use" message rather than silently succeeding while
-		// a dataset under the encryptionroot is mounted. If it instead
-		// succeeded, a co-tenant's running container would lose its key
-		// — which is why this is called out for a reviewer with a pool.
+		// a dataset under the encryptionroot is mounted. Had it succeeded
+		// instead, a co-tenant's running container would have lost its
+		// key; TestIntegration_UnloadKeyRefusesWhileMounted holds the line.
 		if isKeyInUse(stderr) {
 			return ErrKeyInUse
 		}
