@@ -3,8 +3,11 @@ name: Security Scanning
 on:
   push:
     branches: [main]
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215). That
+  # matters most here: gosec, govulncheck and Trivy are the checks least
+  # likely to be missed by eye when they are silently absent.
   pull_request:
-    branches: [main]
   schedule:
     # Run weekly on Monday at 06:00 UTC
     - cron: '0 6 * * 1'
