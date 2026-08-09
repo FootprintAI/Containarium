@@ -204,8 +204,14 @@ type DualServer struct {
 	ttlSweeperManager     *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
 	secretsReconciler     *secretsReconciler     // Phase 4.3 Phase B-3
 	networkPolicyEnforcer *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
-	cloudClient           *cloud.Client          // #354 — cloud-actuation client (nil unless host is enrolled)
-	startTime             time.Time
+
+	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
+	// backend from the same store the eBPF enforcer reads (#1188). Nil on
+	// every other runtime — the two are mutually exclusive by backend, not by
+	// flag.
+	k8sNetPolicyReconciler *K8sNetworkPolicyReconciler
+	cloudClient            *cloud.Client // #354 — cloud-actuation client (nil unless host is enrolled)
+	startTime              time.Time
 }
 
 // bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
@@ -1624,42 +1630,54 @@ skipAppHosting:
 		}
 	}
 
+	// Tenant egress policy on the K8s backend (#1188). Constructed here, where
+	// the policy store exists; started in Start() alongside the other loops.
+	// The eBPF enforcer cannot serve this runtime — it attaches TCX to host
+	// veths that a pod does not have — so the store is the only shared piece.
+	var k8sNetPolicyReconciler *K8sNetworkPolicyReconciler
+	if containerServer != nil && containerServer.boxes().Kind() == box.KindK8s {
+		if applier, ok := containerServer.boxes().(tenantPolicyApplier); ok {
+			k8sNetPolicyReconciler = NewK8sNetworkPolicyReconciler(npServer.Store(), applier, 0)
+		}
+	}
+
 	ds := &DualServer{
-		config:                config,
-		grpcServer:            grpcServer,
-		containerServer:       containerServer,
-		appServer:             appServer,
-		networkServer:         networkServer,
-		trafficServer:         trafficServer,
-		trafficCollector:      trafficCollector,
-		gatewayServer:         gatewayServer,
-		tokenManager:          tokenManager,
-		authMiddleware:        authMiddleware,
-		routeStore:            routeStore,
-		routeSyncJob:          routeSyncJob,
-		passthroughStore:      passthroughStore,
-		passthroughSyncJob:    passthroughSyncJob,
-		collaboratorStore:     collabStore,
-		daemonConfigStore:     config.DaemonConfigStore,
-		metricsCollector:      metricsCollector,
-		securityScanner:       securityScanner,
-		securityStore:         securityStore,
-		securityServer:        securityServerInstance,
-		auditStore:            auditStore,
-		auditEventSubscriber:  auditEventSubscriber,
-		sshCollector:          sshCollector,
-		revocationStore:       revocationStoreLocal,
-		alertStore:            alertStore,
-		alertManager:          alertManager,
-		alertDeliveryStore:    containerServer.alertDeliveryStore,
-		pentestManager:        pentestManager,
-		pentestStore:          pentestStore,
-		zapManager:            zapManager,
-		zapStore:              zapStore,
-		peerPool:              NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
-		networkPolicyEnforcer: networkPolicyEnforcer,
-		cloudClient:           cloudClient,
-		startTime:             time.Now(),
+		config:                 config,
+		grpcServer:             grpcServer,
+		containerServer:        containerServer,
+		appServer:              appServer,
+		networkServer:          networkServer,
+		trafficServer:          trafficServer,
+		trafficCollector:       trafficCollector,
+		gatewayServer:          gatewayServer,
+		tokenManager:           tokenManager,
+		authMiddleware:         authMiddleware,
+		routeStore:             routeStore,
+		routeSyncJob:           routeSyncJob,
+		passthroughStore:       passthroughStore,
+		passthroughSyncJob:     passthroughSyncJob,
+		collaboratorStore:      collabStore,
+		daemonConfigStore:      config.DaemonConfigStore,
+		metricsCollector:       metricsCollector,
+		securityScanner:        securityScanner,
+		securityStore:          securityStore,
+		securityServer:         securityServerInstance,
+		auditStore:             auditStore,
+		auditEventSubscriber:   auditEventSubscriber,
+		sshCollector:           sshCollector,
+		revocationStore:        revocationStoreLocal,
+		alertStore:             alertStore,
+		alertManager:           alertManager,
+		alertDeliveryStore:     containerServer.alertDeliveryStore,
+		pentestManager:         pentestManager,
+		pentestStore:           pentestStore,
+		zapManager:             zapManager,
+		zapStore:               zapStore,
+		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
+		networkPolicyEnforcer:  networkPolicyEnforcer,
+		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
+		cloudClient:            cloudClient,
+		startTime:              time.Now(),
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -2129,6 +2147,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	}
 
 	// Start security scanner if available
+	// Tenant egress policy on the K8s backend (#1188). Nil on every other
+	// runtime; the eBPF enforcer serves those.
+	if ds.k8sNetPolicyReconciler != nil {
+		ds.k8sNetPolicyReconciler.Start(ctx)
+	}
+
 	if ds.securityScanner != nil {
 		ds.securityScanner.Start(ctx)
 		log.Printf("Security scanner started")

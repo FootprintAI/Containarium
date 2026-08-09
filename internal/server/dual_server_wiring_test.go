@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -60,12 +62,31 @@ func dualServerFuncCalls(t *testing.T, funcName string) []string {
 		if !ok {
 			return true
 		}
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			calls = append(calls, sel.Sel.Name)
+		switch fn := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			// x.Foo()
+			calls = append(calls, fn.Sel.Name)
+		case *ast.Ident:
+			// Foo() — plain function calls, which constructors are. Without
+			// this the guards could only see method calls, so a dropped
+			// NewXxx(...) was invisible to them.
+			calls = append(calls, fn.Name)
 		}
 		return true
 	})
 	return calls
+}
+
+// dualServerSourceContains reports whether dual_server.go contains the given
+// text. Used where the call shape matters (a method on a field) rather than
+// just the callee name.
+func dualServerSourceContains(t *testing.T, want string) bool {
+	t.Helper()
+	b, err := os.ReadFile("dual_server.go")
+	if err != nil {
+		t.Fatalf("read dual_server.go: %v", err)
+	}
+	return strings.Contains(string(b), want)
 }
 
 func indexOfCall(calls []string, name string) int {
@@ -147,5 +168,33 @@ func TestStartResumesMetricsExportAfterIdentityIsWired(t *testing.T) {
 		t.Errorf("StartMetricsExportIfEnabled runs before SetCapabilityIdentity (positions %d < %d): "+
 			"the resumed collector would snapshot the placeholder identity rather than the daemon's "+
 			"real backend_id/region (#1080)", resume, identity)
+	}
+}
+
+// The K8s tenant-policy reconciler must be constructed in NewDualServer and
+// started in Start (#1188).
+//
+// Split for the same reason the metrics-export wiring is: it needs the policy
+// store, which is a local in NewDualServer, but starting a loop belongs with
+// the other loops in Start. Neither half is visible at runtime if it goes
+// missing — a dropped construction leaves the reconciler nil and every K8s
+// tenant silently running without the egress policy they configured, which is
+// the exact bug #1188 exists to fix.
+func TestNewDualServerWiresK8sNetworkPolicyReconciler(t *testing.T) {
+	newCalls := dualServerFuncCalls(t, "NewDualServer")
+	if indexOfCall(newCalls, "NewK8sNetworkPolicyReconciler") < 0 {
+		t.Error("NewDualServer no longer constructs the K8s network-policy reconciler — every K8s " +
+			"tenant would silently run without the egress policy they configured (#1188)")
+	}
+
+	startCalls := dualServerFuncCalls(t, "Start")
+	if indexOfCall(startCalls, "Start") < 0 {
+		t.Error("Start makes no Start() calls at all — the parse is wrong, not the wiring")
+	}
+	// The reconciler is started via the field, so look for the guarded call
+	// shape rather than a bare constructor name.
+	if !dualServerSourceContains(t, "ds.k8sNetPolicyReconciler.Start(ctx)") {
+		t.Error("Start no longer starts the K8s network-policy reconciler — it would be constructed " +
+			"and never run, which looks identical to a daemon with no tenant policies (#1188)")
 	}
 }
