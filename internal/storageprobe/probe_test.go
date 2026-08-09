@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -263,5 +264,58 @@ func TestClassify_SevereRequiresAbsoluteLatencyNotJustRatio(t *testing.T) {
 					got.Verdict, tt.wantVerdict, got.Ratio, tt.underLoad.PerOp())
 			}
 		})
+	}
+}
+
+// The load mode's half of "both modes clean up their temp files even when
+// interrupted" (#1210).
+//
+// TestRunLoad_StopsOnContextCancel above drives runLoad with a fake writer, so
+// it proves the loop honours cancellation but says nothing about the file.
+// Load is the exported entry point that actually creates one, and it runs
+// inside a tenant's box: a load generator that leaves a multi-gigabyte scratch
+// file behind every time it is interrupted is worse than one nobody runs.
+func TestLoad_RemovesItsScratchFileWhenInterrupted(t *testing.T) {
+	dir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // interrupted before the first cycle
+
+	cfg := DefaultLoadConfig()
+	cfg.Cycles = 1_000_000
+
+	if err := Load(ctx, dir, cfg); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Load returned %v, want nil or context.Canceled", err)
+	}
+
+	assertNoScratchFiles(t, dir)
+}
+
+// And on the ordinary path too, so the cleanup is not merely a cancellation
+// side effect.
+func TestLoad_RemovesItsScratchFileOnCompletion(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := DefaultLoadConfig()
+	cfg.Cycles = 1 // finish immediately
+
+	if err := Load(context.Background(), dir, cfg); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	assertNoScratchFiles(t, dir)
+}
+
+func assertNoScratchFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "containarium-storage-") {
+			t.Errorf("scratch file %q was left behind; the probe runs inside a tenant's box "+
+				"and one that leaks a file per invocation is one operators stop running", e.Name())
+		}
 	}
 }
