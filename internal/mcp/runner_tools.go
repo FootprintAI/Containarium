@@ -50,7 +50,7 @@ func runnerTools() []Tool {
 				"properties": map[string]interface{}{
 					"repo": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub repo in owner/repo format (e.g. footprintai/containarium).",
+						"description": "Registration target: \"owner/repo\" for one repository, or a bare \"owner\" for an ORGANIZATION runner every repo in the org can use. The shape selects the scope. An org target needs a token with the admin:org scope, not repo.",
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
@@ -105,7 +105,7 @@ func runnerTools() []Tool {
 				"properties": map[string]interface{}{
 					"repo": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub repo in owner/repo format.",
+						"description": "Registration target: \"owner/repo\" for one repository, or a bare \"owner\" for an ORGANIZATION runner every repo in the org can use. The shape selects the scope. An org target needs a token with the admin:org scope, not repo.",
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
@@ -135,7 +135,7 @@ func runnerTools() []Tool {
 				"properties": map[string]interface{}{
 					"repo": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub repo in owner/repo format.",
+						"description": "Registration target: \"owner/repo\" for one repository, or a bare \"owner\" for an ORGANIZATION runner every repo in the org can use. The shape selects the scope. An org target needs a token with the admin:org scope, not repo.",
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",

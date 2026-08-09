@@ -53,10 +53,15 @@ entry point.`,
 }
 
 var runnerProvisionCmd = &cobra.Command{
-	Use:   "provision <repo>",
+	Use:   "provision <target>",
 	Short: "Create N runner boxes and register them as ephemeral GHA runners",
 	Long: `Create N Containarium boxes and configure each as an ephemeral
-GitHub Actions self-hosted runner for the given repo.
+GitHub Actions self-hosted runner for the given target.
+
+<target> is either "owner/repo" for a single repository, or a bare "owner"
+for an ORGANIZATION runner that every repo in the org can use (#1217). The
+shape selects the scope, the way GitHub itself disambiguates. An org target
+needs a token with the admin:org scope rather than repo.
 
 This verb is idempotent: re-running with the same args after a partial
 failure is safe. Boxes that already exist are not recreated; boxes that
@@ -80,7 +85,7 @@ Examples:
 }
 
 var runnerListCmd = &cobra.Command{
-	Use:   "list <repo>",
+	Use:   "list <target>",
 	Short: "List provisioned runner boxes and their GitHub registration status",
 	Long: `List Containarium boxes whose name starts with --name-prefix and
 merge their GitHub-side registration status (online / offline / busy /
@@ -92,7 +97,7 @@ Read-only.`,
 }
 
 var runnerRemoveCmd = &cobra.Command{
-	Use:   "remove <repo> <name>",
+	Use:   "remove <target> <name>",
 	Short: "Drain a runner, deregister it from GitHub, and delete the box",
 	Long: `Stop the runner service inside the box (which waits for the in-flight
 ephemeral job to finish — this is what "drain" means in the ephemeral
