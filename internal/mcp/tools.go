@@ -1565,7 +1565,18 @@ func handleListContainers(client API, args map[string]interface{}) (string, erro
 		return "No containers found.", nil
 	}
 
-	result := fmt.Sprintf("Found %d container(s):\n\n", resp.TotalCount)
+	// Count what is actually rendered, not what the daemon claimed (#1214).
+	//
+	// resp.TotalCount is a separate field that can disagree with the list
+	// below — most easily against a daemon that doesn't populate it, since
+	// the MCP server and the daemon are released and upgraded separately.
+	// A summary line that contradicts its own body is a trap for an agent:
+	// "Found 0 container(s)" is the kind of thing a caller acts on, and
+	// concluding a backend is empty (and therefore safe to wipe) has already
+	// cost a live container here once.
+	//
+	// len() cannot drift from what follows it.
+	result := fmt.Sprintf("Found %d container(s):\n\n", len(resp.Containers))
 	for _, container := range resp.Containers {
 		result += fmt.Sprintf("📦 %s\n", container.Name)
 		result += fmt.Sprintf("   Username: %s\n", container.Username)
