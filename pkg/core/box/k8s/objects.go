@@ -247,7 +247,11 @@ const dnsNamespace = "kube-system"
 // ingress rule falls back to port-only — routing is disabled in that
 // configuration anyway (see gateway_sshpiper.go), and emitting a selector that
 // matches nothing would make the box unreachable rather than merely unrouted.
-func networkPolicyObject(ns, tenant, gatewayNS string) *networkingv1.NetworkPolicy {
+// tenantEgress, when non-empty, is appended to the DNS allowance as
+// additional permitted egress. Empty leaves the default-deny floor exactly as
+// it was — which is what a box with no tenant policy, and a box whose policy
+// was just removed, must both get (#1188).
+func networkPolicyObject(ns, tenant, gatewayNS string, tenantEgress ...networkingv1.NetworkPolicyEgressRule) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	udp := corev1.ProtocolUDP
 	dnsPort := intstr.FromInt(53)
@@ -271,6 +275,22 @@ func networkPolicyObject(ns, tenant, gatewayNS string) *networkingv1.NetworkPoli
 		}}
 	}
 
+	// The DNS allowance is the floor and always comes first: a box that
+	// cannot resolve names is broken in a way that looks like a policy bug
+	// but is not one, so it is never something a tenant rule can remove.
+	egress := []networkingv1.NetworkPolicyEgressRule{{
+		To: []networkingv1.NetworkPolicyPeer{{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{nsNameLabel: dnsNamespace},
+			},
+		}},
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &udp, Port: &dnsPort},
+			{Protocol: &tcp, Port: &dnsPort},
+		},
+	}}
+	egress = append(egress, tenantEgress...)
+
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "default-deny", Namespace: ns, Labels: boxLabels(tenant)},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -280,17 +300,7 @@ func networkPolicyObject(ns, tenant, gatewayNS string) *networkingv1.NetworkPoli
 				networkingv1.PolicyTypeEgress,
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{ingress},
-			Egress: []networkingv1.NetworkPolicyEgressRule{{
-				To: []networkingv1.NetworkPolicyPeer{{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{nsNameLabel: dnsNamespace},
-					},
-				}},
-				Ports: []networkingv1.NetworkPolicyPort{
-					{Protocol: &udp, Port: &dnsPort},
-					{Protocol: &tcp, Port: &dnsPort},
-				},
-			}},
+			Egress:  egress,
 		},
 	}
 }
