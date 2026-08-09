@@ -87,7 +87,11 @@ type ContainerServer struct {
 	// today — in which case an encrypted create is refused rather than
 	// silently producing plaintext (#1198). The lifecycle hooks that
 	// consume it land in #1199/#1201.
-	keyProvider         zfskey.KeyProvider
+	keyProvider zfskey.KeyProvider
+	// encryption carries the per-tenant dataset hooks (#1199/#1201). A
+	// nil value is a valid no-op receiver, so the lifecycle paths do not
+	// branch on whether encryption is configured.
+	encryption          *encryptionHooks
 	collaboratorManager *container.CollaboratorManager
 	emitter             *events.Emitter
 	pendingCreations    map[string]*PendingCreation
@@ -1365,6 +1369,12 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 			return nil, fmt.Errorf("failed to start container: %w", err)
 		}
 	} else {
+		// Pre-start hook (#1199): unlock the dataset before the LXC
+		// boots. A failure stops the start — a container whose storage
+		// is unreadable is worse than one that refused to come up.
+		if err := s.encryption.PreStart(ctx, req.Username+"-container"); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+		}
 		if err := s.manager.Start(req.Username); err != nil {
 			// Try peer
 			if s.peerPool != nil {
@@ -1537,6 +1547,17 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		}
 		return nil, fmt.Errorf("failed to stop container: %w", err)
 	}
+
+	// Post-stop hook (#1201): drop the encryption key so the stopped
+	// container's dataset is ciphertext, including to host root. Runs
+	// only once the LXC is actually down — unloading a key under a
+	// running container would pull its storage away.
+	//
+	// Best-effort by design: the container has already stopped, so a
+	// failed unload cannot be reported as a failed stop. The operator
+	// learns from the log, and "key still in use" (a co-tenant still
+	// running under the same encryptionroot) is the expected case.
+	s.encryption.PostStop(ctx, req.Username+"-container")
 
 	info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
 	if err != nil {
