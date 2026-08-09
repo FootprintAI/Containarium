@@ -15,7 +15,7 @@ func TestListBackends_DecodesProtoJSONStringInts(t *testing.T) {
 	wire := `{
 	  "backends": [
 	    {
-	      "id": "tunnel-fts-13700k-gpu",
+	      "id": "tunnel-gpu-node-a-gpu",
 	      "type": "tunnel",
 	      "healthy": true,
 	      "uptimeSeconds": "123456",

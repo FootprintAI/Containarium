@@ -79,7 +79,7 @@ func TestEnrollREST(t *testing.T) {
 	defer srv.Close()
 
 	id, bearer, err := enrollREST(context.Background(), srv.URL, "host-123.secret",
-		EnrollOptions{DriverToken: "admin.jwt", OSSBackendID: "tunnel-fts-13700k"})
+		EnrollOptions{DriverToken: "admin.jwt", OSSBackendID: "tunnel-gpu-node-a"})
 	if err != nil {
 		t.Fatalf("enrollREST: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestEnrollREST(t *testing.T) {
 	if bearer != "host-123.secret" {
 		t.Errorf("bearer = %q, want host-123.secret (first enroll: response id matches the token's own id)", bearer)
 	}
-	if got.GetJoinToken() != "host-123.secret" || got.GetDriverToken() != "admin.jwt" || got.GetOssBackendId() != "tunnel-fts-13700k" {
+	if got.GetJoinToken() != "host-123.secret" || got.GetDriverToken() != "admin.jwt" || got.GetOssBackendId() != "tunnel-gpu-node-a" {
 		t.Errorf("server saw join=%q driver=%q backend=%q", got.GetJoinToken(), got.GetDriverToken(), got.GetOssBackendId())
 	}
 }

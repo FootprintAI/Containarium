@@ -12,11 +12,11 @@
       "containerCount": 16
     },
     {
-      "id": "tunnel-fts-13700k-gpu",
+      "id": "tunnel-gpu-node-a-gpu",
       "type": "tunnel",
       "healthy": true,
       "lastSeenAt": "2026-05-10T18:59:42Z",
-      "hostname": "fts-13700k",
+      "hostname": "gpu-node-a",
       "os": "Ubuntu 24.04.1 LTS",
       "containerCount": 4,
       "gpus": [
@@ -24,11 +24,11 @@
       ]
     },
     {
-      "id": "tunnel-fts-5900x-gpu",
+      "id": "tunnel-gpu-node-b-gpu",
       "type": "tunnel",
       "healthy": false,
       "lastSeenAt": "2026-05-10T18:42:00Z",
-      "hostname": "fts-5900x",
+      "hostname": "gpu-node-b",
       "os": "Ubuntu 24.04.1 LTS",
       "containerCount": 0,
       "gpus": [
