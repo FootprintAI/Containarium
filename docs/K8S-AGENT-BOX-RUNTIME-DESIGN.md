@@ -165,36 +165,48 @@ wired via `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_{PUBLIC_KEY,KEY_SECRET}`.
 Per tenant namespace:
 
 > ⚠️ **This section described the intended design; the shipped code is weaker.**
-> Corrected 2026-08-08 after reading `pkg/core/box/k8s/objects.go:221-245`
-> against it. The gap is tracked as **#1193**. What follows now describes what
-> actually ships, with the intent noted where they differ.
+> Corrected 2026-08-08 after reading `pkg/core/box/k8s/objects.go` against it,
+> and again on 2026-08-09 once the gap it described was closed. What follows
+> describes what actually ships, with the one remaining divergence called out.
 
-**Intended:** default-deny ingress with a single allow rule — TCP/22 *from the
+**Intended:** default-deny ingress with a single allow rule — SSH *from the
 sshpiper pod only* (matched by `agent-gateway` namespace + pod label) — and
 default-deny egress allowlisting cluster DNS plus the control-plane API
 endpoint.
 
 **Shipped** (one `default-deny` NetworkPolicy per tenant namespace,
-`objects.go:221`, created at `k8s.go:265`):
+`networkPolicyObject` in `objects.go`):
 
-- Its `podSelector` correctly scopes the policy to the tenant's box pods.
-- The **ingress rule carries `ports` but no `from`**, which per the
-  NetworkPolicy spec matches *all* sources. TCP/22 is therefore reachable from
-  anywhere the CNI permits — the `agent-gateway` namespace + pod-label
-  selector does not exist in code.
-- The **egress rule carries `ports` but no `to`**, so DNS (UDP/TCP 53) is
-  allowed to any destination rather than to cluster DNS.
-- There is **no control-plane API egress rule at all**.
+- Its `podSelector` scopes the policy to the tenant's box pods.
+- The **ingress rule restricts the SSH port to the sshpiper pod** — ONE peer
+  carrying both a `namespaceSelector` (`agent-gateway`) and a `podSelector`
+  (`app.kubernetes.io/name: sshpiper`). One peer, not two: two would be OR,
+  admitting any pod in the gateway namespace *or* any sshpiper-labelled pod
+  anywhere (#1195).
+- The **egress rule restricts DNS to the cluster DNS namespace**, on both
+  UDP/53 and TCP/53 — TCP matters for large responses.
+- There is still **no control-plane API egress rule**. A box can resolve
+  names and reach nothing else, which the k8s e2e observes directly
+  (`TestE2E_BoxEgressPosture`). Whether the intended allowance should be
+  implemented or dropped from the intent above is open — tenant egress is
+  becoming policy-driven under #1188, which is the natural place to settle it.
 
-SSH authentication still gates entry to a box, so this is missing
-defense-in-depth rather than an open door — but in the namespace-per-tenant
-model, one tenant's pod can currently open TCP/22 to another tenant's box.
-See #1193 for the fix and its tests.
+The port is `sshPort` (2222), the internal sshpiper→pod hop; the gateway
+terminates the operator-facing `:22`.
 
-This is also **not** the K8s expression of the eBPF egress allowlist: it is a
+**This is enforced, not merely declared.** kind's default CNI (kindnet) does
+not implement NetworkPolicy, so for a while the object was created and
+ignored, and the e2e that "covered" it could not fail (#1234). CI now builds
+the cluster with Calico and `TestE2E_NetworkPolicyIsolation` asserts both
+directions: a pod in another namespace cannot reach the box's SSH port, and —
+as a positive control that runs first — a pod in `agent-gateway` carrying the
+sshpiper label can. Without that control, "connection refused" would prove
+nothing.
+
+This is still **not** the K8s expression of the eBPF egress allowlist: it is a
 static object written once at box-create and never reconciled against
-`NetworkPolicyService`. Tenant egress policy is not enforced on this backend
-at all — see #1188.
+`NetworkPolicyService`. Tenant egress policy is not driven by that service on
+this backend — see #1188.
 
 ## Mapping to the existing (LXC) architecture
 
