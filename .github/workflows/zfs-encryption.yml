@@ -1,0 +1,89 @@
+name: ZFS encryption
+
+# Proves the per-tenant encryption claim against a REAL ZFS pool (#1200).
+#
+# Every encryption phase so far shipped with its core security property —
+# "a stopped container's dataset is ciphertext, including to host root" —
+# asserted only against a fake `zfs` runner. This lane runs the same
+# pkg/core/zfscrypt code against a file-backed pool on the runner, so the
+# claim is demonstrated rather than described.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pkg/core/zfscrypt/**'
+      - 'pkg/core/zfskey/**'
+      - '.github/workflows/zfs-encryption.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215).
+  pull_request:
+    paths:
+      - 'pkg/core/zfscrypt/**'
+      - 'pkg/core/zfskey/**'
+      - '.github/workflows/zfs-encryption.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zfs-integration:
+    name: ZFS encryption integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install ZFS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zfsutils-linux
+          # The module ships in linux-modules-extra on Ubuntu; it is usually
+          # already present on the runner image, so only fetch it if needed.
+          if ! sudo modprobe zfs 2>/dev/null; then
+            echo "zfs module not loadable yet; installing linux-modules-extra-$(uname -r)"
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe zfs
+          fi
+
+      # The whole point of this lane is that the claim is DEMONSTRATED. The Go
+      # test skips when ZFS is missing, which is right for a developer's
+      # laptop and wrong here: a skipped run would report green while proving
+      # nothing, which is exactly the failure #1234 was about. So assert the
+      # environment before trusting the result.
+      - name: Verify ZFS is actually usable (fail, don't skip)
+        run: |
+          set -euo pipefail
+          zfs version
+          test -e /dev/zfs || { echo "::error::/dev/zfs absent — the module cannot be driven"; exit 1; }
+          sudo zpool list >/dev/null
+          echo "ZFS is usable; the integration lane will not skip."
+
+      - name: Run the ZFS encryption integration tests
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" go test -tags=zfs -v -count=1 -timeout 10m \
+            ./pkg/core/zfscrypt/ -run TestIntegration | tee zfs-test.log
+
+      # A skip here means the environment check above passed but the test
+      # decided otherwise — a contradiction worth failing on rather than
+      # quietly reporting green.
+      - name: Assert nothing was skipped
+        run: |
+          set -euo pipefail
+          if grep -q -- "--- SKIP" zfs-test.log; then
+            echo "::error::A ZFS integration test SKIPPED on a runner where ZFS is available."
+            grep -- "--- SKIP" zfs-test.log
+            exit 1
+          fi
+          echo "No skips — every assertion actually ran."
