@@ -97,10 +97,10 @@ func (m *Manager) KeyResyncHandler() http.HandlerFunc {
 
 		coalesced := m.resyncBackendKeys(backend)
 
-		// Report what actually happened, not merely that we tried:
-		// syncAndApply swallows a failed pull (it logs and lets the next
-		// tick retry), so without this the daemon would log "key is live"
-		// for a backend whose keys never arrived — the exact false
+		// Report what actually happened, not merely that we tried: this
+		// path does not retry a failed pull (it logs and leaves recovery to
+		// the periodic loop), so without this the daemon would log "key is
+		// live" for a backend whose keys never arrived — the exact false
 		// confidence this endpoint exists to remove.
 		users, syncErr := m.keyStore.lastSyncResult(backend.ID)
 		log.Printf("[keysync] event-driven resync for backend %s: %d users (coalesced=%v, ok=%v, reason=%q)",
@@ -159,7 +159,9 @@ func (m *Manager) resyncBackendKeys(b *Backend) bool {
 		return true
 	}
 	gate.lastStart = time.Now()
-	m.keyStore.syncAndApply(b.ID, b.IP, m.config.HealthPort)
+	// The error is read back via lastSyncResult below rather than here, so
+	// the handler reports the user count alongside it.
+	_ = m.keyStore.syncAndApply(b.ID, b.IP, m.config.HealthPort)
 	return false
 }
 

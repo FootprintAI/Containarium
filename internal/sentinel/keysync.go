@@ -277,23 +277,17 @@ func (ks *KeyStore) PushSentinelKey(backendIP string, httpPort int) error {
 
 // RunSyncLoop periodically syncs keys from a specific backend.
 // Blocks until ctx is cancelled.
+// A failed attempt is retried on the fast-retry schedule before falling
+// back to the interval (#953), so a blip costs seconds of stale sshpiper
+// routing rather than a full interval.
 func (ks *KeyStore) RunSyncLoop(ctx context.Context, backendID, backendIP string, httpPort int, interval time.Duration) {
 	log.Printf("[keysync] starting sync loop for backend %s (%s:%d, interval=%s)", backendID, backendIP, httpPort, interval)
 
-	ks.syncAndApply(backendID, backendIP, httpPort)
+	runSyncLoop(ctx, "keysync", interval, syncRetryDelays(interval), func() error {
+		return ks.syncAndApply(backendID, backendIP, httpPort)
+	})
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("[keysync] sync loop stopped for backend %s", backendID)
-			return
-		case <-ticker.C:
-			ks.syncAndApply(backendID, backendIP, httpPort)
-		}
-	}
+	log.Printf("[keysync] sync loop stopped for backend %s", backendID)
 }
 
 // RunSyncLoopLegacy is backward-compatible: uses "default" as backend ID.
@@ -301,7 +295,14 @@ func (ks *KeyStore) RunSyncLoopLegacy(ctx context.Context, backendIP string, htt
 	ks.RunSyncLoop(ctx, "default", backendIP, httpPort, interval)
 }
 
-func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) {
+// syncAndApply pulls a backend's keys and rewrites the sshpiper config.
+//
+// The returned error reports whether this cycle fully succeeded, so the
+// periodic loop can fast-retry a transient failure (#953). It deliberately
+// does NOT retry internally: the event-driven resync endpoint calls this
+// synchronously from an HTTP handler, and a retry burst there would block
+// the response for minutes.
+func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) error {
 	if err := ks.Sync(backendID, backendIP, httpPort); err != nil {
 		log.Printf("[keysync] sync failed for %s: %v", backendID, err)
 		if strings.Contains(err.Error(), "unexpected status 401") {
@@ -311,7 +312,7 @@ func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) {
 				"fails with 'no matching pipe' (#687). Fix: set matching CONTAINARIUM_SENTINEL_AUTH_SECRET on both ends "+
 				"(BYOC hosts: `pool join --sentinel-auth-secret ...`).", backendID)
 		}
-		return
+		return err
 	}
 
 	ks.mu.RLock()
@@ -322,13 +323,17 @@ func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) {
 	ks.mu.RUnlock()
 	log.Printf("[keysync] sync OK for %s: %d users", backendID, count)
 
-	if err := ks.PushSentinelKey(backendIP, httpPort); err != nil {
-		log.Printf("[keysync] push sentinel key failed for %s: %v", backendID, err)
+	// A failed push is worth retrying but must not abort the cycle: the
+	// pull already succeeded, and applying it is what keeps SSH working.
+	// Reported at the end so the loop still sees the cycle as incomplete.
+	pushErr := ks.PushSentinelKey(backendIP, httpPort)
+	if pushErr != nil {
+		log.Printf("[keysync] push sentinel key failed for %s: %v", backendID, pushErr)
 	}
 
 	if err := ks.Apply(); err != nil {
 		log.Printf("[keysync] apply failed: %v", err)
-		return
+		return err
 	}
 
 	ks.mu.RLock()
@@ -344,6 +349,7 @@ func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) {
 	if changed {
 		log.Printf("[keysync] sshpiper routing table updated; new connections pick it up on next connect (no restart)")
 	}
+	return pushErr
 }
 
 func (ks *KeyStore) ensureBackendLocked(backendID, backendIP string) *backendKeys {
