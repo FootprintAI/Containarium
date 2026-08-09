@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/internal/testsupport/zfspool"
+	"github.com/footprintai/containarium/pkg/core/zfskey"
 )
 
 // canary is the plaintext we hunt for in the raw vdev. Distinctive enough
@@ -220,5 +221,71 @@ func TestIntegration_KeyStatusVocabulary(t *testing.T) {
 	if root != enc {
 		t.Errorf("encryptionroot = %q, want %q — a child must inherit its parent's key, which is "+
 			"what makes one tenant's containers share an encryptionroot and two tenants never", root, enc)
+	}
+}
+
+// The isolation claim the whole per-tenant design exists for: two tenants
+// never share an encryptionroot, and one tenant's key cannot open another
+// tenant's data.
+//
+// #1199's first AC ("a container created with encrypted=true has its own
+// encryptionroot, distinct from another tenant's") needs the pre-create
+// wiring, which needs Incus. This proves the ZFS half of it — that the
+// command layer, given two tenants, really does produce two independent
+// crypto domains — so what remains open on that AC is the daemon wiring
+// rather than the property itself.
+//
+// The load-bearing assertion is the NEGATIVE one: tenant A's key must be
+// REFUSED against tenant B's dataset. Distinct encryptionroot strings would
+// otherwise be satisfied by two datasets that happen to share key material.
+func TestIntegration_TenantsCannotUnlockEachOther(t *testing.T) {
+	zfspool.Require(t)
+	ctx := context.Background()
+	p := zfspool.New(t)
+	m := NewManager(nil)
+
+	dsA, keyA := p.Dataset("tenant-a"), testKey(t, 0xAA)
+	dsB, keyB := p.Dataset("tenant-b"), testKey(t, 0xBB)
+	for _, tc := range []struct {
+		ds  string
+		key zfskey.Key
+	}{{dsA, keyA}, {dsB, keyB}} {
+		if err := m.CreateEncrypted(ctx, tc.ds, tc.key); err != nil {
+			t.Fatalf("CreateEncrypted(%s): %v", tc.ds, err)
+		}
+	}
+
+	rootA, err := m.EncryptionRoot(ctx, dsA)
+	if err != nil {
+		t.Fatalf("EncryptionRoot(A): %v", err)
+	}
+	rootB, err := m.EncryptionRoot(ctx, dsB)
+	if err != nil {
+		t.Fatalf("EncryptionRoot(B): %v", err)
+	}
+	if rootA == rootB {
+		t.Fatalf("both tenants share encryptionroot %q — one tenant's key would open the other's data", rootA)
+	}
+
+	// Take tenant B's key away, as a stop would.
+	zfspool.UnmountIfMounted(t, dsB)
+	if err := m.UnloadKey(ctx, dsB); err != nil {
+		t.Fatalf("UnloadKey(B): %v", err)
+	}
+
+	// THE assertion: A's key must not open B.
+	if err := m.LoadKey(ctx, dsB, keyA); err == nil {
+		t.Error("tenant A's key unlocked tenant B's dataset — the per-tenant isolation claim is false")
+	}
+	// And B's own key still must.
+	if err := m.LoadKey(ctx, dsB, keyB); err != nil {
+		t.Errorf("tenant B's own key no longer opens its dataset: %v", err)
+	}
+
+	// Tenant A is undisturbed throughout — stopping or re-keying one tenant
+	// must not touch another.
+	if status, err := m.KeyStatus(ctx, dsA); err != nil || status != KeyAvailable {
+		t.Errorf("tenant A keystatus = %q (err %v), want %q — B's lifecycle affected A",
+			status, err, KeyAvailable)
 	}
 }
