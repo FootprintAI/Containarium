@@ -203,10 +203,36 @@ as a positive control that runs first — a pod in `agent-gateway` carrying the
 sshpiper label can. Without that control, "connection refused" would prove
 nothing.
 
-This is still **not** the K8s expression of the eBPF egress allowlist: it is a
-static object written once at box-create and never reconciled against
-`NetworkPolicyService`. Tenant egress policy is not driven by that service on
-this backend — see #1188.
+### Tenant egress policy on this backend
+
+`NetworkPolicyService` now drives this backend (#1188): a reconciler reads the
+same policy store the eBPF enforcer reads and converges each tenant
+namespace's NetworkPolicy with it. A tenant's egress allowlist appears as
+egress rules alongside the DNS allowance, and removing a policy reverts to the
+default-deny floor — never to allow-all, because a delete must not widen
+access. `TestE2E_TenantEgressAllowlistIsEnforced` proves the enforcement with
+packets rather than by inspecting the object: a destination inside the
+allowlist is reachable, one outside it is not.
+
+#### What is LXC-only, and why
+
+Some of the eBPF path's capabilities have no Kubernetes NetworkPolicy
+equivalent. These are **not** cross-backend, and the compiler REFUSES a policy
+containing them rather than applying the part it understood — every one of
+them fails in the same direction, more permissive than the tenant configured,
+so quietly dropping any would be worse than not supporting the backend at all.
+
+| Capability | Why NetworkPolicy cannot express it |
+|---|---|
+| `LOG_ONLY` mode | NetworkPolicy always enforces. Compiling a tenant's dry run would start dropping their traffic. `UNSPECIFIED` is treated as `LOG_ONLY`, so this is the default case. |
+| Metadata carve-out (`allow_metadata=false`) | Denies 169.254.169.254 *even when* the allowlist covers it — deny-beats-allow. An allow-only policy cannot carve an exception out of an allow rule, and the exception guards cloud credentials. |
+| `egress_domains` | NetworkPolicy matches IPs, not names. The eBPF path re-resolves on a refresh loop; a resolved snapshot baked into a static object goes stale silently. |
+| Virtual-patch deny rules (#660) | Payload-signature matches in the BPF program. NetworkPolicy is L3/L4 only. |
+| Traffic-flow accounting (#627) | NetworkPolicy has no counters. Needs Hubble/Cilium or equivalent. |
+
+A tenant policy using any of these is rejected for the K8s backend with the
+feature named, so the asymmetry surfaces at configuration time rather than as
+a silent difference in what is enforced.
 
 ## Mapping to the existing (LXC) architecture
 
