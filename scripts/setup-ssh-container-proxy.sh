@@ -153,28 +153,85 @@ echo "  Created $SUDOERS_FILE"
 # 3. sshd config — suppress host MOTD for containarium users
 # ============================================================
 SSHD_MATCH_FILE="/etc/ssh/sshd_config.d/containarium-motd.conf"
-if [ -d /etc/ssh/sshd_config.d ]; then
+SSHD_BIN="$(command -v sshd || echo /usr/sbin/sshd)"
+
+# NO `Match` BLOCK HERE — this is load-bearing (#1137).
+#
+# PrintMotd and PrintLastLog are not permitted inside a Match block. Wrapping
+# them in one makes the ENTIRE sshd config unparseable, so sshd refuses to
+# start on its next restart:
+#
+#   sshd_config.d/containarium-motd.conf line 2: Directive 'PrintMotd' is
+#   not allowed within a Match block
+#
+# That takes SSH to the host down, and with it every box on the backend
+# (sshpiper's upstream is this host's sshd) — while the daemon, the tunnel
+# and the containers all keep running and the backend still reports healthy.
+# Nothing surfaces it until someone tries to connect, and recovery needs the
+# machine's console. It is not restricted to the drop-in either: the same
+# block appended to the main sshd_config is equally invalid, because the
+# restriction is on Match, not on where the file lives.
+#
+# Global scope is therefore the only option — the directives cannot be
+# per-user. In practice the cost is nil on Ubuntu, which already sets
+# `PrintMotd no` globally in its stock sshd_config and prints the MOTD from
+# pam_motd rather than sshd; the one real change is that admin logins lose
+# the "Last login:" line. On rocky9/rhel9, where PrintMotd defaults to yes,
+# the setting does the job it was written for.
+write_sshd_dropin() {
     cat > "$SSHD_MATCH_FILE" << 'SSHDEOF'
-# Suppress host MOTD for containarium container users
-# containarium-shell shows its own banner with container info
-Match User *,!ubuntu,!root
-    PrintMotd no
-    PrintLastLog no
+# Suppress host MOTD/last-login for containarium container users.
+# containarium-shell shows its own banner with container info.
+#
+# Global, NOT inside a Match block: PrintMotd/PrintLastLog are rejected
+# inside Match and would make sshd_config unparseable (#1137).
+PrintMotd no
+PrintLastLog no
 SSHDEOF
+}
+
+# Validate before reloading, and fail loudly.
+#
+# `sshd -t` parses the whole config, drop-ins included. Previously this was
+# `systemctl reload sshd 2>/dev/null || true`, which discarded both the
+# output and the exit status — and since the running sshd keeps serving its
+# already-loaded config, the host looked healthy for hours or days. The
+# breakage landed at the next restart, in practice an unattended-upgrades
+# openssh update at an arbitrary time. Checking here turns a delayed,
+# console-only outage into an immediate install failure.
+reload_sshd_or_revert() {
+    local revert_cmd="$1"
+    if ! "$SSHD_BIN" -t 2>&1; then
+        echo "ERROR: sshd config is invalid after writing the containarium MOTD settings." >&2
+        echo "       Reverting so sshd keeps starting; SSH to this host is not at risk." >&2
+        eval "$revert_cmd"
+        if "$SSHD_BIN" -t 2>/dev/null; then
+            echo "       Revert succeeded — the config is valid again." >&2
+        else
+            echo "       WARNING: config is STILL invalid after revert; do not restart sshd." >&2
+        fi
+        exit 1
+    fi
+    systemctl reload sshd
+}
+
+if [ -d /etc/ssh/sshd_config.d ]; then
+    write_sshd_dropin
     echo "  Created $SSHD_MATCH_FILE"
-    systemctl reload sshd 2>/dev/null || true
+    reload_sshd_or_revert "rm -f '$SSHD_MATCH_FILE'"
 else
-    # Fallback: append to main sshd_config if .d directory doesn't exist
+    # Fallback: append to main sshd_config if the .d directory doesn't exist.
     if ! grep -q "containarium-motd" /etc/ssh/sshd_config 2>/dev/null; then
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.containarium-bak
         cat >> /etc/ssh/sshd_config << 'SSHDEOF'
 
-# containarium-motd: suppress host MOTD for container users
-Match User *,!ubuntu,!root
-    PrintMotd no
-    PrintLastLog no
+# containarium-motd: suppress host MOTD/last-login for container users.
+# Global, NOT inside a Match block — see #1137.
+PrintMotd no
+PrintLastLog no
 SSHDEOF
         echo "  Updated /etc/ssh/sshd_config"
-        systemctl reload sshd 2>/dev/null || true
+        reload_sshd_or_revert "mv -f /etc/ssh/sshd_config.containarium-bak /etc/ssh/sshd_config"
     fi
 fi
 
