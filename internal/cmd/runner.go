@@ -29,6 +29,8 @@ var (
 	runnerSSHKeyPath   string
 	runnerSentinelHost string
 	runnerSSHUser      string
+	runnerBackendID    string
+	runnerPool         string
 
 	// runner list / remove
 	runnerListFormat string
@@ -120,6 +122,8 @@ func init() {
 	runnerProvisionCmd.Flags().StringVar(&runnerSSHKeyPath, "ssh-key", "", "Path to SSH public key used when creating new boxes (default: ~/.ssh/id_rsa.pub)")
 	runnerProvisionCmd.Flags().StringVar(&runnerSentinelHost, "sentinel", os.Getenv(config.EnvSentinelHost), "Sentinel SSH host (env: CONTAINARIUM_SENTINEL_HOST). REQUIRED for the install step.")
 	runnerProvisionCmd.Flags().StringVar(&runnerSSHUser, "ssh-user", "", "SSH user to use when SSH'ing into a runner box (default: the runner name, via sshpiper)")
+	runnerProvisionCmd.Flags().StringVar(&runnerBackendID, "backend-id", "", "Place the runner boxes on a specific backend (e.g. a named BYOC host). Same semantics as `containarium create --backend-id`; empty keeps today's default placement.")
+	runnerProvisionCmd.Flags().StringVar(&runnerPool, "pool", "", "Place the runner boxes on any healthy backend in this pool. Same semantics as `containarium create --pool`; mutually exclusive with --backend-id, validated by the daemon.")
 
 	// List flags.
 	runnerListCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT with `repo` scope (env: GH_PAT). REQUIRED.")
@@ -378,8 +382,8 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				nil,  // gpus
 				ostype.OSTypeFromString("ubuntu"),
 				false,                   // monitoring
-				"",                      // pool
-				"",                      // backend-id
+				runnerPool,              // pool: steer placement like `create --pool` (#1216)
+				runnerBackendID,         // backend-id: ditto (#1216)
 				client.GitSourceOpts{},  // no git-source for runner boxes
 				0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
 				0,                       // idle-stop: runner boxes are long-lived; not auto-slept
@@ -416,9 +420,9 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			"",  // stack
 			nil, // gpus
 			ostype.OSTypeFromString("ubuntu"),
-			false,
-			"",
-			"",
+			false,                   // monitoring
+			runnerPool,              // pool: steer placement like `create --pool` (#1216)
+			runnerBackendID,         // backend-id: ditto (#1216)
 			client.GitSourceOpts{},  // no git-source for runner boxes
 			0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
 			0,                       // idle-stop: runner boxes are long-lived; not auto-slept
