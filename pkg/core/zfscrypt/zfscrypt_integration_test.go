@@ -373,3 +373,80 @@ func TestIntegration_SnapshotsWorkWithTheKeyUnloaded(t *testing.T) {
 			"unbounded-growth incident.", err)
 	}
 }
+
+// Rollback and snapshot accounting against a real pool (#1160).
+//
+// Rollback is the most destructive operation in this package, and its
+// safety story is entirely about what ZFS does when snapshots exist after
+// the target. Asserting that against a fake would be asserting my own
+// reading of the manual — which the two corrections this lane has already
+// produced (load-key does not remount; unload-key does refuse while
+// mounted) suggest is not good enough for a destructive operation.
+func TestIntegration_RollbackAndSnapshotAccounting(t *testing.T) {
+	zfspool.Require(t)
+	ctx := context.Background()
+	p := zfspool.New(t)
+	m := NewManager(nil)
+
+	ds := p.Dataset("rollback")
+	key := testKey(t, 0x5C)
+	if err := m.CreateEncrypted(ctx, ds, key); err != nil {
+		t.Fatalf("CreateEncrypted: %v", err)
+	}
+	zfspool.Run(t, "zfs", "set", "compression=off", ds)
+
+	dir := filepath.Join(p.Mount, "rollback")
+	before := filepath.Join(dir, "before.txt")
+	if err := os.WriteFile(before, []byte("state at snapshot time"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	snap, err := m.Snapshot(ctx, ds, "good")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	// Write something AFTER the snapshot; rollback must discard it.
+	after := filepath.Join(dir, "after.txt")
+	if err := os.WriteFile(after, []byte("written after the snapshot"), 0o600); err != nil {
+		t.Fatalf("write after: %v", err)
+	}
+
+	// A snapshot taken later is what makes an unqualified rollback refuse.
+	later, err := m.Snapshot(ctx, ds, "later")
+	if err != nil {
+		t.Fatalf("Snapshot(later): %v", err)
+	}
+
+	// THE safety property: rolling back past a newer snapshot is refused,
+	// and recognised as that specific condition rather than a generic error.
+	err = m.RollbackToSnapshot(ctx, snap, false)
+	if !errors.Is(err, ErrNewerSnapshotsExist) {
+		t.Fatalf("rollback with a newer snapshot present = %v, want ErrNewerSnapshotsExist. "+
+			"If ZFS no longer refuses, an unqualified rollback would destroy restore points "+
+			"the caller never named.", err)
+	}
+
+	// Accounting: the snapshot pins space, and `used` is the number that
+	// would be freed by destroying it.
+	if _, _, err := m.SnapshotUsage(ctx, snap); err != nil {
+		t.Errorf("SnapshotUsage: %v", err)
+	}
+
+	// With the newer snapshot destroyed, the rollback proceeds.
+	if err := m.DestroySnapshot(ctx, later); err != nil {
+		t.Fatalf("DestroySnapshot(later): %v", err)
+	}
+	if err := m.RollbackToSnapshot(ctx, snap, false); err != nil {
+		t.Fatalf("rollback after clearing newer snapshots: %v", err)
+	}
+
+	// The dataset really is back: the post-snapshot write is gone, the
+	// pre-snapshot one remains.
+	if _, err := os.Stat(after); !os.IsNotExist(err) {
+		t.Errorf("after.txt survived the rollback (stat err = %v)", err)
+	}
+	if _, err := os.Stat(before); err != nil {
+		t.Errorf("before.txt did not survive the rollback: %v", err)
+	}
+}

@@ -3,6 +3,7 @@ package zfscrypt
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -123,4 +124,93 @@ func (m *Manager) EnsureInspectable(ctx context.Context, snapshot string) error 
 			snapshot, ErrKeyUnavailableForInspection, dataset, status)
 	}
 	return nil
+}
+
+// ErrNewerSnapshotsExist reports that a rollback would have to destroy
+// snapshots taken after the target.
+//
+// A distinct error because the caller's decision is a real one — losing
+// intermediate restore points — and ZFS's own message ("more recent
+// snapshots or bookmarks exist") does not say which, or that the fix is an
+// explicit flag rather than a retry.
+var ErrNewerSnapshotsExist = fmt.Errorf("rollback would destroy snapshots taken after the target")
+
+// RollbackToSnapshot returns a dataset to the state captured by a snapshot.
+//
+// DESTRUCTIVE, and destructive twice over: everything written since the
+// snapshot is discarded, and any snapshot taken after it must be destroyed
+// too. destroyNewer gates only the second: without it, a rollback that would
+// take other restore points with it is refused with
+// ErrNewerSnapshotsExist rather than silently widening its blast radius.
+//
+// The caller is responsible for the container being stopped. ZFS will refuse
+// a rollback of a busy dataset, but "the dataset is busy" is a far worse
+// message than "stop the container first", and relying on it would make the
+// safety depend on whether the filesystem happens to be mounted.
+func (m *Manager) RollbackToSnapshot(ctx context.Context, snapshot string, destroyNewer bool) error {
+	dataset, _, ok := strings.Cut(snapshot, "@")
+	if !ok {
+		return fmt.Errorf("invalid snapshot reference %q: expected <dataset>@<name>", snapshot)
+	}
+	if err := validateDataset(dataset); err != nil {
+		return err
+	}
+
+	args := []string{"rollback"}
+	if destroyNewer {
+		// -r destroys snapshots newer than the target. Deliberately opt-in.
+		args = append(args, "-r")
+	}
+	args = append(args, snapshot)
+
+	_, stderr, err := m.run.Run(ctx, nil, args...)
+	if err != nil {
+		if isNewerSnapshotsErr(stderr) {
+			return fmt.Errorf("%s: %w: %s", snapshot, ErrNewerSnapshotsExist, strings.TrimSpace(stderr))
+		}
+		return fmt.Errorf("rollback %s: %w: %s", snapshot, err, strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
+// isNewerSnapshotsErr recognises ZFS refusing a rollback because later
+// snapshots exist.
+func isNewerSnapshotsErr(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "more recent snapshots") || strings.Contains(s, "use '-r' to force")
+}
+
+// SnapshotUsage reports the space a snapshot pins.
+//
+// Used is the space that would be freed by destroying it — the number that
+// matters, because a forgotten snapshot silently holds disk that nothing
+// else accounts for. Referenced is the size of the data the snapshot points
+// at, which is mostly shared with the live dataset and so is NOT what a
+// capacity alert should watch.
+func (m *Manager) SnapshotUsage(ctx context.Context, snapshot string) (used, referenced int64, err error) {
+	dataset, _, ok := strings.Cut(snapshot, "@")
+	if !ok {
+		return 0, 0, fmt.Errorf("invalid snapshot reference %q: expected <dataset>@<name>", snapshot)
+	}
+	if err := validateDataset(dataset); err != nil {
+		return 0, 0, err
+	}
+
+	stdout, stderr, err := m.run.Run(ctx, nil,
+		"get", "-Hp", "-o", "value", "used,referenced", snapshot)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read usage for %s: %w: %s", snapshot, err, strings.TrimSpace(stderr))
+	}
+
+	fields := strings.Fields(strings.TrimSpace(stdout))
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("unexpected usage output for %s: %q", snapshot, strings.TrimSpace(stdout))
+	}
+	if used, err = strconv.ParseInt(fields[0], 10, 64); err != nil {
+		return 0, 0, fmt.Errorf("parse used for %s: %w", snapshot, err)
+	}
+	if referenced, err = strconv.ParseInt(fields[1], 10, 64); err != nil {
+		return 0, 0, fmt.Errorf("parse referenced for %s: %w", snapshot, err)
+	}
+	return used, referenced, nil
 }

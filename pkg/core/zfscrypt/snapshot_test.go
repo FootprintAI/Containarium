@@ -124,3 +124,85 @@ func TestListSnapshotsParsesAndSkipsBlanks(t *testing.T) {
 		t.Error("listing consulted keystatus; snapshot names are metadata and need no key")
 	}
 }
+
+// Rollback is destructive twice over — it discards everything written since
+// the snapshot, AND must destroy any snapshot taken after it. The second is
+// gated (#1160).
+func TestRollbackDoesNotDestroyNewerSnapshotsByDefault(t *testing.T) {
+	f := newFakeRunner()
+	m := NewManager(f)
+
+	if err := m.RollbackToSnapshot(context.Background(), "pool/c/alice@snap", false); err != nil {
+		t.Fatalf("RollbackToSnapshot: %v", err)
+	}
+	if strings.Contains(f.allArgs(), "-r") {
+		t.Error("rollback passed -r without being asked to: that silently destroys every restore " +
+			"point taken after the target, which is a wider blast radius than the caller requested")
+	}
+}
+
+func TestRollbackDestroysNewerOnlyWhenAsked(t *testing.T) {
+	f := newFakeRunner()
+	m := NewManager(f)
+
+	if err := m.RollbackToSnapshot(context.Background(), "pool/c/alice@snap", true); err != nil {
+		t.Fatalf("RollbackToSnapshot: %v", err)
+	}
+	if !strings.Contains(f.allArgs(), "rollback -r pool/c/alice@snap") {
+		t.Errorf("expected an explicit -r rollback, got: %s", f.allArgs())
+	}
+}
+
+// ZFS's own refusal does not say which snapshots are in the way, or that the
+// remedy is a deliberate flag rather than a retry.
+func TestRollbackReportsNewerSnapshotsDistinctly(t *testing.T) {
+	f := newFakeRunner()
+	f.errs["rollback"] = errors.New("exit status 1")
+	f.stderr["rollback"] = "cannot rollback to 'pool/c/alice@snap': more recent snapshots or bookmarks exist\nuse '-r' to force deletion of the following snapshots and bookmarks:\npool/c/alice@later"
+	m := NewManager(f)
+
+	err := m.RollbackToSnapshot(context.Background(), "pool/c/alice@snap", false)
+	if !errors.Is(err, ErrNewerSnapshotsExist) {
+		t.Fatalf("err = %v, want ErrNewerSnapshotsExist", err)
+	}
+	if !strings.Contains(err.Error(), "pool/c/alice@later") {
+		t.Errorf("the error should name what stands in the way, got %q", err)
+	}
+}
+
+func TestRollbackRejectsANonSnapshot(t *testing.T) {
+	f := newFakeRunner()
+	if err := NewManager(f).RollbackToSnapshot(context.Background(), "pool/c/alice", false); err == nil {
+		t.Error("accepted a dataset where a snapshot reference was required")
+	}
+	if len(f.calls) != 0 {
+		t.Error("a rejected reference must not reach zfs")
+	}
+}
+
+// A forgotten snapshot silently pins disk, so the number a caller needs is
+// `used` — what destroying it would free — not `referenced`, which is mostly
+// shared with the live dataset.
+func TestSnapshotUsageParsesBothNumbers(t *testing.T) {
+	f := newFakeRunner()
+	f.stdout["get"] = "1048576\t5242880\n"
+	used, referenced, err := NewManager(f).SnapshotUsage(context.Background(), "pool/c/alice@snap")
+	if err != nil {
+		t.Fatalf("SnapshotUsage: %v", err)
+	}
+	if used != 1048576 || referenced != 5242880 {
+		t.Errorf("used=%d referenced=%d", used, referenced)
+	}
+	// -p is what makes these exact bytes rather than "1M".
+	if !strings.Contains(f.allArgs(), "-Hp") {
+		t.Errorf("usage must be read in parseable bytes (-p), got: %s", f.allArgs())
+	}
+}
+
+func TestSnapshotUsageRejectsUnparseableOutput(t *testing.T) {
+	f := newFakeRunner()
+	f.stdout["get"] = "1M\t5M\n" // human-readable: what -p exists to prevent
+	if _, _, err := NewManager(f).SnapshotUsage(context.Background(), "pool/c/alice@snap"); err == nil {
+		t.Error("accepted human-readable sizes as byte counts")
+	}
+}
