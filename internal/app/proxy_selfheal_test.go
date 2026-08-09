@@ -29,7 +29,9 @@ func newRWFakeCaddy(initial map[string]interface{}) (*httptest.Server, *rwFakeCa
 		path := strings.TrimPrefix(r.URL.Path, "/config/")
 		path = strings.TrimSuffix(path, "/")
 
-		if r.Method == http.MethodPut {
+		// PATCH is treated like PUT: ProvisionTLS writes the policy array back
+		// with PATCH, and for a whole-node replacement the two are equivalent.
+		if r.Method == http.MethodPut || r.Method == http.MethodPatch {
 			body, _ := io.ReadAll(r.Body)
 			var val interface{}
 			if err := json.Unmarshal(body, &val); err != nil {
