@@ -73,18 +73,23 @@ fi
 # The box backend declares agent-sandbox Sandbox CRs; the agent-sandbox
 # controller (kubernetes-sigs/agent-sandbox) owns the pod + Service under
 # them, so it must run in the cluster for the lifecycle e2e to converge.
-# Note: the install asset is manifest.yaml (their README says
-# sandbox-with-extensions.yaml, which 404s for this release).
 #
 # Keep this in step with the sigs.k8s.io/agent-sandbox version in go.mod.
 # Skew matters: 0.5.4 is the release that makes the Suspended condition
 # always present, which stateOf now reads (#1186). Pinned at v0.5.1 the e2e
 # exercised only the pre-0.5.4 fallback path, so the new behavior was never
 # covered here.
+#
+# Asset name is coupled to the version: upstream renamed manifest.yaml ->
+# sandbox.yaml in v0.5.2 (alongside sandbox-with-extensions.yaml, which adds
+# optional extensions we don't install). v0.5.1 was the last release with the
+# old name, so bumping the version alone 404s — which is how this first broke.
+# Both are release assets, so nothing here or in the compiler can catch a bad
+# pair; TestE2EControllerAssetNameMatchesVersion does it instead.
 AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.4}"
 echo "==> installing agent-sandbox controller ${AGENT_SANDBOX_VERSION}"
 command -v kubectl >/dev/null || { echo "kubectl is required to install the agent-sandbox controller" >&2; exit 1; }
-kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
+kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/sandbox.yaml"
 # The manifest installs Deployment agent-sandbox-controller in namespace
 # agent-sandbox-system (it does NOT carry the kubebuilder-conventional
 # control-plane=controller-manager label — a label-selector wait matches
