@@ -102,6 +102,24 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 			}
 		}
 		delete(r.spots, spotID)
+
+		// Re-assert the loopback alias on reconnect (#1139).
+		//
+		// Reusing the IP is not the same as the IP still being on `lo`. The
+		// registry's map can outlive the alias — a host network
+		// reconfiguration, an `ip addr flush`, or anything else that clears
+		// loopback addresses leaves the entry here pointing at an address
+		// the kernel no longer has. Forwarding then targets an IP that does
+		// not exist, and nothing re-adds it, because this branch previously
+		// only ever reused the recorded address. That is the shape operators
+		// recover from by restarting the sentinel by hand.
+		//
+		// Cheap insurance: addLoopbackAlias is already idempotent — it
+		// treats "already exists" as reuse — so the normal path costs one
+		// `ip addr add` that immediately reports the alias is present.
+		if err := addLoopbackAliasFn(localIP); err != nil {
+			return "", 0, fmt.Errorf("re-assert loopback alias %s on reconnect: %w", localIP, err)
+		}
 	} else {
 		var err error
 		octet, err = r.allocateOctet(spotID)
