@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -91,8 +92,23 @@ func classifyTunnelJournal(journal string) (tunnelHandshakeOutcome, string) {
 // loop is testable without systemd.
 type journalReader func(unit string, since time.Time) (string, error)
 
+// validUnitName matches the systemd unit names this package is allowed to
+// read. Deliberately strict: the name becomes a command argument, and a
+// leading dash would be parsed as a flag.
+var validUnitName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._-]*$`)
+
 // readUnitJournal is the real reader.
 func readUnitJournal(unit string, since time.Time) (string, error) {
+	// The unit name is a package constant at the only call site, but it is a
+	// parameter for testability — so validate rather than assume, and keep
+	// the check next to the exec that depends on it.
+	if !validUnitName.MatchString(unit) {
+		return "", fmt.Errorf("refusing to read the journal for %q: not a valid unit name", unit)
+	}
+
+	// #nosec G204 -- the binary is the literal "journalctl"; the only
+	// non-literal argument is the unit name, which is validated immediately
+	// above and never reaches a shell (exec.Command does not use one).
 	out, err := exec.Command("journalctl",
 		"-u", unit,
 		"--since", since.Format("2006-01-02 15:04:05"),

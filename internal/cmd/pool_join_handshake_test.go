@@ -172,3 +172,28 @@ func TestTunnelRejectedErrorNamesTheRemedy(t *testing.T) {
 		t.Error("the failure must not also claim the pool was joined")
 	}
 }
+
+// The unit name becomes a command argument, so it is validated before the
+// exec rather than trusted. A leading dash would be parsed as a flag by
+// journalctl; the rest keeps the #nosec annotation on readUnitJournal
+// truthful rather than merely quiet.
+func TestReadUnitJournalRejectsUnsafeUnitNames(t *testing.T) {
+	for _, unit := range []string{"", "-u", "--since", "unit name", "unit;rm -rf /", "unit\nname", "/etc/passwd"} {
+		t.Run("unit="+unit, func(t *testing.T) {
+			if _, err := readUnitJournal(unit, time.Now()); err == nil {
+				t.Errorf("accepted unsafe unit name %q", unit)
+			}
+		})
+	}
+}
+
+func TestReadUnitJournalAcceptsRealUnitNames(t *testing.T) {
+	// Not asserting on the output — journalctl may be absent here. The point
+	// is that a legitimate name is not refused by the validator.
+	for _, unit := range []string{"containarium-tunnel", "containarium.service", "user@1000.service"} {
+		if _, err := readUnitJournal(unit, time.Now()); err != nil &&
+			strings.Contains(err.Error(), "not a valid unit name") {
+			t.Errorf("rejected legitimate unit name %q", unit)
+		}
+	}
+}
