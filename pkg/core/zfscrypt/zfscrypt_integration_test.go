@@ -289,3 +289,87 @@ func TestIntegration_TenantsCannotUnlockEachOther(t *testing.T) {
 			status, err, KeyAvailable)
 	}
 }
+
+// The premise behind resolved decision #3 (#1202): snapshots of an encrypted
+// dataset can be taken, listed and destroyed with the key UNLOADED, because
+// those touch metadata rather than contents.
+//
+// The design chose "allow creation, fail the read" on the strength of that
+// claim — blocking creation on key custody would let a transient KMS outage
+// silently suppress a backup window. If ZFS actually refused to snapshot an
+// unkeyed dataset, that decision would be unimplementable and the sprint's
+// backup story would need rethinking, so it is worth demonstrating rather
+// than believing.
+func TestIntegration_SnapshotsWorkWithTheKeyUnloaded(t *testing.T) {
+	zfspool.Require(t)
+	ctx := context.Background()
+	p := zfspool.New(t)
+	m := NewManager(nil)
+
+	ds := p.Dataset("snapme")
+	key := testKey(t, 0xC3)
+	if err := m.CreateEncrypted(ctx, ds, key); err != nil {
+		t.Fatalf("CreateEncrypted: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(p.Mount, "snapme", "data.txt"), []byte("tenant data"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Stop the container: unmount and drop the key.
+	zfspool.UnmountIfMounted(t, ds)
+	if err := m.UnloadKey(ctx, ds); err != nil {
+		t.Fatalf("UnloadKey: %v", err)
+	}
+	if status, err := m.KeyStatus(ctx, ds); err != nil || status != KeyUnavailable {
+		t.Fatalf("precondition: keystatus = %q (err %v), want %q", status, err, KeyUnavailable)
+	}
+
+	// THE premise: creation succeeds anyway.
+	snap, err := m.Snapshot(ctx, ds, "backup-window")
+	if err != nil {
+		t.Fatalf("snapshot of an unkeyed dataset FAILED: %v\n"+
+			"Decision #3 (allow creation while the key is unavailable) assumes this works. "+
+			"If ZFS refuses, the design's backup story needs rethinking, not a workaround.", err)
+	}
+
+	// Listing is metadata, so it must work too.
+	snaps, err := m.ListSnapshots(ctx, ds)
+	if err != nil {
+		t.Fatalf("ListSnapshots with the key unloaded: %v", err)
+	}
+	var found bool
+	for _, s := range snaps {
+		if s == snap {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("snapshot %q not listed; got %v", snap, snaps)
+	}
+
+	// AC2: inspection is refused, and specifically.
+	err = m.EnsureInspectable(ctx, snap)
+	if !errors.Is(err, ErrKeyUnavailableForInspection) {
+		t.Errorf("EnsureInspectable = %v, want ErrKeyUnavailableForInspection", err)
+	}
+
+	// Once custody is back, the same snapshot becomes inspectable — the
+	// snapshot was never damaged, only unreadable.
+	if err := m.LoadKey(ctx, ds, key); err != nil {
+		t.Fatalf("LoadKey: %v", err)
+	}
+	if err := m.EnsureInspectable(ctx, snap); err != nil {
+		t.Errorf("snapshot still not inspectable after the key came back: %v", err)
+	}
+
+	// And retention works without the key: drop it again, then destroy.
+	zfspool.UnmountIfMounted(t, ds)
+	if err := m.UnloadKey(ctx, ds); err != nil {
+		t.Fatalf("UnloadKey (second): %v", err)
+	}
+	if err := m.DestroySnapshot(ctx, snap); err != nil {
+		t.Errorf("DestroySnapshot with the key unloaded failed: %v\n"+
+			"Retention has to survive a key outage, or an outage becomes an "+
+			"unbounded-growth incident.", err)
+	}
+}
