@@ -139,16 +139,51 @@ func TestE2E_NetworkPolicyIsolation(t *testing.T) {
 	}
 }
 
+// ensureNamespace makes a namespace exist and usable, and removes it again
+// only if this call is what created it.
+//
+// Both halves matter once more than one test wants the same namespace, which
+// is now the case for agent-gateway:
+//
+//   - Namespace deletion is ASYNCHRONOUS. A namespace left Terminating by an
+//     earlier test's cleanup still exists, so a plain Create returns
+//     AlreadyExists and the caller proceeds — then every write into it fails
+//     with "unable to create new content in namespace X because it is being
+//     terminated". So wait the termination out rather than racing it.
+//   - Deleting a namespace this call did NOT create takes it away from
+//     whoever did, which is how the race got started.
 func ensureNamespace(ctx context.Context, t *testing.T, b *Backend, name string) {
 	t.Helper()
-	_, err := b.clientset.CoreV1().Namespaces().Create(ctx,
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create namespace %s: %v", name, err)
+
+	namespaces := b.clientset.CoreV1().Namespaces()
+	deadline := time.Now().Add(2 * time.Minute)
+
+	for {
+		_, err := namespaces.Create(ctx,
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{})
+		if err == nil {
+			// We created it, so we own its removal.
+			t.Cleanup(func() {
+				_ = namespaces.Delete(context.Background(), name, metav1.DeleteOptions{})
+			})
+			return
+		}
+		if !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create namespace %s: %v", name, err)
+		}
+
+		// It exists. Usable only if it is not on its way out.
+		existing, getErr := namespaces.Get(ctx, name, metav1.GetOptions{})
+		if getErr == nil && existing.Status.Phase != corev1.NamespaceTerminating {
+			// Someone else created it; leave the removal to them.
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("namespace %s is still terminating after 2m; a previous test's cleanup has not "+
+				"finished and every write into it would fail", name)
+		}
+		time.Sleep(2 * time.Second)
 	}
-	t.Cleanup(func() {
-		_ = b.clientset.CoreV1().Namespaces().Delete(context.Background(), name, metav1.DeleteOptions{})
-	})
 }
 
 // startPolicySelectedListener runs a pod in the tenant namespace carrying the

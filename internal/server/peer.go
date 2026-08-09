@@ -23,6 +23,8 @@ import (
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // PeerClient represents a connection to a remote containarium daemon.
@@ -770,28 +772,37 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 
 // ForwardCreateContainer forwards a create container request to a specific peer.
 func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
-	// Use camelCase field names — gRPC-gateway's protojson uses camelCase,
-	// not snake_case, when unmarshaling JSON into proto messages.
-	reqBody := map[string]interface{}{
-		"username": pbReq.Username,
-		"image":    pbReq.Image,
-		"resources": map[string]string{
-			"cpu":    pbReq.Resources.GetCpu(),
-			"memory": pbReq.Resources.GetMemory(),
-			"disk":   pbReq.Resources.GetDisk(),
-		},
-		"sshKeys":         pbReq.SshKeys,
-		"enablePodman":    pbReq.EnablePodman,
-		"stack":           pbReq.Stack,
-		"stackParameters": pbReq.StackParameters,
-		"gpus":            pbReq.Gpus,
-		"staticIp":        pbReq.StaticIp,
-		"labels":          pbReq.Labels,
-		"async":           pbReq.Async,
-		"osType":          int32(pbReq.OsType),
+	// Marshal the REQUEST ITSELF rather than hand-copying a subset of its
+	// fields into a map (#1001).
+	//
+	// The map form silently dropped every field nobody remembered to add to
+	// it: monitoring, pool, the four git_* provisioning fields, ttl_seconds,
+	// idle_stop_minutes, delete_after_stopped_seconds, and — worst —
+	// encrypted and tenant_id, so `create --encrypted` against a
+	// tunnel-connected backend produced an UNENCRYPTED container and said
+	// nothing. Creating remotely and creating locally silently meant
+	// different things.
+	//
+	// Nothing catches that: a map literal missing a key compiles, passes
+	// review, and looks exactly like a complete one. Forwarding the message
+	// means the set of forwarded fields is the set of fields that exist, by
+	// construction, and a field added to the proto later is carried without
+	// anyone having to remember this function. It is also what CLAUDE.md
+	// asks for — a typed message, not map[string]interface{}, for a wire
+	// payload.
+	//
+	// protojson with UseProtoNames=false emits the camelCase names
+	// grpc-gateway unmarshals on the peer, matching what the map produced by
+	// hand.
+	fwd, ok := proto.Clone(pbReq).(*pb.CreateContainerRequest)
+	if !ok {
+		return nil, fmt.Errorf("clone create request: unexpected type")
 	}
+	// The peer IS the target. Leaving backend_id set would have it evaluate
+	// routing again and forward onwards, rather than creating locally.
+	fwd.BackendId = ""
 
-	bodyBytes, err := json.Marshal(reqBody)
+	bodyBytes, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(fwd)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -825,47 +836,26 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 		return nil, fmt.Errorf("peer returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// Parse the response into proto format
-	var data struct {
-		Container struct {
-			Name     string `json:"name"`
-			Username string `json:"username"`
-			State    string `json:"state"`
-			Network  struct {
-				IPAddress string `json:"ipAddress"`
-			} `json:"network"`
-			Resources struct {
-				CPU          string `json:"cpu"`
-				Memory       string `json:"memory"`
-				Disk         string `json:"disk"`
-				StorageClass string `json:"storageClass"`
-			} `json:"resources"`
-		} `json:"container"`
-		Message    string `json:"message"`
-		SshCommand string `json:"sshCommand"`
-	}
-	if err := json.Unmarshal(respBody, &data); err != nil {
+	// Decode the RESPONSE into its proto type for the same reason (#1001).
+	//
+	// The hand-rolled struct dropped everything it did not name — created_at,
+	// ssh_host, pool, labels, os_type — and it parsed `state` into a field it
+	// then never assigned, so a container created on a peer came back
+	// reporting no state at all.
+	//
+	// DiscardUnknown so a peer running a newer daemon, and therefore sending
+	// fields this build has never heard of, is decoded rather than rejected.
+	var out pb.CreateContainerResponse
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, &out); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
-	return &pb.CreateContainerResponse{
-		Container: &pb.Container{
-			Name:      data.Container.Name,
-			Username:  data.Container.Username,
-			BackendId: pc.ID,
-			Network: &pb.NetworkInfo{
-				IpAddress: data.Container.Network.IPAddress,
-			},
-			Resources: &pb.ResourceLimits{
-				Cpu:          data.Container.Resources.CPU,
-				Memory:       data.Container.Resources.Memory,
-				Disk:         data.Container.Resources.Disk,
-				StorageClass: data.Container.Resources.StorageClass,
-			},
-		},
-		Message:    data.Message,
-		SshCommand: data.SshCommand,
-	}, nil
+	// The peer does not know its own ID in this exchange; stamp it so the
+	// caller can tell which backend the container landed on.
+	if out.Container != nil {
+		out.Container.BackendId = pc.ID
+	}
+	return &out, nil
 }
 
 // ForwardRequest forwards an arbitrary HTTP request to the peer and returns the response body.
