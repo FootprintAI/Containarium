@@ -118,7 +118,10 @@ func TestKeyResyncHandler_SyncsNewBoxWithoutWaitingForTick(t *testing.T) {
 	m := managerWithBackend(t, "backend-a", backend)
 
 	// The state after the last periodic tick: only the pre-existing box.
-	m.keyStore.syncAndApply("backend-a", mustIP(t, backend), m.config.HealthPort)
+	// The error is ignored on purpose: this test asserts on the in-memory
+	// key state (next line), not on the sshpiper config write, which needs
+	// /etc/sshpiper and so depends on how the test host is set up.
+	_ = m.keyStore.syncAndApply("backend-a", mustIP(t, backend), m.config.HealthPort)
 	if got := syncedUsers(m.keyStore, "backend-a"); len(got) != 1 {
 		t.Fatalf("precondition: synced users = %v, want 1", got)
 	}

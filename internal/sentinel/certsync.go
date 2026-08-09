@@ -119,38 +119,27 @@ func (cs *CertStore) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificat
 
 // RunSyncLoop periodically syncs certificates from the backend.
 // Blocks until ctx is cancelled.
+//
+// A failed attempt is retried on the fast-retry schedule before falling
+// back to the interval. This loop is the reason that schedule exists: at a
+// 6h interval, one transient failure used to mean stale certificates for
+// most of a day (#953).
 func (cs *CertStore) RunSyncLoop(ctx context.Context, backendIP string, httpPort int, interval time.Duration) {
 	log.Printf("[certsync] starting sync loop (backend=%s:%d, interval=%s)", backendIP, httpPort, interval)
 
-	// Initial sync attempt
-	if err := cs.Sync(backendIP, httpPort); err != nil {
-		log.Printf("[certsync] initial sync failed (will retry): %v", err)
-	} else {
+	runSyncLoop(ctx, "certsync", interval, syncRetryDelays(interval), func() error {
+		if err := cs.Sync(backendIP, httpPort); err != nil {
+			log.Printf("[certsync] sync failed: %v", err)
+			return err
+		}
 		cs.mu.RLock()
 		count := cs.syncedCount
 		cs.mu.RUnlock()
-		log.Printf("[certsync] initial sync OK: %d certificates", count)
-	}
+		log.Printf("[certsync] sync OK: %d certificates", count)
+		return nil
+	})
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("[certsync] sync loop stopped")
-			return
-		case <-ticker.C:
-			if err := cs.Sync(backendIP, httpPort); err != nil {
-				log.Printf("[certsync] sync failed: %v", err)
-			} else {
-				cs.mu.RLock()
-				count := cs.syncedCount
-				cs.mu.RUnlock()
-				log.Printf("[certsync] sync OK: %d certificates", count)
-			}
-		}
-	}
+	log.Printf("[certsync] sync loop stopped")
 }
 
 // LastSync returns the time of the last successful sync.
