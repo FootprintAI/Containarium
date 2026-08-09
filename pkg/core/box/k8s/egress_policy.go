@@ -5,14 +5,11 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
-	"strconv"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -42,77 +39,121 @@ import (
 // matched by an allow rule. It is precisely wrong for the case tenants
 // actually write: allow a wide range, then carve an exception out of it.
 
-// UnsupportedEgressRule is a rule that has no faithful NetworkPolicy
-// expression.
-type UnsupportedEgressRule struct {
-	Rule   *pb.ACLRule
-	Reason string
+// UnsupportedPolicyFeature is part of a tenant policy that has no faithful
+// NetworkPolicy expression.
+type UnsupportedPolicyFeature struct {
+	Feature string
+	Reason  string
 }
 
-func (u UnsupportedEgressRule) String() string {
-	dst := u.Rule.GetDestination()
-	if dst == "" {
-		dst = "*"
-	}
-	return fmt.Sprintf("%s %s (%s)", u.Rule.GetAction(), dst, u.Reason)
+func (u UnsupportedPolicyFeature) String() string {
+	return fmt.Sprintf("%s (%s)", u.Feature, u.Reason)
 }
 
-// compileEgressRules turns a tenant's egress ACL into NetworkPolicy egress
-// rules, returning any rule that could not be expressed.
+// metadataIP is the cloud metadata service. The stored policy denies it even
+// when the egress allowlist would otherwise cover it, because it hands out
+// cloud credentials.
+var metadataIP = netip.MustParseAddr("169.254.169.254")
+
+// compileTenantPolicy turns the stored tenant network policy into
+// NetworkPolicy egress rules, returning everything it could not express.
 //
-// A non-empty unsupported list means the policy MUST NOT be applied as-is:
-// the result would permit traffic the tenant asked to block.
-func compileEgressRules(rules []*pb.ACLRule) ([]networkingv1.NetworkPolicyEgressRule, []UnsupportedEgressRule) {
-	var (
-		out         []networkingv1.NetworkPolicyEgressRule
-		unsupported []UnsupportedEgressRule
-	)
-
-	// Deterministic order: NetworkPolicy semantics do not depend on rule
-	// order (it is a union of permitted flows), but a config that reshuffles
-	// on every reconcile churns the API server and makes diffs unreadable.
-	sorted := make([]*pb.ACLRule, len(rules))
-	copy(sorted, rules)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].GetPriority() != sorted[j].GetPriority() {
-			return sorted[i].GetPriority() < sorted[j].GetPriority()
-		}
-		return sorted[i].GetDestination() < sorted[j].GetDestination()
-	})
-
-	for _, r := range sorted {
-		switch r.GetAction() {
-		case pb.ACLAction_ACL_ACTION_ALLOW:
-			// carry on below
-		case pb.ACLAction_ACL_ACTION_DROP, pb.ACLAction_ACL_ACTION_REJECT:
-			unsupported = append(unsupported, UnsupportedEgressRule{
-				Rule:   r,
-				Reason: "Kubernetes NetworkPolicy is allow-only and cannot express a deny",
-			})
-			continue
-		default:
-			unsupported = append(unsupported, UnsupportedEgressRule{
-				Rule:   r,
-				Reason: "unspecified action",
-			})
-			continue
-		}
-
-		peers, err := egressPeersFor(r.GetDestination())
-		if err != nil {
-			unsupported = append(unsupported, UnsupportedEgressRule{Rule: r, Reason: err.Error()})
-			continue
-		}
-		ports, err := egressPortsFor(r.GetDestinationPort(), r.GetProtocol())
-		if err != nil {
-			unsupported = append(unsupported, UnsupportedEgressRule{Rule: r, Reason: err.Error()})
-			continue
-		}
-
-		out = append(out, networkingv1.NetworkPolicyEgressRule{To: peers, Ports: ports})
+// A non-empty unsupported list means the policy MUST NOT be applied: the
+// result would differ from what the tenant configured, in the permissive
+// direction every time.
+func compileTenantPolicy(p *pb.NetworkPolicy) ([]networkingv1.NetworkPolicyEgressRule, []UnsupportedPolicyFeature) {
+	if p == nil {
+		return nil, nil
 	}
 
-	return out, unsupported
+	var unsupported []UnsupportedPolicyFeature
+
+	// LOG_ONLY asks to observe denied flows and drop nothing. NetworkPolicy
+	// has no observe-only mode: applying one enforces it. Compiling a
+	// LOG_ONLY policy would therefore start dropping traffic during what the
+	// tenant intended as a dry run — the exact opposite of the request, and
+	// the kind of thing discovered as an outage.
+	switch p.GetMode() {
+	case pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE:
+		// the only mode NetworkPolicy can honour
+	default:
+		unsupported = append(unsupported, UnsupportedPolicyFeature{
+			Feature: fmt.Sprintf("mode=%s", p.GetMode()),
+			Reason:  "NetworkPolicy always enforces; it cannot observe without dropping",
+		})
+	}
+
+	// Domains are resolved to CIDRs on a refresh loop on the eBPF path.
+	// NetworkPolicy matches on IPs only, and resolving here would bake one
+	// moment's answer into a static object that then goes stale silently.
+	if len(p.GetEgressDomains()) > 0 {
+		unsupported = append(unsupported, UnsupportedPolicyFeature{
+			Feature: fmt.Sprintf("egress_domains=%v", p.GetEgressDomains()),
+			Reason:  "NetworkPolicy matches IPs, not names, and a resolved snapshot would go stale",
+		})
+	}
+
+	// Virtual-patch deny rules are deny-beats-allow (#660).
+	if len(p.GetDenyRules()) > 0 {
+		unsupported = append(unsupported, UnsupportedPolicyFeature{
+			Feature: fmt.Sprintf("deny_rules (%d)", len(p.GetDenyRules())),
+			Reason:  "NetworkPolicy is allow-only and cannot express a deny that overrides an allow",
+		})
+	}
+
+	var rules []networkingv1.NetworkPolicyEgressRule
+	for _, cidr := range p.GetEgressCidrs() {
+		peers, err := egressPeersFor(cidr)
+		if err != nil {
+			unsupported = append(unsupported, UnsupportedPolicyFeature{
+				Feature: "egress_cidr=" + cidr, Reason: err.Error(),
+			})
+			continue
+		}
+
+		// The metadata carve-out is deny-beats-allow and cannot be expressed:
+		// an allowlist entry covering 169.254.169.254 would hand the tenant
+		// cloud credentials the stored policy explicitly withholds.
+		if !p.GetAllowMetadata() && coversMetadataIP(cidr) {
+			unsupported = append(unsupported, UnsupportedPolicyFeature{
+				Feature: "egress_cidr=" + cidr,
+				Reason: "covers the cloud metadata IP while allow_metadata is false; NetworkPolicy " +
+					"cannot carve an exception out of an allow rule",
+			})
+			continue
+		}
+
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{To: peers})
+	}
+
+	// Deterministic order so a reconcile does not rewrite the object every
+	// pass and leave an unreadable diff.
+	sort.SliceStable(rules, func(i, j int) bool {
+		return peerCIDR(rules[i]) < peerCIDR(rules[j])
+	})
+	return rules, unsupported
+}
+
+// coversMetadataIP reports whether an allowlist entry would admit the cloud
+// metadata service.
+func coversMetadataIP(cidr string) bool {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+	if err != nil {
+		// A bare address, or "*"; "*" covers everything.
+		if strings.TrimSpace(cidr) == "*" || strings.TrimSpace(cidr) == "" {
+			return true
+		}
+		addr, addrErr := netip.ParseAddr(strings.TrimSpace(cidr))
+		return addrErr == nil && addr == metadataIP
+	}
+	return prefix.Contains(metadataIP)
+}
+
+func peerCIDR(r networkingv1.NetworkPolicyEgressRule) string {
+	if len(r.To) == 0 || r.To[0].IPBlock == nil {
+		return ""
+	}
+	return r.To[0].IPBlock.CIDR
 }
 
 // egressPeersFor turns an ACL destination into NetworkPolicy peers.
@@ -148,113 +189,33 @@ func egressPeersFor(destination string) ([]networkingv1.NetworkPolicyPeer, error
 	}, nil
 }
 
-// egressPortsFor turns an ACL port/protocol pair into NetworkPolicy ports.
+// ApplyTenantPolicy reconciles a tenant namespace's NetworkPolicy so it
+// permits the tenant's stored egress allowlist on top of the default-deny
+// floor (#1188).
 //
-// "*" on either side means "unrestricted", which NetworkPolicy expresses as
-// no port entries at all.
-func egressPortsFor(portSpec, protocol string) ([]networkingv1.NetworkPolicyPort, error) {
-	proto, err := egressProtocolFor(protocol)
-	if err != nil {
-		return nil, err
-	}
-
-	spec := strings.TrimSpace(portSpec)
-	if spec == "" || spec == "*" {
-		if proto == nil {
-			return nil, nil
-		}
-		// A protocol with no port still narrows the rule.
-		return []networkingv1.NetworkPolicyPort{{Protocol: proto}}, nil
-	}
-
-	var ports []networkingv1.NetworkPolicyPort
-	for _, part := range strings.Split(spec, ",") {
-		part = strings.TrimSpace(part)
-		if lo, hi, ok := strings.Cut(part, "-"); ok {
-			start, err := parsePort(lo)
-			if err != nil {
-				return nil, err
-			}
-			end, err := parsePort(hi)
-			if err != nil {
-				return nil, err
-			}
-			if end < start {
-				return nil, fmt.Errorf("port range %q ends before it starts", part)
-			}
-			p := intstr.FromInt(int(start))
-			endPort := end
-			ports = append(ports, networkingv1.NetworkPolicyPort{
-				Protocol: proto, Port: &p, EndPort: &endPort,
-			})
-			continue
-		}
-		n, err := parsePort(part)
-		if err != nil {
-			return nil, err
-		}
-		p := intstr.FromInt(int(n))
-		ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: proto, Port: &p})
-	}
-	return ports, nil
-}
-
-// egressProtocolFor maps the ACL protocol onto the K8s one. Nil means "any",
-// which NetworkPolicy spells as an unset Protocol.
-func egressProtocolFor(protocol string) (*corev1.Protocol, error) {
-	switch strings.ToLower(strings.TrimSpace(protocol)) {
-	case "", "*", "any":
-		return nil, nil
-	case "tcp":
-		p := corev1.ProtocolTCP
-		return &p, nil
-	case "udp":
-		p := corev1.ProtocolUDP
-		return &p, nil
-	case "icmp":
-		// NetworkPolicy has no ICMP: its ports are TCP/UDP/SCTP only. An ICMP
-		// allow silently becoming "no restriction" would be the wrong
-		// direction to fail in.
-		return nil, fmt.Errorf("protocol icmp cannot be expressed by NetworkPolicy")
-	default:
-		return nil, fmt.Errorf("unknown protocol %q", protocol)
-	}
-}
-
-func parsePort(s string) (int32, error) {
-	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 32)
-	if err != nil || n < 1 || n > 65535 {
-		return 0, fmt.Errorf("invalid port %q", s)
-	}
-	return int32(n), nil
-}
-
-// ApplyTenantEgress reconciles a tenant namespace's NetworkPolicy so it
-// permits the tenant's egress allowlist on top of the default-deny floor
-// (#1188).
+// A nil policy is how a policy is REMOVED, and it reverts to the floor — DNS
+// only — never to allow-all. That direction matters more than the feature: a
+// removal that widened access would be a silent privilege escalation
+// triggered by a delete.
 //
-// Passing no rules is how a policy is REMOVED, and it reverts to the floor —
-// DNS only — never to allow-all. That direction matters more than the
-// feature: a removal that widened access would be a silent privilege
-// escalation triggered by a delete.
-//
-// Refuses outright when any rule cannot be faithfully expressed, rather than
-// applying the part it understood. A partially-applied egress policy permits
-// traffic the tenant asked to block, and does so while reporting success.
-func (b *Backend) ApplyTenantEgress(ctx context.Context, tenant string, rules []*pb.ACLRule) error {
+// Refuses outright when any part of the policy cannot be expressed, rather
+// than applying the rest. A partially-applied policy differs from what the
+// tenant configured in the permissive direction every time, and reports
+// success while doing so.
+func (b *Backend) ApplyTenantPolicy(ctx context.Context, tenant string, policy *pb.NetworkPolicy) error {
 	if tenant == "" {
 		return fmt.Errorf("k8s: tenant is required")
 	}
 
-	compiled, unsupported := compileEgressRules(rules)
+	compiled, unsupported := compileTenantPolicy(policy)
 	if len(unsupported) > 0 {
 		parts := make([]string, 0, len(unsupported))
 		for _, u := range unsupported {
 			parts = append(parts, u.String())
 		}
-		return fmt.Errorf("k8s: refusing to apply a partial egress policy for tenant %q — "+
-			"%d rule(s) have no NetworkPolicy expression and applying the rest would permit "+
-			"traffic the policy denies: %s", tenant, len(unsupported), strings.Join(parts, "; "))
+		return fmt.Errorf("k8s: refusing to apply a partial network policy for tenant %q — "+
+			"%d feature(s) have no NetworkPolicy expression, and applying the rest would be "+
+			"more permissive than the policy says: %s", tenant, len(unsupported), strings.Join(parts, "; "))
 	}
 
 	ns := b.cfg.TenantNamespacePrefix + tenant
