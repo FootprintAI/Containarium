@@ -213,6 +213,12 @@ func startPolicySelectedListener(ctx context.Context, t *testing.T, b *Backend, 
 		_ = b.clientset.CoreV1().Pods(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
 	})
 
+	return waitForPodIP(ctx, t, b, ns, name)
+}
+
+// waitForPodIP blocks until a pod is Running with an IP, and returns it.
+func waitForPodIP(ctx context.Context, t *testing.T, b *Backend, ns, name string) string {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		got, err := b.clientset.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
@@ -221,7 +227,7 @@ func startPolicySelectedListener(ctx context.Context, t *testing.T, b *Backend, 
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatal("listener pod never reached Running with an IP")
+	t.Fatalf("pod %s/%s never reached Running with an IP", ns, name)
 	return ""
 }
 
