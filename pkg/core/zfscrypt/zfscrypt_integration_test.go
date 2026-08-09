@@ -20,12 +20,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/footprintai/containarium/internal/testsupport/zfspool"
 )
 
 // canary is the plaintext we hunt for in the raw vdev. Distinctive enough
@@ -33,105 +34,7 @@ import (
 // survive block alignment.
 var canary = bytes.Repeat([]byte("CONTAINARIUM-PLAINTEXT-CANARY-7f3a9b2c-"), 64)
 
-func requireZFS(t *testing.T) {
-	t.Helper()
-	if os.Geteuid() != 0 {
-		t.Skip("ZFS pool operations need root; run with sudo -E")
-	}
-	for _, bin := range []string{"zfs", "zpool"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s not on PATH; install zfsutils-linux", bin)
-		}
-	}
-	if _, err := os.Stat("/dev/zfs"); err != nil {
-		t.Skipf("/dev/zfs is absent, so the kernel module cannot be driven: %v", err)
-	}
-}
-
-func run(t *testing.T, name string, args ...string) string {
-	t.Helper()
-	out, err := exec.Command(name, args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
-	}
-	return string(out)
-}
-
-// testPool creates a throwaway file-backed pool and returns its name and
-// mountpoint. Destroyed on teardown, including on failure.
-func testPool(t *testing.T) (pool, mnt string) {
-	t.Helper()
-	dir := t.TempDir()
-	img := filepath.Join(dir, "vdev.img")
-	mnt = filepath.Join(dir, "mnt")
-
-	if err := os.MkdirAll(mnt, 0o755); err != nil {
-		t.Fatalf("mkdir mnt: %v", err)
-	}
-	f, err := os.Create(img)
-	if err != nil {
-		t.Fatalf("create vdev: %v", err)
-	}
-	// 512 MiB — comfortably above ZFS's 64 MiB minimum vdev.
-	if err := f.Truncate(512 << 20); err != nil {
-		t.Fatalf("truncate vdev: %v", err)
-	}
-	_ = f.Close()
-
-	// A name unique to this test binary, so a stray pool can never collide
-	// with a real one on the host.
-	pool = fmt.Sprintf("containarium-zfstest-%d", os.Getpid())
-	run(t, "zpool", "create", "-m", mnt, pool, img)
-	t.Cleanup(func() {
-		// -f because a failed test may have left a dataset mounted.
-		_ = exec.Command("zpool", "destroy", "-f", pool).Run()
-	})
-	return pool, mnt
-}
-
 // testKey is shared with the unit tests in zfscrypt_test.go.
-
-// vdevContains reports whether the pool's backing file contains the needle.
-// The pool is synced first so writes have reached the vdev.
-func vdevContains(t *testing.T, pool, img string, needle []byte) bool {
-	t.Helper()
-	_ = exec.Command("zpool", "sync", pool).Run()
-
-	data, err := os.ReadFile(img)
-	if err != nil {
-		t.Fatalf("read vdev image: %v", err)
-	}
-	return bytes.Contains(data, needle)
-}
-
-// unmountIfMounted unmounts a dataset, tolerating "not currently mounted".
-//
-// Needed because `zfs load-key` makes a dataset readable but does NOT remount
-// it — so after an unload/load cycle the dataset has its key available and no
-// mount. (Confirmed on a real pool; the first version of this test assumed
-// load-key remounted and failed with "not currently mounted".) In production
-// the mount is Incus's job, which is why the pre-start hook only loads the
-// key.
-func unmountIfMounted(t *testing.T, dataset string) {
-	t.Helper()
-	out, err := exec.Command("zfs", "unmount", dataset).CombinedOutput()
-	if err != nil && !strings.Contains(string(out), "not currently mounted") {
-		t.Fatalf("zfs unmount %s: %v\n%s", dataset, err, out)
-	}
-}
-
-// poolImage returns the backing file for a pool created by testPool.
-func poolImage(t *testing.T, pool string) string {
-	t.Helper()
-	out := run(t, "zpool", "status", "-P", pool)
-	for _, line := range strings.Fields(out) {
-		if strings.HasSuffix(line, "vdev.img") {
-			return line
-		}
-	}
-	t.Fatalf("could not find the vdev path in:\n%s", out)
-	return ""
-}
 
 // THE security claim (#1168, #1201): a stopped container's dataset is
 // ciphertext, including to host root.
@@ -144,42 +47,41 @@ func poolImage(t *testing.T, pool string) string {
 // that was never encrypted at all. Both datasets set compression=off so the
 // only difference between them is encryption.
 func TestIntegration_StoppedDatasetIsCiphertextAtRest(t *testing.T) {
-	requireZFS(t)
+	zfspool.Require(t)
 	ctx := context.Background()
-	pool, mnt := testPool(t)
-	img := poolImage(t, pool)
+	p := zfspool.New(t)
 	m := NewManager(nil) // the real zfs binary
 
-	plainDS := pool + "/plain"
+	plainDS := p.Dataset("plain")
 	plainCanary := append([]byte("PLAIN-"), canary...)
-	run(t, "zfs", "create", "-o", "compression=off", plainDS)
-	if err := os.WriteFile(filepath.Join(mnt, "plain", "secret.txt"), plainCanary, 0o600); err != nil {
+	zfspool.Run(t, "zfs", "create", "-o", "compression=off", plainDS)
+	if err := os.WriteFile(filepath.Join(p.Mount, "plain", "secret.txt"), plainCanary, 0o600); err != nil {
 		t.Fatalf("write plaintext canary: %v", err)
 	}
-	run(t, "zfs", "unmount", plainDS)
+	zfspool.Run(t, "zfs", "unmount", plainDS)
 
-	if !vdevContains(t, pool, img, plainCanary) {
+	if !p.ContainsPlaintext(t, plainCanary) {
 		t.Fatal("POSITIVE CONTROL FAILED: the canary written to an UNENCRYPTED dataset was not " +
 			"found in the raw vdev. The search cannot detect plaintext at all, so the " +
 			"encrypted case below would 'pass' for the wrong reason. Failing loudly instead.")
 	}
 	t.Log("positive control OK: plaintext on an unencrypted dataset IS visible in the raw vdev")
 
-	encDS := pool + "/encrypted"
+	encDS := p.Dataset("encrypted")
 	key := testKey(t, 0xA5)
 	if err := m.CreateEncrypted(ctx, encDS, key); err != nil {
 		t.Fatalf("CreateEncrypted (assumption: keylocation=file:///dev/stdin with the raw key "+
 			"on stdin is accepted by zfs create): %v", err)
 	}
-	run(t, "zfs", "set", "compression=off", encDS)
+	zfspool.Run(t, "zfs", "set", "compression=off", encDS)
 
 	encCanary := append([]byte("ENCRD-"), canary...)
-	if err := os.WriteFile(filepath.Join(mnt, "encrypted", "secret.txt"), encCanary, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(p.Mount, "encrypted", "secret.txt"), encCanary, 0o600); err != nil {
 		t.Fatalf("write encrypted canary: %v", err)
 	}
 
 	// Stop the "container": unmount, then drop the key.
-	run(t, "zfs", "unmount", encDS)
+	zfspool.Run(t, "zfs", "unmount", encDS)
 	if err := m.UnloadKey(ctx, encDS); err != nil {
 		t.Fatalf("UnloadKey after unmount: %v", err)
 	}
@@ -200,7 +102,7 @@ func TestIntegration_StoppedDatasetIsCiphertextAtRest(t *testing.T) {
 	}
 
 	// AC: and the plaintext genuinely is not on the disk.
-	if vdevContains(t, pool, img, encCanary) {
+	if p.ContainsPlaintext(t, encCanary) {
 		t.Error("the canary written to the ENCRYPTED dataset was found verbatim in the raw vdev — " +
 			"the data is not encrypted at rest (#1168)")
 	}
@@ -210,18 +112,18 @@ func TestIntegration_StoppedDatasetIsCiphertextAtRest(t *testing.T) {
 // written anywhere. Here that is checked against the real binary — the unit
 // test can only show what we passed to a fake.
 func TestIntegration_KeyRoundTripsThroughStdin(t *testing.T) {
-	requireZFS(t)
+	zfspool.Require(t)
 	ctx := context.Background()
-	pool, _ := testPool(t)
+	p := zfspool.New(t)
 	m := NewManager(nil)
 
-	ds := pool + "/roundtrip"
+	ds := p.Dataset("roundtrip")
 	key := testKey(t, 0x5A)
 	if err := m.CreateEncrypted(ctx, ds, key); err != nil {
 		t.Fatalf("CreateEncrypted: %v", err)
 	}
 
-	unmountIfMounted(t, ds)
+	zfspool.UnmountIfMounted(t, ds)
 	if err := m.UnloadKey(ctx, ds); err != nil {
 		t.Fatalf("UnloadKey: %v", err)
 	}
@@ -241,7 +143,7 @@ func TestIntegration_KeyRoundTripsThroughStdin(t *testing.T) {
 	}
 
 	// A wrong key must be refused rather than silently accepted.
-	unmountIfMounted(t, ds)
+	zfspool.UnmountIfMounted(t, ds)
 	if err := m.UnloadKey(ctx, ds); err != nil {
 		t.Fatalf("UnloadKey before the wrong-key check: %v", err)
 	}
@@ -259,17 +161,17 @@ func TestIntegration_KeyRoundTripsThroughStdin(t *testing.T) {
 // instead refused for the mundane reason that this dataset is still mounted,
 // the hook would log the wrong explanation AND leave the data readable.
 func TestIntegration_UnloadKeyRefusesWhileMounted(t *testing.T) {
-	requireZFS(t)
+	zfspool.Require(t)
 	ctx := context.Background()
-	pool, _ := testPool(t)
+	p := zfspool.New(t)
 	m := NewManager(nil)
 
-	ds := pool + "/mounted"
+	ds := p.Dataset("mounted")
 	if err := m.CreateEncrypted(ctx, ds, testKey(t, 0x33)); err != nil {
 		t.Fatalf("CreateEncrypted: %v", err)
 	}
 	// Freshly created and still mounted.
-	if out := run(t, "zfs", "get", "-H", "-o", "value", "mounted", ds); strings.TrimSpace(out) != "yes" {
+	if out := zfspool.Run(t, "zfs", "get", "-H", "-o", "value", "mounted", ds); strings.TrimSpace(out) != "yes" {
 		t.Skipf("dataset is not mounted (%q), so this assumption cannot be exercised", strings.TrimSpace(out))
 	}
 
@@ -288,21 +190,21 @@ func TestIntegration_UnloadKeyRefusesWhileMounted(t *testing.T) {
 // Assumption 3: keystatus reports exactly "available"/"unavailable", and an
 // unencrypted dataset reports "-" (which the package treats as an error).
 func TestIntegration_KeyStatusVocabulary(t *testing.T) {
-	requireZFS(t)
+	zfspool.Require(t)
 	ctx := context.Background()
-	pool, _ := testPool(t)
+	p := zfspool.New(t)
 	m := NewManager(nil)
 
-	enc := pool + "/enc"
+	enc := p.Dataset("enc")
 	if err := m.CreateEncrypted(ctx, enc, testKey(t, 0x77)); err != nil {
 		t.Fatalf("CreateEncrypted: %v", err)
 	}
-	if got := strings.TrimSpace(run(t, "zfs", "get", "-H", "-o", "value", "keystatus", enc)); got != "available" {
+	if got := strings.TrimSpace(zfspool.Run(t, "zfs", "get", "-H", "-o", "value", "keystatus", enc)); got != "available" {
 		t.Errorf("raw keystatus = %q, want \"available\" — the package parses this string exactly", got)
 	}
 
-	plain := pool + "/plain"
-	run(t, "zfs", "create", plain)
+	plain := p.Dataset("plain")
+	zfspool.Run(t, "zfs", "create", plain)
 	if _, err := m.KeyStatus(ctx, plain); err == nil {
 		t.Error("KeyStatus accepted an unencrypted dataset; the caller and the dataset disagree " +
 			"about what this container is, which must be an error")
@@ -310,7 +212,7 @@ func TestIntegration_KeyStatusVocabulary(t *testing.T) {
 
 	// EncryptionRoot is what the per-tenant isolation claim rests on.
 	child := enc + "/child"
-	run(t, "zfs", "create", child)
+	zfspool.Run(t, "zfs", "create", child)
 	root, err := m.EncryptionRoot(ctx, child)
 	if err != nil {
 		t.Fatalf("EncryptionRoot: %v", err)
