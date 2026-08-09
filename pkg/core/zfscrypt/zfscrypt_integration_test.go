@@ -104,6 +104,22 @@ func vdevContains(t *testing.T, pool, img string, needle []byte) bool {
 	return bytes.Contains(data, needle)
 }
 
+// unmountIfMounted unmounts a dataset, tolerating "not currently mounted".
+//
+// Needed because `zfs load-key` makes a dataset readable but does NOT remount
+// it — so after an unload/load cycle the dataset has its key available and no
+// mount. (Confirmed on a real pool; the first version of this test assumed
+// load-key remounted and failed with "not currently mounted".) In production
+// the mount is Incus's job, which is why the pre-start hook only loads the
+// key.
+func unmountIfMounted(t *testing.T, dataset string) {
+	t.Helper()
+	out, err := exec.Command("zfs", "unmount", dataset).CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "not currently mounted") {
+		t.Fatalf("zfs unmount %s: %v\n%s", dataset, err, out)
+	}
+}
+
 // poolImage returns the backing file for a pool created by testPool.
 func poolImage(t *testing.T, pool string) string {
 	t.Helper()
@@ -205,7 +221,7 @@ func TestIntegration_KeyRoundTripsThroughStdin(t *testing.T) {
 		t.Fatalf("CreateEncrypted: %v", err)
 	}
 
-	run(t, "zfs", "unmount", ds)
+	unmountIfMounted(t, ds)
 	if err := m.UnloadKey(ctx, ds); err != nil {
 		t.Fatalf("UnloadKey: %v", err)
 	}
@@ -225,7 +241,7 @@ func TestIntegration_KeyRoundTripsThroughStdin(t *testing.T) {
 	}
 
 	// A wrong key must be refused rather than silently accepted.
-	run(t, "zfs", "unmount", ds)
+	unmountIfMounted(t, ds)
 	if err := m.UnloadKey(ctx, ds); err != nil {
 		t.Fatalf("UnloadKey before the wrong-key check: %v", err)
 	}
