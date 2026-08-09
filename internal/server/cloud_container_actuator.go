@@ -119,7 +119,7 @@ func (a *cloudContainerActuator) EnsureDeleted(ctx context.Context, localName st
 
 // create makes the instance (stopped) and stamps the tenant label before start.
 func (a *cloudContainerActuator) create(spec cloud.ContainerSpec) error {
-	if err := a.incus.CreateContainer(buildContainerConfig(spec)); err != nil {
+	if err := a.incus.CreateContainer(buildContainerConfig(spec, a.incus.StoragePool())); err != nil {
 		return fmt.Errorf("create %s: %w", spec.LocalName, err)
 	}
 	// Stamp the owning org as the tenant label so the network-policy enforcer
@@ -139,13 +139,13 @@ func (a *cloudContainerActuator) create(spec cloud.ContainerSpec) error {
 // GPU inventory the assignment doesn't carry). CPU isn't in the assignment;
 // routes/secrets aren't in the actuation contract, so they're not set here.
 // Pure (no Incus calls) so the mapping is unit-testable.
-func buildContainerConfig(spec cloud.ContainerSpec) incus.ContainerConfig {
+func buildContainerConfig(spec cloud.ContainerSpec, storagePool string) incus.ContainerConfig {
 	cfg := incus.ContainerConfig{Name: spec.LocalName, Image: spec.Image}
 	if spec.RAMMB > 0 {
 		cfg.Memory = fmt.Sprintf("%dMB", spec.RAMMB)
 	}
 	if spec.DiskGB > 0 {
-		cfg.Disk = &incus.DiskDevice{Path: "/", Pool: "default", Size: fmt.Sprintf("%dGB", spec.DiskGB)}
+		cfg.Disk = &incus.DiskDevice{Path: "/", Pool: storagePool, Size: fmt.Sprintf("%dGB", spec.DiskGB)}
 	}
 	if spec.GPUCount > 0 {
 		// A single empty GPU device means "pass through all GPUs" (no PCI

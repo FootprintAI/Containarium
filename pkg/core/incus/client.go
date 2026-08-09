@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
@@ -37,6 +38,69 @@ type Client struct {
 	// storageProbe overrides host detection during driver selection. Nil uses
 	// DefaultStorageProbe.
 	storageProbe *StorageProbe
+
+	// storagePool is the incus storage pool containers are created on.
+	// Empty means DefaultStoragePool (#1213).
+	//
+	// NOT the daemon's --pool, which names an independent cluster fronted by
+	// the sentinel. These are unrelated concepts that share a word; see
+	// docs/MULTI-POOL.md.
+	storagePool string
+}
+
+// DefaultStoragePool is the incus storage pool used when none is configured.
+const DefaultStoragePool = "default"
+
+// configuredStoragePool is the process-wide storage pool, set once from the
+// daemon's --storage-pool flag.
+//
+// Process-wide because incus.New() is called from a dozen places that each
+// build their own client — the cloud actuator, several container_server
+// helpers — and none of them thread daemon configuration. A per-client
+// setting alone would therefore be honoured on the daemon's own client and
+// silently ignored by every other one, which is the same shape of bug this
+// change exists to remove.
+var configuredStoragePool atomic.Value // string
+
+// SetDefaultStoragePool sets the process-wide incus storage pool. Called once
+// during daemon startup, before any container is created. Empty is ignored.
+//
+// NOT the daemon's --pool, which names an independent cluster fronted by the
+// sentinel; see docs/MULTI-POOL.md. These are unrelated concepts sharing a
+// word, which is why the flag is --storage-pool.
+func SetDefaultStoragePool(name string) {
+	if name != "" {
+		configuredStoragePool.Store(name)
+	}
+}
+
+// defaultPool reports the process-wide pool.
+func defaultPool() string {
+	if v, ok := configuredStoragePool.Load().(string); ok && v != "" {
+		return v
+	}
+	return DefaultStoragePool
+}
+
+// SetStoragePool selects the incus storage pool containers are created on.
+// Empty resets to DefaultStoragePool. See #1213.
+func (c *Client) SetStoragePool(name string) {
+	c.storagePool = name
+}
+
+// StoragePool returns the configured incus storage pool.
+//
+// Every root-disk device construction goes through this rather than a literal
+// "default". A literal is how a backend migrated onto an isolated pool
+// silently un-migrated itself: existing tenants stayed put while every NEW
+// tenant landed back on the shared-filesystem pool, so the contention probe
+// went clean right after the migration and regressed weeks later with nothing
+// in the product explaining why (#1206, #1213).
+func (c *Client) StoragePool() string {
+	if c.storagePool != "" {
+		return c.storagePool
+	}
+	return defaultPool()
 }
 
 // SetStoragePolicy sets what EnsureStorage does when a storage pool does not
@@ -56,6 +120,12 @@ func (c *Client) probe() StorageProbe {
 // Backend is the interface satisfied by *Client. Consumers depend on it (or a
 // narrower subset declared at the call site) so they can be mocked in tests.
 type Backend interface {
+	// StoragePool is the incus storage pool containers are created on.
+	// Read-only here: it is configured on the concrete client at daemon
+	// startup, and every root-disk construction reads it rather than
+	// hardcoding "default" (#1213).
+	StoragePool() string
+
 	// Lifecycle
 	CreateContainer(config ContainerConfig) error
 	StartContainer(name string) error
@@ -1732,7 +1802,7 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 // temporarily expands it to the target size so Incus can write its backup.yaml.
 func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) error {
 	if pool == "" {
-		pool = "default"
+		pool = c.StoragePool()
 	}
 
 	// Determine the ZFS dataset name: <zfs-pool>/containers/containers/<name>
@@ -1915,7 +1985,7 @@ func (c *Client) EnsureNetwork(config NetworkConfig) (string, error) {
 // Returns the storage pool name.
 func (c *Client) EnsureStorage(name string) (string, error) {
 	if name == "" {
-		name = "default"
+		name = c.StoragePool()
 	}
 
 	// Check if storage pool already exists
@@ -2004,6 +2074,30 @@ func (c *Client) GetStorageDriver(name string) string {
 }
 
 // EnsureDefaultProfile configures the default profile with network and storage
+// rootDiskForPool returns the default profile's root-disk device for the given
+// storage pool, the pool it is moving away from (empty when there was no
+// device), and whether anything changed.
+//
+// Pure so the repoint decision is testable without an Incus server — the
+// decision is the part that was wrong (#1213), not the API call.
+func rootDiskForPool(existing map[string]string, storageName string) (device map[string]string, movedFrom string, changed bool) {
+	if existing == nil {
+		return map[string]string{"type": "disk", "path": "/", "pool": storageName}, "", true
+	}
+	if existing["pool"] == storageName {
+		return existing, "", false
+	}
+	// Repoint in place, preserving anything else the operator set on the
+	// device (size, io limits) — only the pool is ours to change.
+	from := existing["pool"]
+	updated := make(map[string]string, len(existing))
+	for k, v := range existing {
+		updated[k] = v
+	}
+	updated["pool"] = storageName
+	return updated, from, true
+}
+
 func (c *Client) EnsureDefaultProfile(networkName, storageName string) error {
 	// Get current default profile
 	profile, _, err := c.server.GetProfile("default")
@@ -2018,13 +2112,22 @@ func (c *Client) EnsureDefaultProfile(networkName, storageName string) error {
 
 	needsUpdate := false
 
-	// Add root disk device if not present
-	if _, ok := profile.Devices["root"]; !ok {
-		profile.Devices["root"] = map[string]string{
-			"type": "disk",
-			"path": "/",
-			"pool": storageName,
+	// Add the root disk device, or REPOINT it when the configured storage
+	// pool has changed (#1213).
+	//
+	// Setting it only when absent is what made a storage migration undo
+	// itself: an operator repointing the backend at an isolated pool kept a
+	// default profile whose root disk still named the old one, so every
+	// container inheriting the profile — which is every container created
+	// without an explicit disk size — landed back on the pool they were
+	// migrating away from. The contention probe went clean right after the
+	// migration and regressed as new tenants arrived.
+	if device, from, changed := rootDiskForPool(profile.Devices["root"], storageName); changed {
+		if from != "" {
+			log.Printf("[incus] default profile root disk moves from storage pool %q to %q; "+
+				"containers created from now on land on %q (#1213)", from, storageName, storageName)
 		}
+		profile.Devices["root"] = device
 		needsUpdate = true
 	}
 
@@ -2051,7 +2154,7 @@ func (c *Client) EnsureDefaultProfile(networkName, storageName string) error {
 // This should be called once during daemon startup
 func (c *Client) InitializeInfrastructure(networkConfig NetworkConfig) error {
 	// 1. Ensure storage pool exists
-	storageName, err := c.EnsureStorage("default")
+	storageName, err := c.EnsureStorage(c.StoragePool())
 	if err != nil {
 		return fmt.Errorf("failed to ensure storage: %w", err)
 	}
@@ -2348,7 +2451,7 @@ func (c *Client) containerRootfsPath(containerName string) string {
 		pool = rootDev["pool"]
 	}
 	if pool == "" {
-		pool = "default"
+		pool = c.StoragePool()
 	}
 	poolCfg, _, err := c.server.GetStoragePool(pool)
 	if err != nil {

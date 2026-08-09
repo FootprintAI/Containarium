@@ -119,15 +119,43 @@ Run two pools side by side and move tenants across one at a time, so there
 is no fleet-wide outage and rollback is per tenant:
 
 ```bash
+# 1. Create the isolated pool alongside the existing one.
 incus storage create isolated zfs source=<dataset>
-incus move <container> --storage isolated     # per tenant
+
+# 2. Point the daemon at it BEFORE moving anything, so tenants created
+#    during the migration land on the new pool rather than the old one.
+#    (--storage-pool is the incus STORAGE pool; --pool is a
+#    sentinel-fronted cluster and is unrelated. See MULTI-POOL.md.)
+containarium daemon --storage-pool isolated ...     # then restart the daemon
+
+# 3. Move tenants across one at a time. Rollback is per tenant:
+#    `incus move <container> --storage default`.
+incus move <container> --storage isolated
 ```
 
-This currently needs the storage pool name to be configurable, which it is
-not yet — every container-creation path is pinned to the pool literally
-named `default`, so newly created tenants would land back on `dir` and the
-migration would silently undo itself. Tracked as issue #1213; do not use
-Path B until it lands.
+Step 2 is what stops the migration undoing itself. Until #1213 every
+container-creation path was pinned to the pool literally named `default`,
+so newly created tenants landed back on `dir` — the contention probe went
+clean right after the migration and regressed weeks later as tenants
+arrived, with nothing connecting the two.
+
+Restarting the daemon with `--storage-pool` also **repoints the default
+profile's root disk**. That matters because a container created without an
+explicit disk size has no root device of its own and inherits the profile's
+— so a stale profile would send exactly those containers back to the old
+pool regardless of step 2. The daemon logs the move:
+
+```
+[incus] default profile root disk moves from storage pool "default" to "isolated";
+        containers created from now on land on "isolated" (#1213)
+```
+
+Verify placement after the change:
+
+```bash
+incus config device get <new-container> root pool     # expect: isolated
+containarium backends list                            # STORAGE column
+```
 
 ### Verifying, either way
 

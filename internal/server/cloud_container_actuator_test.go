@@ -11,7 +11,7 @@ func TestBuildContainerConfig(t *testing.T) {
 		LocalName: "cld-abc", Image: "ubuntu:24.04",
 		RAMMB: 2048, DiskGB: 40, GPUCount: 1,
 		SecretEnv: map[string]string{"API_TOKEN": "shh"},
-	})
+	}, "default")
 	if cfg.Env["API_TOKEN"] != "shh" {
 		t.Errorf("secret_env not injected as container env: %v", cfg.Env)
 	}
@@ -81,7 +81,7 @@ func TestTenantLabelStale(t *testing.T) {
 }
 
 func TestBuildContainerConfig_MinimalOmitsDevices(t *testing.T) {
-	cfg := buildContainerConfig(cloud.ContainerSpec{LocalName: "cld-x", Image: "alpine"})
+	cfg := buildContainerConfig(cloud.ContainerSpec{LocalName: "cld-x", Image: "alpine"}, "default")
 	if cfg.Memory != "" {
 		t.Errorf("no RAM → memory unset, got %q", cfg.Memory)
 	}
