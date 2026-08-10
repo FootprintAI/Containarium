@@ -1951,7 +1951,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// HTTPS pinned to the sentinel-issued CA. Failure here is
 		// not fatal — the daemon stays on plain HTTP (pre-0.5
 		// behavior) and logs the reason.
-		if err := ds.peerPool.BootstrapPKI(); err != nil {
+		if err := ds.peerPool.BootstrapPKI(ctx); err != nil {
 			log.Printf("[peer-pki] bootstrap failed (%v) — staying on HTTP for peer-to-peer (audit C-CRIT-1 still open until configured)", err)
 		} else {
 			ds.peerPool.StartCertRenewal(ctx)

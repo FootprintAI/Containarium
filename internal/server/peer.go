@@ -163,7 +163,7 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 // Errors are NOT fatal; the caller (dual_server.go) logs them and
 // falls back to HTTP. Operators see the message clearly in the
 // startup log.
-func (p *PeerPool) BootstrapPKI() error {
+func (p *PeerPool) BootstrapPKI(ctx context.Context) error {
 	if p.sentinelURL == "" {
 		return nil
 	}
@@ -177,7 +177,7 @@ func (p *PeerPool) BootstrapPKI() error {
 		return fmt.Errorf("local backend ID is empty; cannot request peer cert")
 	}
 
-	pki, err := FetchPeerPKI(nil, p.sentinelURL, p.localBackendID, secret)
+	pki, err := FetchPeerPKI(ctx, p.sentinelURL, p.localBackendID, secret)
 	if err != nil {
 		return fmt.Errorf("fetch peer PKI from sentinel: %w", err)
 	}
@@ -256,7 +256,7 @@ func (p *PeerPool) StartCertRenewal(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := p.maybeRenewCert(); err != nil {
+				if err := p.maybeRenewCert(ctx); err != nil {
 					log.Printf("[peer-pki] renewal failed (will retry): %v", err)
 				}
 			}
@@ -269,7 +269,7 @@ func (p *PeerPool) StartCertRenewal(ctx context.Context) {
 // Idempotent: if the cert isn't due for renewal yet, this is a
 // no-op. Returns an error only when the sentinel call itself
 // fails — the caller's retry loop handles transient failures.
-func (p *PeerPool) maybeRenewCert() error {
+func (p *PeerPool) maybeRenewCert(ctx context.Context) error {
 	if p.pki == nil {
 		return nil
 	}
@@ -293,7 +293,7 @@ func (p *PeerPool) maybeRenewCert() error {
 	if len(secret) < auth.SentinelMinSecretLen {
 		return fmt.Errorf("HMAC secret unavailable")
 	}
-	fresh, err := FetchPeerPKI(nil, p.sentinelURL, p.localBackendID, secret)
+	fresh, err := FetchPeerPKI(ctx, p.sentinelURL, p.localBackendID, secret)
 	if err != nil {
 		return err
 	}
