@@ -794,9 +794,11 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		s.stampBirthDeleteAfterStopped(info.Ref.Name, req.DeleteAfterStoppedSeconds)
 	}
 
-	// Stamp tenant secrets into the LXC's env (best-effort — a
-	// failure here doesn't fail the create; secrets can always be
-	// retried via RefreshSecrets).
+	// Deliver tenant secrets to the new box — env config on LXC, the
+	// mounted Secret on K8s (best-effort; a failure here doesn't fail the
+	// create, and RefreshSecrets is the retry). Runs after the box exists,
+	// which on K8s matters: the Secret lands in the tenant namespace, and
+	// that namespace is created with the box.
 	if s.secretsStore != nil {
 		if n, err := s.stampSecrets(ctx, req.Username); err != nil {
 			log.Printf("[secrets] failed to stamp on %s: %v (continuing)", info.Ref.Name, err)
@@ -1414,15 +1416,15 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 			log.Printf("[ttl] failed to clear %s on %s: %v (continuing)", incus.StoppedAtKey, req.Username, err)
 		}
 
-		// Re-stamp tenant secrets from the current DB state. Picks up
-		// any rotations that happened while the container was stopped;
-		// existing processes won't see the change (POSIX inherit-at-fork),
-		// but new execs will.
+		// Re-deliver tenant secrets from the current DB state. Picks up
+		// any rotations that happened while the box was stopped; existing
+		// processes won't see the change (POSIX inherit-at-fork), but new
+		// execs and new sessions will.
 		if s.secretsStore != nil {
 			if n, err := s.stampSecrets(ctx, req.Username); err != nil {
-				log.Printf("[secrets] failed to re-stamp on start of %s-container: %v (continuing)", req.Username, err)
+				log.Printf("[secrets] failed to re-deliver on start of %s's box: %v (continuing)", req.Username, err)
 			} else if n > 0 {
-				log.Printf("[secrets] re-stamped %d secret(s) on %s-container at start time", n, req.Username)
+				log.Printf("[secrets] re-delivered %d secret(s) to %s's box at start time", n, req.Username)
 			}
 		}
 	}
