@@ -115,7 +115,7 @@ func TestFormatLabels(t *testing.T) {
 }
 
 func TestGroupContainersByLabel(t *testing.T) {
-	containers := []interface{}{
+	containers := []incus.ContainerInfo{
 		incus.ContainerInfo{
 			Name:   "alice-container",
 			State:  "Running",
@@ -255,7 +255,7 @@ func TestGetSortedGroupKeys(t *testing.T) {
 }
 
 func TestGroupedJSONOutput(t *testing.T) {
-	containers := []interface{}{
+	containers := []incus.ContainerInfo{
 		incus.ContainerInfo{
 			Name:      "alice-container",
 			State:     "Running",
@@ -313,7 +313,7 @@ func BenchmarkParseLabelFilter(b *testing.B) {
 }
 
 func BenchmarkGroupContainersByLabel(b *testing.B) {
-	containers := make([]interface{}, 100)
+	containers := make([]incus.ContainerInfo, 100)
 	teams := []string{"backend", "frontend", "devops", "data"}
 	for i := 0; i < 100; i++ {
 		containers[i] = incus.ContainerInfo{

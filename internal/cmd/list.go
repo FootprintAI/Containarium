@@ -94,7 +94,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	labelFilter := parseLabelFilter(filterLabels)
 
 	// Apply filters
-	var filtered []interface{}
+	var filtered []incus.ContainerInfo
 	runningCount := 0
 	stoppedCount := 0
 
@@ -161,7 +161,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printTableFormat(containers []interface{}, running, stopped int, withLabels bool) {
+func printTableFormat(containers []incus.ContainerInfo, running, stopped int, withLabels bool) {
 	// MON column: ✓ when the container has app-emitted OTel
 	// stamped in (environment.OTEL_EXPORTER_OTLP_ENDPOINT
 	// non-empty). 3-char column keeps the table compact.
@@ -179,8 +179,7 @@ func printTableFormat(containers []interface{}, running, stopped int, withLabels
 	}
 
 	monCount := 0
-	for _, item := range containers {
-		c := item.(incus.ContainerInfo)
+	for _, c := range containers {
 		ip := c.IPAddress
 		if ip == "" {
 			ip = "-"
@@ -237,11 +236,17 @@ func parseLabelFilter(labelSlice []string) map[string]string {
 	return result
 }
 
-func printJSONFormat(containers []interface{}) error {
-	output := map[string]interface{}{
-		"containers":  containers,
-		"total_count": len(containers),
-	}
+// listJSON is the shape `containarium list --json` emits. A named struct
+// rather than a map so the field names are checked at compile time — a typo
+// in a map key produces valid JSON with the wrong shape, and the first thing
+// to notice is whatever is parsing it.
+type listJSON struct {
+	Containers []incus.ContainerInfo `json:"containers"`
+	TotalCount int                   `json:"total_count"`
+}
+
+func printJSONFormat(containers []incus.ContainerInfo) error {
+	output := listJSON{Containers: containers, TotalCount: len(containers)}
 
 	data, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
@@ -252,10 +257,9 @@ func printJSONFormat(containers []interface{}) error {
 	return nil
 }
 
-func printYAMLFormat(containers []interface{}) {
+func printYAMLFormat(containers []incus.ContainerInfo) {
 	fmt.Println("containers:")
-	for _, item := range containers {
-		c := item.(incus.ContainerInfo)
+	for _, c := range containers {
 		fmt.Printf("  - name: %s\n", c.Name)
 		fmt.Printf("    state: %s\n", c.State)
 		fmt.Printf("    ip_address: %s\n", c.IPAddress)
@@ -277,10 +281,9 @@ func printYAMLFormat(containers []interface{}) {
 }
 
 // groupContainersByLabel groups containers by a specific label key
-func groupContainersByLabel(containers []interface{}, labelKey string) map[string][]incus.ContainerInfo {
+func groupContainersByLabel(containers []incus.ContainerInfo, labelKey string) map[string][]incus.ContainerInfo {
 	groups := make(map[string][]incus.ContainerInfo)
-	for _, item := range containers {
-		c := item.(incus.ContainerInfo)
+	for _, c := range containers {
 		labelValue := "(no label)"
 		if c.Labels != nil {
 			if val, ok := c.Labels[labelKey]; ok {
@@ -310,7 +313,7 @@ func getSortedGroupKeys(groups map[string][]incus.ContainerInfo) []string {
 	return keys
 }
 
-func printGroupedTableFormat(containers []interface{}, labelKey string, withLabels bool) {
+func printGroupedTableFormat(containers []incus.ContainerInfo, labelKey string, withLabels bool) {
 	groups := groupContainersByLabel(containers, labelKey)
 	sortedKeys := getSortedGroupKeys(groups)
 
@@ -364,14 +367,22 @@ func printGroupedTableFormat(containers []interface{}, labelKey string, withLabe
 	fmt.Printf("Total: %d containers in %d groups (%d running, %d stopped)\n", totalCount, len(groups), totalRunning, totalStopped)
 }
 
-func printGroupedJSONFormat(containers []interface{}, labelKey string) error {
+// groupedListJSON is the shape `containarium list --group-by --json` emits.
+type groupedListJSON struct {
+	GroupBy    string                           `json:"group_by"`
+	Groups     map[string][]incus.ContainerInfo `json:"groups"`
+	GroupCount int                              `json:"group_count"`
+	TotalCount int                              `json:"total_count"`
+}
+
+func printGroupedJSONFormat(containers []incus.ContainerInfo, labelKey string) error {
 	groups := groupContainersByLabel(containers, labelKey)
 
-	output := map[string]interface{}{
-		"group_by":    labelKey,
-		"groups":      groups,
-		"group_count": len(groups),
-		"total_count": len(containers),
+	output := groupedListJSON{
+		GroupBy:    labelKey,
+		Groups:     groups,
+		GroupCount: len(groups),
+		TotalCount: len(containers),
 	}
 
 	data, err := json.MarshalIndent(output, "", "  ")
@@ -383,7 +394,7 @@ func printGroupedJSONFormat(containers []interface{}, labelKey string) error {
 	return nil
 }
 
-func printGroupedYAMLFormat(containers []interface{}, labelKey string) {
+func printGroupedYAMLFormat(containers []incus.ContainerInfo, labelKey string) {
 	groups := groupContainersByLabel(containers, labelKey)
 	sortedKeys := getSortedGroupKeys(groups)
 
