@@ -6617,6 +6617,15 @@
       "default": "BACKUP_DESTINATION_UNSPECIFIED",
       "description": "BackupDestination is where a logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination."
     },
+    "BackupEngine": {
+      "type": "string",
+      "enum": [
+        "BACKUP_ENGINE_UNSPECIFIED",
+        "BACKUP_ENGINE_POSTGRES"
+      ],
+      "default": "BACKUP_ENGINE_UNSPECIFIED",
+      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one."
+    },
     "BackupRecord": {
       "type": "object",
       "properties": {
@@ -6654,8 +6663,8 @@
           "description": "Concrete location of the dump: a host path for LOCAL, a gs:// URI\nfor GCS."
         },
         "engine": {
-          "type": "string",
-          "description": "Database engine. \"postgres\" is the only engine in v1."
+          "$ref": "#/definitions/BackupEngine",
+          "description": "Database engine the dump was taken with.\n\nAn enum rather than a string because the valid values are an\nenumerated set, so the compiler should be the thing that rejects a\ntypo rather than a driver lookup failing at dump time (#1157)."
         },
         "lastVerification": {
           "$ref": "#/definitions/BackupVerification",

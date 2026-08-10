@@ -27,6 +27,21 @@ enum BackupDestination {
   BACKUP_DESTINATION_GCS = 2;
 }
 
+// BackupEngine identifies the database engine a backup was taken from.
+//
+// Postgres is the only engine implemented today; the enum exists so that a
+// second one has somewhere to be named, and so that the engine a record was
+// taken with is a typed value rather than a string the reader has to trust.
+enum BackupEngine {
+  // Unset, or a record written by a daemon that predates this enum.
+  // Rejected wherever an engine has to be chosen — never treated as
+  // Postgres by default, because guessing the engine of a dump is how a
+  // restore silently targets the wrong one.
+  BACKUP_ENGINE_UNSPECIFIED = 0;
+
+  BACKUP_ENGINE_POSTGRES = 1;
+}
+
 // BackupRecord is the metadata index entry for one stored dump. The dump
 // itself lives at `location`; this record is persisted as a small JSON
 // sidecar in the daemon's backup directory so `ListBackups` works without
@@ -58,8 +73,12 @@ message BackupRecord {
   // for GCS.
   string location = 8;
 
-  // Database engine. "postgres" is the only engine in v1.
-  string engine = 9;
+  // Database engine the dump was taken with.
+  //
+  // An enum rather than a string because the valid values are an
+  // enumerated set, so the compiler should be the thing that rejects a
+  // typo rather than a driver lookup failing at dump time (#1157).
+  BackupEngine engine = 9;
 
   // Outcome of the most recent restore test, unset until the backup has
   // been verified. A recorded sha256 proves the bytes are intact; only

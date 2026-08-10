@@ -328,6 +328,22 @@ func destToProto(d backup.Destination) pb.BackupDestination {
 	}
 }
 
+// engineToProto maps a stored record's engine to the wire enum.
+//
+// The manifest keeps engine as a string, so records written before the enum
+// existed — and any record whose engine this daemon does not recognise — map
+// to UNSPECIFIED rather than to Postgres. Defaulting an unknown engine to
+// Postgres would present a dump as restorable by pg_restore on the strength
+// of a guess, which is the failure the enum exists to make impossible.
+func engineToProto(engine string) pb.BackupEngine {
+	switch engine {
+	case backup.EnginePostgres:
+		return pb.BackupEngine_BACKUP_ENGINE_POSTGRES
+	default:
+		return pb.BackupEngine_BACKUP_ENGINE_UNSPECIFIED
+	}
+}
+
 func connFromProto(c *pb.PgConnection) backup.PgConn {
 	if c == nil {
 		return backup.PgConn{}
@@ -385,7 +401,7 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 		Sha256:      r.SHA256,
 		Destination: destToProto(r.Destination),
 		Location:    r.Location,
-		Engine:      r.Engine,
+		Engine:      engineToProto(r.Engine),
 
 		LastVerification: verificationToProto(r.LastVerification),
 		RelationCount:    r.RelationCount,

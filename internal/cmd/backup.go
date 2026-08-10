@@ -70,6 +70,21 @@ func parseDestination(s string) (pb.BackupDestination, error) {
 }
 
 // destLabel renders a destination enum for human output.
+// engineLabel renders the engine the way it read before it became an enum
+// (#1157). The wire value is now BACKUP_ENGINE_POSTGRES; a human running
+// `backup get` should still see "postgres".
+func engineLabel(e pb.BackupEngine) string {
+	switch e {
+	case pb.BackupEngine_BACKUP_ENGINE_POSTGRES:
+		return "postgres"
+	default:
+		// Covers a record written before the enum existed, and one whose
+		// engine this build does not know. Both are genuinely unknown to
+		// the reader, and saying so beats naming an engine on a guess.
+		return "unspecified"
+	}
+}
+
 func destLabel(d pb.BackupDestination) string {
 	switch d {
 	case pb.BackupDestination_BACKUP_DESTINATION_LOCAL:

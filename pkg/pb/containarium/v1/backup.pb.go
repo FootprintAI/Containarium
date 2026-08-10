@@ -84,6 +84,61 @@ func (BackupDestination) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{0}
 }
 
+// BackupEngine identifies the database engine a backup was taken from.
+//
+// Postgres is the only engine implemented today; the enum exists so that a
+// second one has somewhere to be named, and so that the engine a record was
+// taken with is a typed value rather than a string the reader has to trust.
+type BackupEngine int32
+
+const (
+	// Unset, or a record written by a daemon that predates this enum.
+	// Rejected wherever an engine has to be chosen — never treated as
+	// Postgres by default, because guessing the engine of a dump is how a
+	// restore silently targets the wrong one.
+	BackupEngine_BACKUP_ENGINE_UNSPECIFIED BackupEngine = 0
+	BackupEngine_BACKUP_ENGINE_POSTGRES    BackupEngine = 1
+)
+
+// Enum value maps for BackupEngine.
+var (
+	BackupEngine_name = map[int32]string{
+		0: "BACKUP_ENGINE_UNSPECIFIED",
+		1: "BACKUP_ENGINE_POSTGRES",
+	}
+	BackupEngine_value = map[string]int32{
+		"BACKUP_ENGINE_UNSPECIFIED": 0,
+		"BACKUP_ENGINE_POSTGRES":    1,
+	}
+)
+
+func (x BackupEngine) Enum() *BackupEngine {
+	p := new(BackupEngine)
+	*p = x
+	return p
+}
+
+func (x BackupEngine) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BackupEngine) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_backup_proto_enumTypes[1].Descriptor()
+}
+
+func (BackupEngine) Type() protoreflect.EnumType {
+	return &file_containarium_v1_backup_proto_enumTypes[1]
+}
+
+func (x BackupEngine) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BackupEngine.Descriptor instead.
+func (BackupEngine) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{1}
+}
+
 // VerificationResult is the outcome of a restore test. A backup whose
 // bytes are intact but which cannot be loaded by the engine is FAILED —
 // that distinction is the whole point of verification (see #1159).
@@ -125,11 +180,11 @@ func (x VerificationResult) String() string {
 }
 
 func (VerificationResult) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_backup_proto_enumTypes[1].Descriptor()
+	return file_containarium_v1_backup_proto_enumTypes[2].Descriptor()
 }
 
 func (VerificationResult) Type() protoreflect.EnumType {
-	return &file_containarium_v1_backup_proto_enumTypes[1]
+	return &file_containarium_v1_backup_proto_enumTypes[2]
 }
 
 func (x VerificationResult) Number() protoreflect.EnumNumber {
@@ -138,7 +193,7 @@ func (x VerificationResult) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VerificationResult.Descriptor instead.
 func (VerificationResult) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{2}
 }
 
 // BackupRecord is the metadata index entry for one stored dump. The dump
@@ -165,8 +220,12 @@ type BackupRecord struct {
 	// Concrete location of the dump: a host path for LOCAL, a gs:// URI
 	// for GCS.
 	Location string `protobuf:"bytes,8,opt,name=location,proto3" json:"location,omitempty"`
-	// Database engine. "postgres" is the only engine in v1.
-	Engine string `protobuf:"bytes,9,opt,name=engine,proto3" json:"engine,omitempty"`
+	// Database engine the dump was taken with.
+	//
+	// An enum rather than a string because the valid values are an
+	// enumerated set, so the compiler should be the thing that rejects a
+	// typo rather than a driver lookup failing at dump time (#1157).
+	Engine BackupEngine `protobuf:"varint,9,opt,name=engine,proto3,enum=containarium.v1.BackupEngine" json:"engine,omitempty"`
 	// Outcome of the most recent restore test, unset until the backup has
 	// been verified. A recorded sha256 proves the bytes are intact; only
 	// this proves the dump is restorable (#1159).
@@ -270,11 +329,11 @@ func (x *BackupRecord) GetLocation() string {
 	return ""
 }
 
-func (x *BackupRecord) GetEngine() string {
+func (x *BackupRecord) GetEngine() BackupEngine {
 	if x != nil {
 		return x.Engine
 	}
-	return ""
+	return BackupEngine_BACKUP_ENGINE_UNSPECIFIED
 }
 
 func (x *BackupRecord) GetLastVerification() *BackupVerification {
@@ -1253,7 +1312,7 @@ var File_containarium_v1_backup_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xb7\x03\n" +
+	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xd6\x03\n" +
 	"\fBackupRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
@@ -1264,8 +1323,8 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"size_bytes\x18\x05 \x01(\x03R\tsizeBytes\x12\x16\n" +
 	"\x06sha256\x18\x06 \x01(\tR\x06sha256\x12D\n" +
 	"\vdestination\x18\a \x01(\x0e2\".containarium.v1.BackupDestinationR\vdestination\x12\x1a\n" +
-	"\blocation\x18\b \x01(\tR\blocation\x12\x16\n" +
-	"\x06engine\x18\t \x01(\tR\x06engine\x12P\n" +
+	"\blocation\x18\b \x01(\tR\blocation\x125\n" +
+	"\x06engine\x18\t \x01(\x0e2\x1d.containarium.v1.BackupEngineR\x06engine\x12P\n" +
 	"\x11last_verification\x18\n" +
 	" \x01(\v2#.containarium.v1.BackupVerificationR\x10lastVerification\x12*\n" +
 	"\x0erelation_count\x18\v \x01(\x03H\x00R\rrelationCount\x88\x01\x01B\x11\n" +
@@ -1338,7 +1397,10 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x11BackupDestination\x12\"\n" +
 	"\x1eBACKUP_DESTINATION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18BACKUP_DESTINATION_LOCAL\x10\x01\x12\x1a\n" +
-	"\x16BACKUP_DESTINATION_GCS\x10\x02*y\n" +
+	"\x16BACKUP_DESTINATION_GCS\x10\x02*I\n" +
+	"\fBackupEngine\x12\x1d\n" +
+	"\x19BACKUP_ENGINE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16BACKUP_ENGINE_POSTGRES\x10\x01*y\n" +
 	"\x12VerificationResult\x12#\n" +
 	"\x1fVERIFICATION_RESULT_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aVERIFICATION_RESULT_PASSED\x10\x01\x12\x1e\n" +
@@ -1369,60 +1431,62 @@ func file_containarium_v1_backup_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_backup_proto_rawDescData
 }
 
-var file_containarium_v1_backup_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_containarium_v1_backup_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_containarium_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_containarium_v1_backup_proto_goTypes = []any{
 	(BackupDestination)(0),        // 0: containarium.v1.BackupDestination
-	(VerificationResult)(0),       // 1: containarium.v1.VerificationResult
-	(*BackupRecord)(nil),          // 2: containarium.v1.BackupRecord
-	(*VerificationCheck)(nil),     // 3: containarium.v1.VerificationCheck
-	(*BackupVerification)(nil),    // 4: containarium.v1.BackupVerification
-	(*PgConnection)(nil),          // 5: containarium.v1.PgConnection
-	(*CreateBackupRequest)(nil),   // 6: containarium.v1.CreateBackupRequest
-	(*CreateBackupResponse)(nil),  // 7: containarium.v1.CreateBackupResponse
-	(*ListBackupsRequest)(nil),    // 8: containarium.v1.ListBackupsRequest
-	(*ListBackupsResponse)(nil),   // 9: containarium.v1.ListBackupsResponse
-	(*GetBackupRequest)(nil),      // 10: containarium.v1.GetBackupRequest
-	(*GetBackupResponse)(nil),     // 11: containarium.v1.GetBackupResponse
-	(*RestoreBackupRequest)(nil),  // 12: containarium.v1.RestoreBackupRequest
-	(*RestoreBackupResponse)(nil), // 13: containarium.v1.RestoreBackupResponse
-	(*VerifyBackupRequest)(nil),   // 14: containarium.v1.VerifyBackupRequest
-	(*VerifyBackupResponse)(nil),  // 15: containarium.v1.VerifyBackupResponse
-	(*DeleteBackupRequest)(nil),   // 16: containarium.v1.DeleteBackupRequest
-	(*DeleteBackupResponse)(nil),  // 17: containarium.v1.DeleteBackupResponse
+	(BackupEngine)(0),             // 1: containarium.v1.BackupEngine
+	(VerificationResult)(0),       // 2: containarium.v1.VerificationResult
+	(*BackupRecord)(nil),          // 3: containarium.v1.BackupRecord
+	(*VerificationCheck)(nil),     // 4: containarium.v1.VerificationCheck
+	(*BackupVerification)(nil),    // 5: containarium.v1.BackupVerification
+	(*PgConnection)(nil),          // 6: containarium.v1.PgConnection
+	(*CreateBackupRequest)(nil),   // 7: containarium.v1.CreateBackupRequest
+	(*CreateBackupResponse)(nil),  // 8: containarium.v1.CreateBackupResponse
+	(*ListBackupsRequest)(nil),    // 9: containarium.v1.ListBackupsRequest
+	(*ListBackupsResponse)(nil),   // 10: containarium.v1.ListBackupsResponse
+	(*GetBackupRequest)(nil),      // 11: containarium.v1.GetBackupRequest
+	(*GetBackupResponse)(nil),     // 12: containarium.v1.GetBackupResponse
+	(*RestoreBackupRequest)(nil),  // 13: containarium.v1.RestoreBackupRequest
+	(*RestoreBackupResponse)(nil), // 14: containarium.v1.RestoreBackupResponse
+	(*VerifyBackupRequest)(nil),   // 15: containarium.v1.VerifyBackupRequest
+	(*VerifyBackupResponse)(nil),  // 16: containarium.v1.VerifyBackupResponse
+	(*DeleteBackupRequest)(nil),   // 17: containarium.v1.DeleteBackupRequest
+	(*DeleteBackupResponse)(nil),  // 18: containarium.v1.DeleteBackupResponse
 }
 var file_containarium_v1_backup_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.BackupRecord.destination:type_name -> containarium.v1.BackupDestination
-	4,  // 1: containarium.v1.BackupRecord.last_verification:type_name -> containarium.v1.BackupVerification
-	1,  // 2: containarium.v1.BackupVerification.result:type_name -> containarium.v1.VerificationResult
-	3,  // 3: containarium.v1.BackupVerification.checks:type_name -> containarium.v1.VerificationCheck
-	5,  // 4: containarium.v1.CreateBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	0,  // 5: containarium.v1.CreateBackupRequest.destination:type_name -> containarium.v1.BackupDestination
-	2,  // 6: containarium.v1.CreateBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	2,  // 7: containarium.v1.CreateBackupResponse.records:type_name -> containarium.v1.BackupRecord
-	2,  // 8: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
-	2,  // 9: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	5,  // 10: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	5,  // 11: containarium.v1.VerifyBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	4,  // 12: containarium.v1.VerifyBackupResponse.verification:type_name -> containarium.v1.BackupVerification
-	2,  // 13: containarium.v1.VerifyBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	6,  // 14: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
-	8,  // 15: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
-	10, // 16: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
-	12, // 17: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
-	14, // 18: containarium.v1.BackupService.VerifyBackup:input_type -> containarium.v1.VerifyBackupRequest
-	16, // 19: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
-	7,  // 20: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
-	9,  // 21: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
-	11, // 22: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
-	13, // 23: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
-	15, // 24: containarium.v1.BackupService.VerifyBackup:output_type -> containarium.v1.VerifyBackupResponse
-	17, // 25: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
-	20, // [20:26] is the sub-list for method output_type
-	14, // [14:20] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	1,  // 1: containarium.v1.BackupRecord.engine:type_name -> containarium.v1.BackupEngine
+	5,  // 2: containarium.v1.BackupRecord.last_verification:type_name -> containarium.v1.BackupVerification
+	2,  // 3: containarium.v1.BackupVerification.result:type_name -> containarium.v1.VerificationResult
+	4,  // 4: containarium.v1.BackupVerification.checks:type_name -> containarium.v1.VerificationCheck
+	6,  // 5: containarium.v1.CreateBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	0,  // 6: containarium.v1.CreateBackupRequest.destination:type_name -> containarium.v1.BackupDestination
+	3,  // 7: containarium.v1.CreateBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	3,  // 8: containarium.v1.CreateBackupResponse.records:type_name -> containarium.v1.BackupRecord
+	3,  // 9: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
+	3,  // 10: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	6,  // 11: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	6,  // 12: containarium.v1.VerifyBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	5,  // 13: containarium.v1.VerifyBackupResponse.verification:type_name -> containarium.v1.BackupVerification
+	3,  // 14: containarium.v1.VerifyBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	7,  // 15: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
+	9,  // 16: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
+	11, // 17: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
+	13, // 18: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
+	15, // 19: containarium.v1.BackupService.VerifyBackup:input_type -> containarium.v1.VerifyBackupRequest
+	17, // 20: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
+	8,  // 21: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
+	10, // 22: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
+	12, // 23: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
+	14, // 24: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
+	16, // 25: containarium.v1.BackupService.VerifyBackup:output_type -> containarium.v1.VerifyBackupResponse
+	18, // 26: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
+	21, // [21:27] is the sub-list for method output_type
+	15, // [15:21] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_backup_proto_init() }
@@ -1436,7 +1500,7 @@ func file_containarium_v1_backup_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_backup_proto_rawDesc), len(file_containarium_v1_backup_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
