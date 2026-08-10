@@ -178,6 +178,7 @@ func normalizeIncusDiskSuffix(disk string) (normalized string, ok bool) {
 
 func int64p(i int64) *int64 { return &i }
 func boolp(b bool) *bool    { return &b }
+func int32p(i int32) *int32 { return &i }
 
 // boxLabels are the identity labels shared by all of a tenant box's objects;
 // the pod selector and the cross-namespace List selector both key off them.

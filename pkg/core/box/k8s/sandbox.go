@@ -54,6 +54,10 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, o
 	// all capabilities dropped, default seccomp. The box image (dropbear on
 	// :2222) is built to run under exactly this.
 	gpuCount := len(spec.GPUs)
+	// Tenant secrets (#1190): mounted rather than projected as env vars,
+	// because a Secret update does not reach a running pod's environment but
+	// does reach its volumes. Optional, so a box with no secrets still starts.
+	secretsVolume, secretsMount := tenantSecretsVolumeFor(spec.Ref.Tenant)
 	container := corev1.Container{
 		Name:  boxContainerName,
 		Image: spec.Image,
@@ -71,6 +75,7 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, o
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: authorizedKeysVolume, MountPath: authorizedKeysMount, ReadOnly: true},
 			{Name: hostKeyVolume, MountPath: hostKeyMount, ReadOnly: true},
+			secretsMount,
 		},
 	}
 	if res := resourceRequirements(spec.Resources, gpuCount, def); res != nil {
@@ -85,6 +90,7 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, o
 	}
 
 	volumes := []corev1.Volume{
+		secretsVolume,
 		{
 			Name: authorizedKeysVolume,
 			VolumeSource: corev1.VolumeSource{
