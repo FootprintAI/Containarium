@@ -356,6 +356,23 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err := validateCreateContainerBounds(req); err != nil {
 		return nil, err
 	}
+	// Refuse a request for encryption the daemon cannot actually deliver.
+	//
+	// The create path does not yet provision an encrypted dataset (#1199:
+	// the pre-create hook exists and is proven against a real pool, but
+	// wiring it needs Incus's "instance from an existing dataset" path).
+	// Until it does, honouring this flag by ignoring it hands the caller a
+	// guarantee they do not have — the container is created on the pool-wide
+	// key, and nothing says so.
+	//
+	// The proto is explicit that this must fail rather than fall back, and
+	// so is the CLI's own help text. It was the code that disagreed.
+	if req.Encrypted {
+		return nil, status.Error(codes.FailedPrecondition,
+			"per-container encryption is not available on this daemon yet: the create path "+
+				"does not provision an encrypted dataset (#1199). Refusing rather than creating "+
+				"an unencrypted container, which is what this flag is documented to do.")
+	}
 	// Birth TTL (#523): reject an out-of-range TTL before we provision
 	// anything — fail fast rather than create a box and then reject its
 	// death date. Same bound (7 days) as SetContainerTTL; 0 = no TTL.
