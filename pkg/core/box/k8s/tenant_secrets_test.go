@@ -16,7 +16,7 @@ import (
 func sandboxPodSpecForTest(t *testing.T, spec box.BoxSpec) corev1.PodSpec {
 	t.Helper()
 	sb := sandboxObject("tenant-"+spec.Ref.Tenant, spec, false, memDefaults{}, podOptions{})
-	podSpec := sb.Spec.SandboxBlueprint.PodTemplate.Spec
+	podSpec := sb.Spec.PodTemplate.Spec
 	if len(podSpec.Containers) != 1 {
 		t.Fatalf("want 1 container, got %d", len(podSpec.Containers))
 	}
