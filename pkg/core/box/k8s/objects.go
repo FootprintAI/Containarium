@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/box/k8s/boxmeta"
 	"log"
 	"strings"
 
@@ -69,15 +70,18 @@ const (
 	// enforced at the gateway, not by per-tenant box users.
 	boxSSHUser = "agent"
 
-	managedByLabel       = "app.kubernetes.io/managed-by"
-	managedByValue       = "containarium"
-	tenantLabel          = "containarium.dev/tenant"
+	managedByLabel       = boxmeta.ManagedByLabel
+	managedByValue       = boxmeta.ManagedByValue
+	tenantLabel          = boxmeta.TenantLabel
 	metaAnnotationPrefix = "containarium.dev/meta."
 	gpuCountAnnotation   = "containarium.dev/gpu-count"
 
 	// nvidiaGPUResource is the K8s extended-resource name for NVIDIA GPUs.
 	// A non-zero limit causes the cluster autoscaler to scale up a GPU node pool.
 	nvidiaGPUResource = corev1.ResourceName("nvidia.com/gpu")
+
+	// boxContainerName is the box container in the pod.
+	boxContainerName = boxmeta.BoxContainerName
 
 	authorizedKeysKey = "authorized_keys"
 	// authorizedKeysMount is where the box image (dropbear entrypoint) reads
