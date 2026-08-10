@@ -100,6 +100,34 @@ kubectl -n agent-sandbox-system wait --for=condition=available \
   deployment/agent-sandbox-controller --timeout=180s
 
 echo "==> running K8s agent-box e2e (reconciler vs. the kind apiserver)"
-CONTAINARIUM_K8S_E2E=1 go test -tags k8s -run TestE2E -timeout 12m -v ./pkg/core/box/k8s/
+# pipefail is already set above, so piping through tee still fails the script
+# when go test does.
+E2E_LOG="$(mktemp)"
+trap 'rm -f "$E2E_LOG"' EXIT
+CONTAINARIUM_K8S_E2E=1 go test -tags k8s -run TestE2E -timeout 12m -v \
+  ./pkg/core/box/k8s/ 2>&1 | tee "$E2E_LOG"
+
+# The enforcement test skips itself under a CNI that does not enforce
+# NetworkPolicy, which is the right behaviour — a vacuous pass is worse than
+# an honest skip (#1234). What is NOT right is the lane staying green while
+# it happens: "no NetworkPolicy assertions ran" then looks exactly like
+# "NetworkPolicy is enforced".
+#
+# So the skip is honest at the test level and fatal at the lane level. If you
+# genuinely want the fast local loop, run the script with E2E_CNI=kindnet —
+# that path is expected to skip and is not gated here.
+if [ "$E2E_CNI" = "calico" ]; then
+  if grep -q -- "--- SKIP: TestE2E_TenantEgressAllowlistIsEnforced" "$E2E_LOG"; then
+    echo "FAIL: the egress-enforcement test skipped under Calico, which enforces" >&2
+    echo "      NetworkPolicy. A green lane here would mean the one assertion" >&2
+    echo "      #1188 turns on never ran." >&2
+    exit 1
+  fi
+  if ! grep -q -- "--- PASS: TestE2E_TenantEgressAllowlistIsEnforced" "$E2E_LOG"; then
+    echo "FAIL: the egress-enforcement test did not run at all — renamed, retagged," >&2
+    echo "      or filtered out by -run. It is the test #1188 turns on." >&2
+    exit 1
+  fi
+fi
 
 echo "==> e2e passed"
