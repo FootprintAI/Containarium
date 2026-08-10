@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
@@ -134,7 +135,7 @@ func (p *peerPKI) replace(cert tls.Certificate, caPool *x509.CertPool, caPEM []b
 // authenticated regardless. (We still recommend HTTPS for the
 // bootstrap call too, since the leaf private key travels in the
 // body.)
-func FetchPeerPKI(ctx interface{}, sentinelBaseURL, peerID string, hmacSecret []byte) (*peerPKI, error) {
+func FetchPeerPKI(ctx context.Context, sentinelBaseURL, peerID string, hmacSecret []byte) (*peerPKI, error) {
 	if len(hmacSecret) < auth.SentinelMinSecretLen {
 		return nil, fmt.Errorf("sentinel HMAC secret is missing or too short — Phase 0.5 bootstrap requires CONTAINARIUM_SENTINEL_AUTH_SECRET")
 	}
@@ -147,7 +148,7 @@ func FetchPeerPKI(ctx interface{}, sentinelBaseURL, peerID string, hmacSecret []
 		return nil, fmt.Errorf("marshal cert request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, sentinelBaseURL+"/sentinel/peer-cert", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sentinelBaseURL+"/sentinel/peer-cert", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build peer-cert request: %w", err)
 	}
