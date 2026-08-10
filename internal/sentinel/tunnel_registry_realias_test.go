@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -114,5 +115,85 @@ func TestRegister_FirstRegistrationUnchanged(t *testing.T) {
 	}
 	if len(rec.added) != 1 {
 		t.Errorf("first registration added %d aliases, want exactly 1", len(rec.added))
+	}
+}
+
+// The `ip` invocation is not exercised by any test that could catch a mistake
+// in it: the end-to-end tunnel tests substitute the alias seam, and even
+// before they did, they passed on Linux without the alias at all, because
+// 127.0.0.0/8 already routes to loopback. A malformed invocation would surface
+// on macOS, or on a reconnect against a stale alias — not here.
+//
+// So the arguments are asserted directly. Cheap, and it covers the failure
+// this file's other tests cannot.
+func TestLoopbackAliasArgs(t *testing.T) {
+	for _, tc := range []struct {
+		op   string
+		want string
+	}{
+		{"add", "ip addr add 127.0.0.7/32 dev lo"},
+		{"del", "ip addr del 127.0.0.7/32 dev lo"},
+	} {
+		got := strings.Join(loopbackAliasArgs(tc.op, "127.0.0.7"), " ")
+		if got != tc.want {
+			t.Errorf("loopbackAliasArgs(%q) = %q, want %q", tc.op, got, tc.want)
+		}
+	}
+}
+
+// The /32 is what keeps the alias a single address. Without it `ip` applies
+// the interface default — /8 on loopback — and the alias claims the whole
+// 127.0.0.0/8 range, which collides with every other spot's address.
+func TestLoopbackAliasIsASingleAddress(t *testing.T) {
+	args := loopbackAliasArgs("add", "127.0.0.7")
+
+	var addr string
+	for i, a := range args {
+		if a == "add" && i+1 < len(args) {
+			addr = args[i+1]
+		}
+	}
+	if !strings.HasSuffix(addr, "/32") {
+		t.Errorf("alias address = %q, want a /32 — a wider prefix on lo claims every other "+
+			"spot's 127.0.0.x address too", addr)
+	}
+}
+
+// withRecordedIPCmds captures the `ip` invocations instead of running them.
+func withRecordedIPCmds(t *testing.T) *[][]string {
+	t.Helper()
+	var got [][]string
+	orig := runIPCmd
+	runIPCmd = func(args []string) ([]byte, error) {
+		got = append(got, args)
+		return nil, nil
+	}
+	t.Cleanup(func() { runIPCmd = orig })
+	return &got
+}
+
+// A remove that issued `add` would leak one alias per disconnect, and nothing
+// would notice: the callers are only reached through the alias seam the other
+// tests substitute, so neither path is otherwise executed at all.
+func TestLoopbackAliasCallersIssueTheRightOperation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the alias helpers no-op off Linux, so there is no invocation to record")
+	}
+
+	cmds := withRecordedIPCmds(t)
+	if err := addLoopbackAlias("127.0.0.7"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	removeLoopbackAlias("127.0.0.7")
+
+	if len(*cmds) != 2 {
+		t.Fatalf("recorded %d invocations, want 2: %v", len(*cmds), *cmds)
+	}
+	if got := strings.Join((*cmds)[0], " "); got != "ip addr add 127.0.0.7/32 dev lo" {
+		t.Errorf("add issued %q", got)
+	}
+	if got := strings.Join((*cmds)[1], " "); got != "ip addr del 127.0.0.7/32 dev lo" {
+		t.Errorf("remove issued %q — a remove that adds leaks an alias per disconnect until "+
+			"the address space runs out", got)
 	}
 }

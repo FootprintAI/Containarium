@@ -380,7 +380,7 @@ func addLoopbackAlias(ip string) error {
 		log.Printf("[tunnel-registry] loopback alias %s: skipping on %s", ip, runtime.GOOS)
 		return nil
 	}
-	out, err := exec.Command("ip", "addr", "add", ip+"/32", "dev", "lo").CombinedOutput() // #nosec G204 -- ip is "127.0.0.<octet>", built internally by allocateOctet, never user input
+	out, err := runIPCmd(loopbackAliasArgs("add", ip))
 	if err != nil {
 		if isAlreadyExistsErr(out) {
 			log.Printf("[tunnel-registry] loopback alias %s already present (stale from a prior crash?) — reusing", ip)
@@ -389,6 +389,27 @@ func addLoopbackAlias(ip string) error {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// loopbackAliasArgs builds the `ip` invocation for adding or removing a
+// loopback alias.
+//
+// Split out so the command is checkable without privileges. The end-to-end
+// tunnel tests used to exercise this call by side effect, but only ever
+// established that it did not error — and on Linux they pass without the
+// alias at all, since 127.0.0.0/8 already routes to loopback. So a malformed
+// invocation here (a dropped /32, the wrong device) would show up on macOS,
+// or on a reconnect against a stale alias, and nowhere in the test suite.
+func loopbackAliasArgs(op, ip string) []string {
+	return []string{"ip", "addr", op, ip + "/32", "dev", "lo"}
+}
+
+// runIPCmd executes an `ip` invocation. Indirected so a test can assert which
+// invocation each caller issues — without it, a remove path that issued `add`
+// would leak an alias per disconnect and no test would notice, because the
+// callers are only reached through a seam the tests already substitute.
+var runIPCmd = func(args []string) ([]byte, error) {
+	return exec.Command(args[0], args[1:]...).CombinedOutput() // #nosec G204 -- args come from loopbackAliasArgs; the address is "127.0.0.<octet>", built internally by allocateOctet, never user input
 }
 
 // isAlreadyExistsErr reports whether `ip addr add`'s output indicates the
@@ -418,7 +439,7 @@ func removeLoopbackAlias(ip string) {
 	if runtime.GOOS != "linux" {
 		return
 	}
-	if err := exec.Command("ip", "addr", "del", ip+"/32", "dev", "lo").Run(); err != nil {
+	if _, err := runIPCmd(loopbackAliasArgs("del", ip)); err != nil {
 		log.Printf("[tunnel-registry] failed to remove loopback alias %s: %v", ip, err)
 	}
 }
