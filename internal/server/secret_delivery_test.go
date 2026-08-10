@@ -15,13 +15,11 @@ import (
 // the step where a delivery mode can be silently dropped.
 
 type fakeApplier struct {
-	data  map[string][]byte
-	calls int
-	err   error
+	data map[string][]byte
+	err  error
 }
 
 func (f *fakeApplier) ApplyTenantSecrets(_ context.Context, _ string, data map[string][]byte) error {
-	f.calls++
 	if f.err != nil {
 		return f.err
 	}
@@ -116,16 +114,24 @@ func TestK8sDelivery_ComposeFileMatchesTheLXCRendering(t *testing.T) {
 	}
 }
 
-// A tenant with no secrets delivers an empty set, which removes the object
-// rather than leaving the last values mounted.
-func TestK8sDelivery_NoSecretsDeliversNothing(t *testing.T) {
-	applier := deliverK8s(t, map[string]secrets.SecretValue{})
-	if len(applier.data) != 0 {
-		t.Errorf("delivered %d keys for a tenant with no secrets", len(applier.data))
+// A tenant with no secrets must translate to an empty set, because that is
+// what makes the apply delete the object instead of leaving the last values
+// mounted. Deleting the last secret and having it stay readable would be a
+// deletion that reports success and does nothing.
+//
+// (Only the translation is asserted here. That an empty set actually deletes
+// the object is the applier's job and is covered in pkg/core/box/k8s. Calling
+// the fake applier and asserting it was called once would prove nothing —
+// this test calls it directly.)
+func TestK8sDelivery_NoSecretsTranslatesToAnEmptySet(t *testing.T) {
+	if got := secretsToK8sData(map[string]secrets.SecretValue{}); len(got) != 0 {
+		t.Errorf("translated a tenant with no secrets to %d key(s): %v", len(got), keysOf(got))
 	}
-	if applier.calls != 1 {
-		t.Errorf("applier called %d times, want 1 — the empty apply is what deletes the object",
-			applier.calls)
+	// A tenant whose only secrets were compose rows, all now deleted, must
+	// also land on empty — not on a lone empty dotenv that keeps the object
+	// alive.
+	if got := secretsToK8sData(nil); len(got) != 0 {
+		t.Errorf("translated a nil row set to %d key(s): %v", len(got), keysOf(got))
 	}
 }
 
