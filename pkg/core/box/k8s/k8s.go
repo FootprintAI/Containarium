@@ -227,6 +227,14 @@ func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 
 func (b *Backend) Kind() box.BackendKind { return box.KindK8s }
 
+// Clientset exposes the backend's Kubernetes client.
+//
+// Narrow on purpose: the SSH session collector (#1189) has to read box pod
+// logs, which is an apiserver call and not something the BoxBackend contract
+// covers. Rather than widen that contract with a method only one caller
+// wants, the daemon type-asserts for this when the backend is K8s.
+func (b *Backend) Clientset() kubernetes.Interface { return b.clientset }
+
 func (b *Backend) namespaceFor(tenant string) string {
 	return b.cfg.TenantNamespacePrefix + tenant
 }

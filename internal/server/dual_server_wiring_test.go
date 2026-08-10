@@ -198,3 +198,30 @@ func TestNewDualServerWiresK8sNetworkPolicyReconciler(t *testing.T) {
 			"and never run, which looks identical to a daemon with no tenant policies (#1188)")
 	}
 }
+
+// #1189: on a K8s deployment the SSH collector used to be built only if an
+// incus client could be created — which on a K8s host it cannot. The result
+// was a fleet that recorded no logins at all, indistinguishable from one
+// nobody logged into. The guard is that the K8s branch exists and picks the
+// pod-log source.
+func TestNewDualServerWiresTheK8sSessionSource(t *testing.T) {
+	newCalls := dualServerFuncCalls(t, "NewDualServer")
+	if indexOfCall(newCalls, "NewK8sSessionSource") < 0 {
+		t.Error("NewDualServer never constructs the K8s session source — a K8s deployment would " +
+			"record no SSH logins, which reads exactly like a fleet nobody logged into (#1189)")
+	}
+	if indexOfCall(newCalls, "NewSSHCollector") < 0 {
+		t.Error("NewDualServer no longer constructs the LXC SSH collector — the incus path would " +
+			"stop auditing logins (#1189)")
+	}
+
+	// Both sources must remain reachable: a single collector built from
+	// whichever source happens to be first would leave one backend unaudited.
+	if !dualServerSourceContains(t, "containerServer.boxes().Kind() == box.KindK8s") {
+		t.Error("the SSH collector no longer selects its source by backend kind")
+	}
+	if !dualServerSourceContains(t, "audit.NewSSHCollectorWithSource(") {
+		t.Error("the K8s branch no longer builds the collector from a source — it would fall back " +
+			"to the incus constructor, which cannot reach a K8s box (#1189)")
+	}
+}

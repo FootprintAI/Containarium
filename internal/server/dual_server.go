@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"k8s.io/client-go/kubernetes"
 	"log"
 	"net"
 	"net/http"
@@ -1265,15 +1266,27 @@ skipAppHosting:
 		}
 	}
 
-	// Setup SSH login collector (requires audit store + incus client)
+	// Setup SSH login collector. Which source it reads depends on the box
+	// backend: an LXC box keeps sessions in /var/log/auth.log and is read by
+	// exec, a K8s box logs them to stderr and is read from the pod log
+	// (#1189). Before this, the collector was built only when an incus client
+	// could be created, so a K8s deployment recorded no logins at all — which
+	// reads exactly like a fleet nobody logged into.
 	var sshCollector *audit.SSHCollector
 	if auditStore != nil {
-		sshIncusClient, incusErr := incus.New()
-		if incusErr != nil {
+		if containerServer != nil && containerServer.boxes().Kind() == box.KindK8s {
+			if backend, ok := containerServer.boxes().(k8sClientsetProvider); ok {
+				sshCollector = audit.NewSSHCollectorWithSource(
+					audit.NewK8sSessionSource(backend.Clientset(), ""), auditStore)
+				log.Printf("SSH login collector configured (K8s pod logs)")
+			} else {
+				log.Printf("Warning: K8s box backend exposes no clientset; SSH logins will not be audited")
+			}
+		} else if sshIncusClient, incusErr := incus.New(); incusErr != nil {
 			log.Printf("Warning: Failed to create incus client for SSH collector: %v", incusErr)
 		} else {
 			sshCollector = audit.NewSSHCollector(sshIncusClient, auditStore)
-			log.Printf("SSH login collector configured")
+			log.Printf("SSH login collector configured (LXC auth.log)")
 		}
 	}
 
@@ -2542,4 +2555,11 @@ func envTruthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// k8sClientsetProvider is the K8s box backend's clientset accessor, asserted
+// for rather than added to the BoxBackend contract — reading a pod log is not
+// an operation every backend has (#1189).
+type k8sClientsetProvider interface {
+	Clientset() kubernetes.Interface
 }
