@@ -164,15 +164,14 @@ wired via `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_{PUBLIC_KEY,KEY_SECRET}`.
 
 Per tenant namespace:
 
-> ⚠️ **This section described the intended design; the shipped code is weaker.**
-> Corrected 2026-08-08 after reading `pkg/core/box/k8s/objects.go` against it,
-> and again on 2026-08-09 once the gap it described was closed. What follows
-> describes what actually ships, with the one remaining divergence called out.
+> This section once described an intended design the shipped code did not
+> implement (#1193). Corrected 2026-08-08 after reading
+> `pkg/core/box/k8s/objects.go` against it, and rewritten as the gaps closed.
+> It now describes what ships, and every claim below is asserted by a test.
 
-**Intended:** default-deny ingress with a single allow rule — SSH *from the
+**The floor:** default-deny ingress with a single allow rule — SSH *from the
 sshpiper pod only* (matched by `agent-gateway` namespace + pod label) — and
-default-deny egress allowlisting cluster DNS plus the control-plane API
-endpoint.
+default-deny egress allowlisting cluster DNS and nothing else.
 
 **Shipped** (one `default-deny` NetworkPolicy per tenant namespace,
 `networkPolicyObject` in `objects.go`):
@@ -185,11 +184,32 @@ endpoint.
   anywhere (#1195).
 - The **egress rule restricts DNS to the cluster DNS namespace**, on both
   UDP/53 and TCP/53 — TCP matters for large responses.
-- There is still **no control-plane API egress rule**. A box can resolve
-  names and reach nothing else, which the k8s e2e observes directly
-  (`TestE2E_BoxEgressPosture`). Whether the intended allowance should be
-  implemented or dropped from the intent above is open — tenant egress is
-  becoming policy-driven under #1188, which is the natural place to settle it.
+- The ingress restriction is **conditional on `GatewayNamespace` being set**
+  (`CONTAINARIUM_K8S_GATEWAY_NAMESPACE`, default `agent-gateway`). Cleared, it
+  means routing is disabled, and the rule falls back to port-only — which
+  admits every source the CNI permits. Emitting a selector that matches
+  nothing instead would make the box unreachable rather than merely unrouted,
+  so the fallback is deliberate; but an operator who clears this variable
+  weakens the ingress boundary and gets no warning. Pinned by
+  `TestNetworkPolicyIngressFallsBackWhenGatewayNamespaceUnset`, which exists
+  so the fallback stays a choice someone made rather than a regression.
+- There is **no control-plane API egress rule**, and that is now a decision
+  rather than an omission. An earlier draft of this section listed one in the
+  intended allowlist and left the question open pending #1188. #1188 has since
+  shipped: tenant egress is policy-driven, so anything beyond DNS is expressed
+  as a tenant's policy and converged into this same object. A hardcoded
+  control-plane allowance in the floor would grant *every* box egress to the
+  API server whether or not its policy says so — which is the shape of
+  problem #1193 was filed about, pointed the other way.
+
+  Nothing in the box image needs it: `agent-box` speaks stdio over SSH, and
+  authorized_keys, host keys and tenant secrets all arrive as mounts. A box
+  can resolve names and reach nothing else, which the k8s e2e observes
+  directly (`TestE2E_BoxEgressPosture`). A deployment that does need it should
+  say so as a tenant egress policy, where it is visible and revocable.
+
+  The floor being DNS-only is pinned by a test that asserts exactly one egress
+  rule, so adding a second one to the floor fails rather than passing quietly.
 
 The port is `sshPort` (2222), the internal sshpiper→pod hop; the gateway
 terminates the operator-facing `:22`.
