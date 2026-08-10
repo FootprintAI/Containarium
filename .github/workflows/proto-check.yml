@@ -1,0 +1,82 @@
+name: Proto generated code
+
+# The generated code under pkg/pb and api/swagger is committed, so it can
+# drift from the .proto files it is generated from. Nothing caught that: a
+# reviewer sees the .proto change and the generated diff in the same PR and
+# has no way to tell whether the second was produced by the first.
+#
+# This regenerates and fails if anything moved. Two failures it catches:
+#
+#   - a .proto edited without running `make proto`, so the contract and the
+#     code that implements it disagree, and the REST/OpenAPI consumers get a
+#     shape nobody generated
+#   - generated files edited by hand, which survive exactly until the next
+#     regeneration silently reverts them
+#
+# This became checkable only once the buf plugin versions were pinned. While
+# they resolved to "latest", the check would have failed on upstream plugin
+# releases rather than on drift in this repo — a guard that cries wolf gets
+# turned off, which is worse than not having it.
+
+on:
+  pull_request:
+    # Deliberately no `branches:` filter — a PR that targets a branch other
+    # than main would otherwise run none of this and show no checks at all,
+    # which reads identically to checks that have not started yet (#1215).
+    paths:
+      - 'proto/**'
+      - 'buf.yaml'
+      - 'buf.gen.yaml'
+      - 'pkg/pb/**'
+      - 'api/swagger/**'
+      - '.github/workflows/proto-check.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'proto/**'
+      - 'buf.yaml'
+      - 'buf.gen.yaml'
+      - 'pkg/pb/**'
+      - 'api/swagger/**'
+      - '.github/workflows/proto-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    name: generated code matches the protos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.5'
+
+      - name: Install buf
+        # The CLI only orchestrates; the plugin versions in buf.gen.yaml are
+        # what determine the output, and those are pinned.
+        run: go install github.com/bufbuild/buf/cmd/buf@latest
+
+      - name: Regenerate
+        run: make proto
+
+      - name: Fail if anything moved
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Regenerating from the .proto files changed the committed output."
+            echo ""
+            echo "Either a .proto was edited without running 'make proto', or a generated"
+            echo "file was edited by hand. Run 'make proto' and commit the result."
+            echo ""
+            echo "Files that differ:"
+            git status --porcelain
+            echo ""
+            echo "--- diff ---"
+            git --no-pager diff
+            exit 1
+          fi
+          echo "Generated code is current."
