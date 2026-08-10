@@ -12,23 +12,44 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
-// SSHCollector periodically reads auth.log from containers to capture SSH login events.
+// SSHCollector periodically reads each box's session log to capture SSH
+// login events.
+//
+// Backend-neutral since #1189: it holds a SessionSource rather than an
+// *incus.Client, because K8s boxes keep their session log somewhere else
+// (a pod's stderr, not /var/log/auth.log) and write it in a different
+// format (dropbear, not OpenSSH).
 type SSHCollector struct {
-	incusClient *incus.Client
-	store       *Store
-	interval    time.Duration
-	lastSeen    map[string]time.Time // per-container high-water mark
-	mu          sync.Mutex
-	cancel      context.CancelFunc
+	source   SessionSource
+	store    entryLogger
+	interval time.Duration
+	lastSeen map[string]time.Time // per-box high-water mark
+	mu       sync.Mutex
+	cancel   context.CancelFunc
 }
 
-// NewSSHCollector creates a new SSH login collector.
+// NewSSHCollector creates a collector over the LXC session source.
+//
+// Kept for the existing call site; NewSSHCollectorWithSource is the general
+// form.
+// entryLogger is the only thing the collector needs from the audit store.
+// Narrowed so the collection logic is testable without Postgres — *Store
+// satisfies it, so no call site changes.
+type entryLogger interface {
+	Log(ctx context.Context, entry *AuditEntry) error
+}
+
 func NewSSHCollector(incusClient *incus.Client, store *Store) *SSHCollector {
+	return NewSSHCollectorWithSource(NewIncusSessionSource(incusClient), store)
+}
+
+// NewSSHCollectorWithSource creates a collector over any session source.
+func NewSSHCollectorWithSource(source SessionSource, store entryLogger) *SSHCollector {
 	return &SSHCollector{
-		incusClient: incusClient,
-		store:       store,
-		interval:    2 * time.Minute,
-		lastSeen:    make(map[string]time.Time),
+		source:   source,
+		store:    store,
+		interval: 2 * time.Minute,
+		lastSeen: make(map[string]time.Time),
 	}
 }
 
@@ -63,41 +84,28 @@ func (sc *SSHCollector) Stop() {
 	log.Printf("SSH login collector stopped")
 }
 
-// collectAll iterates all running user containers and collects SSH login entries.
+// collectAll iterates every box the source reports and collects its logins.
 func (sc *SSHCollector) collectAll(ctx context.Context) {
-	containers, err := sc.incusClient.ListContainers()
+	boxes, err := sc.source.Boxes(ctx)
 	if err != nil {
-		log.Printf("SSH collector: failed to list containers: %v", err)
+		log.Printf("SSH collector: failed to list boxes: %v", err)
 		return
 	}
 
-	for _, c := range containers {
-		if c.State != "Running" || c.Role.IsCoreRole() {
-			continue
-		}
-
-		username := c.Name
-		if strings.HasSuffix(c.Name, "-container") {
-			username = strings.TrimSuffix(c.Name, "-container")
-		}
-
-		if err := sc.collectFromContainer(ctx, c.Name, username); err != nil {
-			log.Printf("SSH collector: %s: %v", c.Name, err)
+	for _, b := range boxes {
+		if err := sc.collectFromBox(ctx, b); err != nil {
+			log.Printf("SSH collector: %s: %v", b.Name, err)
 		}
 	}
 }
 
-// collectFromContainer reads auth.log from a single container and writes audit entries.
-func (sc *SSHCollector) collectFromContainer(ctx context.Context, containerName, username string) error {
-	stdout, _, err := sc.incusClient.ExecWithOutput(containerName, []string{
-		"grep", "Accepted", "/var/log/auth.log",
-	})
+// collectFromBox reads one box's session log and writes audit entries.
+func (sc *SSHCollector) collectFromBox(ctx context.Context, box SessionBox) error {
+	containerName, username := box.Name, box.Username
+
+	stdout, err := sc.source.ReadSessions(ctx, box)
 	if err != nil {
-		// grep exits 1 when no matches — not an error
-		if strings.Contains(err.Error(), "exited with code 1") {
-			return nil
-		}
-		return fmt.Errorf("failed to read auth.log: %w", err)
+		return fmt.Errorf("read session log: %w", err)
 	}
 
 	if strings.TrimSpace(stdout) == "" {
@@ -109,11 +117,13 @@ func (sc *SSHCollector) collectFromContainer(ctx context.Context, containerName,
 	sc.mu.Unlock()
 
 	year := time.Now().Year()
+	// Used for sources whose lines carry no timestamp of their own.
+	readAt := time.Now()
 	var maxTS time.Time
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 
 	for _, line := range lines {
-		ts, sshUser, sourceIP, method, ok := parseAuthLogLine(line, year)
+		ts, sshUser, sourceIP, method, ok := sc.source.ParseLine(line, year, readAt)
 		if !ok {
 			continue
 		}
