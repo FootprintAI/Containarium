@@ -25,7 +25,11 @@ rules:
   - apiGroups: [""]
     resources: [services, pods, persistentvolumeclaims]
     verbs: [get, list, watch, create, update, patch, delete]
-  # Read pod logs / exec for debug commands
+  # Read pod logs / exec for debug commands, and for SSH session audit
+  # (#1189): a K8s box logs its logins to stderr, so pods/log is the audit
+  # trail, not just a debugging convenience. Removing it does not fail
+  # loudly — the collector logs a read error per poll and the fleet records
+  # no logins, which reads exactly like a fleet nobody logged into.
   - apiGroups: [""]
     resources: [pods/log, pods/exec]
     verbs: [get, list, create]
