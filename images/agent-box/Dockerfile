@@ -35,14 +35,24 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends dropbear-bin ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/bash agent \
-    && mkdir -p /home/agent/.ssh /etc/agent-box \
+    && mkdir -p /home/agent/.ssh /etc/agent-box /usr/local/lib/containarium \
     && chown -R agent:agent /home/agent /etc/agent-box
 
 COPY --from=build /out/agent-box /usr/local/bin/agent-box
 # Plain COPY + chmod (not COPY --chmod) so the image also builds with the
 # legacy builder, not only BuildKit.
 COPY images/agent-box/entrypoint.sh /usr/local/bin/agent-box-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/agent-box-entrypoint.sh
+# Tenant secrets (#1190): the daemon mounts them at /run/secrets, and these
+# turn them into the session environment. Installed as a shared snippet with
+# two consumers, because the two session modes reach it differently — the
+# forced command sources it through the session wrapper, an interactive shell
+# through /etc/profile.d. One copy, so the two modes cannot drift.
+COPY images/agent-box/secrets-env.sh /usr/local/lib/containarium/secrets-env.sh
+COPY images/agent-box/session.sh /usr/local/bin/agent-box-session
+RUN chmod 0755 /usr/local/bin/agent-box-entrypoint.sh /usr/local/bin/agent-box-session \
+    && chmod 0644 /usr/local/lib/containarium/secrets-env.sh \
+    && printf '. /usr/local/lib/containarium/secrets-env.sh\n' \
+       > /etc/profile.d/10-containarium-secrets.sh
 
 USER agent
 ENV HOME=/home/agent
