@@ -5,6 +5,8 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -223,5 +225,56 @@ func TestNewDualServerWiresTheK8sSessionSource(t *testing.T) {
 	if !dualServerSourceContains(t, "audit.NewSSHCollectorWithSource(") {
 		t.Error("the K8s branch no longer builds the collector from a source — it would fall back " +
 			"to the incus constructor, which cannot reach a K8s box (#1189)")
+	}
+}
+
+// Everything the daemon starts must also be stopped on shutdown.
+//
+// The shutdown block stops thirteen components by name. Adding a fourteenth
+// Start without the matching Stop is a one-line omission that nothing catches:
+// the daemon still boots, still serves, still passes every test, and only
+// leaks a goroutine that keeps writing to the apiserver after Start has
+// returned. That is exactly how k8sNetPolicyReconciler shipped in #1264 —
+// started, never stopped, and the only one of thirteen missing.
+//
+// Checked against the source rather than at runtime because the omission is
+// in the wiring, and the wiring is what a runtime test would have to stand up
+// in full to observe.
+func TestEverythingStartedIsAlsoStopped(t *testing.T) {
+	b, err := os.ReadFile("dual_server.go")
+	if err != nil {
+		t.Fatalf("read dual_server.go: %v", err)
+	}
+	src := string(b)
+
+	// Components with no Stop method at all, and why. A ctx-driven blocking
+	// Start needs no separate stop — it returns when the context is done.
+	noStopMethod := map[string]string{
+		"gatewayServer": "Start(ctx) blocks and returns when ctx is done; GatewayServer has no Stop",
+	}
+
+	started := regexp.MustCompile(`ds\.(\w+)\.Start\(`).FindAllStringSubmatch(src, -1)
+	if len(started) == 0 {
+		t.Fatal("found no ds.<field>.Start( calls — the pattern changed, so this guard is blind")
+	}
+
+	var missing []string
+	for _, m := range started {
+		field := m[1]
+		if reason, ok := noStopMethod[field]; ok {
+			t.Logf("%s: not stopped, by design (%s)", field, reason)
+			continue
+		}
+		if !strings.Contains(src, "ds."+field+".Stop()") {
+			missing = append(missing, field)
+		}
+	}
+
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("these components are started and never stopped on shutdown:\n  %s\n"+
+			"Each keeps its goroutines running after Start returns. Add a Stop() call to the "+
+			"ctx.Done() block, or record it in noStopMethod above with the reason.",
+			strings.Join(missing, "\n  "))
 	}
 }

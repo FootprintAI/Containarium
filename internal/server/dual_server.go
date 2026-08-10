@@ -2439,6 +2439,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if ds.networkPolicyEnforcer != nil {
 			ds.networkPolicyEnforcer.Stop()
 		}
+		if ds.k8sNetPolicyReconciler != nil {
+			ds.k8sNetPolicyReconciler.Stop()
+		}
 		if ds.metricsCollector != nil {
 			ds.metricsCollector.Stop()
 		}
