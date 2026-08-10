@@ -174,7 +174,7 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 
 	log.Printf("[secrets] refresh %s: stamped=%d", req.Username, stamped)
 	return &pb.RefreshSecretsResponse{
-		Message: fmt.Sprintf("re-stamped %d secret(s) on %s-container; new execs will see updated values", stamped, req.Username),
+		Message: refreshSecretsMessage(s.boxes().Kind(), req.Username, stamped),
 		Stamped: safecast.I32(stamped),
 	}, nil
 }

@@ -77,14 +77,21 @@ the change should reach the next exec without a container restart.`,
 
 var secretsRefreshCmd = &cobra.Command{
 	Use:   "refresh <username>",
-	Short: "Re-stamp env vars on the LXC from the current secrets store",
+	Short: "Deliver the current secrets store to the tenant's box",
 	Long: `Reads all of the tenant's secrets, decrypts them, and updates the
-container's environment.<NAME> config keys to match. Running
-processes keep their old env (POSIX inherit-at-fork); new execs
-(including a fresh 'docker compose up') see the refreshed values.
+box to match.
+
+On the LXC backend this sets the container's environment.<NAME>
+config keys and rewrites tmpfs file-mode secrets. On the Kubernetes
+backend it updates the box's mounted Secret, which the kubelet
+refreshes in place within about a minute.
+
+Either way, running processes keep their old environment (POSIX
+inherit-at-fork); new execs and new sessions — including a fresh
+'docker compose up' — see the refreshed values.
 
 Use this after rotating a secret if you want the change to land
-without restarting the whole container.`,
+without restarting the box.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSecretsRefresh,
 }

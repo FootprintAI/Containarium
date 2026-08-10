@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/internal/secrets"
+	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/container"
 )
 
@@ -134,4 +135,27 @@ func keysOf(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// The refresh message is the only feedback an operator gets that delivery
+// happened. Naming the LXC mechanism and an object that does not exist on
+// K8s would tell them their secrets landed somewhere they cannot find.
+func TestRefreshMessage_DescribesTheBackendItRanOn(t *testing.T) {
+	k8s := refreshSecretsMessage(box.KindK8s, "alice", 3)
+	lxc := refreshSecretsMessage(box.KindLXC, "alice", 3)
+
+	if strings.Contains(k8s, "alice-container") {
+		t.Errorf("the K8s message names a container that does not exist there: %q", k8s)
+	}
+	if strings.Contains(k8s, "re-stamped") {
+		t.Errorf("the K8s message describes the LXC mechanism: %q", k8s)
+	}
+	if !strings.Contains(lxc, "alice-container") {
+		t.Errorf("the LXC message no longer names the container: %q", lxc)
+	}
+	for name, msg := range map[string]string{"k8s": k8s, "lxc": lxc} {
+		if !strings.Contains(msg, "3") {
+			t.Errorf("%s message does not say how many secrets were delivered: %q", name, msg)
+		}
+	}
 }

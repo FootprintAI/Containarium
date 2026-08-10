@@ -112,3 +112,20 @@ func pathBase(p string) string {
 	}
 	return p
 }
+
+// refreshSecretsMessage describes what a refresh actually did on the backend
+// it ran on.
+//
+// The old wording named `<username>-container` and "re-stamped", which is the
+// LXC mechanism and an object that does not exist on K8s. An operator there
+// would be told their secrets landed somewhere they could not find (#1190).
+func refreshSecretsMessage(kind box.BackendKind, username string, delivered int) string {
+	if kind == box.KindK8s {
+		return fmt.Sprintf(
+			"delivered %d secret(s) to %s's box; the mount refreshes within about a minute, "+
+				"and new sessions see the updated values", delivered, username)
+	}
+	return fmt.Sprintf(
+		"re-stamped %d secret(s) on %s-container; new execs will see updated values",
+		delivered, username)
+}
