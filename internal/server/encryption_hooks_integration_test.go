@@ -18,6 +18,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,6 +48,17 @@ func (m *memKeyRefStore) SetKeyRef(name string, ref zfskey.KeyRef) error {
 type fixedResolver struct{ datasets map[string]string }
 
 func (f fixedResolver) DatasetFor(name string) (string, error) { return f.datasets[name], nil }
+
+// unavailableKeys stands in for key custody being unreachable.
+type unavailableKeys struct{}
+
+func (unavailableKeys) Wrap(context.Context, string) (zfskey.Key, zfskey.KeyRef, error) {
+	return zfskey.Key{}, zfskey.KeyRef{}, errors.New("key custody unavailable")
+}
+
+func (unavailableKeys) Load(context.Context, zfskey.KeyRef) (zfskey.Key, error) {
+	return zfskey.Key{}, errors.New("key custody unavailable")
+}
 
 // harness wires real encryption machinery over a throwaway pool.
 type harness struct {
@@ -81,21 +93,22 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-// createBox mints a key, creates the encrypted dataset, and records the ref
-// the way the create path does.
+// createBox provisions a box through PreCreate — the hook the create path
+// calls — rather than reproducing its steps here.
+//
+// It used to mint the key, create the dataset and record the ref itself,
+// which meant every test below exercised a local imitation of the create
+// path instead of the path itself. A divergence between the two would have
+// left these tests passing against code production does not run.
 func (h *harness) createBox(t *testing.T, ctx context.Context, container, tenant string) string {
 	t.Helper()
-	key, ref, err := h.keys.Wrap(ctx, tenant)
-	if err != nil {
-		t.Fatalf("KeyProvider.Wrap(%s): %v", tenant, err)
-	}
+	// The resolver has to know the dataset before the hook asks for it;
+	// in production that mapping comes from the storage layout.
 	dataset := h.pool.Dataset(container)
-	if err := h.hooks.zfs.CreateEncrypted(ctx, dataset, key); err != nil {
-		t.Fatalf("CreateEncrypted(%s): %v", dataset, err)
-	}
 	h.res.datasets[container] = dataset
-	if err := h.hooks.RecordKeyRef(container, ref); err != nil {
-		t.Fatalf("RecordKeyRef: %v", err)
+
+	if _, err := h.hooks.PreCreate(ctx, container, tenant); err != nil {
+		t.Fatalf("PreCreate(%s, %s): %v", container, tenant, err)
 	}
 	return dataset
 }
@@ -252,5 +265,81 @@ func TestIntegrationEncryption_PostStopDoesNotBlockOnFailure(t *testing.T) {
 	if status, err := h.hooks.zfs.KeyStatus(ctx, dataset); err != nil || status != zfscrypt.KeyAvailable {
 		t.Errorf("keystatus = %q (err %v); a refused unload must leave the dataset as it was",
 			status, err)
+	}
+}
+
+// #1199 AC1: a container created encrypted has its own encryptionroot,
+// distinct from another tenant's.
+//
+// Only checkable against real ZFS. The unit tests can show PreCreate asks
+// for a per-tenant key, but "these two datasets are under different
+// encryptionroots" is a property ZFS computes, not one the caller asserts —
+// and it is the property the whole tenant boundary rests on. If two tenants
+// landed under one root, either tenant's key would unlock the other's data
+// and every unit test would still pass.
+func TestIntegrationEncryption_PreCreateGivesEachTenantItsOwnRoot(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	aliceOne := h.createBox(t, ctx, "alice-one", "alice")
+	aliceTwo := h.createBox(t, ctx, "alice-two", "alice")
+	bobOne := h.createBox(t, ctx, "bob-one", "bob")
+
+	rootOf := func(dataset string) string {
+		t.Helper()
+		root, err := h.hooks.zfs.EncryptionRoot(ctx, dataset)
+		if err != nil {
+			t.Fatalf("EncryptionRoot(%s): %v", dataset, err)
+		}
+		return root
+	}
+
+	aliceRoot1, aliceRoot2, bobRoot := rootOf(aliceOne), rootOf(aliceTwo), rootOf(bobOne)
+
+	// Each dataset is its own encryptionroot: PreCreate creates every one
+	// with its own key material rather than inheriting a parent's.
+	if aliceRoot1 != aliceOne {
+		t.Errorf("alice-one's encryptionroot is %q, not itself (%q) — it inherited a parent's "+
+			"key, so it is not independently lockable", aliceRoot1, aliceOne)
+	}
+	if bobRoot != bobOne {
+		t.Errorf("bob-one's encryptionroot is %q, not itself (%q)", bobRoot, bobOne)
+	}
+
+	// The boundary that matters: no tenant's dataset sits under another's
+	// root.
+	if aliceRoot1 == bobRoot || aliceRoot2 == bobRoot {
+		t.Errorf("alice and bob share an encryptionroot (%q) — one tenant's key would unlock "+
+			"the other's data", bobRoot)
+	}
+}
+
+// #1199 AC3, against a real pool: the KeyProvider being down must leave no
+// dataset behind. A unit test shows no create was attempted; this shows the
+// pool is genuinely unchanged, which is what "no partial dataset" means.
+func TestIntegrationEncryption_PreCreateLeavesNothingWhenKeysAreUnavailable(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	// The provider is stubbed to fail rather than misconfigured into
+	// failing: what is under test is the pool's state afterwards, and a
+	// provider that fails for an incidental reason would make the outcome
+	// depend on how it happened to break.
+	h.hooks.provider = unavailableKeys{}
+
+	dataset := h.pool.Dataset("doomed")
+	h.res.datasets["doomed"] = dataset
+
+	if _, err := h.hooks.PreCreate(ctx, "doomed", "alice"); err == nil {
+		t.Fatal("PreCreate succeeded with key custody unavailable")
+	}
+
+	exists, err := h.hooks.zfs.Exists(ctx, dataset)
+	if err != nil {
+		t.Fatalf("Exists(%s): %v", dataset, err)
+	}
+	if exists {
+		t.Errorf("dataset %s survived a failed create — it is unopenable, and the next create "+
+			"for this container fails on a name that already exists", dataset)
 	}
 }

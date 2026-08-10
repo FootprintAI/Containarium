@@ -18,10 +18,25 @@ type fakeKeyProvider struct {
 	key      zfskey.Key
 	loadErr  error
 	loadCall int
+	wrapErr  error
+	wrapCall int
+	// wrapped records the tenants Wrap was called for, in order.
+	wrapped []string
 }
 
-func (f *fakeKeyProvider) Wrap(context.Context, string) (zfskey.Key, zfskey.KeyRef, error) {
-	return f.key, zfskey.KeyRef{Scheme: zfskey.SchemeFile, URI: "/keys/alice.key"}, nil
+func (f *fakeKeyProvider) Wrap(_ context.Context, tenant string) (zfskey.Key, zfskey.KeyRef, error) {
+	f.wrapCall++
+	if f.wrapErr != nil {
+		return zfskey.Key{}, zfskey.KeyRef{}, f.wrapErr
+	}
+	f.wrapped = append(f.wrapped, tenant)
+	// Per-tenant URI, matching the real contract: a tenant's containers
+	// share one key, and two tenants never do.
+	uri := "/keys/" + tenant + ".key"
+	if tenant == "" {
+		uri = "/keys/alice.key"
+	}
+	return f.key, zfskey.KeyRef{Scheme: zfskey.SchemeFile, URI: uri}, nil
 }
 
 func (f *fakeKeyProvider) Load(context.Context, zfskey.KeyRef) (zfskey.Key, error) {
@@ -35,6 +50,9 @@ func (f *fakeKeyProvider) Load(context.Context, zfskey.KeyRef) (zfskey.Key, erro
 type fakeRefStore struct {
 	refs map[string]zfskey.KeyRef
 	err  error
+	// setErr fails only writes, which is the window PreCreate has to roll
+	// back: the dataset exists but nothing records how to unlock it.
+	setErr error
 }
 
 func (f *fakeRefStore) GetKeyRef(name string) (zfskey.KeyRef, bool, error) {
@@ -46,6 +64,9 @@ func (f *fakeRefStore) GetKeyRef(name string) (zfskey.KeyRef, bool, error) {
 }
 
 func (f *fakeRefStore) SetKeyRef(name string, ref zfskey.KeyRef) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -346,5 +367,164 @@ func TestCorruptKeyRefIsAnError(t *testing.T) {
 	}
 	if _, _, err := s.GetKeyRef("alice-container"); err == nil {
 		t.Error("a corrupt key ref must not be read as 'no encryption'")
+	}
+}
+
+// --- PreCreate (#1199) -------------------------------------------------
+
+// sameRef compares the identity of two refs. KeyRef carries a Metadata map,
+// so it is not comparable with ==; Scheme and URI are what identify the key.
+func sameRef(a, b zfskey.KeyRef) bool {
+	return a.Scheme == b.Scheme && a.URI == b.URI
+}
+
+// testHooksWith is testHooks with a ref store the caller can break.
+func testHooksWith(t *testing.T, z *zfsFake, p *fakeKeyProvider, refs *fakeRefStore) *encryptionHooks {
+	t.Helper()
+	return &encryptionHooks{
+		provider: p,
+		zfs:      zfscrypt.NewManager(z),
+		cache:    zfskey.NewCache(time.Hour),
+		refs:     refs,
+		datasets: fakeDatasets{prefix: "pool/containers"},
+	}
+}
+
+func TestPreCreate_CreatesAnEncryptedDatasetAndRecordsItsRef(t *testing.T) {
+	z, p := newZFSFake(), &fakeKeyProvider{key: aKey(t)}
+	refs := &fakeRefStore{refs: map[string]zfskey.KeyRef{}}
+
+	ref, err := testHooksWith(t, z, p, refs).PreCreate(context.Background(), "alice-container", "alice")
+	if err != nil {
+		t.Fatalf("PreCreate: %v", err)
+	}
+
+	if !z.ran("create") || !z.ran("encryption=on") {
+		t.Errorf("no encrypted dataset was created; calls=%v", z.calls)
+	}
+	if !z.ran("pool/containers/alice-container") {
+		t.Errorf("created the wrong dataset; calls=%v", z.calls)
+	}
+	if !sameRef(refs.refs["alice-container"], ref) {
+		t.Errorf("stored ref %v, returned %v — every later hook re-resolves the key from the "+
+			"stored one, so a mismatch means the container cannot be started",
+			refs.refs["alice-container"], ref)
+	}
+}
+
+// A tenant's containers share one encryptionroot, and two tenants never do.
+// Wrap is what guarantees it, so PreCreate must ask per tenant — not per
+// container, which would mint a second key and a second root for the same
+// tenant.
+func TestPreCreate_KeysPerTenantNotPerContainer(t *testing.T) {
+	z, p := newZFSFake(), &fakeKeyProvider{key: aKey(t)}
+	refs := &fakeRefStore{refs: map[string]zfskey.KeyRef{}}
+	h := testHooksWith(t, z, p, refs)
+	ctx := context.Background()
+
+	first, err := h.PreCreate(ctx, "alice-one", "alice")
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	second, err := h.PreCreate(ctx, "alice-two", "alice")
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	other, err := h.PreCreate(ctx, "bob-one", "bob")
+	if err != nil {
+		t.Fatalf("other tenant: %v", err)
+	}
+
+	if !sameRef(first, second) {
+		t.Errorf("the same tenant's two containers got different key refs (%v vs %v) — they "+
+			"would sit under separate encryptionroots", first, second)
+	}
+	if sameRef(other, first) {
+		t.Errorf("two tenants share a key ref (%v) — one tenant's key would unlock another's "+
+			"data, which is the whole boundary this design exists to draw", other)
+	}
+	for _, tenant := range p.wrapped {
+		if tenant != "alice" && tenant != "bob" {
+			t.Errorf("Wrap was called for %q, not a tenant", tenant)
+		}
+	}
+}
+
+// AC3: KeyProvider down at create time must leave nothing behind. The key is
+// resolved first precisely so there is nothing to clean up.
+func TestPreCreate_KeyProviderDownCreatesNothing(t *testing.T) {
+	z := newZFSFake()
+	p := &fakeKeyProvider{key: aKey(t), wrapErr: errors.New("kms unreachable")}
+	refs := &fakeRefStore{refs: map[string]zfskey.KeyRef{}}
+
+	_, err := testHooksWith(t, z, p, refs).PreCreate(context.Background(), "alice-container", "alice")
+	if err == nil {
+		t.Fatal("PreCreate succeeded with the key provider down")
+	}
+	if z.ran("create") {
+		t.Errorf("a dataset was created despite having no key; calls=%v — it would be "+
+			"unopenable and would block the name on retry", z.calls)
+	}
+	if len(refs.refs) != 0 {
+		t.Errorf("a key ref was recorded for a container that was never created: %v", refs.refs)
+	}
+}
+
+// The one window where a partial dataset can exist: created, but its ref not
+// recorded. Nothing knows which key unlocks it, so it is neither usable nor
+// safely reusable — it must be destroyed.
+func TestPreCreate_RollsBackTheDatasetWhenTheRefCannotBeStored(t *testing.T) {
+	z, p := newZFSFake(), &fakeKeyProvider{key: aKey(t)}
+	refs := &fakeRefStore{refs: map[string]zfskey.KeyRef{}, setErr: errors.New("incus unreachable")}
+
+	_, err := testHooksWith(t, z, p, refs).PreCreate(context.Background(), "alice-container", "alice")
+	if err == nil {
+		t.Fatal("PreCreate succeeded without recording the key ref")
+	}
+	if !z.ran("destroy") {
+		t.Errorf("the dataset was left behind with no recorded key; calls=%v — nothing can "+
+			"unlock it and the next create fails on a name that already exists", z.calls)
+	}
+}
+
+// When the rollback itself fails, the error has to say so — an operator now
+// has to remove the dataset by hand before the name can be reused.
+func TestPreCreate_SaysSoWhenTheRollbackAlsoFails(t *testing.T) {
+	z, p := newZFSFake(), &fakeKeyProvider{key: aKey(t)}
+	z.errs["destroy"] = errors.New("dataset busy")
+	refs := &fakeRefStore{refs: map[string]zfskey.KeyRef{}, setErr: errors.New("incus unreachable")}
+
+	_, err := testHooksWith(t, z, p, refs).PreCreate(context.Background(), "alice-container", "alice")
+	if err == nil {
+		t.Fatal("PreCreate succeeded")
+	}
+	msg := err.Error()
+	for _, want := range []string{"pool/containers/alice-container", "manually"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the error does not mention %q, so an operator cannot act on it: %v", want, err)
+		}
+	}
+}
+
+// Encryption unconfigured must not fail a create — the flag defaults off and
+// existing deployments keep working.
+func TestPreCreate_NoOpWhenEncryptionIsNotConfigured(t *testing.T) {
+	var h *encryptionHooks
+	ref, err := h.PreCreate(context.Background(), "alice-container", "alice")
+	if err != nil {
+		t.Errorf("a nil hooks receiver failed the create: %v", err)
+	}
+	if ref.URI != "" || ref.Scheme != "" {
+		t.Errorf("returned a key ref with no provider configured: %v", ref)
+	}
+}
+
+func TestPreCreate_RequiresATenant(t *testing.T) {
+	z, p := newZFSFake(), &fakeKeyProvider{key: aKey(t)}
+	refs := &fakeRefStore{refs: map[string]zfskey.KeyRef{}}
+
+	if _, err := testHooksWith(t, z, p, refs).PreCreate(context.Background(), "orphan", ""); err == nil {
+		t.Error("an empty tenant was accepted — Wrap would key the dataset under a tenant that " +
+			"does not exist, and no later hook could resolve it")
 	}
 }

@@ -77,6 +77,66 @@ func (h *encryptionHooks) encryptedFor(containerName string) (dataset string, re
 	return dataset, ref, true, nil
 }
 
+// PreCreate provisions the encrypted dataset a new container will be
+// built on, and returns the ref that lets every later hook re-resolve the
+// same key.
+//
+// Order matters and is the whole of AC3. The key is resolved BEFORE
+// anything is created, so a KeyProvider outage fails the create having
+// touched nothing — there is no dataset to clean up because none was made.
+// The only window where a partial dataset can exist is between creating it
+// and persisting its ref, and that window is closed by destroying the
+// dataset if the ref cannot be stored.
+//
+// That rollback is not tidiness. A dataset with no recorded ref is
+// unopenable: nothing knows which key unlocks it, so it is neither usable
+// nor safely reusable, and the next create for the same container would
+// fail on a name that already exists. Leaking one is worse than failing.
+func (h *encryptionHooks) PreCreate(ctx context.Context, containerName, tenant string) (zfskey.KeyRef, error) {
+	if !h.enabled() {
+		return zfskey.KeyRef{}, nil
+	}
+	if tenant == "" {
+		return zfskey.KeyRef{}, fmt.Errorf("encryption: tenant is required to create %s", containerName)
+	}
+
+	dataset, err := h.datasets.DatasetFor(containerName)
+	if err != nil {
+		return zfskey.KeyRef{}, fmt.Errorf("resolve dataset for %s: %w", containerName, err)
+	}
+
+	// Wrap is per-tenant and idempotent: a tenant's containers share one
+	// encryptionroot, so the second container reuses the first's key rather
+	// than minting a second one that ZFS would treat as a separate root.
+	key, ref, err := h.provider.Wrap(ctx, tenant)
+	if err != nil {
+		// Nothing has been created, so there is nothing to undo. The
+		// create fails as Unavailable and the operator retries when key
+		// custody is back.
+		return zfskey.KeyRef{}, fmt.Errorf("cannot obtain an encryption key for %s: %w", containerName, err)
+	}
+	h.cachePut(tenant, key)
+
+	if err := h.zfs.CreateEncrypted(ctx, dataset, key); err != nil {
+		return zfskey.KeyRef{}, fmt.Errorf("cannot create the encrypted dataset for %s: %w", containerName, err)
+	}
+
+	if err := h.refs.SetKeyRef(containerName, ref); err != nil {
+		// The dataset exists but nothing records how to unlock it. Undo it.
+		if derr := h.zfs.Destroy(ctx, dataset); derr != nil {
+			// Both failed: say so plainly, because now an operator has to
+			// remove the dataset by hand before the name can be reused.
+			return zfskey.KeyRef{}, fmt.Errorf(
+				"could not record the encryption key ref for %s (%w), and rolling back its "+
+					"dataset %s also failed (%v) — that dataset is unopenable and must be "+
+					"destroyed manually before the name can be reused", containerName, err, dataset, derr)
+		}
+		return zfskey.KeyRef{}, fmt.Errorf("could not record the encryption key ref for %s: %w", containerName, err)
+	}
+
+	return ref, nil
+}
+
 // PreStart loads the container's encryption key so its dataset can be
 // mounted.
 //
