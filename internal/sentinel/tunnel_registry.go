@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
@@ -46,15 +47,33 @@ type TunnelSpot struct {
 	Generation uint64
 }
 
-// addLoopbackAliasFn / removeLoopbackAliasFn are indirection seams over the
-// `ip addr` calls. Configuring a loopback alias needs CAP_NET_ADMIN, which a
-// unit test does not have and should not need in order to exercise
-// registration bookkeeping — the same reason isAlreadyExistsErr was split out
-// below. Production always uses the real functions.
+// The indirection seams over the `ip addr` calls. Configuring a loopback
+// alias needs CAP_NET_ADMIN, which a unit test does not have and should not
+// need in order to exercise registration bookkeeping — the same reason
+// isAlreadyExistsErr was split out below. Production always uses the real
+// functions and never writes these after init.
+//
+// Held in atomics rather than as plain vars because tests DO write them, and
+// the tunnel server's session-monitor goroutines outlive the test that
+// started them. A test restoring the seam in its cleanup then races a
+// goroutine reading it — caught by -race once these tests became runnable
+// without root (#1280). Production is unaffected either way; this makes the
+// swap safe rather than making the read correct.
 var (
-	addLoopbackAliasFn    = addLoopbackAlias
-	removeLoopbackAliasFn = removeLoopbackAlias
+	addLoopbackAliasFn    atomic.Pointer[func(string) error]
+	removeLoopbackAliasFn atomic.Pointer[func(string)]
 )
+
+func init() {
+	add := addLoopbackAlias
+	remove := removeLoopbackAlias
+	addLoopbackAliasFn.Store(&add)
+	removeLoopbackAliasFn.Store(&remove)
+}
+
+// addAlias / removeAlias call whichever implementation is currently installed.
+func addAlias(ip string) error { return (*addLoopbackAliasFn.Load())(ip) }
+func removeAlias(ip string)    { (*removeLoopbackAliasFn.Load())(ip) }
 
 // TunnelRegistry tracks connected tunnel clients and assigns loopback aliases.
 type TunnelRegistry struct {
@@ -117,7 +136,7 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 		// Cheap insurance: addLoopbackAlias is already idempotent — it
 		// treats "already exists" as reuse — so the normal path costs one
 		// `ip addr add` that immediately reports the alias is present.
-		if err := addLoopbackAliasFn(localIP); err != nil {
+		if err := addAlias(localIP); err != nil {
 			return "", 0, fmt.Errorf("re-assert loopback alias %s on reconnect: %w", localIP, err)
 		}
 	} else {
@@ -127,7 +146,7 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 			return "", 0, err
 		}
 		localIP = fmt.Sprintf("127.0.0.%d", octet)
-		if err := addLoopbackAliasFn(localIP); err != nil {
+		if err := addAlias(localIP); err != nil {
 			delete(r.usedIPs, octet)
 			return "", 0, fmt.Errorf("add loopback alias %s: %w", localIP, err)
 		}
@@ -229,7 +248,7 @@ func (r *TunnelRegistry) unregisterLocked(spotID string) {
 	if spot.Session != nil {
 		_ = spot.Session.Close()
 	}
-	removeLoopbackAliasFn(spot.LocalIP)
+	removeAlias(spot.LocalIP)
 	delete(r.spots, spotID)
 
 	for octet, id := range r.usedIPs {
@@ -380,7 +399,7 @@ func addLoopbackAlias(ip string) error {
 		log.Printf("[tunnel-registry] loopback alias %s: skipping on %s", ip, runtime.GOOS)
 		return nil
 	}
-	out, err := runIPCmd(loopbackAliasArgs("add", ip))
+	out, err := runIP(loopbackAliasArgs("add", ip))
 	if err != nil {
 		if isAlreadyExistsErr(out) {
 			log.Printf("[tunnel-registry] loopback alias %s already present (stale from a prior crash?) — reusing", ip)
@@ -408,9 +427,17 @@ func loopbackAliasArgs(op, ip string) []string {
 // invocation each caller issues — without it, a remove path that issued `add`
 // would leak an alias per disconnect and no test would notice, because the
 // callers are only reached through a seam the tests already substitute.
-var runIPCmd = func(args []string) ([]byte, error) {
-	return exec.Command(args[0], args[1:]...).CombinedOutput() // #nosec G204 -- args come from loopbackAliasArgs; the address is "127.0.0.<octet>", built internally by allocateOctet, never user input
+var runIPCmd atomic.Pointer[func([]string) ([]byte, error)]
+
+func init() {
+	run := func(args []string) ([]byte, error) {
+		return exec.Command(args[0], args[1:]...).CombinedOutput() // #nosec G204 -- args come from loopbackAliasArgs; the address is "127.0.0.<octet>", built internally by allocateOctet, never user input
+	}
+	runIPCmd.Store(&run)
 }
+
+// runIP calls whichever implementation is currently installed.
+func runIP(args []string) ([]byte, error) { return (*runIPCmd.Load())(args) }
 
 // isAlreadyExistsErr reports whether `ip addr add`'s output indicates the
 // alias already exists rather than some other, genuinely fatal failure (bad
@@ -439,7 +466,7 @@ func removeLoopbackAlias(ip string) {
 	if runtime.GOOS != "linux" {
 		return
 	}
-	if _, err := runIPCmd(loopbackAliasArgs("del", ip)); err != nil {
+	if _, err := runIP(loopbackAliasArgs("del", ip)); err != nil {
 		log.Printf("[tunnel-registry] failed to remove loopback alias %s: %v", ip, err)
 	}
 }

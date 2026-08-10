@@ -29,11 +29,14 @@ import (
 // Registration bookkeeping does not need CAP_NET_ADMIN to be worth testing.
 func stubLoopbackAliases(t *testing.T) {
 	t.Helper()
-	origAdd, origRemove := addLoopbackAliasFn, removeLoopbackAliasFn
-	addLoopbackAliasFn = func(string) error { return nil }
-	removeLoopbackAliasFn = func(string) {}
+	origAdd, origRemove := addLoopbackAliasFn.Load(), removeLoopbackAliasFn.Load()
+	add := func(string) error { return nil }
+	remove := func(string) {}
+	addLoopbackAliasFn.Store(&add)
+	removeLoopbackAliasFn.Store(&remove)
 	t.Cleanup(func() {
-		addLoopbackAliasFn, removeLoopbackAliasFn = origAdd, origRemove
+		addLoopbackAliasFn.Store(origAdd)
+		removeLoopbackAliasFn.Store(origRemove)
 	})
 }
 

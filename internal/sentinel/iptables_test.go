@@ -90,9 +90,9 @@ func TestPort22FilteringNoPort22(t *testing.T) {
 // cover.
 func onNonLinuxHost(t *testing.T) {
 	t.Helper()
-	real := hostGOOS
-	hostGOOS = "darwin"
-	t.Cleanup(func() { hostGOOS = real })
+	real := goos()
+	hostGOOS.Store("darwin")
+	t.Cleanup(func() { hostGOOS.Store(real) })
 }
 
 func TestEnableForwardingOnNonLinux(t *testing.T) {
@@ -120,13 +120,13 @@ func TestDisableForwardingOnNonLinux(t *testing.T) {
 // what the early returns read, the two tests above would go back to running
 // the real iptables path on every CI runner and would still report a pass.
 func TestNonLinuxControlActuallyDivertsTheHostCheck(t *testing.T) {
-	if hostGOOS != runtime.GOOS {
-		t.Fatalf("hostGOOS = %q before any override, want the real %q", hostGOOS, runtime.GOOS)
+	if goos() != runtime.GOOS {
+		t.Fatalf("hostGOOS = %q before any override, want the real %q", goos(), runtime.GOOS)
 	}
 
 	func() {
 		onNonLinuxHost(t)
-		if hostGOOS == runtime.GOOS && runtime.GOOS == "linux" {
+		if goos() == runtime.GOOS && runtime.GOOS == "linux" {
 			t.Error("the override did not change what the code under test reads — the " +
 				"non-Linux tests would run the real iptables path against the host")
 		}

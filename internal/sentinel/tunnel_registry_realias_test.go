@@ -42,9 +42,15 @@ func (a *aliasRecorder) remove(ip string) {
 func withRecordedAliases(t *testing.T) *aliasRecorder {
 	t.Helper()
 	rec := &aliasRecorder{}
-	origAdd, origRemove := addLoopbackAliasFn, removeLoopbackAliasFn
-	addLoopbackAliasFn, removeLoopbackAliasFn = rec.add, rec.remove
-	t.Cleanup(func() { addLoopbackAliasFn, removeLoopbackAliasFn = origAdd, origRemove })
+	origAdd, origRemove := addLoopbackAliasFn.Load(), removeLoopbackAliasFn.Load()
+	add := func(ip string) error { return rec.add(ip) }
+	remove := func(ip string) { rec.remove(ip) }
+	addLoopbackAliasFn.Store(&add)
+	removeLoopbackAliasFn.Store(&remove)
+	t.Cleanup(func() {
+		addLoopbackAliasFn.Store(origAdd)
+		removeLoopbackAliasFn.Store(origRemove)
+	})
 	return rec
 }
 
@@ -163,12 +169,13 @@ func TestLoopbackAliasIsASingleAddress(t *testing.T) {
 func withRecordedIPCmds(t *testing.T) *[][]string {
 	t.Helper()
 	var got [][]string
-	orig := runIPCmd
-	runIPCmd = func(args []string) ([]byte, error) {
+	orig := runIPCmd.Load()
+	fn := func(args []string) ([]byte, error) {
 		got = append(got, args)
 		return nil, nil
 	}
-	t.Cleanup(func() { runIPCmd = orig })
+	runIPCmd.Store(&fn)
+	t.Cleanup(func() { runIPCmd.Store(orig) })
 	return &got
 }
 
