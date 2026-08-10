@@ -318,7 +318,13 @@ func TestStartProxiesRefusesToClobberANewerGeneration(t *testing.T) {
 	session, closeSession := newSessionPair(t)
 	defer closeSession()
 
-	ts.startProxies(ctx, "spot-1", 7, "127.0.0.1", 0, []int{9090}, session)
+	// Picked at run time, not named: 9090 is Prometheus's default and is
+	// plausibly in use on a developer machine. Both calls share it because the
+	// point is that the second, staler one must not take over the first's
+	// listener on the same port.
+	proxyPort := freeLoopbackPort(t)
+
+	ts.startProxies(ctx, "spot-1", 7, "127.0.0.1", 0, []int{proxyPort}, session)
 	ts.mu.Lock()
 	current := ts.proxies["spot-1"]
 	ts.mu.Unlock()
@@ -326,7 +332,7 @@ func TestStartProxiesRefusesToClobberANewerGeneration(t *testing.T) {
 	require.NotEmpty(t, current.listeners)
 
 	// An older registration's call arriving late must be ignored outright.
-	ts.startProxies(ctx, "spot-1", 3, "127.0.0.1", 0, []int{9090}, session)
+	ts.startProxies(ctx, "spot-1", 3, "127.0.0.1", 0, []int{proxyPort}, session)
 
 	ts.mu.Lock()
 	after := ts.proxies["spot-1"]
