@@ -29,6 +29,35 @@ type RouteSyncJob struct {
 	running bool
 	stopCh  chan struct{}
 	doneCh  chan struct{}
+
+	// l4Activated latches once the layer4 app has been brought up, and is
+	// what lets the sync tell "never needed L4" apart from "had L4 and lost
+	// it" (#1067).
+	//
+	// Caddy is configured entirely over the admin API, so a crash, restart
+	// or binary swap reverts it to the stub Caddyfile and the layer4 app
+	// disappears. The HTTP side self-heals via EnsureBaseConfig; L4 did not,
+	// because its activation is guarded by "are there passthrough routes?"
+	// — so a wipe that happened while the route set was empty left :443 as
+	// plain HTTP indefinitely, with no PROXY/SNI passthrough and nothing to
+	// notice.
+	//
+	// Guarded by mu: SyncNow can run concurrently with the ticker.
+	l4Activated bool
+}
+
+// l4WasActivated reports whether this daemon has ever had layer4 up.
+func (j *RouteSyncJob) l4WasActivated() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.l4Activated
+}
+
+// markL4Activated records that layer4 is up.
+func (j *RouteSyncJob) markL4Activated() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.l4Activated = true
 }
 
 // NewRouteSyncJob creates a new route sync job
@@ -270,15 +299,31 @@ func (j *RouteSyncJob) syncL4Routes(dbRoutes []*RouteRecord) error {
 	// behaviourally identical to the HTTP-on-:443 baseline — non-matching SNI
 	// already falls through to the HTTP fallback — but it never rewrites the
 	// listen address, so the listener is never restarted under live traffic.
+	//
+	// The same latch also covers Caddy losing its config entirely (#1067).
+	// Once L4 has been up, a later tick finding the layer4 app gone means
+	// Caddy reverted to its stub — not that we should stay lazy — so it is
+	// rebuilt regardless of how many passthrough routes currently exist.
+	// The route set being empty at that moment is exactly the case that
+	// used to leave :443 as plain HTTP forever.
 	if !j.l4ProxyManager.IsL4Active() {
-		if len(dbRoutes) == 0 {
+		healing := j.l4WasActivated()
+		if len(dbRoutes) == 0 && !healing {
 			return nil // never activated and nothing to route — stay lazy
 		}
 		if err := j.l4ProxyManager.ActivateL4(); err != nil {
 			return fmt.Errorf("failed to activate L4: %w", err)
 		}
-		log.Printf("[RouteSyncJob] L4 activated for %d passthrough route(s)", len(dbRoutes))
+		if healing {
+			log.Printf("[RouteSyncJob] layer4 app was missing though L4 had been active — Caddy "+
+				"reverted to its stub config; rebuilt L4 and reclaimed :443 for %d passthrough route(s) (#1067)",
+				len(dbRoutes))
+		} else {
+			log.Printf("[RouteSyncJob] L4 activated for %d passthrough route(s)", len(dbRoutes))
+		}
 	}
+	// L4 is up now, however it got there.
+	j.markL4Activated()
 
 	// Get current L4 routes from Caddy
 	caddyL4Routes, err := j.l4ProxyManager.ListL4Routes()

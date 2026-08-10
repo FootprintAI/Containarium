@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
@@ -28,11 +29,103 @@ func detectZFSContainersDataset() bool {
 // Client wraps the Incus API client
 type Client struct {
 	server incus.InstanceServer
+
+	// storagePolicy decides what EnsureStorage does when a pool does not
+	// isolate tenant volumes (#1206). Zero value warns, which preserves the
+	// pre-existing behaviour for dev hosts and single-tenant boxes.
+	storagePolicy StoragePolicy
+
+	// storageProbe overrides host detection during driver selection. Nil uses
+	// DefaultStorageProbe.
+	storageProbe *StorageProbe
+
+	// storagePool is the incus storage pool containers are created on.
+	// Empty means DefaultStoragePool (#1213).
+	//
+	// NOT the daemon's --pool, which names an independent cluster fronted by
+	// the sentinel. These are unrelated concepts that share a word; see
+	// docs/MULTI-POOL.md.
+	storagePool string
+}
+
+// DefaultStoragePool is the incus storage pool used when none is configured.
+const DefaultStoragePool = "default"
+
+// configuredStoragePool is the process-wide storage pool, set once from the
+// daemon's --storage-pool flag.
+//
+// Process-wide because incus.New() is called from a dozen places that each
+// build their own client — the cloud actuator, several container_server
+// helpers — and none of them thread daemon configuration. A per-client
+// setting alone would therefore be honoured on the daemon's own client and
+// silently ignored by every other one, which is the same shape of bug this
+// change exists to remove.
+var configuredStoragePool atomic.Value // string
+
+// SetDefaultStoragePool sets the process-wide incus storage pool. Called once
+// during daemon startup, before any container is created. Empty is ignored.
+//
+// NOT the daemon's --pool, which names an independent cluster fronted by the
+// sentinel; see docs/MULTI-POOL.md. These are unrelated concepts sharing a
+// word, which is why the flag is --storage-pool.
+func SetDefaultStoragePool(name string) {
+	if name != "" {
+		configuredStoragePool.Store(name)
+	}
+}
+
+// defaultPool reports the process-wide pool.
+func defaultPool() string {
+	if v, ok := configuredStoragePool.Load().(string); ok && v != "" {
+		return v
+	}
+	return DefaultStoragePool
+}
+
+// SetStoragePool selects the incus storage pool containers are created on.
+// Empty resets to DefaultStoragePool. See #1213.
+func (c *Client) SetStoragePool(name string) {
+	c.storagePool = name
+}
+
+// StoragePool returns the configured incus storage pool.
+//
+// Every root-disk device construction goes through this rather than a literal
+// "default". A literal is how a backend migrated onto an isolated pool
+// silently un-migrated itself: existing tenants stayed put while every NEW
+// tenant landed back on the shared-filesystem pool, so the contention probe
+// went clean right after the migration and regressed weeks later with nothing
+// in the product explaining why (#1206, #1213).
+func (c *Client) StoragePool() string {
+	if c.storagePool != "" {
+		return c.storagePool
+	}
+	return defaultPool()
+}
+
+// SetStoragePolicy sets what EnsureStorage does when a storage pool does not
+// isolate tenant volumes: warn (the default) or refuse. See #1206.
+func (c *Client) SetStoragePolicy(p StoragePolicy) {
+	c.storagePolicy = p
+}
+
+// probe returns the host storage probe, defaulting to the real one.
+func (c *Client) probe() StorageProbe {
+	if c.storageProbe != nil {
+		return *c.storageProbe
+	}
+	return DefaultStorageProbe()
 }
 
 // Backend is the interface satisfied by *Client. Consumers depend on it (or a
 // narrower subset declared at the call site) so they can be mocked in tests.
 type Backend interface {
+	// StoragePool is the incus storage pool containers are created on.
+	// Read-only here: it is configured on the concrete client at daemon
+	// startup, and every root-disk construction reads it rather than
+	// hardcoding "default" (#1213).
+	StoragePool() string
+
 	// Lifecycle
 	CreateContainer(config ContainerConfig) error
 	StartContainer(name string) error
@@ -1705,27 +1798,58 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	return nil
 }
 
+// ContainerDataset resolves the ZFS dataset backing a container's rootfs.
+//
+// Extracted from the quota-headroom path, which has computed this on real
+// hosts since long before it was needed elsewhere — so this is the daemon's
+// existing, exercised understanding of the layout rather than a fresh guess
+// at it. Anything that needs to name a container's dataset (per-tenant
+// encryption's dataset resolver, snapshot/rollback RPCs) should use this
+// rather than rebuild the string.
+//
+// Empty pool uses the configured storage pool.
+func (c *Client) ContainerDataset(containerName, pool string) (string, error) {
+	if containerName == "" {
+		return "", fmt.Errorf("container name is required")
+	}
+	if pool == "" {
+		pool = c.StoragePool()
+	}
+
+	poolConfig, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return "", fmt.Errorf("failed to get storage pool %s: %w", pool, err)
+	}
+	return buildContainerDataset(poolConfig.Config["source"], poolConfig.Name, containerName), nil
+}
+
+// buildContainerDataset is the pure half, so the layout can be tested without
+// an Incus server.
+//
+// The doubled "containers/containers" is not a typo: incus nests its instance
+// datasets under a `containers` child of the pool's own `containers` dataset.
+// It is preserved exactly as the quota path has always produced it — changing
+// it would silently point every caller at a dataset that does not exist.
+func buildContainerDataset(poolSource, poolName, containerName string) string {
+	zfsPool := poolSource
+	if zfsPool == "" {
+		// A pool created without an explicit source uses its own name.
+		zfsPool = poolName
+	}
+	return fmt.Sprintf("%s/containers/containers/%s", zfsPool, containerName)
+}
+
 // ensureZFSQuotaHeadroom checks if the container's ZFS dataset is at quota and
 // temporarily expands it to the target size so Incus can write its backup.yaml.
 func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) error {
 	if pool == "" {
-		pool = "default"
+		pool = c.StoragePool()
 	}
 
-	// Determine the ZFS dataset name: <zfs-pool>/containers/containers/<name>
-	// Get the ZFS pool name from the Incus storage pool source
-	poolConfig, _, err := c.server.GetStoragePool(pool)
+	dataset, err := c.ContainerDataset(containerName, pool)
 	if err != nil {
-		return fmt.Errorf("failed to get storage pool %s: %w", pool, err)
+		return err
 	}
-
-	zfsPool := poolConfig.Config["source"]
-	if zfsPool == "" {
-		// Try pool name as ZFS pool name
-		zfsPool = poolConfig.Name
-	}
-
-	dataset := fmt.Sprintf("%s/containers/containers/%s", zfsPool, containerName)
 
 	// Set the ZFS quota to the target size directly
 	cmd := exec.Command("zfs", "set", fmt.Sprintf("quota=%s", targetSize), dataset)
@@ -1876,14 +2000,23 @@ func (c *Client) EnsureNetwork(config NetworkConfig) (string, error) {
 	return config.Name, nil
 }
 
-// EnsureStorage creates a storage pool if it doesn't exist.
-// It auto-detects ZFS pools: if a ZFS pool named "incus-local" exists with a
-// "containers" dataset, it creates a ZFS-backed Incus storage pool using it.
-// Otherwise, falls back to a directory-backed pool.
+// EnsureStorage creates a storage pool if it doesn't exist, preferring a
+// driver that gives every container its own volume.
+//
+// Selection order is zfs, then btrfs, then dir — see SelectStorageDriver. The
+// `dir` driver is a last resort because it puts every tenant rootfs on one
+// filesystem, so they share one journal and one tenant's writeback stalls
+// another tenant's fsync (#1206). Landing on it produces a loud warning, or a
+// hard failure under StoragePolicyRequireIsolation.
+//
+// An already-existing pool is re-checked rather than accepted silently: a
+// backend provisioned on `dir` before this change never re-runs selection, so
+// without the re-check it would stay quiet forever.
+//
 // Returns the storage pool name.
 func (c *Client) EnsureStorage(name string) (string, error) {
 	if name == "" {
-		name = "default"
+		name = c.StoragePool()
 	}
 
 	// Check if storage pool already exists
@@ -1894,27 +2027,25 @@ func (c *Client) EnsureStorage(name string) (string, error) {
 
 	for _, p := range pools {
 		if p == name {
-			// Pool exists, return it
-			return name, nil
+			return name, c.reviewExistingStorage(name)
 		}
 	}
 
-	// Auto-detect ZFS pool: check if "incus-local/containers" dataset exists
-	driver := "dir"
-	config := map[string]string{}
-	if detectZFSContainersDataset() {
-		driver = "zfs"
-		config["source"] = "incus-local/containers"
-		log.Printf("  Auto-detected ZFS dataset incus-local/containers, using ZFS driver")
-	} else {
-		log.Printf("  No ZFS dataset found, using dir driver")
+	choice := SelectStorageDriver(c.probe())
+	warning, err := reviewStoragePool(c.storagePolicy, name, choice.Driver)
+	if err != nil {
+		return "", err
+	}
+	log.Printf("  Storage: creating pool %q on the %s driver — %s", name, choice.Driver, choice.Reason)
+	if warning != "" {
+		log.Print(warning)
 	}
 
 	poolReq := api.StoragePoolsPost{
 		Name:   name,
-		Driver: driver,
+		Driver: string(choice.Driver),
 		StoragePoolPut: api.StoragePoolPut{
-			Config: config,
+			Config: choice.Config,
 		},
 	}
 
@@ -1923,6 +2054,44 @@ func (c *Client) EnsureStorage(name string) (string, error) {
 	}
 
 	return name, nil
+}
+
+// reviewExistingStorage applies the isolation policy to a pool that already
+// exists. A pool we cannot read is reported as unchecked rather than warned
+// about under a guessed driver — saying "we could not check" is honest;
+// warning about a driver we did not actually observe is not.
+func (c *Client) reviewExistingStorage(name string) error {
+	pool, _, err := c.server.GetStoragePool(name)
+	if err != nil {
+		log.Printf("  Note: storage pool %q exists but could not be read, so its tenant-isolation "+
+			"property was not checked: %v", name, err)
+		return nil
+	}
+
+	warning, err := reviewStoragePool(c.storagePolicy, name, StorageDriver(pool.Driver))
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		log.Print(warning)
+	}
+	return nil
+}
+
+// PoolDriver returns the typed driver for the named pool, and an error when
+// the pool could not be read.
+//
+// Distinct from GetStorageDriver, which collapses a read failure into the
+// "unknown" string. Callers that put the driver on the wire need to tell "we
+// could not read the pool" apart from "we read it and it is a driver we don't
+// classify" — reporting the first as the second would let an unreadable pool
+// look like an observed one. See #1209.
+func (c *Client) PoolDriver(name string) (StorageDriver, error) {
+	pool, _, err := c.server.GetStoragePool(name)
+	if err != nil {
+		return "", fmt.Errorf("read storage pool %s: %w", name, err)
+	}
+	return StorageDriver(pool.Driver), nil
 }
 
 // GetStorageDriver returns the driver type ("zfs", "dir", etc.) for the named pool.
@@ -1936,6 +2105,30 @@ func (c *Client) GetStorageDriver(name string) string {
 }
 
 // EnsureDefaultProfile configures the default profile with network and storage
+// rootDiskForPool returns the default profile's root-disk device for the given
+// storage pool, the pool it is moving away from (empty when there was no
+// device), and whether anything changed.
+//
+// Pure so the repoint decision is testable without an Incus server — the
+// decision is the part that was wrong (#1213), not the API call.
+func rootDiskForPool(existing map[string]string, storageName string) (device map[string]string, movedFrom string, changed bool) {
+	if existing == nil {
+		return map[string]string{"type": "disk", "path": "/", "pool": storageName}, "", true
+	}
+	if existing["pool"] == storageName {
+		return existing, "", false
+	}
+	// Repoint in place, preserving anything else the operator set on the
+	// device (size, io limits) — only the pool is ours to change.
+	from := existing["pool"]
+	updated := make(map[string]string, len(existing))
+	for k, v := range existing {
+		updated[k] = v
+	}
+	updated["pool"] = storageName
+	return updated, from, true
+}
+
 func (c *Client) EnsureDefaultProfile(networkName, storageName string) error {
 	// Get current default profile
 	profile, _, err := c.server.GetProfile("default")
@@ -1950,13 +2143,22 @@ func (c *Client) EnsureDefaultProfile(networkName, storageName string) error {
 
 	needsUpdate := false
 
-	// Add root disk device if not present
-	if _, ok := profile.Devices["root"]; !ok {
-		profile.Devices["root"] = map[string]string{
-			"type": "disk",
-			"path": "/",
-			"pool": storageName,
+	// Add the root disk device, or REPOINT it when the configured storage
+	// pool has changed (#1213).
+	//
+	// Setting it only when absent is what made a storage migration undo
+	// itself: an operator repointing the backend at an isolated pool kept a
+	// default profile whose root disk still named the old one, so every
+	// container inheriting the profile — which is every container created
+	// without an explicit disk size — landed back on the pool they were
+	// migrating away from. The contention probe went clean right after the
+	// migration and regressed as new tenants arrived.
+	if device, from, changed := rootDiskForPool(profile.Devices["root"], storageName); changed {
+		if from != "" {
+			log.Printf("[incus] default profile root disk moves from storage pool %q to %q; "+
+				"containers created from now on land on %q (#1213)", from, storageName, storageName)
 		}
+		profile.Devices["root"] = device
 		needsUpdate = true
 	}
 
@@ -1983,7 +2185,7 @@ func (c *Client) EnsureDefaultProfile(networkName, storageName string) error {
 // This should be called once during daemon startup
 func (c *Client) InitializeInfrastructure(networkConfig NetworkConfig) error {
 	// 1. Ensure storage pool exists
-	storageName, err := c.EnsureStorage("default")
+	storageName, err := c.EnsureStorage(c.StoragePool())
 	if err != nil {
 		return fmt.Errorf("failed to ensure storage: %w", err)
 	}
@@ -2280,7 +2482,7 @@ func (c *Client) containerRootfsPath(containerName string) string {
 		pool = rootDev["pool"]
 	}
 	if pool == "" {
-		pool = "default"
+		pool = c.StoragePool()
 	}
 	poolCfg, _, err := c.server.GetStoragePool(pool)
 	if err != nil {

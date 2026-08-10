@@ -178,17 +178,27 @@ func TestValidateOptions(t *testing.T) {
 		{
 			name:    "empty repo",
 			opts:    Options{Repo: "", PAT: "ghp_x", Count: 1},
-			wantErr: "repo is required",
+			wantErr: "target is required",
 		},
 		{
-			name:    "bad repo format - no slash",
-			opts:    Options{Repo: "owner-repo", PAT: "ghp_x", Count: 1},
-			wantErr: "not in owner/repo format",
+			// CHANGED with #1217: a bare owner is no longer malformed, it is
+			// an ORGANIZATION target. This case previously asserted the
+			// opposite, so it is the one assertion org support genuinely
+			// inverts — kept here, flipped, rather than deleted, so the
+			// change is visible in the diff.
+			name:    "bare owner is an organization target, not an error",
+			opts:    Options{Repo: "footprintai", PAT: "ghp_x", Count: 1},
+			wantErr: "",
 		},
 		{
-			name:    "bad repo format - leading slash",
+			name:    "malformed target - leading slash",
 			opts:    Options{Repo: "/repo", PAT: "ghp_x", Count: 1},
-			wantErr: "not in owner/repo format",
+			wantErr: "neither owner/repo nor a bare organization name",
+		},
+		{
+			name:    "malformed target - trailing slash",
+			opts:    Options{Repo: "owner/", PAT: "ghp_x", Count: 1},
+			wantErr: "neither owner/repo nor a bare organization name",
 		},
 		{
 			name:    "empty PAT",
@@ -691,8 +701,8 @@ func TestList_FilterByPrefixAndMergeGitHubState(t *testing.T) {
 
 func TestList_RequiresRepoAndPAT(t *testing.T) {
 	_, err := List(context.Background(), Deps{}, Options{Repo: "", PAT: "x"})
-	if err == nil || !strings.Contains(err.Error(), "repo is required") {
-		t.Errorf("expected repo-required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "target is required") {
+		t.Errorf("expected target-required error, got %v", err)
 	}
 	_, err = List(context.Background(), Deps{}, Options{Repo: "owner/repo", PAT: ""})
 	if err == nil || !strings.Contains(err.Error(), "github_pat is required") {
@@ -759,7 +769,9 @@ func TestRemove_RejectsMissingArgs(t *testing.T) {
 		{"no name", Options{Repo: "owner/repo", PAT: "x"}, "", "name is required"},
 		{"no repo", Options{Repo: "", PAT: "x"}, "n", "repo and github_pat are required"},
 		{"no pat", Options{Repo: "owner/repo", PAT: ""}, "n", "repo and github_pat are required"},
-		{"bad repo", Options{Repo: "garbage", PAT: "x"}, "n", "not in owner/repo format"},
+		// "garbage" is now a legitimate ORG target (#1217), so this case uses
+		// a shape that is malformed under either scope.
+		{"malformed target", Options{Repo: "owner//repo", PAT: "x"}, "n", "neither owner/repo nor a bare organization name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

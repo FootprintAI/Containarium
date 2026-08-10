@@ -164,11 +164,95 @@ wired via `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_{PUBLIC_KEY,KEY_SECRET}`.
 
 Per tenant namespace:
 
-- **Default-deny ingress**, single allow rule: TCP/22 *from the sshpiper pod
-  only* (matched by `agent-gateway` namespace + pod label).
-- **Default-deny egress**, allowlist: cluster DNS + the control-plane API
-  endpoint. This is the K8s expression of the eBPF egress allowlist shipped
-  on the LXC backend.
+> This section once described an intended design the shipped code did not
+> implement (#1193). Corrected 2026-08-08 after reading
+> `pkg/core/box/k8s/objects.go` against it, and rewritten as the gaps closed.
+> It now describes what ships, and every claim below is asserted by a test.
+
+**The floor:** default-deny ingress with a single allow rule — SSH *from the
+sshpiper pod only* (matched by `agent-gateway` namespace + pod label) — and
+default-deny egress allowlisting cluster DNS and nothing else.
+
+**Shipped** (one `default-deny` NetworkPolicy per tenant namespace,
+`networkPolicyObject` in `objects.go`):
+
+- Its `podSelector` scopes the policy to the tenant's box pods.
+- The **ingress rule restricts the SSH port to the sshpiper pod** — ONE peer
+  carrying both a `namespaceSelector` (`agent-gateway`) and a `podSelector`
+  (`app.kubernetes.io/name: sshpiper`). One peer, not two: two would be OR,
+  admitting any pod in the gateway namespace *or* any sshpiper-labelled pod
+  anywhere (#1195).
+- The **egress rule restricts DNS to the cluster DNS namespace**, on both
+  UDP/53 and TCP/53 — TCP matters for large responses.
+- The ingress restriction is **conditional on `GatewayNamespace` being set**
+  (`CONTAINARIUM_K8S_GATEWAY_NAMESPACE`, default `agent-gateway`). Cleared, it
+  means routing is disabled, and the rule falls back to port-only — which
+  admits every source the CNI permits. Emitting a selector that matches
+  nothing instead would make the box unreachable rather than merely unrouted,
+  so the fallback is deliberate; but an operator who clears this variable
+  weakens the ingress boundary and gets no warning. Pinned by
+  `TestNetworkPolicyIngressFallsBackWhenGatewayNamespaceUnset`, which exists
+  so the fallback stays a choice someone made rather than a regression.
+- There is **no control-plane API egress rule**, and that is now a decision
+  rather than an omission. An earlier draft of this section listed one in the
+  intended allowlist and left the question open pending #1188. #1188 has since
+  shipped: tenant egress is policy-driven, so anything beyond DNS is expressed
+  as a tenant's policy and converged into this same object. A hardcoded
+  control-plane allowance in the floor would grant *every* box egress to the
+  API server whether or not its policy says so — which is the shape of
+  problem #1193 was filed about, pointed the other way.
+
+  Nothing in the box image needs it: `agent-box` speaks stdio over SSH, and
+  authorized_keys, host keys and tenant secrets all arrive as mounts. A box
+  can resolve names and reach nothing else, which the k8s e2e observes
+  directly (`TestE2E_BoxEgressPosture`). A deployment that does need it should
+  say so as a tenant egress policy, where it is visible and revocable.
+
+  The floor being DNS-only is pinned by a test that asserts exactly one egress
+  rule, so adding a second one to the floor fails rather than passing quietly.
+
+The port is `sshPort` (2222), the internal sshpiper→pod hop; the gateway
+terminates the operator-facing `:22`.
+
+**This is enforced, not merely declared.** kind's default CNI (kindnet) does
+not implement NetworkPolicy, so for a while the object was created and
+ignored, and the e2e that "covered" it could not fail (#1234). CI now builds
+the cluster with Calico and `TestE2E_NetworkPolicyIsolation` asserts both
+directions: a pod in another namespace cannot reach the box's SSH port, and —
+as a positive control that runs first — a pod in `agent-gateway` carrying the
+sshpiper label can. Without that control, "connection refused" would prove
+nothing.
+
+### Tenant egress policy on this backend
+
+`NetworkPolicyService` now drives this backend (#1188): a reconciler reads the
+same policy store the eBPF enforcer reads and converges each tenant
+namespace's NetworkPolicy with it. A tenant's egress allowlist appears as
+egress rules alongside the DNS allowance, and removing a policy reverts to the
+default-deny floor — never to allow-all, because a delete must not widen
+access. `TestE2E_TenantEgressAllowlistIsEnforced` proves the enforcement with
+packets rather than by inspecting the object: a destination inside the
+allowlist is reachable, one outside it is not.
+
+#### What is LXC-only, and why
+
+Some of the eBPF path's capabilities have no Kubernetes NetworkPolicy
+equivalent. These are **not** cross-backend, and the compiler REFUSES a policy
+containing them rather than applying the part it understood — every one of
+them fails in the same direction, more permissive than the tenant configured,
+so quietly dropping any would be worse than not supporting the backend at all.
+
+| Capability | Why NetworkPolicy cannot express it |
+|---|---|
+| `LOG_ONLY` mode | NetworkPolicy always enforces. Compiling a tenant's dry run would start dropping their traffic. `UNSPECIFIED` is treated as `LOG_ONLY`, so this is the default case. |
+| Metadata carve-out (`allow_metadata=false`) | Denies 169.254.169.254 *even when* the allowlist covers it — deny-beats-allow. An allow-only policy cannot carve an exception out of an allow rule, and the exception guards cloud credentials. |
+| `egress_domains` | NetworkPolicy matches IPs, not names. The eBPF path re-resolves on a refresh loop; a resolved snapshot baked into a static object goes stale silently. |
+| Virtual-patch deny rules (#660) | Payload-signature matches in the BPF program. NetworkPolicy is L3/L4 only. |
+| Traffic-flow accounting (#627) | NetworkPolicy has no counters. Needs Hubble/Cilium or equivalent. |
+
+A tenant policy using any of these is rejected for the K8s backend with the
+feature named, so the asymmetry surfaces at configuration time rather than as
+a silent difference in what is enforced.
 
 ## Mapping to the existing (LXC) architecture
 
@@ -178,7 +262,7 @@ Per tenant namespace:
 | sshpiper on sentinel :22 | sshpiper Deployment + LB Service :22 |
 | sentinel key-sync → YAML | controller → `Pipe` CRD + Secret |
 | LXC box per tenant | agent-sandbox `Sandbox` CR (pod `box`) per tenant namespace |
-| eBPF deny-by-default + egress allowlist | default-deny NetworkPolicy + egress allowlist |
+| eBPF deny-by-default + egress allowlist, driven by `NetworkPolicyService` | static `default-deny` NetworkPolicy, **not** policy-driven (#1188), and weaker than documented (#1193) |
 | sshd 2222 (mgmt) vs sshpiper 22 | mgmt via `kubectl`/RBAC; sshpiper owns 22 |
 
 ## CLI-first surface
@@ -656,6 +740,58 @@ The GPU *type* (L4, A100, etc.) is expressed via node affinity, driven by a
 `gpu-spec` label on the box when set — otherwise K8s schedules to any GPU
 node. This is deliberately different from the LXC/GCE path, where the daemon
 selects the exact machine type; on K8s, the scheduler owns that decision.
+
+### Tenant secret delivery (#1190)
+
+A tenant's secrets are materialized into a per-tenant Secret and mounted into
+the box at `/run/secrets`, one file per secret — the same path the LXC
+file-delivery mode uses. The box's session builds its environment from those
+files, so an env-delivery secret behaves the same on both backends.
+
+**Why a mount and not env vars.** A container's environment is fixed when it
+starts. Updating a Secret projected with `envFrom` does not change a running
+pod — it has to be recreated. A Secret *volume* is refreshed in place by the
+kubelet, so a new session sees the new value with no restart. That is also
+what the LXC path actually promises: its refresh message says *new execs* see
+updated values, not that running processes are re-parented. The mount is what
+makes the two backends agree.
+
+Because the mount is refreshed by the kubelet and survives a restart, the
+LXC-side secrets reconciler has no K8s counterpart and is not wired there.
+It exists because a container's tmpfs does not survive a restart; a mounted
+Secret does.
+
+All three delivery modes land in the same object. `env` and `file` rows each
+become one file; `compose` rows are rendered into a single `secrets.env` by
+the same function the LXC path uses, so a compose app's `env_file:` reference
+differs only in directory.
+
+**Boxes created before this shipped.** The secrets volume is part of the box's
+pod template, so a box created before it existed has no mount and no amount of
+delivery will reach it — the Secret is written and nothing consumes it. Those
+boxes need recreating. This fails quietly rather than loudly: `secret refresh`
+reports success, because the delivery genuinely succeeded; it is the mount that
+is missing. Recreate a box and check for `/run/secrets` inside it if secrets
+appear to be ignored on a long-lived deployment.
+
+**Operator responsibility: encryption at rest.** A Kubernetes Secret is
+base64-encoded, not encrypted, unless the cluster has [encryption at
+rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)
+configured for the `secrets` resource. Containarium's own at-rest guarantee —
+envelope encryption with a KMS-held KEK — covers the value in Postgres, and it
+still does on this backend. It does **not** extend to etcd.
+
+So a tenant moving from the LXC backend to K8s gets a *weaker* at-rest
+guarantee for the delivered copy unless the operator configures it, and the
+platform cannot detect or enforce that from inside. Stated here rather than
+left implied: a reader who assumes the KMS guarantee covers the whole path
+would be wrong, and would be wrong silently.
+
+Anyone can read a mounted secret who can `kubectl get secret` in the tenant
+namespace, `kubectl exec` into the box, or read etcd directly. The first two
+are the same trust boundary as the LXC backend (an operator with incus access
+can read a container's config and its tmpfs); the third is new, and is what
+cluster encryption at rest addresses.
 
 ## Fronting a K8s node with the fleet sentinel
 

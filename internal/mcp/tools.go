@@ -196,6 +196,14 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Opt the container into application-emitted OpenTelemetry. When true, the daemon stamps the LXC with OTEL_EXPORTER_OTLP_ENDPOINT (and related env vars) pointing at the platform's core OTel collector, so any OTel SDK inside the container ships telemetry without app-side configuration. Default false. The daemon's own cgroup-level metrics for the container (CPU/mem/disk/net) are independent of this flag and continue for every container regardless.",
 					},
+					"encrypted": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Encrypt the container's ZFS dataset with a tenant-scoped key rather than the pool-wide key, so a co-tenant — or host root once the box is stopped — sees ciphertext. Requires the daemon to have a KeyProvider configured: without one the create is REFUSED (FAILED_PRECONDITION) rather than silently producing an unencrypted container. Default false. Mirrors `containarium create --encrypted`.",
+					},
+					"tenant_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Tenant that owns the container, scoping its encryption key. A single-tenant daemon accepts only an empty value or 'default' and rejects anything else with INVALID_ARGUMENT.",
+					},
 					"pool": map[string]interface{}{
 						"type":        "string",
 						"description": "Place the container on any healthy backend tagged with this pool (e.g., 'demo', 'lab', 'prod'). When omitted, the request lands on the primary/local backend. Use list_backends to see available pools. Mutually exclusive with backend_id unless the chosen backend is already in this pool (the daemon validates consistency).",
@@ -605,9 +613,15 @@ func (s *Server) registerTools() {
 			Name: "list_backends",
 			Description: "List the cluster's backend hosts (the local daemon plus any " +
 				"tunnel-connected peers). Returns id, type (local/tunnel), health, " +
-				"hostname, OS, container count, and GPU inventory per backend. Use " +
-				"this when the agent needs to reason about peer topology — e.g. " +
-				"\"which host has GPU capacity?\" or \"is peer X healthy?\".",
+				"hostname, OS, container count, GPU inventory, and live host load " +
+				"(hostLoad: 1/5/15-minute CPU load averages with the host's core " +
+				"count, plus memory and disk used vs total) per backend. Use " +
+				"this when the agent needs to reason about peer topology or current " +
+				"machine loading — e.g. \"which host has GPU capacity?\", \"is peer X " +
+				"healthy?\", or \"how loaded is this machine right now?\". A backend " +
+				"with no hostLoad block means the load is UNKNOWN (probe failed or " +
+				"peer unreachable), not that the host is idle — never read a missing " +
+				"block as spare capacity.",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
@@ -949,7 +963,11 @@ func (s *Server) registerTools() {
 				"name: the command runs inside a named tmux session ON THE BOX, so a later call " +
 				"with the same `session` sees the same shell — `cd /app` then `pwd` returns " +
 				"/app. A human can `tmux attach` to that session too. The SSH target is the " +
-				"box's ssh_host (or its IP if the daemon reports none) and its SSH username.",
+				"box's ssh_host (or its IP if the daemon reports none) and its SSH username.\n\n" +
+				"Credential: against a control plane that can sign SSH certificates, connect uses a " +
+				"short-lived certificate scoped to this box and installs NOTHING on it — nothing to " +
+				"rotate and nothing left behind after a restart. Against a plain daemon it falls back " +
+				"to authorizing a managed key, as before. You do not configure which; it is detected.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1331,7 +1349,11 @@ func toolScopeAssignments() map[string]string {
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
-		"list_backups":   auth.ScopeBackupsRead,
+		// A restore test writes (creates and drops a scratch database in
+		// the target container), so it needs the write scope even though
+		// it never mutates the backup itself.
+		"verify_backup": auth.ScopeBackupsWrite,
+		"list_backups":  auth.ScopeBackupsRead,
 		// KMS envelope-encryption administration (admin-only)
 		"kms_status":              auth.ScopeKMSAdmin,
 		"kms_envelope_coverage":   auth.ScopeKMSAdmin,
@@ -1388,6 +1410,8 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		GPU:          getStringArg(args, "gpu", ""),
 		GPUs:         getStringSliceArg(args, "gpus"),
 		Monitoring:   getBoolArg(args, "monitoring", false),
+		Encrypted:    getBoolArg(args, "encrypted", false),
+		TenantID:     getStringArg(args, "tenant_id", ""),
 		Pool:         getStringArg(args, "pool", ""),
 		BackendID:    getStringArg(args, "backend_id", ""),
 	}
@@ -1541,7 +1565,18 @@ func handleListContainers(client API, args map[string]interface{}) (string, erro
 		return "No containers found.", nil
 	}
 
-	result := fmt.Sprintf("Found %d container(s):\n\n", resp.TotalCount)
+	// Count what is actually rendered, not what the daemon claimed (#1214).
+	//
+	// resp.TotalCount is a separate field that can disagree with the list
+	// below — most easily against a daemon that doesn't populate it, since
+	// the MCP server and the daemon are released and upgraded separately.
+	// A summary line that contradicts its own body is a trap for an agent:
+	// "Found 0 container(s)" is the kind of thing a caller acts on, and
+	// concluding a backend is empty (and therefore safe to wipe) has already
+	// cost a live container here once.
+	//
+	// len() cannot drift from what follows it.
+	result := fmt.Sprintf("Found %d container(s):\n\n", len(resp.Containers))
 	for _, container := range resp.Containers {
 		result += fmt.Sprintf("📦 %s\n", container.Name)
 		result += fmt.Sprintf("   Username: %s\n", container.Username)

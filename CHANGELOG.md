@@ -7,6 +7,194 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`connect` uses a short-lived SSH certificate when the server can sign one.**
+  The MCP `connect` tool authorized a managed long-lived key on the box and
+  dialed with it. That leaves a durable credential on every box an agent has
+  ever touched, and those copies drift — after a host restart a box can be left
+  with stale `authorized_keys` and no working login.
+
+  Against a control plane that signs SSH certificates, `connect` now generates a
+  throwaway keypair, has it signed for exactly that box, and uses a certificate
+  that expires in minutes. Nothing is installed on the box, so nothing is left
+  behind and nothing goes stale. The ephemeral key lives in a `0700` directory
+  for the duration of the call and is removed when it returns.
+
+  **Capability-detected, not configured.** A plain daemon has no signing
+  endpoint, and a flag describing which kind of server you pointed at is a flag
+  you will get wrong — so `connect` tries to issue and falls back to the managed
+  key when the endpoint is absent. Existing deployments are unaffected. A server
+  that *can* sign and then fails is surfaced rather than silently downgraded:
+  falling back there would install a long-lived key to paper over a
+  control-plane fault and never mention it.
+
+### Fixed
+
+- **Sentinel no longer tears down a backend's own reconnect (#769).** After a
+  backend host reboots — a routine event when it runs on preemptible capacity
+  — it reconnects its tunnel under the same spot id. `TunnelRegistry.Register`
+  closes the previous yamux session in order to replace the entry, and that
+  close woke the goroutine monitoring the OLD session, which then ran its
+  ordinary disconnect cleanup against the registration that had just replaced
+  it: proxy listeners closed, loopback alias removed, the spot unregistered,
+  and `OnDisconnect` fired, which strips that backend's users out of the
+  sshpiper config. The tunnel was up and healthy; nothing routed over it. SSH
+  to that host's containers stayed broken until an operator restarted the
+  sentinel by hand.
+
+  Each registration now carries a generation, and every teardown step is
+  conditional on that generation still being the current one — checked under
+  the same lock as the mutation it guards, so a superseded watcher cannot race
+  a fresh registration. A genuine disconnect is unaffected and still cleans up
+  fully. A reconnect now re-keys on its own (keysync applies immediately on
+  connect), so the manual `systemctl restart` workaround is no longer needed.
+
+### Added
+
+- **Live host load per backend in `list_backends` / `GET /v1/backends`** —
+  `BackendInfo` gains a `host_load` block: 1/5/15-minute CPU load averages
+  with the host's core count as the denominator, memory used vs total, disk
+  used vs total, and the sample timestamp. Covers the local daemon and every
+  healthy tunnel-connected peer, so BYOC hosts — which previously had no
+  load signal anywhere in the product — report load like any other backend.
+  Surfaced in `containarium backends list` / `backends get` (new CPU LOAD /
+  MEM / DISK columns) and in the `list_backends` MCP tool.
+
+  No new measurement or transport: `GetSystemInfo` already carried these
+  figures and `ListBackends` already fetched it for the local backend and
+  forwarded it to each peer — the projection into `BackendInfo` was the
+  missing step, which is why capacity and committed sums were visible while
+  actual load was not. This rides the peer fan-out rather than the
+  per-container driver path, so it is independent of BYOC container-metrics
+  work.
+
+  `host_load` is **null, never zeroed**, when no usable sample exists (probe
+  failed, peer unreachable). A host we could not measure must not render as
+  an idle one — that indistinguishability is what made placement decisions
+  blind. Used-byte figures are clamped to `[0, total]` because used and
+  available come from separate probes and a skewed read could otherwise
+  surface a negative "bytes in use".
+
+## [0.61.0] - 2026-07-27
+
+### Added
+
+- **Cloud metrics export now covers the platform domain, not just the
+  host.** v0.60.0 shipped the export toggle and the host series; this
+  round adds the groups that make an exported dashboard answer
+  operational questions rather than just "is the box alive":
+  a **heartbeat** series with a dead-man alert recipe, so the failure
+  class where the host or daemon simply dies is caught by metric
+  *absence* rather than going unnoticed (#1090); **API health** —
+  requests and errors bucketed by `code_class` via grpc-gateway's own
+  status mapping (#1092); **provisioning outcomes** — attempts,
+  failures and duration keyed by `create`/`delete` (#1094);
+  **connectivity** — healthy peer count plus each peer's tunnel
+  up/down state, which is how a BYOC peer gets represented at all
+  given it cannot export for itself (#1095); and **per-container**
+  CPU/memory/disk/network series, the last unimplemented piece of the
+  export design (#1098).
+
+- **`containarium cloud enroll --adopt-foreign`** — acknowledges, in
+  one explicit flag, that the host being enrolled already runs
+  cloud-managed containers belonging to another organization. The
+  control-plane half refuses such a host by default; this is the
+  operator's deliberate override. Note the flag must be in operators'
+  hands *before* the control-plane guard is deployed, since the guard
+  fails closed and this is the only way past it (#1104).
+
+- **`containarium doctor` now reports host security posture**, as its own
+  advisory section alongside the existing capability checks. For BYOC the
+  machine is the customer's, from an image we did not build, so "can this
+  host run workloads" and "is it safe to run them here" are different
+  questions — and until now only the first was ever asked. The new group
+  covers data-volume encryption (dm-crypt), Secure Boot, auditd, sshd
+  hardening (`PermitRootLogin` / `PasswordAuthentication`), unattended
+  security upgrades, and whether the cloud metadata endpoint is reachable
+  from the host. The daemon reports them to the control plane through the
+  existing status probe, so a control plane records posture per host with
+  no contract change.
+
+  Two properties worth knowing. **A check that cannot gather evidence
+  reports unmet, never a pass** — the point is to distinguish what we can
+  attest from what we cannot, and a check that passed on no evidence would
+  manufacture the assurance it is supposed to establish. So an ordinary
+  unhardened host will show several unmet items, including ones that may
+  well be fine (provider-managed disk encryption, for instance, is
+  invisible from inside the guest and is reported as unobservable rather
+  than absent). **Nothing here blocks anything**: posture checks are
+  advisory, `doctor`'s exit code is unchanged, and the daemon's
+  `self_check_ok` is still derived from the capability checks alone (#1106).
+
+### Fixed
+
+- **A resumed metrics export no longer re-emits under a placeholder
+  identity.** A daemon that resumed export on restart published its
+  host series as `backend_id="local", region=""` instead of its real
+  identity, splitting the host across two `backend_id` streams and
+  silently dropping it from any dashboard or alert keyed on
+  `backend_id` — the failure was invisible precisely where it
+  mattered. Export now waits until identity is wired (#1087).
+
+- **A box is now SSH-reachable as soon as it reports RUNNING** — the
+  sentinel learned about a box's SSH key only by polling each backend's
+  `/authorized-keys` on a 2-minute ticker, so a box created just after a
+  tick was RUNNING while sshpiper had no pipe for it and SSH answered
+  `Permission denied (publickey)` for up to two minutes (~50s typical).
+  Anything that trusted RUNNING as "ready" — CI, agents, the documented
+  create→ssh flow — failed its first connection attempts. The daemon now
+  calls a new HMAC-gated `POST /sentinel/keys/resync` whenever its
+  host-side key set changes (container create/delete, `AddSSHKey`,
+  `RemoveSSHKey`), and the sentinel re-pulls that backend's keys and
+  rewrites the sshpiper routing table immediately. Concurrent resyncs for
+  one backend coalesce on "a pull that started after this request
+  arrived", which is guaranteed to include the caller's key — never a
+  time-based skip, which is what would reintroduce the bug. The periodic
+  sync is unchanged and remains the convergence backstop, so a lost or
+  refused notification costs the old latency rather than reachability.
+  Revoked keys likewise stop routing at revocation instead of up to two
+  minutes later (#1100).
+
+### Documentation
+
+- Cloud-native metrics export: PRD for application-domain metrics
+  (#1086), the platform-domain metric-group design (#1088), the
+  committed GCM dashboard's platform group plus quickstart (#1096),
+  the BYOC no-export posture with a corrected heartbeat claim (#1097),
+  and a bare-VM quickstart carrying a real measured cost estimate
+  (#1099).
+
+### Security
+
+- **The sentinel's peer proxy now requires authentication.**
+  `/peer/<backend-id>/*` on the sentinel's binary-server port forwards to
+  that backend's daemon, and was the only route on that mux registered
+  with no middleware while every neighbouring `/sentinel/*` route was
+  HMAC-gated. The backend-id namespace on a sentinel is flat and global,
+  so anything able to reach that port could address every tunnel-joined
+  backend the sentinel fronts, across all organizations — enumerating
+  them and probing whatever each daemon exposes pre-auth. The daemon's
+  own authentication still stood behind it, so this was a
+  lateral-movement surface rather than an open door, but it is the layer
+  meant to stop the probing. It is now gated by the sentinel **admin**
+  secret, the same authority secret `/sentinel/tunnel-tokens` and
+  `/sentinel/byoc-routes` already use. Rejections are also uniform now:
+  an unknown backend id and a malformed path return a byte-identical 404
+  that no longer echoes the requested id back, so an authorized caller
+  cannot map a sentinel's backends by diffing error responses.
+
+  **Operator action required before upgrading.** A sentinel with no
+  `CONTAINARIUM_SENTINEL_ADMIN_SECRET` set now rejects every `/peer/`
+  request with 401 — fail-closed, since a fail-open fallback would skip
+  the fix precisely on the hosts whose operator never configured the
+  secret. If a control plane drives tunnel-joined backends through this
+  sentinel, set that secret **and** make sure the caller signs its
+  `/peer/` requests before rolling this out; otherwise those backends
+  become undrivable. The sentinel logs this loudly at startup when the
+  secret is absent (#1105).
+
+
 ## [0.60.0] - 2026-07-23
 
 ### Added

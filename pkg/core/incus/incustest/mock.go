@@ -21,6 +21,11 @@ type MockBackend struct {
 	// the container's IPAddress field.
 	WaitNetworkIP string
 
+	// StoragePoolName, if set, is what StoragePool reports. Empty yields
+	// incus.DefaultStoragePool, so existing tests see what they always did
+	// while a test that cares can point the mock at another pool (#1213).
+	StoragePoolName string
+
 	// Override hooks. If non-nil, the method delegates to the function and
 	// the default behavior is skipped.
 	CreateContainerFunc       func(config incus.ContainerConfig) error
@@ -287,6 +292,15 @@ func (m *MockBackend) GetRawInstance(name string) (map[string]string, string, er
 		return m.GetRawInstanceFunc(name)
 	}
 	return nil, "", nil
+}
+
+// StoragePool reports the configured pool, defaulting to incus's own default
+// so existing tests see exactly what they always did (#1213).
+func (m *MockBackend) StoragePool() string {
+	if m.StoragePoolName == "" {
+		return incus.DefaultStoragePool
+	}
+	return m.StoragePoolName
 }
 
 // Compile-time assertion that *MockBackend satisfies incus.Backend.

@@ -9,6 +9,23 @@ on:
     tags:
       - 'v*'   # e.g. v0.53.0
 
+  # Rehearsal trigger (#1119 follow-up). A tag push is currently the ONLY
+  # way these builds ever run, so the two release incidents this repo has
+  # recorded (v0.47.0's Windows cross-compile break, v0.48.0's web-ui build
+  # failure) were both invisible until the real release build failed — with a
+  # burned tag as the cost. This lets the identical build run on any ref
+  # WITHOUT publishing anything.
+  #
+  # Deliberately publish-free: nothing here pushes an image, uploads an
+  # artifact, or creates a Release. Publishing stays exclusively on tag push,
+  # so a rehearsal cannot become an accidental release.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build as (without v prefix), e.g. 0.61.0. Build only — publishes nothing.'
+        required: false
+        default: '0.0.0-dryrun'
+
 permissions:
   contents: read
   packages: write   # for GHCR push
@@ -33,7 +50,11 @@ jobs:
       - name: Derive image tags
         id: tags
         run: |
-          version="${GITHUB_REF#refs/tags/v}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
+          fi
           # Minor-series moving tag: 0.53.0 -> v0.53
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium"
@@ -53,7 +74,8 @@ jobs:
           build-args: |
             VERSION=${{ steps.tags.outputs.version }}
           platforms: linux/amd64
-          push: true
+          # Push on tag only; a rehearsal builds the image and discards it.
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM (buildx-default on push); explicit so it's
           # reviewable, matching sidecars.yml.

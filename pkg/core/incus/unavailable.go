@@ -28,6 +28,11 @@ func NewUnavailableBackend() *UnavailableBackend { return &UnavailableBackend{} 
 // Compile-time assertion.
 var _ Backend = (*UnavailableBackend)(nil)
 
+// StoragePool returns the default name rather than an error: it has no
+// signature to fail through, and a caller on a host with no incus never
+// reaches a create path where the value is used.
+func (*UnavailableBackend) StoragePool() string { return DefaultStoragePool }
+
 func (*UnavailableBackend) CreateContainer(ContainerConfig) error       { return ErrUnavailable }
 func (*UnavailableBackend) StartContainer(string) error                 { return ErrUnavailable }
 func (*UnavailableBackend) StopContainer(string, bool) error            { return ErrUnavailable }

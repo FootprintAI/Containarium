@@ -72,7 +72,10 @@ func (s *ContainerServer) CreateAlertRule(ctx context.Context, req *pb.CreateAle
 
 	severity := req.Severity
 	if severity == "" {
-		severity = "warning"
+		severity = alert.SeverityWarning
+	}
+	if err := alert.ValidateSeverity(severity); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	duration := req.Duration
 	if duration == "" {
@@ -196,6 +199,9 @@ func (s *ContainerServer) UpdateAlertRule(ctx context.Context, req *pb.UpdateAle
 		existing.Duration = req.Duration
 	}
 	if req.Severity != "" {
+		if err := alert.ValidateSeverity(req.Severity); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 		existing.Severity = req.Severity
 	}
 	if req.Description != "" {

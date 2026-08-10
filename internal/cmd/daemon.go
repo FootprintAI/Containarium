@@ -22,6 +22,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/server"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -31,38 +32,40 @@ import (
 )
 
 var (
-	daemonAddress        string
-	daemonPort           int
-	daemonHTTPPort       int
-	enableMTLS           bool
-	enableREST           bool
-	daemonCertsDir       string
-	jwtSecret            string
-	jwtSecretFile        string
-	swaggerDir           string
-	networkSubnet        string
-	skipInfraInit        bool
-	standaloneMode       bool
-	enableAppHosting     bool
-	postgresConnString   string
-	baseDomain           string
-	caddyAdminURL        string
-	caddyCertDir         string
-	alertWebhookURL      string
-	alertWebhookSecret   string
-	sentinelURL          string
-	sshHost              string
-	peerAddrs            []string
-	localBackendID       string
-	pool                 string
-	region               string
-	cpuOvercommitFactor  float64
-	cpuOvercommitEnforce bool
-	placementCPUAware    bool
-	publicHostname       string
-	publicAliases        []string
-	publicBaseDomains    []string
-	publicPort           int
+	daemonAddress          string
+	daemonPort             int
+	daemonHTTPPort         int
+	enableMTLS             bool
+	enableREST             bool
+	daemonCertsDir         string
+	jwtSecret              string
+	jwtSecretFile          string
+	swaggerDir             string
+	networkSubnet          string
+	skipInfraInit          bool
+	requireIsolatedStorage bool
+	standaloneMode         bool
+	enableAppHosting       bool
+	postgresConnString     string
+	baseDomain             string
+	caddyAdminURL          string
+	caddyCertDir           string
+	alertWebhookURL        string
+	alertWebhookSecret     string
+	sentinelURL            string
+	sshHost                string
+	peerAddrs              []string
+	localBackendID         string
+	pool                   string
+	storagePool            string
+	region                 string
+	cpuOvercommitFactor    float64
+	cpuOvercommitEnforce   bool
+	placementCPUAware      bool
+	publicHostname         string
+	publicAliases          []string
+	publicBaseDomains      []string
+	publicPort             int
 
 	proxyProtocol        bool
 	proxyProtocolTrusted []string
@@ -132,6 +135,7 @@ func init() {
 	// Infrastructure settings
 	daemonCmd.Flags().StringVar(&networkSubnet, "network-subnet", "10.100.0.1/24", "IPv4 subnet for container network (CIDR format, e.g., 10.100.0.1/24)")
 	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
+	daemonCmd.Flags().BoolVar(&requireIsolatedStorage, "require-isolated-storage", false, "Refuse to start on a storage pool that does not give each container its own volume. The dir driver puts every tenant rootfs on one filesystem, so they share one journal and one tenant's writeback can stall another tenant's fsync (see #1206). Off by default: a shared journal is harmless on a dev host or a single-tenant box. Turn it on for backends running mutually untrusting tenants.")
 	daemonCmd.Flags().BoolVar(&standaloneMode, "standalone", false, "Standalone mode: skip core containers (PostgreSQL, Caddy) and start immediately")
 
 	// App hosting settings
@@ -150,6 +154,7 @@ func init() {
 	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses (e.g., 10.128.0.5:18001)")
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
+	daemonCmd.Flags().StringVar(&storagePool, "storage-pool", "", "Incus STORAGE pool containers are created on (default \"default\"). Unrelated to --pool, which names a sentinel-fronted cluster. Point this at a second, per-container-volume pool to migrate tenants off a shared-filesystem `dir` pool without every newly created tenant landing back on it (#1206, #1213).")
 	daemonCmd.Flags().StringVar(&region, "region", "", "Region this backend serves; recorded in its capability profile (containarium backends profile). Empty falls back to the --pool name.")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
@@ -231,8 +236,19 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Initialize infrastructure (storage, network, profile) unless skipped or
 	// running on a host without incus (k8s runtime).
+	// Set the storage pool before ANY container is created. Process-wide
+	// because several subsystems build their own incus client and none of
+	// them thread daemon config; see incus.SetDefaultStoragePool.
+	incus.SetDefaultStoragePool(storagePool)
+	if storagePool != "" {
+		log.Printf("[storage] containers will be created on incus storage pool %q (--storage-pool)", storagePool)
+	}
+
 	if !skipInfraInit && incusClient != nil {
 		log.Printf("Initializing infrastructure...")
+		// Decide up front what happens if the storage pool doesn't isolate
+		// tenant volumes: warn, or refuse to come up (#1206).
+		incusClient.SetStoragePolicy(incus.StoragePolicyFromRequireFlag(requireIsolatedStorage))
 		networkConfig := incus.NetworkConfig{
 			Name:        "incusbr0",
 			IPv4Address: networkSubnet,
@@ -254,8 +270,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			networkSubnet = actual
 		}
 		log.Printf("  Network: incusbr0 (%s)", networkSubnet)
-		storageDriver := incusClient.GetStorageDriver("default")
-		log.Printf("  Storage: default (%s)", storageDriver)
+		// Report the isolation property alongside the driver name so the
+		// startup banner answers "can one tenant stall another's fsync?"
+		// rather than only "which driver is this?" (#1206).
+		storageDriver := incus.StorageDriver(incusClient.GetStorageDriver("default"))
+		log.Printf("  Storage: default (%s, %s)", storageDriver, storageDriver.Isolation())
 		log.Printf("  Profile: default (configured)")
 	}
 
@@ -855,11 +874,26 @@ func resolvePublicBaseDomains(public []string, base string) []string {
 // saveRecoveryConfigToPersistentStorage saves recovery config to persistent disk
 // This enables auto-recovery after instance recreation
 func saveRecoveryConfigToPersistentStorage(networkCIDR, baseDomain, caddyAdminURL, jwtSecretFile string, appHosting bool) error {
-	// Only save if the persistent storage path exists
-	persistentDir := "/mnt/incus-data"
+	// Only save if the persistent storage path exists.
+	persistentDir := hostcheck.DefaultRecoveryDir
 	if _, err := os.Stat(persistentDir); os.IsNotExist(err) {
-		// Persistent storage not mounted, skip
+		// Nothing provisioned there at all — no recovery config to write.
 		return nil
+	}
+	// os.Stat proves the directory exists; it cannot prove the directory
+	// is durable. Any host where this path exists for an incidental
+	// reason — a leftover mkdir from the startup script, a partial
+	// migration — used to be treated as persistent storage, and the
+	// config was written to the boot disk and destroyed by exactly the
+	// event it exists to survive (#1154).
+	//
+	// The write still goes ahead: it remains useful for an in-place
+	// daemon restart, and skipping it would lose that for no gain. What
+	// changes is that the host no longer reports silent success — the
+	// condition is logged here and surfaced as a `containarium doctor`
+	// check, so it is visible before a recovery rather than during one.
+	if warning := hostcheck.DescribeDurability(persistentDir); warning != "" {
+		log.Print(warning)
 	}
 
 	// Try to get ZFS source from current storage pool

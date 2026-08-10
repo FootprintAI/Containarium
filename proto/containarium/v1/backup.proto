@@ -27,6 +27,21 @@ enum BackupDestination {
   BACKUP_DESTINATION_GCS = 2;
 }
 
+// BackupEngine identifies the database engine a backup was taken from.
+//
+// Postgres is the only engine implemented today; the enum exists so that a
+// second one has somewhere to be named, and so that the engine a record was
+// taken with is a typed value rather than a string the reader has to trust.
+enum BackupEngine {
+  // Unset, or a record written by a daemon that predates this enum.
+  // Rejected wherever an engine has to be chosen — never treated as
+  // Postgres by default, because guessing the engine of a dump is how a
+  // restore silently targets the wrong one.
+  BACKUP_ENGINE_UNSPECIFIED = 0;
+
+  BACKUP_ENGINE_POSTGRES = 1;
+}
+
 // BackupRecord is the metadata index entry for one stored dump. The dump
 // itself lives at `location`; this record is persisted as a small JSON
 // sidecar in the daemon's backup directory so `ListBackups` works without
@@ -58,8 +73,95 @@ message BackupRecord {
   // for GCS.
   string location = 8;
 
-  // Database engine. "postgres" is the only engine in v1.
-  string engine = 9;
+  // Database engine the dump was taken with.
+  //
+  // An enum rather than a string because the valid values are an
+  // enumerated set, so the compiler should be the thing that rejects a
+  // typo rather than a driver lookup failing at dump time (#1157).
+  BackupEngine engine = 9;
+
+  // Outcome of the most recent restore test, unset until the backup has
+  // been verified. A recorded sha256 proves the bytes are intact; only
+  // this proves the dump is restorable (#1159).
+  BackupVerification last_verification = 10;
+
+  // Number of user relations (tables and partitioned tables, excluding
+  // system catalogs) in the source database at dump time — the manifest
+  // a restore test compares the restored schema against.
+  //
+  // Optional because it is absent on backups taken before verification
+  // existed, and because a source that cannot be queried still produces
+  // a valid dump. Unset means "no manifest": verification records what
+  // it found but has nothing to compare it to.
+  optional int64 relation_count = 11;
+}
+
+// VerificationResult is the outcome of a restore test. A backup whose
+// bytes are intact but which cannot be loaded by the engine is FAILED —
+// that distinction is the whole point of verification (see #1159).
+enum VerificationResult {
+  // Never verified, or the outcome could not be determined.
+  VERIFICATION_RESULT_UNSPECIFIED = 0;
+
+  // The dump restored into a scratch database and passed every
+  // engine-appropriate sanity check.
+  VERIFICATION_RESULT_PASSED = 1;
+
+  // The dump could not be restored, or restored but failed a sanity
+  // check. `error` carries the engine's own message.
+  VERIFICATION_RESULT_FAILED = 2;
+}
+
+// VerificationCheck is one engine-appropriate assertion made during a
+// restore test, recorded individually so the evidence shows *what* was
+// checked rather than just a pass/fail bit.
+message VerificationCheck {
+  // Check identifier, e.g. "restore", "connect", "relation_count".
+  string name = 1;
+
+  // Whether this individual check passed.
+  bool passed = 2;
+
+  // Human-readable outcome, e.g. "42 relations in scratch database".
+  // For a failing check this carries the engine's own error text.
+  string detail = 3;
+}
+
+// BackupVerification is the audit artifact for one restore test: who ran
+// it, when, against what, and what the engine said. Persisted on the
+// BackupRecord so `ListBackups` can answer "last verified" and so the
+// evidence outlives the run that produced it (ISO 27001 A.8.13 wants
+// backups *tested*, not just taken).
+message BackupVerification {
+  // RFC3339 UTC timestamp of when verification completed.
+  string verified_at = 1;
+
+  // Outcome.
+  VerificationResult result = 2;
+
+  // The engine's own error when result is FAILED — pg_restore's own
+  // message, so an operator sees why the dump would not load rather
+  // than a wrapper's summary. Empty on success. This is engine stderr
+  // captured verbatim: it is persisted and returned over the API, so
+  // treat it with the same care as any other diagnostic output.
+  string error = 3;
+
+  // Container the dump was restored into. Always distinct from the
+  // container the backup was taken from.
+  string target_container = 4;
+
+  // Throwaway database created for the test and dropped afterwards.
+  string scratch_database = 5;
+
+  // Wall-clock duration of the restore test.
+  int64 duration_ms = 6;
+
+  // Authenticated subject that requested verification, for the "who"
+  // half of the audit record. Empty when unauthenticated (dev mode).
+  string verified_by = 7;
+
+  // Individual checks performed, in execution order.
+  repeated VerificationCheck checks = 8;
 }
 
 // PgConnection carries the connection parameters pg_dump / pg_restore use
@@ -175,6 +277,40 @@ message RestoreBackupResponse {
   string message = 1;
 }
 
+// VerifyBackupRequest restore-tests a stored dump: it loads the dump into
+// a throwaway database inside a *target* container and runs
+// engine-appropriate sanity checks, then drops the scratch database.
+//
+// The target is always a container other than the one the backup came
+// from — verification must never touch the source database. Supply a
+// disposable container as the target; the daemon rejects a request whose
+// target resolves to the source container.
+message VerifyBackupRequest {
+  // Backup to verify.
+  string id = 1;
+
+  // Tenant whose container is used as the throwaway restore target.
+  // Required, and must differ from the backup's own tenant container.
+  string target_username = 2;
+
+  // Connection parameters for the *target* container's Postgres. The
+  // scratch database name is generated by the daemon, so
+  // connection.database is ignored here.
+  PgConnection connection = 3;
+}
+
+message VerifyBackupResponse {
+  // Operator-facing summary, e.g. "verification passed: <id>".
+  string message = 1;
+
+  // The verification artifact, including per-check detail and the
+  // engine's own error on failure.
+  BackupVerification verification = 2;
+
+  // The backup record with last_verification updated.
+  BackupRecord record = 3;
+}
+
 // DeleteBackupRequest removes a stored dump and its index entry.
 message DeleteBackupRequest {
   string id = 1;
@@ -235,6 +371,19 @@ service BackupService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Restore a backup";
       description: "Streams a stored dump back into a container's database via pg_restore. Destructive when clean=true.";
+      tags: "Backups";
+    };
+  }
+
+  // VerifyBackup restore-tests a stored dump against a throwaway target.
+  rpc VerifyBackup(VerifyBackupRequest) returns (VerifyBackupResponse) {
+    option (google.api.http) = {
+      post: "/v1/backups/{id}/verify"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Verify a backup";
+      description: "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.";
       tags: "Backups";
     };
   }

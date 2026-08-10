@@ -314,7 +314,9 @@ message CreateContainerRequest {
   string static_ip = 8;
 
   // Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
-  // See available stacks in configs/stacks.yaml
+  // Run `containarium create --help` for the ids and what each one installs; the
+  // catalog itself is pkg/core/stacks/stacks.yaml, overridable per host at
+  // /etc/containarium/stacks.yaml.
   string stack = 9;
 
   // GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
@@ -413,6 +415,31 @@ message CreateContainerRequest {
   // non-empty `gpu` is treated as a single-element list. Each device is
   // resolved to a stable PCI address at create time.
   repeated string gpus = 23;
+
+  // Encrypt the container's ZFS dataset with a tenant-scoped key rather
+  // than the pool-wide key, so a co-tenant — or host root, once the
+  // container is stopped and the key unloaded — sees ciphertext.
+  //
+  // Requires the daemon to be wired with a KeyProvider. Without one the
+  // request fails with FAILED_PRECONDITION; it never falls back to
+  // plaintext, because a create that silently ignores this flag would
+  // hand the caller an encryption guarantee they do not have.
+  //
+  // Default false: existing containers keep their current posture
+  // (pool-level encryption, or none). See
+  // docs/ZFS-PER-CONTAINER-ENCRYPTION-DESIGN.md.
+  bool encrypted = 24;
+
+  // Tenant that owns this container, scoping the encryption key: all of
+  // a tenant's containers share one ZFS encryptionroot, and different
+  // tenants always have distinct ones.
+  //
+  // The OSS daemon is single-tenant and accepts only "" or "default",
+  // rejecting anything else with INVALID_ARGUMENT; the multi-tenant
+  // cloud daemon accepts any non-empty value. The field is defined here
+  // so the wire shape stays stable across the OSS → cloud transition
+  // rather than changing when tenancy lands.
+  string tenant_id = 25;
 }
 
 // CreateContainerResponse is the response from creating a container

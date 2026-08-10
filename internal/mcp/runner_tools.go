@@ -50,7 +50,7 @@ func runnerTools() []Tool {
 				"properties": map[string]interface{}{
 					"repo": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub repo in owner/repo format (e.g. footprintai/containarium).",
+						"description": "Registration target: \"owner/repo\" for one repository, or a bare \"owner\" for an ORGANIZATION runner every repo in the org can use. The shape selects the scope. An org target needs a token with the admin:org scope, not repo.",
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
@@ -80,6 +80,14 @@ func runnerTools() []Tool {
 						"type":        "string",
 						"description": "Path to the SSH public key used to create boxes and SSH into them for install. Default ~/.ssh/id_rsa.pub.",
 					},
+					"backend_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Place the runner boxes on a specific backend (e.g. a named BYOC host). Same semantics as create_container's backend_id. Omit to keep the daemon's default placement.",
+					},
+					"pool": map[string]interface{}{
+						"type":        "string",
+						"description": "Place the runner boxes on any healthy backend in this pool. Same semantics as create_container's pool. Mutually exclusive with backend_id; the daemon validates the pair.",
+					},
 				},
 				"required": []string{"repo", "github_pat"},
 			},
@@ -97,7 +105,7 @@ func runnerTools() []Tool {
 				"properties": map[string]interface{}{
 					"repo": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub repo in owner/repo format.",
+						"description": "Registration target: \"owner/repo\" for one repository, or a bare \"owner\" for an ORGANIZATION runner every repo in the org can use. The shape selects the scope. An org target needs a token with the admin:org scope, not repo.",
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
@@ -127,7 +135,7 @@ func runnerTools() []Tool {
 				"properties": map[string]interface{}{
 					"repo": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub repo in owner/repo format.",
+						"description": "Registration target: \"owner/repo\" for one repository, or a bare \"owner\" for an ORGANIZATION runner every repo in the org can use. The shape selects the scope. An org target needs a token with the admin:org scope, not repo.",
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
@@ -184,7 +192,14 @@ func (a *mcpDaemonAPI) DeleteContainer(username string, force bool) error {
 // Per CLAUDE.md: this is the same shape of dependency graph the
 // CLI builds in internal/cmd/runner.go — both call into
 // internal/runner with the same orchestrator.
-func buildMCPRunnerDeps(client API, sentinel, sshKeyPath string, withSSH bool) (runner.Deps, string, error) {
+// placement steers where runner boxes land, mirroring `containarium create`
+// (#1216). Zero value keeps today's default placement.
+type placement struct {
+	Pool      string
+	BackendID string
+}
+
+func buildMCPRunnerDeps(client API, sentinel, sshKeyPath string, withSSH bool, place placement) (runner.Deps, string, error) {
 	api := &mcpDaemonAPI{c: client}
 	creator := func(_ context.Context, name, sshPubKey string) (string, string, error) {
 		req := CreateContainerRequest{
@@ -197,6 +212,10 @@ func buildMCPRunnerDeps(client API, sentinel, sshKeyPath string, withSSH bool) (
 			Image:        "images:ubuntu/24.04",
 			EnablePodman: true,
 			SSHKeys:      splitMCPKey(sshPubKey),
+			// Placement, same semantics as create_container. Empty leaves
+			// the daemon's default placement untouched (#1216).
+			Pool:      place.Pool,
+			BackendID: place.BackendID,
 		}
 		resp, err := client.CreateContainer(req)
 		if err != nil {
@@ -368,7 +387,10 @@ func handleProvisionRunners(client API, args map[string]interface{}) (string, er
 
 	sentinel := getStringArg(args, "sentinel", "")
 	sshKeyPath := getStringArg(args, "ssh_key_path", "")
-	deps, sshPubKey, err := buildMCPRunnerDeps(client, sentinel, sshKeyPath, true)
+	deps, sshPubKey, err := buildMCPRunnerDeps(client, sentinel, sshKeyPath, true, placement{
+		Pool:      getStringArg(args, "pool", ""),
+		BackendID: getStringArg(args, "backend_id", ""),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -387,7 +409,7 @@ func handleListRunners(client API, args map[string]interface{}) (string, error) 
 	if repo == "" || pat == "" {
 		return "", fmt.Errorf("repo and github_pat are required")
 	}
-	deps, _, err := buildMCPRunnerDeps(client, "", "", false)
+	deps, _, err := buildMCPRunnerDeps(client, "", "", false, placement{})
 	if err != nil {
 		return "", err
 	}
@@ -409,7 +431,7 @@ func handleRemoveRunner(client API, args map[string]interface{}) (string, error)
 	if repo == "" || pat == "" || name == "" {
 		return "", fmt.Errorf("repo, github_pat, and name are required")
 	}
-	deps, _, err := buildMCPRunnerDeps(client, "", "", false)
+	deps, _, err := buildMCPRunnerDeps(client, "", "", false, placement{})
 	if err != nil {
 		return "", err
 	}

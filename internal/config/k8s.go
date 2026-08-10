@@ -26,6 +26,7 @@ const (
 	EnvK8sDisableMemoryFloor       = "CONTAINARIUM_K8S_DISABLE_MEMORY_FLOOR"
 	EnvK8sOperator                 = "CONTAINARIUM_K8S_OPERATOR"
 	EnvK8sBoxNamespace             = "CONTAINARIUM_K8S_BOX_NAMESPACE"
+	EnvK8sRuntimeClass             = "CONTAINARIUM_K8S_RUNTIME_CLASS"
 )
 
 // K8s defaults applied by LoadK8s when the variable is unset.
@@ -118,6 +119,16 @@ type K8s struct {
 	// BoxNamespace is where the convergent create path writes Box CRs when the
 	// operator is enabled. (EnvK8sBoxNamespace; default "default")
 	BoxNamespace string
+
+	// RuntimeClass is the Kubernetes RuntimeClass every box pod is scheduled
+	// under. Empty (the default) leaves RuntimeClassName unset so pods run on
+	// the cluster's default runtime — `runc`, sharing the host kernel. Set to
+	// "runsc" on a node pool with gVisor installed to run boxes behind a
+	// userspace kernel. Not validated here: whether the class exists is a
+	// cluster fact the daemon cannot check at startup, and an unknown class
+	// surfaces as a clear pod-level scheduling failure.
+	// (EnvK8sRuntimeClass)
+	RuntimeClass string
 }
 
 // LoadK8s reads the CONTAINARIUM_K8S_* namespace from the environment once,
@@ -142,6 +153,7 @@ func LoadK8s() K8s {
 		DisableDefaultMemoryFloor: getBool(EnvK8sDisableMemoryFloor),
 		OperatorEnabled:           getBool(EnvK8sOperator),
 		BoxNamespace:              getString(EnvK8sBoxNamespace, defaultK8sBoxNamespace),
+		RuntimeClass:              getString(EnvK8sRuntimeClass, ""),
 	}
 }
 

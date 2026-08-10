@@ -20,7 +20,7 @@ When using the sentinel + spot VM architecture, SSH traffic flows through sshpip
 
 - **sshpiper** (port 22) acts as an SSH reverse proxy on the sentinel. It sees real client IPs and bans brute-force attackers via the `failtoban` plugin (3 failures = 1h ban).
 - **sshd** on the sentinel listens on port 2222 for management/IAP access only.
-- Authorized keys are synced from the spot VM every 2 minutes. sshpiper routes each user to the spot VM automatically.
+- Authorized keys are synced from the spot VM whenever the daemon's key set changes — creating a box, deleting one, or adding/removing a key makes the daemon call the sentinel's `POST /sentinel/keys/resync`, so a new box is SSH-reachable as soon as it is running. A 2-minute periodic sync remains as the convergence backstop for anything a notification missed (sentinel restart, daemon crash mid-create). sshpiper routes each user to the spot VM automatically.
 - Client SSH config is unchanged — users connect to the sentinel's static IP on port 22 as before.
 
 ### Single VM (Development)

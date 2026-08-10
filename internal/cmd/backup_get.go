@@ -31,7 +31,7 @@ func runBackupGet(cmd *cobra.Command, args []string) error {
 	fmt.Printf("ID:          %s\n", r.Id)
 	fmt.Printf("User:        %s\n", r.Username)
 	fmt.Printf("Database:    %s\n", r.Database)
-	fmt.Printf("Engine:      %s\n", r.Engine)
+	fmt.Printf("Engine:      %s\n", engineLabel(r.Engine))
 	fmt.Printf("Created:     %s\n", r.CreatedAt)
 	fmt.Printf("Size:        %s\n", humanBytes(r.SizeBytes))
 	fmt.Printf("SHA-256:     %s\n", r.Sha256)

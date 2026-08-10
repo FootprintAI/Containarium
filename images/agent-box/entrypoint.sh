@@ -65,7 +65,10 @@ dropbear_flags=(-F -E -s -j -k -p 2222 -r "$ED_HOSTKEY" -r "$RSA_HOSTKEY")
 #          so the shell can't reach the cluster network.
 case "${AGENTBOX_MODE:-mcp}" in
   mcp)
-    exec dropbear "${dropbear_flags[@]}" -c /usr/local/bin/agent-box
+    # agent-box-session, not agent-box: the wrapper loads the tenant's
+    # mounted secrets into the environment first, per session, so a
+    # refreshed Secret reaches the next session without a restart (#1190).
+    exec dropbear "${dropbear_flags[@]}" -c /usr/local/bin/agent-box-session
     ;;
   shell)
     echo "[agent-box-entrypoint] AGENTBOX_MODE=shell — interactive shell enabled, forced-command MCP disabled" >&2

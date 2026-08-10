@@ -21,6 +21,7 @@ the ISO 27001 A.8.13 control mapping.
   containarium backup create alice --database app --dest gcs --gcs-bucket gs://my-backups/pg --server <host>
   containarium backup list alice --server <host>
   containarium backup restore alice-app-20260605T130405Z --clean --server <host>
+  containarium backup verify alice-app-20260605T130405Z --target scratch --server <host>
   containarium backup delete alice-app-20260605T130405Z --server <host>`,
 }
 
@@ -36,9 +37,14 @@ type backupAPI interface {
 	ListBackups(username string) ([]*pb.BackupRecord, error)
 	GetBackup(id string) (*pb.BackupRecord, error)
 	RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBackupResponse, error)
+	VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error)
 	DeleteBackup(id string) (*pb.DeleteBackupResponse, error)
 	Close() error
 }
+
+// newBackupClientFn is the seam tests substitute to exercise a backup
+// command's output and exit-code handling without a live daemon.
+var newBackupClientFn = newBackupClient
 
 func newBackupClient() (backupAPI, error) {
 	if serverAddr == "" {
@@ -64,6 +70,21 @@ func parseDestination(s string) (pb.BackupDestination, error) {
 }
 
 // destLabel renders a destination enum for human output.
+// engineLabel renders the engine the way it read before it became an enum
+// (#1157). The wire value is now BACKUP_ENGINE_POSTGRES; a human running
+// `backup get` should still see "postgres".
+func engineLabel(e pb.BackupEngine) string {
+	switch e {
+	case pb.BackupEngine_BACKUP_ENGINE_POSTGRES:
+		return "postgres"
+	default:
+		// Covers a record written before the enum existed, and one whose
+		// engine this build does not know. Both are genuinely unknown to
+		// the reader, and saying so beats naming an engine on a guess.
+		return "unspecified"
+	}
+}
+
 func destLabel(d pb.BackupDestination) string {
 	switch d {
 	case pb.BackupDestination_BACKUP_DESTINATION_LOCAL:

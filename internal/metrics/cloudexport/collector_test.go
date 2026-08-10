@@ -11,15 +11,18 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// fakeSources is a Sources whose SystemResources snapshot and error are
-// fully controlled by the test. AllContainerMetrics is present to
-// satisfy the interface (the #1070 host collector never calls it).
+// fakeSources is a Sources whose SystemResources/AllContainerMetrics
+// snapshots and errors are fully controlled by the test.
 type fakeSources struct {
 	sr  *SystemResources
 	err error
+
+	containers    map[string]*pb.ContainerMetrics
+	containersErr error
 }
 
 func (f *fakeSources) SystemResources(ctx context.Context) (*SystemResources, error) {
@@ -30,7 +33,10 @@ func (f *fakeSources) SystemResources(ctx context.Context) (*SystemResources, er
 }
 
 func (f *fakeSources) AllContainerMetrics(ctx context.Context) (map[string]*pb.ContainerMetrics, error) {
-	return nil, nil
+	if f.containersErr != nil {
+		return nil, f.containersErr
+	}
+	return f.containers, nil
 }
 
 func sampleResources() *SystemResources {
@@ -165,13 +171,72 @@ func TestExportedSeries_MatchesAllowlistGolden(t *testing.T) {
 	}
 }
 
+// fakePlatformSources is a PlatformSources whose snapshots are fully
+// controlled by the test.
+type fakePlatformSources struct {
+	api       platformstats.APISnapshot
+	provision platformstats.ProvisionSnapshot
+	peers     []PeerState
+}
+
+func (f *fakePlatformSources) APIStats() platformstats.APISnapshot {
+	return f.api
+}
+
+func (f *fakePlatformSources) ProvisionStats() platformstats.ProvisionSnapshot {
+	return f.provision
+}
+
+func (f *fakePlatformSources) Peers() []PeerState {
+	return f.peers
+}
+
+// flattenPoints returns every emitted datapoint (gauge OR cumulative
+// counter) as (name, value, attributes). Separate from flattenGauges
+// (which deliberately fatals on anything but a gauge, locking in that
+// the #1070 host/heartbeat series are gauge-only) because the platform
+// group's api.requests/api.errors are Int64ObservableCounters —
+// asserting on them needs a helper that accepts Sum[int64] too.
+func flattenPoints(t *testing.T, rm metricdata.ResourceMetrics) []point {
+	t.Helper()
+	var pts []point
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch g := m.Data.(type) {
+			case metricdata.Gauge[float64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, fval: dp.Value, attrs: dp.Attributes})
+				}
+			case metricdata.Gauge[int64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, ival: dp.Value, isInt: true, attrs: dp.Attributes})
+				}
+			case metricdata.Sum[int64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, ival: dp.Value, isInt: true, attrs: dp.Attributes})
+				}
+			case metricdata.Sum[float64]:
+				for _, dp := range g.DataPoints {
+					pts = append(pts, point{name: m.Name, fval: dp.Value, attrs: dp.Attributes})
+				}
+			default:
+				t.Fatalf("metric %q has unhandled data type %T", m.Name, m.Data)
+			}
+		}
+	}
+	return pts
+}
+
 // collectGroupsOnce stands up a ManualReader-backed MeterProvider for a
 // specific set of enabled groups and pulls one collection, so the
 // per-group golden can assert exactly which series each group emits.
-func collectGroupsOnce(t *testing.T, groups []pb.CloudMetricsGroup, sources Sources, labels Labels) metricdata.ResourceMetrics {
+// platformSources may be nil — the platform group registers no
+// instruments without one, matching production's "not wired yet"
+// behavior.
+func collectGroupsOnce(t *testing.T, groups []pb.CloudMetricsGroup, sources Sources, platformSources PlatformSources, labels Labels) metricdata.ResourceMetrics {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
-	c := NewCollector(CollectorOptions{Sources: sources, Labels: labels, Groups: groups})
+	c := NewCollector(CollectorOptions{Sources: sources, PlatformSources: platformSources, Labels: labels, Groups: groups})
 	mp, err := c.buildMeterProvider(reader)
 	if err != nil {
 		t.Fatalf("buildMeterProvider: %v", err)
@@ -226,7 +291,7 @@ func TestExportedSeries_PerGroupGolden(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rm := collectGroupsOnce(t, tc.groups, &fakeSources{sr: sampleResources()}, sampleLabels())
+			rm := collectGroupsOnce(t, tc.groups, &fakeSources{sr: sampleResources()}, nil, sampleLabels())
 			pts := flattenGauges(t, rm)
 
 			got := map[string]bool{}
@@ -526,4 +591,746 @@ func TestIntervalFloor(t *testing.T) {
 	if got := c.interval; got != 120*time.Second {
 		t.Errorf("IntervalSeconds=120 -> interval %v, want 120s", got)
 	}
+}
+
+// samplePlatformSnapshot is a representative, non-trivial API snapshot
+// for the platform-series tests below.
+func samplePlatformSnapshot() platformstats.APISnapshot {
+	return platformstats.APISnapshot{
+		RequestsByClass: map[platformstats.CodeClass]int64{
+			platformstats.CodeClassOK:          42,
+			platformstats.CodeClassClientError: 3,
+			platformstats.CodeClassServerError: 1,
+		},
+		ErrorsByClass: map[platformstats.CodeClass]int64{
+			platformstats.CodeClassClientError: 3,
+			platformstats.CodeClassServerError: 1,
+		},
+	}
+}
+
+// pointsByNameAndClass indexes flattened points by (series name,
+// code_class label value) for easy per-class assertions.
+func pointsByNameAndClass(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		class, _ := p.attrs.Value(attribute.Key(LabelCodeClass))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][class.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_PlatformAPIHealth is #1082's acceptance criterion:
+// enabling the platform group with a wired PlatformSources emits
+// containarium.platform.api.requests/.errors, one point per code_class,
+// with the exact cumulative values the snapshot reports.
+func TestExportedSeries_PlatformAPIHealth(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{api: samplePlatformSnapshot()}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNameClass := pointsByNameAndClass(pts)
+
+	wantRequests := map[string]int64{"ok": 42, "client_error": 3, "server_error": 1}
+	for class, want := range wantRequests {
+		p, ok := byNameClass[MetricPlatformAPIRequests][class]
+		if !ok {
+			t.Fatalf("missing %s{code_class=%q}", MetricPlatformAPIRequests, class)
+		}
+		if p.ival != want {
+			t.Errorf("%s{code_class=%q} = %d, want %d", MetricPlatformAPIRequests, class, p.ival, want)
+		}
+	}
+
+	// api.errors carries only the error classes — "ok" is never an error
+	// and must not appear as a series point at all.
+	wantErrors := map[string]int64{"client_error": 3, "server_error": 1}
+	for class, want := range wantErrors {
+		p, ok := byNameClass[MetricPlatformAPIErrors][class]
+		if !ok {
+			t.Fatalf("missing %s{code_class=%q}", MetricPlatformAPIErrors, class)
+		}
+		if p.ival != want {
+			t.Errorf("%s{code_class=%q} = %d, want %d", MetricPlatformAPIErrors, class, p.ival, want)
+		}
+	}
+	if _, ok := byNameClass[MetricPlatformAPIErrors]["ok"]; ok {
+		t.Errorf("%s must not emit a code_class=ok point (ok is never an error)", MetricPlatformAPIErrors)
+	}
+}
+
+// TestExportedSeries_PlatformGroupNilSourcesEmitsNothing guards the
+// "not wired yet" default: enabling the platform group without a
+// PlatformSources must emit zero platform series, never panic.
+func TestExportedSeries_PlatformGroupNilSourcesEmitsNothing(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, nil, sampleLabels())
+	pts := flattenPoints(t, rm)
+	for _, p := range pts {
+		if p.name == MetricPlatformAPIRequests || p.name == MetricPlatformAPIErrors {
+			t.Errorf("platform series %q emitted with no PlatformSources wired", p.name)
+		}
+	}
+}
+
+// TestNoTenantLabels_PlatformSeries locks in #1082's cardinality
+// acceptance criterion: the platform API series carry exactly
+// backend_id/hostname/region/code_class and nothing else — no
+// per-route, per-user, or per-org label, even though platformstats
+// itself has no channel to supply one.
+func TestNoTenantLabels_PlatformSeries(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{api: samplePlatformSnapshot()}, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	// Enabling the platform group also emits the always-on heartbeat
+	// (buildMeterProvider registers it unconditionally, independent of
+	// groups) — it has its own label contract and its own test
+	// (TestHeartbeatLabels); only the two platform series belong here.
+	var pts []point
+	for _, p := range all {
+		if p.name == MetricPlatformAPIRequests || p.name == MetricPlatformAPIErrors {
+			pts = append(pts, p)
+		}
+	}
+	if len(pts) == 0 {
+		t.Fatal("no platform series emitted")
+	}
+
+	allowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+		// code_class value varies per point; checked separately below.
+	}
+	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path"}
+
+	for _, p := range pts {
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelCodeClass {
+				continue // value asserted by TestExportedSeries_PlatformAPIHealth
+			}
+			if wantVal, ok := allowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range allowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if !seen[LabelCodeClass] {
+			t.Errorf("series %q missing required label %q", p.name, LabelCodeClass)
+		}
+	}
+}
+
+// sampleProvisionSnapshot is a representative, non-trivial provisioning
+// snapshot for the tests below — mirrors what Stats.SnapshotProvision()
+// always returns: both operations present, even one with zero failures.
+func sampleProvisionSnapshot() platformstats.ProvisionSnapshot {
+	return platformstats.ProvisionSnapshot{
+		Attempts: map[platformstats.Operation]int64{
+			platformstats.OperationCreate: 10,
+			platformstats.OperationDelete: 4,
+		},
+		Failures: map[platformstats.Operation]int64{
+			platformstats.OperationCreate: 2,
+			platformstats.OperationDelete: 0,
+		},
+		DurationSecondsSum: map[platformstats.Operation]float64{
+			platformstats.OperationCreate: 55.5,
+			platformstats.OperationDelete: 8.0,
+		},
+	}
+}
+
+// pointsByNameAndOperation indexes flattened points by (series name,
+// operation label value), the provisioning-series analog of
+// pointsByNameAndClass.
+func pointsByNameAndOperation(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		op, _ := p.attrs.Value(attribute.Key(LabelOperation))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][op.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_PlatformProvisionOutcome is #1083's acceptance
+// criterion: enabling the platform group with a wired PlatformSources
+// emits containarium.platform.provision.attempts/.failures/
+// .duration_seconds_sum, one point per operation, with the exact
+// cumulative values the snapshot reports — including a zero-failure
+// operation (delete), which must still appear as an explicit 0 point,
+// not be silently absent.
+func TestExportedSeries_PlatformProvisionOutcome(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{provision: sampleProvisionSnapshot()}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNameOp := pointsByNameAndOperation(pts)
+
+	wantAttempts := map[string]int64{"create": 10, "delete": 4}
+	for op, want := range wantAttempts {
+		p, ok := byNameOp[MetricPlatformProvisionAttempts][op]
+		if !ok {
+			t.Fatalf("missing %s{operation=%q}", MetricPlatformProvisionAttempts, op)
+		}
+		if p.ival != want {
+			t.Errorf("%s{operation=%q} = %d, want %d", MetricPlatformProvisionAttempts, op, p.ival, want)
+		}
+	}
+
+	wantFailures := map[string]int64{"create": 2, "delete": 0}
+	for op, want := range wantFailures {
+		p, ok := byNameOp[MetricPlatformProvisionFailures][op]
+		if !ok {
+			t.Fatalf("missing %s{operation=%q} — a zero-failure operation must still emit an explicit 0 point", MetricPlatformProvisionFailures, op)
+		}
+		if p.ival != want {
+			t.Errorf("%s{operation=%q} = %d, want %d", MetricPlatformProvisionFailures, op, p.ival, want)
+		}
+	}
+
+	wantDuration := map[string]float64{"create": 55.5, "delete": 8.0}
+	for op, want := range wantDuration {
+		p, ok := byNameOp[MetricPlatformProvisionDurationSecondsSum][op]
+		if !ok {
+			t.Fatalf("missing %s{operation=%q}", MetricPlatformProvisionDurationSecondsSum, op)
+		}
+		if p.fval != want {
+			t.Errorf("%s{operation=%q} = %v, want %v", MetricPlatformProvisionDurationSecondsSum, op, p.fval, want)
+		}
+	}
+}
+
+// TestExportedSeries_PlatformGroup_ProvisionZeroWhenNotWired guards the
+// "not wired yet" default for the provisioning series specifically: a
+// PlatformSources whose ProvisionStats returns the zero value (as an
+// older adapter or a minimal fake might) must not panic and must not
+// fabricate an operation the snapshot didn't report.
+func TestExportedSeries_PlatformGroup_ProvisionZeroWhenNotWired(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	for _, p := range pts {
+		switch p.name {
+		case MetricPlatformProvisionAttempts, MetricPlatformProvisionFailures, MetricPlatformProvisionDurationSecondsSum:
+			t.Errorf("provisioning series %q emitted a point from a zero-value ProvisionSnapshot", p.name)
+		}
+	}
+}
+
+// TestNoTenantLabels_ProvisionSeries locks in #1083's cardinality
+// acceptance criterion: the provisioning series carry exactly
+// backend_id/hostname/region/operation and nothing else.
+func TestNoTenantLabels_ProvisionSeries(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{provision: sampleProvisionSnapshot()}, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	var pts []point
+	for _, p := range all {
+		switch p.name {
+		case MetricPlatformProvisionAttempts, MetricPlatformProvisionFailures, MetricPlatformProvisionDurationSecondsSum:
+			pts = append(pts, p)
+		}
+	}
+	if len(pts) == 0 {
+		t.Fatal("no provisioning series emitted")
+	}
+
+	allowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+	}
+	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path"}
+
+	for _, p := range pts {
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelOperation {
+				continue // value asserted by TestExportedSeries_PlatformProvisionOutcome
+			}
+			if wantVal, ok := allowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range allowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if !seen[LabelOperation] {
+			t.Errorf("series %q missing required label %q", p.name, LabelOperation)
+		}
+	}
+}
+
+// sampleConnectivitySnapshot is a representative peer snapshot for the
+// tests below: one healthy peer, one unhealthy — so both tunnel.state
+// values (1 and 0) and a partial peers.connected count are exercised in
+// one fixture.
+func sampleConnectivitySnapshot() []PeerState {
+	return []PeerState{
+		{ID: "byoc-host-a", Healthy: true},
+		{ID: "byoc-host-b", Healthy: false},
+	}
+}
+
+// pointsByNameAndPeer indexes flattened points by (series name, peer_id
+// label value), the connectivity-series analog of pointsByNameAndClass /
+// pointsByNameAndOperation. Points with no peer_id label (peers.connected)
+// are indexed under the empty string.
+func pointsByNameAndPeer(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		peerID, _ := p.attrs.Value(attribute.Key(LabelPeerID))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][peerID.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_PlatformConnectivity is #1084's acceptance
+// criterion: enabling the platform group with a wired PlatformSources
+// emits containarium.platform.peers.connected as the count of healthy
+// peers, and containarium.platform.tunnel.state as one 0/1 point per
+// registered peer, keyed by peer_id.
+func TestExportedSeries_PlatformConnectivity(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{peers: sampleConnectivitySnapshot()}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNamePeer := pointsByNameAndPeer(pts)
+
+	connected, ok := byNamePeer[MetricPlatformPeersConnected][""]
+	if !ok {
+		t.Fatalf("missing %s", MetricPlatformPeersConnected)
+	}
+	if connected.ival != 1 {
+		t.Errorf("%s = %d, want 1 (one healthy peer of two)", MetricPlatformPeersConnected, connected.ival)
+	}
+
+	wantTunnelState := map[string]int64{"byoc-host-a": 1, "byoc-host-b": 0}
+	for peerID, want := range wantTunnelState {
+		p, ok := byNamePeer[MetricPlatformTunnelState][peerID]
+		if !ok {
+			t.Fatalf("missing %s{peer_id=%q} — an unhealthy peer must still emit an explicit 0 point", MetricPlatformTunnelState, peerID)
+		}
+		if p.ival != want {
+			t.Errorf("%s{peer_id=%q} = %d, want %d", MetricPlatformTunnelState, peerID, p.ival, want)
+		}
+	}
+}
+
+// TestTunnelState_FlipsOnHealthChange locks in the issue's literal
+// acceptance criterion at the collector level: a peer flipping from
+// healthy to unhealthy (and back) between two ticks flips its
+// tunnel.state point accordingly, and peers.connected moves with it.
+// The real end-to-end timing (a stopped tunnel reflected within 2 export
+// intervals) is a live property of the peer-pool health check + export
+// cadence, not reproducible in a unit test — this pins the collector's
+// half of that contract: it always reports whatever PlatformSources
+// currently says, with no caching or debouncing of its own.
+func TestTunnelState_FlipsOnHealthChange(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	src := &fakePlatformSources{peers: []PeerState{{ID: "byoc-host-a", Healthy: true}}}
+
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{Sources: &fakeSources{sr: sampleResources()}, PlatformSources: src, Labels: sampleLabels(), Groups: []pb.CloudMetricsGroup{platform}})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 1): %v", err)
+	}
+	byNamePeer := pointsByNameAndPeer(flattenPoints(t, rm))
+	if p := byNamePeer[MetricPlatformTunnelState]["byoc-host-a"]; p.ival != 1 {
+		t.Fatalf("tick 1: tunnel.state = %d, want 1 (healthy)", p.ival)
+	}
+	if p := byNamePeer[MetricPlatformPeersConnected][""]; p.ival != 1 {
+		t.Fatalf("tick 1: peers.connected = %d, want 1", p.ival)
+	}
+
+	// Tunnel drops.
+	src.peers = []PeerState{{ID: "byoc-host-a", Healthy: false}}
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 2): %v", err)
+	}
+	byNamePeer = pointsByNameAndPeer(flattenPoints(t, rm))
+	if p := byNamePeer[MetricPlatformTunnelState]["byoc-host-a"]; p.ival != 0 {
+		t.Fatalf("tick 2: tunnel.state = %d, want 0 (dropped)", p.ival)
+	}
+	if p := byNamePeer[MetricPlatformPeersConnected][""]; p.ival != 0 {
+		t.Fatalf("tick 2: peers.connected = %d, want 0", p.ival)
+	}
+
+	// Tunnel reconnects.
+	src.peers = []PeerState{{ID: "byoc-host-a", Healthy: true}}
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 3): %v", err)
+	}
+	byNamePeer = pointsByNameAndPeer(flattenPoints(t, rm))
+	if p := byNamePeer[MetricPlatformTunnelState]["byoc-host-a"]; p.ival != 1 {
+		t.Fatalf("tick 3: tunnel.state = %d, want 1 (reconnected)", p.ival)
+	}
+	if p := byNamePeer[MetricPlatformPeersConnected][""]; p.ival != 1 {
+		t.Fatalf("tick 3: peers.connected = %d, want 1", p.ival)
+	}
+}
+
+// TestExportedSeries_PlatformGroup_ConnectivityZeroWhenNotWired guards
+// the zero-peers default: a PlatformSources whose Peers() returns nil
+// (an older adapter, or a backend with no registered peers) must not
+// panic. peers.connected is a scalar summary — unlike the per-key
+// provisioning series, there is no key to fabricate or omit — so it
+// still emits an explicit 0; tunnel.state has no peer to report and
+// emits nothing.
+func TestExportedSeries_PlatformGroup_ConnectivityZeroWhenNotWired(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{}, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNamePeer := pointsByNameAndPeer(pts)
+
+	connected, ok := byNamePeer[MetricPlatformPeersConnected][""]
+	if !ok {
+		t.Fatalf("missing %s — must still emit an explicit 0 with zero peers", MetricPlatformPeersConnected)
+	}
+	if connected.ival != 0 {
+		t.Errorf("%s = %d, want 0", MetricPlatformPeersConnected, connected.ival)
+	}
+
+	for _, p := range pts {
+		if p.name == MetricPlatformTunnelState {
+			t.Errorf("tunnel.state emitted a point %+v with zero registered peers", p)
+		}
+	}
+}
+
+// TestNoTenantLabels_ConnectivitySeries locks in #1084's cardinality
+// acceptance criterion: peers.connected carries exactly backend_id/
+// hostname/region (no peer_id — it is a backend-wide scalar);
+// tunnel.state carries exactly backend_id/hostname/region/peer_id, and
+// peer_id is always the enrolled host name passed in by PlatformSources,
+// never an org/tenant identifier.
+func TestNoTenantLabels_ConnectivitySeries(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()}, &fakePlatformSources{peers: sampleConnectivitySnapshot()}, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	forbidden := []string{"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path"}
+	baseAllowed := map[string]string{
+		LabelBackendID: "backend-xyz",
+		LabelHostname:  "host-1",
+		LabelRegion:    "us-central1",
+	}
+	validPeerIDs := map[string]bool{"byoc-host-a": true, "byoc-host-b": true}
+
+	var sawConnected, sawTunnel bool
+	for _, p := range all {
+		switch p.name {
+		case MetricPlatformPeersConnected:
+			sawConnected = true
+		case MetricPlatformTunnelState:
+			sawTunnel = true
+		default:
+			continue
+		}
+
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelPeerID {
+				if p.name == MetricPlatformPeersConnected {
+					t.Errorf("%s carries peer_id label — it is a backend-wide scalar", MetricPlatformPeersConnected)
+				}
+				if !validPeerIDs[kv.Value.AsString()] {
+					t.Errorf("%s peer_id = %q, want one of the enrolled peer IDs the fixture passed in", p.name, kv.Value.AsString())
+				}
+				continue
+			}
+			if wantVal, ok := baseAllowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range baseAllowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if p.name == MetricPlatformTunnelState && !seen[LabelPeerID] {
+			t.Errorf("series %q missing required label %q", p.name, LabelPeerID)
+		}
+	}
+	if !sawConnected {
+		t.Fatal("no peers.connected series emitted")
+	}
+	if !sawTunnel {
+		t.Fatal("no tunnel.state series emitted")
+	}
+}
+
+// sampleContainerMetrics is a representative two-container fixture for
+// the #1071 container-series tests below.
+func sampleContainerMetrics() map[string]*pb.ContainerMetrics {
+	return map[string]*pb.ContainerMetrics{
+		"alice-container": {
+			Name:             "alice-container",
+			CpuUsageSeconds:  120,
+			MemoryUsageBytes: 256 << 20,
+			DiskUsageBytes:   2 << 30,
+			NetworkRxBytes:   1000,
+			NetworkTxBytes:   500,
+		},
+		"bob-container": {
+			Name:             "bob-container",
+			CpuUsageSeconds:  30,
+			MemoryUsageBytes: 128 << 20,
+			DiskUsageBytes:   1 << 30,
+			NetworkRxBytes:   200,
+			NetworkTxBytes:   100,
+		},
+	}
+}
+
+// containerMetricNames is the complete #1071 per-container instrument
+// allowlist, used to filter the always-on heartbeat (and, in these
+// container-only-group tests, nothing else) out of flattened points.
+var containerMetricNames = map[string]bool{
+	MetricContainerCPUUsageSeconds:  true,
+	MetricContainerMemoryUsageBytes: true,
+	MetricContainerDiskUsageBytes:   true,
+	MetricContainerNetworkRxBytes:   true,
+	MetricContainerNetworkTxBytes:   true,
+}
+
+// pointsByNameAndContainer indexes flattened points by (series name,
+// container_name label value), the container-series analog of
+// pointsByNameAndOperation / pointsByNameAndPeer.
+func pointsByNameAndContainer(pts []point) map[string]map[string]point {
+	out := map[string]map[string]point{}
+	for _, p := range pts {
+		name, _ := p.attrs.Value(attribute.Key(LabelContainerName))
+		if out[p.name] == nil {
+			out[p.name] = map[string]point{}
+		}
+		out[p.name][name.AsString()] = p
+	}
+	return out
+}
+
+// TestExportedSeries_ContainerGolden is #1071's acceptance criterion:
+// enabling the container group with a wired Sources emits all five
+// per-container series, one point per running container, with the exact
+// values AllContainerMetrics reports.
+func TestExportedSeries_ContainerGolden(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup}, &fakeSources{containers: sampleContainerMetrics()}, nil, sampleLabels())
+	pts := flattenPoints(t, rm)
+	byNameContainer := pointsByNameAndContainer(pts)
+
+	type want struct{ cpu, mem, disk, rx, tx int64 }
+	wants := map[string]want{
+		"alice-container": {cpu: 120, mem: 256 << 20, disk: 2 << 30, rx: 1000, tx: 500},
+		"bob-container":   {cpu: 30, mem: 128 << 20, disk: 1 << 30, rx: 200, tx: 100},
+	}
+
+	for containerName, w := range wants {
+		checks := []struct {
+			metric string
+			want   int64
+		}{
+			{MetricContainerCPUUsageSeconds, w.cpu},
+			{MetricContainerMemoryUsageBytes, w.mem},
+			{MetricContainerDiskUsageBytes, w.disk},
+			{MetricContainerNetworkRxBytes, w.rx},
+			{MetricContainerNetworkTxBytes, w.tx},
+		}
+		for _, c := range checks {
+			p, ok := byNameContainer[c.metric][containerName]
+			if !ok {
+				t.Errorf("missing %s{container_name=%q}", c.metric, containerName)
+				continue
+			}
+			if p.ival != c.want {
+				t.Errorf("%s{container_name=%q} = %d, want %d", c.metric, containerName, p.ival, c.want)
+			}
+		}
+	}
+
+	var total int
+	for metricName, byContainer := range byNameContainer {
+		if containerMetricNames[metricName] {
+			total += len(byContainer)
+		}
+	}
+	if total != 10 {
+		t.Errorf("got %d container-series points, want 10 (2 containers x 5 series)", total)
+	}
+}
+
+// TestDeletedContainerSeriesStop is the design doc's explicit acceptance
+// criterion: a container that disappears from AllContainerMetrics (i.e.
+// was deleted) stops emitting at the very next observation — collection
+// re-enumerates live containers every tick, so there is no separate
+// deletion-tracking state to get stale.
+func TestDeletedContainerSeriesStop(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	src := &fakeSources{containers: sampleContainerMetrics()}
+
+	reader := sdkmetric.NewManualReader()
+	c := NewCollector(CollectorOptions{Sources: src, Labels: sampleLabels(), Groups: []pb.CloudMetricsGroup{containerGroup}})
+	mp, err := c.buildMeterProvider(reader)
+	if err != nil {
+		t.Fatalf("buildMeterProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 1): %v", err)
+	}
+	byNameContainer := pointsByNameAndContainer(flattenPoints(t, rm))
+	if _, ok := byNameContainer[MetricContainerCPUUsageSeconds]["bob-container"]; !ok {
+		t.Fatal("tick 1: expected bob-container present before deletion")
+	}
+
+	// bob-container is deleted: the next tick's AllContainerMetrics no
+	// longer reports it.
+	src.containers = map[string]*pb.ContainerMetrics{
+		"alice-container": sampleContainerMetrics()["alice-container"],
+	}
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect (tick 2): %v", err)
+	}
+	byNameContainer = pointsByNameAndContainer(flattenPoints(t, rm))
+	for metricName := range containerMetricNames {
+		if _, ok := byNameContainer[metricName]["bob-container"]; ok {
+			t.Errorf("tick 2: %s still reports deleted container bob-container", metricName)
+		}
+		if _, ok := byNameContainer[metricName]["alice-container"]; !ok {
+			t.Errorf("tick 2: %s missing still-live container alice-container", metricName)
+		}
+	}
+}
+
+// TestNoTenantLabels_ContainerSeries locks in #1071's cardinality
+// acceptance criterion: container series carry exactly backend_id +
+// container_name — deliberately narrower than the host/platform series'
+// backend_id/hostname/region, per the design doc's label table.
+func TestNoTenantLabels_ContainerSeries(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup}, &fakeSources{containers: sampleContainerMetrics()}, nil, sampleLabels())
+	all := flattenPoints(t, rm)
+
+	var pts []point
+	for _, p := range all {
+		if containerMetricNames[p.name] {
+			pts = append(pts, p)
+		}
+	}
+	if len(pts) == 0 {
+		t.Fatal("no container series emitted")
+	}
+
+	allowed := map[string]string{LabelBackendID: "backend-xyz"}
+	forbidden := []string{
+		"org", "org_id", "tenant", "tenant_id", "username", "user", "uuid", "route", "method", "path",
+		// Container series are deliberately narrower than host/platform:
+		// no hostname/region.
+		LabelHostname, LabelRegion,
+	}
+
+	for _, p := range pts {
+		iter := p.attrs.Iter()
+		seen := map[string]bool{}
+		for iter.Next() {
+			kv := iter.Attribute()
+			key := string(kv.Key)
+			seen[key] = true
+			for _, f := range forbidden {
+				if key == f {
+					t.Errorf("series %q carries forbidden label %q", p.name, key)
+				}
+			}
+			if key == LabelContainerName {
+				continue // value asserted by TestExportedSeries_ContainerGolden
+			}
+			if wantVal, ok := allowed[key]; !ok {
+				t.Errorf("series %q carries non-allowlisted label %q", p.name, key)
+			} else if kv.Value.AsString() != wantVal {
+				t.Errorf("series %q label %q = %q, want %q", p.name, key, kv.Value.AsString(), wantVal)
+			}
+		}
+		for want := range allowed {
+			if !seen[want] {
+				t.Errorf("series %q missing allowlisted label %q", p.name, want)
+			}
+		}
+		if !seen[LabelContainerName] {
+			t.Errorf("series %q missing required label %q", p.name, LabelContainerName)
+		}
+	}
+}
+
+// TestContainerGroup_SourcesErrorSkipsTickWithoutPanic mirrors the host
+// series' TestSourceErrorSkipsTickWithoutPanic: an AllContainerMetrics
+// error is skipped cleanly for that tick — no panic, no stale points —
+// without suppressing the Sources-independent heartbeat.
+func TestContainerGroup_SourcesErrorSkipsTickWithoutPanic(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup}, &fakeSources{containersErr: errors.New("incus unavailable")}, nil, sampleLabels())
+	pts := flattenPoints(t, rm)
+
+	for _, p := range pts {
+		if containerMetricNames[p.name] {
+			t.Errorf("expected no container series on an AllContainerMetrics error, got %q", p.name)
+		}
+	}
+	heartbeatOf(t, pts) // heartbeat still present; fails if absent.
 }

@@ -42,7 +42,11 @@ type runnersListResponse struct {
 }
 
 func (c *githubClient) ListRunners(ctx context.Context, repo, pat string) ([]RegisteredRunner, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners", repo)
+	target, err := ParseTarget(repo)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("https://api.github.com/%s/actions/runners", target.APIPath())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -59,7 +63,8 @@ func (c *githubClient) ListRunners(ctx context.Context, repo, pat string) ([]Reg
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("github list runners: HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("github list runners: HTTP %d: %s%s",
+			resp.StatusCode, string(body), target.scopeHint(resp.StatusCode))
 	}
 
 	var parsed runnersListResponse
@@ -80,7 +85,11 @@ func (c *githubClient) ListRunners(ctx context.Context, repo, pat string) ([]Reg
 }
 
 func (c *githubClient) RemoveRunner(ctx context.Context, repo, pat string, runnerID int64) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/%d", repo, runnerID)
+	target, err := ParseTarget(repo)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("https://api.github.com/%s/actions/runners/%d", target.APIPath(), runnerID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -103,6 +112,7 @@ func (c *githubClient) RemoveRunner(ctx context.Context, repo, pat string, runne
 		return nil
 	default:
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("github delete runner: HTTP %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("github delete runner: HTTP %d: %s%s",
+			resp.StatusCode, string(body), target.scopeHint(resp.StatusCode))
 	}
 }

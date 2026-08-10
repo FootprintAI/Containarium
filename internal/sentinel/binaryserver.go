@@ -9,11 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -42,17 +39,13 @@ type StatusJSON struct {
 	SentinelAuthDetail        string `json:"sentinel_auth_detail,omitempty"`
 }
 
-// StartBinaryServer starts an HTTP server that serves the containarium binary
-// for the spot VM to download, plus a /status JSON endpoint.
-// This runs on an internal-only port (default 8888).
-func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
-	binaryPath := defaultBinaryPath
-
-	// Verify binary exists
-	if _, err := os.Stat(binaryPath); err != nil {
-		return nil, fmt.Errorf("binary not found at %s: %w", binaryPath, err)
-	}
-
+// buildBinaryServerMux registers every binary-server route on a fresh
+// mux. Split out of StartBinaryServer so tests can exercise the REAL
+// route table — in particular which middleware each route is registered
+// behind (#1102). A test that builds its own mux proves only that the
+// handler works when someone remembers to gate it, which is exactly the
+// mistake being fixed here.
+func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/containarium", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -107,6 +100,15 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	mux.Handle("/sentinel/peer-cert", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PeerCertHandler()))
 	mux.Handle("/sentinel/fetch-release", auth.SentinelHMACMiddleware(manager.hmacSecret, fetchReleaseHandler(binaryPath)))
 
+	// Event-driven SSH key resync — a daemon calls this the moment its
+	// host-side authorized_keys set changes, so a freshly created box is
+	// SSH-reachable immediately instead of waiting up to a full keysync
+	// tick (cloud #971). Gated by the same daemon HMAC secret that
+	// authenticates the sentinel's own /authorized-keys pull; it triggers
+	// that pull rather than accepting key material, so it grants no
+	// authority the caller doesn't already have.
+	mux.Handle("/sentinel/keys/resync", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.KeyResyncHandler()))
+
 	// Runtime tunnel-token registration — gated by the separate
 	// admin secret (CONTAINARIUM_SENTINEL_ADMIN_SECRET), not the
 	// cluster-wide daemon HMAC secret. See TunnelTokenRegisterHandler.
@@ -119,35 +121,16 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	mux.Handle("/sentinel/byoc-routes", auth.SentinelHMACMiddleware(manager.adminSecret, manager.BYOCRouteRegisterHandler()))
 
 	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
-	// This allows the primary daemon to reach tunnel backends through the sentinel
-	// without needing extra firewall rules for external ports.
-	mux.HandleFunc("/peer/", func(w http.ResponseWriter, r *http.Request) {
-		// Parse path: /peer/<backend-id>/v1/containers → backend-id, /v1/containers
-		path := strings.TrimPrefix(r.URL.Path, "/peer/")
-		slashIdx := strings.Index(path, "/")
-		if slashIdx < 0 {
-			http.Error(w, "invalid peer path", http.StatusBadRequest)
-			return
-		}
-		backendID := path[:slashIdx]
-		remainingPath := path[slashIdx:]
-
-		// Find the backend's loopback IP
-		backend := manager.backends.Get(backendID)
-		if backend == nil {
-			http.Error(w, fmt.Sprintf("backend %q not found", backendID), http.StatusNotFound)
-			return
-		}
-
-		target := &url.URL{
-			Scheme: "http",
-			Host:   fmt.Sprintf("%s:%d", backend.IP, manager.config.HealthPort),
-		}
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		r.URL.Path = remainingPath
-		r.Host = target.Host
-		proxy.ServeHTTP(w, r)
-	})
+	// so the control plane can reach tunnel backends through the sentinel without
+	// extra firewall rules for external ports.
+	//
+	// Gated by the ADMIN secret, like /sentinel/tunnel-tokens and
+	// /sentinel/byoc-routes: driving another machine's daemon is a
+	// control-plane authority operation, and the control plane is the only
+	// legitimate caller. Before #1102 this was the one ungated route on this
+	// mux, which made it an unauthenticated lateral-movement surface across
+	// every tenant's backend for anything that could reach this port.
+	mux.Handle("/peer/", auth.SentinelHMACMiddleware(manager.adminSecret, manager.PeerProxyHandler()))
 
 	// Status JSON endpoint — always available
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +169,22 @@ func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
 	// scraper can alert on the net — the on-spot VictoriaMetrics dies with
 	// the spot it would be reporting on.
 	mux.HandleFunc("/metrics", manager.MetricsHandler())
+
+	return mux
+}
+
+// StartBinaryServer starts an HTTP server that serves the containarium binary
+// for the spot VM to download, plus a /status JSON endpoint.
+// This runs on an internal-only port (default 8888).
+func StartBinaryServer(port int, manager *Manager) (stop func(), err error) {
+	binaryPath := defaultBinaryPath
+
+	// Verify binary exists
+	if _, err := os.Stat(binaryPath); err != nil {
+		return nil, fmt.Errorf("binary not found at %s: %w", binaryPath, err)
+	}
+
+	mux := buildBinaryServerMux(binaryPath, manager)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", port),

@@ -120,6 +120,55 @@ the next interval because collection enumerates live containers each tick.
    heartbeat — only real daemon/host death does. The exact absence-policy recipe
    (`gcloud`/JSON) lives in `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`.
 
+### BYOC hosts do not export (by design) (#1078)
+
+A BYOC (bring-your-own-cloud) host exports nothing to GCP Cloud Monitoring,
+and this is intentional — not a gap to fix, not a bug a support ticket should
+chase.
+
+- **Per-host opt-in, default off**, same as any other backend: a host sends
+  nothing until an operator runs `containarium monitoring export enable
+  --provider gcp` on it.
+- **The credential probe (step 1 above) fails closed off-GCP.** Enabling
+  resolves ADC with the monitoring-write scope. A GCE VM gets this for free
+  from the metadata server; bare-metal BYOC hardware has no metadata server
+  and no ADC, so the probe returns `FailedPrecondition` with the IAM
+  remediation hint and persists nothing. **This failure is the expected UX**
+  on a BYOC box, not a defect — an operator who tries to enable export on
+  customer hardware should see this error and stop, not chase it as a bug.
+- **The technically-possible-but-not-recommended alternative:** a BYOC host
+  *could* export by provisioning a long-lived service-account key
+  (`GOOGLE_APPLICATION_CREDENTIALS`, `roles/monitoring.metricWriter`); the GCP
+  resource detector falls back to `generic_node`/`generic_task` instead of
+  `gce_instance`, same `backend_id`/`hostname`/`region` labels otherwise. This
+  is untested and deliberately not the default — it means shipping a
+  long-lived credential onto customer-controlled hardware, the same class of
+  problem behind the BYOC driver-token expiry incidents (#1049). Only worth
+  revisiting if a customer specifically asks, with an explicit key-rotation
+  story attached.
+- **#1072's heartbeat is NOT the BYOC liveness answer** — a correction to
+  this issue's original framing, worth recording because it is easy to get
+  backwards. The heartbeat is one gauge among the instruments a
+  `CloudExportCollector` emits, and that collector is only ever built after
+  the same daemon's own ADC probe succeeds (`buildMeterProvider`, called from
+  `Start`, registers the heartbeat unconditionally *once the collector
+  exists* — but a BYOC daemon whose probe fails never gets a collector built
+  in the first place, per the "Enable" step above). A BYOC host that cannot
+  export its host series cannot export its own heartbeat either; there is no
+  separate credential-free path for the heartbeat alone.
+- **The actual out-of-band signal for a BYOC peer is the *GCP primary's*
+  `platform` group (#1084), not anything the BYOC host emits.** The primary
+  already has a working ADC identity and already health-checks every peer
+  over the existing management tunnel (`PeerPool`); #1084 exports that
+  existing health check as `containarium.platform.peers.connected` /
+  `.tunnel.state` (labeled `peer_id` = the BYOC host's enrolled name), all
+  under the *primary's* `backend_id` — no credentials of any kind land on
+  the BYOC box. This is the mechanism that makes a dead or tunnel-dropped
+  BYOC peer visible in GCM without the BYOC host exporting anything itself,
+  and it is the property the original issue was reaching for (imprecisely
+  attributed to #1072 before #1084 existed as a concrete design). See
+  `docs/architecture/cloud-export-domain-metrics.md`.
+
 ## Contracts
 
 | Boundary | Contract | Source of truth |

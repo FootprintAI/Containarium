@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -39,6 +40,22 @@ const (
 	MetricDiskTotal      = "containarium.host.disk.total_bytes"
 	MetricContainerCount = "containarium.host.container.count"
 
+	// MetricContainerCPUUsageSeconds / MemoryUsageBytes / DiskUsageBytes /
+	// NetworkRxBytes / NetworkTxBytes are the container group's
+	// per-container series (#1071): the same GetAllMetrics data the
+	// daemon's internal pipeline already collects, routed to the
+	// cloud-provider sink so one noisy container is distinguishable from
+	// host-level pressure. CPU/network are cumulative counters (matching
+	// incus's cumulative CPU-seconds and byte counters); memory/disk are
+	// point-in-time gauges. Collection re-enumerates live containers every
+	// tick, so a deleted container simply stops appearing — no separate
+	// deletion bookkeeping.
+	MetricContainerCPUUsageSeconds  = "containarium.container.cpu.usage_seconds"
+	MetricContainerMemoryUsageBytes = "containarium.container.memory.usage_bytes"
+	MetricContainerDiskUsageBytes   = "containarium.container.disk.usage_bytes"
+	MetricContainerNetworkRxBytes   = "containarium.container.network.rx_bytes"
+	MetricContainerNetworkTxBytes   = "containarium.container.network.tx_bytes"
+
 	// MetricHeartbeat is the liveness/up series (#1072): a constant 1
 	// emitted every export interval while the daemon runs. It is the
 	// out-of-band dead-man signal — a metric-absence alert policy in the
@@ -47,6 +64,36 @@ const (
 	// partitioned) that host-local alerting cannot report on because it
 	// fate-shares with the host.
 	MetricHeartbeat = "containarium.export.heartbeat"
+
+	// MetricPlatformAPIRequests / MetricPlatformAPIErrors are the
+	// platform group's API-health series (#1082): cumulative counts of
+	// completed API calls (native gRPC + REST-via-grpc-gateway, both
+	// converge on the same interceptor), by coarse code_class. Requests
+	// counts every completed call; errors counts only the client_error
+	// and server_error classes.
+	MetricPlatformAPIRequests = "containarium.platform.api.requests"
+	MetricPlatformAPIErrors   = "containarium.platform.api.errors"
+
+	// MetricPlatformProvisionAttempts / Failures / DurationSecondsSum are
+	// the platform group's provisioning-outcome series (#1083): a
+	// container create or delete, by operation. Attempts counts every
+	// attempt (success or not); Failures counts the subset that failed;
+	// DurationSecondsSum is the cumulative wall-clock time spent across
+	// all attempts for that operation, regardless of outcome — dividing
+	// it by Attempts in MQL/PromQL gives mean latency without a
+	// per-bucket-billed histogram.
+	MetricPlatformProvisionAttempts           = "containarium.platform.provision.attempts"
+	MetricPlatformProvisionFailures           = "containarium.platform.provision.failures"
+	MetricPlatformProvisionDurationSecondsSum = "containarium.platform.provision.duration_seconds_sum"
+
+	// MetricPlatformPeersConnected / MetricPlatformTunnelState are the
+	// platform group's connectivity series (#1084): how many registered
+	// BYOC peers this backend currently sees as healthy, and each one's
+	// individual tunnel up/down state. Complements #1078 (BYOC hosts
+	// can't export themselves) — the GCP primary exports connectivity on
+	// their behalf.
+	MetricPlatformPeersConnected = "containarium.platform.peers.connected"
+	MetricPlatformTunnelState    = "containarium.platform.tunnel.state"
 )
 
 // Label keys — the complete allowlist. No org/tenant identifier ever
@@ -61,6 +108,26 @@ const (
 	// series) with the daemon build, so a dead-man alert makes clear which
 	// version stopped reporting.
 	LabelDaemonVersion = "daemon_version"
+	// LabelCodeClass tags the platform API series with their coarse
+	// outcome bucket (platformstats.CodeClass) — the deliberately small,
+	// fixed-cardinality dimension the design uses instead of a raw route
+	// or gRPC code, which would blow up the billed cost surface.
+	LabelCodeClass = "code_class"
+	// LabelOperation tags the platform provisioning series with which
+	// kind of provisioning call this was (platformstats.Operation) —
+	// create or delete, never a per-request identifier.
+	LabelOperation = "operation"
+	// LabelPeerID tags the tunnel.state series with which registered
+	// peer a point is for (#1084). Always the enrolled host name — the
+	// enrollment path forbids org/tenant identifiers in it — never an
+	// org/tenant identifier itself.
+	LabelPeerID = "peer_id"
+	// LabelContainerName tags the container-group series with which
+	// container a point is for (#1071). Deliberately the ONLY per-point
+	// label alongside backend_id — the container group's label set is
+	// narrower than host/platform (no hostname/region), per the design
+	// doc's allowlist.
+	LabelContainerName = "container_name"
 )
 
 // Labels is the fixed identity stamped on every exported series. These
@@ -97,10 +164,62 @@ func (l Labels) heartbeatAttributeSet() attribute.Set {
 	)
 }
 
+// platformAttributeSet is the platform API-health label set (backend_id,
+// hostname, region, code_class) — the host-series identity plus the
+// per-point outcome class.
+func (l Labels) platformAttributeSet(class platformstats.CodeClass) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelRegion, l.Region),
+		attribute.String(LabelCodeClass, string(class)),
+	)
+}
+
+// provisionAttributeSet is the platform provisioning-outcome label set
+// (backend_id, hostname, region, operation) — the host-series identity
+// plus which operation this point is for.
+func (l Labels) provisionAttributeSet(op platformstats.Operation) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelRegion, l.Region),
+		attribute.String(LabelOperation, string(op)),
+	)
+}
+
+// tunnelAttributeSet is the platform tunnel-state label set (backend_id,
+// hostname, region, peer_id) — the host-series identity plus which peer
+// this point is for (#1084).
+func (l Labels) tunnelAttributeSet(peerID string) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelRegion, l.Region),
+		attribute.String(LabelPeerID, peerID),
+	)
+}
+
+// containerAttributeSet is the container-series label set (backend_id,
+// container_name) (#1071) — deliberately narrower than every other
+// group's label set: no hostname/region, per the design doc's allowlist.
+func (l Labels) containerAttributeSet(containerName string) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelContainerName, containerName),
+	)
+}
+
 // CollectorOptions are the construction inputs for a CloudExportCollector.
 type CollectorOptions struct {
 	// Sources is the seam over the daemon's metric collection. Required.
 	Sources Sources
+	// PlatformSources is the read-side seam over platform-domain facts
+	// (#1082/#1083/#1084). Optional — nil means the platform group, if
+	// enabled, registers no instruments (the same "reserved" behavior
+	// container/platform had before any of those issues landed), rather
+	// than erroring.
+	PlatformSources PlatformSources
 	// Exporter is the OTel SDK metric exporter to push batches through
 	// (a provider Sink's NewExporter result in production, a fake in
 	// tests). Required.
@@ -180,13 +299,14 @@ func (h *healthExporter) Export(ctx context.Context, rm *metricdata.ResourceMetr
 // cost surface, and keeping it isolated makes that surface explicit and
 // reviewable in one file.
 type CloudExportCollector struct {
-	sources  Sources
-	exporter sdkmetric.Exporter
-	resource *resource.Resource
-	labels   Labels
-	interval time.Duration
-	groups   []pb.CloudMetricsGroup
-	health   *healthState
+	sources         Sources
+	platformSources PlatformSources
+	exporter        sdkmetric.Exporter
+	resource        *resource.Resource
+	labels          Labels
+	interval        time.Duration
+	groups          []pb.CloudMetricsGroup
+	health          *healthState
 
 	mu      sync.Mutex
 	mp      *sdkmetric.MeterProvider
@@ -201,13 +321,14 @@ func NewCollector(opts CollectorOptions) *CloudExportCollector {
 		interval = floor
 	}
 	return &CloudExportCollector{
-		sources:  opts.Sources,
-		exporter: opts.Exporter,
-		resource: opts.Resource,
-		labels:   opts.Labels,
-		interval: interval,
-		groups:   NormalizeGroups(opts.Groups),
-		health:   &healthState{},
+		sources:         opts.Sources,
+		platformSources: opts.PlatformSources,
+		exporter:        opts.Exporter,
+		resource:        opts.Resource,
+		labels:          opts.Labels,
+		interval:        interval,
+		groups:          NormalizeGroups(opts.Groups),
+		health:          &healthState{},
 	}
 }
 
@@ -281,7 +402,7 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
 	for _, g := range c.groups {
-		if err := registerGroupInstruments(mp, g, c.sources, c.labels); err != nil {
+		if err := registerGroupInstruments(mp, g, c.sources, c.platformSources, c.labels); err != nil {
 			return nil, err
 		}
 	}
@@ -293,31 +414,144 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 
 // registerGroupInstruments registers exactly the instruments belonging
 // to one metric group (#1081). This is the single dispatch point new
-// groups plug into: host registers the #1070 allowlist; container and
-// platform are reserved enableable groups whose series land in
-// #1071/#1072 and #1082/#1083/#1084 — until then they register nothing,
-// so enabling them is a deliberate zero-series opt-in rather than a
-// no-such-group error. Groups are normalized before they reach here, so
-// UNSPECIFIED never arrives; an unknown value is a programming error.
+// groups plug into: host registers the #1070 allowlist; container
+// registers the #1071 per-container series; platform registers the
+// #1082/#1083/#1084 API-health, provisioning-outcome, and connectivity
+// series when a PlatformSources is wired, and nothing otherwise. Groups
+// are normalized before they reach here, so UNSPECIFIED never arrives;
+// an unknown value is a programming error.
 //
 // Note the heartbeat is deliberately NOT a group: it is registered
 // unconditionally by buildMeterProvider alongside (and independent of)
 // whatever groups are enabled, because the dead-man signal must never be
 // gated by group selection or a Sources error (see
 // registerHeartbeatInstrument).
-func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, labels Labels) error {
+func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, platformSources PlatformSources, labels Labels) error {
 	switch group {
 	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST:
 		return registerHostInstruments(mp, sources, labels)
 	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER:
-		// Reserved: per-container series land in #1071/#1072.
-		return nil
+		return registerContainerInstruments(mp, sources, labels)
 	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM:
-		// Reserved: platform series land in #1082/#1083/#1084.
-		return nil
+		if platformSources == nil {
+			// Not wired (e.g. an older daemon build, or a test that
+			// doesn't need it) — deliberate zero-series opt-in, same as
+			// the pre-#1082 "reserved" behavior, never an error.
+			return nil
+		}
+		return registerPlatformInstruments(mp, platformSources, labels)
 	default:
 		return fmt.Errorf("cloudexport: unregisterable metric group %v", group)
 	}
+}
+
+// registerPlatformInstruments creates the platform group's API-health
+// (#1082), provisioning-outcome (#1083), and connectivity (#1084)
+// instruments and wires one callback per concern, each pulling a single
+// snapshot per tick. API-health and provisioning are counters: OTel
+// async-counter semantics expect the current cumulative total on every
+// observation (platformstats.Stats already accumulates for the daemon's
+// lifetime), which is exactly what those snapshots report. Connectivity
+// is gauges: peer health is current state, not an accumulating count.
+func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSources, labels Labels) error {
+	meter := mp.Meter(meterName)
+
+	requests, err := meter.Int64ObservableCounter(MetricPlatformAPIRequests,
+		metric.WithDescription("Cumulative count of completed API requests (gRPC + REST-via-gateway), by coarse outcome class."))
+	if err != nil {
+		return err
+	}
+	apiErrors, err := meter.Int64ObservableCounter(MetricPlatformAPIErrors,
+		metric.WithDescription("Cumulative count of completed API requests that resulted in a client or server error, by coarse outcome class."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			snap := sources.APIStats()
+			for class, n := range snap.RequestsByClass {
+				o.ObserveInt64(requests, n, metric.WithAttributeSet(labels.platformAttributeSet(class)))
+			}
+			for class, n := range snap.ErrorsByClass {
+				o.ObserveInt64(apiErrors, n, metric.WithAttributeSet(labels.platformAttributeSet(class)))
+			}
+			return nil
+		},
+		requests, apiErrors,
+	)
+	if err != nil {
+		return err
+	}
+
+	attempts, err := meter.Int64ObservableCounter(MetricPlatformProvisionAttempts,
+		metric.WithDescription("Cumulative count of container provisioning attempts (create/delete), by operation."))
+	if err != nil {
+		return err
+	}
+	failures, err := meter.Int64ObservableCounter(MetricPlatformProvisionFailures,
+		metric.WithDescription("Cumulative count of container provisioning attempts that failed, by operation."))
+	if err != nil {
+		return err
+	}
+	durationSum, err := meter.Float64ObservableCounter(MetricPlatformProvisionDurationSecondsSum,
+		metric.WithUnit("s"), metric.WithDescription("Cumulative wall-clock time spent on provisioning attempts, by operation — divide by attempts for mean latency."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			snap := sources.ProvisionStats()
+			for op, n := range snap.Attempts {
+				o.ObserveInt64(attempts, n, metric.WithAttributeSet(labels.provisionAttributeSet(op)))
+			}
+			for op, n := range snap.Failures {
+				o.ObserveInt64(failures, n, metric.WithAttributeSet(labels.provisionAttributeSet(op)))
+			}
+			for op, n := range snap.DurationSecondsSum {
+				o.ObserveFloat64(durationSum, n, metric.WithAttributeSet(labels.provisionAttributeSet(op)))
+			}
+			return nil
+		},
+		attempts, failures, durationSum,
+	)
+	if err != nil {
+		return err
+	}
+
+	peersConnected, err := meter.Int64ObservableGauge(MetricPlatformPeersConnected,
+		metric.WithUnit("{peer}"), metric.WithDescription("Number of registered BYOC peers this backend currently sees as healthy (tunnel up)."))
+	if err != nil {
+		return err
+	}
+	tunnelState, err := meter.Int64ObservableGauge(MetricPlatformTunnelState,
+		metric.WithDescription("Per-peer tunnel state: 1 if the peer is currently healthy, 0 if not. peer_id is the enrolled host name."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			peers := sources.Peers()
+			var connected int64
+			for _, peer := range peers {
+				state := int64(0)
+				if peer.Healthy {
+					connected++
+					state = 1
+				}
+				o.ObserveInt64(tunnelState, state, metric.WithAttributeSet(labels.tunnelAttributeSet(peer.ID)))
+			}
+			// Always observed, even at zero peers — a scalar summary
+			// like the host-series gauges, not a per-key breakdown, so
+			// there is no set of keys to fabricate or omit.
+			o.ObserveInt64(peersConnected, connected, metric.WithAttributeSet(labels.attributeSet()))
+			return nil
+		},
+		peersConnected, tunnelState,
+	)
+	return err
 }
 
 // registerHeartbeatInstrument creates the heartbeat/up gauge (#1072) and
@@ -426,6 +660,74 @@ func registerHostInstruments(mp *sdkmetric.MeterProvider, sources Sources, label
 			return nil
 		},
 		load1, load5, load15, memUsed, memTotal, diskUsed, diskTotal, containerCount,
+	)
+	return err
+}
+
+// registerContainerInstruments creates the container group's five
+// per-container series (#1071) and wires one callback that pulls a
+// single AllContainerMetrics snapshot per tick and observes all five for
+// every container currently reported. CPU/network are counters
+// (cumulative, matching incus's own CPU-seconds and byte counters);
+// memory/disk are gauges (point-in-time). A container absent from the
+// snapshot — because AllContainerMetrics enumerates live containers
+// fresh every tick — simply has no point observed for it this tick,
+// which is exactly the "deleted container's series stop at the next
+// interval" behavior the design doc requires: no separate
+// deletion-tracking state to fall out of sync.
+func registerContainerInstruments(mp *sdkmetric.MeterProvider, sources Sources, labels Labels) error {
+	meter := mp.Meter(meterName)
+
+	cpu, err := meter.Int64ObservableCounter(MetricContainerCPUUsageSeconds,
+		metric.WithUnit("s"), metric.WithDescription("Cumulative CPU time used by the container, in seconds."))
+	if err != nil {
+		return err
+	}
+	mem, err := meter.Int64ObservableGauge(MetricContainerMemoryUsageBytes,
+		metric.WithUnit("By"), metric.WithDescription("Current memory usage of the container, in bytes."))
+	if err != nil {
+		return err
+	}
+	disk, err := meter.Int64ObservableGauge(MetricContainerDiskUsageBytes,
+		metric.WithUnit("By"), metric.WithDescription("Current root-filesystem disk usage of the container, in bytes."))
+	if err != nil {
+		return err
+	}
+	rx, err := meter.Int64ObservableCounter(MetricContainerNetworkRxBytes,
+		metric.WithUnit("By"), metric.WithDescription("Cumulative network bytes received by the container (all interfaces except loopback)."))
+	if err != nil {
+		return err
+	}
+	tx, err := meter.Int64ObservableCounter(MetricContainerNetworkTxBytes,
+		metric.WithUnit("By"), metric.WithDescription("Cumulative network bytes transmitted by the container (all interfaces except loopback)."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			containers, err := sources.AllContainerMetrics(ctx)
+			if err != nil {
+				// Skip this tick: log and emit nothing, same contract as
+				// the host series' SystemResources error handling. Never
+				// panic, never crash the daemon.
+				log.Printf("[cloudexport] skipping container series tick: AllContainerMetrics: %v", err)
+				return nil
+			}
+			for name, m := range containers {
+				if m == nil {
+					continue
+				}
+				observeOpt := metric.WithAttributeSet(labels.containerAttributeSet(name))
+				o.ObserveInt64(cpu, m.CpuUsageSeconds, observeOpt)
+				o.ObserveInt64(mem, m.MemoryUsageBytes, observeOpt)
+				o.ObserveInt64(disk, m.DiskUsageBytes, observeOpt)
+				o.ObserveInt64(rx, m.NetworkRxBytes, observeOpt)
+				o.ObserveInt64(tx, m.NetworkTxBytes, observeOpt)
+			}
+			return nil
+		},
+		cpu, mem, disk, rx, tx,
 	)
 	return err
 }

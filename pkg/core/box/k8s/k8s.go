@@ -64,6 +64,18 @@ type Config struct {
 	// StorageClass is reserved for the box PVC (not wired in this slice).
 	StorageClass string
 
+	// RuntimeClass names the Kubernetes RuntimeClass every box pod is scheduled
+	// under. Empty (the default) leaves RuntimeClassName unset, so pods run on
+	// the cluster's default container runtime — `runc`, sharing the host
+	// kernel. Set it to "runsc" on a node pool that has gVisor installed to put
+	// boxes behind a userspace kernel instead.
+	//
+	// This is daemon-wide, not per box: the runtime is a property of the node
+	// pool the daemon schedules onto. Per-box runtime selection is a separate,
+	// unshipped design (a typed runtime_class on the container spec) gated on
+	// the gVisor feasibility benchmark.
+	RuntimeClass string
+
 	// DefaultMemoryRequest / DefaultMemoryLimit override the built-in per-box
 	// memory floor applied when a box's spec carries no valid memory quantity.
 	// The request (scheduler reservation) is kept below the limit (hard cap) so
@@ -215,6 +227,14 @@ func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 
 func (b *Backend) Kind() box.BackendKind { return box.KindK8s }
 
+// Clientset exposes the backend's Kubernetes client.
+//
+// Narrow on purpose: the SSH session collector (#1189) has to read box pod
+// logs, which is an apiserver call and not something the BoxBackend contract
+// covers. Rather than widen that contract with a method only one caller
+// wants, the daemon type-asserts for this when the backend is K8s.
+func (b *Backend) Clientset() kubernetes.Interface { return b.clientset }
+
 func (b *Backend) namespaceFor(tenant string) string {
 	return b.cfg.TenantNamespacePrefix + tenant
 }
@@ -250,7 +270,7 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if _, err := b.clientset.CoreV1().Secrets(ns).Create(ctx, secretObject(ns, tenant, b.boxAuthorizedKeys(spec.SSHKeys), spec.SSHKeys), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure secret: %w", err)
 	}
-	if _, err := b.clientset.NetworkingV1().NetworkPolicies(ns).Create(ctx, networkPolicyObject(ns, tenant), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	if _, err := b.clientset.NetworkingV1().NetworkPolicies(ns).Create(ctx, networkPolicyObject(ns, tenant, b.cfg.GatewayNamespace), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure networkpolicy: %w", err)
 	}
 	// Stable per-box host key Secret — created before the Sandbox, whose pod
@@ -263,7 +283,8 @@ func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus,
 	if boxMode == "" {
 		boxMode = b.cfg.BoxMode
 	}
-	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults(), boxMode), metav1.CreateOptions{}); ignoreExists(err) != nil {
+	opts := podOptions{BoxMode: boxMode, RuntimeClass: b.cfg.RuntimeClass}
+	if _, err := b.sandboxes.AgentsV1beta1().Sandboxes(ns).Create(ctx, sandboxObject(ns, spec, storageClass != "", b.memDefaults(), opts), metav1.CreateOptions{}); ignoreExists(err) != nil {
 		return nil, fmt.Errorf("k8s: ensure sandbox: %w", err)
 	}
 	// Program the SSH gateway so username=<tenant> routes to this box (no-op
@@ -500,15 +521,50 @@ func (b *Backend) GetMeta(ctx context.Context, ref box.BoxRef) (map[string]strin
 	return metaFromAnnotations(sb.Annotations), nil
 }
 
-// stateOf maps a Sandbox onto the proto state. spec.operatingMode is the
-// desired state (Suspended → STOPPED, the CR-native replicas=0); within
-// Running, the controller-set conditions distinguish a Ready pod (RUNNING)
-// from one still coming up (PROVISIONING). Finished means the pod hit a
-// terminal phase — for a long-lived SSH box that is effectively stopped.
+// stateOf maps a Sandbox onto the proto state, preferring *observed* status
+// over *desired* spec.
+//
+// spec.operatingMode is only a request. Reporting STOPPED the moment Stop()
+// writes it — as this function used to — tells a caller polling for shutdown
+// that the box is down while its pod is still terminating. agent-sandbox
+// >= 0.5.4 makes the observation available: the Suspended condition is always
+// present after the first reconcile, True only once the backing Pod is
+// actually gone (reason PodTerminated), and False while it is still going away
+// (reason PodTerminating). See #1186.
+//
+// Version skew is deliberate here: bumping the Go module upgrades the API
+// types, not the controller running in a cluster. Against a 0.5.3 controller
+// the condition is absent, so we fall back to the old spec-derived answer
+// rather than reporting a box that never stops. An Unknown condition (reason
+// PodStateUnknown — the controller failed to reconcile the Pod) is treated the
+// same way: no usable observation, so trust the request.
+//
+// Within Running, Ready distinguishes a live pod (RUNNING) from one still
+// coming up (PROVISIONING). Finished means the pod hit a terminal phase —
+// for a long-lived SSH box that is effectively stopped.
 func stateOf(sb *sandboxv1beta1.Sandbox) pb.ContainerState {
-	if sb.Spec.OperatingMode == sandboxv1beta1.SandboxOperatingModeSuspended {
+	suspendRequested := sb.Spec.OperatingMode == sandboxv1beta1.SandboxOperatingModeSuspended
+	suspended := apimeta.FindStatusCondition(sb.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended))
+
+	switch {
+	case suspended == nil, suspended.Status == metav1.ConditionUnknown:
+		// No usable observation (pre-0.5.4 controller, or reconcile failed) —
+		// fall back to the desired state.
+		if suspendRequested {
+			return pb.ContainerState_CONTAINER_STATE_STOPPED
+		}
+	case suspended.Status == metav1.ConditionTrue:
+		// Observed suspended: the pod is genuinely gone.
 		return pb.ContainerState_CONTAINER_STATE_STOPPED
+	case suspended.Status == metav1.ConditionFalse:
+		// Not suspended yet. If a suspend was requested, the pod is still
+		// terminating — report RUNNING, not STOPPED, so a caller waiting for
+		// shutdown keeps waiting instead of acting on a box that is still up.
+		if suspendRequested {
+			return pb.ContainerState_CONTAINER_STATE_RUNNING
+		}
 	}
+
 	if apimeta.IsStatusConditionTrue(sb.Status.Conditions, string(sandboxv1beta1.SandboxConditionFinished)) {
 		return pb.ContainerState_CONTAINER_STATE_STOPPED
 	}

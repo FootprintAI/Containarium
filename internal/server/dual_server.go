@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"k8s.io/client-go/kubernetes"
 	"log"
 	"net"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/metrics"
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/pentest"
@@ -203,8 +205,14 @@ type DualServer struct {
 	ttlSweeperManager     *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
 	secretsReconciler     *secretsReconciler     // Phase 4.3 Phase B-3
 	networkPolicyEnforcer *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
-	cloudClient           *cloud.Client          // #354 — cloud-actuation client (nil unless host is enrolled)
-	startTime             time.Time
+
+	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
+	// backend from the same store the eBPF enforcer reads (#1188). Nil on
+	// every other runtime — the two are mutually exclusive by backend, not by
+	// flag.
+	k8sNetPolicyReconciler *K8sNetworkPolicyReconciler
+	cloudClient            *cloud.Client // #354 — cloud-actuation client (nil unless host is enrolled)
+	startTime              time.Time
 }
 
 // bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
@@ -304,13 +312,26 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 		grpcServer = grpc.NewServer(
 			grpc.Creds(creds),
-			grpc.UnaryInterceptor(auth.RequireMTLSUnaryInterceptor()),
+			// Auth interceptor runs OUTER (first): a call mTLS rejects
+			// never reaches the platform-stats interceptor, so
+			// unauthenticated noise never pollutes the platform.api.*
+			// series (#1082) — those series are meant to reflect
+			// application-level API health, not authentication traffic.
+			grpc.ChainUnaryInterceptor(
+				auth.RequireMTLSUnaryInterceptor(),
+				platformstats.UnaryInterceptor(containerServer.platformStats),
+			),
 			grpc.StreamInterceptor(auth.RequireMTLSStreamInterceptor()),
 		)
 		log.Printf("gRPC server: mTLS enabled (interceptor verifies peer cert on every call)")
 	} else {
 		grpcServer = grpc.NewServer(
-			grpc.UnaryInterceptor(authMiddleware.GRPCUnaryInterceptor()),
+			// Same ordering rationale as the mTLS branch above: auth
+			// outer, platform-stats inner.
+			grpc.ChainUnaryInterceptor(
+				authMiddleware.GRPCUnaryInterceptor(),
+				platformstats.UnaryInterceptor(containerServer.platformStats),
+			),
 			grpc.StreamInterceptor(authMiddleware.GRPCStreamInterceptor()),
 		)
 		log.Printf("WARNING: gRPC server running in INSECURE mode")
@@ -1245,15 +1266,27 @@ skipAppHosting:
 		}
 	}
 
-	// Setup SSH login collector (requires audit store + incus client)
+	// Setup SSH login collector. Which source it reads depends on the box
+	// backend: an LXC box keeps sessions in /var/log/auth.log and is read by
+	// exec, a K8s box logs them to stderr and is read from the pod log
+	// (#1189). Before this, the collector was built only when an incus client
+	// could be created, so a K8s deployment recorded no logins at all — which
+	// reads exactly like a fleet nobody logged into.
 	var sshCollector *audit.SSHCollector
 	if auditStore != nil {
-		sshIncusClient, incusErr := incus.New()
-		if incusErr != nil {
+		if containerServer != nil && containerServer.boxes().Kind() == box.KindK8s {
+			if backend, ok := containerServer.boxes().(k8sClientsetProvider); ok {
+				sshCollector = audit.NewSSHCollectorWithSource(
+					audit.NewK8sSessionSource(backend.Clientset(), ""), auditStore)
+				log.Printf("SSH login collector configured (K8s pod logs)")
+			} else {
+				log.Printf("Warning: K8s box backend exposes no clientset; SSH logins will not be audited")
+			}
+		} else if sshIncusClient, incusErr := incus.New(); incusErr != nil {
 			log.Printf("Warning: Failed to create incus client for SSH collector: %v", incusErr)
 		} else {
 			sshCollector = audit.NewSSHCollector(sshIncusClient, auditStore)
-			log.Printf("SSH login collector configured")
+			log.Printf("SSH login collector configured (LXC auth.log)")
 		}
 	}
 
@@ -1450,7 +1483,19 @@ skipAppHosting:
 		// up.
 		if mgr := containerServer.GetManager(); mgr != nil {
 			gatewayServer.SetContainerExistsFn(func(username string) bool {
-				return mgr.ContainerExists(username + "-container")
+				// Owner "<o>" → container "<o>-container". Collaborator jump
+				// accounts are "<o>-container-<c>" and map to the SAME
+				// "<o>-container"; the bare `username+"-container"` synthesises
+				// "<o>-container-<c>-container", which never exists, so every
+				// collaborator was misclassified as an orphan and stripped from
+				// keysync → sshpiperd denied it (#1140). Accept either.
+				if mgr.ContainerExists(username + "-container") {
+					return true
+				}
+				if c, ok := container.CollaboratorJumpAccountContainer(username); ok {
+					return mgr.ContainerExists(c)
+				}
+				return false
 			})
 		}
 
@@ -1598,42 +1643,54 @@ skipAppHosting:
 		}
 	}
 
+	// Tenant egress policy on the K8s backend (#1188). Constructed here, where
+	// the policy store exists; started in Start() alongside the other loops.
+	// The eBPF enforcer cannot serve this runtime — it attaches TCX to host
+	// veths that a pod does not have — so the store is the only shared piece.
+	var k8sNetPolicyReconciler *K8sNetworkPolicyReconciler
+	if containerServer != nil && containerServer.boxes().Kind() == box.KindK8s {
+		if applier, ok := containerServer.boxes().(tenantPolicyApplier); ok {
+			k8sNetPolicyReconciler = NewK8sNetworkPolicyReconciler(npServer.Store(), applier, 0)
+		}
+	}
+
 	ds := &DualServer{
-		config:                config,
-		grpcServer:            grpcServer,
-		containerServer:       containerServer,
-		appServer:             appServer,
-		networkServer:         networkServer,
-		trafficServer:         trafficServer,
-		trafficCollector:      trafficCollector,
-		gatewayServer:         gatewayServer,
-		tokenManager:          tokenManager,
-		authMiddleware:        authMiddleware,
-		routeStore:            routeStore,
-		routeSyncJob:          routeSyncJob,
-		passthroughStore:      passthroughStore,
-		passthroughSyncJob:    passthroughSyncJob,
-		collaboratorStore:     collabStore,
-		daemonConfigStore:     config.DaemonConfigStore,
-		metricsCollector:      metricsCollector,
-		securityScanner:       securityScanner,
-		securityStore:         securityStore,
-		securityServer:        securityServerInstance,
-		auditStore:            auditStore,
-		auditEventSubscriber:  auditEventSubscriber,
-		sshCollector:          sshCollector,
-		revocationStore:       revocationStoreLocal,
-		alertStore:            alertStore,
-		alertManager:          alertManager,
-		alertDeliveryStore:    containerServer.alertDeliveryStore,
-		pentestManager:        pentestManager,
-		pentestStore:          pentestStore,
-		zapManager:            zapManager,
-		zapStore:              zapStore,
-		peerPool:              NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
-		networkPolicyEnforcer: networkPolicyEnforcer,
-		cloudClient:           cloudClient,
-		startTime:             time.Now(),
+		config:                 config,
+		grpcServer:             grpcServer,
+		containerServer:        containerServer,
+		appServer:              appServer,
+		networkServer:          networkServer,
+		trafficServer:          trafficServer,
+		trafficCollector:       trafficCollector,
+		gatewayServer:          gatewayServer,
+		tokenManager:           tokenManager,
+		authMiddleware:         authMiddleware,
+		routeStore:             routeStore,
+		routeSyncJob:           routeSyncJob,
+		passthroughStore:       passthroughStore,
+		passthroughSyncJob:     passthroughSyncJob,
+		collaboratorStore:      collabStore,
+		daemonConfigStore:      config.DaemonConfigStore,
+		metricsCollector:       metricsCollector,
+		securityScanner:        securityScanner,
+		securityStore:          securityStore,
+		securityServer:         securityServerInstance,
+		auditStore:             auditStore,
+		auditEventSubscriber:   auditEventSubscriber,
+		sshCollector:           sshCollector,
+		revocationStore:        revocationStoreLocal,
+		alertStore:             alertStore,
+		alertManager:           alertManager,
+		alertDeliveryStore:     containerServer.alertDeliveryStore,
+		pentestManager:         pentestManager,
+		pentestStore:           pentestStore,
+		zapManager:             zapManager,
+		zapStore:               zapStore,
+		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
+		networkPolicyEnforcer:  networkPolicyEnforcer,
+		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
+		cloudClient:            cloudClient,
+		startTime:              time.Now(),
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -2044,7 +2101,16 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.containerServer != nil {
 		if mgr := ds.containerServer.GetManager(); mgr != nil {
 			go container.RunOrphanReaper(ctx, func(username string) bool {
-				return mgr.ContainerExists(username + "-container")
+				// Same collaborator-aware mapping as the keysync filter above
+				// (#1140): without it a live collaborator jump account
+				// "<o>-container-<c>" is misread as an orphan and userdel'd.
+				if mgr.ContainerExists(username + "-container") {
+					return true
+				}
+				if c, ok := container.CollaboratorJumpAccountContainer(username); ok {
+					return mgr.ContainerExists(c)
+				}
+				return false
 			})
 		}
 	}
@@ -2056,7 +2122,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// /run/secrets files until the next daemon-driven
 	// touch. Owned alongside the autosleep manager —
 	// same shape, same lifetime.
-	if ds.containerServer != nil && ds.containerServer.secretsStore != nil {
+	//
+	// Deliberately LXC-only, and not an oversight left over from #1190.
+	// The reconciler exists because a container's tmpfs does not survive a
+	// restart, so the files have to be rewritten. A K8s box mounts its
+	// secrets from a Secret, which does survive — the kubelet repopulates
+	// the mount on its own, and a periodic re-apply would be writes to the
+	// apiserver that change nothing.
+	if ds.containerServer != nil && ds.containerServer.secretsStore != nil &&
+		ds.containerServer.boxes().Kind() != box.KindK8s {
 		if ic, err := incus.New(); err != nil {
 			log.Printf("[secrets-reconciler] incus client unavailable: %v (reconciler disabled)", err)
 		} else {
@@ -2094,6 +2168,12 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	}
 
 	// Start security scanner if available
+	// Tenant egress policy on the K8s backend (#1188). Nil on every other
+	// runtime; the eBPF enforcer serves those.
+	if ds.k8sNetPolicyReconciler != nil {
+		ds.k8sNetPolicyReconciler.Start(ctx)
+	}
+
 	if ds.securityScanner != nil {
 		ds.securityScanner.Start(ctx)
 		log.Printf("Security scanner started")
@@ -2359,6 +2439,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if ds.networkPolicyEnforcer != nil {
 			ds.networkPolicyEnforcer.Stop()
 		}
+		if ds.k8sNetPolicyReconciler != nil {
+			ds.k8sNetPolicyReconciler.Stop()
+		}
 		if ds.metricsCollector != nil {
 			ds.metricsCollector.Stop()
 		}
@@ -2483,4 +2566,11 @@ func envTruthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// k8sClientsetProvider is the K8s box backend's clientset accessor, asserted
+// for rather than added to the BoxBackend contract — reading a pod log is not
+// an operation every backend has (#1189).
+type k8sClientsetProvider interface {
+	Clientset() kubernetes.Interface
 }

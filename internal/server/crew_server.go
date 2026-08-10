@@ -94,6 +94,18 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		InputJson: req.InputJson,
 	}
 
+	// Record the run before driving it, so an in-flight run is observable.
+	//
+	// Previously the first write happened only after driveCrew returned, so
+	// GetCrewRun answered NotFound for the entire duration of a run — the one
+	// window where a caller most wants to look — and CREW_RUN_STATE_RUNNING
+	// was set on a struct that was overwritten before anyone could read it.
+	// The state existed in the proto and never in the store.
+	//
+	// Safe to store now because the store clones: the mutations below act on
+	// the local run, and each put replaces the stored copy.
+	s.runs.put(run)
+
 	// Provision each member box (scoped token + per-box allowed_peers policy)
 	// and start it in serve mode so it serves /tasks for the hops below. Members
 	// are seeded with no task input — the crew delivers per-hop input over A2A.

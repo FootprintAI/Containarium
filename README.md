@@ -23,7 +23,7 @@ curl https://blog.example.com → hello world
 
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
-[![Containarium demo: prompt → live HTTPS Python app](docs/images/demo-preview.gif)](https://youtu.be/IBDDD_tb8FY)
+[![Containarium quickstart: one command turns a fresh box into SSH + a wired agent + a live HTTPS app](docs/images/quickstart.gif)](https://youtu.be/IBDDD_tb8FY)
 
 🌐 **Project site:** [containarium.dev](https://containarium.dev) · 🎬 **55s demo:** [youtu.be/IBDDD_tb8FY](https://youtu.be/IBDDD_tb8FY) · 🚀 **Live app:** [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev)
 
@@ -57,11 +57,27 @@ You bring the agent. We run the box.
 
 ## Quick start
 
+### One command (requires containarium ≥ v0.62)
+
+`quickstart` collapses the five steps below into a single idempotent command —
+create the box, wire SSH and your agent (`claude` / `gemini` / `codex`), and,
+with `--prompt`, build and serve a site:
+
+```bash
+containarium quickstart alice --server <your-vm> \
+  --prompt "a coffee-shop landing page" --domain coffee.example.com
+```
+
+No `--ssh-key`? It reuses your `~/.ssh` key or generates a managed one. On a
+fresh VM the installer can bootstrap it too:
+`curl -fsSL https://containarium.dev/install.sh | sudo bash -s -- --quickstart alice`.
+
+Prefer to see each piece, or drive it by hand? The same five steps, explicitly:
+
 ### 1. Self-host on a fresh Ubuntu VM (5 minutes)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh \
-  | sudo bash
+curl -fsSL https://containarium.dev/install.sh | sudo bash
 ```
 
 That installs Containarium + Incus + dependencies, starts the daemon,
@@ -447,7 +463,8 @@ The sentinel itself is e2-micro (free tier). It:
 
 VictoriaMetrics + Grafana auto-provisioned. Per-container CPU,
 memory, disk, network. Alerting via webhooks. SSH audit logs per
-user.
+user (LXC backend; the Kubernetes backend records control-plane API
+audit but not in-box SSH sessions — see #1189).
 
 ### Security primitives
 
@@ -578,8 +595,7 @@ least-privilege scope catalog.
 ### Manual install (recommended for getting started)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/footprintai/containarium/main/hacks/install.sh \
-  | sudo bash
+curl -fsSL https://containarium.dev/install.sh | sudo bash
 ```
 
 See [`hacks/README.md`](hacks/README.md) for what the script does.
@@ -748,6 +764,11 @@ and your data on your infra.
 
 Where Containarium has been demonstrated live:
 
+- **2026-08 — COSCUP, Taipei.** *An SSH-native agent runtime, built
+  because our hardware was sitting idle* — where utilisation goes on AI
+  and VM fleets, why one VM per developer stopped paying for itself, and
+  how LXC + sshpiper + persistent disk became Containarium.
+  [Slides](https://containarium.dev/talks/coscup2026).
 - **2026-06-04 — AI Agent Night, Taipei.** When the grand-prize
   giveaway (a custom vibe-keyboard) hit a snag — the event had no way
   to run the lucky draw — we fired up Containarium and vibe-coded a

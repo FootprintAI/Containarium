@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
+	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -83,4 +84,45 @@ func (s *serverMetricsSources) AllContainerMetrics(ctx context.Context) (map[str
 		out[m.Name] = toProtoMetrics(m)
 	}
 	return out, nil
+}
+
+// serverPlatformSources is the production cloudexport.PlatformSources
+// adapter (#1082): a thin wrapper over the daemon's platformstats.Stats,
+// the same instance the gRPC unary interceptor records into (see
+// DualServer's interceptor chain), plus the daemon's *PeerPool (#1084)
+// for connectivity. No independent state of its own.
+type serverPlatformSources struct {
+	stats *platformstats.Stats
+	peers *PeerPool
+}
+
+// APIStats returns the current cumulative API counters. Nil-safe: a
+// ContainerServer constructed directly (bypassing NewContainerServer,
+// as some tests do) may have a nil platformStats, and this must degrade
+// to an empty snapshot rather than panic — consistent with every other
+// seam in this package never crashing the export tick.
+func (s serverPlatformSources) APIStats() platformstats.APISnapshot {
+	if s.stats == nil {
+		return platformstats.APISnapshot{}
+	}
+	return s.stats.SnapshotAPI()
+}
+
+// ProvisionStats returns the current cumulative provisioning counters
+// (#1083). Nil-safe for the same reason as APIStats.
+func (s serverPlatformSources) ProvisionStats() platformstats.ProvisionSnapshot {
+	if s.stats == nil {
+		return platformstats.ProvisionSnapshot{}
+	}
+	return s.stats.SnapshotProvision()
+}
+
+// Peers returns the current peer-health snapshot (#1084). Nil-safe: a
+// ContainerServer without a wired PeerPool degrades to no peers, same
+// as every other seam in this package.
+func (s serverPlatformSources) Peers() []cloudexport.PeerState {
+	if s.peers == nil {
+		return nil
+	}
+	return s.peers.Snapshot()
 }

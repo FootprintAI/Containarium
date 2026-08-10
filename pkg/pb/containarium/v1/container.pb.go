@@ -1024,7 +1024,9 @@ type CreateContainerRequest struct {
 	// If empty, DHCP will assign an IP automatically
 	StaticIp string `protobuf:"bytes,8,opt,name=static_ip,json=staticIp,proto3" json:"static_ip,omitempty"`
 	// Software stack to install (optional, e.g., "nodejs", "python", "fullstack")
-	// See available stacks in configs/stacks.yaml
+	// Run `containarium create --help` for the ids and what each one installs; the
+	// catalog itself is pkg/core/stacks/stacks.yaml, overridable per host at
+	// /etc/containarium/stacks.yaml.
 	Stack string `protobuf:"bytes,9,opt,name=stack,proto3" json:"stack,omitempty"`
 	// GPU device ID for passthrough (e.g., "0" for first GPU, PCI address, or empty for none)
 	//
@@ -1108,7 +1110,30 @@ type CreateContainerRequest struct {
 	// singular `gpu` field: when non-empty `gpu` is ignored; when empty a
 	// non-empty `gpu` is treated as a single-element list. Each device is
 	// resolved to a stable PCI address at create time.
-	Gpus          []string `protobuf:"bytes,23,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	Gpus []string `protobuf:"bytes,23,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	// Encrypt the container's ZFS dataset with a tenant-scoped key rather
+	// than the pool-wide key, so a co-tenant — or host root, once the
+	// container is stopped and the key unloaded — sees ciphertext.
+	//
+	// Requires the daemon to be wired with a KeyProvider. Without one the
+	// request fails with FAILED_PRECONDITION; it never falls back to
+	// plaintext, because a create that silently ignores this flag would
+	// hand the caller an encryption guarantee they do not have.
+	//
+	// Default false: existing containers keep their current posture
+	// (pool-level encryption, or none). See
+	// docs/ZFS-PER-CONTAINER-ENCRYPTION-DESIGN.md.
+	Encrypted bool `protobuf:"varint,24,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	// Tenant that owns this container, scoping the encryption key: all of
+	// a tenant's containers share one ZFS encryptionroot, and different
+	// tenants always have distinct ones.
+	//
+	// The OSS daemon is single-tenant and accepts only "" or "default",
+	// rejecting anything else with INVALID_ARGUMENT; the multi-tenant
+	// cloud daemon accepts any non-empty value. The field is defined here
+	// so the wire shape stays stable across the OSS → cloud transition
+	// rather than changing when tenancy lands.
+	TenantId      string `protobuf:"bytes,25,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1302,6 +1327,20 @@ func (x *CreateContainerRequest) GetGpus() []string {
 		return x.Gpus
 	}
 	return nil
+}
+
+func (x *CreateContainerRequest) GetEncrypted() bool {
+	if x != nil {
+		return x.Encrypted
+	}
+	return false
+}
+
+func (x *CreateContainerRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -4919,7 +4958,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\x86\b\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xc1\b\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -4949,7 +4988,9 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"ttlSeconds\x12*\n" +
 	"\x11idle_stop_minutes\x18\x15 \x01(\x05R\x0fidleStopMinutes\x12?\n" +
 	"\x1cdelete_after_stopped_seconds\x18\x16 \x01(\x03R\x19deleteAfterStoppedSeconds\x12\x12\n" +
-	"\x04gpus\x18\x17 \x03(\tR\x04gpus\x1a9\n" +
+	"\x04gpus\x18\x17 \x03(\tR\x04gpus\x12\x1c\n" +
+	"\tencrypted\x18\x18 \x01(\bR\tencrypted\x12\x1b\n" +
+	"\ttenant_id\x18\x19 \x01(\tR\btenantId\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +

@@ -15,58 +15,74 @@
   },
   "tags": [
     {
-      "name": "ContainerService"
+      "name": "ContainerService",
+      "description": "ContainerService provides container management operations"
     },
     {
       "name": "ActuationService"
     },
     {
-      "name": "RecipeService"
+      "name": "RecipeService",
+      "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
     {
-      "name": "AgentSkillService"
+      "name": "AgentSkillService",
+      "description": "AgentSkillService manages and runs individual packaged agents."
     },
     {
-      "name": "CrewService"
+      "name": "CrewService",
+      "description": "CrewService runs collaborating sets of skills bound to a task purpose."
     },
     {
-      "name": "NetworkService"
+      "name": "NetworkService",
+      "description": "NetworkService provides network and firewall management"
     },
     {
-      "name": "AppService"
+      "name": "AppService",
+      "description": "AppService provides application deployment and management"
     },
     {
-      "name": "BackupService"
+      "name": "BackupService",
+      "description": "BackupService provides logical (pg_dump) database backups for the\ndatabases running inside Containarium containers, stored off-host.\nSee docs/DB-BACKUP-OPERATIONS.md for the operational runbook and the\nISO 27001 A.8.13 control mapping."
     },
     {
       "name": "ComposeAutostartService"
     },
     {
-      "name": "TrafficService"
+      "name": "TrafficService",
+      "description": "TrafficService provides container traffic monitoring capabilities"
     },
     {
-      "name": "EventService"
+      "name": "EventService",
+      "description": "EventService provides real-time event streaming"
     },
     {
-      "name": "KmsService"
+      "name": "KmsService",
+      "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
     },
     {
-      "name": "NetworkPolicyService"
+      "name": "NetworkPolicyService",
+      "description": "NetworkPolicyService — the control-plane CRUD for per-tenant network\nisolation policies (Phase A of the eBPF network-isolation design, #315).\n\nThis is the policy *store* surface: operators (and the cloud control plane)\nset/get/list/delete a tenant's NetworkPolicy here; the per-veth TC_INGRESS\nBPF loader (a later increment) consumes the stored policies and programs the\nkernel. Admin-only — policies are fleet-shaping config, not tenant-editable."
     },
     {
-      "name": "PentestService"
+      "name": "PentestService",
+      "description": "PentestService provides automated penetration testing and vulnerability scanning"
     },
     {
-      "name": "SecurityService"
+      "name": "SecurityService",
+      "description": "SecurityService provides container security scanning and reporting"
     },
     {
-      "name": "TokensService"
+      "name": "TokensService",
+      "description": "TokensService is the admin surface for JWT lifecycle.\n\nRevokeToken requires an admin role + tokens:write scope;\ntenants can't revoke other tenants' tokens. RefreshToken\nis open to any holder of a valid refresh token — that's\nthe whole point of the exchange flow."
     },
     {
-      "name": "VolumeService"
+      "name": "VolumeService",
+      "description": "VolumeService manages shared, multi-writer data volumes (#384).\n\nThe only storage mechanism that lets N containers mount the SAME volume\nread-write without corruption is a CephFS custom (filesystem) volume:\nCephFS's MDS + capability/lease protocol coordinates concurrent POSIX\nwriters, which a block device on a non-cluster filesystem (ext4/xfs/zfs)\ncannot. So this service is capability-gated: it only works on hosts\nbacked by a `cephfs` Incus storage pool, and rejects create/attach on\nsingle-node ZFS hosts (today's default) with a clear error. Callers\ncheck support via ListVolumes.shared_volumes_supported.\n\nNOTE: this is a single-writer-safe DATA volume, not an instance rootfs\n(Incus restricts the cephfs driver to custom volumes)."
     },
     {
-      "name": "ZapService"
+      "name": "ZapService",
+      "description": "ZapService provides OWASP ZAP web application security scanning"
     }
   ],
   "schemes": [
@@ -1287,6 +1303,47 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/RestoreBackupBody"
+            }
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      }
+    },
+    "/v1/backups/{id}/verify": {
+      "post": {
+        "summary": "Verify a backup",
+        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.",
+        "operationId": "BackupService_VerifyBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/VerifyBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Backup to verify.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/VerifyBackupBody"
             }
           }
         ],
@@ -6516,9 +6573,39 @@
         "capabilityProfile": {
           "$ref": "#/definitions/CapabilityProfile",
           "description": "The backend's hardware capability profile recorded at join (hardware\nclass, a bounded CPU/memory micro-benchmark, and region), or null when no\nprofile has been recorded yet. Lets the control plane place work by\nmeasured class rather than self-reported class alone. See #681."
+        },
+        "hostLoad": {
+          "$ref": "#/definitions/HostLoad",
+          "description": "What this host is actually doing right now — measured CPU load, memory\nand disk in use — or null when no usable sample could be taken (the\nprobe failed, or a peer was unreachable this call). Null rather than\nzeros so a caller can tell \"we don't know\" from \"idle\", which is the\ndifference between a placement decision and a guess.\n\nDistinct from the two capacity fields above, and all three are needed to\nanswer different questions: headroom is what the host *offers*,\ncapability_profile is what it *can* do, host_load is what it is *doing*.\nSee cloud #966 / #547."
+        },
+        "storage": {
+          "$ref": "#/definitions/BackendStorage",
+          "description": "The storage pool backing this backend's containers, and whether it\nisolates tenant volumes. Null when the pool could not be read — an\nunread pool must not be reported as isolated. See #1209 / #1206."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
+    },
+    "BackendStorage": {
+      "type": "object",
+      "properties": {
+        "pool": {
+          "type": "string",
+          "description": "Storage pool name (e.g. \"default\")."
+        },
+        "driver": {
+          "$ref": "#/definitions/StorageDriver",
+          "description": "The pool's driver as a typed constant."
+        },
+        "isolation": {
+          "$ref": "#/definitions/StorageIsolation",
+          "description": "Whether this pool isolates tenant volumes."
+        },
+        "driverName": {
+          "type": "string",
+          "description": "The raw driver string incus reported (e.g. \"zfs\", \"dir\", or a driver\npredating this enum). Always populated when the pool was read, so a\nSTORAGE_DRIVER_OTHER value is still actionable."
+        }
+      },
+      "description": "BackendStorage describes the storage pool backing a backend's containers.\nSurfaced through ListBackends so an operator can answer \"which of my\nbackends can have one tenant stall another's fsync?\" from the product,\nrather than by reading a daemon startup log on each host. See #1209."
     },
     "BackupDestination": {
       "type": "string",
@@ -6529,6 +6616,15 @@
       ],
       "default": "BACKUP_DESTINATION_UNSPECIFIED",
       "description": "BackupDestination is where a logical dump is stored *off* the database\nhost. The whole point of the feature is getting the data off-box, so a\ndestination is always required — there is no \"stay on the same disk\"\noption (a dump that shares a failure domain with the database it came\nfrom is not a backup; see docs/DB-BACKUP-OPERATIONS.md).\n\n - BACKUP_DESTINATION_UNSPECIFIED: Unset — the daemon rejects a create with this value.\n - BACKUP_DESTINATION_LOCAL: A backup directory on the daemon host, distinct from the container's\nown data disk. Survives container/disk loss but NOT host loss — use\nfor dev or as a staging tier in front of an off-host copy.\n - BACKUP_DESTINATION_GCS: A Google Cloud Storage bucket, written via the host's `gcloud`\n(`gcloud storage cp`). True off-host durability; the recommended\nproduction destination."
+    },
+    "BackupEngine": {
+      "type": "string",
+      "enum": [
+        "BACKUP_ENGINE_UNSPECIFIED",
+        "BACKUP_ENGINE_POSTGRES"
+      ],
+      "default": "BACKUP_ENGINE_UNSPECIFIED",
+      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one."
     },
     "BackupRecord": {
       "type": "object",
@@ -6567,11 +6663,63 @@
           "description": "Concrete location of the dump: a host path for LOCAL, a gs:// URI\nfor GCS."
         },
         "engine": {
+          "$ref": "#/definitions/BackupEngine",
+          "description": "Database engine the dump was taken with.\n\nAn enum rather than a string because the valid values are an\nenumerated set, so the compiler should be the thing that rejects a\ntypo rather than a driver lookup failing at dump time (#1157)."
+        },
+        "lastVerification": {
+          "$ref": "#/definitions/BackupVerification",
+          "description": "Outcome of the most recent restore test, unset until the backup has\nbeen verified. A recorded sha256 proves the bytes are intact; only\nthis proves the dump is restorable (#1159)."
+        },
+        "relationCount": {
           "type": "string",
-          "description": "Database engine. \"postgres\" is the only engine in v1."
+          "format": "int64",
+          "description": "Number of user relations (tables and partitioned tables, excluding\nsystem catalogs) in the source database at dump time — the manifest\na restore test compares the restored schema against.\n\nOptional because it is absent on backups taken before verification\nexisted, and because a source that cannot be queried still produces\na valid dump. Unset means \"no manifest\": verification records what\nit found but has nothing to compare it to."
         }
       },
       "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
+    },
+    "BackupVerification": {
+      "type": "object",
+      "properties": {
+        "verifiedAt": {
+          "type": "string",
+          "description": "RFC3339 UTC timestamp of when verification completed."
+        },
+        "result": {
+          "$ref": "#/definitions/VerificationResult",
+          "description": "Outcome."
+        },
+        "error": {
+          "type": "string",
+          "description": "The engine's own error when result is FAILED — pg_restore's own\nmessage, so an operator sees why the dump would not load rather\nthan a wrapper's summary. Empty on success. This is engine stderr\ncaptured verbatim: it is persisted and returned over the API, so\ntreat it with the same care as any other diagnostic output."
+        },
+        "targetContainer": {
+          "type": "string",
+          "description": "Container the dump was restored into. Always distinct from the\ncontainer the backup was taken from."
+        },
+        "scratchDatabase": {
+          "type": "string",
+          "description": "Throwaway database created for the test and dropped afterwards."
+        },
+        "durationMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Wall-clock duration of the restore test."
+        },
+        "verifiedBy": {
+          "type": "string",
+          "description": "Authenticated subject that requested verification, for the \"who\"\nhalf of the audit record. Empty when unauthenticated (dev mode)."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/VerificationCheck"
+          },
+          "description": "Individual checks performed, in execution order."
+        }
+      },
+      "description": "BackupVerification is the audit artifact for one restore test: who ran\nit, when, against what, and what the engine said. Persisted on the\nBackupRecord so `ListBackups` can answer \"last verified\" and so the\nevidence outlives the run that produced it (ISO 27001 A.8.13 wants\nbackups *tested*, not just taken)."
     },
     "BuildpackOptions": {
       "type": "object",
@@ -7479,7 +7627,7 @@
         },
         "stack": {
           "type": "string",
-          "title": "Software stack to install (optional, e.g., \"nodejs\", \"python\", \"fullstack\")\nSee available stacks in configs/stacks.yaml"
+          "description": "Software stack to install (optional, e.g., \"nodejs\", \"python\", \"fullstack\")\nRun `containarium create --help` for the ids and what each one installs; the\ncatalog itself is pkg/core/stacks/stacks.yaml, overridable per host at\n/etc/containarium/stacks.yaml."
         },
         "gpu": {
           "type": "string",
@@ -7546,6 +7694,14 @@
             "type": "string"
           },
           "description": "GPU device IDs for passthrough — one entry per GPU to attach (device\nindex like \"0\"/\"1\" or PCI address like \"0000:0b:00.0\"). Supersedes the\nsingular `gpu` field: when non-empty `gpu` is ignored; when empty a\nnon-empty `gpu` is treated as a single-element list. Each device is\nresolved to a stable PCI address at create time."
+        },
+        "encrypted": {
+          "type": "boolean",
+          "description": "Encrypt the container's ZFS dataset with a tenant-scoped key rather\nthan the pool-wide key, so a co-tenant — or host root, once the\ncontainer is stopped and the key unloaded — sees ciphertext.\n\nRequires the daemon to be wired with a KeyProvider. Without one the\nrequest fails with FAILED_PRECONDITION; it never falls back to\nplaintext, because a create that silently ignores this flag would\nhand the caller an encryption guarantee they do not have.\n\nDefault false: existing containers keep their current posture\n(pool-level encryption, or none). See\ndocs/ZFS-PER-CONTAINER-ENCRYPTION-DESIGN.md."
+        },
+        "tenantId": {
+          "type": "string",
+          "description": "Tenant that owns this container, scoping the encryption key: all of\na tenant's containers share one ZFS encryptionroot, and different\ntenants always have distinct ones.\n\nThe OSS daemon is single-tenant and accepts only \"\" or \"default\",\nrejecting anything else with INVALID_ARGUMENT; the multi-tenant\ncloud daemon accepts any non-empty value. The field is defined here\nso the wire shape stays stable across the OSS → cloud transition\nrather than changing when tenancy lands."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -8162,6 +8318,10 @@
         "ossBackendId": {
           "type": "string",
           "description": "oss_backend_id is the id this host's tunnel registered under at the\nsentinel (its `pool join` spot-id) — what the sentinel `/peer/\u003cid\u003e/`\nproxy keys on. The cloud records it to map a container's backend id\nback to this host. Empty if not (yet) a peer-proxy-routed BYOC backend."
+        },
+        "adoptForeign": {
+          "type": "boolean",
+          "description": "adopt_foreign acknowledges that this host already runs cloud-managed\ncontainers belonging to OTHER organizations, and enrolls it anyway\n(cloud #1006). Default false: the cloud REFUSES such a host with\nFailedPrecondition rather than silently claiming it around the existing\nresidents. Set by `containarium cloud enroll --adopt-foreign`.\n\nThe check runs control-plane-side — the cloud probes this host's daemon\nover the sentinel peer-proxy and reads the containers' `cloud_org_id`\nlabels itself, so the host cannot under-report. The cloud records the\noverride on its host audit trail."
         }
       },
       "description": "EnrollHostRequest carries the single-use join token a BYO host redeems to\nregister itself with the cloud (BYO-compute report path). Unlike every other\nActuationService RPC this one is NOT host-bearer authed — the host row\ndoesn't exist yet; the cloud validates + single-use-redeems the token."
@@ -8317,7 +8477,7 @@
         "GPU_STATUS_DEGRADED"
       ],
       "default": "GPU_STATUS_UNSPECIFIED",
-      "title": "- GPU_STATUS_OK: nvidia-smi saw the GPU inside the LXC\n - GPU_STATUS_UNAVAILABLE: no GPU / passthrough not visible / setup failed\n - GPU_STATUS_DEGRADED: reserved (e.g. present but reporting errors)"
+      "description": "- GPU_STATUS_OK: nvidia-smi saw the GPU inside the LXC\n - GPU_STATUS_UNAVAILABLE: no GPU / passthrough not visible / setup failed\n - GPU_STATUS_DEGRADED: reserved (e.g. present but reporting errors)"
     },
     "GPUVendor": {
       "type": "string",
@@ -8328,7 +8488,7 @@
         "GPU_VENDOR_INTEL"
       ],
       "default": "GPU_VENDOR_UNSPECIFIED",
-      "title": "GPU vendor enum"
+      "description": "GPU vendor enum"
     },
     "GetAgentSkillResponse": {
       "type": "object",
@@ -8995,6 +9155,52 @@
         }
       },
       "description": "HostCapabilityCheck is one line of the `doctor` self-check: a named probe\nwith a pass/fail + human-readable detail. Defined locally here (same field\nnumbers as the cloud's host.proto message) so the vendored actuation proto\nstays self-contained — wire-compatible without vendoring host.proto."
+    },
+    "HostLoad": {
+      "type": "object",
+      "properties": {
+        "cpuLoad1m": {
+          "type": "number",
+          "format": "double",
+          "description": "Kernel load averages over 1 / 5 / 15 minutes. Interpret against\ncpu_cores: load counts runnable + uninterruptible tasks, so a value at\nor below cpu_cores is not saturated, and I/O wait can inflate it\nwithout the CPU being busy."
+        },
+        "cpuLoad5m": {
+          "type": "number",
+          "format": "double"
+        },
+        "cpuLoad15m": {
+          "type": "number",
+          "format": "double"
+        },
+        "cpuCores": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Physical CPU cores on the host — the denominator that makes the load\naverages comparable across differently-sized machines."
+        },
+        "memoryUsedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "RAM in use and installed, in bytes."
+        },
+        "memoryTotalBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "diskUsedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Disk in use and total, in bytes, for the storage backing containers."
+        },
+        "diskTotalBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "sampledAt": {
+          "type": "string",
+          "description": "RFC3339 timestamp of this sample. Callers should treat a sample as\nfresh only for as long as their own polling interval — it is measured\nper request, not continuously."
+        }
+      },
+      "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
     },
     "InstallPentestToolRequest": {
       "type": "object",
@@ -10898,6 +11104,17 @@
       },
       "title": "ScanJob represents a queued ClamAV scan job"
     },
+    "SecretDelivery": {
+      "type": "string",
+      "enum": [
+        "SECRET_DELIVERY_UNSPECIFIED",
+        "SECRET_DELIVERY_ENV",
+        "SECRET_DELIVERY_FILE",
+        "SECRET_DELIVERY_COMPOSE"
+      ],
+      "default": "SECRET_DELIVERY_UNSPECIFIED",
+      "description": "SecretDelivery is how a secret is materialized inside the container.\nReplaces the free-string `delivery` field, per the repo's\n\"protobuf enums over magic strings\" convention (CLAUDE.md).\n\n - SECRET_DELIVERY_UNSPECIFIED: Unset. Callers that omit delivery_mode fall back to the legacy\n`delivery` string, then to ENV.\n - SECRET_DELIVERY_ENV: environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC — visible to every process in\nthe container via /proc/\u003cpid\u003e/environ. The pre-4.3 default.\n - SECRET_DELIVERY_FILE: Per-secret file at /run/secrets/\u003cNAME\u003e, mode 0440 root:\u003ctenant\u003e, on\ntmpfs. Same tenant isolation, narrower in-container access surface.\n - SECRET_DELIVERY_COMPOSE: Shared dotenv at /run/containarium/secrets.env (mode 0400, tmpfs)\nfor nested docker / docker-compose apps that consume `env_file:` and\ndo not inherit the LXC environment. Single-line values only."
+    },
     "SecretMetadata": {
       "type": "object",
       "properties": {
@@ -10923,7 +11140,11 @@
         },
         "delivery": {
           "type": "string",
-          "description": "Phase 4.3 — how the secret is delivered into the container.\n\"env\" (default): stamped as environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC,\nvisible to every process in the container via /proc/\u003cpid\u003e/environ.\n\"file\": written to a per-container tmpfs at /run/secrets/\u003cNAME\u003e,\nfile mode 0440 root:\u003ctenant\u003e. Same tenant isolation, narrower\nin-container access surface.\n\"compose\": written to a shared dotenv file at\n/run/containarium/secrets.env (mode 0400, tmpfs) that nested\ndocker / docker-compose apps consume via `env_file:` — they don't\ninherit the LXC environment (the same gap OTel solved). Single-line\nvalues only; rejected at set-time otherwise. See\ndocs/security/SECRETS-ENV-VAR-RISK.md."
+          "description": "Phase 4.3 — how the secret is delivered into the container.\n\"env\" (default): stamped as environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC,\nvisible to every process in the container via /proc/\u003cpid\u003e/environ.\n\"file\": written to a per-container tmpfs at /run/secrets/\u003cNAME\u003e,\nfile mode 0440 root:\u003ctenant\u003e. Same tenant isolation, narrower\nin-container access surface.\n\"compose\": written to a shared dotenv file at\n/run/containarium/secrets.env (mode 0400, tmpfs) that nested\ndocker / docker-compose apps consume via `env_file:` — they don't\ninherit the LXC environment (the same gap OTel solved). Single-line\nvalues only; rejected at set-time otherwise. See\ndocs/security/SECRETS-ENV-VAR-RISK.md.\n\nDeprecated: use delivery_mode. Still populated on every response so\nexisting REST/MCP clients keep working; a future major release drops it."
+        },
+        "deliveryMode": {
+          "$ref": "#/definitions/SecretDelivery",
+          "description": "Typed delivery mode — the same value as `delivery`, as an enum.\nBoth fields are always populated and always agree."
         }
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
@@ -11185,7 +11406,11 @@
         },
         "delivery": {
           "type": "string",
-          "description": "Phase 4.3 — delivery mode for the secret. Accepts \"env\"\n(default; same behavior as pre-4.3), \"file\" (per-secret tmpfs\n/run/secrets/\u003cNAME\u003e), or \"compose\" (shared dotenv at\n/run/containarium/secrets.env for docker-compose `env_file:`;\nsingle-line values only). Unknown values are rejected at the\nAPI boundary."
+          "description": "Phase 4.3 — delivery mode for the secret. Accepts \"env\"\n(default; same behavior as pre-4.3), \"file\" (per-secret tmpfs\n/run/secrets/\u003cNAME\u003e), or \"compose\" (shared dotenv at\n/run/containarium/secrets.env for docker-compose `env_file:`;\nsingle-line values only). Unknown values are rejected at the\nAPI boundary.\n\nDeprecated: use delivery_mode. Accepted for backward compatibility;\nwhen both are set they must agree, or the request is rejected rather\nthan silently preferring one."
+        },
+        "deliveryMode": {
+          "$ref": "#/definitions/SecretDelivery",
+          "description": "Typed delivery mode. UNSPECIFIED falls back to `delivery`, and if\nthat is empty too, to SECRET_DELIVERY_ENV."
         }
       },
       "description": "SetSecretRequest creates or updates a tenant secret. Idempotent —\nrepeated calls with the same (username, name) bump the version and\nreplace the value."
@@ -11433,6 +11658,31 @@
       },
       "description": "StopEgressProxyResponse is the (empty) ack for a teardown."
     },
+    "StorageDriver": {
+      "type": "string",
+      "enum": [
+        "STORAGE_DRIVER_UNSPECIFIED",
+        "STORAGE_DRIVER_ZFS",
+        "STORAGE_DRIVER_BTRFS",
+        "STORAGE_DRIVER_LVM",
+        "STORAGE_DRIVER_CEPH",
+        "STORAGE_DRIVER_DIR",
+        "STORAGE_DRIVER_OTHER"
+      ],
+      "default": "STORAGE_DRIVER_UNSPECIFIED",
+      "description": "StorageDriver identifies the incus storage-pool driver backing a backend's\ncontainers. An enum rather than a bare string so callers switch on typed\nconstants; the raw driver name travels alongside in BackendStorage for\ndrivers we do not have a constant for.\n\n - STORAGE_DRIVER_OTHER: A pool driver we read successfully but do not classify. Distinct from\nUNSPECIFIED, which means we could not read the pool at all."
+    },
+    "StorageIsolation": {
+      "type": "string",
+      "enum": [
+        "STORAGE_ISOLATION_UNSPECIFIED",
+        "STORAGE_ISOLATION_PER_CONTAINER",
+        "STORAGE_ISOLATION_SHARED_FILESYSTEM",
+        "STORAGE_ISOLATION_UNKNOWN_DRIVER"
+      ],
+      "default": "STORAGE_ISOLATION_UNSPECIFIED",
+      "description": "StorageIsolation says whether a storage pool hands each container its own\nfilesystem, or puts every container on one shared filesystem.\n\nThis is the property behind #1206. On a shared filesystem every tenant\nrootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;\next4's default data=ordered mode writes back a transaction's dirty data\nwhile holding the journal lock, so one tenant's buffered writes block\nanother tenant's fsync() — measured at 17 ms -\u003e 11,885 ms with the host and\nthe physical device both idle. A tenant degrades its neighbours by writing\nnormally, which makes this an isolation property, not a performance one.\n\n - STORAGE_ISOLATION_UNSPECIFIED: Not known — the pool could not be read. Deliberately distinct from\nSHARED_FILESYSTEM: an unread pool must not be reported as either safe or\nunsafe.\n - STORAGE_ISOLATION_PER_CONTAINER: Each container gets its own dataset / subvolume / logical volume, so\ntenants share no filesystem journal.\n - STORAGE_ISOLATION_SHARED_FILESYSTEM: Every container's rootfs is on one filesystem — one journal, and\ncross-tenant fsync stalls.\n - STORAGE_ISOLATION_UNKNOWN_DRIVER: The driver was read but is not one we classify, so we cannot vouch for it\neither way. Distinct from UNSPECIFIED (pool unreadable) and from\nSHARED_FILESYSTEM (positively known to share)."
+    },
     "SuppressPentestFindingBody": {
       "type": "object",
       "properties": {
@@ -11573,6 +11823,10 @@
         "sshIngressHost": {
           "type": "string",
           "description": "Public SSH entrypoint (the sentinel host) clients dial to reach this\nbackend's containers — the daemon's advertised --ssh-host. **Empty means\nthis backend advertises NO external SSH entrypoint** (direct / in-network\nmode: reach containers by IP, or deploy through an in-network pipeline).\nSurfaced so an agent can tell, from get_system_info alone, whether an\nexternal SSH/deploy entrypoint exists and what host it is — instead of\nassuming a sentinel that may not exist. See #1011."
+        },
+        "storage": {
+          "$ref": "#/definitions/BackendStorage",
+          "description": "The storage pool backing this backend's containers, and whether that\npool isolates tenant volumes. Null when the pool could not be read —\n\"we don't know\" must stay distinguishable from \"isolated\". Carried on\nSystemInfo so peers report it through the GetSystemInfo fan-out that\nListBackends already uses, BYOC tunnel hosts included. See #1209."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -12088,6 +12342,65 @@
         }
       },
       "description": "ValidateGPUResponse reports whether the GPU is usable from inside an LXC on\nthe backend: the daemon launches a throwaway nvidia.runtime LXC, runs\nnvidia-smi inside, tears it down, and returns the parsed model + driver."
+    },
+    "VerificationCheck": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Check identifier, e.g. \"restore\", \"connect\", \"relation_count\"."
+        },
+        "passed": {
+          "type": "boolean",
+          "description": "Whether this individual check passed."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Human-readable outcome, e.g. \"42 relations in scratch database\".\nFor a failing check this carries the engine's own error text."
+        }
+      },
+      "description": "VerificationCheck is one engine-appropriate assertion made during a\nrestore test, recorded individually so the evidence shows *what* was\nchecked rather than just a pass/fail bit."
+    },
+    "VerificationResult": {
+      "type": "string",
+      "enum": [
+        "VERIFICATION_RESULT_UNSPECIFIED",
+        "VERIFICATION_RESULT_PASSED",
+        "VERIFICATION_RESULT_FAILED"
+      ],
+      "default": "VERIFICATION_RESULT_UNSPECIFIED",
+      "description": "VerificationResult is the outcome of a restore test. A backup whose\nbytes are intact but which cannot be loaded by the engine is FAILED —\nthat distinction is the whole point of verification (see #1159).\n\n - VERIFICATION_RESULT_UNSPECIFIED: Never verified, or the outcome could not be determined.\n - VERIFICATION_RESULT_PASSED: The dump restored into a scratch database and passed every\nengine-appropriate sanity check.\n - VERIFICATION_RESULT_FAILED: The dump could not be restored, or restored but failed a sanity\ncheck. `error` carries the engine's own message."
+    },
+    "VerifyBackupBody": {
+      "type": "object",
+      "properties": {
+        "targetUsername": {
+          "type": "string",
+          "description": "Tenant whose container is used as the throwaway restore target.\nRequired, and must differ from the backup's own tenant container."
+        },
+        "connection": {
+          "$ref": "#/definitions/PgConnection",
+          "description": "Connection parameters for the *target* container's Postgres. The\nscratch database name is generated by the daemon, so\nconnection.database is ignored here."
+        }
+      },
+      "description": "VerifyBackupRequest restore-tests a stored dump: it loads the dump into\na throwaway database inside a *target* container and runs\nengine-appropriate sanity checks, then drops the scratch database.\n\nThe target is always a container other than the one the backup came\nfrom — verification must never touch the source database. Supply a\ndisposable container as the target; the daemon rejects a request whose\ntarget resolves to the source container."
+    },
+    "VerifyBackupResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary, e.g. \"verification passed: \u003cid\u003e\"."
+        },
+        "verification": {
+          "$ref": "#/definitions/BackupVerification",
+          "description": "The verification artifact, including per-check detail and the\nengine's own error on failure."
+        },
+        "record": {
+          "$ref": "#/definitions/BackupRecord",
+          "description": "The backup record with last_verification updated."
+        }
+      }
     },
     "Volume": {
       "type": "object",

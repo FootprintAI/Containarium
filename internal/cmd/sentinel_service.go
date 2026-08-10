@@ -81,7 +81,28 @@ ExecStart=/usr/local/bin/containarium sentinel \
   --zone %s \
   --project %s
 Restart=always
+# Keep retrying forever (StartLimitIntervalSec=0 above), but not at full
+# speed. A persistent start failure used to retry every 5s indefinitely:
+# one production host crash-looped 1655 times in ~4 hours, pinning a core
+# and — because each cycle rewrites the bundled monitoring config —
+# restarting alertmanager and vmalert every 7 seconds, so alerting could
+# not have fired during the incident, including on the incident itself
+# (#1152).
+#
+# "Never give up" and "retry at full speed" are separable. RestartSteps
+# interpolates the delay geometrically from RestartSec to
+# RestartMaxDelaySec, so a transient incus hiccup at boot still recovers
+# in seconds while a persistent failure settles to one attempt every 5
+# minutes. That same 4-hour outage would cost ~50 attempts, not 1655.
+#
+# Requires systemd 254+. The documented host floor is Ubuntu 24.04 LTS
+# ("or later", README), which ships 255. On an older host systemd warns
+# and continues, degrading to the previous fixed-interval behaviour
+# rather than failing to start — so this cannot brick a host that
+# predates the directives.
 RestartSec=5s
+RestartSteps=6
+RestartMaxDelaySec=5min
 User=root
 Group=root
 

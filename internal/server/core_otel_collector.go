@@ -109,7 +109,7 @@ func (cs *CoreServices) EnsureOTelCollector(ctx context.Context, victoriaMetrics
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",
-			Pool: "default",
+			Pool: cs.incusClient.StoragePool(),
 			Size: "3GB",
 		},
 	}

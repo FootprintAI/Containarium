@@ -259,18 +259,59 @@ func (cm *CollaboratorManager) RemoveCollaborator(ownerUsername, collaboratorUse
 	return nil
 }
 
-// removeCollaboratorUser removes a collaborator user from the container
+// removeCollaboratorUser removes a collaborator user from the container.
+//
+// Revoking a collaborator must END their access now, not merely block the next
+// reconnect: a plain `userdel -r` neither kills the account's live SSH session
+// nor — without -f — even succeeds while the account is in use (it exits with
+// "user is currently used by process"), so an active shell survives the revoke.
+// So we terminate the account's sessions/processes first, then force-remove it.
+// This mirrors the host-side jump-server account deletion, which already kills a
+// live session before userdel (see runUserdel, #1035); this is the same fix for
+// the in-container account.
 func (cm *CollaboratorManager) removeCollaboratorUser(containerName, accountName string) error {
 	// Remove sudoers file
 	sudoersPath := fmt.Sprintf("/etc/sudoers.d/%s", accountName)
 	_ = cm.manager.incus.Exec(containerName, []string{"rm", "-f", sudoersPath})
 
-	// Delete user and home directory
-	if err := cm.manager.incus.Exec(containerName, []string{"userdel", "-r", accountName}); err != nil {
+	// Terminate any live session/processes owned by the account BEFORE deleting
+	// it. Both are best-effort: loginctl exists only on systemd-based images,
+	// and pkill exits non-zero when nothing matched (a benign race), so their
+	// statuses are deliberately ignored — the KILL is what drops the shell.
+	_ = cm.manager.incus.Exec(containerName, []string{"loginctl", "terminate-user", accountName})
+	_ = cm.manager.incus.Exec(containerName, []string{"pkill", "-KILL", "-u", accountName})
+
+	// Delete user and home directory. -f forces removal even if the account was
+	// referenced a moment ago, so a lingering process can't block the delete
+	// (and can't leave a re-loginnable account behind).
+	if err := cm.manager.incus.Exec(containerName, []string{"userdel", "-rf", accountName}); err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
 	}
 
 	return nil
+}
+
+// CollaboratorJumpAccountContainer maps a COLLABORATOR jump-server account name
+// back to the owner container it grants access to. Collaborator accounts are
+// named "<owner>-container-<collaborator>" (see AddCollaborator); the container
+// is "<owner>-container". Returns (containerName, true) for a collaborator
+// account, or ("", false) for anything else (e.g. a bare owner account
+// "<owner>", which callers resolve with the usual "<owner>-container").
+//
+// This exists because the /authorized-keys orphan filter and the orphan reaper
+// (internal/server/dual_server.go) derived the container as
+// `username+"-container"` for EVERY jump account. That is right for owners but
+// yields "<owner>-container-<collab>-container" for collaborators — a name that
+// never exists — so every collaborator was misclassified as an orphan: filtered
+// out of the sentinel keysync (→ sshpiperd "no pipe" → publickey denied) AND
+// eligible for reaping. #1140.
+func CollaboratorJumpAccountContainer(jumpUser string) (string, bool) {
+	const infix = "-container-"
+	i := strings.Index(jumpUser, infix)
+	if i < 0 {
+		return "", false
+	}
+	return jumpUser[:i+len("-container")], true
 }
 
 // ListCollaborators returns all collaborators for a container

@@ -23,6 +23,8 @@ import (
 // Everything runs on localhost. No iptables, no loopback aliases, no real VMs.
 // The test verifies the core tunnel flow: mux → tunnel handshake → yamux → spot service.
 func TestTunnelIntegration(t *testing.T) {
+	withRecordedAliases(t)
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

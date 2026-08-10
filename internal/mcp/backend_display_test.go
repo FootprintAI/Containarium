@@ -16,13 +16,13 @@ import (
 
 func TestListContainers_ShowsBackendAndPool(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"containers":[{"name":"box1","username":"cld-1","state":"running","backendId":"tunnel-fts-13700k","pool":"gpu-pool"}],"totalCount":1}`))
+		_, _ = w.Write([]byte(`{"containers":[{"name":"box1","username":"cld-1","state":"running","backendId":"tunnel-gpu-node-a","pool":"gpu-pool"}],"totalCount":1}`))
 	}))
 	defer server.Close()
 
 	out, err := handleListContainers(NewClient(server.URL, "t"), map[string]interface{}{})
 	require.NoError(t, err)
-	assert.Contains(t, out, "Backend: tunnel-fts-13700k")
+	assert.Contains(t, out, "Backend: tunnel-gpu-node-a")
 	assert.Contains(t, out, "Pool: gpu-pool")
 }
 
@@ -30,32 +30,32 @@ func TestCreateContainer_ShowsBackend_AndFallbackWarning(t *testing.T) {
 	// Server reports the box landed on the default GCP backend, regardless of
 	// the requested backend_id — the silent-fallback case.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"container":{"name":"box1","username":"cld-1","state":"running","backendId":"containarium-jump-ase1-spot"},"message":"created"}`))
+		_, _ = w.Write([]byte(`{"container":{"name":"box1","username":"cld-1","state":"running","backendId":"cloud-backend-spot"},"message":"created"}`))
 	}))
 	defer server.Close()
 
 	out, err := handleCreateContainer(NewClient(server.URL, "t"), map[string]interface{}{
 		"username":   "cld-1",
-		"backend_id": "tunnel-fts-13700k", // requested
+		"backend_id": "tunnel-gpu-node-a", // requested
 	})
 	require.NoError(t, err)
-	assert.Contains(t, out, "Backend: containarium-jump-ase1-spot")
+	assert.Contains(t, out, "Backend: cloud-backend-spot")
 	assert.Contains(t, out, "⚠️", "must warn when the box landed on a different backend than requested")
-	assert.Contains(t, out, "tunnel-fts-13700k", "warning should name the requested backend")
+	assert.Contains(t, out, "tunnel-gpu-node-a", "warning should name the requested backend")
 }
 
 func TestCreateContainer_NoWarningWhenBackendMatches(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"container":{"name":"box1","username":"cld-1","state":"running","backendId":"tunnel-fts-13700k"},"message":"created"}`))
+		_, _ = w.Write([]byte(`{"container":{"name":"box1","username":"cld-1","state":"running","backendId":"tunnel-gpu-node-a"},"message":"created"}`))
 	}))
 	defer server.Close()
 
 	out, err := handleCreateContainer(NewClient(server.URL, "t"), map[string]interface{}{
 		"username":   "cld-1",
-		"backend_id": "tunnel-fts-13700k",
+		"backend_id": "tunnel-gpu-node-a",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, out, "Backend: tunnel-fts-13700k")
+	assert.Contains(t, out, "Backend: tunnel-gpu-node-a")
 	assert.NotContains(t, out, "⚠️", "no warning when landed backend == requested")
 }
 
@@ -63,7 +63,7 @@ func TestDeleteContainer_ShowsBackend(t *testing.T) {
 	// Delete pre-fetches the box (GET) to learn its backend, then deletes.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"container":{"name":"box1","username":"cld-1","state":"running","backendId":"tunnel-fts-13700k"}}`))
+			_, _ = w.Write([]byte(`{"container":{"name":"box1","username":"cld-1","state":"running","backendId":"tunnel-gpu-node-a"}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"message":"container cld-1 deleted","containerName":"cld-1"}`))
@@ -73,7 +73,7 @@ func TestDeleteContainer_ShowsBackend(t *testing.T) {
 	out, err := handleDeleteContainer(NewClient(server.URL, "t"), map[string]interface{}{"username": "cld-1"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "deleted")
-	assert.Contains(t, out, "Backend: tunnel-fts-13700k")
+	assert.Contains(t, out, "Backend: tunnel-gpu-node-a")
 }
 
 // The GET pre-fetch is best-effort: if it fails, delete still succeeds (just

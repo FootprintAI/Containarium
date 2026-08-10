@@ -3,7 +3,6 @@ package runner
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -91,7 +90,10 @@ const DefaultRegistrationTimeout = 60 * time.Second
 // caller that wants the defaults can pass `Options{Repo: "...",
 // PAT: "...", Count: 1}` and not worry about timeouts.
 type Options struct {
-	// Repo in "owner/repo" form. Validated against repoPattern.
+	// Repo is the registration target: "owner/repo" for a single
+	// repository, or a bare "owner" for an organization (#1217). The shape
+	// selects the endpoint family, the way GitHub itself disambiguates.
+	// Named Repo for compatibility with existing callers.
 	Repo string
 
 	// PAT is a GitHub Personal Access Token with `repo` scope.
@@ -302,26 +304,18 @@ type Deps struct {
 	Clock  Clock
 }
 
-// repoPattern matches GitHub's "owner/repo" shape. Owner and repo
-// names can contain alphanumerics, hyphen, underscore, and dot;
-// GitHub's full rules are slightly more permissive but this catches
-// the common typos (spaces, slashes other than the single separator,
-// empty owner or repo) without false negatives on real repo names.
-var repoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
-
 // ValidateOptions returns a descriptive error when Options would
 // fail any precondition Provision checks. Exposed separately so
 // callers (CLI flag handler, MCP tool argument parser) can
 // surface input errors before doing any actual work.
 func ValidateOptions(opts Options) error {
-	if opts.Repo == "" {
-		return fmt.Errorf("repo is required (owner/repo format)")
-	}
-	if !repoPattern.MatchString(opts.Repo) {
-		return fmt.Errorf("repo %q is not in owner/repo format", opts.Repo)
+	target, err := ParseTarget(opts.Repo)
+	if err != nil {
+		return err
 	}
 	if opts.PAT == "" {
-		return fmt.Errorf("github_pat is required (PAT with `repo` scope)")
+		return fmt.Errorf("github_pat is required (PAT with the %q scope for this %s target)",
+			target.RequiredPATScope(), target.Scope)
 	}
 	if opts.Count <= 0 {
 		return fmt.Errorf("count must be > 0, got %d", opts.Count)
@@ -596,11 +590,8 @@ func waitForRegistration(ctx context.Context, deps Deps, opts Options, name stri
 // query the runners-list API; NamePrefix is the filter (only boxes
 // whose name starts with it are returned).
 func List(ctx context.Context, deps Deps, opts Options) (*Result, error) {
-	if opts.Repo == "" {
-		return nil, fmt.Errorf("repo is required")
-	}
-	if !repoPattern.MatchString(opts.Repo) {
-		return nil, fmt.Errorf("repo %q is not in owner/repo format", opts.Repo)
+	if _, err := ParseTarget(opts.Repo); err != nil {
+		return nil, err
 	}
 	if opts.PAT == "" {
 		return nil, fmt.Errorf("github_pat is required")
@@ -666,8 +657,8 @@ func Remove(ctx context.Context, deps Deps, opts Options, name string) (*RunnerS
 	if opts.Repo == "" || opts.PAT == "" {
 		return nil, fmt.Errorf("repo and github_pat are required so the runner can be deregistered from github")
 	}
-	if !repoPattern.MatchString(opts.Repo) {
-		return nil, fmt.Errorf("repo %q is not in owner/repo format", opts.Repo)
+	if _, err := ParseTarget(opts.Repo); err != nil {
+		return nil, err
 	}
 
 	st := &RunnerStatus{Name: name, BoxID: name}

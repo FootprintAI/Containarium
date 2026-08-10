@@ -270,6 +270,12 @@ type EnrollOptions struct {
 	// OSSBackendID is this host's tunnel/`pool join` spot-id — what the
 	// sentinel `/peer/<id>/` proxy keys on.
 	OSSBackendID string
+	// AdoptForeign acknowledges that this host already runs cloud-managed
+	// containers belonging to other organizations, and enrolls it anyway
+	// (cloud #1006). Default false: the cloud refuses such a host rather than
+	// silently claiming it around the existing residents. The cloud makes and
+	// audits the decision — this flag only carries the operator's consent.
+	AdoptForeign bool
 }
 
 // Enroll redeems a single-use join token against the control plane and
@@ -308,6 +314,7 @@ func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS boo
 		JoinToken:    joinToken,
 		DriverToken:  opts.DriverToken,
 		OssBackendId: opts.OSSBackendID,
+		AdoptForeign: opts.AdoptForeign,
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("cloud: enroll: %w", err)

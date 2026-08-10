@@ -21,6 +21,70 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// SecretDelivery is how a secret is materialized inside the container.
+// Replaces the free-string `delivery` field, per the repo's
+// "protobuf enums over magic strings" convention (CLAUDE.md).
+type SecretDelivery int32
+
+const (
+	// Unset. Callers that omit delivery_mode fall back to the legacy
+	// `delivery` string, then to ENV.
+	SecretDelivery_SECRET_DELIVERY_UNSPECIFIED SecretDelivery = 0
+	// environment.<NAME>=<value> on the LXC — visible to every process in
+	// the container via /proc/<pid>/environ. The pre-4.3 default.
+	SecretDelivery_SECRET_DELIVERY_ENV SecretDelivery = 1
+	// Per-secret file at /run/secrets/<NAME>, mode 0440 root:<tenant>, on
+	// tmpfs. Same tenant isolation, narrower in-container access surface.
+	SecretDelivery_SECRET_DELIVERY_FILE SecretDelivery = 2
+	// Shared dotenv at /run/containarium/secrets.env (mode 0400, tmpfs)
+	// for nested docker / docker-compose apps that consume `env_file:` and
+	// do not inherit the LXC environment. Single-line values only.
+	SecretDelivery_SECRET_DELIVERY_COMPOSE SecretDelivery = 3
+)
+
+// Enum value maps for SecretDelivery.
+var (
+	SecretDelivery_name = map[int32]string{
+		0: "SECRET_DELIVERY_UNSPECIFIED",
+		1: "SECRET_DELIVERY_ENV",
+		2: "SECRET_DELIVERY_FILE",
+		3: "SECRET_DELIVERY_COMPOSE",
+	}
+	SecretDelivery_value = map[string]int32{
+		"SECRET_DELIVERY_UNSPECIFIED": 0,
+		"SECRET_DELIVERY_ENV":         1,
+		"SECRET_DELIVERY_FILE":        2,
+		"SECRET_DELIVERY_COMPOSE":     3,
+	}
+)
+
+func (x SecretDelivery) Enum() *SecretDelivery {
+	p := new(SecretDelivery)
+	*p = x
+	return p
+}
+
+func (x SecretDelivery) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SecretDelivery) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_secrets_proto_enumTypes[0].Descriptor()
+}
+
+func (SecretDelivery) Type() protoreflect.EnumType {
+	return &file_containarium_v1_secrets_proto_enumTypes[0]
+}
+
+func (x SecretDelivery) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SecretDelivery.Descriptor instead.
+func (SecretDelivery) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_secrets_proto_rawDescGZIP(), []int{0}
+}
+
 // SecretMetadata is the public-safe view of a stored secret.
 // `value` is never returned by `ListSecrets` — only per-name `GetSecret`.
 type SecretMetadata struct {
@@ -49,7 +113,15 @@ type SecretMetadata struct {
 	// inherit the LXC environment (the same gap OTel solved). Single-line
 	// values only; rejected at set-time otherwise. See
 	// docs/security/SECRETS-ENV-VAR-RISK.md.
-	Delivery      string `protobuf:"bytes,6,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	//
+	// Deprecated: use delivery_mode. Still populated on every response so
+	// existing REST/MCP clients keep working; a future major release drops it.
+	//
+	// Deprecated: Marked as deprecated in containarium/v1/secrets.proto.
+	Delivery string `protobuf:"bytes,6,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	// Typed delivery mode — the same value as `delivery`, as an enum.
+	// Both fields are always populated and always agree.
+	DeliveryMode  SecretDelivery `protobuf:"varint,7,opt,name=delivery_mode,json=deliveryMode,proto3,enum=containarium.v1.SecretDelivery" json:"delivery_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -119,11 +191,19 @@ func (x *SecretMetadata) GetUpdatedAt() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in containarium/v1/secrets.proto.
 func (x *SecretMetadata) GetDelivery() string {
 	if x != nil {
 		return x.Delivery
 	}
 	return ""
+}
+
+func (x *SecretMetadata) GetDeliveryMode() SecretDelivery {
+	if x != nil {
+		return x.DeliveryMode
+	}
+	return SecretDelivery_SECRET_DELIVERY_UNSPECIFIED
 }
 
 // SetSecretRequest creates or updates a tenant secret. Idempotent —
@@ -146,7 +226,16 @@ type SetSecretRequest struct {
 	// /run/containarium/secrets.env for docker-compose `env_file:`;
 	// single-line values only). Unknown values are rejected at the
 	// API boundary.
-	Delivery      string `protobuf:"bytes,4,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	//
+	// Deprecated: use delivery_mode. Accepted for backward compatibility;
+	// when both are set they must agree, or the request is rejected rather
+	// than silently preferring one.
+	//
+	// Deprecated: Marked as deprecated in containarium/v1/secrets.proto.
+	Delivery string `protobuf:"bytes,4,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	// Typed delivery mode. UNSPECIFIED falls back to `delivery`, and if
+	// that is empty too, to SECRET_DELIVERY_ENV.
+	DeliveryMode  SecretDelivery `protobuf:"varint,5,opt,name=delivery_mode,json=deliveryMode,proto3,enum=containarium.v1.SecretDelivery" json:"delivery_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -202,11 +291,19 @@ func (x *SetSecretRequest) GetValue() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in containarium/v1/secrets.proto.
 func (x *SetSecretRequest) GetDelivery() string {
 	if x != nil {
 		return x.Delivery
 	}
 	return ""
+}
+
+func (x *SetSecretRequest) GetDeliveryMode() SecretDelivery {
+	if x != nil {
+		return x.DeliveryMode
+	}
+	return SecretDelivery_SECRET_DELIVERY_UNSPECIFIED
 }
 
 type SetSecretResponse struct {
@@ -675,7 +772,7 @@ var File_containarium_v1_secrets_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_secrets_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/secrets.proto\x12\x0fcontainarium.v1\"\xb4\x01\n" +
+	"\x1dcontainarium/v1/secrets.proto\x12\x0fcontainarium.v1\"\xfe\x01\n" +
 	"\x0eSecretMetadata\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -683,13 +780,15 @@ const file_containarium_v1_secrets_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x04 \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x05 \x01(\tR\tupdatedAt\x12\x1a\n" +
-	"\bdelivery\x18\x06 \x01(\tR\bdelivery\"t\n" +
+	"updated_at\x18\x05 \x01(\tR\tupdatedAt\x12\x1e\n" +
+	"\bdelivery\x18\x06 \x01(\tB\x02\x18\x01R\bdelivery\x12D\n" +
+	"\rdelivery_mode\x18\a \x01(\x0e2\x1f.containarium.v1.SecretDeliveryR\fdeliveryMode\"\xbe\x01\n" +
 	"\x10SetSecretRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\tR\x05value\x12\x1a\n" +
-	"\bdelivery\x18\x04 \x01(\tR\bdelivery\"f\n" +
+	"\x05value\x18\x03 \x01(\tR\x05value\x12\x1e\n" +
+	"\bdelivery\x18\x04 \x01(\tB\x02\x18\x01R\bdelivery\x12D\n" +
+	"\rdelivery_mode\x18\x05 \x01(\x0e2\x1f.containarium.v1.SecretDeliveryR\fdeliveryMode\"f\n" +
 	"\x11SetSecretResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x127\n" +
 	"\x06secret\x18\x02 \x01(\v2\x1f.containarium.v1.SecretMetadataR\x06secret\"B\n" +
@@ -712,7 +811,12 @@ const file_containarium_v1_secrets_proto_rawDesc = "" +
 	"\busername\x18\x01 \x01(\tR\busername\"L\n" +
 	"\x16RefreshSecretsResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12\x18\n" +
-	"\astamped\x18\x02 \x01(\x05R\astampedBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\astamped\x18\x02 \x01(\x05R\astamped*\x81\x01\n" +
+	"\x0eSecretDelivery\x12\x1f\n" +
+	"\x1bSECRET_DELIVERY_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13SECRET_DELIVERY_ENV\x10\x01\x12\x18\n" +
+	"\x14SECRET_DELIVERY_FILE\x10\x02\x12\x1b\n" +
+	"\x17SECRET_DELIVERY_COMPOSE\x10\x03BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_secrets_proto_rawDescOnce sync.Once
@@ -726,29 +830,33 @@ func file_containarium_v1_secrets_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_secrets_proto_rawDescData
 }
 
+var file_containarium_v1_secrets_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_containarium_v1_secrets_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_containarium_v1_secrets_proto_goTypes = []any{
-	(*SecretMetadata)(nil),         // 0: containarium.v1.SecretMetadata
-	(*SetSecretRequest)(nil),       // 1: containarium.v1.SetSecretRequest
-	(*SetSecretResponse)(nil),      // 2: containarium.v1.SetSecretResponse
-	(*GetSecretRequest)(nil),       // 3: containarium.v1.GetSecretRequest
-	(*GetSecretResponse)(nil),      // 4: containarium.v1.GetSecretResponse
-	(*ListSecretsRequest)(nil),     // 5: containarium.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),    // 6: containarium.v1.ListSecretsResponse
-	(*DeleteSecretRequest)(nil),    // 7: containarium.v1.DeleteSecretRequest
-	(*DeleteSecretResponse)(nil),   // 8: containarium.v1.DeleteSecretResponse
-	(*RefreshSecretsRequest)(nil),  // 9: containarium.v1.RefreshSecretsRequest
-	(*RefreshSecretsResponse)(nil), // 10: containarium.v1.RefreshSecretsResponse
+	(SecretDelivery)(0),            // 0: containarium.v1.SecretDelivery
+	(*SecretMetadata)(nil),         // 1: containarium.v1.SecretMetadata
+	(*SetSecretRequest)(nil),       // 2: containarium.v1.SetSecretRequest
+	(*SetSecretResponse)(nil),      // 3: containarium.v1.SetSecretResponse
+	(*GetSecretRequest)(nil),       // 4: containarium.v1.GetSecretRequest
+	(*GetSecretResponse)(nil),      // 5: containarium.v1.GetSecretResponse
+	(*ListSecretsRequest)(nil),     // 6: containarium.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),    // 7: containarium.v1.ListSecretsResponse
+	(*DeleteSecretRequest)(nil),    // 8: containarium.v1.DeleteSecretRequest
+	(*DeleteSecretResponse)(nil),   // 9: containarium.v1.DeleteSecretResponse
+	(*RefreshSecretsRequest)(nil),  // 10: containarium.v1.RefreshSecretsRequest
+	(*RefreshSecretsResponse)(nil), // 11: containarium.v1.RefreshSecretsResponse
 }
 var file_containarium_v1_secrets_proto_depIdxs = []int32{
-	0, // 0: containarium.v1.SetSecretResponse.secret:type_name -> containarium.v1.SecretMetadata
-	0, // 1: containarium.v1.GetSecretResponse.secret:type_name -> containarium.v1.SecretMetadata
-	0, // 2: containarium.v1.ListSecretsResponse.secrets:type_name -> containarium.v1.SecretMetadata
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0, // 0: containarium.v1.SecretMetadata.delivery_mode:type_name -> containarium.v1.SecretDelivery
+	0, // 1: containarium.v1.SetSecretRequest.delivery_mode:type_name -> containarium.v1.SecretDelivery
+	1, // 2: containarium.v1.SetSecretResponse.secret:type_name -> containarium.v1.SecretMetadata
+	1, // 3: containarium.v1.GetSecretResponse.secret:type_name -> containarium.v1.SecretMetadata
+	1, // 4: containarium.v1.ListSecretsResponse.secrets:type_name -> containarium.v1.SecretMetadata
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_secrets_proto_init() }
@@ -761,13 +869,14 @@ func file_containarium_v1_secrets_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_secrets_proto_rawDesc), len(file_containarium_v1_secrets_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_containarium_v1_secrets_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_secrets_proto_depIdxs,
+		EnumInfos:         file_containarium_v1_secrets_proto_enumTypes,
 		MessageInfos:      file_containarium_v1_secrets_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_secrets_proto = out.File

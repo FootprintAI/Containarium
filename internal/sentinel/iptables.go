@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 const chainName = "SENTINEL_PREROUTING"
@@ -19,6 +20,21 @@ const sshPiperPort = 22
 // It creates a custom chain, adds DNAT rules for each port, and enables MASQUERADE.
 // Port 22 is excluded from forwarding — it is handled by sshpiper on the sentinel.
 // On non-Linux systems or when iptables is unavailable, it logs a warning and returns nil.
+// hostGOOS is runtime.GOOS, indirected so the non-Linux early returns below
+// are testable on any platform.
+//
+// Without it, the tests that cover those returns run the real iptables path
+// when the test host is Linux — which is every CI runner. They passed by
+// actually writing DNAT rules into the runner's nat table, and failed on any
+// Linux machine without the privilege to do so. Neither outcome had anything
+// to do with the behaviour they claim to check.
+var hostGOOS atomic.Value // string
+
+func init() { hostGOOS.Store(runtime.GOOS) }
+
+// goos reports the OS the helpers below should behave as.
+func goos() string { return hostGOOS.Load().(string) }
+
 func enableForwarding(spotIP string, ports []int) error {
 	// Filter out port 22 — handled by sshpiper, not DNAT
 	filtered := make([]int, 0, len(ports))
@@ -30,8 +46,8 @@ func enableForwarding(spotIP string, ports []int) error {
 		filtered = append(filtered, p)
 	}
 	ports = filtered
-	if runtime.GOOS != "linux" {
-		log.Printf("[sentinel] iptables: skipping on %s (non-Linux)", runtime.GOOS)
+	if goos() != "linux" {
+		log.Printf("[sentinel] iptables: skipping on %s (non-Linux)", goos())
 		return nil
 	}
 
@@ -149,7 +165,7 @@ func detectBridgeCIDR() string {
 // disableForwarding removes all sentinel iptables rules.
 // Safe to call even if no rules exist.
 func disableForwarding() error {
-	if runtime.GOOS != "linux" {
+	if goos() != "linux" {
 		return nil
 	}
 

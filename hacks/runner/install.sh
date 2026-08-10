@@ -13,7 +13,9 @@
 #
 # Required env vars (or pass on command line):
 #
-#   GH_REPO     org/repo for the runner (e.g. FootprintAI/Containarium-cloud)
+#   GH_REPO     registration target: owner/repo for one repository, or a
+#               bare owner for an ORGANIZATION runner usable by every repo
+#               in it (#1217)
 #   GH_PAT      personal access token with `repo` scope; used to mint
 #               short-lived runner-registration tokens at the start of
 #               each loop iteration. Pick from
@@ -61,7 +63,7 @@
 set -euo pipefail
 
 # ---- input validation ----
-: "${GH_REPO:?GH_REPO is required (org/repo)}"
+: "${GH_REPO:?GH_REPO is required (owner/repo, or a bare owner for an org runner)}"
 : "${GH_PAT:?GH_PAT is required (PAT with repo scope)}"
 
 # GH_BASE_URL — the GitHub server URL. Defaults to github.com; set to
@@ -238,15 +240,27 @@ cd "$RUNNER_HOME"
 GH_API_BASE="${GH_API_BASE:-https://api.github.com}"
 GH_BASE_URL="${GH_BASE_URL:-https://github.com}"
 
+# Registration scope follows the SHAPE of GH_REPO, the same rule the CLI uses
+# (#1217): "owner/repo" is a repository, a bare "owner" is an organization.
+# An org runner is visible to every repo in the org, which is the point of a
+# shared pool.
+#
+# --url below needs no branch: "${GH_BASE_URL}/${GH_REPO}" is already
+# https://github.com/owner/repo or https://github.com/owner respectively.
+case "$GH_REPO" in
+  */*) GH_SCOPE_PATH="repos/${GH_REPO}" ; GH_PAT_SCOPE="repo" ;;
+  *)   GH_SCOPE_PATH="orgs/${GH_REPO}"  ; GH_PAT_SCOPE="admin:org" ;;
+esac
+
 # Mint a short-lived runner-registration token (valid ~1h).
 REG_TOKEN=$(curl -sX POST \
   -H "Authorization: token $GH_PAT" \
   -H "Accept: application/vnd.github+json" \
-  "${GH_API_BASE}/repos/${GH_REPO}/actions/runners/registration-token" \
+  "${GH_API_BASE}/${GH_SCOPE_PATH}/actions/runners/registration-token" \
   | jq -r '.token')
 
 if [ -z "$REG_TOKEN" ] || [ "$REG_TOKEN" = "null" ]; then
-  echo "Failed to mint registration token — check GH_PAT scope (needs 'repo')" >&2
+  echo "Failed to mint registration token — check GH_PAT scope (this is a ${GH_SCOPE_PATH%%/*} target, which needs '${GH_PAT_SCOPE}')" >&2
   echo "GH_API_BASE in use: ${GH_API_BASE}" >&2
   exit 1
 fi

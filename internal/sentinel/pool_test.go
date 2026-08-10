@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testPeer struct {
@@ -149,19 +150,31 @@ func TestOnTunnelConnect_PeerOnlyDoesNotPromote(t *testing.T) {
 
 // TestRegisterPropagatesPool confirms the pool tag flows from Register()
 // into the TunnelSpot.
+// This asserts a pool tag flows from Register into TunnelSpot — pure data
+// plumbing — so it has no business configuring host networking to ask.
+//
+// It used to, because Register adds a loopback alias as a side effect. That
+// made it fail on any machine without CAP_NET_ADMIN, and pass in CI only
+// because the runner has it (#1279). withRecordedAliases substitutes the
+// seam the registry already exposes, so the question the test asks is the
+// only thing it needs.
 func TestRegisterPropagatesPool(t *testing.T) {
+	withRecordedAliases(t)
+
 	r := NewTunnelRegistry()
-	_, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
-	assert.NoError(t, err)
+	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
+	require.NoError(t, err)
 
 	spot := r.Get("spot-1")
-	assert.NotNil(t, spot)
+	require.NotNil(t, spot)
 	assert.Equal(t, Pool("prod"), spot.Pool)
 
 	// Empty pool stays empty (back-compat).
-	_, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, Pool(""), r.Get("spot-2").Pool)
+	_, _, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil)
+	require.NoError(t, err)
+	spot2 := r.Get("spot-2")
+	require.NotNil(t, spot2)
+	assert.Equal(t, Pool(""), spot2.Pool)
 }
 
 func idsOf(peers []testPeer) []string {

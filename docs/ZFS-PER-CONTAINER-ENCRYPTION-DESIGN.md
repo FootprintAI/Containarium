@@ -209,3 +209,71 @@ None of this lives in OSS. OSS ships only:
 |---|---|---|
 | 2026-05-15 | hsinhoyeh, drafted with Claude | Initial draft. Per-tenant ZFS native encryption design with pluggable KeyProvider, five lifecycle hooks, in-memory key cache, MoveContainer integration. Status: Draft. |
 | 2026-05-15 | hsinhoyeh | Resolved all 5 open questions: tenant_id added to proto with OSS validation, OTel-while-encrypted accepted, snapshot-while-KMS-down allows + warns, cross-cloud migration deferred, rotation control-plane-driven. Status: Draft → Approved. |
+
+## Verifying the encryption claim (#1200)
+
+The security claim this design exists for — *a stopped container's dataset is
+ciphertext, including to host root* — is not something unit tests can show.
+`pkg/core/zfscrypt`'s unit tests drive a fake `zfs` runner: they pin which
+command runs, in what order, and what happens on failure, and a fake agreeing
+with itself proves nothing about ZFS's own semantics.
+
+`pkg/core/zfscrypt/zfscrypt_integration_test.go` (build tag `zfs`) runs the
+same production code against a real, file-backed pool.
+
+### Running it
+
+```sh
+sudo apt-get install -y zfsutils-linux     # Debian/Ubuntu
+sudo modprobe zfs                          # may need linux-modules-extra-$(uname -r)
+sudo -E env "PATH=$PATH" go test -tags=zfs -v ./pkg/core/zfscrypt/ -run TestIntegration
+```
+
+No real disks are needed: the pool is created on a 512 MiB sparse file under
+the test's temp dir, named `containarium-zfstest-<pid>` so it can never
+collide with a pool on the host, and destroyed on teardown. Root is required
+because pool creation is a privileged operation.
+
+The lane **skips cleanly** where ZFS is unavailable, so it never breaks a
+laptop or a container-based dev box.
+
+### Where it can be run
+
+| Environment | Works | Why |
+|---|---|---|
+| GitHub Actions `ubuntu-latest` | yes | full VM, real `/dev`, root, ZFS installable — this is what CI uses |
+| Bare-metal / VM with ZFS | yes | the documented local setup above |
+| **Unprivileged LXC dev container** | **no** | see below |
+
+An LXC dev container is not usable even when the host has ZFS loaded. The
+kernel module is visible through `/proc/modules` and `/proc/misc`, and
+`/dev/zfs` can be created by hand, at which point the userspace tools talk to
+the module — but `zpool create` on a file vdev still fails with `no such pool
+or dataset`, because the module opens the vdev **by path in the initial mount
+namespace**, where the container's file does not exist. Worse, a container
+that can reach `/dev/zfs` can also drive the *host's* pools, so creating that
+node is a bad idea on a machine hosting real data. Use CI or a VM.
+
+### What the test proves
+
+The load-bearing part is the **positive control**. An unencrypted dataset gets
+the same canary written the same way, and its canary must be findable in the
+raw vdev before the encrypted case is trusted. Without that step, "the canary
+is absent" would prove nothing — ZFS compresses by default, so an absent
+canary could just mean lz4 rearranged the bytes, and the test would pass just
+as happily against a dataset that was never encrypted. Both datasets set
+`compression=off`, so encryption is the only difference between them.
+
+On top of the claim itself, the lane retires the three assumptions listed in
+the `pkg/core/zfscrypt` package doc, each of which was previously derived from
+documentation and never executed:
+
+1. `-o keylocation=file:///dev/stdin` with the raw key on stdin is accepted by
+   `zfs create` / `zfs load-key` — and a *wrong* key is refused.
+2. `zfs unload-key` fails rather than silently succeeding while the dataset is
+   mounted, and fails with a message `isKeyInUse()` recognises. The post-stop
+   hook depends on this: it treats that failure as the benign "a co-tenant is
+   still running" case, so if ZFS instead succeeded, a co-tenant's running
+   container would lose its key.
+3. `keystatus` reports exactly `available` / `unavailable`, and an unencrypted
+   dataset reports `-`.

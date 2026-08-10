@@ -9,8 +9,13 @@ name: golangci-lint
 on:
   push:
     branches: [main]
+  # No `branches:` filter here, deliberately (#1215). Filtering PRs to base
+  # `main` gives a PR targeting any other branch — i.e. every stacked PR —
+  # ZERO checks: not failing, not pending, just absent. That is
+  # indistinguishable from "CI hasn't started yet", so an ungated PR reads as
+  # ready to merge. `push` stays pinned to main so branch pushes don't
+  # double-run alongside the PR.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

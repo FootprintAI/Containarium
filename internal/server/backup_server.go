@@ -206,6 +206,82 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 	return &pb.RestoreBackupResponse{Message: "restore complete: " + rec.ID}, nil
 }
 
+// VerifyBackup restore-tests a stored dump against a throwaway database
+// inside a *target* tenant's container, never the source container.
+//
+// A dump that fails to restore is a successful RPC reporting a failed
+// verification — the failure is the answer, not an error. Only a test
+// that could not be run at all (unknown backup, missing target
+// container) returns a gRPC error.
+func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
+		return nil, err
+	}
+	if req.Id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if req.TargetUsername == "" {
+		return nil, status.Error(codes.InvalidArgument, "target_username is required: a restore test needs a throwaway container to load into")
+	}
+
+	rec, err := s.mgr.Get(req.Id)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	if err := auth.AuthorizeTenant(ctx, rec.Username); err != nil {
+		return nil, err
+	}
+	// The caller must also own the container being written to — the
+	// restore test creates and drops a database inside it.
+	if err := auth.AuthorizeTenant(ctx, req.TargetUsername); err != nil {
+		return nil, err
+	}
+
+	target, err := s.containers.manager.Get(req.TargetUsername)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "target container for user %s not found: %v", req.TargetUsername, err)
+	}
+
+	// Resolve the source container so the core can refuse to restore
+	// over it. A source container that no longer exists is not a
+	// blocker — verifying a backup after its container is gone is a
+	// legitimate (and important) case — so an unresolvable source just
+	// leaves nothing to collide with.
+	sourceName := ""
+	if src, err := s.containers.manager.Get(rec.Username); err == nil {
+		sourceName = src.Name
+	}
+
+	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
+	v, err := s.mgr.Verify(backup.VerifyOptions{
+		ID:              req.Id,
+		TargetContainer: target.Name,
+		SourceContainer: sourceName,
+		Conn:            connFromProto(req.Connection),
+		VerifiedBy:      subject,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "verification could not run: %v", err)
+	}
+
+	updated, err := s.mgr.Get(req.Id)
+	if err != nil {
+		updated = rec
+	}
+	log.Printf("[backup] verified id=%s user=%s db=%s target=%s result=%s duration_ms=%d",
+		rec.ID, rec.Username, rec.Database, v.TargetContainer, v.Result, v.DurationMS)
+
+	msg := "verification passed: " + rec.ID
+	if v.Result != backup.VerificationPassed {
+		msg = "verification FAILED: " + rec.ID + ": " + v.Error
+	}
+	return &pb.VerifyBackupResponse{
+		Message:      msg,
+		Verification: verificationToProto(v),
+		Record:       recordToProto(updated),
+	}, nil
+}
+
 // DeleteBackup removes a stored dump and its index entry.
 func (s *BackupServer) DeleteBackup(ctx context.Context, req *pb.DeleteBackupRequest) (*pb.DeleteBackupResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
@@ -252,6 +328,22 @@ func destToProto(d backup.Destination) pb.BackupDestination {
 	}
 }
 
+// engineToProto maps a stored record's engine to the wire enum.
+//
+// The manifest keeps engine as a string, so records written before the enum
+// existed — and any record whose engine this daemon does not recognise — map
+// to UNSPECIFIED rather than to Postgres. Defaulting an unknown engine to
+// Postgres would present a dump as restorable by pg_restore on the strength
+// of a guess, which is the failure the enum exists to make impossible.
+func engineToProto(engine string) pb.BackupEngine {
+	switch engine {
+	case backup.EnginePostgres:
+		return pb.BackupEngine_BACKUP_ENGINE_POSTGRES
+	default:
+		return pb.BackupEngine_BACKUP_ENGINE_UNSPECIFIED
+	}
+}
+
 func connFromProto(c *pb.PgConnection) backup.PgConn {
 	if c == nil {
 		return backup.PgConn{}
@@ -265,6 +357,40 @@ func connFromProto(c *pb.PgConnection) backup.PgConn {
 	}
 }
 
+func verificationResultToProto(r backup.VerificationResult) pb.VerificationResult {
+	switch r {
+	case backup.VerificationPassed:
+		return pb.VerificationResult_VERIFICATION_RESULT_PASSED
+	case backup.VerificationFailed:
+		return pb.VerificationResult_VERIFICATION_RESULT_FAILED
+	default:
+		return pb.VerificationResult_VERIFICATION_RESULT_UNSPECIFIED
+	}
+}
+
+func verificationToProto(v *backup.Verification) *pb.BackupVerification {
+	if v == nil {
+		return nil
+	}
+	out := &pb.BackupVerification{
+		VerifiedAt:      v.VerifiedAt.UTC().Format(time.RFC3339),
+		Result:          verificationResultToProto(v.Result),
+		Error:           v.Error,
+		TargetContainer: v.TargetContainer,
+		ScratchDatabase: v.ScratchDatabase,
+		DurationMs:      v.DurationMS,
+		VerifiedBy:      v.VerifiedBy,
+	}
+	for _, c := range v.Checks {
+		out.Checks = append(out.Checks, &pb.VerificationCheck{
+			Name:   c.Name,
+			Passed: c.Passed,
+			Detail: c.Detail,
+		})
+	}
+	return out
+}
+
 func recordToProto(r *backup.Record) *pb.BackupRecord {
 	return &pb.BackupRecord{
 		Id:          r.ID,
@@ -275,6 +401,9 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 		Sha256:      r.SHA256,
 		Destination: destToProto(r.Destination),
 		Location:    r.Location,
-		Engine:      r.Engine,
+		Engine:      engineToProto(r.Engine),
+
+		LastVerification: verificationToProto(r.LastVerification),
+		RelationCount:    r.RelationCount,
 	}
 }

@@ -474,6 +474,28 @@ type BackupRecord struct {
 	Destination string `json:"destination"`
 	Location    string `json:"location"`
 	Engine      string `json:"engine"`
+
+	LastVerification *BackupVerification `json:"lastVerification,omitempty"`
+}
+
+// VerificationCheck is one assertion made during a restore test.
+type VerificationCheck struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
+}
+
+// BackupVerification mirrors the proto BackupVerification: the audit
+// artifact for one restore test.
+type BackupVerification struct {
+	VerifiedAt      string              `json:"verifiedAt"`
+	Result          string              `json:"result"`
+	Error           string              `json:"error,omitempty"`
+	TargetContainer string              `json:"targetContainer"`
+	ScratchDatabase string              `json:"scratchDatabase"`
+	DurationMS      string              `json:"durationMs"` // int64 → string in proto JSON
+	VerifiedBy      string              `json:"verifiedBy,omitempty"`
+	Checks          []VerificationCheck `json:"checks,omitempty"`
 }
 
 // CreateBackupResponse is the result of a backup create.
@@ -523,6 +545,33 @@ func (c *Client) ListBackups(username string) (*ListBackupsResponse, error) {
 		return nil, err
 	}
 	var resp ListBackupsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// VerifyBackupRequest is the body for POST /v1/backups/{id}/verify.
+type VerifyBackupRequest struct {
+	ID             string            `json:"id"`
+	TargetUsername string            `json:"target_username"`
+	Connection     *PgConnectionBody `json:"connection,omitempty"`
+}
+
+// VerifyBackupResponse is the result of a restore test.
+type VerifyBackupResponse struct {
+	Message      string              `json:"message"`
+	Verification *BackupVerification `json:"verification"`
+	Record       *BackupRecord       `json:"record"`
+}
+
+// VerifyBackup restore-tests a stored dump against a throwaway target.
+func (c *Client) VerifyBackup(req VerifyBackupRequest) (*VerifyBackupResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/backups/"+req.ID+"/verify", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp VerifyBackupResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -746,14 +795,31 @@ func (c *Client) GetSecret(username, name string) (string, error) {
 	return resp.Value, nil
 }
 
+// SecretMetadata mirrors the proto SecretMetadata on the response side.
+// Values are never included — they are readable only via GetSecret,
+// per-name and audit-logged.
+//
+// The tags are lowerCamelCase because grpc-gateway is configured with
+// UseProtoNames=false, so protojson emits `createdAt` / `updatedAt`.
+// Reading these through an untyped map is what hid #1219: the CLI looked
+// up `updated_at`, a key the daemon never sends.
+type SecretMetadata struct {
+	Username  string `json:"username"`
+	Name      string `json:"name"`
+	Version   int32  `json:"version"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+	Delivery  string `json:"delivery"`
+}
+
 // ListSecrets returns metadata for every tenant secret.
-func (c *Client) ListSecrets(username string) ([]map[string]interface{}, error) {
+func (c *Client) ListSecrets(username string) ([]SecretMetadata, error) {
 	respBody, err := c.doRequest("GET", fmt.Sprintf("/v1/secrets/%s", username), nil)
 	if err != nil {
 		return nil, err
 	}
 	var resp struct {
-		Secrets []map[string]interface{} `json:"secrets"`
+		Secrets []SecretMetadata `json:"secrets"`
 	}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -1502,6 +1568,16 @@ type CreateContainerRequest struct {
 	// docs/OTEL-COLLECTOR-DESIGN.md for the full design.
 	Monitoring bool `json:"monitoring,omitempty"`
 
+	// Encrypted requests a tenant-scoped ZFS key for the container's
+	// dataset instead of the pool-wide key (#1198). The daemon refuses
+	// the create with FAILED_PRECONDITION when no KeyProvider is
+	// configured — it never falls back to plaintext.
+	Encrypted bool `json:"encrypted,omitempty"`
+
+	// TenantID scopes the encryption key. A single-tenant daemon accepts
+	// only an empty value or "default".
+	TenantID string `json:"tenantId,omitempty"`
+
 	// Pool selects placement by pool tag. When set with an empty
 	// BackendID, the daemon picks any healthy backend in the pool.
 	// When set with BackendID, the daemon validates that BackendID
@@ -1568,8 +1644,12 @@ type ResizeContainerResponse struct {
 }
 
 type SecretResponse struct {
-	Message string                 `json:"message"`
-	Secret  map[string]interface{} `json:"secret"`
+	Message string `json:"message"`
+	// The created/updated secret's metadata (never its value). Typed for
+	// the same reason as ListSecrets (#1219): the gateway emits
+	// lowerCamelCase, and a map hides a key mismatch until someone reads
+	// a blank field.
+	Secret SecretMetadata `json:"secret"`
 }
 
 type RefreshSecretsResponse struct {
@@ -1652,6 +1732,27 @@ type Backend struct {
 	OS             string       `json:"os,omitempty"`
 	ContainerCount int32        `json:"containerCount"`
 	GPUs           []BackendGPU `json:"gpus,omitempty"`
+	// HostLoad is what this machine is actually doing right now, absent
+	// when the daemon had no usable sample (cloud #966). Absent means
+	// "unknown", not "idle" — an agent reading this must not treat a
+	// missing block as a host with spare capacity.
+	HostLoad *BackendHostLoad `json:"hostLoad,omitempty"`
+}
+
+// BackendHostLoad mirrors BackendInfo.host_load: measured live usage for one
+// backend host, including tunnel-connected BYOC hosts. Distinct from any
+// capacity/committed figure — those say what has been allocated, this says
+// what is being used.
+type BackendHostLoad struct {
+	CPULoad1m        float64   `json:"cpuLoad1m,omitempty"`
+	CPULoad5m        float64   `json:"cpuLoad5m,omitempty"`
+	CPULoad15m       float64   `json:"cpuLoad15m,omitempty"`
+	CPUCores         int32     `json:"cpuCores,omitempty"`
+	MemoryUsedBytes  flexInt64 `json:"memoryUsedBytes,omitempty"`
+	MemoryTotalBytes flexInt64 `json:"memoryTotalBytes,omitempty"`
+	DiskUsedBytes    flexInt64 `json:"diskUsedBytes,omitempty"`
+	DiskTotalBytes   flexInt64 `json:"diskTotalBytes,omitempty"`
+	SampledAt        string    `json:"sampledAt,omitempty"`
 }
 
 type BackendGPU struct {

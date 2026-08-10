@@ -29,6 +29,8 @@ var (
 	runnerSSHKeyPath   string
 	runnerSentinelHost string
 	runnerSSHUser      string
+	runnerBackendID    string
+	runnerPool         string
 
 	// runner list / remove
 	runnerListFormat string
@@ -51,10 +53,15 @@ entry point.`,
 }
 
 var runnerProvisionCmd = &cobra.Command{
-	Use:   "provision <repo>",
+	Use:   "provision <target>",
 	Short: "Create N runner boxes and register them as ephemeral GHA runners",
 	Long: `Create N Containarium boxes and configure each as an ephemeral
-GitHub Actions self-hosted runner for the given repo.
+GitHub Actions self-hosted runner for the given target.
+
+<target> is either "owner/repo" for a single repository, or a bare "owner"
+for an ORGANIZATION runner that every repo in the org can use (#1217). The
+shape selects the scope, the way GitHub itself disambiguates. An org target
+needs a token with the admin:org scope rather than repo.
 
 This verb is idempotent: re-running with the same args after a partial
 failure is safe. Boxes that already exist are not recreated; boxes that
@@ -78,7 +85,7 @@ Examples:
 }
 
 var runnerListCmd = &cobra.Command{
-	Use:   "list <repo>",
+	Use:   "list <target>",
 	Short: "List provisioned runner boxes and their GitHub registration status",
 	Long: `List Containarium boxes whose name starts with --name-prefix and
 merge their GitHub-side registration status (online / offline / busy /
@@ -90,7 +97,7 @@ Read-only.`,
 }
 
 var runnerRemoveCmd = &cobra.Command{
-	Use:   "remove <repo> <name>",
+	Use:   "remove <target> <name>",
 	Short: "Drain a runner, deregister it from GitHub, and delete the box",
 	Long: `Stop the runner service inside the box (which waits for the in-flight
 ephemeral job to finish — this is what "drain" means in the ephemeral
@@ -120,6 +127,8 @@ func init() {
 	runnerProvisionCmd.Flags().StringVar(&runnerSSHKeyPath, "ssh-key", "", "Path to SSH public key used when creating new boxes (default: ~/.ssh/id_rsa.pub)")
 	runnerProvisionCmd.Flags().StringVar(&runnerSentinelHost, "sentinel", os.Getenv(config.EnvSentinelHost), "Sentinel SSH host (env: CONTAINARIUM_SENTINEL_HOST). REQUIRED for the install step.")
 	runnerProvisionCmd.Flags().StringVar(&runnerSSHUser, "ssh-user", "", "SSH user to use when SSH'ing into a runner box (default: the runner name, via sshpiper)")
+	runnerProvisionCmd.Flags().StringVar(&runnerBackendID, "backend-id", "", "Place the runner boxes on a specific backend (e.g. a named BYOC host). Same semantics as `containarium create --backend-id`; empty keeps today's default placement.")
+	runnerProvisionCmd.Flags().StringVar(&runnerPool, "pool", "", "Place the runner boxes on any healthy backend in this pool. Same semantics as `containarium create --pool`; mutually exclusive with --backend-id, validated by the daemon.")
 
 	// List flags.
 	runnerListCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT with `repo` scope (env: GH_PAT). REQUIRED.")
@@ -377,14 +386,15 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				"",   // stack
 				nil,  // gpus
 				ostype.OSTypeFromString("ubuntu"),
-				false,                  // monitoring
-				"",                     // pool
-				"",                     // backend-id
-				client.GitSourceOpts{}, // no git-source for runner boxes
-				0,                      // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
-				0,                      // idle-stop: runner boxes are long-lived; not auto-slept
-				0,                      // delete-after-stopped: not applicable to runner boxes
-				"",                     // storage-class: runner boxes use cluster default
+				false,                   // monitoring
+				runnerPool,              // pool: steer placement like `create --pool` (#1216)
+				runnerBackendID,         // backend-id: ditto (#1216)
+				client.GitSourceOpts{},  // no git-source for runner boxes
+				0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
+				0,                       // idle-stop: runner boxes are long-lived; not auto-slept
+				0,                       // delete-after-stopped: not applicable to runner boxes
+				"",                      // storage-class: runner boxes use cluster default
+				client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
 			)
 			if err != nil {
 				return "", "", err
@@ -415,14 +425,15 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			"",  // stack
 			nil, // gpus
 			ostype.OSTypeFromString("ubuntu"),
-			false,
-			"",
-			"",
-			client.GitSourceOpts{}, // no git-source for runner boxes
-			0,                      // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
-			0,                      // idle-stop: runner boxes are long-lived; not auto-slept
-			0,                      // delete-after-stopped: not applicable to runner boxes
-			"",                     // storage-class: runner boxes use cluster default
+			false,                   // monitoring
+			runnerPool,              // pool: steer placement like `create --pool` (#1216)
+			runnerBackendID,         // backend-id: ditto (#1216)
+			client.GitSourceOpts{},  // no git-source for runner boxes
+			0,                       // ttl: runner sets its own lifecycle; birth-TTL wiring is #526
+			0,                       // idle-stop: runner boxes are long-lived; not auto-slept
+			0,                       // delete-after-stopped: not applicable to runner boxes
+			"",                      // storage-class: runner boxes use cluster default
+			client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
 		)
 		if err != nil {
 			return "", "", err

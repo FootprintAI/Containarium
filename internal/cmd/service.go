@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -19,7 +20,13 @@ const systemdServiceTemplate = `[Unit]
 Description=Containarium Container Management Daemon
 Documentation=https://github.com/footprintai/Containarium
 After=network.target incus.service
-Requires=incus.service
+# Wants=, not Requires=. A Requires= dependency that fails takes this unit's
+# start job down with it, and a *job* failure is not something Restart=on-failure
+# retries -- so a single transient incus hiccup at boot leaves the daemon dead
+# until someone notices, which on a pool member means silently dropping out of
+# the pool. After= still guarantees ordering, and Restart=on-failure covers the
+# "incus not ready yet" case by retrying the daemon itself.
+Wants=incus.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -28,7 +35,28 @@ ExecStart=/usr/local/bin/containarium daemon \
   --rest \
   --jwt-secret-file /etc/containarium/jwt.secret
 Restart=on-failure
+# Keep retrying forever (StartLimitIntervalSec=0 above), but not at full
+# speed. A persistent start failure used to retry every 5s indefinitely:
+# one production host crash-looped 1655 times in ~4 hours, pinning a core
+# and — because each cycle rewrites the bundled monitoring config —
+# restarting alertmanager and vmalert every 7 seconds, so alerting could
+# not have fired during the incident, including on the incident itself
+# (#1152).
+#
+# "Never give up" and "retry at full speed" are separable. RestartSteps
+# interpolates the delay geometrically from RestartSec to
+# RestartMaxDelaySec, so a transient incus hiccup at boot still recovers
+# in seconds while a persistent failure settles to one attempt every 5
+# minutes. That same 4-hour outage would cost ~50 attempts, not 1655.
+#
+# Requires systemd 254+. The documented host floor is Ubuntu 24.04 LTS
+# ("or later", README), which ships 255. On an older host systemd warns
+# and continues, degrading to the previous fixed-interval behaviour
+# rather than failing to start — so this cannot brick a host that
+# predates the directives.
 RestartSec=5s
+RestartSteps=6
+RestartMaxDelaySec=5min
 User=root
 Group=root
 
@@ -36,7 +64,17 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/var/lib/incus /etc/containarium /etc /home /var/lock /run/lock /opt/containarium /var/log
+ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock -/opt/containarium /var/log -/mnt/incus-data
+
+# StateDirectory= makes systemd create /var/lib/containarium (0750, root) before
+# the daemon starts and grants it write access. The backup service writes there
+# on every destination -- pkg/core/backup stages the dump and its sidecar index
+# under /var/lib/containarium/backups even for GCS -- and nothing else on the
+# host creates that directory, so without this ProtectSystem=strict makes those
+# writes fail EROFS. The "-" on the ReadWritePaths entry above keeps that
+# (now redundant) grant from ever being the thing that fails namespace setup.
+StateDirectory=containarium
+StateDirectoryMode=0750
 
 StandardOutput=journal
 StandardError=journal
@@ -123,6 +161,40 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// daemonOwnedDirs are the unit's ReadWritePaths entries that Containarium owns
+// rather than inherits from the base system, so they may not exist on a fresh
+// host. Everything else the unit grants (/var/lib/incus, /etc, /home, /var/log,
+// /var/lock, /run/lock) already exists or is created by incus.
+//
+// Two reasons these must be created at install time:
+//
+//   - ProtectSystem=strict makes systemd build the mount namespace from
+//     ReadWritePaths= *before* the daemon executes, and a missing listed path
+//     fails that setup with status=226/NAMESPACE — an opaque crashloop naming
+//     neither the path nor the setting.
+//   - They are in hostcheck.DaemonWritablePaths, which the doctor treats as
+//     Required. `pool join` runs its capability self-check after this function,
+//     so creating them here is what lets that check pass on a fresh host
+//     instead of aborting the join.
+//
+// StateDirectory= in the unit covers /var/lib/containarium at runtime too, but
+// only once the unit starts — which is after the doctor has already run.
+var daemonOwnedDirs = []string{"/opt/containarium", "/var/lib/containarium"}
+
+// ensureDaemonOwnedDirs creates the Containarium-owned directories the unit
+// sandbox and the doctor both expect. root is prepended to each path so tests
+// can exercise this without touching the real filesystem; callers pass "/".
+func ensureDaemonOwnedDirs(root string) error {
+	for _, dir := range daemonOwnedDirs {
+		// 0750: every consumer is root (the daemon, the Terraform startup
+		// scripts' markers, logrotate, the backup sidecar index).
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
+			return fmt.Errorf("failed to create %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
 // ensureDaemonUnitAndSecret makes the daemon's JWT secret and the canonical
 // hardened systemd unit exist (idempotent). Shared by `service install` and
 // `pool join` so the daemon unit is authored in exactly ONE place
@@ -140,6 +212,9 @@ func ensureDaemonUnitAndSecret() error {
 		log.Printf("Generated JWT secret: %s", jwtPath)
 	} else {
 		log.Printf("JWT secret already exists: %s", jwtPath)
+	}
+	if err := ensureDaemonOwnedDirs("/"); err != nil {
+		return err
 	}
 	// #nosec G306 -- systemd unit, world-readable config by convention; no secrets
 	if err := os.WriteFile(systemdServicePath, []byte(systemdServiceTemplate), 0644); err != nil {

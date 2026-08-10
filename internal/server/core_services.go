@@ -225,7 +225,7 @@ func (cs *CoreServices) EnsurePostgres(ctx context.Context) (string, error) {
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",
-			Pool: "default",
+			Pool: cs.incusClient.StoragePool(),
 			Size: "10GB",
 		},
 	}
@@ -428,7 +428,7 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",
-			Pool: "default",
+			Pool: cs.incusClient.StoragePool(),
 			Size: "5GB",
 		},
 	}
@@ -657,7 +657,7 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",
-			Pool: "default",
+			Pool: cs.incusClient.StoragePool(),
 			Size: "10GB",
 		},
 	}
@@ -1325,7 +1325,7 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		AutoStart: true,
 		Disk: &incus.DiskDevice{
 			Path: "/",
-			Pool: "default",
+			Pool: cs.incusClient.StoragePool(),
 			Size: "5GB",
 		},
 	}

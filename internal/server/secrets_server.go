@@ -40,7 +40,12 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 		return nil, err
 	}
 
-	meta, err := s.secretsStore.Set(ctx, req.Username, req.Name, req.Value, req.Delivery)
+	delivery, err := resolveDelivery(req.DeliveryMode, req.Delivery) //nolint:staticcheck // req.Delivery is deprecated but still accepted
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	meta, err := s.secretsStore.Set(ctx, req.Username, req.Name, req.Value, delivery)
 	if err != nil {
 		return nil, mapSecretError(err)
 	}
@@ -162,14 +167,14 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 		return nil, err
 	}
 
-	stamped, err := s.stampSecretsOnLXC(ctx, req.Username)
+	stamped, err := s.stampSecrets(ctx, req.Username)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "refresh secrets: %v", err)
 	}
 
 	log.Printf("[secrets] refresh %s: stamped=%d", req.Username, stamped)
 	return &pb.RefreshSecretsResponse{
-		Message: fmt.Sprintf("re-stamped %d secret(s) on %s-container; new execs will see updated values", stamped, req.Username),
+		Message: refreshSecretsMessage(s.boxes().Kind(), req.Username, stamped),
 		Stamped: safecast.I32(stamped),
 	}, nil
 }
@@ -396,6 +401,9 @@ func toProtoSecretMetadata(m *secrets.SecretMetadata) *pb.SecretMetadata {
 		Version:   m.Version,
 		CreatedAt: m.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt: m.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		Delivery:  m.Delivery,
+		// Both forms are always populated and always agree: the enum is
+		// the contract, the string keeps existing REST/MCP clients working.
+		Delivery:     m.Delivery, //nolint:staticcheck // deprecated but still served
+		DeliveryMode: deliveryToProto(m.Delivery),
 	}
 }

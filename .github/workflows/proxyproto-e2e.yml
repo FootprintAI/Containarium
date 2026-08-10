@@ -3,8 +3,9 @@ name: PROXY Protocol E2E
 on:
   push:
     branches: [main]
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215).
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -60,13 +61,17 @@ jobs:
         # needs live infra (incus/storage) not present on the runner and fails
         # closed without it.
         #
-        # The -skip list is the pre-existing set that needs root on unprivileged
-        # Linux runners (tunnel_registry.addLoopbackAlias runs `ip addr add`;
-        # TestEnableForwardingOnNonLinux has no GOOS guard). They pass on darwin
-        # where loopback aliases are no-ops. Tracked for a follow-up cleanup.
+        # The -skip list that used to live here excluded five sentinel tests
+        # that needed root on an unprivileged runner. They no longer do
+        # (#1278, #1280): the `ip addr` calls sit behind a seam the tests
+        # substitute, so registration bookkeeping is exercised without
+        # CAP_NET_ADMIN.
+        #
+        # Removing the list is the point of those changes. While it was here,
+        # the three tunnel tests never ran in CI at all — and running them
+        # under -race is what surfaced a genuine data race in the seam itself.
         run: |
           go test -race -timeout 8m \
-            -skip 'TestEnableForwardingOnNonLinux|TestRegisterPropagatesPool|TestTunnelIntegration|TestTunnelEndToEnd|TestConnMuxWithTunnelClient' \
             $(go list ./... | grep -v '/test/integration')
 
   real-caddy-e2e:

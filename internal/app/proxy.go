@@ -332,6 +332,67 @@ func (p *ProxyManager) RemoveTLSSubject(domain string) error {
 
 // ProvisionTLS provisions a TLS certificate for the given domain via Caddy's on-demand TLS
 // or by adding it to the TLS automation policy
+// ensureDNSIssuers gives a policy's issuers the configured DNS-01 challenge
+// config, reporting whether it changed anything.
+//
+// Wildcard subjects (`*.example.com`) can ONLY be issued via DNS-01 —
+// HTTP-01 and TLS-ALPN-01 categorically cannot solve them. A policy created
+// before DNS-01 was configured keeps its original issuers, so appending a
+// wildcard to it produces a subject Caddy never attempts: no certificate, no
+// error, nothing in the log to notice (#1066).
+//
+// A no-op when DNS-01 isn't configured (nothing to add) or when every issuer
+// already carries it, so this is safe to call on every provision.
+func (p *ProxyManager) ensureDNSIssuers(policy *CaddyTLSAutomationPolicy) bool {
+	if p.dnsChallenge == nil {
+		return false
+	}
+	if len(policy.Issuers) > 0 && policyHasDNSChallenge(*policy) {
+		return false
+	}
+	policy.Issuers = issuersFor(p.dnsChallenge)
+	return true
+}
+
+// policyHasDNSChallenge reports whether EVERY issuer can solve DNS-01.
+//
+// Every, not any: Caddy tries issuers in order, and one that cannot solve the
+// challenge is a failed attempt for the wildcard rather than a skipped one.
+func policyHasDNSChallenge(policy CaddyTLSAutomationPolicy) bool {
+	for _, issuer := range policy.Issuers {
+		if issuer.Challenges == nil || issuer.Challenges.DNS == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// patchTLSPolicies writes the policy array back to Caddy.
+func (p *ProxyManager) patchTLSPolicies(url string, policies []CaddyTLSAutomationPolicy) error {
+	policyJSON, err := json.Marshal(policies)
+	if err != nil {
+		return fmt.Errorf("failed to marshal policies: %w", err)
+	}
+
+	req, err := http.NewRequest("PATCH", url, bytes.NewReader(policyJSON))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to update TLS policy: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy returned error updating TLS policy (status %d): %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 func (p *ProxyManager) ProvisionTLS(domain string) error {
 	// Caddy's admin API returns 400 "invalid traversal path" when you
 	// PATCH/POST a sub-path whose parent doesn't exist yet. On a fresh
@@ -363,10 +424,25 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 	}
 
 	// Check if domain is already in a policy
-	for _, policy := range policies {
-		for _, subject := range policy.Subjects {
+	for i := range policies {
+		for _, subject := range policies[i].Subjects {
 			if subject == domain {
-				// Domain already has a policy, no need to add
+				// Present — but presence is not enough (#1066). A policy that
+				// predates DNS-01 being configured still carries HTTP-01 /
+				// TLS-ALPN-01 issuers, and those categorically cannot solve a
+				// wildcard subject, so Caddy never even attempts the
+				// certificate: the subject just sits there with no cert and
+				// no error.
+				//
+				// Repairing here rather than only on append is what reaches a
+				// host that ALREADY hit the bug. Such a host has the subject
+				// in the array from a previous run, so an append-only fix
+				// would return early every time and never heal it.
+				if p.ensureDNSIssuers(&policies[i]) {
+					log.Printf("[ProxyManager] policy for %s had no DNS-01 issuers; adding them so the "+
+						"wildcard subject can actually be issued (#1066)", domain)
+					return p.patchTLSPolicies(url, policies)
+				}
 				return nil
 			}
 		}
@@ -378,30 +454,13 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 		// Add domain to the first policy's subjects
 		policies[0].Subjects = append(policies[0].Subjects, domain)
 
-		// Update the policy
-		policyJSON, err := json.Marshal(policies)
-		if err != nil {
-			return fmt.Errorf("failed to marshal policies: %w", err)
-		}
+		// The policy we are appending to may predate DNS-01 being configured,
+		// in which case its issuers cannot satisfy a wildcard subject (#1066).
+		// The create-new-policy branch below gets this right via
+		// NewTLSPolicyWithDNS; this branch has to do the same explicitly.
+		p.ensureDNSIssuers(&policies[0])
 
-		req, err := http.NewRequest("PATCH", url, bytes.NewReader(policyJSON))
-		if err != nil {
-			return fmt.Errorf("failed to create request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := p.httpClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to update TLS policy: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("caddy returned error updating TLS policy (status %d): %s", resp.StatusCode, string(body))
-		}
-
-		return nil
+		return p.patchTLSPolicies(url, policies)
 	}
 
 	// No existing policies, create a new one with ACME issuers (DNS-01 when

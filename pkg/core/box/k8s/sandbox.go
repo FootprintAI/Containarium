@@ -10,6 +10,27 @@ import (
 	"github.com/footprintai/containarium/pkg/core/box"
 )
 
+// podOptions carries the daemon-level pod knobs resolved per box at create
+// time. A named struct rather than adjacent bare string parameters, so a
+// caller cannot silently transpose them.
+type podOptions struct {
+	// BoxMode is passed to the box as the AGENTBOX_MODE env var: "" or "mcp"
+	// keeps the forced-command MCP session (default), "shell" gives an
+	// interactive login shell. Empty leaves the image default.
+	BoxMode string
+
+	// RuntimeClass is the name of the Kubernetes RuntimeClass the box's pod is
+	// scheduled under — "runsc" puts it in a gVisor sandbox, where guest
+	// syscalls are served by a userspace kernel instead of hitting the host
+	// kernel directly. Empty leaves RuntimeClassName unset, so the pod runs on
+	// whatever the cluster's default runtime is (containerd's `runc`); that is
+	// the behavior every box had before this field existed, and remains the
+	// default. The named class must exist in the cluster AND its handler must
+	// be configured on the node's container runtime, or the pod fails to
+	// start — this is deliberately not validated here.
+	RuntimeClass string
+}
+
 // sandboxObject builds the agent-sandbox Sandbox CR for a tenant box. The
 // agent-sandbox controller owns the children: it creates the pod (named after
 // the Sandbox) and, because spec.service is true, a headless Service (also
@@ -24,16 +45,21 @@ import (
 // plain persistentVolumeClaim volume — deliberately not a volumeClaimTemplate,
 // which the controller would owner-reference and GC on Sandbox deletion,
 // breaking delete-retains-data. def is the resolved default memory floor
-// applied when the spec sets no explicit memory.
-func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, boxMode string) *sandboxv1beta1.Sandbox {
+// applied when the spec sets no explicit memory. opts carries the per-box pod
+// knobs (box mode, runtime class).
+func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, opts podOptions) *sandboxv1beta1.Sandbox {
 	labels := boxLabels(spec.Ref.Tenant)
 
 	// restricted-PSA container hardening: non-root, no privilege escalation,
 	// all capabilities dropped, default seccomp. The box image (dropbear on
 	// :2222) is built to run under exactly this.
 	gpuCount := len(spec.GPUs)
+	// Tenant secrets (#1190): mounted rather than projected as env vars,
+	// because a Secret update does not reach a running pod's environment but
+	// does reach its volumes. Optional, so a box with no secrets still starts.
+	secretsVolume, secretsMount := tenantSecretsVolumeFor(spec.Ref.Tenant)
 	container := corev1.Container{
-		Name:  "agent-box",
+		Name:  boxContainerName,
 		Image: spec.Image,
 		Ports: []corev1.ContainerPort{{Name: sshPortName, ContainerPort: sshPort, Protocol: corev1.ProtocolTCP}},
 		SecurityContext: &corev1.SecurityContext{
@@ -49,6 +75,7 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, b
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: authorizedKeysVolume, MountPath: authorizedKeysMount, ReadOnly: true},
 			{Name: hostKeyVolume, MountPath: hostKeyMount, ReadOnly: true},
+			secretsMount,
 		},
 	}
 	if res := resourceRequirements(spec.Resources, gpuCount, def); res != nil {
@@ -58,11 +85,12 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, b
 	// entrypoint (images/agent-box/entrypoint.sh): "shell" swaps the
 	// forced-command MCP session for an interactive login shell. Left unset the
 	// image defaults to the forced-command MCP session.
-	if boxMode != "" {
-		container.Env = append(container.Env, corev1.EnvVar{Name: "AGENTBOX_MODE", Value: boxMode})
+	if opts.BoxMode != "" {
+		container.Env = append(container.Env, corev1.EnvVar{Name: "AGENTBOX_MODE", Value: opts.BoxMode})
 	}
 
 	volumes := []corev1.Volume{
+		secretsVolume,
 		{
 			Name: authorizedKeysVolume,
 			VolumeSource: corev1.VolumeSource{
@@ -105,22 +133,30 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, b
 		mode = sandboxv1beta1.SandboxOperatingModeRunning
 	}
 
+	podSpec := corev1.PodSpec{
+		AutomountServiceAccountToken: boolp(false), // the box is a leaf, never a kube-apiserver client
+		SecurityContext: &corev1.PodSecurityContext{
+			RunAsNonRoot:   boolp(true),
+			RunAsUser:      int64p(1000),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+		Containers: []corev1.Container{container},
+		Volumes:    volumes,
+	}
+	// Left nil when unconfigured: an empty RuntimeClassName is NOT the same as
+	// an unset one — the scheduler treats "" as a class that does not exist and
+	// the pod never starts. Unset = the cluster's default runtime.
+	if opts.RuntimeClass != "" {
+		podSpec.RuntimeClassName = &opts.RuntimeClass
+	}
+
 	return &sandboxv1beta1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{Name: sandboxName, Namespace: ns, Labels: labels},
 		Spec: sandboxv1beta1.SandboxSpec{
 			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
 				PodTemplate: sandboxv1beta1.PodTemplate{
 					ObjectMeta: podMeta,
-					Spec: corev1.PodSpec{
-						AutomountServiceAccountToken: boolp(false), // the box is a leaf, never a kube-apiserver client
-						SecurityContext: &corev1.PodSecurityContext{
-							RunAsNonRoot:   boolp(true),
-							RunAsUser:      int64p(1000),
-							SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-						},
-						Containers: []corev1.Container{container},
-						Volumes:    volumes,
-					},
+					Spec:       podSpec,
 				},
 				Service: boolp(true), // headless Service = the gateway's routing target
 			},

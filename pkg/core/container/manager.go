@@ -196,7 +196,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if diskSize != "" {
 		config.Disk = &incus.DiskDevice{
 			Path: "/",
-			Pool: "default",
+			Pool: m.incus.StoragePool(),
 			Size: diskSize,
 		}
 	}

@@ -419,6 +419,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if err := exec.Command("systemctl", "enable", "--now", "containarium").Run(); err != nil {
 		return fmt.Errorf("systemctl enable --now containarium: %w", err)
 	}
+	tunnelStartedAt := time.Now().Add(-2 * time.Second) // small skew allowance
 	if err := exec.Command("systemctl", "enable", "--now", "containarium-tunnel").Run(); err != nil {
 		return fmt.Errorf("systemctl enable --now containarium-tunnel: %w", err)
 	}
@@ -435,6 +436,34 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("pool join: %d required capability check(s) FAILED — units were installed but this host is NOT a healthy pool member yet; fix the above and re-run", failed)
 	}
 
+	// 5b. Verify the tunnel handshake was actually ACCEPTED before claiming
+	// the host joined (#1051). Everything above is host-side: units enabled,
+	// capabilities present. None of it asks the sentinel whether it took the
+	// tunnel, which is why a host rejected on every reconnect for 11 days
+	// still saw "Joined pool" and exit 0.
+	fmt.Println()
+	fmt.Println("Verifying the sentinel accepted the tunnel...")
+	outcome, detail := waitForTunnelHandshake(readUnitJournal, "containarium-tunnel",
+		tunnelStartedAt, 20*time.Second, time.Second)
+	switch outcome {
+	case tunnelHandshakeRejected:
+		return tunnelRejectedError(sentinelAddr, spotID, detail)
+	case tunnelHandshakeRegistered:
+		fmt.Printf("  ✓ sentinel accepted the tunnel (%s)\n", detail)
+	default:
+		// Not a failure: journald may be absent, or the first handshake may
+		// still be in flight. Say so plainly rather than implying success —
+		// an unverified join is exactly what this check exists to stop being
+		// silent.
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"  ⚠ could not confirm the tunnel handshake within 20s — the units are installed, but this\n"+
+				"    host is not confirmed joined. Check with:\n"+
+				"      sudo journalctl -u containarium-tunnel -n 50\n"+
+				"    A repeating \"handshake rejected\" there means the join token needs registering on the\n"+
+				"    sentinel (`containarium sentinel register-token`); re-running `pool join` will not help,\n"+
+				"    because join tokens do not expire.\n")
+	}
+
 	fmt.Println()
 	fmt.Printf("Joined pool %q via sentinel %s (spot-id %s).\n", poolJoinPool, sentinelAddr, spotID)
 
@@ -447,7 +476,11 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if cp := strings.TrimSpace(poolJoinCloudControlPlane); cp != "" {
 		fmt.Println()
 		if err := cloudEnrollAfterPoolJoin(cmd, cp, poolJoinToken, "tunnel-"+spotID, poolJoinCloudInsecure); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ cloud enrollment failed (%v)\n  the tunnel is joined regardless; re-run `containarium cloud enroll --control-plane %s --token-file <token-file> --oss-backend-id tunnel-%s` once fixed\n", err, cp, spotID)
+			// A refusal here is expected when the host already runs other orgs'
+			// cloud-managed containers (cloud #1006) — surface --adopt-foreign
+			// as the deliberate way through, since the automated join
+			// intentionally never sets it.
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ cloud enrollment failed (%v)\n  the tunnel is joined regardless; re-run `containarium cloud enroll --control-plane %s --token-file <token-file> --oss-backend-id tunnel-%s` once fixed\n  (if the cloud refused because this host already runs OTHER organizations' containers, add --adopt-foreign only if that co-residency is intended)\n", err, cp, spotID)
 		}
 	}
 
