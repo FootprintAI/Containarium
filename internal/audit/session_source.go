@@ -32,6 +32,11 @@ type SessionBox struct {
 	Name string
 	// Username is the tenant the box belongs to.
 	Username string
+	// Ref is a handle private to the source that produced this box — a pod
+	// reference, say. Opaque to the collector, which only ever hands it back
+	// to the same source; a backend whose Name is enough to locate the box
+	// leaves it empty.
+	Ref string
 }
 
 // SessionSource supplies session-log lines for one backend.

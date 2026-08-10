@@ -55,7 +55,7 @@ func sandboxObject(ns string, spec box.BoxSpec, withPVC bool, def memDefaults, o
 	// :2222) is built to run under exactly this.
 	gpuCount := len(spec.GPUs)
 	container := corev1.Container{
-		Name:  "agent-box",
+		Name:  boxContainerName,
 		Image: spec.Image,
 		Ports: []corev1.ContainerPort{{Name: sshPortName, ContainerPort: sshPort, Protocol: corev1.ProtocolTCP}},
 		SecurityContext: &corev1.SecurityContext{
