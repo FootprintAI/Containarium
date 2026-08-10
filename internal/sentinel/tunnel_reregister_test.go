@@ -57,6 +57,45 @@ func newSessionPair(t *testing.T) (sentinelSide *yamux.Session, cleanup func()) 
 	}
 }
 
+// freeLoopbackPort returns a loopback port that is free right now.
+//
+// TestMonitorSessionCleansUpCurrentGeneration named port 8080, which
+// startProxies binds as-is. Anything else on the machine holding 8080 — a
+// container port-forward, a dev server — made it fail with "Should NOT be
+// empty, but was []", an assertion about listeners that reads as a bug in the
+// code under test rather than as a busy port.
+//
+// There is a small window between closing this listener and the code under
+// test binding the port, which is unavoidable without threading a listener
+// through. It is a much smaller risk than naming a port something else is
+// probably using.
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+	return port
+}
+
+// requireListeners fails if the spot has no proxy listeners.
+//
+// TestMonitorSessionIgnoresSupersededGeneration asserted nothing about
+// listeners, so a future failure to bind would leave it exercising the
+// no-listeners path and still passing. It was not doing so before this
+// change — its ports are remapped out of the privileged range — but nothing
+// was stopping it.
+func requireListeners(t *testing.T, ts *TunnelServer, spotID string) {
+	t.Helper()
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	p, ok := ts.proxies[spotID]
+	require.True(t, ok, "no proxies recorded for %s — startProxies bound nothing", spotID)
+	require.NotEmpty(t, p.listeners,
+		"%s has no listeners: the port was busy, so this test would exercise the "+
+			"no-listeners path rather than the one it is written for", spotID)
+}
+
 func handshake(spotID string) *TunnelHandshake {
 	return &TunnelHandshake{SpotID: spotID, Ports: []int{22, 8080}, Pool: "prod"}
 }
@@ -157,8 +196,14 @@ func TestMonitorSessionIgnoresSupersededGeneration(t *testing.T) {
 	defer closeFirst()
 	_, firstGen, err := registry.Register(handshake("spot-1"), firstSession)
 	require.NoError(t, err)
-	// Bind on 127.0.0.1 rather than the (stubbed, non-existent) alias.
-	ts.startProxies(ctx, "spot-1", firstGen, "127.0.0.1", 0, []int{22}, firstSession)
+	// Bind on 127.0.0.1 rather than the (stubbed, non-existent) alias, and on
+	// a port picked at run time rather than named here. A privileged remote
+	// port is remapped by startProxies (22 becomes 20022), but an unprivileged
+	// one is bound as-is — so naming a port means the test fails whenever a
+	// developer happens to be running anything on it.
+	proxyPort := freeLoopbackPort(t)
+	ts.startProxies(ctx, "spot-1", firstGen, "127.0.0.1", 0, []int{proxyPort}, firstSession)
+	requireListeners(t, ts, "spot-1")
 
 	monitorDone := make(chan struct{})
 	go func() {
@@ -171,7 +216,9 @@ func TestMonitorSessionIgnoresSupersededGeneration(t *testing.T) {
 	defer closeSecond()
 	_, secondGen, err := registry.Register(handshake("spot-1"), secondSession)
 	require.NoError(t, err)
-	ts.startProxies(ctx, "spot-1", secondGen, "127.0.0.1", 0, []int{22}, secondSession)
+	// The same port as the first registration: a reconnect rebinds what the
+	// superseded generation had.
+	ts.startProxies(ctx, "spot-1", secondGen, "127.0.0.1", 0, []int{proxyPort}, secondSession)
 
 	select {
 	case <-monitorDone:
@@ -224,7 +271,7 @@ func TestMonitorSessionCleansUpCurrentGeneration(t *testing.T) {
 	defer closeSession()
 	_, gen, err := registry.Register(handshake("spot-1"), session)
 	require.NoError(t, err)
-	ts.startProxies(ctx, "spot-1", gen, "127.0.0.1", 0, []int{8080}, session)
+	ts.startProxies(ctx, "spot-1", gen, "127.0.0.1", 0, []int{freeLoopbackPort(t)}, session)
 
 	ts.mu.Lock()
 	listeners := append([]net.Listener(nil), ts.proxies["spot-1"].listeners...)
