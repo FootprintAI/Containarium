@@ -721,6 +721,50 @@ The GPU *type* (L4, A100, etc.) is expressed via node affinity, driven by a
 node. This is deliberately different from the LXC/GCE path, where the daemon
 selects the exact machine type; on K8s, the scheduler owns that decision.
 
+### Tenant secret delivery (#1190)
+
+A tenant's secrets are materialized into a per-tenant Secret and mounted into
+the box at `/run/secrets`, one file per secret — the same path the LXC
+file-delivery mode uses. The box's session builds its environment from those
+files, so an env-delivery secret behaves the same on both backends.
+
+**Why a mount and not env vars.** A container's environment is fixed when it
+starts. Updating a Secret projected with `envFrom` does not change a running
+pod — it has to be recreated. A Secret *volume* is refreshed in place by the
+kubelet, so a new session sees the new value with no restart. That is also
+what the LXC path actually promises: its refresh message says *new execs* see
+updated values, not that running processes are re-parented. The mount is what
+makes the two backends agree.
+
+Because the mount is refreshed by the kubelet and survives a restart, the
+LXC-side secrets reconciler has no K8s counterpart and is not wired there.
+It exists because a container's tmpfs does not survive a restart; a mounted
+Secret does.
+
+All three delivery modes land in the same object. `env` and `file` rows each
+become one file; `compose` rows are rendered into a single `secrets.env` by
+the same function the LXC path uses, so a compose app's `env_file:` reference
+differs only in directory.
+
+**Operator responsibility: encryption at rest.** A Kubernetes Secret is
+base64-encoded, not encrypted, unless the cluster has [encryption at
+rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)
+configured for the `secrets` resource. Containarium's own at-rest guarantee —
+envelope encryption with a KMS-held KEK — covers the value in Postgres, and it
+still does on this backend. It does **not** extend to etcd.
+
+So a tenant moving from the LXC backend to K8s gets a *weaker* at-rest
+guarantee for the delivered copy unless the operator configures it, and the
+platform cannot detect or enforce that from inside. Stated here rather than
+left implied: a reader who assumes the KMS guarantee covers the whole path
+would be wrong, and would be wrong silently.
+
+Anyone can read a mounted secret who can `kubectl get secret` in the tenant
+namespace, `kubectl exec` into the box, or read etcd directly. The first two
+are the same trust boundary as the LXC backend (an operator with incus access
+can read a container's config and its tmpfs); the third is new, and is what
+cluster encryption at rest addresses.
+
 ## Fronting a K8s node with the fleet sentinel
 
 Everything above describes a K8s node reached at its *own* in-cluster gateway

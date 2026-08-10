@@ -2122,7 +2122,15 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// /run/secrets files until the next daemon-driven
 	// touch. Owned alongside the autosleep manager —
 	// same shape, same lifetime.
-	if ds.containerServer != nil && ds.containerServer.secretsStore != nil {
+	//
+	// Deliberately LXC-only, and not an oversight left over from #1190.
+	// The reconciler exists because a container's tmpfs does not survive a
+	// restart, so the files have to be rewritten. A K8s box mounts its
+	// secrets from a Secret, which does survive — the kubelet repopulates
+	// the mount on its own, and a periodic re-apply would be writes to the
+	// apiserver that change nothing.
+	if ds.containerServer != nil && ds.containerServer.secretsStore != nil &&
+		ds.containerServer.boxes().Kind() != box.KindK8s {
 		if ic, err := incus.New(); err != nil {
 			log.Printf("[secrets-reconciler] incus client unavailable: %v (reconciler disabled)", err)
 		} else {

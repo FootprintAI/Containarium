@@ -167,7 +167,7 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 		return nil, err
 	}
 
-	stamped, err := s.stampSecretsOnLXC(ctx, req.Username)
+	stamped, err := s.stampSecrets(ctx, req.Username)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "refresh secrets: %v", err)
 	}

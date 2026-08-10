@@ -798,7 +798,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// failure here doesn't fail the create; secrets can always be
 	// retried via RefreshSecrets).
 	if s.secretsStore != nil {
-		if n, err := s.stampSecretsOnLXC(ctx, req.Username); err != nil {
+		if n, err := s.stampSecrets(ctx, req.Username); err != nil {
 			log.Printf("[secrets] failed to stamp on %s: %v (continuing)", info.Ref.Name, err)
 		} else if n > 0 {
 			log.Printf("[secrets] stamped %d secret(s) on %s at create time", n, info.Ref.Name)
@@ -1419,7 +1419,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// existing processes won't see the change (POSIX inherit-at-fork),
 		// but new execs will.
 		if s.secretsStore != nil {
-			if n, err := s.stampSecretsOnLXC(ctx, req.Username); err != nil {
+			if n, err := s.stampSecrets(ctx, req.Username); err != nil {
 				log.Printf("[secrets] failed to re-stamp on start of %s-container: %v (continuing)", req.Username, err)
 			} else if n > 0 {
 				log.Printf("[secrets] re-stamped %d secret(s) on %s-container at start time", n, req.Username)

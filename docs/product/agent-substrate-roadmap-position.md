@@ -114,7 +114,6 @@ does not.**
 | Gap | Evidence |
 | --- | --- |
 | **eBPF network policy** | `NetworkPolicyEnforcer`'s inspector is `ListContainers() ([]incus.ContainerInfo, error)`; it resolves container-name → host veth ifindex and attaches TCX. Constructed with `networkIncusClient` (`dual_server.go:1303`). No K8s branch exists. |
-| **Tenant secret delivery** | `incus config set environment.<NAME>=…`, reconciler holds `*incus.Client`. The K8s backend mounts Secrets only for authorized_keys and host keys. |
 
 These are **type-level** dependencies on `pkg/core/incus`, not feature
 flags. They cannot be switched on for K8s; they'd have to be rebuilt
@@ -145,17 +144,29 @@ idiom to bind to rather than reimplement. That is the "inherit, don't
 invent" posture this note already argues for, so the gaps are consistent
 with the strategy rather than a refutation of it.
 
-Gaps tracked as #1188 (policy-driven K8s NetworkPolicy) and #1190 (tenant
-secret delivery on K8s).
+The one gap left in the table is the eBPF network policy enforcer, whose
+inspector is incus-typed at the interface level.
 
-#1189 (in-box session audit on K8s) is addressed: the collector now reads
-sessions through a backend-neutral source — OpenSSH `auth.log` on LXC,
-box pod logs on Kubernetes — and both land in the same store under the
-same action. It is listed here as the worked example of what porting one
-of these gaps costs: a parser for the other backend's log format, a
-source interface, and the wiring to choose between them. The type-level
-dependency was the whole of the problem, and it was three PRs of work,
-not a redesign.
+The other three named here are closed, and how they closed is the useful part
+of this note:
+
+- **#1188** — tenant egress policy compiles to a native `NetworkPolicy`.
+- **#1189** — session audit reads OpenSSH `auth.log` on LXC and box pod logs
+  on Kubernetes, through one backend-neutral source.
+- **#1190** — tenant secrets are materialized into a mounted Secret rather
+  than stamped into container config.
+
+Each cost the same three things: an implementation of the other backend's
+native mechanism, a seam narrow enough that the shared logic stopped naming a
+backend, and the wiring to pick between them. None needed a redesign, and none
+of the "already portable" half — identity, authz, secrets-at-rest — had to
+move. That is the evidence for the claim above rather than a restatement of it.
+
+Two of the three also turned out to have a *different* fix than first
+proposed, which is worth knowing before scoping the fourth: #1189's collector
+needed a log parser for a different SSH server, not just a client swap, and
+#1190's secrets could not be projected as env vars at all, because a running
+pod's environment cannot be updated.
 
 ## What this note deliberately does not say
 
