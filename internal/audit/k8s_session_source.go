@@ -99,7 +99,33 @@ func (s *k8sSessionSource) Boxes(ctx context.Context) ([]SessionBox, error) {
 			Ref:      pod.Namespace + "/" + pod.Name,
 		})
 	}
+
+	// Drop windows for pods that no longer exist. The key is the pod, and a
+	// pod is replaced on every restart and resize — so without this the map
+	// gains an entry per box lifetime and never loses one, in a process meant
+	// to run for months.
+	//
+	// Only on a successful list: pruning on a transient empty result would
+	// reset every window to the initial lookback, making the next pass re-read
+	// a day of logs for the whole fleet.
+	s.retainWindows(boxes)
+
 	return boxes, nil
+}
+
+// retainWindows forgets the read window of every box not in the current list.
+func (s *k8sSessionSource) retainWindows(boxes []SessionBox) {
+	live := make(map[string]struct{}, len(boxes))
+	for _, b := range boxes {
+		live[b.Ref] = struct{}{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ref := range s.lastRead {
+		if _, ok := live[ref]; !ok {
+			delete(s.lastRead, ref)
+		}
+	}
 }
 
 func (s *k8sSessionSource) ReadSessions(ctx context.Context, box SessionBox) (string, error) {

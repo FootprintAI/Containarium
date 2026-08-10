@@ -2,8 +2,12 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -202,5 +206,54 @@ func TestK8sSource_FailedReadDoesNotAdvanceTheWindow(t *testing.T) {
 	if after.Sub(before) > time.Second {
 		t.Errorf("the window moved from %v to %v despite the read failing — the logins that "+
 			"read missed would never be collected", before, after)
+	}
+}
+
+// The window map is keyed by pod, and a pod is replaced on every restart and
+// resize. Without pruning it gains an entry per box lifetime and never loses
+// one, in a process meant to run for months.
+func TestK8sSource_ForgetsWindowsOfPodsThatAreGone(t *testing.T) {
+	cs := fake.NewSimpleClientset(boxPod("tenant-alice", "alice-new", "alice", corev1.PodRunning))
+	src := NewK8sSessionSource(cs, "").(*k8sSessionSource)
+
+	// A window left behind by a pod that has since been replaced.
+	src.markRead("tenant-alice/alice-old", time.Now())
+	src.markRead("tenant-alice/alice-new", time.Now())
+
+	if _, err := src.Boxes(context.Background()); err != nil {
+		t.Fatalf("boxes: %v", err)
+	}
+
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if _, stale := src.lastRead["tenant-alice/alice-old"]; stale {
+		t.Error("kept the window of a pod that no longer exists — one entry per box lifetime, " +
+			"never released, in a daemon that runs for months")
+	}
+	if _, live := src.lastRead["tenant-alice/alice-new"]; !live {
+		t.Error("dropped the window of a pod that still exists — the next read would pull the " +
+			"full lookback again for every box on every pass")
+	}
+}
+
+// A failed listing must not prune: resetting every window to the initial
+// lookback makes the next pass re-read a day of logs for the whole fleet.
+func TestK8sSource_KeepsWindowsWhenListingFails(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("apiserver down")
+	})
+	src := NewK8sSessionSource(cs, "").(*k8sSessionSource)
+	src.markRead("tenant-alice/alice-abc", time.Now())
+
+	if _, err := src.Boxes(context.Background()); err == nil {
+		t.Fatal("expected the listing to fail")
+	}
+
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if _, ok := src.lastRead["tenant-alice/alice-abc"]; !ok {
+		t.Error("a failed listing dropped every read window — the next pass would re-read the " +
+			"full lookback for the whole fleet")
 	}
 }
