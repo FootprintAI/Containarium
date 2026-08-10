@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testPeer struct {
@@ -149,19 +150,31 @@ func TestOnTunnelConnect_PeerOnlyDoesNotPromote(t *testing.T) {
 
 // TestRegisterPropagatesPool confirms the pool tag flows from Register()
 // into the TunnelSpot.
+// require, not assert, on everything a later line dereferences.
+//
+// Register adds a loopback alias, so it fails without CAP_NET_ADMIN. With
+// assert the test carried on from that failure, r.Get returned nil, and the
+// next line dereferenced it — a SIGSEGV that takes down the whole test binary,
+// so every other test in the package is reported as failed too. The real
+// cause was then three screens up, under a stack trace.
+//
+// Failing cleanly here does not make the test pass unprivileged; it makes the
+// one real failure legible instead of burying the package.
 func TestRegisterPropagatesPool(t *testing.T) {
 	r := NewTunnelRegistry()
 	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	spot := r.Get("spot-1")
-	assert.NotNil(t, spot)
+	require.NotNil(t, spot)
 	assert.Equal(t, Pool("prod"), spot.Pool)
 
 	// Empty pool stays empty (back-compat).
 	_, _, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, Pool(""), r.Get("spot-2").Pool)
+	require.NoError(t, err)
+	spot2 := r.Get("spot-2")
+	require.NotNil(t, spot2)
+	assert.Equal(t, Pool(""), spot2.Pool)
 }
 
 func idsOf(peers []testPeer) []string {

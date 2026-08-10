@@ -1,6 +1,7 @@
 package sentinel
 
 import (
+	"runtime"
 	"testing"
 )
 
@@ -78,8 +79,27 @@ func TestPort22FilteringNoPort22(t *testing.T) {
 	}
 }
 
+// onNonLinuxHost makes the code under test believe it is running somewhere
+// without iptables, and restores the real value afterwards.
+//
+// The two tests below are named "OnNonLinux" but had no such control, so on a
+// Linux host — which is every CI runner — they fell through to the real
+// iptables path. They passed by writing actual DNAT rules into the runner's
+// nat table, and failed outright on a Linux machine without the privilege to
+// do it. Neither result said anything about the early return they exist to
+// cover.
+func onNonLinuxHost(t *testing.T) {
+	t.Helper()
+	real := hostGOOS
+	hostGOOS = "darwin"
+	t.Cleanup(func() { hostGOOS = real })
+}
+
 func TestEnableForwardingOnNonLinux(t *testing.T) {
-	// On non-Linux (macOS, etc.), enableForwarding should return nil without error
+	onNonLinuxHost(t)
+
+	// On non-Linux (macOS, etc.), enableForwarding should return nil without
+	// error and touch nothing.
 	err := enableForwarding("10.0.0.1", []int{80, 443})
 	if err != nil {
 		t.Errorf("expected nil error on non-Linux, got: %v", err)
@@ -87,9 +107,28 @@ func TestEnableForwardingOnNonLinux(t *testing.T) {
 }
 
 func TestDisableForwardingOnNonLinux(t *testing.T) {
-	// On non-Linux, disableForwarding should return nil
+	onNonLinuxHost(t)
+
+	// On non-Linux, disableForwarding should return nil and touch nothing.
 	err := disableForwarding()
 	if err != nil {
 		t.Errorf("expected nil error on non-Linux, got: %v", err)
 	}
+}
+
+// The control has to actually control something. If hostGOOS stopped being
+// what the early returns read, the two tests above would go back to running
+// the real iptables path on every CI runner and would still report a pass.
+func TestNonLinuxControlActuallyDivertsTheHostCheck(t *testing.T) {
+	if hostGOOS != runtime.GOOS {
+		t.Fatalf("hostGOOS = %q before any override, want the real %q", hostGOOS, runtime.GOOS)
+	}
+
+	func() {
+		onNonLinuxHost(t)
+		if hostGOOS == runtime.GOOS && runtime.GOOS == "linux" {
+			t.Error("the override did not change what the code under test reads — the " +
+				"non-Linux tests would run the real iptables path against the host")
+		}
+	}()
 }
