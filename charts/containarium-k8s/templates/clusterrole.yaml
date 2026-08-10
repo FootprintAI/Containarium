@@ -33,7 +33,10 @@ rules:
   - apiGroups: [""]
     resources: [pods/log, pods/exec]
     verbs: [get, list, create]
-  # Manage per-box SSH keys in tenant namespaces
+  # Manage per-box SSH keys in tenant namespaces, and the per-tenant Secret
+  # that carries delivered tenant secrets (#1190). Removing this does not
+  # fail loudly for the second: `secret set` still succeeds — the value is
+  # stored and encrypted — and only the delivery into the box is lost.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, list, watch, create, update, patch, delete]

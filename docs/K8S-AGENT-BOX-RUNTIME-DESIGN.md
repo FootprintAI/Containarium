@@ -746,6 +746,14 @@ become one file; `compose` rows are rendered into a single `secrets.env` by
 the same function the LXC path uses, so a compose app's `env_file:` reference
 differs only in directory.
 
+**Boxes created before this shipped.** The secrets volume is part of the box's
+pod template, so a box created before it existed has no mount and no amount of
+delivery will reach it — the Secret is written and nothing consumes it. Those
+boxes need recreating. This fails quietly rather than loudly: `secret refresh`
+reports success, because the delivery genuinely succeeded; it is the mount that
+is missing. Recreate a box and check for `/run/secrets` inside it if secrets
+appear to be ignored on a long-lived deployment.
+
 **Operator responsibility: encryption at rest.** A Kubernetes Secret is
 base64-encoded, not encrypted, unless the cluster has [encryption at
 rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)
