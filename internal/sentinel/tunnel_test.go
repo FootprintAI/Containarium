@@ -89,6 +89,8 @@ func TestTunnelRegistryAllocate(t *testing.T) {
 // On Linux (with loopback aliases), it verifies full data flow through the tunnel.
 // On non-Linux, it verifies handshake, registration, and session establishment.
 func TestTunnelEndToEnd(t *testing.T) {
+	withRecordedAliases(t)
+
 	if testing.Short() {
 		t.Skip("skipping end-to-end tunnel test in short mode")
 	}
@@ -283,6 +285,8 @@ func TestConnMuxRouting(t *testing.T) {
 // TestConnMuxWithTunnelClient verifies that a tunnel client can connect through
 // a ConnMux on the same port as HTTPS.
 func TestConnMuxWithTunnelClient(t *testing.T) {
+	withRecordedAliases(t)
+
 	if testing.Short() {
 		t.Skip("skipping ConnMux+tunnel test in short mode")
 	}

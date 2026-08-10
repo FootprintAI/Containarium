@@ -150,17 +150,17 @@ func TestOnTunnelConnect_PeerOnlyDoesNotPromote(t *testing.T) {
 
 // TestRegisterPropagatesPool confirms the pool tag flows from Register()
 // into the TunnelSpot.
-// require, not assert, on everything a later line dereferences.
+// This asserts a pool tag flows from Register into TunnelSpot — pure data
+// plumbing — so it has no business configuring host networking to ask.
 //
-// Register adds a loopback alias, so it fails without CAP_NET_ADMIN. With
-// assert the test carried on from that failure, r.Get returned nil, and the
-// next line dereferenced it — a SIGSEGV that takes down the whole test binary,
-// so every other test in the package is reported as failed too. The real
-// cause was then three screens up, under a stack trace.
-//
-// Failing cleanly here does not make the test pass unprivileged; it makes the
-// one real failure legible instead of burying the package.
+// It used to, because Register adds a loopback alias as a side effect. That
+// made it fail on any machine without CAP_NET_ADMIN, and pass in CI only
+// because the runner has it (#1279). withRecordedAliases substitutes the
+// seam the registry already exposes, so the question the test asks is the
+// only thing it needs.
 func TestRegisterPropagatesPool(t *testing.T) {
+	withRecordedAliases(t)
+
 	r := NewTunnelRegistry()
 	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
 	require.NoError(t, err)
