@@ -4,8 +4,29 @@ run:
   timeout: 5m
 
 # Mirrors the cloud repo's config. `default: standard` = errcheck, govet,
-# ineffassign, staticcheck, unused. Tighten by enabling more linters once a
-# clean baseline holds.
+# ineffassign, staticcheck, unused.
+#
+# On "tighten by enabling more linters once a clean baseline holds": the
+# baseline is clean, and six candidates were measured against this tree
+# (2026-08-11, golangci-lint 2.12.2, build tags included). Only one was worth
+# anything, and it was already clean:
+#
+#   sqlclosecheck   0 findings — already holds; enable if it stays free
+#   makezero        3 — all the nonce||ciphertext idiom in KMS test fakes,
+#                   where make([]byte, NonceSize()) then append is correct
+#   bodyclose       6 — all responses handed to the generic parseResponse,
+#                   which does `defer drainClose(resp)`; the linter cannot
+#                   trace through it
+#   nilerr         18 — sampled: deliberate skip-and-continue, already
+#                   carrying comments saying so ("skip unreadable entries")
+#   errorlint      33 — 26 are ==/!= on errors the stdlib returns unwrapped
+#                   by contract (io.EOF from io.ReadFull), so safe here
+#   noctx         448 — overwhelmingly httptest.NewRequest and exec.Command
+#                   in tests
+#
+# Each would cost more nolint annotations than it would catch bugs. Recorded
+# so the next person does not re-measure; re-check after any large refactor
+# rather than treating this as settled forever.
 linters:
   default: standard
   enable:
