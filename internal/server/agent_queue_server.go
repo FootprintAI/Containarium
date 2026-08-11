@@ -38,7 +38,10 @@ func (s *AgentSkillServer) EnqueueAgentTask(ctx context.Context, req *pb.Enqueue
 	if _, err := s.catalog.Get(req.SkillId); err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
-	id := s.queue.enqueue(req.SkillId, req.InputJson)
+	id, err := s.queue.Enqueue(ctx, req.SkillId, req.InputJson)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "enqueue task: %v", err)
+	}
 	return &pb.EnqueueAgentTaskResponse{TaskId: id}, nil
 }
 
@@ -49,7 +52,10 @@ func (s *AgentSkillServer) LeaseAgentTask(ctx context.Context, req *pb.LeaseAgen
 	if err := auth.RequireScope(ctx, auth.ScopeAgentsRun); err != nil {
 		return nil, err
 	}
-	leased, ok := s.queue.lease(req.SkillId, time.Duration(req.LeaseSeconds)*time.Second)
+	leased, ok, err := s.queue.Lease(ctx, req.SkillId, time.Duration(req.LeaseSeconds)*time.Second)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "lease task: %v", err)
+	}
 	if !ok {
 		return &pb.LeaseAgentTaskResponse{HasTask: false}, nil
 	}
@@ -72,7 +78,10 @@ func (s *AgentSkillServer) CompleteAgentTask(ctx context.Context, req *pb.Comple
 	if req.TaskId == "" || req.LeaseToken == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id and lease_token are required")
 	}
-	ok := s.queue.complete(req.TaskId, req.LeaseToken, req.ArtifactJson, req.Error)
+	ok, err := s.queue.Complete(ctx, req.TaskId, req.LeaseToken, req.ArtifactJson, req.Error)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "complete task: %v", err)
+	}
 	return &pb.CompleteAgentTaskResponse{Accepted: ok}, nil
 }
 

@@ -12,7 +12,7 @@ import (
 func boxContainerEnv(t *testing.T, boxMode string) map[string]string {
 	t.Helper()
 	sb := sandboxObject("tenant-x", box.BoxSpec{Ref: box.BoxRef{Tenant: "x"}, Image: "img", AutoStart: true}, false, memDefaults{}, podOptions{BoxMode: boxMode})
-	containers := sb.Spec.SandboxBlueprint.PodTemplate.Spec.Containers
+	containers := sb.Spec.PodTemplate.Spec.Containers
 	if len(containers) != 1 {
 		t.Fatalf("want 1 container, got %d", len(containers))
 	}
@@ -53,7 +53,7 @@ func TestSandboxObjectRuntimeClass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sb := sandboxObject("tenant-x", box.BoxSpec{Ref: box.BoxRef{Tenant: "x"}, Image: "img", AutoStart: true},
 				false, memDefaults{}, podOptions{RuntimeClass: tc.runtimeClass})
-			got := sb.Spec.SandboxBlueprint.PodTemplate.Spec.RuntimeClassName
+			got := sb.Spec.PodTemplate.Spec.RuntimeClassName
 			switch {
 			case tc.want == nil && got != nil:
 				t.Errorf("RuntimeClassName = %q, want unset", *got)
