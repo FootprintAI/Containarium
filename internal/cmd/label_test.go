@@ -116,27 +116,27 @@ func TestFormatLabels(t *testing.T) {
 
 func TestGroupContainersByLabel(t *testing.T) {
 	containers := []incus.ContainerInfo{
-		incus.ContainerInfo{
+		{
 			Name:   "alice-container",
 			State:  "Running",
 			Labels: map[string]string{"team": "backend", "env": "prod"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "bob-container",
 			State:  "Running",
 			Labels: map[string]string{"team": "backend", "env": "staging"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "charlie-container",
 			State:  "Stopped",
 			Labels: map[string]string{"team": "frontend", "env": "prod"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "dave-container",
 			State:  "Running",
 			Labels: nil,
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "eve-container",
 			State:  "Running",
 			Labels: map[string]string{"env": "dev"}, // no team label
@@ -256,13 +256,13 @@ func TestGetSortedGroupKeys(t *testing.T) {
 
 func TestGroupedJSONOutput(t *testing.T) {
 	containers := []incus.ContainerInfo{
-		incus.ContainerInfo{
+		{
 			Name:      "alice-container",
 			State:     "Running",
 			IPAddress: "10.0.0.1",
 			Labels:    map[string]string{"team": "backend"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:      "bob-container",
 			State:     "Stopped",
 			IPAddress: "10.0.0.2",
