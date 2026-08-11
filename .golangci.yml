@@ -2,6 +2,14 @@ version: "2"
 
 run:
   timeout: 5m
+  # Lint the code behind build tags too. Without this, 13 files are invisible
+  # to every linter: the whole K8s box backend's tests, the ZFS integration
+  # tests, and internal/testsupport/zfspool (which is not even a test file).
+  # That is where the newest and least-exercised code lives, so it is the
+  # worst place to have a blind spot.
+  build-tags:
+    - k8s
+    - zfs
 
 # Mirrors the cloud repo's config. `default: standard` = errcheck, govet,
 # ineffassign, staticcheck, unused. Tighten by enabling more linters once a
