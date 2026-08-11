@@ -2,7 +2,7 @@ package k8s
 
 import (
 	"context"
-	"strings"
+	"slices"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,21 +51,63 @@ func TestCompileTenantPolicy_RefusesLogOnlyMode(t *testing.T) {
 }
 
 // The metadata carve-out is deny-beats-allow and guards cloud credentials.
-// An allowlist entry covering 169.254.169.254 cannot be narrowed by an
-// allow-only policy, so it must be refused rather than admitted.
-func TestCompileTenantPolicy_RefusesAllowlistCoveringMetadataIP(t *testing.T) {
-	_, unsupported := compileTenantPolicy(enforcing(&pb.NetworkPolicy{
+//
+// This used to be REFUSED, on the belief that an allow-only policy could not
+// narrow a rule. It can: IPBlock.Except subtracts sub-ranges from a peer, which
+// is exactly deny-beats-allow for one address. Refusing rejected the commonest
+// policy tenants write — allow a wide range, carve out metadata — and left
+// them on the DNS-only floor with no outbound network at all.
+//
+// The security property is unchanged and the assertion below is the same one:
+// the tenant must not reach 169.254.169.254. What changed is that the rest of
+// their allowlist now works.
+func TestCompileTenantPolicy_ExceptsMetadataIPFromCoveringAllowlist(t *testing.T) {
+	compiled, unsupported := compileTenantPolicy(enforcing(&pb.NetworkPolicy{
 		Tenant:      "alice",
 		EgressCidrs: []string{"169.254.0.0/16"}, // covers the metadata service
 		// AllowMetadata false — the default, and the whole point
 	}))
-	if len(unsupported) == 0 {
-		t.Fatal("an allowlist covering 169.254.169.254 was accepted while allow_metadata is " +
-			"false — the tenant would reach the cloud metadata service, and its credentials, " +
-			"which the stored policy explicitly withholds")
+	if len(unsupported) != 0 {
+		t.Fatalf("the allowlist was refused rather than narrowed: %v", unsupported)
 	}
-	if !strings.Contains(unsupported[0].Reason, "metadata") {
-		t.Errorf("reason should name the metadata carve-out: %v", unsupported[0])
+	if len(compiled) != 1 {
+		t.Fatalf("compiled %d rules, want 1", len(compiled))
+	}
+
+	var excepted bool
+	for _, peer := range compiled[0].To {
+		if peer.IPBlock == nil {
+			continue
+		}
+		if slices.Contains(peer.IPBlock.Except, "169.254.169.254/32") {
+			excepted = true
+		}
+	}
+	if !excepted {
+		t.Errorf("the compiled rule admits 169.254.169.254 — the tenant would reach the cloud "+
+			"metadata service, and its credentials, which the stored policy explicitly "+
+			"withholds. Rule: %+v", compiled[0])
+	}
+}
+
+// The exception must not be added when the tenant has NOT opted in but the
+// allowlist doesn't reach metadata anyway — an Except entry outside its
+// IPBlock's CIDR is invalid and some CNIs reject the whole object.
+func TestCompileTenantPolicy_NoMetadataExceptWhenAllowlistDoesNotCoverIt(t *testing.T) {
+	compiled, unsupported := compileTenantPolicy(enforcing(&pb.NetworkPolicy{
+		Tenant: "alice", EgressCidrs: []string{"10.0.0.0/8"},
+	}))
+	if len(unsupported) != 0 {
+		t.Fatalf("unexpected refusal: %v", unsupported)
+	}
+	if len(compiled) != 1 {
+		t.Fatalf("compiled %d rules, want 1", len(compiled))
+	}
+	for _, peer := range compiled[0].To {
+		if peer.IPBlock != nil && len(peer.IPBlock.Except) != 0 {
+			t.Errorf("added Except %v to 10.0.0.0/8, which does not contain the metadata IP; "+
+				"an Except outside its CIDR is invalid", peer.IPBlock.Except)
+		}
 	}
 }
 
