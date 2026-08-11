@@ -1,5 +1,7 @@
 # Containarium — Agent Runtime
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FFootprintAI%2FContainarium.svg)](https://mcptoplist.com/server/glama%2FFootprintAI%2FContainarium)
+
 > **Open-source agent runtime** · SSH-native isolation · eBPF egress policy · Kubernetes + LXC · MCP-native CLI · GPU passthrough
 
 **The open-source, self-hostable agent runtime for AI agents.**
