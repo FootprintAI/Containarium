@@ -407,7 +407,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 	// Register CrewService — Phase 3. Collaborating sets of skills bound to a
 	// task purpose; reuses the agent-skill server to provision each member box.
-	pb.RegisterCrewServiceServer(grpcServer, NewCrewServer(agentSkillServer))
+	crewServer := NewCrewServer(agentSkillServer)
+	pb.RegisterCrewServiceServer(grpcServer, crewServer)
 	log.Printf("Crew service enabled")
 
 	// Merge external skill/crew catalogs (#620) into the process-wide catalogs
@@ -1076,6 +1077,23 @@ skipAppHosting:
 			} else {
 				npServer.SetSignatureStore(sigStore)
 				log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
+			}
+
+			// Agent run state (#1182) shares the same pool. Same best-effort
+			// posture: on failure the in-memory store stays, so the daemon comes
+			// up either way — it just loses runs across a restart, which is the
+			// behavior that predates this.
+			if runStore, rErr := NewPostgresCrewRunStore(context.Background(), pool); rErr != nil {
+				log.Printf("Warning: Failed to create Postgres crew-run store: %v", rErr)
+			} else {
+				crewServer.SetRunStore(runStore)
+				log.Printf("Crew-run persistence enabled (Postgres store)")
+			}
+			if taskQueue, qErr := NewPostgresAgentTaskQueue(context.Background(), pool); qErr != nil {
+				log.Printf("Warning: Failed to create Postgres agent task queue: %v", qErr)
+			} else {
+				agentSkillServer.SetTaskQueue(taskQueue)
+				log.Printf("Agent task-queue persistence enabled (Postgres store)")
 			}
 		}
 	}

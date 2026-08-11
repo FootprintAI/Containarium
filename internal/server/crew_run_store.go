@@ -146,3 +146,13 @@ func (s *PostgresCrewRunStore) Get(ctx context.Context, id string) (*pb.CrewRun,
 	}
 	return &r, true, nil
 }
+
+// SetRunStore swaps the crew-run store, used at daemon start to upgrade from
+// the in-memory default to Postgres once the connection string is resolved.
+// Called before grpcServer.Serve, so it races with no live RPCs — the same
+// point and the same reasoning as NetworkPolicyServer.SetStore.
+func (s *CrewServer) SetRunStore(store CrewRunStore) {
+	if store != nil {
+		s.runs = store
+	}
+}
