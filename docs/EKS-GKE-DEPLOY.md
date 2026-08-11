@@ -236,9 +236,28 @@ so the CLI and GitOps drive one reconcile loop. The operator is opt-in
   `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY=1` for out-of-the-box dev. In
   production, unset it and distribute the gateway host key so clients use
   `StrictHostKeyChecking=yes` against a known `known_hosts` entry.
-- **Default-deny NetworkPolicy.** Pair each box namespace with a default-deny
-  egress policy (enforced by the CNI — Calico on EKS, Dataplane V2 / Cilium on
-  GKE) so a box can't reach the cluster network even under shell mode.
+- **Default-deny NetworkPolicy — and it means boxes have _no_ outbound
+  network today.** You don't add this: the daemon already creates a
+  `default-deny` NetworkPolicy in each box namespace. What it currently
+  permits is exactly one thing — DNS (UDP/TCP 53) to `kube-system`. Nothing
+  else. So a box on this backend can resolve names and **connect to nothing**:
+  no `pip install`, no `apt-get`, no outbound HTTP, no control-plane API.
+
+  This is measured, not inferred — `TestE2E_BoxEgressPosture` observes it on a
+  Calico cluster in CI, with a DNS positive control to prove the probe itself
+  works. It is the deliberate "v1 floor"; a per-tenant egress **allowlist**
+  driven by `NetworkPolicyService` is [#1188] and is not built yet.
+
+  Two practical consequences:
+
+  - If your agents need to install packages or reach the internet, the LXC
+    backend is the one that supports that today. Plan around it.
+  - Enforcement is the CNI's job (Calico on EKS, Dataplane V2 / Cilium on
+    GKE). On a CNI that ignores NetworkPolicy the object is inert and boxes
+    have *unrestricted* egress — the opposite posture, silently. Verify which
+    you have rather than assuming.
+
+  [#1188]: https://github.com/FootprintAI/Containarium/issues/1188
 - **Elastic capacity.** Because boxes are ordinary pods, the cluster autoscaler
   (managed node groups / Karpenter on EKS, node auto-provisioning / Autopilot
   on GKE) scales nodes to fit them. Combine with the Sandbox CRD's
