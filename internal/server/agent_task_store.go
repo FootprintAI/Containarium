@@ -230,3 +230,12 @@ func (p *PostgresAgentTaskQueue) Result(ctx context.Context, taskID string) (tas
 // wall-clock property, and the alternative to injecting a clock is a test that
 // sleeps for the lease duration.
 func (m *MemAgentTaskQueue) setClock(now func() time.Time) { m.q.now = now }
+
+// SetTaskQueue swaps the pull-queue store, used at daemon start to upgrade
+// from the in-memory default to Postgres. Called before grpcServer.Serve, so
+// no lease is in flight across the swap.
+func (s *AgentSkillServer) SetTaskQueue(q AgentTaskQueue) {
+	if q != nil {
+		s.queue = q
+	}
+}
