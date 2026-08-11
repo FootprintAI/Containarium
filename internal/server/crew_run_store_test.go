@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -141,3 +142,61 @@ func TestMemCrewRunStore_PutNil(t *testing.T) {
 // CrewRunStore is the contract the daemon wires; both impls must satisfy it.
 var _ CrewRunStore = (*MemCrewRunStore)(nil)
 var _ CrewRunStore = (*PostgresCrewRunStore)(nil)
+
+// The hazard the clone exists for, which the other tests in this file do not
+// reach: RunCrew records the run before driving it (crew_server.go), so the
+// driver goes on mutating the very object it handed the store while
+// GetCrewRun reads it. A CrewRun is several fields and nothing makes updating
+// them atomic.
+//
+// This covered #1298 and was lost when the store moved behind an interface —
+// the clone survived, the test for it under concurrency did not. Run with
+// -race.
+//
+// Two details it needs to mean anything, both learned by getting them wrong:
+// the writer mutates the run it already Put rather than putting fresh ones
+// (the map is mutex-guarded either way; the race is in the shared message),
+// and a start barrier makes readers and writer actually overlap. Without the
+// barrier the writer finishes before any reader is scheduled and the test
+// passes with the clone removed.
+func TestMemCrewRunStore_DriverMutationsDoNotRaceWithReaders(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemCrewRunStore()
+
+	run := &pb.CrewRun{Id: "r1", State: pb.CrewRunState_CREW_RUN_STATE_RUNNING}
+	if err := s.Put(ctx, run); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 2000; j++ {
+				if got, ok, err := s.Get(ctx, "r1"); err == nil && ok {
+					_ = got.State
+					_ = got.Error
+					_ = got.ArtifactJson
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for j := 0; j < 2000; j++ {
+			run.State = pb.CrewRunState_CREW_RUN_STATE_COMPLETED
+			run.ArtifactJson = "{}"
+			run.Error = ""
+		}
+		_ = s.Put(ctx, run)
+	}()
+
+	close(start)
+	wg.Wait()
+}
