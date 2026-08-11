@@ -171,6 +171,52 @@ before a node-VM is a fully-healthy backend.
 
 Not yet exercised: the VFIO GPU-to-VM bind (the reboot-class step).
 
+## Encrypted / external storage for `/var/lib/incus`
+
+If a node-VM (or any Containarium host) keeps `/var/lib/incus` on external or
+LUKS-encrypted storage instead of the VM's root disk, the daemon must not start
+before that storage is mounted — otherwise it initializes against an empty
+directory. `scripts/containarium.service` intentionally ships `Wants=incus.service`,
+not `Requires=`, because a failed `Requires=` kills the unit's start job and
+`Restart=on-failure` does **not** retry a job failure (see the comment in that
+file, and #1152: a hard dependency + fixed-interval restart once crash-looped a
+host 1655 times in ~4 hours, restarting the monitoring stack on every cycle so
+alerting could not fire during the incident it should have caught).
+
+Gating the daemon on external storage needs the same care. A
+`containarium.service.d/` drop-in that re-adds
+`RequiresMountsFor=/var/lib/incus` is the natural fix, but `RequiresMountsFor`
+has **no retry semantics** — any transient failure in the mount's own dependency
+chain (e.g. the LUKS volume's `systemd-cryptsetup@` unit, or the `.device` unit
+underneath it) leaves `containarium.service` `inactive (dead)` permanently, with
+**zero journal entries for that boot** and nothing to alert on. This silently
+reintroduces the exact failure class #1152 already taught this project to design
+around — see
+[#1317](https://github.com/FootprintAI/Containarium/issues/1317) for a real
+incident: a LUKS-encrypted data volume's `systemd-cryptsetup@` unit opened the
+device successfully, but the corresponding `dev-mapper-<name>.device` unit timed
+out waiting for udev's "add" event (lost/delayed during early boot), cascading
+through `systemd-fsck@` → the mount → `incus.socket`/`incus.service` →
+`containarium.service` — all failing with `result=dependency`, silently, with no
+observable error.
+
+If your storage setup needs `RequiresMountsFor=/var/lib/incus`, pair it with an
+`ExecStartPost` on the underlying `systemd-cryptsetup@<instance>.service` that
+re-announces the device to udev right after opening it, so a missed/delayed
+uevent can't wedge the chain:
+
+```ini
+# /etc/systemd/system/systemd-cryptsetup@<instance>.service.d/10-udev-kick.conf
+[Service]
+ExecStartPost=-/usr/bin/udevadm trigger --action=add --settle /dev/mapper/%i
+```
+
+Apply to every LUKS instance backing `/var/lib/incus` (there may be more than
+one — e.g. separate volumes for data and a btrfs pool). This has been verified
+safe (no regressions across repeated reboots) and effective (the exact
+recovery command that fixes a wedged instance live) against the incident in
+#1317.
+
 ## Related
 - `docs/MULTI-POOL.md`, `docs/MULTI-BACKEND-PEERS.md` — pool routing the nodes plug into.
 - `docs/CONTAINARIUM-HOST-TO-VM-MIGRATION.md` — the VFIO/host→VM concerns this shares (#318).
