@@ -70,7 +70,8 @@ jobs:
         env:
           CONTAINARIUM_TEST_DSN: postgres://containarium:test@127.0.0.1:5432/containarium?sslmode=disable
         run: |
-          go test -tags=integration -count=1 -timeout 10m -v ./internal/server/ 2>&1 | tee integration.log
+          go test -tags=integration -count=1 -timeout 10m -v \
+            ./internal/server/ ./internal/audit/ 2>&1 | tee integration.log
           rc=${PIPESTATUS[0]}
           if [ "$rc" -ne 0 ]; then exit "$rc"; fi
 
@@ -86,7 +87,9 @@ jobs:
 
           # And a run that matched nothing would also be green. Require that
           # the suite actually executed.
-          if ! grep -q -- "--- PASS: TestAgentTaskQueue_ConcurrentLeasesAreDistinct" integration.log; then
-            echo "::error::The integration suite did not run its concurrency case — renamed, retagged, or filtered out."
-            exit 1
-          fi
+          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork; do
+            if ! grep -q -- "--- PASS: $want" integration.log; then
+              echo "::error::$want did not run — renamed, retagged, or filtered out."
+              exit 1
+            fi
+          done
