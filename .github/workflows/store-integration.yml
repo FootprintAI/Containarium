@@ -71,7 +71,7 @@ jobs:
           CONTAINARIUM_TEST_DSN: postgres://containarium:test@127.0.0.1:5432/containarium?sslmode=disable
         run: |
           go test -tags=integration -count=1 -timeout 10m -v \
-            ./internal/server/ ./internal/audit/ 2>&1 | tee integration.log
+            ./internal/server/ ./internal/audit/ ./internal/auth/ 2>&1 | tee integration.log
 
           # internal/secrets and internal/app carry their Postgres tests
           # without a build tag, gated on the DSN. Run them here too — they
@@ -94,7 +94,7 @@ jobs:
 
           # And a run that matched nothing would also be green. Require that
           # the suite actually executed.
-          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations; do
+          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations TestRevocationStore_RevokedTokenReadsAsRevoked; do
             if ! grep -q -- "--- PASS: $want" integration.log; then
               echo "::error::$want did not run — renamed, retagged, or filtered out."
               exit 1
