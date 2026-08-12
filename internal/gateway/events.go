@@ -238,6 +238,11 @@ type ssePayloadContainer struct {
 	Disk          string `json:"disk"`
 	Image         string `json:"image"`
 	PodmanEnabled bool   `json:"podmanEnabled"`
+	// Stack is declared by web-ui (src/types/events.ts) and read by its
+	// client, but was never emitted here — the map literal this replaced
+	// listed nine fields and stack was not one of them (#1310). Additive, so
+	// a consumer that ignores it is unaffected.
+	Stack string `json:"stack,omitempty"`
 }
 
 type ssePayloadContainerEvent struct {
@@ -315,6 +320,7 @@ func containerToPayload(c *pb.Container) *ssePayloadContainer {
 		Disk:          c.Resources.GetDisk(),
 		Image:         c.Image,
 		PodmanEnabled: c.PodmanEnabled,
+		Stack:         c.Stack,
 	}
 }
 

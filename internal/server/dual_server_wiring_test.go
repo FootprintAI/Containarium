@@ -278,3 +278,22 @@ func TestEverythingStartedIsAlsoStopped(t *testing.T) {
 			strings.Join(missing, "\n  "))
 	}
 }
+
+// A reconciliation nothing calls does not happen.
+//
+// The durable crew-run store makes RUNNING survive a restart, so the daemon
+// has to clear it at start or GetCrewRun answers RUNNING forever for a run
+// that can never finish (#1182 AC4). #1320 had to fix exactly this shape for
+// these stores once already — constructed, never wired — so it is guarded
+// rather than trusted.
+func TestNewDualServerReconcilesStrandedCrewRuns(t *testing.T) {
+	if !dualServerSourceContains(t, "FailStranded(") {
+		t.Error("the daemon never reconciles stranded crew runs — a run the previous daemon was " +
+			"driving stays RUNNING in the store forever, and nothing reports it (#1182 AC4)")
+	}
+	// It has to run against the durable store, not the memory one that is
+	// empty at start anyway.
+	if !dualServerSourceContains(t, "runStore.FailStranded(") {
+		t.Error("reconciliation does not run against the Postgres store it exists for")
+	}
+}

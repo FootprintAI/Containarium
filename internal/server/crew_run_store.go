@@ -32,7 +32,22 @@ type CrewRunStore interface {
 	Put(ctx context.Context, r *pb.CrewRun) error
 	// Get returns the run and whether it was found.
 	Get(ctx context.Context, id string) (*pb.CrewRun, bool, error)
+	// FailStranded marks every run still RUNNING as FAILED with the given
+	// reason, returning how many it changed.
+	//
+	// Called once at daemon start. RunCrew records a run as RUNNING before it
+	// drives it, so a daemon that dies mid-run leaves that state behind — and
+	// with a durable store it survives, so GetCrewRun answers RUNNING forever
+	// for a run that can never finish (#1182 AC4). Nothing else reconciles
+	// them: driveCrew has no resumption point, so the honest outcome is a
+	// terminal failure that says why, not a run that claims to be working.
+	FailStranded(ctx context.Context, reason string) (int, error)
 }
+
+// StrandedByRestart is the reason recorded for a run the daemon was driving
+// when it stopped. Named so an operator reading a failed run can tell this
+// apart from a crew that genuinely failed.
+const StrandedByRestart = "daemon restarted while this run was in flight; the run was not resumed"
 
 // --- in-memory ------------------------------------------------------
 
@@ -65,6 +80,23 @@ func (s *MemCrewRunStore) Get(_ context.Context, id string) (*pb.CrewRun, bool, 
 		return nil, false, nil
 	}
 	return proto.Clone(r).(*pb.CrewRun), true, nil
+}
+
+func (s *MemCrewRunStore) FailStranded(_ context.Context, reason string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for id, r := range s.runs {
+		if r.GetState() != pb.CrewRunState_CREW_RUN_STATE_RUNNING {
+			continue
+		}
+		updated := proto.Clone(r).(*pb.CrewRun)
+		updated.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
+		updated.Error = reason
+		s.runs[id] = updated
+		n++
+	}
+	return n, nil
 }
 
 // --- postgres -------------------------------------------------------
@@ -145,4 +177,47 @@ func (s *PostgresCrewRunStore) Get(ctx context.Context, id string) (*pb.CrewRun,
 		return nil, false, fmt.Errorf("unmarshal crew run %s: %w", id, err)
 	}
 	return &r, true, nil
+}
+
+// SetRunStore swaps the crew-run store, used at daemon start to upgrade from
+// the in-memory default to Postgres once the connection string is resolved.
+// Called before grpcServer.Serve, so it races with no live RPCs — the same
+// point and the same reasoning as NetworkPolicyServer.SetStore.
+// FailStranded marks rows still RUNNING as FAILED in one statement.
+//
+// The state column and the marshalled proto both carry the state, so both are
+// updated — a row whose column said FAILED while its body still said RUNNING
+// would report differently depending on which one a reader trusted. jsonb_set
+// keeps the rest of the run intact.
+//
+// Not covered by a test that runs: nothing in this repo can execute Postgres
+// SQL today (#1300). The memory implementation's behaviour is tested, and the
+// orchestration is guarded, but this statement itself is reviewed rather than
+// exercised.
+func (s *PostgresCrewRunStore) FailStranded(ctx context.Context, reason string) (int, error) {
+	const q = `
+		UPDATE crew_runs
+		SET state = $1,
+		    run = jsonb_set(
+		            jsonb_set(run::jsonb, '{state}', to_jsonb($2::text), true),
+		            '{error}', to_jsonb($3::text), true)::text::json,
+		    updated_at = NOW()
+		WHERE state = $4
+	`
+	tag, err := s.pool.Exec(ctx, q,
+		int32(pb.CrewRunState_CREW_RUN_STATE_FAILED),
+		pb.CrewRunState_CREW_RUN_STATE_FAILED.String(),
+		reason,
+		int32(pb.CrewRunState_CREW_RUN_STATE_RUNNING),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("fail stranded crew runs: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (s *CrewServer) SetRunStore(store CrewRunStore) {
+	if store != nil {
+		s.runs = store
+	}
 }

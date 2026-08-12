@@ -96,11 +96,28 @@ func (s *Store) initSchema(ctx context.Context) error {
 // the tail row serializes concurrent writers so the chain
 // stays well-ordered. Without the lock, two concurrent inserts
 // could both reference the same prev_hash and produce a fork.
+// auditChainLockKey is the advisory-lock key appends serialize on. An
+// arbitrary constant; it only has to be unique among this database's advisory
+// locks.
+const auditChainLockKey int64 = 0x0A0D17C4A1
+
 func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 	ts := entry.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
 	}
+	// Truncate to what Postgres can store before hashing.
+	//
+	// computeRowHash feeds Timestamp.UnixNano() into the digest, and the
+	// column is `timestamp with time zone` — microsecond precision. So a
+	// nanosecond-precision time hashed here comes back truncated, the
+	// recomputed hash differs, and VerifyChainSinceID reports the row as
+	// modified. Every row, always: the chain could never verify, so the
+	// tamper-evidence it exists for could not distinguish a tampered log
+	// from an intact one.
+	//
+	// Truncating first makes the hashed value identical to the stored one.
+	ts = ts.Truncate(time.Microsecond)
 	entry.Timestamp = ts
 
 	tx, err := s.pool.Begin(ctx)
@@ -109,11 +126,30 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // best-effort cleanup; Commit() supersedes
 
-	// Get prev_hash from the chain tail. FOR UPDATE serializes
-	// concurrent appenders; the lock releases on Commit.
+	// Serialize appenders on the chain itself.
+	//
+	// `SELECT ... ORDER BY id DESC LIMIT 1 FOR UPDATE` does not do this,
+	// though it reads as if it should. It locks the row that is the tail
+	// *now*; it cannot lock a row that does not exist yet. Two transactions
+	// therefore both read tail N, both insert, and both claim N as
+	// predecessor — a fork. On an empty table it is worse: there is no row to
+	// lock at all, so every concurrent first write claims genesis.
+	//
+	// An advisory lock has no such gap: it is taken on a constant, not on a
+	// row, so it serializes writers regardless of what the table contains.
+	// It releases on commit or rollback with the transaction.
+	//
+	// This serializes all audit appends against each other. That is the point
+	// — a hash chain is inherently sequential, and a chain that forks under
+	// load is not tamper-evident, only tamper-suggestive.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLockKey); err != nil {
+		return fmt.Errorf("audit: lock chain: %w", err)
+	}
+
+	// Get prev_hash from the chain tail.
 	var prevHash string
 	err = tx.QueryRow(ctx,
-		`SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+		`SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1`,
 	).Scan(&prevHash)
 	if err != nil {
 		// First row in the table — no predecessor.

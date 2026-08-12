@@ -50,9 +50,20 @@ func TestContainerPayloadShape(t *testing.T) {
 		State:     pb.ContainerState_CONTAINER_STATE_RUNNING,
 		Network:   &pb.NetworkInfo{IpAddress: "10.0.3.5"},
 		Resources: &pb.ResourceLimits{Cpu: "2", Memory: "4GB", Disk: "20GB"},
-		Image:     "ubuntu:24.04", PodmanEnabled: true,
+		Image:     "ubuntu:24.04", PodmanEnabled: true, Stack: "nodejs",
 	}))
-	assertKeys(t, got, "name", "username", "state", "ipAddress", "cpu", "memory", "disk", "image", "podmanEnabled")
+	assertKeys(t, got, "name", "username", "state", "ipAddress", "cpu", "memory", "disk", "image", "podmanEnabled", "stack")
+}
+
+// stack is omitted when the container has none, so adding it does not put an
+// empty string into every event for the majority of containers that are not
+// stack-provisioned.
+func TestContainerPayloadOmitsEmptyStack(t *testing.T) {
+	got := marshalToMap(t, containerToPayload(&pb.Container{Name: "alice-container"}))
+	if _, present := got["stack"]; present {
+		t.Error("stack is emitted when empty — every event for a container without a stack " +
+			"would carry a field that means nothing")
+	}
 }
 
 // previousState is omitted when unspecified — the map literal got that by
