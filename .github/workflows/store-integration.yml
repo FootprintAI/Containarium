@@ -1,0 +1,95 @@
+name: Store integration (Postgres)
+
+# The Postgres store implementations had no executable test coverage (#1300):
+# every green test exercised the in-memory impl, which is the half that cannot
+# fail for the reasons the Postgres half exists. The two dedicated store tests
+# in the tree skip unconditionally and defer to "integration tests run
+# separately" — which ran nowhere.
+#
+# This is that lane. It stands up a real Postgres, runs the shared behavioural
+# suite against both implementations, and covers the properties only a database
+# can show: row-locked lease claims, sequence-backed lease tokens surviving a
+# reconnect, and a stranded-run sweep that has to update both the state column
+# and the state inside the marshalled proto.
+
+on:
+  pull_request:
+    # No `branches:` filter — a PR targeting anything but main would otherwise
+    # run none of this and show no checks at all, which reads exactly like
+    # checks that have not started (#1215).
+    paths:
+      - 'internal/server/**'
+      - 'internal/audit/**'
+      - 'internal/secrets/**'
+      - 'internal/app/**'
+      - '.github/workflows/store-integration.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/server/**'
+      - 'internal/audit/**'
+      - 'internal/secrets/**'
+      - 'internal/app/**'
+      - '.github/workflows/store-integration.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    name: stores against a real Postgres
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: containarium
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: containarium
+        ports:
+          - 5432:5432
+        # Without this the job races the database's startup and fails on
+        # connect rather than on anything it is testing.
+        options: >-
+          --health-cmd "pg_isready -U containarium"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.5'
+
+      - name: Run the store integration suite
+        env:
+          CONTAINARIUM_TEST_DSN: postgres://containarium:test@127.0.0.1:5432/containarium?sslmode=disable
+        run: |
+          go test -tags=integration -count=1 -timeout 10m -v \
+            ./internal/server/ ./internal/audit/ 2>&1 | tee integration.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+
+          # A skipped test here is indistinguishable from a passing one, and
+          # this lane exists because that ambiguity hid the gap for so long.
+          # The suite fails rather than skips when the DSN is missing, so a
+          # SKIP means something else went quiet — treat it as a failure.
+          if grep -q -- "--- SKIP" integration.log; then
+            echo "::error::A store integration test skipped while the database was up."
+            grep -- "--- SKIP" integration.log
+            exit 1
+          fi
+
+          # And a run that matched nothing would also be green. Require that
+          # the suite actually executed.
+          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork; do
+            if ! grep -q -- "--- PASS: $want" integration.log; then
+              echo "::error::$want did not run — renamed, retagged, or filtered out."
+              exit 1
+            fi
+          done

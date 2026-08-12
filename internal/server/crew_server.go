@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,7 +28,7 @@ type CrewServer struct {
 	catalog *crews.Manager
 	skills  *skills.Manager
 	agents  *AgentSkillServer // reuse RunAgentSkill: provision + scoped token + per-box net policy
-	runs    *crewRunStore
+	runs    CrewRunStore
 }
 
 // NewCrewServer wires the crew service to the agent-skill server (for box
@@ -37,7 +38,7 @@ func NewCrewServer(agents *AgentSkillServer) *CrewServer {
 		catalog: crews.GetDefault(),
 		skills:  skills.GetDefault(),
 		agents:  agents,
-		runs:    newCrewRunStore(),
+		runs:    NewMemCrewRunStore(),
 	}
 }
 
@@ -104,7 +105,9 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	//
 	// Safe to store now because the store clones: the mutations below act on
 	// the local run, and each put replaces the stored copy.
-	s.runs.put(run)
+	if err := s.runs.Put(ctx, run); err != nil {
+		log.Printf("[crew] record run %s: %v", run.GetId(), err)
+	}
 
 	// Provision each member box (scoped token + per-box allowed_peers policy)
 	// and start it in serve mode so it serves /tasks for the hops below. Members
@@ -115,7 +118,9 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		if err != nil {
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)
-			s.runs.put(run)
+			if putErr := s.runs.Put(ctx, run); putErr != nil {
+				log.Printf("[crew] record run %s: %v", run.GetId(), putErr)
+			}
 			return nil, status.Errorf(codes.Internal, "crew %q: %s", crew.Id, run.Error)
 		}
 		s.agents.startServeMode(containerName)
@@ -134,7 +139,9 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		run.ArtifactJson = out
 	}
 
-	s.runs.put(run)
+	if err := s.runs.Put(ctx, run); err != nil {
+		log.Printf("[crew] record run %s: %v", run.GetId(), err)
+	}
 	return &pb.RunCrewResponse{Run: run}, nil
 }
 
@@ -196,7 +203,10 @@ func (s *CrewServer) GetCrewRun(ctx context.Context, req *pb.GetCrewRunRequest) 
 	if err := auth.RequireScope(ctx, auth.ScopeCrewsRead); err != nil {
 		return nil, err
 	}
-	run, ok := s.runs.get(req.Id)
+	run, ok, err := s.runs.Get(ctx, req.Id)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read crew run %q: %v", req.Id, err)
+	}
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "crew run %q not found", req.Id)
 	}

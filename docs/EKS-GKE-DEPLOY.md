@@ -236,9 +236,38 @@ so the CLI and GitOps drive one reconcile loop. The operator is opt-in
   `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY=1` for out-of-the-box dev. In
   production, unset it and distribute the gateway host key so clients use
   `StrictHostKeyChecking=yes` against a known `known_hosts` entry.
-- **Default-deny NetworkPolicy.** Pair each box namespace with a default-deny
-  egress policy (enforced by the CNI — Calico on EKS, Dataplane V2 / Cilium on
-  GKE) so a box can't reach the cluster network even under shell mode.
+- **Default-deny NetworkPolicy — a box with no egress policy has _no_
+  outbound network.** You don't add this: the daemon already creates a
+  `default-deny` NetworkPolicy in each box namespace. On its own it permits
+  exactly one thing — DNS (UDP/TCP 53) to `kube-system`. Nothing else. So a
+  box with no policy set can resolve names and **connect to nothing**: no
+  `pip install`, no `apt-get`, no outbound HTTP, no control-plane API.
+
+  This is measured, not inferred — `TestE2E_BoxEgressPosture` observes it on a
+  Calico cluster in CI, with a DNS positive control to prove the probe itself
+  works.
+
+  That floor is the *starting* posture, not the ceiling. A per-tenant egress
+  **allowlist** driven by `NetworkPolicyService` shipped in [#1188]: a
+  reconciler converges each tenant's namespace NetworkPolicy with the stored
+  policy, so an allowlist appears as egress rules alongside the DNS
+  allowance, and removing a policy reverts to this floor rather than to
+  allow-all. `TestE2E_TenantEgressAllowlistIsEnforced` proves it with packets
+  on Calico — a destination inside the allowlist is reachable, one outside it
+  is not.
+
+  Two practical consequences:
+
+  - If your agents need to install packages or reach the internet, set an
+    egress policy for that tenant. Until you do, the floor above is what they
+    get — which is the point, but it surprises people who expected the LXC
+    backend's open-by-default posture.
+  - Enforcement is the CNI's job (Calico on EKS, Dataplane V2 / Cilium on
+    GKE). On a CNI that ignores NetworkPolicy the object is inert and boxes
+    have *unrestricted* egress — the opposite posture, silently. Verify which
+    you have rather than assuming.
+
+  [#1188]: https://github.com/FootprintAI/Containarium/issues/1188
 - **Elastic capacity.** Because boxes are ordinary pods, the cluster autoscaler
   (managed node groups / Karpenter on EKS, node auto-provisioning / Autopilot
   on GKE) scales nodes to fit them. Combine with the Sandbox CRD's

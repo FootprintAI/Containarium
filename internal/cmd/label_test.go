@@ -115,28 +115,28 @@ func TestFormatLabels(t *testing.T) {
 }
 
 func TestGroupContainersByLabel(t *testing.T) {
-	containers := []interface{}{
-		incus.ContainerInfo{
+	containers := []incus.ContainerInfo{
+		{
 			Name:   "alice-container",
 			State:  "Running",
 			Labels: map[string]string{"team": "backend", "env": "prod"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "bob-container",
 			State:  "Running",
 			Labels: map[string]string{"team": "backend", "env": "staging"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "charlie-container",
 			State:  "Stopped",
 			Labels: map[string]string{"team": "frontend", "env": "prod"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "dave-container",
 			State:  "Running",
 			Labels: nil,
 		},
-		incus.ContainerInfo{
+		{
 			Name:   "eve-container",
 			State:  "Running",
 			Labels: map[string]string{"env": "dev"}, // no team label
@@ -255,14 +255,14 @@ func TestGetSortedGroupKeys(t *testing.T) {
 }
 
 func TestGroupedJSONOutput(t *testing.T) {
-	containers := []interface{}{
-		incus.ContainerInfo{
+	containers := []incus.ContainerInfo{
+		{
 			Name:      "alice-container",
 			State:     "Running",
 			IPAddress: "10.0.0.1",
 			Labels:    map[string]string{"team": "backend"},
 		},
-		incus.ContainerInfo{
+		{
 			Name:      "bob-container",
 			State:     "Stopped",
 			IPAddress: "10.0.0.2",
@@ -313,7 +313,7 @@ func BenchmarkParseLabelFilter(b *testing.B) {
 }
 
 func BenchmarkGroupContainersByLabel(b *testing.B) {
-	containers := make([]interface{}, 100)
+	containers := make([]incus.ContainerInfo, 100)
 	teams := []string{"backend", "frontend", "devops", "data"}
 	for i := 0; i < 100; i++ {
 		containers[i] = incus.ContainerInfo{

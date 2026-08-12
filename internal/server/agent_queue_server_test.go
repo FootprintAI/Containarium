@@ -22,7 +22,7 @@ func runScopedCtx() context.Context {
 }
 
 func newQueueServer() *AgentSkillServer {
-	return &AgentSkillServer{catalog: skills.GetDefault(), queue: newAgentTaskQueue()}
+	return &AgentSkillServer{catalog: skills.GetDefault(), queue: NewMemAgentTaskQueue()}
 }
 
 // TestQueueRPC_EndToEndLoop drives the full producer→worker loop through the
@@ -85,7 +85,7 @@ func TestQueueRPC_StaleCompleteRejected(t *testing.T) {
 	ctx := runScopedCtx()
 	base := time.Unix(1_700_000_000, 0).UTC()
 	clock := base
-	s.queue.now = func() time.Time { return clock }
+	s.queue.(*MemAgentTaskQueue).setClock(func() time.Time { return clock })
 
 	_, _ = s.EnqueueAgentTask(ctx, &pb.EnqueueAgentTaskRequest{SkillId: "hello-agent"})
 	first, _ := s.LeaseAgentTask(ctx, &pb.LeaseAgentTaskRequest{LeaseSeconds: 1})

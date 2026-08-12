@@ -107,8 +107,8 @@ func TestE2E_BoxEgressPosture(t *testing.T) {
 		// Not a failure of the policy as written — but it contradicts the
 		// object, which means something else is granting egress. Worth
 		// failing on, because the isolation story depends on knowing which.
-		t.Errorf("a box-labelled pod reached the control-plane API on :443, but the NetworkPolicy "+
-			"has no egress rule permitting it. Something outside the policy is granting egress — "+
+		t.Errorf("a box-labelled pod reached the control-plane API on :443, but the NetworkPolicy " +
+			"has no egress rule permitting it. Something outside the policy is granting egress — " +
 			"investigate before trusting the deny-by-default posture (#1188).")
 	default:
 		t.Logf("OBSERVED: box egress to the control-plane API is blocked (phase %v). "+

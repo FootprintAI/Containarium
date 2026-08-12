@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 
@@ -111,16 +112,19 @@ func compileTenantPolicy(p *pb.NetworkPolicy) ([]networkingv1.NetworkPolicyEgres
 			continue
 		}
 
-		// The metadata carve-out is deny-beats-allow and cannot be expressed:
-		// an allowlist entry covering 169.254.169.254 would hand the tenant
-		// cloud credentials the stored policy explicitly withholds.
+		// The metadata carve-out IS expressible: IPBlock.Except subtracts
+		// sub-ranges from an allow rule, which is exactly deny-beats-allow for
+		// this one address. An earlier version refused here on the belief that
+		// NetworkPolicy had no such mechanism; it does, and refusing rejected
+		// the commonest policy tenants actually write — allow a wide range,
+		// carve out metadata — leaving them on the DNS-only floor with no
+		// outbound network at all.
+		//
+		// Except entries must fall inside the peer's CIDR. That holds by
+		// construction: coversMetadataIP is true only when the CIDR contains
+		// the metadata address.
 		if !p.GetAllowMetadata() && coversMetadataIP(cidr) {
-			unsupported = append(unsupported, UnsupportedPolicyFeature{
-				Feature: "egress_cidr=" + cidr,
-				Reason: "covers the cloud metadata IP while allow_metadata is false; NetworkPolicy " +
-					"cannot carve an exception out of an allow rule",
-			})
-			continue
+			peers = withMetadataExcepted(peers)
 		}
 
 		rules = append(rules, networkingv1.NetworkPolicyEgressRule{To: peers})
@@ -132,6 +136,31 @@ func compileTenantPolicy(p *pb.NetworkPolicy) ([]networkingv1.NetworkPolicyEgres
 		return peerCIDR(rules[i]) < peerCIDR(rules[j])
 	})
 	return rules, unsupported
+}
+
+// withMetadataExcepted subtracts the cloud metadata address from every IPBlock
+// peer, so a broad allow rule stops short of the one address that hands out
+// cloud credentials.
+//
+// A peer with no IPBlock (there are none today — egressPeersFor only builds
+// IPBlocks) is passed through untouched rather than silently dropped: losing a
+// peer here would narrow the tenant's policy without saying so.
+func withMetadataExcepted(peers []networkingv1.NetworkPolicyPeer) []networkingv1.NetworkPolicyPeer {
+	out := make([]networkingv1.NetworkPolicyPeer, 0, len(peers))
+	except := netip.PrefixFrom(metadataIP, metadataIP.BitLen()).String()
+	for _, p := range peers {
+		if p.IPBlock == nil {
+			out = append(out, p)
+			continue
+		}
+		block := *p.IPBlock
+		if !slices.Contains(block.Except, except) {
+			block.Except = append(append([]string(nil), block.Except...), except)
+		}
+		p.IPBlock = &block
+		out = append(out, p)
+	}
+	return out
 }
 
 // coversMetadataIP reports whether an allowlist entry would admit the cloud

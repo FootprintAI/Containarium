@@ -407,7 +407,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 	// Register CrewService — Phase 3. Collaborating sets of skills bound to a
 	// task purpose; reuses the agent-skill server to provision each member box.
-	pb.RegisterCrewServiceServer(grpcServer, NewCrewServer(agentSkillServer))
+	crewServer := NewCrewServer(agentSkillServer)
+	pb.RegisterCrewServiceServer(grpcServer, crewServer)
 	log.Printf("Crew service enabled")
 
 	// Merge external skill/crew catalogs (#620) into the process-wide catalogs
@@ -1076,6 +1077,34 @@ skipAppHosting:
 			} else {
 				npServer.SetSignatureStore(sigStore)
 				log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
+			}
+
+			// Agent run state (#1182) shares the same pool. Same best-effort
+			// posture: on failure the in-memory store stays, so the daemon comes
+			// up either way — it just loses runs across a restart, which is the
+			// behavior that predates this.
+			if runStore, rErr := NewPostgresCrewRunStore(context.Background(), pool); rErr != nil {
+				log.Printf("Warning: Failed to create Postgres crew-run store: %v", rErr)
+			} else {
+				crewServer.SetRunStore(runStore)
+				log.Printf("Crew-run persistence enabled (Postgres store)")
+				// Reconcile runs the previous daemon was driving when it
+				// stopped. RunCrew records a run as RUNNING before driving it,
+				// so without this they stay RUNNING forever now that the state
+				// is durable — GetCrewRun would answer RUNNING for a run that
+				// can never finish (#1182 AC4). Best-effort: a daemon that
+				// cannot reconcile should still start.
+				if n, fErr := runStore.FailStranded(context.Background(), StrandedByRestart); fErr != nil {
+					log.Printf("Warning: could not reconcile stranded crew runs: %v", fErr)
+				} else if n > 0 {
+					log.Printf("Marked %d crew run(s) FAILED: in flight when the previous daemon stopped", n)
+				}
+			}
+			if taskQueue, qErr := NewPostgresAgentTaskQueue(context.Background(), pool); qErr != nil {
+				log.Printf("Warning: Failed to create Postgres agent task queue: %v", qErr)
+			} else {
+				agentSkillServer.SetTaskQueue(taskQueue)
+				log.Printf("Agent task-queue persistence enabled (Postgres store)")
 			}
 		}
 	}

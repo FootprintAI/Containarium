@@ -161,13 +161,13 @@ func (h *EventHandler) sendProtoEvent(w http.ResponseWriter, flusher http.Flushe
 	// Add payload based on type
 	switch p := event.Payload.(type) {
 	case *pb.Event_ContainerEvent:
-		eventData["containerEvent"] = containerEventToMap(p.ContainerEvent)
+		eventData["containerEvent"] = containerEventToPayload(p.ContainerEvent)
 	case *pb.Event_AppEvent:
-		eventData["appEvent"] = appEventToMap(p.AppEvent)
+		eventData["appEvent"] = appEventToPayload(p.AppEvent)
 	case *pb.Event_RouteEvent:
-		eventData["routeEvent"] = routeEventToMap(p.RouteEvent)
+		eventData["routeEvent"] = routeEventToPayload(p.RouteEvent)
 	case *pb.Event_MetricsEvent:
-		eventData["metricsEvent"] = metricsEventToMap(p.MetricsEvent)
+		eventData["metricsEvent"] = metricsEventToPayload(p.MetricsEvent)
 	}
 
 	jsonData, err := json.Marshal(eventData)
@@ -217,104 +217,175 @@ func getEventAllowedOrigins() []string {
 
 // Helper functions to convert proto messages to maps
 
-func containerEventToMap(e *pb.ContainerEvent) map[string]interface{} {
+// The SSE payload shapes.
+//
+// These were map[string]interface{} literals, which meant a mistyped key was
+// valid Go producing valid JSON with the wrong field name. web-ui declares the
+// matching shape in src/types/events.ts, so the two agreed only by inspection
+// — nothing on either side would have caught a drift.
+//
+// Named structs so the field names are compile-checked. The JSON is
+// unchanged: same keys, same casing, and the same omit-when-empty behaviour
+// the map literals got by only assigning present fields.
+
+type ssePayloadContainer struct {
+	Name          string `json:"name"`
+	Username      string `json:"username"`
+	State         string `json:"state"`
+	IPAddress     string `json:"ipAddress"`
+	CPU           string `json:"cpu"`
+	Memory        string `json:"memory"`
+	Disk          string `json:"disk"`
+	Image         string `json:"image"`
+	PodmanEnabled bool   `json:"podmanEnabled"`
+	// Stack is declared by web-ui (src/types/events.ts) and read by its
+	// client, but was never emitted here — the map literal this replaced
+	// listed nine fields and stack was not one of them (#1310). Additive, so
+	// a consumer that ignores it is unaffected.
+	Stack string `json:"stack,omitempty"`
+}
+
+type ssePayloadContainerEvent struct {
+	Container     *ssePayloadContainer `json:"container,omitempty"`
+	PreviousState string               `json:"previousState,omitempty"`
+}
+
+type ssePayloadApp struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Username      string `json:"username"`
+	ContainerName string `json:"containerName"`
+	Subdomain     string `json:"subdomain"`
+	FullDomain    string `json:"fullDomain"`
+	Port          int32  `json:"port"`
+	State         string `json:"state"`
+}
+
+type ssePayloadAppEvent struct {
+	App           *ssePayloadApp `json:"app,omitempty"`
+	PreviousState string         `json:"previousState,omitempty"`
+}
+
+type ssePayloadRoute struct {
+	Subdomain   string `json:"subdomain"`
+	FullDomain  string `json:"fullDomain"`
+	ContainerIP string `json:"containerIp"`
+	Port        int32  `json:"port"`
+	Active      bool   `json:"active"`
+	AppID       string `json:"appId"`
+	AppName     string `json:"appName"`
+}
+
+type ssePayloadRouteEvent struct {
+	Route *ssePayloadRoute `json:"route,omitempty"`
+}
+
+type ssePayloadMetric struct {
+	Name             string `json:"name"`
+	CPUUsageSeconds  int64  `json:"cpuUsageSeconds"`
+	MemoryUsageBytes int64  `json:"memoryUsageBytes"`
+	MemoryPeakBytes  int64  `json:"memoryPeakBytes"`
+	DiskUsageBytes   int64  `json:"diskUsageBytes"`
+	NetworkRxBytes   int64  `json:"networkRxBytes"`
+	NetworkTxBytes   int64  `json:"networkTxBytes"`
+	ProcessCount     int32  `json:"processCount"`
+}
+
+type ssePayloadMetricsEvent struct {
+	Metrics []ssePayloadMetric `json:"metrics"`
+}
+
+func containerEventToPayload(e *pb.ContainerEvent) *ssePayloadContainerEvent {
 	if e == nil {
 		return nil
 	}
-	result := map[string]interface{}{}
-	if e.Container != nil {
-		result["container"] = containerToMap(e.Container)
-	}
+	out := &ssePayloadContainerEvent{Container: containerToPayload(e.Container)}
 	if e.PreviousState != pb.ContainerState_CONTAINER_STATE_UNSPECIFIED {
-		result["previousState"] = e.PreviousState.String()
+		out.PreviousState = e.PreviousState.String()
 	}
-	return result
+	return out
 }
 
-func containerToMap(c *pb.Container) map[string]interface{} {
+func containerToPayload(c *pb.Container) *ssePayloadContainer {
 	if c == nil {
 		return nil
 	}
-	return map[string]interface{}{
-		"name":          c.Name,
-		"username":      c.Username,
-		"state":         c.State.String(),
-		"ipAddress":     c.Network.GetIpAddress(),
-		"cpu":           c.Resources.GetCpu(),
-		"memory":        c.Resources.GetMemory(),
-		"disk":          c.Resources.GetDisk(),
-		"image":         c.Image,
-		"podmanEnabled": c.PodmanEnabled,
+	return &ssePayloadContainer{
+		Name:          c.Name,
+		Username:      c.Username,
+		State:         c.State.String(),
+		IPAddress:     c.Network.GetIpAddress(),
+		CPU:           c.Resources.GetCpu(),
+		Memory:        c.Resources.GetMemory(),
+		Disk:          c.Resources.GetDisk(),
+		Image:         c.Image,
+		PodmanEnabled: c.PodmanEnabled,
+		Stack:         c.Stack,
 	}
 }
 
-func appEventToMap(e *pb.AppEvent) map[string]interface{} {
+func appEventToPayload(e *pb.AppEvent) *ssePayloadAppEvent {
 	if e == nil {
 		return nil
 	}
-	result := map[string]interface{}{}
-	if e.App != nil {
-		result["app"] = appToMap(e.App)
-	}
+	out := &ssePayloadAppEvent{App: appToPayload(e.App)}
 	if e.PreviousState != pb.AppState_APP_STATE_UNSPECIFIED {
-		result["previousState"] = e.PreviousState.String()
+		out.PreviousState = e.PreviousState.String()
 	}
-	return result
+	return out
 }
 
-func appToMap(a *pb.App) map[string]interface{} {
+func appToPayload(a *pb.App) *ssePayloadApp {
 	if a == nil {
 		return nil
 	}
-	return map[string]interface{}{
-		"id":            a.Id,
-		"name":          a.Name,
-		"username":      a.Username,
-		"containerName": a.ContainerName,
-		"subdomain":     a.Subdomain,
-		"fullDomain":    a.FullDomain,
-		"port":          a.Port,
-		"state":         a.State.String(),
+	return &ssePayloadApp{
+		ID:            a.Id,
+		Name:          a.Name,
+		Username:      a.Username,
+		ContainerName: a.ContainerName,
+		Subdomain:     a.Subdomain,
+		FullDomain:    a.FullDomain,
+		Port:          a.Port,
+		State:         a.State.String(),
 	}
 }
 
-func routeEventToMap(e *pb.RouteEvent) map[string]interface{} {
+func routeEventToPayload(e *pb.RouteEvent) *ssePayloadRouteEvent {
 	if e == nil {
 		return nil
 	}
-	result := map[string]interface{}{}
+	out := &ssePayloadRouteEvent{}
 	if e.Route != nil {
-		result["route"] = map[string]interface{}{
-			"subdomain":   e.Route.Subdomain,
-			"fullDomain":  e.Route.FullDomain,
-			"containerIp": e.Route.ContainerIp,
-			"port":        e.Route.Port,
-			"active":      e.Route.Active,
-			"appId":       e.Route.AppId,
-			"appName":     e.Route.AppName,
+		out.Route = &ssePayloadRoute{
+			Subdomain:   e.Route.Subdomain,
+			FullDomain:  e.Route.FullDomain,
+			ContainerIP: e.Route.ContainerIp,
+			Port:        e.Route.Port,
+			Active:      e.Route.Active,
+			AppID:       e.Route.AppId,
+			AppName:     e.Route.AppName,
 		}
 	}
-	return result
+	return out
 }
 
-func metricsEventToMap(e *pb.MetricsEvent) map[string]interface{} {
+func metricsEventToPayload(e *pb.MetricsEvent) *ssePayloadMetricsEvent {
 	if e == nil {
 		return nil
 	}
-	metrics := make([]map[string]interface{}, len(e.Metrics))
+	metrics := make([]ssePayloadMetric, len(e.Metrics))
 	for i, m := range e.Metrics {
-		metrics[i] = map[string]interface{}{
-			"name":             m.Name,
-			"cpuUsageSeconds":  m.CpuUsageSeconds,
-			"memoryUsageBytes": m.MemoryUsageBytes,
-			"memoryPeakBytes":  m.MemoryPeakBytes,
-			"diskUsageBytes":   m.DiskUsageBytes,
-			"networkRxBytes":   m.NetworkRxBytes,
-			"networkTxBytes":   m.NetworkTxBytes,
-			"processCount":     m.ProcessCount,
+		metrics[i] = ssePayloadMetric{
+			Name:             m.Name,
+			CPUUsageSeconds:  m.CpuUsageSeconds,
+			MemoryUsageBytes: m.MemoryUsageBytes,
+			MemoryPeakBytes:  m.MemoryPeakBytes,
+			DiskUsageBytes:   m.DiskUsageBytes,
+			NetworkRxBytes:   m.NetworkRxBytes,
+			NetworkTxBytes:   m.NetworkTxBytes,
+			ProcessCount:     m.ProcessCount,
 		}
 	}
-	return map[string]interface{}{
-		"metrics": metrics,
-	}
+	return &ssePayloadMetricsEvent{Metrics: metrics}
 }
