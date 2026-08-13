@@ -158,23 +158,42 @@ func TestIntegrationIncus_TwoTenantsCannotUnlockEachOther(t *testing.T) {
 			"other's data", aliceRoot)
 	}
 
-	// Now the part a string comparison cannot do. Unload bob's key, then
-	// offer alice's key material to bob's encryptionroot.
-	if err := zfs.UnloadKey(ctx, bobRoot); err != nil {
-		t.Skipf("could not unload %s to test cross-tenant unlock: %v", bobRoot, err)
-	}
-	keys, err := zfskey.NewFileKeyProvider(filepath.Join(t.TempDir(), "unused"))
+	// Now the part a string comparison cannot do: offer ALICE'S ACTUAL KEY
+	// to bob's encryptionroot and require ZFS to refuse it.
+	//
+	// The key comes from the server's own provider, not a fresh one. A
+	// second FileKeyProvider under a different directory would mint
+	// different material for the same tenant, and the unlock would fail
+	// because the key was wrong rather than because the tenants are
+	// isolated — the test would pass no matter how broken the boundary was.
+	aliceKey, _, err := s.encryption.provider.Wrap(ctx, alice)
 	if err != nil {
-		t.Fatalf("NewFileKeyProvider: %v", err)
+		t.Fatalf("Wrap(%s) from the server's own provider: %v", alice, err)
 	}
-	aliceKey, _, err := keys.Wrap(ctx, alice)
-	if err != nil {
-		t.Fatalf("Wrap(%s): %v", alice, err)
+
+	// Bob's key is loaded while his container runs, and ZFS will not unload
+	// a key that a mounted dataset is using. Stop his container the way the
+	// daemon does, then drop the key through the hook that production runs.
+	// Deliberately NOT a t.Skip: a skipped cross-tenant check is the one
+	// result that must never be mistaken for a pass.
+	if err := s.boxes().Stop(ctx, box.BoxRef{Tenant: bob}, true); err != nil {
+		t.Fatalf("stopping bob's container: %v", err)
 	}
+	s.encryption.PostStop(ctx, bob+"-container")
+
+	if status, err := zfs.KeyStatus(ctx, bobRoot); err != nil {
+		t.Fatalf("KeyStatus(%s): %v", bobRoot, err)
+	} else if status != zfscrypt.KeyUnavailable {
+		t.Fatalf("bob's key is still %q after his last container stopped, so the unlock below "+
+			"would be answered from the loaded key rather than tested", status)
+	}
+
 	if err := zfs.LoadKey(ctx, bobRoot, aliceKey); err == nil {
 		t.Fatalf("alice's key unlocked bob's encryptionroot %s — the tenants share key material "+
-			"despite reporting different roots, which is the failure a string comparison misses", bobRoot)
+			"despite reporting different roots, which is exactly the failure a comparison of "+
+			"encryptionroot strings cannot see", bobRoot)
 	}
+	t.Logf("alice's key is refused against bob's encryptionroot %s", bobRoot)
 }
 
 func TestIntegrationIncus_SecondContainerForATenantSharesItsEncryptionroot(t *testing.T) {
