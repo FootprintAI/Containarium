@@ -150,6 +150,11 @@ type DualServerConfig struct {
 	// created under (--zfs-tenant-root). Empty derives it from the daemon's
 	// storage pool; see DefaultTenantRoot.
 	ZFSTenantRoot string
+
+	// ZFSKeysDir is the directory holding per-tenant encryption keys
+	// (--zfs-keys-dir). Empty means no key custody is configured, which is
+	// the default and leaves every encrypted create refused.
+	ZFSKeysDir string
 }
 
 // managementRouteDomains returns the domains the daemon serves its own
@@ -282,6 +287,23 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Failing to reach Incus (the k8s runtime, or a daemon with no local
 	// Incus) leaves encryption unwired, which makes an encrypted create fail
 	// loudly rather than land somewhere arbitrary.
+	// Key custody (#1342). This is the switch that makes encrypted=true
+	// reachable at all: without a provider, validateEncryption refuses every
+	// encrypted create, which is the state every OSS daemon ships in.
+	//
+	// Installed BEFORE the storage wiring below only for readability —
+	// SetKeyProvider re-attaches to hooks built either side of it, so the
+	// order genuinely does not matter (asserted in key_provider_wiring_test).
+	keyProvider, err := keyProviderFromDir(config.ZFSKeysDir)
+	if err != nil {
+		return nil, err
+	}
+	if keyProvider != nil {
+		containerServer.SetKeyProvider(keyProvider)
+		log.Printf("[encryption] key custody: file-based, keys under %s (--zfs-keys-dir). "+
+			"Encrypted creates are now accepted on this daemon", config.ZFSKeysDir)
+	}
+
 	if encClient, err := incus.New(); err == nil {
 		tenantRoot := config.ZFSTenantRoot
 		derived := false

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -85,14 +86,11 @@ func (s *ContainerServer) recordEncryptedPlacement(req *pb.CreateContainerReques
 // before the create path could genuinely encrypt would make
 // validateEncryption start PASSING while the daemon handed back plaintext.
 func (s *ContainerServer) SetEncryptionStorage(tenantRoot string, client *incus.Client) {
-	if tenantRoot == "" || client == nil {
+	if client == nil {
 		return
 	}
-	s.encryption = &encryptionHooks{
-		provider: s.keyProvider, // nil until #1342, which keeps the hooks inert
-		zfs:      zfscrypt.NewManager(nil),
-		cache:    zfskey.NewCache(zfsKeyCacheTTL),
-		refs: incusEncryptionState{
+	s.setEncryptionHooks(tenantRoot,
+		incusEncryptionState{
 			setConfig: client.UpdateContainerConfig,
 			getConfig: func(containerName, key string) (string, error) {
 				cfg, _, err := client.GetRawInstance(containerName)
@@ -102,12 +100,67 @@ func (s *ContainerServer) SetEncryptionStorage(tenantRoot string, client *incus.
 				return cfg[key], nil
 			},
 		},
-		pools: incusStoragePools{
+		incusStoragePools{
 			createPool: client.CreateZFSPool,
 			poolSource: client.StoragePoolSource,
 		},
+	)
+}
+
+// setEncryptionHooks is the substrate-free half, so the wiring — and the
+// order it happens in relative to SetKeyProvider — is testable without Incus.
+func (s *ContainerServer) setEncryptionHooks(tenantRoot string, refs encryptionStateStore, pools storagePoolAPI) {
+	if tenantRoot == "" {
+		return
+	}
+	s.encryption = &encryptionHooks{
+		// Whatever custody is configured right now. Nil is the normal case
+		// at this point in startup and keeps the hooks inert; SetKeyProvider
+		// attaches one later if --zfs-keys-dir was given.
+		provider:   s.keyProvider,
+		zfs:        zfscrypt.NewManager(nil),
+		cache:      zfskey.NewCache(zfsKeyCacheTTL),
+		refs:       refs,
+		pools:      pools,
 		tenantRoot: tenantRoot,
 	}
+}
+
+// SetKeyProvider installs key custody, and attaches it to the encryption
+// hooks if they are already wired.
+//
+// The re-attach is what makes startup order irrelevant. Without it, hooks
+// built before custody was configured would keep a nil provider and stay
+// inert forever — every encrypted create failing on a daemon the operator
+// had configured correctly, with an error pointing at the create path
+// rather than at startup.
+//
+// This is the switch #1342 exists for: until a provider is installed,
+// validateEncryption refuses every encrypted create, which is the state
+// every OSS daemon ships in.
+func (s *ContainerServer) SetKeyProvider(provider zfskey.KeyProvider) {
+	s.keyProvider = provider
+	if s.encryption != nil {
+		s.encryption.provider = provider
+	}
+}
+
+// keyProviderFromDir builds the file-based key custody --zfs-keys-dir asks
+// for, or nothing at all when the flag is unset.
+//
+// Unset is not an error: it is the default, and it must leave the daemon
+// exactly as it was — refusing encrypted creates rather than failing to
+// start, and certainly rather than quietly enabling encryption for every
+// deployment that never asked for it.
+func keyProviderFromDir(dir string) (zfskey.KeyProvider, error) {
+	if strings.TrimSpace(dir) == "" {
+		return nil, nil
+	}
+	provider, err := zfskey.NewFileKeyProvider(dir)
+	if err != nil {
+		return nil, fmt.Errorf("configure key custody at %s: %w", dir, err)
+	}
+	return provider, nil
 }
 
 // DefaultTenantRoot derives the tenant dataset root from the daemon's own
