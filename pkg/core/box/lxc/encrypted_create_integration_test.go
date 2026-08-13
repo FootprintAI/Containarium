@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,32 +162,111 @@ func TestIntegrationIncus_InstanceOnAPreExistingEncryptedDataset(t *testing.T) {
 		OSType:    pb.OSType_OS_TYPE_UBUNTU_2404,
 		AutoStart: true,
 	})
-	if createErr != nil {
-		t.Fatalf("Incus will not build an instance on a pre-existing dataset: %v\n\n"+
-			"This is design §3 hook row 1's premise — 'tells Incus to use that pre-existing dataset "+
-			"(Incus's instance from an existing zvol path)' — and it does not hold as written. "+
-			"#1199's remaining step is therefore not a wiring task; see the issue comment for the "+
-			"alternatives this leaves open.", createErr)
+
+	// The answer, recorded as an executable fact rather than a hypothesis.
+	//
+	// Incus 6.0.0 refuses, and the error names the mechanism: it builds an
+	// instance volume with `zfs clone <image>@readonly <instance dataset>`.
+	// A clone is created BY the clone operation, so there is no dataset for
+	// it to adopt — and a clone's encryption is inherited from its origin
+	// snapshot, not from where it is placed. Pre-creating the dataset cannot
+	// make the instance encrypted even in principle.
+	//
+	// This test asserts the refusal on purpose. If it ever starts failing,
+	// Incus has changed and design §3's premise may have become available —
+	// which is worth being told about loudly rather than discovering by
+	// re-running this investigation from scratch.
+	if createErr == nil {
+		t.Fatalf("Incus accepted a create onto a pre-existing dataset. That contradicts the "+
+			"behaviour recorded here against Incus 6.0.0 (#1199), and would mean design §3 hook "+
+			"row 1's 'instance from an existing zvol' path is now real. Re-check what landed on %s "+
+			"and revisit the issue.", dataset)
+	}
+	if !strings.Contains(createErr.Error(), "dataset already exists") {
+		t.Fatalf("create failed, but not with the refusal this test records: %v\n"+
+			"Expected Incus's zfs clone to refuse the existing dataset. A different failure means "+
+			"the environment broke rather than the premise being retested.", createErr)
+	}
+	t.Logf("recorded: Incus will not adopt a pre-existing dataset — %v", createErr)
+}
+
+// TestIntegrationIncus_InstanceInheritsEncryptionFromThePoolRoot tests the
+// alternative the refusal above leaves open, so #1199's design question
+// arrives with evidence attached rather than as a dead end.
+//
+// If Incus makes every instance a clone of the image, then the only way an
+// instance can be encrypted is for the dataset it is cloned WITHIN to be
+// encrypted — i.e. the pool's own root dataset is the encryptionroot. Incus
+// supports a pool sourced at an arbitrary dataset, so "one storage pool per
+// tenant, sourced at that tenant's encrypted dataset" is expressible today
+// with no new Incus capability.
+//
+// This test does not implement that design. It answers whether it works,
+// which is what the design decision needs and what nobody has been able to
+// check.
+func TestIntegrationIncus_InstanceInheritsEncryptionFromThePoolRoot(t *testing.T) {
+	client := incusenv.Require(t)
+	if err := client.InitializeInfrastructure(incus.DefaultNetworkConfig()); err != nil {
+		t.Fatalf("the daemon's own infrastructure init failed: %v", err)
 	}
 
-	// It succeeded. Now the part that decides whether it succeeded for the
-	// right reason: Incus must have ADOPTED the encrypted dataset, not
-	// created its own alongside it. A create that quietly lands on a
-	// different, unencrypted dataset is the exact failure #1294 refuses to
-	// ship — success reported, plaintext delivered.
-	landed := incusenv.DatasetFor(t, instance)
-	if landed != dataset {
-		t.Fatalf("the create succeeded but the instance is on %q, not the encrypted dataset %q "+
-			"that was pre-created for it — Incus ignored it rather than adopting it, so the "+
-			"container is unencrypted while every daemon-side signal says otherwise", landed, dataset)
+	zfs := zfscrypt.NewManager(zfscrypt.ExecRunner{})
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	defer cancel()
+
+	// The tenant's encryptionroot, created by the production CreateEncrypted
+	// exactly as PreCreate would.
+	tenantRoot := fmt.Sprintf("incus-local/tenant%d", os.Getpid())
+	if err := zfs.CreateEncrypted(ctx, tenantRoot, newTestKey(t)); err != nil {
+		t.Fatalf("create the tenant encryptionroot %s: %v", tenantRoot, err)
 	}
-	gotRoot, err := zfs.EncryptionRoot(ctx, landed)
+	t.Cleanup(func() { _ = zfs.Destroy(context.Background(), tenantRoot) })
+
+	// A storage pool sourced at it. Everything Incus creates for this pool —
+	// images and instances alike — lands under the encryptionroot.
+	pool := fmt.Sprintf("tenantpool%d", os.Getpid())
+	incusenv.CreateZFSPool(t, pool, tenantRoot)
+
+	name := fmt.Sprintf("tnt%d", os.Getpid())
+	instance := name + "-container"
+	t.Cleanup(func() { incusenv.DeleteInstance(t, instance) })
+
+	// Point the daemon's create at that pool. A disk size is required for
+	// the root device to name a pool at all — without one the container
+	// inherits the default profile's root disk.
+	client.SetStoragePool(pool)
+	t.Cleanup(func() { client.SetStoragePool(incus.DefaultStoragePool) })
+
+	st, err := New(container.NewWithBackend(client)).Create(ctx, box.BoxSpec{
+		Ref:       box.BoxRef{Tenant: name},
+		Image:     "images:ubuntu/24.04",
+		OSType:    pb.OSType_OS_TYPE_UBUNTU_2404,
+		AutoStart: true,
+		Resources: box.ResourceLimits{Disk: "5GB"},
+	})
 	if err != nil {
-		t.Fatalf("read encryptionroot of %s after the create: %v", landed, err)
+		t.Fatalf("create on a pool rooted at an encrypted dataset: %v\n"+
+			"If this is where per-tenant encryption fails, the pool-per-tenant alternative is "+
+			"out too and #1199 needs a different approach entirely.", err)
 	}
-	if gotRoot != dataset {
-		t.Fatalf("instance dataset %s has encryptionroot %q, want %q", landed, gotRoot, dataset)
+	if st.State != pb.ContainerState_CONTAINER_STATE_RUNNING {
+		t.Fatalf("container state = %v, want RUNNING", st.State)
 	}
-	t.Logf("Incus adopted the pre-existing encrypted dataset; instance %s is under encryptionroot %s",
-		instance, gotRoot)
+
+	landed := incusenv.DatasetFor(t, instance)
+	if landed == "" {
+		t.Fatalf("instance %s has no dataset", instance)
+	}
+	root, err := zfs.EncryptionRoot(ctx, landed)
+	if err != nil {
+		t.Fatalf("read encryptionroot of %s: %v", landed, err)
+	}
+	if root != tenantRoot {
+		t.Fatalf("instance dataset %s has encryptionroot %q, want the tenant's root %q — "+
+			"the container is NOT under the tenant key, so a pool per tenant would not deliver "+
+			"per-tenant encryption either", landed, root, tenantRoot)
+	}
+	t.Logf("a container created through the daemon's own path on a pool rooted at %s is encrypted "+
+		"under that tenant's encryptionroot: instance dataset %s, encryptionroot %s",
+		tenantRoot, landed, root)
 }

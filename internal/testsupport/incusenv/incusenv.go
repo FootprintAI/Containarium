@@ -92,6 +92,27 @@ func DatasetFor(t *testing.T, instanceName string) string {
 	return ""
 }
 
+// CreateZFSPool adds an Incus storage pool sourced at an existing ZFS
+// dataset, and registers its removal.
+//
+// Shells out to the CLI because the daemon's client has no method for
+// creating an arbitrary pool — EnsureStorage only ever provisions the one
+// configured pool, which is the right production surface and the wrong one
+// for a test that needs a second pool to compare against.
+func CreateZFSPool(t *testing.T, poolName, sourceDataset string) {
+	t.Helper()
+	out, err := exec.Command("incus", "storage", "create", poolName, "zfs", // #nosec G204 -- test-controlled names
+		"source="+sourceDataset).CombinedOutput()
+	if err != nil {
+		t.Fatalf("incus storage create %s zfs source=%s: %v\n%s", poolName, sourceDataset, err, out)
+	}
+	t.Cleanup(func() {
+		if out, err := exec.Command("incus", "storage", "delete", poolName).CombinedOutput(); err != nil { // #nosec G204 -- test-controlled name
+			t.Logf("cleanup: could not delete storage pool %s: %v\n%s", poolName, err, out)
+		}
+	})
+}
+
 // DeleteInstance removes an instance, tolerating one that was never created.
 // Registered as cleanup so a failed test does not leave the runner — or a
 // developer's box — carrying a container and its dataset.
