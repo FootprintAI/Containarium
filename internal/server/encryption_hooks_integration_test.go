@@ -31,23 +31,45 @@ import (
 // canary is the plaintext hunted for in the raw vdev.
 var hookCanary = bytes.Repeat([]byte("CONTAINARIUM-HOOK-CANARY-4e1d8a6b-"), 64)
 
-// memKeyRefStore stands in for the Incus config key the daemon really uses.
-type memKeyRefStore struct{ refs map[string]zfskey.KeyRef }
+// memEncryptionState stands in for the Incus config keys the daemon really
+// uses to record a container's key ref and storage pool.
+type memEncryptionState struct {
+	refs  map[string]zfskey.KeyRef
+	pools map[string]string
+}
 
-func (m *memKeyRefStore) GetKeyRef(name string) (zfskey.KeyRef, bool, error) {
+func (m *memEncryptionState) GetKeyRef(name string) (zfskey.KeyRef, bool, error) {
 	ref, ok := m.refs[name]
 	return ref, ok, nil
 }
 
-func (m *memKeyRefStore) SetKeyRef(name string, ref zfskey.KeyRef) error {
+func (m *memEncryptionState) SetKeyRef(name string, ref zfskey.KeyRef) error {
 	m.refs[name] = ref
 	return nil
 }
 
-// fixedResolver maps container names to datasets.
-type fixedResolver struct{ datasets map[string]string }
+func (m *memEncryptionState) GetPool(name string) (string, error) { return m.pools[name], nil }
 
-func (f fixedResolver) DatasetFor(name string) (string, error) { return f.datasets[name], nil }
+func (m *memEncryptionState) SetPool(name, pool string) error {
+	m.pools[name] = pool
+	return nil
+}
+
+// memPools stands in for Incus's storage-pool API. Incus itself is not
+// available in this lane — that is the incus lane's job (#1332) — so what is
+// under test here is the ZFS half: that the datasets the hooks create really
+// do give each tenant its own encryptionroot.
+type memPools struct{ sources map[string]string }
+
+func (m *memPools) CreateZFSPool(name, source string) error {
+	m.sources[name] = source
+	return nil
+}
+
+func (m *memPools) StoragePoolSource(name string) (string, bool, error) {
+	src, ok := m.sources[name]
+	return src, ok, nil
+}
 
 // unavailableKeys stands in for key custody being unreachable.
 type unavailableKeys struct{}
@@ -65,8 +87,8 @@ type harness struct {
 	pool  *zfspool.Pool
 	hooks *encryptionHooks
 	keys  *zfskey.FileKeyProvider
-	refs  *memKeyRefStore
-	res   fixedResolver
+	refs  *memEncryptionState
+	pools *memPools
 }
 
 func newHarness(t *testing.T) *harness {
@@ -78,37 +100,49 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("NewFileKeyProvider: %v", err)
 	}
 	h := &harness{
-		pool: zfspool.New(t),
-		keys: keys,
-		refs: &memKeyRefStore{refs: map[string]zfskey.KeyRef{}},
-		res:  fixedResolver{datasets: map[string]string{}},
+		pool:  zfspool.New(t),
+		keys:  keys,
+		refs:  &memEncryptionState{refs: map[string]zfskey.KeyRef{}, pools: map[string]string{}},
+		pools: &memPools{sources: map[string]string{}},
 	}
 	h.hooks = &encryptionHooks{
 		provider: keys,
 		zfs:      zfscrypt.NewManager(nil), // the real zfs binary
 		cache:    zfskey.NewCache(0),
 		refs:     h.refs,
-		datasets: h.res,
+		pools:    h.pools,
+		// Tenant encryptionroots are children of the throwaway pool, so
+		// tenantDataset produces <pool>/<tenant> — the same shape production
+		// gets from --zfs-tenant-root.
+		tenantRoot: h.pool.Name,
 	}
 	return h
 }
 
-// createBox provisions a box through PreCreate — the hook the create path
-// calls — rather than reproducing its steps here.
+// createBox provisions a box through EnsureTenantStorage — the hook the
+// create path calls — rather than reproducing its steps here.
 //
 // It used to mint the key, create the dataset and record the ref itself,
 // which meant every test below exercised a local imitation of the create
 // path instead of the path itself. A divergence between the two would have
 // left these tests passing against code production does not run.
+//
+// The child dataset stands in for the one Incus would clone from the image
+// INSIDE the tenant pool. Creating it with a plain `zfs create` is faithful
+// to what matters here: it inherits the tenant's key exactly as a clone
+// would, which is the property these tests exist to check.
 func (h *harness) createBox(t *testing.T, ctx context.Context, container, tenant string) string {
 	t.Helper()
-	// The resolver has to know the dataset before the hook asks for it;
-	// in production that mapping comes from the storage layout.
-	dataset := h.pool.Dataset(container)
-	h.res.datasets[container] = dataset
+	pool, ref, err := h.hooks.EnsureTenantStorage(ctx, tenant)
+	if err != nil {
+		t.Fatalf("EnsureTenantStorage(%s): %v", tenant, err)
+	}
 
-	if _, err := h.hooks.PreCreate(ctx, container, tenant); err != nil {
-		t.Fatalf("PreCreate(%s, %s): %v", container, tenant, err)
+	dataset := h.pool.Dataset(tenant) + "/" + container
+	zfspool.Run(t, "zfs", "create", dataset)
+
+	if err := h.hooks.RecordPlacement(container, ref, pool); err != nil {
+		t.Fatalf("RecordPlacement(%s): %v", container, err)
 	}
 	return dataset
 }
@@ -184,40 +218,31 @@ func TestIntegrationEncryption_PostStopKeepsKeyForRunningCoTenant(t *testing.T) 
 	h := newHarness(t)
 
 	// One tenant, one key, one encryptionroot — a parent with two children,
-	// which is the shape the design gives a tenant's containers.
-	key, ref, err := h.keys.Wrap(ctx, "acme")
-	if err != nil {
-		t.Fatalf("KeyProvider.Wrap: %v", err)
-	}
+	// which is the shape the design gives a tenant's containers, and which
+	// EnsureTenantStorage now produces rather than the test assembling it.
 	root := h.pool.Dataset("acme")
-	if err := h.hooks.zfs.CreateEncrypted(ctx, root, key); err != nil {
-		t.Fatalf("CreateEncrypted(root): %v", err)
-	}
-
+	boxes := map[string]string{}
 	for _, box := range []string{"box-one", "box-two"} {
-		ds := root + "/" + box
-		zfspool.Run(t, "zfs", "create", ds)
-		h.res.datasets[box] = ds
-		if err := h.hooks.RecordKeyRef(box, ref); err != nil {
-			t.Fatalf("RecordKeyRef(%s): %v", box, err)
-		}
+		boxes[box] = h.createBox(t, ctx, box, "acme")
 	}
 
 	// Confirm they really do share one encryptionroot — the property the
-	// whole per-tenant isolation claim rests on.
-	for _, box := range []string{"box-one", "box-two"} {
-		got, err := h.hooks.zfs.EncryptionRoot(ctx, h.res.datasets[box])
+	// whole per-tenant isolation claim rests on. Note the direction: each
+	// box INHERITS the tenant root rather than being its own, which is
+	// exactly what makes a pool-per-tenant work at all.
+	for box, ds := range boxes {
+		got, err := h.hooks.zfs.EncryptionRoot(ctx, ds)
 		if err != nil {
 			t.Fatalf("EncryptionRoot(%s): %v", box, err)
 		}
 		if got != root {
-			t.Fatalf("%s encryptionroot = %q, want %q", box, got, root)
+			t.Fatalf("%s encryptionroot = %q, want the tenant root %q", box, got, root)
 		}
 	}
 
 	// Stop box-one while box-two is still "running" (still mounted).
-	zfspool.UnmountIfMounted(t, h.res.datasets["box-one"])
-	if !zfspool.IsMounted(t, h.res.datasets["box-two"]) {
+	zfspool.UnmountIfMounted(t, boxes["box-one"])
+	if !zfspool.IsMounted(t, boxes["box-two"]) {
 		t.Fatal("precondition: box-two should still be mounted")
 	}
 
@@ -277,7 +302,7 @@ func TestIntegrationEncryption_PostStopDoesNotBlockOnFailure(t *testing.T) {
 // and it is the property the whole tenant boundary rests on. If two tenants
 // landed under one root, either tenant's key would unlock the other's data
 // and every unit test would still pass.
-func TestIntegrationEncryption_PreCreateGivesEachTenantItsOwnRoot(t *testing.T) {
+func TestIntegrationEncryption_EnsureTenantStorageGivesEachTenantItsOwnRoot(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
 
@@ -296,14 +321,19 @@ func TestIntegrationEncryption_PreCreateGivesEachTenantItsOwnRoot(t *testing.T) 
 
 	aliceRoot1, aliceRoot2, bobRoot := rootOf(aliceOne), rootOf(aliceTwo), rootOf(bobOne)
 
-	// Each dataset is its own encryptionroot: PreCreate creates every one
-	// with its own key material rather than inheriting a parent's.
-	if aliceRoot1 != aliceOne {
-		t.Errorf("alice-one's encryptionroot is %q, not itself (%q) — it inherited a parent's "+
-			"key, so it is not independently lockable", aliceRoot1, aliceOne)
+	// Each container inherits its TENANT's encryptionroot — not its own.
+	// That is the inversion #1335 forced: Incus clones the image to make an
+	// instance and a clone takes its key from where it is made, so the key
+	// has to live on the dataset the pool is sourced at.
+	if want := h.pool.Dataset("alice"); aliceRoot1 != want {
+		t.Errorf("alice-one's encryptionroot is %q, want the tenant root %q", aliceRoot1, want)
 	}
-	if bobRoot != bobOne {
-		t.Errorf("bob-one's encryptionroot is %q, not itself (%q)", bobRoot, bobOne)
+	if aliceRoot1 != aliceRoot2 {
+		t.Errorf("one tenant's two containers have encryptionroots %q and %q — they would need "+
+			"two separate load-keys and could not share a pool", aliceRoot1, aliceRoot2)
+	}
+	if want := h.pool.Dataset("bob"); bobRoot != want {
+		t.Errorf("bob-one's encryptionroot is %q, want the tenant root %q", bobRoot, want)
 	}
 
 	// The boundary that matters: no tenant's dataset sits under another's
@@ -317,7 +347,7 @@ func TestIntegrationEncryption_PreCreateGivesEachTenantItsOwnRoot(t *testing.T) 
 // #1199 AC3, against a real pool: the KeyProvider being down must leave no
 // dataset behind. A unit test shows no create was attempted; this shows the
 // pool is genuinely unchanged, which is what "no partial dataset" means.
-func TestIntegrationEncryption_PreCreateLeavesNothingWhenKeysAreUnavailable(t *testing.T) {
+func TestIntegrationEncryption_EnsureTenantStorageLeavesNothingWhenKeysAreUnavailable(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
 
@@ -328,10 +358,9 @@ func TestIntegrationEncryption_PreCreateLeavesNothingWhenKeysAreUnavailable(t *t
 	h.hooks.provider = unavailableKeys{}
 
 	dataset := h.pool.Dataset("doomed")
-	h.res.datasets["doomed"] = dataset
 
-	if _, err := h.hooks.PreCreate(ctx, "doomed", "alice"); err == nil {
-		t.Fatal("PreCreate succeeded with key custody unavailable")
+	if _, _, err := h.hooks.EnsureTenantStorage(ctx, "doomed"); err == nil {
+		t.Fatal("EnsureTenantStorage succeeded with key custody unavailable")
 	}
 
 	exists, err := h.hooks.zfs.Exists(ctx, dataset)

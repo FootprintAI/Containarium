@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/footprintai/containarium/pkg/core/zfscrypt"
 	"github.com/footprintai/containarium/pkg/core/zfskey"
@@ -30,18 +31,39 @@ import (
 // re-resolve the same key without holding any state itself.
 const keyRefConfigKey = "user.containarium.zfs_key_ref"
 
-// keyRefStore reads and writes a container's durable KeyRef. An
+// poolConfigKey is the Incus config key recording which storage pool a
+// container was placed on.
+//
+// The pool's source dataset IS the container's encryptionroot, so this is
+// how a restarted daemon finds the dataset to unlock. It is read back rather
+// than recomputed from the tenant naming convention on purpose: recomputing
+// means the day the convention changes, every existing container resolves to
+// a dataset that is not theirs.
+const poolConfigKey = "user.containarium.zfs_pool"
+
+// encryptionStateStore reads and writes a container's durable encryption
+// state: which key unlocks it, and which storage pool it lives on. An
 // interface so the hooks are testable without Incus.
-type keyRefStore interface {
+type encryptionStateStore interface {
 	// GetKeyRef returns the stored ref and whether one was present.
 	GetKeyRef(containerName string) (zfskey.KeyRef, bool, error)
 	// SetKeyRef persists the ref on the container.
 	SetKeyRef(containerName string, ref zfskey.KeyRef) error
+	// GetPool returns the storage pool the container was placed on, or ""
+	// when none was recorded.
+	GetPool(containerName string) (string, error)
+	// SetPool persists the storage pool on the container.
+	SetPool(containerName, pool string) error
 }
 
-// datasetResolver maps a container to the ZFS dataset backing it.
-type datasetResolver interface {
-	DatasetFor(containerName string) (string, error)
+// storagePoolAPI is the slice of the Incus storage-pool surface the hooks
+// need. Narrow on purpose: the hooks provision one pool per tenant and read
+// back where it points, and nothing else.
+type storagePoolAPI interface {
+	// CreateZFSPool creates a zfs-driver pool sourced at an existing dataset.
+	CreateZFSPool(name, source string) error
+	// StoragePoolSource reports where a pool points, and whether it exists.
+	StoragePoolSource(name string) (source string, exists bool, err error)
 }
 
 // encryptionHooks carries the collaborators the lifecycle hooks need.
@@ -51,18 +73,28 @@ type encryptionHooks struct {
 	provider zfskey.KeyProvider
 	zfs      *zfscrypt.Manager
 	cache    *zfskey.Cache
-	refs     keyRefStore
-	datasets datasetResolver
+	refs     encryptionStateStore
+	pools    storagePoolAPI
+	// tenantRoot is the dataset every tenant encryptionroot is created
+	// under, e.g. "incus-local/tenants".
+	tenantRoot string
 }
 
 // enabled reports whether encryption is wired at all.
 func (h *encryptionHooks) enabled() bool {
-	return h != nil && h.provider != nil && h.zfs != nil && h.refs != nil && h.datasets != nil
+	return h != nil && h.provider != nil && h.zfs != nil && h.refs != nil &&
+		h.pools != nil && h.tenantRoot != ""
 }
 
-// encryptedFor returns the dataset and key ref for a container, and
-// false when the container is not encrypted.
-func (h *encryptionHooks) encryptedFor(containerName string) (dataset string, ref zfskey.KeyRef, ok bool, err error) {
+// encryptionRootFor resolves the dataset that is a container's
+// encryptionroot, and false when the container is not encrypted.
+//
+// The encryptionroot is the SOURCE of the storage pool the container lives
+// on, not the container's own dataset. Incus clones the image to build an
+// instance, and a clone inherits its key from the dataset it is made inside
+// (#1335) — so the container's own dataset has no key to load, and the one
+// that does is the pool's source.
+func (h *encryptionHooks) encryptionRootFor(containerName string) (root string, ref zfskey.KeyRef, ok bool, err error) {
 	if !h.enabled() {
 		return "", zfskey.KeyRef{}, false, nil
 	}
@@ -70,71 +102,204 @@ func (h *encryptionHooks) encryptedFor(containerName string) (dataset string, re
 	if err != nil || !present {
 		return "", zfskey.KeyRef{}, false, err
 	}
-	dataset, err = h.datasets.DatasetFor(containerName)
+
+	pool, err := h.refs.GetPool(containerName)
 	if err != nil {
-		return "", zfskey.KeyRef{}, false, err
+		return "", zfskey.KeyRef{}, false, fmt.Errorf("read the storage pool of %s: %w", containerName, err)
 	}
-	return dataset, ref, true, nil
+	// A ref with no pool is a half-written record. Refuse rather than treat
+	// the container as unencrypted: it IS encrypted, and starting it as
+	// though it were not would run it on storage nothing can account for.
+	if pool == "" {
+		return "", zfskey.KeyRef{}, false, fmt.Errorf(
+			"container %s records an encryption key ref but no storage pool, so its encryptionroot "+
+				"cannot be resolved; it was created by a daemon that did not record placement, or the "+
+				"record was written partially", containerName)
+	}
+
+	source, exists, err := h.pools.StoragePoolSource(pool)
+	if err != nil {
+		return "", zfskey.KeyRef{}, false, fmt.Errorf("read storage pool %s for %s: %w", pool, containerName, err)
+	}
+	if !exists {
+		return "", zfskey.KeyRef{}, false, fmt.Errorf(
+			"container %s is recorded on storage pool %s, which does not exist", containerName, pool)
+	}
+	if source == "" {
+		return "", zfskey.KeyRef{}, false, fmt.Errorf(
+			"storage pool %s (for %s) has no source dataset, so there is no encryptionroot to unlock",
+			pool, containerName)
+	}
+	return source, ref, true, nil
 }
 
-// PreCreate provisions the encrypted dataset a new container will be
-// built on, and returns the ref that lets every later hook re-resolve the
-// same key.
+// tenantPoolName is the Incus storage pool a tenant's containers live on.
+// Stable across daemon restarts — it is how the daemon finds the pool it
+// created — and tenant-scoped so `incus storage list` stays readable.
+func tenantPoolName(tenant string) string { return "containarium-tenant-" + tenant }
+
+// tenantDataset is the ZFS dataset that is a tenant's encryptionroot.
 //
-// Order matters and is the whole of AC3. The key is resolved BEFORE
-// anything is created, so a KeyProvider outage fails the create having
-// touched nothing — there is no dataset to clean up because none was made.
-// The only window where a partial dataset can exist is between creating it
-// and persisting its ref, and that window is closed by destroying the
-// dataset if the ref cannot be stored.
-//
-// That rollback is not tidiness. A dataset with no recorded ref is
-// unopenable: nothing knows which key unlocks it, so it is neither usable
-// nor safely reusable, and the next create for the same container would
-// fail on a name that already exists. Leaking one is worse than failing.
-func (h *encryptionHooks) PreCreate(ctx context.Context, containerName, tenant string) (zfskey.KeyRef, error) {
-	if !h.enabled() {
-		return zfskey.KeyRef{}, nil
+// The tenant name is interpolated into a dataset path AND an Incus pool
+// name, so it is validated rather than trusted: a name carrying a slash or
+// a ".." would name somebody else's dataset, and the caller would never
+// know because everything downstream would succeed.
+func tenantDataset(root, tenant string) (string, error) {
+	if root == "" {
+		return "", fmt.Errorf("no tenant dataset root is configured, so a tenant encryptionroot cannot be placed")
 	}
-	if tenant == "" {
-		return zfskey.KeyRef{}, fmt.Errorf("encryption: tenant is required to create %s", containerName)
+	if err := validateTenantName(tenant); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(root, "/") + "/" + tenant, nil
+}
+
+// validateTenantName rejects anything that could name something other than a
+// single child dataset of the tenant root.
+func validateTenantName(tenant string) error {
+	switch {
+	case tenant == "":
+		return fmt.Errorf("encryption: a tenant is required")
+	case strings.ContainsAny(tenant, "/ \t\n\r"):
+		return fmt.Errorf("invalid tenant %q: it becomes a dataset path component and must not contain a separator or whitespace", tenant)
+	case strings.HasPrefix(tenant, "-"):
+		return fmt.Errorf("invalid tenant %q: a leading dash would be read as a flag by zfs", tenant)
+	case tenant == "." || tenant == "..":
+		return fmt.Errorf("invalid tenant %q: it would name the tenant root itself or its parent", tenant)
+	}
+	return nil
+}
+
+// EnsureTenantStorage makes a tenant's encrypted storage exist and reports
+// the Incus pool a container for that tenant must be created on.
+//
+// Replaces PreCreate. The old hook made a per-CONTAINER encrypted dataset
+// and pointed Incus at it; Incus will not build an instance on a dataset
+// that already exists, because it creates the instance volume by cloning the
+// image snapshot — and a clone inherits encryption from its origin, not from
+// where it is placed (#1335). The encryptionroot therefore has to sit above
+// the level Incus manages: a storage pool sourced at the tenant's encrypted
+// dataset, so images and instances alike are cloned inside it.
+//
+// Order is the whole of #1199 AC3. The key is resolved BEFORE anything is
+// created, so a KeyProvider outage fails having touched nothing.
+//
+// # Rollback is asymmetric, and that is deliberate
+//
+// PreCreate destroyed its dataset whenever a later step failed. That was
+// right when the dataset belonged to one container. It is now the TENANT's
+// encryptionroot, shared by every container they own, so destroying it
+// because an unrelated container's create failed would destroy live data.
+// Only a dataset THIS call created is rolled back; one that was already
+// there is left exactly as found.
+func (h *encryptionHooks) EnsureTenantStorage(ctx context.Context, tenant string) (pool string, ref zfskey.KeyRef, err error) {
+	if !h.enabled() {
+		return "", zfskey.KeyRef{}, nil
 	}
 
-	dataset, err := h.datasets.DatasetFor(containerName)
+	dataset, err := tenantDataset(h.tenantRoot, tenant)
 	if err != nil {
-		return zfskey.KeyRef{}, fmt.Errorf("resolve dataset for %s: %w", containerName, err)
+		return "", zfskey.KeyRef{}, err
 	}
+	pool = tenantPoolName(tenant)
 
 	// Wrap is per-tenant and idempotent: a tenant's containers share one
 	// encryptionroot, so the second container reuses the first's key rather
 	// than minting a second one that ZFS would treat as a separate root.
 	key, ref, err := h.provider.Wrap(ctx, tenant)
 	if err != nil {
-		// Nothing has been created, so there is nothing to undo. The
-		// create fails as Unavailable and the operator retries when key
-		// custody is back.
-		return zfskey.KeyRef{}, fmt.Errorf("cannot obtain an encryption key for %s: %w", containerName, err)
+		// Nothing has been created, so there is nothing to undo. The create
+		// fails as Unavailable and the operator retries when key custody is
+		// back.
+		return "", zfskey.KeyRef{}, fmt.Errorf("cannot obtain an encryption key for tenant %s: %w", tenant, err)
 	}
 	h.cachePut(tenant, key)
 
-	if err := h.zfs.CreateEncrypted(ctx, dataset, key); err != nil {
-		return zfskey.KeyRef{}, fmt.Errorf("cannot create the encrypted dataset for %s: %w", containerName, err)
+	createdDataset, err := h.ensureTenantDataset(ctx, dataset, key)
+	if err != nil {
+		return "", zfskey.KeyRef{}, err
 	}
 
-	if err := h.refs.SetKeyRef(containerName, ref); err != nil {
-		// The dataset exists but nothing records how to unlock it. Undo it.
-		if derr := h.zfs.Destroy(ctx, dataset); derr != nil {
-			// Both failed: say so plainly, because now an operator has to
-			// remove the dataset by hand before the name can be reused.
-			return zfskey.KeyRef{}, fmt.Errorf(
-				"could not record the encryption key ref for %s (%w), and rolling back its "+
-					"dataset %s also failed (%v) — that dataset is unopenable and must be "+
-					"destroyed manually before the name can be reused", containerName, err, dataset, derr)
+	if err := h.ensureTenantPool(ctx, pool, dataset, createdDataset); err != nil {
+		return "", zfskey.KeyRef{}, err
+	}
+	return pool, ref, nil
+}
+
+// ensureTenantDataset makes the tenant's encryptionroot exist, and reports
+// whether this call created it — which is what decides whether a later
+// failure may destroy it.
+//
+// An existing dataset is verified to be its own encryptionroot rather than
+// assumed. A plaintext dataset sitting at the tenant's path is the quietest
+// possible failure: the pool would be built on it, every container inside
+// would be unencrypted, and every daemon-side signal would say otherwise.
+func (h *encryptionHooks) ensureTenantDataset(ctx context.Context, dataset string, key zfskey.Key) (created bool, err error) {
+	exists, err := h.zfs.Exists(ctx, dataset)
+	if err != nil {
+		return false, fmt.Errorf("check the tenant encryptionroot %s: %w", dataset, err)
+	}
+	if !exists {
+		if err := h.zfs.CreateEncrypted(ctx, dataset, key); err != nil {
+			return false, fmt.Errorf("cannot create the tenant encryptionroot %s: %w", dataset, err)
 		}
-		return zfskey.KeyRef{}, fmt.Errorf("could not record the encryption key ref for %s: %w", containerName, err)
+		return true, nil
 	}
 
-	return ref, nil
+	root, err := h.zfs.EncryptionRoot(ctx, dataset)
+	if err != nil {
+		return false, fmt.Errorf(
+			"dataset %s already exists but its encryption state could not be read (%w) — refusing "+
+				"to place a tenant pool on a dataset that may not be encrypted", dataset, err)
+	}
+	if root != dataset {
+		return false, fmt.Errorf(
+			"dataset %s already exists and its encryptionroot is %q, not itself — a tenant pool "+
+				"placed here would not give its containers that tenant's own key", dataset, root)
+	}
+	return false, nil
+}
+
+// ensureTenantPool makes the Incus pool sourced at the tenant's
+// encryptionroot exist, rolling back a dataset this call created if it
+// cannot.
+//
+// A pool that already exists on a DIFFERENT source is refused, never
+// repointed: repointing would move the containers already on it onto another
+// encryptionroot underneath them.
+func (h *encryptionHooks) ensureTenantPool(ctx context.Context, pool, dataset string, createdDataset bool) error {
+	rollback := func(cause error) error {
+		if !createdDataset {
+			// Not ours to destroy — it is another container's encryptionroot.
+			return cause
+		}
+		if derr := h.zfs.Destroy(ctx, dataset); derr != nil {
+			return fmt.Errorf(
+				"%w, and rolling back the tenant encryptionroot %s also failed (%v) — that dataset "+
+					"is unreferenced and must be destroyed manually before the tenant can be "+
+					"provisioned again", cause, dataset, derr)
+		}
+		return cause
+	}
+
+	source, exists, err := h.pools.StoragePoolSource(pool)
+	if err != nil {
+		return rollback(fmt.Errorf("cannot read storage pool %s: %w", pool, err))
+	}
+	if exists {
+		if source != dataset {
+			return rollback(fmt.Errorf(
+				"storage pool %s already exists and is sourced at %q, not the tenant encryptionroot "+
+					"%s; refusing to reuse or repoint it, because its existing containers would be "+
+					"moved onto a different encryptionroot underneath them", pool, source, dataset))
+		}
+		return nil
+	}
+
+	if err := h.pools.CreateZFSPool(pool, dataset); err != nil {
+		return rollback(fmt.Errorf("cannot create storage pool %s on %s: %w", pool, dataset, err))
+	}
+	return nil
 }
 
 // PreStart loads the container's encryption key so its dataset can be
@@ -146,7 +311,7 @@ func (h *encryptionHooks) PreCreate(ctx context.Context, containerName, tenant s
 // refused start, which is at least legible (design §5: KeyProvider down
 // at start time → FailedPrecondition, the LXC stays stopped).
 func (h *encryptionHooks) PreStart(ctx context.Context, containerName string) error {
-	dataset, ref, ok, err := h.encryptedFor(containerName)
+	dataset, ref, ok, err := h.encryptionRootFor(containerName)
 	if err != nil {
 		return fmt.Errorf("resolve encryption state for %s: %w", containerName, err)
 	}
@@ -183,7 +348,7 @@ func (h *encryptionHooks) PreStart(ctx context.Context, containerName string) er
 // container running under the same encryptionroot — a tenant's
 // containers share one — and is not an error.
 func (h *encryptionHooks) PostStop(ctx context.Context, containerName string) {
-	dataset, ref, ok, err := h.encryptedFor(containerName)
+	dataset, ref, ok, err := h.encryptionRootFor(containerName)
 	if err != nil {
 		log.Printf("[encryption] could not resolve encryption state for %s while stopping: %v", containerName, err)
 		return
@@ -210,12 +375,31 @@ func (h *encryptionHooks) PostStop(ctx context.Context, containerName string) {
 	}
 }
 
-// RecordKeyRef persists the ref produced at create time.
-func (h *encryptionHooks) RecordKeyRef(containerName string, ref zfskey.KeyRef) error {
+// RecordPlacement persists what the create produced: the key ref, and the
+// storage pool whose source is the container's encryptionroot.
+//
+// The ref is written FIRST on purpose. A half-written record then leaves a
+// container that refuses to start — encryptionRootFor says so explicitly —
+// rather than one that reads as unencrypted. Encrypted-but-unstartable is
+// legible and recoverable; silently-unencrypted is the failure #1294 exists
+// to prevent.
+func (h *encryptionHooks) RecordPlacement(containerName string, ref zfskey.KeyRef, pool string) error {
 	if !h.enabled() {
 		return fmt.Errorf("encryption is not configured on this daemon")
 	}
-	return h.refs.SetKeyRef(containerName, ref)
+	if pool == "" {
+		return fmt.Errorf("refusing to record %s with no storage pool: its encryptionroot could not be resolved afterwards", containerName)
+	}
+	if err := h.refs.SetKeyRef(containerName, ref); err != nil {
+		return fmt.Errorf("record the encryption key ref for %s: %w", containerName, err)
+	}
+	if err := h.refs.SetPool(containerName, pool); err != nil {
+		return fmt.Errorf(
+			"recorded the encryption key ref for %s but not its storage pool %s (%w) — the "+
+				"container will refuse to start until the pool is recorded, which is deliberate: "+
+				"it is encrypted and nothing can currently name its encryptionroot", containerName, pool, err)
+	}
+	return nil
 }
 
 func (h *encryptionHooks) cacheGet(tenant string) (zfskey.Key, bool) {
@@ -249,15 +433,16 @@ func tenantFromRef(ref zfskey.KeyRef, containerName string) string {
 
 // --- concrete adapters -----------------------------------------------
 
-// incusKeyRefStore persists the KeyRef as an Incus config key on the
-// container, so it survives a daemon restart without the daemon holding
-// any state of its own.
-type incusKeyRefStore struct {
+// incusEncryptionState persists a container's encryption state as Incus
+// config keys on the container, so it survives a daemon restart — and
+// reaches a migration destination — without the daemon holding any state of
+// its own.
+type incusEncryptionState struct {
 	setConfig func(containerName, key, value string) error
 	getConfig func(containerName, key string) (string, error)
 }
 
-func (s incusKeyRefStore) GetKeyRef(containerName string) (zfskey.KeyRef, bool, error) {
+func (s incusEncryptionState) GetKeyRef(containerName string) (zfskey.KeyRef, bool, error) {
 	raw, err := s.getConfig(containerName, keyRefConfigKey)
 	if err != nil {
 		return zfskey.KeyRef{}, false, err
@@ -272,10 +457,36 @@ func (s incusKeyRefStore) GetKeyRef(containerName string) (zfskey.KeyRef, bool, 
 	return ref, true, nil
 }
 
-func (s incusKeyRefStore) SetKeyRef(containerName string, ref zfskey.KeyRef) error {
+func (s incusEncryptionState) SetKeyRef(containerName string, ref zfskey.KeyRef) error {
 	b, err := json.Marshal(ref)
 	if err != nil {
 		return fmt.Errorf("encode key ref: %w", err)
 	}
 	return s.setConfig(containerName, keyRefConfigKey, string(b))
+}
+
+func (s incusEncryptionState) GetPool(containerName string) (string, error) {
+	return s.getConfig(containerName, poolConfigKey)
+}
+
+func (s incusEncryptionState) SetPool(containerName, pool string) error {
+	return s.setConfig(containerName, poolConfigKey, pool)
+}
+
+// incusStoragePools adapts the daemon's Incus client to storagePoolAPI.
+//
+// Function values rather than a client, matching incusEncryptionState: it
+// keeps this file free of a concrete Incus dependency, and lets the caller
+// bind whichever client it already holds.
+type incusStoragePools struct {
+	createPool func(name, source string) error
+	poolSource func(name string) (source string, exists bool, err error)
+}
+
+func (p incusStoragePools) CreateZFSPool(name, source string) error {
+	return p.createPool(name, source)
+}
+
+func (p incusStoragePools) StoragePoolSource(name string) (string, bool, error) {
+	return p.poolSource(name)
 }
