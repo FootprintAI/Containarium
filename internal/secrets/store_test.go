@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	corecrypto "github.com/footprintai/containarium/pkg/core/secrets"
@@ -23,10 +24,16 @@ import (
 // this test exercises the SQL roundtrip + AAD binding through
 // the full Store API.
 func TestSecretsStore_Roundtrip(t *testing.T) {
-	t.Skip("requires Postgres at localhost:5432 — see comment for run instructions")
+	// Gated on the DSN rather than skipped unconditionally. It skipped for
+	// everyone, everywhere, including the lane that was supposed to run it —
+	// so the SQL roundtrip and AAD binding below had never executed (#1300).
+	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CONTAINARIUM_TEST_DSN to run this against Postgres (the store-integration lane does)")
+	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, "postgres://containarium:test@localhost:5432/containarium?sslmode=disable")
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect Postgres: %v", err)
 	}
