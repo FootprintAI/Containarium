@@ -97,7 +97,12 @@ jobs:
       - name: Install Incus
         run: |
           set -euo pipefail
-          sudo apt-get install -y --no-install-recommends incus
+          # dnsmasq-base is explicit because --no-install-recommends drops it,
+          # and Incus needs it to bring up incusbr0's DHCP/DNS. Without it the
+          # daemon's own EnsureNetwork fails with "Failed to check dnsmasq
+          # version: executable file not found", which is a runner-provisioning
+          # gap wearing the costume of a daemon bug.
+          sudo apt-get install -y --no-install-recommends incus dnsmasq-base
           # Socket-activated: this both proves the client works and brings the
           # daemon up, so the socket the test connects to exists.
           sudo incus version
@@ -137,6 +142,12 @@ jobs:
             exit 1
           }
           sudo incus info | head -30
+          # Asserted here rather than discovered inside EnsureNetwork, where it
+          # surfaces as a daemon error rather than a missing package.
+          command -v dnsmasq >/dev/null || {
+            echo "::error::dnsmasq is absent — Incus cannot bring up incusbr0"
+            exit 1
+          }
           sudo zfs list incus-local/containers >/dev/null || {
             echo "::error::incus-local/containers is absent — the daemon would select the dir driver"
             exit 1
