@@ -199,7 +199,20 @@ func TestIntegrationEncryption_PostStopLeavesCiphertext(t *testing.T) {
 	}
 
 	// "Stop the container": Incus unmounts, then the hook runs.
+	//
+	// BOTH the container's dataset and the tenant encryptionroot above it
+	// are unmounted, because `zfs unload-key` refuses while anything under
+	// the root is mounted — including the root itself. The old design had
+	// them be the same dataset, so one unmount sufficed; they are now two.
+	//
+	// The harness mounts the tenant root only because zfspool creates the
+	// throwaway pool with an inherited mountpoint. Whether a real Incus
+	// leaves its pool's SOURCE dataset mounted is a different question, and
+	// this lane has no Incus to answer it — see the note on #1341. If it
+	// does, PostStop could never unload and "a stopped container is
+	// ciphertext" would not hold in production.
 	zfspool.UnmountIfMounted(t, dataset)
+	zfspool.UnmountIfMounted(t, h.pool.Dataset("alice"))
 	h.hooks.PostStop(ctx, "box-alice")
 
 	status, err := h.hooks.zfs.KeyStatus(ctx, dataset)
