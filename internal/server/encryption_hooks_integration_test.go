@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/testsupport/zfspool"
@@ -147,6 +148,15 @@ func (h *harness) createBox(t *testing.T, ctx context.Context, container, tenant
 	return dataset
 }
 
+// mountpointOf maps a dataset under the throwaway pool to its filesystem
+// path. Derived rather than composed from the container name: a container's
+// dataset now lives under its TENANT's encryptionroot, so the two are no
+// longer the same string, and hardcoding the old shape is what made this
+// test fail on the first run of the reshape.
+func (h *harness) mountpointOf(dataset string) string {
+	return filepath.Join(h.pool.Mount, strings.TrimPrefix(dataset, h.pool.Name+"/"))
+}
+
 // AC 1 (#1201): after stopping the last container under an encryptionroot,
 // the key is unloaded and the dataset reads as ciphertext to host root.
 //
@@ -165,7 +175,7 @@ func TestIntegrationEncryption_PostStopLeavesCiphertext(t *testing.T) {
 	// control's plaintext — which sits unencrypted on this same vdev — and
 	// report the encrypted dataset as leaking when it had not.
 	encCanary := append([]byte("ENCRD-"), hookCanary...)
-	secret := filepath.Join(h.pool.Mount, "box-alice", "secret.txt")
+	secret := filepath.Join(h.mountpointOf(dataset), "secret.txt")
 	if err := os.WriteFile(secret, encCanary, 0o600); err != nil {
 		t.Fatalf("write canary: %v", err)
 	}
