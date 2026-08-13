@@ -1,0 +1,192 @@
+name: Incus create path
+
+# Stands up the environment #1199 has been blocked on (#1332).
+#
+# #1199 — wiring the per-tenant encryption PreCreate hook into the create
+# path — was reported blocked for a sprint on "there is nowhere to run the
+# daemon's Incus-backed Create()". Nobody had tried constructing that
+# somewhere. This lane is that attempt: a plain ubuntu-latest runner with a
+# real ZFS pool and a real Incus, driving the daemon's own create path.
+#
+# It follows the precedent of zfs-encryption.yml, which cleared the same
+# shape of blocker for #1200 in a day. It is a SEPARATE workflow rather than
+# more steps on that one because the two have different costs and different
+# triggers: the ZFS lane is a pool plus `go test` and gates every encryption
+# change, while this one installs Incus and pulls a distro image, and gates
+# the create path. Merging them would make every encryption change wait on an
+# image pull.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pkg/core/box/lxc/**'
+      - 'pkg/core/container/**'
+      - 'pkg/core/incus/**'
+      - 'internal/testsupport/incusenv/**'
+      - '.github/workflows/incus-create.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215).
+  pull_request:
+    paths:
+      - 'pkg/core/box/lxc/**'
+      - 'pkg/core/container/**'
+      - 'pkg/core/incus/**'
+      - 'internal/testsupport/incusenv/**'
+      - '.github/workflows/incus-create.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  incus-create:
+    name: Daemon Create() against real Incus on ZFS
+    runs-on: ubuntu-latest
+    # Generous: the create path pulls a distro image and then runs a real
+    # in-container package install, which is the work it does in production.
+    timeout-minutes: 45
+    env:
+      # Turns "no usable Incus here" from a skip into a failure — AC3. The
+      # switch itself is unit-tested in internal/testsupport/incusenv, so a
+      # lane that stopped exercising Incus cannot report green by not running.
+      CONTAINARIUM_REQUIRE_INCUS: '1'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install ZFS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zfsutils-linux
+          # The module ships in linux-modules-extra on Ubuntu; usually already
+          # present on the runner image, so only fetch it if needed.
+          if ! sudo modprobe zfs 2>/dev/null; then
+            echo "zfs module not loadable yet; installing linux-modules-extra-$(uname -r)"
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe zfs
+          fi
+          zfs version
+          test -e /dev/zfs || { echo "::error::/dev/zfs absent — the module cannot be driven"; exit 1; }
+
+      # The pool is named incus-local with a `containers` dataset because that
+      # is what the daemon's OWN storage detection probes for
+      # (detectZFSContainersDataset / SelectStorageDriver). Creating the pool
+      # under any other name would make the daemon fall back to the `dir`
+      # driver, and a dir-backed lane cannot exercise per-container datasets
+      # at all — which is the thing #1199 needs.
+      - name: Create the ZFS pool the daemon detects
+        run: |
+          set -euo pipefail
+          # /mnt is the runner's large scratch disk; the image is sparse.
+          sudo truncate -s 20G /mnt/incus-zfs.img
+          sudo zpool create -f -m /mnt/incus-local incus-local /mnt/incus-zfs.img
+          sudo zfs create incus-local/containers
+          sudo zpool list
+          sudo zfs list
+
+      - name: Install Incus
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends incus
+          # Socket-activated: this both proves the client works and brings the
+          # daemon up, so the socket the test connects to exists.
+          sudo incus version
+
+      # Two runner-specific facts that would otherwise show up as a mystifying
+      # failure several minutes into the create:
+      #
+      # 1. Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor,
+      #    which is what an unprivileged Incus container needs.
+      # 2. Docker is installed and running on GitHub runners, and it sets the
+      #    iptables FORWARD policy to DROP. That silently kills incusbr0's
+      #    NAT, so the container boots with no route out and the create fails
+      #    minutes later inside `apt-get update` rather than here.
+      - name: Make the runner able to host containers
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo iptables -P FORWARD ACCEPT
+          # Incus needs a subuid/subgid range for root to map an unprivileged
+          # container into. The package normally provides it; assert rather
+          # than assume, since a missing range fails at instance start.
+          grep -q '^root:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid
+          grep -q '^root:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid
+
+      # Assert the environment before trusting any result from it. The Go
+      # helper does the same check and fails on it (CONTAINARIUM_REQUIRE_INCUS
+      # above); this step exists so an unusable runner is named at the step
+      # that set it up, which is what #1332's timebox asks for if the answer
+      # turns out to be "Incus cannot run here".
+      - name: Verify Incus is actually usable (fail, don't skip)
+        run: |
+          set -euo pipefail
+          test -S /var/lib/incus/unix.socket || {
+            echo "::error::no Incus socket at /var/lib/incus/unix.socket — the daemon did not come up"
+            sudo systemctl status incus.service --no-pager || true
+            sudo journalctl -u incus.service --no-pager -n 100 || true
+            exit 1
+          }
+          sudo incus info | head -30
+          sudo zfs list incus-local/containers >/dev/null || {
+            echo "::error::incus-local/containers is absent — the daemon would select the dir driver"
+            exit 1
+          }
+          echo "Incus and ZFS are usable; the lane will not skip."
+
+      # NOT `incus launch`. The test drives box.BoxBackend.Create →
+      # container.Manager.Create → the daemon's Incus client, because the
+      # claim being made is that OUR create path runs here — that is the API
+      # #1199 has to call.
+      #
+      # Storage pool, network and default profile are set up by the test
+      # through the daemon's own InitializeInfrastructure, not by
+      # `incus admin init`, so the lane exercises the daemon's selection
+      # instead of a preseed we wrote to make it pass.
+      - name: Create a container through the daemon's own Create()
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
+            ./pkg/core/box/lxc/ -run 'TestIntegrationIncus' | tee incus-test.log
+
+      # A skip here means the environment check above passed and the test
+      # decided otherwise — a contradiction worth failing on rather than
+      # quietly reporting green (#1234).
+      - name: Assert nothing was skipped
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f incus-test.log || { echo "::error::no test log — the test step never produced output"; exit 1; }
+          if grep -q -- "--- SKIP" incus-test.log; then
+            echo "::error::An Incus integration test SKIPPED on a runner where Incus is available."
+            grep -- "--- SKIP" incus-test.log
+            exit 1
+          fi
+          echo "No skips — the create path actually ran."
+
+      # #1332 is timeboxed with a defined failure mode: if Incus cannot run in
+      # a GitHub-hosted runner, the issue closes with the SPECIFIC failure
+      # recorded. Collect it here so that outcome arrives as evidence rather
+      # than as "it went red".
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          sudo incus list --format compact || true
+          # The instance name embeds the test binary's PID, so ask Incus which
+          # instances exist rather than trying to reconstruct it.
+          for i in $(sudo incus list --format csv -c n || true); do
+            echo "--- incus info --show-log $i ---"
+            sudo incus info --show-log "$i" || true
+          done
+          sudo journalctl -u incus.service --no-pager -n 200 || true
+          sudo zfs list -r -t all || true
+          sudo dmesg | tail -50 || true
