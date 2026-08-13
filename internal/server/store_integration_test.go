@@ -145,6 +145,47 @@ func TestCrewRunStore_FailStrandedForBothImpls(t *testing.T) {
 	}
 }
 
+// #1322 AC5: a crew run written before a reconnect is readable after it.
+//
+// The contract test above uses one store instance, which cannot distinguish
+// "persisted" from "cached in this process" — the property the durable store
+// exists for is exactly the one a single instance cannot show.
+func TestCrewRunStore_SurvivesAReconnect(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	freshSchema(t, pool)
+
+	s1, err := NewPostgresCrewRunStore(ctx, pool)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := s1.Put(ctx, &pb.CrewRun{
+		Id: "r-durable", CrewId: "crew-1",
+		State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED, ArtifactJson: `{"ok":true}`,
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	// A new pool and store over the same database: a restarted daemon.
+	pool2, err := pgxpool.New(ctx, os.Getenv("CONTAINARIUM_TEST_DSN"))
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	defer pool2.Close()
+	s2, err := NewPostgresCrewRunStore(ctx, pool2)
+	if err != nil {
+		t.Fatalf("store after reconnect: %v", err)
+	}
+
+	got, ok, err := s2.Get(ctx, "r-durable")
+	if err != nil || !ok {
+		t.Fatalf("a run written before the reconnect was not readable after it: ok=%v err=%v", ok, err)
+	}
+	if got.State != pb.CrewRunState_CREW_RUN_STATE_COMPLETED || got.ArtifactJson != `{"ok":true}` {
+		t.Errorf("the run survived but lost state: %+v", got)
+	}
+}
+
 func mustPutI(t *testing.T, s CrewRunStore, r *pb.CrewRun) {
 	t.Helper()
 	if err := s.Put(context.Background(), r); err != nil {
