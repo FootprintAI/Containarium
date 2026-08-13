@@ -58,6 +58,7 @@ var (
 	localBackendID         string
 	pool                   string
 	storagePool            string
+	zfsTenantRoot          string
 	region                 string
 	cpuOvercommitFactor    float64
 	cpuOvercommitEnforce   bool
@@ -155,6 +156,7 @@ func init() {
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
 	daemonCmd.Flags().StringVar(&storagePool, "storage-pool", "", "Incus STORAGE pool containers are created on (default \"default\"). Unrelated to --pool, which names a sentinel-fronted cluster. Point this at a second, per-container-volume pool to migrate tenants off a shared-filesystem `dir` pool without every newly created tenant landing back on it (#1206, #1213).")
+	daemonCmd.Flags().StringVar(&zfsTenantRoot, "zfs-tenant-root", "", "ZFS dataset each tenant's encryptionroot is created under for per-tenant encryption (#1199), e.g. \"incus-local/tenants\". Empty derives it from the storage pool's source. Has no effect until key custody is configured — an encrypted create is refused without a KeyProvider.")
 	daemonCmd.Flags().StringVar(&region, "region", "", "Region this backend serves; recorded in its capability profile (containarium backends profile). Empty falls back to the --pool name.")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
@@ -576,6 +578,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ProxyProtocolTrusted: proxyProtocolTrusted,
 		OTelDropLabels:       otelDropLabels,
 		Runtime:              runtime,
+		ZFSTenantRoot:        zfsTenantRoot,
 	}
 
 	// Create dual server

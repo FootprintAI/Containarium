@@ -22,6 +22,17 @@ import (
 // That is worse than an unimplemented feature. An operator who runs
 // `containarium create --encrypted` gets a container they believe is
 // tenant-encrypted, and nothing anywhere tells them otherwise.
+//
+// #1341 UPDATE. The blanket refusal this test was written against is gone,
+// because the reason for it is gone: the create path now does provision
+// encrypted storage. What survives — and what this test now asserts — is the
+// refusal that actually keeps the promise: no KeyProvider, no encrypted
+// create. Every OSS daemon is in that state until an operator configures one
+// (#1342), so the externally visible behaviour here is unchanged.
+//
+// The assertion moved off the phrase "not available", which no longer appears
+// anywhere, and onto the guarantee: FAILED_PRECONDITION, and a message that
+// identifies a daemon capability gap rather than a caller mistake.
 func TestCreateContainer_RefusesEncryptedRatherThanIgnoringIt(t *testing.T) {
 	s := &ContainerServer{}
 
@@ -40,8 +51,13 @@ func TestCreateContainer_RefusesEncryptedRatherThanIgnoringIt(t *testing.T) {
 	}
 	// The caller has to be able to act on this, which means knowing it is a
 	// daemon capability gap rather than something they got wrong.
-	if !strings.Contains(err.Error(), "not available") {
-		t.Errorf("the error does not say the capability is missing: %v", err)
+	msg := err.Error()
+	if !strings.Contains(msg, "KeyProvider") || !strings.Contains(msg, "none is configured") {
+		t.Errorf("the error does not identify the missing daemon capability: %v", err)
+	}
+	// And it must still promise the thing #1294 was filed for.
+	if !strings.Contains(msg, "refusing rather than creating an unencrypted container") {
+		t.Errorf("the error no longer says it refuses rather than falling back to plaintext: %v", err)
 	}
 }
 
@@ -61,7 +77,10 @@ func TestCreateContainer_EncryptionRefusalDoesNotPreemptValidation(t *testing.T)
 	if err == nil {
 		t.Fatal("a request with no username succeeded")
 	}
-	if strings.Contains(err.Error(), "per-container encryption") {
+	// Assert against the refusal that actually exists. The old assertion
+	// looked for "per-container encryption", a phrase #1341 deleted — it
+	// could no longer fail, so it proved nothing about ordering.
+	if strings.Contains(err.Error(), "KeyProvider") {
 		t.Errorf("a request missing its username was refused for encryption instead: %v — the "+
 			"caller would go looking at daemon capabilities for a typo", err)
 	}

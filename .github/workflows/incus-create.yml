@@ -27,6 +27,10 @@ on:
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
       - 'pkg/core/zfskey/**'
+      # The server wiring that decides whether a container is encrypted at
+      # all (#1341). Without this the wiring lands untested by the lane that
+      # exists to test it.
+      - 'internal/server/**'
       - '.github/workflows/incus-create.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215).
@@ -39,6 +43,10 @@ on:
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
       - 'pkg/core/zfskey/**'
+      # The server wiring that decides whether a container is encrypted at
+      # all (#1341). Without this the wiring lands untested by the lane that
+      # exists to test it.
+      - 'internal/server/**'
       - '.github/workflows/incus-create.yml'
 
 permissions:
@@ -179,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
-            ./pkg/core/box/lxc/ ./pkg/core/incus/ -run 'TestIntegrationIncus' | tee incus-test.log
+            ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ -run 'TestIntegrationIncus' | tee incus-test.log
 
       # A skip here means the environment check above passed and the test
       # decided otherwise — a contradiction worth failing on rather than

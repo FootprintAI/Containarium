@@ -356,23 +356,16 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	if err := validateCreateContainerBounds(req); err != nil {
 		return nil, err
 	}
-	// Refuse a request for encryption the daemon cannot actually deliver.
+	// #1294's unconditional refusal used to sit here, on the grounds that the
+	// create path did not provision an encrypted dataset. It now does
+	// (#1341), so that statement is no longer true and the blanket refusal is
+	// gone.
 	//
-	// The create path does not yet provision an encrypted dataset (#1199:
-	// the pre-create hook exists and is proven against a real pool, but
-	// wiring it needs Incus's "instance from an existing dataset" path).
-	// Until it does, honouring this flag by ignoring it hands the caller a
-	// guarantee they do not have — the container is created on the pool-wide
-	// key, and nothing says so.
-	//
-	// The proto is explicit that this must fail rather than fall back, and
-	// so is the CLI's own help text. It was the code that disagreed.
-	if req.Encrypted {
-		return nil, status.Error(codes.FailedPrecondition,
-			"per-container encryption is not available on this daemon yet: the create path "+
-				"does not provision an encrypted dataset (#1199). Refusing rather than creating "+
-				"an unencrypted container, which is what this flag is documented to do.")
-	}
+	// What has NOT changed is the promise: validateEncryption below still
+	// refuses an encrypted create on a daemon with no KeyProvider, which is
+	// every OSS daemon until an operator configures one (#1342). That refusal
+	// is the load-bearing one — it is what stops the flag being accepted and
+	// silently ignored — and it is the last thing to go.
 	// Birth TTL (#523): reject an out-of-range TTL before we provision
 	// anything — fail fast rather than create a box and then reject its
 	// death date. Same bound (7 days) as SetContainerTTL; 0 = no TTL.
@@ -398,6 +391,35 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	}
 	if err := validateEncryption(req, s.keyProvider); err != nil {
 		return nil, err
+	}
+
+	// Per-tenant encrypted storage (#1341). Resolved BEFORE anything is
+	// provisioned: EnsureTenantStorage resolves the key first, so a key
+	// custody outage fails here having created nothing.
+	//
+	// A tenant's containers share one Incus storage pool, sourced at that
+	// tenant's encrypted dataset. Everything Incus creates inside it — images
+	// and instances alike — inherits that tenant's key, which is the only way
+	// an instance can be encrypted at all: Incus builds one by cloning the
+	// image, and a ZFS clone takes its key from where it is made (#1335).
+	var encPool string
+	var encRef zfskey.KeyRef
+	if req.GetEncrypted() {
+		encPool, encRef, err = s.encryption.EnsureTenantStorage(ctx, encryptionTenantFor(req))
+		if err != nil {
+			return nil, status.Error(codes.Unavailable, err.Error())
+		}
+		// A resolved-empty pool means encryption is half-wired: a KeyProvider
+		// is configured but the hooks are not. Falling through would create
+		// the container on the daemon's default pool — unencrypted, reported
+		// as encrypted, which is precisely what #1294 refused to ship.
+		if encPool == "" {
+			return nil, status.Error(codes.FailedPrecondition,
+				"encrypted=true resolved no storage pool for this tenant: the daemon has key "+
+					"custody configured but no encryption storage wired, so the container would "+
+					"be created on the default pool without encryption. Refusing rather than "+
+					"delivering plaintext under an encryption guarantee")
+		}
 	}
 
 	// Pool resolution — if a pool is requested, either validate that
@@ -503,6 +525,9 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		GitRef:        req.GitRef,
 		GitCredential: req.GitCredential,
 		WorkspacePath: req.WorkspacePath,
+		// Empty for an unencrypted create, which leaves placement exactly as
+		// it was: the daemon-wide pool, or the default profile (#1339).
+		StoragePool: encPool,
 	}
 	// Phase 2.5 follow-up — load the OTel bearer for
 	// monitoring=true containers. Best-effort: an error
@@ -638,6 +663,16 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		asyncHandledInline = true
 		go func() {
 			info, err := s.boxes().Create(context.Background(), spec)
+			// Same contract as the sync path: an encrypted box whose
+			// placement cannot be recorded is removed rather than left
+			// unopenable. The caller already has its CREATING response, so
+			// this surfaces through the pending state like every other
+			// async failure.
+			if err == nil {
+				if rerr := s.recordEncryptedPlacement(req, info.Ref.Name, encRef, encPool); rerr != nil {
+					err, info = rerr, nil
+				}
+			}
 
 			// Phase 3.1 Phase-C: post-pull verification.
 			// In async mode the HTTP response has already
@@ -763,6 +798,14 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	info, err := s.boxes().Create(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
+
+	// Record which key unlocks this container and which pool it lives on,
+	// before anything else touches it. See recordEncryptedPlacement: a
+	// container whose placement cannot be recorded is deleted, because it is
+	// encrypted and nothing can name its encryptionroot.
+	if err := s.recordEncryptedPlacement(req, info.Ref.Name, encRef, encPool); err != nil {
+		return nil, err
 	}
 
 	// Phase 3.1 Phase-C: post-pull defense-in-depth.

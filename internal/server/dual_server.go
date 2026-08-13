@@ -145,6 +145,11 @@ type DualServerConfig struct {
 	// Runtime selects the box-lifecycle backend: "lxc" (default) or "k8s".
 	// Set via CONTAINARIUM_RUNTIME env or --runtime flag on daemon start.
 	Runtime string
+
+	// ZFSTenantRoot is the ZFS dataset each tenant's encryptionroot is
+	// created under (--zfs-tenant-root). Empty derives it from the daemon's
+	// storage pool; see DefaultTenantRoot.
+	ZFSTenantRoot string
 }
 
 // managementRouteDomains returns the domains the daemon serves its own
@@ -268,6 +273,34 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// default and resume-on-restart silently never fired (caught live
 	// on a GCP backend while validating #1070).
 	containerServer.SetDaemonConfigStore(config.DaemonConfigStore)
+
+	// Per-tenant encrypted storage (#1341). Wired here so the create path can
+	// place an encrypted container on its tenant's pool; INERT until a
+	// KeyProvider is also configured (#1342), because encryptionHooks.enabled()
+	// is false without one. Nothing an operator can observe changes today.
+	//
+	// Failing to reach Incus (the k8s runtime, or a daemon with no local
+	// Incus) leaves encryption unwired, which makes an encrypted create fail
+	// loudly rather than land somewhere arbitrary.
+	if encClient, err := incus.New(); err == nil {
+		tenantRoot := config.ZFSTenantRoot
+		derived := false
+		if tenantRoot == "" {
+			tenantRoot, derived = DefaultTenantRoot(encClient), true
+		}
+		switch {
+		case tenantRoot == "":
+			log.Printf("[encryption] per-tenant dataset root could not be derived from storage pool %q; "+
+				"encrypted creates will be refused until --zfs-tenant-root is set", encClient.StoragePool())
+		default:
+			containerServer.SetEncryptionStorage(tenantRoot, encClient)
+			how := "--zfs-tenant-root"
+			if derived {
+				how = "derived from the storage pool"
+			}
+			log.Printf("[encryption] per-tenant dataset root: %s (%s)", tenantRoot, how)
+		}
+	}
 	// NOTE: metrics-export resume (StartMetricsExportIfEnabled) is
 	// deliberately NOT called here. The resumed collector snapshots the
 	// daemon's backend_id/region at build time, and neither is populated
