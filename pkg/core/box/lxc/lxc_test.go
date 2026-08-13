@@ -71,6 +71,7 @@ func TestSpecToCreateOptions(t *testing.T) {
 		Stack:       "python",
 		StackParams: map[string]string{"version": "3.12"},
 		AutoStart:   true,
+		StoragePool: "containarium-tenant-alice",
 	}
 	got := specToCreateOptions(spec)
 	want := container.CreateOptions{
@@ -87,6 +88,7 @@ func TestSpecToCreateOptions(t *testing.T) {
 		Stack:           "python",
 		StackParameters: map[string]string{"version": "3.12"},
 		AutoStart:       true,
+		StoragePool:     "containarium-tenant-alice",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("specToCreateOptions mismatch\n got: %+v\nwant: %+v", got, want)
