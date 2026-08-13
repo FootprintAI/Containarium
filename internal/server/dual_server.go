@@ -288,11 +288,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		if tenantRoot == "" {
 			tenantRoot, derived = DefaultTenantRoot(encClient), true
 		}
-		switch {
-		case tenantRoot == "":
+		if tenantRoot == "" {
 			log.Printf("[encryption] per-tenant dataset root could not be derived from storage pool %q; "+
 				"encrypted creates will be refused until --zfs-tenant-root is set", encClient.StoragePool())
-		default:
+		} else {
 			containerServer.SetEncryptionStorage(tenantRoot, encClient)
 			how := "--zfs-tenant-root"
 			if derived {
