@@ -169,11 +169,17 @@ jobs:
       # through the daemon's own InitializeInfrastructure, not by
       # `incus admin init`, so the lane exercises the daemon's selection
       # instead of a preseed we wrote to make it pass.
+      #
+      # The package list is explicit rather than ./... — this lane owns the
+      # packages whose behaviour only a real Incus can settle, and a wildcard
+      # would drag in every unit test for no benefit. Add a package here when
+      # it grows an incus-tagged test, or the test silently never runs and the
+      # lane goes green without it (#1338 shipped that way for one commit).
       - name: Create a container through the daemon's own Create()
         run: |
           set -euo pipefail
           sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
-            ./pkg/core/box/lxc/ -run 'TestIntegrationIncus' | tee incus-test.log
+            ./pkg/core/box/lxc/ ./pkg/core/incus/ -run 'TestIntegrationIncus' | tee incus-test.log
 
       # A skip here means the environment check above passed and the test
       # decided otherwise — a contradiction worth failing on rather than
