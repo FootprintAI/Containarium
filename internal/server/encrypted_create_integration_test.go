@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/testsupport/incusenv"
 	"github.com/footprintai/containarium/pkg/core/box"
@@ -47,6 +48,10 @@ func encTestServer(t *testing.T, client *incus.Client, tenantRoot string) *Conta
 		keyProvider:      keys,
 		pendingCreations: map[string]*PendingCreation{},
 		platformStats:    platformstats.New(),
+		// NewContainerServer always sets this; a directly-constructed server
+		// must too, or the create panics on a nil *Emitter after the box is
+		// already built.
+		emitter: events.NewEmitter(events.GetBus()),
 	}
 	// The production wiring, then the provider on top — SetEncryptionStorage
 	// reads s.keyProvider, which is set above.

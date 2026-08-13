@@ -240,6 +240,13 @@ func (h *encryptionHooks) ensureTenantDataset(ctx context.Context, dataset strin
 		return false, fmt.Errorf("check the tenant encryptionroot %s: %w", dataset, err)
 	}
 	if !exists {
+		// The root the tenant datasets sit under is derived from the storage
+		// pool and may never have existed on this host. `zfs create` does not
+		// make intermediates, so without this every encrypted create on a
+		// fresh host fails with "parent does not exist" (#1341).
+		if err := h.zfs.EnsureParent(ctx, dataset); err != nil {
+			return false, fmt.Errorf("cannot prepare the tenant dataset root for %s: %w", dataset, err)
+		}
 		if err := h.zfs.CreateEncrypted(ctx, dataset, key); err != nil {
 			return false, fmt.Errorf("cannot create the tenant encryptionroot %s: %w", dataset, err)
 		}
