@@ -71,6 +71,21 @@ type BoxSpec struct {
 	StaticIP   string // empty = DHCP
 	Monitoring bool
 
+	// StoragePool places the box's root disk on a named backend storage pool,
+	// overriding the daemon-wide default for this create only. Empty keeps
+	// today's behaviour exactly: the daemon's configured pool (#1213), or the
+	// default profile when no disk size is requested either.
+	//
+	// It exists for per-tenant encryption (#1199): each tenant's containers
+	// live on that tenant's own pool, sourced at that tenant's encrypted
+	// dataset, because Incus clones the image to build an instance and a ZFS
+	// clone inherits encryption from its origin rather than its location
+	// (#1335). Placement is therefore per-request, not per-daemon.
+	//
+	// LXC only. The K8s backend expresses the same idea as
+	// ResourceLimits.StorageClass and ignores this.
+	StoragePool string
+
 	// EnablePodman / EnablePodmanPrivileged request Docker/Podman support
 	// inside the box (the privileged variant is gated by policy at the server
 	// layer before it reaches here).
