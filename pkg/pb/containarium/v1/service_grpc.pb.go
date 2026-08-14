@@ -19,60 +19,61 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ContainerService_CreateContainer_FullMethodName          = "/containarium.v1.ContainerService/CreateContainer"
-	ContainerService_ListContainers_FullMethodName           = "/containarium.v1.ContainerService/ListContainers"
-	ContainerService_GetContainer_FullMethodName             = "/containarium.v1.ContainerService/GetContainer"
-	ContainerService_DebugContainer_FullMethodName           = "/containarium.v1.ContainerService/DebugContainer"
-	ContainerService_DeleteContainer_FullMethodName          = "/containarium.v1.ContainerService/DeleteContainer"
-	ContainerService_StartContainer_FullMethodName           = "/containarium.v1.ContainerService/StartContainer"
-	ContainerService_StopContainer_FullMethodName            = "/containarium.v1.ContainerService/StopContainer"
-	ContainerService_ResizeContainer_FullMethodName          = "/containarium.v1.ContainerService/ResizeContainer"
-	ContainerService_MoveContainer_FullMethodName            = "/containarium.v1.ContainerService/MoveContainer"
-	ContainerService_AdoptMigratedContainer_FullMethodName   = "/containarium.v1.ContainerService/AdoptMigratedContainer"
-	ContainerService_ToggleMonitoring_FullMethodName         = "/containarium.v1.ContainerService/ToggleMonitoring"
-	ContainerService_ToggleAutoSleep_FullMethodName          = "/containarium.v1.ContainerService/ToggleAutoSleep"
-	ContainerService_SetContainerTTL_FullMethodName          = "/containarium.v1.ContainerService/SetContainerTTL"
-	ContainerService_SetContainerDeletePolicy_FullMethodName = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
-	ContainerService_SetContainerAttribution_FullMethodName  = "/containarium.v1.ContainerService/SetContainerAttribution"
-	ContainerService_AddSSHKey_FullMethodName                = "/containarium.v1.ContainerService/AddSSHKey"
-	ContainerService_RemoveSSHKey_FullMethodName             = "/containarium.v1.ContainerService/RemoveSSHKey"
-	ContainerService_AddCollaborator_FullMethodName          = "/containarium.v1.ContainerService/AddCollaborator"
-	ContainerService_RemoveCollaborator_FullMethodName       = "/containarium.v1.ContainerService/RemoveCollaborator"
-	ContainerService_ListCollaborators_FullMethodName        = "/containarium.v1.ContainerService/ListCollaborators"
-	ContainerService_GetMetrics_FullMethodName               = "/containarium.v1.ContainerService/GetMetrics"
-	ContainerService_CleanupDisk_FullMethodName              = "/containarium.v1.ContainerService/CleanupDisk"
-	ContainerService_InstallStack_FullMethodName             = "/containarium.v1.ContainerService/InstallStack"
-	ContainerService_ListStacks_FullMethodName               = "/containarium.v1.ContainerService/ListStacks"
-	ContainerService_GetSystemInfo_FullMethodName            = "/containarium.v1.ContainerService/GetSystemInfo"
-	ContainerService_ListBackends_FullMethodName             = "/containarium.v1.ContainerService/ListBackends"
-	ContainerService_AdvertiseCapacity_FullMethodName        = "/containarium.v1.ContainerService/AdvertiseCapacity"
-	ContainerService_WithdrawCapacity_FullMethodName         = "/containarium.v1.ContainerService/WithdrawCapacity"
-	ContainerService_GetCapacityHeadroom_FullMethodName      = "/containarium.v1.ContainerService/GetCapacityHeadroom"
-	ContainerService_ProfileBackend_FullMethodName           = "/containarium.v1.ContainerService/ProfileBackend"
-	ContainerService_GetCapabilityProfile_FullMethodName     = "/containarium.v1.ContainerService/GetCapabilityProfile"
-	ContainerService_GetSelfMeasurement_FullMethodName       = "/containarium.v1.ContainerService/GetSelfMeasurement"
-	ContainerService_GetLatestRelease_FullMethodName         = "/containarium.v1.ContainerService/GetLatestRelease"
-	ContainerService_ValidateGPU_FullMethodName              = "/containarium.v1.ContainerService/ValidateGPU"
-	ContainerService_TriggerUpgrade_FullMethodName           = "/containarium.v1.ContainerService/TriggerUpgrade"
-	ContainerService_GetUpgradeStatus_FullMethodName         = "/containarium.v1.ContainerService/GetUpgradeStatus"
-	ContainerService_GetMonitoringInfo_FullMethodName        = "/containarium.v1.ContainerService/GetMonitoringInfo"
-	ContainerService_SetMetricsExport_FullMethodName         = "/containarium.v1.ContainerService/SetMetricsExport"
-	ContainerService_GetMetricsExport_FullMethodName         = "/containarium.v1.ContainerService/GetMetricsExport"
-	ContainerService_CreateAlertRule_FullMethodName          = "/containarium.v1.ContainerService/CreateAlertRule"
-	ContainerService_ListAlertRules_FullMethodName           = "/containarium.v1.ContainerService/ListAlertRules"
-	ContainerService_GetAlertRule_FullMethodName             = "/containarium.v1.ContainerService/GetAlertRule"
-	ContainerService_UpdateAlertRule_FullMethodName          = "/containarium.v1.ContainerService/UpdateAlertRule"
-	ContainerService_DeleteAlertRule_FullMethodName          = "/containarium.v1.ContainerService/DeleteAlertRule"
-	ContainerService_GetAlertingInfo_FullMethodName          = "/containarium.v1.ContainerService/GetAlertingInfo"
-	ContainerService_ListDefaultAlertRules_FullMethodName    = "/containarium.v1.ContainerService/ListDefaultAlertRules"
-	ContainerService_UpdateAlertingConfig_FullMethodName     = "/containarium.v1.ContainerService/UpdateAlertingConfig"
-	ContainerService_TestWebhook_FullMethodName              = "/containarium.v1.ContainerService/TestWebhook"
-	ContainerService_ListWebhookDeliveries_FullMethodName    = "/containarium.v1.ContainerService/ListWebhookDeliveries"
-	ContainerService_SetSecret_FullMethodName                = "/containarium.v1.ContainerService/SetSecret"
-	ContainerService_GetSecret_FullMethodName                = "/containarium.v1.ContainerService/GetSecret"
-	ContainerService_ListSecrets_FullMethodName              = "/containarium.v1.ContainerService/ListSecrets"
-	ContainerService_DeleteSecret_FullMethodName             = "/containarium.v1.ContainerService/DeleteSecret"
-	ContainerService_RefreshSecrets_FullMethodName           = "/containarium.v1.ContainerService/RefreshSecrets"
+	ContainerService_CreateContainer_FullMethodName           = "/containarium.v1.ContainerService/CreateContainer"
+	ContainerService_ListContainers_FullMethodName            = "/containarium.v1.ContainerService/ListContainers"
+	ContainerService_GetContainer_FullMethodName              = "/containarium.v1.ContainerService/GetContainer"
+	ContainerService_DebugContainer_FullMethodName            = "/containarium.v1.ContainerService/DebugContainer"
+	ContainerService_DeleteContainer_FullMethodName           = "/containarium.v1.ContainerService/DeleteContainer"
+	ContainerService_StartContainer_FullMethodName            = "/containarium.v1.ContainerService/StartContainer"
+	ContainerService_StopContainer_FullMethodName             = "/containarium.v1.ContainerService/StopContainer"
+	ContainerService_ResizeContainer_FullMethodName           = "/containarium.v1.ContainerService/ResizeContainer"
+	ContainerService_MoveContainer_FullMethodName             = "/containarium.v1.ContainerService/MoveContainer"
+	ContainerService_PrepareEncryptedMigration_FullMethodName = "/containarium.v1.ContainerService/PrepareEncryptedMigration"
+	ContainerService_AdoptMigratedContainer_FullMethodName    = "/containarium.v1.ContainerService/AdoptMigratedContainer"
+	ContainerService_ToggleMonitoring_FullMethodName          = "/containarium.v1.ContainerService/ToggleMonitoring"
+	ContainerService_ToggleAutoSleep_FullMethodName           = "/containarium.v1.ContainerService/ToggleAutoSleep"
+	ContainerService_SetContainerTTL_FullMethodName           = "/containarium.v1.ContainerService/SetContainerTTL"
+	ContainerService_SetContainerDeletePolicy_FullMethodName  = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
+	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
+	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
+	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
+	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
+	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
+	ContainerService_ListCollaborators_FullMethodName         = "/containarium.v1.ContainerService/ListCollaborators"
+	ContainerService_GetMetrics_FullMethodName                = "/containarium.v1.ContainerService/GetMetrics"
+	ContainerService_CleanupDisk_FullMethodName               = "/containarium.v1.ContainerService/CleanupDisk"
+	ContainerService_InstallStack_FullMethodName              = "/containarium.v1.ContainerService/InstallStack"
+	ContainerService_ListStacks_FullMethodName                = "/containarium.v1.ContainerService/ListStacks"
+	ContainerService_GetSystemInfo_FullMethodName             = "/containarium.v1.ContainerService/GetSystemInfo"
+	ContainerService_ListBackends_FullMethodName              = "/containarium.v1.ContainerService/ListBackends"
+	ContainerService_AdvertiseCapacity_FullMethodName         = "/containarium.v1.ContainerService/AdvertiseCapacity"
+	ContainerService_WithdrawCapacity_FullMethodName          = "/containarium.v1.ContainerService/WithdrawCapacity"
+	ContainerService_GetCapacityHeadroom_FullMethodName       = "/containarium.v1.ContainerService/GetCapacityHeadroom"
+	ContainerService_ProfileBackend_FullMethodName            = "/containarium.v1.ContainerService/ProfileBackend"
+	ContainerService_GetCapabilityProfile_FullMethodName      = "/containarium.v1.ContainerService/GetCapabilityProfile"
+	ContainerService_GetSelfMeasurement_FullMethodName        = "/containarium.v1.ContainerService/GetSelfMeasurement"
+	ContainerService_GetLatestRelease_FullMethodName          = "/containarium.v1.ContainerService/GetLatestRelease"
+	ContainerService_ValidateGPU_FullMethodName               = "/containarium.v1.ContainerService/ValidateGPU"
+	ContainerService_TriggerUpgrade_FullMethodName            = "/containarium.v1.ContainerService/TriggerUpgrade"
+	ContainerService_GetUpgradeStatus_FullMethodName          = "/containarium.v1.ContainerService/GetUpgradeStatus"
+	ContainerService_GetMonitoringInfo_FullMethodName         = "/containarium.v1.ContainerService/GetMonitoringInfo"
+	ContainerService_SetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/SetMetricsExport"
+	ContainerService_GetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/GetMetricsExport"
+	ContainerService_CreateAlertRule_FullMethodName           = "/containarium.v1.ContainerService/CreateAlertRule"
+	ContainerService_ListAlertRules_FullMethodName            = "/containarium.v1.ContainerService/ListAlertRules"
+	ContainerService_GetAlertRule_FullMethodName              = "/containarium.v1.ContainerService/GetAlertRule"
+	ContainerService_UpdateAlertRule_FullMethodName           = "/containarium.v1.ContainerService/UpdateAlertRule"
+	ContainerService_DeleteAlertRule_FullMethodName           = "/containarium.v1.ContainerService/DeleteAlertRule"
+	ContainerService_GetAlertingInfo_FullMethodName           = "/containarium.v1.ContainerService/GetAlertingInfo"
+	ContainerService_ListDefaultAlertRules_FullMethodName     = "/containarium.v1.ContainerService/ListDefaultAlertRules"
+	ContainerService_UpdateAlertingConfig_FullMethodName      = "/containarium.v1.ContainerService/UpdateAlertingConfig"
+	ContainerService_TestWebhook_FullMethodName               = "/containarium.v1.ContainerService/TestWebhook"
+	ContainerService_ListWebhookDeliveries_FullMethodName     = "/containarium.v1.ContainerService/ListWebhookDeliveries"
+	ContainerService_SetSecret_FullMethodName                 = "/containarium.v1.ContainerService/SetSecret"
+	ContainerService_GetSecret_FullMethodName                 = "/containarium.v1.ContainerService/GetSecret"
+	ContainerService_ListSecrets_FullMethodName               = "/containarium.v1.ContainerService/ListSecrets"
+	ContainerService_DeleteSecret_FullMethodName              = "/containarium.v1.ContainerService/DeleteSecret"
+	ContainerService_RefreshSecrets_FullMethodName            = "/containarium.v1.ContainerService/RefreshSecrets"
 )
 
 // ContainerServiceClient is the client API for ContainerService service.
@@ -107,6 +108,24 @@ type ContainerServiceClient interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(ctx context.Context, in *MoveContainerRequest, opts ...grpc.CallOption) (*MoveContainerResponse, error)
+	// PrepareEncryptedMigration asks this daemon, as a migration
+	// DESTINATION, whether it can take over an encrypted container before
+	// any data is copied — and provisions the tenant's encrypted storage
+	// so the copy has somewhere correct to land.
+	//
+	// Two answers in one call, because they are needed at the same moment
+	// and only the destination can give either: whether its own key
+	// custody resolves the source's KeyRef, and which storage pool is
+	// sourced at that tenant's encryptionroot.
+	//
+	// Without the first, a migration can copy an entire container and only
+	// then discover the destination cannot unlock it, leaving an
+	// unstartable shell. Without the second, the copy lands on the
+	// destination's default pool and the container arrives unencrypted.
+	//
+	// Only the KeyRef crosses the wire; key material never does. Internal
+	// use only — operators don't call this.
+	PrepareEncryptedMigration(ctx context.Context, in *PrepareEncryptedMigrationRequest, opts ...grpc.CallOption) (*PrepareEncryptedMigrationResponse, error)
 	// AdoptMigratedContainer is the destination-side helper RPC called by
 	// a peer's MoveContainer after `incus copy` has pushed the LXC to
 	// this daemon. It registers the container with this daemon's state
@@ -397,6 +416,16 @@ func (c *containerServiceClient) MoveContainer(ctx context.Context, in *MoveCont
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MoveContainerResponse)
 	err := c.cc.Invoke(ctx, ContainerService_MoveContainer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) PrepareEncryptedMigration(ctx context.Context, in *PrepareEncryptedMigrationRequest, opts ...grpc.CallOption) (*PrepareEncryptedMigrationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareEncryptedMigrationResponse)
+	err := c.cc.Invoke(ctx, ContainerService_PrepareEncryptedMigration_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -885,6 +914,24 @@ type ContainerServiceServer interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error)
+	// PrepareEncryptedMigration asks this daemon, as a migration
+	// DESTINATION, whether it can take over an encrypted container before
+	// any data is copied — and provisions the tenant's encrypted storage
+	// so the copy has somewhere correct to land.
+	//
+	// Two answers in one call, because they are needed at the same moment
+	// and only the destination can give either: whether its own key
+	// custody resolves the source's KeyRef, and which storage pool is
+	// sourced at that tenant's encryptionroot.
+	//
+	// Without the first, a migration can copy an entire container and only
+	// then discover the destination cannot unlock it, leaving an
+	// unstartable shell. Without the second, the copy lands on the
+	// destination's default pool and the container arrives unencrypted.
+	//
+	// Only the KeyRef crosses the wire; key material never does. Internal
+	// use only — operators don't call this.
+	PrepareEncryptedMigration(context.Context, *PrepareEncryptedMigrationRequest) (*PrepareEncryptedMigrationResponse, error)
 	// AdoptMigratedContainer is the destination-side helper RPC called by
 	// a peer's MoveContainer after `incus copy` has pushed the LXC to
 	// this daemon. It registers the container with this daemon's state
@@ -1117,6 +1164,9 @@ func (UnimplementedContainerServiceServer) ResizeContainer(context.Context, *Res
 }
 func (UnimplementedContainerServiceServer) MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MoveContainer not implemented")
+}
+func (UnimplementedContainerServiceServer) PrepareEncryptedMigration(context.Context, *PrepareEncryptedMigrationRequest) (*PrepareEncryptedMigrationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareEncryptedMigration not implemented")
 }
 func (UnimplementedContainerServiceServer) AdoptMigratedContainer(context.Context, *AdoptMigratedContainerRequest) (*AdoptMigratedContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AdoptMigratedContainer not implemented")
@@ -1432,6 +1482,24 @@ func _ContainerService_MoveContainer_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).MoveContainer(ctx, req.(*MoveContainerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_PrepareEncryptedMigration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareEncryptedMigrationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).PrepareEncryptedMigration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_PrepareEncryptedMigration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).PrepareEncryptedMigration(ctx, req.(*PrepareEncryptedMigrationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2288,6 +2356,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MoveContainer",
 			Handler:    _ContainerService_MoveContainer_Handler,
+		},
+		{
+			MethodName: "PrepareEncryptedMigration",
+			Handler:    _ContainerService_PrepareEncryptedMigration_Handler,
 		},
 		{
 			MethodName: "AdoptMigratedContainer",

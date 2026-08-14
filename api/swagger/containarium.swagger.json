@@ -2513,6 +2513,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/prepare-encrypted-migration": {
+      "post": {
+        "summary": "Pre-flight an encrypted migration (internal)",
+        "description": "Called by the source daemon before MoveContainer copies anything. The destination reports whether its key custody can resolve the container's KeyRef, and provisions the tenant's encrypted storage pool so the copy lands inside the tenant's encryptionroot. Only the key reference is sent; key material never crosses the wire. Not intended for direct operator use.",
+        "operationId": "ContainerService_PrepareEncryptedMigration",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PrepareEncryptedMigrationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container about to be migrated.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PrepareEncryptedMigrationBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/resize": {
       "put": {
         "summary": "Resize container resources",
@@ -10347,6 +10388,38 @@
         }
       },
       "description": "PgConnection carries the connection parameters pg_dump / pg_restore use\n*inside the container*. Defaults target a per-container local Postgres\nreached over loopback. db_password is never logged and is passed to the\nchild process via the PGPASSWORD environment variable, not argv."
+    },
+    "PrepareEncryptedMigrationBody": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "description": "The tenant whose encryptionroot the container lives under. The\ndestination provisions storage for this tenant, not for the\ncontainer: a tenant's containers share one encryptionroot."
+        },
+        "keyRef": {
+          "type": "string",
+          "description": "The source's stored KeyRef, JSON-encoded exactly as it is held on\nthe container's own metadata. An opaque reference (scheme + URI +\nmetadata); it carries no key bytes."
+        }
+      },
+      "description": "PrepareEncryptedMigrationRequest asks a destination daemon whether it\ncan take over an encrypted container, BEFORE any data is copied.\n\nOnly the key REFERENCE travels — never key material. The ref names a\nkey in whatever custody the destination is configured with; resolving\nit is the destination's job with its own KeyProvider, which is the\nwhole point of the check."
+    },
+    "PrepareEncryptedMigrationResponse": {
+      "type": "object",
+      "properties": {
+        "canResolve": {
+          "type": "boolean",
+          "description": "Whether the destination resolved the KeyRef through its own key\ncustody. False means the migration must not start: the container\nwould arrive unopenable after a full data copy."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why not, when can_resolve is false. Operator-facing."
+        },
+        "storagePool": {
+          "type": "string",
+          "description": "The destination storage pool the container must be copied into —\nthe pool sourced at this tenant's encryptionroot. A copy that\nignores it lands on the destination's default pool, outside the\ntenant's encryptionroot, and the container arrives unencrypted\nwhile every daemon-side signal says otherwise."
+        }
+      },
+      "description": "PrepareEncryptedMigrationResponse tells the source whether to proceed,\nand where to put the container if so."
     },
     "ProfileBackendRequest": {
       "type": "object",

@@ -1196,6 +1196,47 @@ message AdoptMigratedContainerRequest {
   repeated string source_routes = 2;
 }
 
+// PrepareEncryptedMigrationRequest asks a destination daemon whether it
+// can take over an encrypted container, BEFORE any data is copied.
+//
+// Only the key REFERENCE travels — never key material. The ref names a
+// key in whatever custody the destination is configured with; resolving
+// it is the destination's job with its own KeyProvider, which is the
+// whole point of the check.
+message PrepareEncryptedMigrationRequest {
+  // Username of the container about to be migrated.
+  string username = 1;
+
+  // The tenant whose encryptionroot the container lives under. The
+  // destination provisions storage for this tenant, not for the
+  // container: a tenant's containers share one encryptionroot.
+  string tenant = 2;
+
+  // The source's stored KeyRef, JSON-encoded exactly as it is held on
+  // the container's own metadata. An opaque reference (scheme + URI +
+  // metadata); it carries no key bytes.
+  string key_ref = 3;
+}
+
+// PrepareEncryptedMigrationResponse tells the source whether to proceed,
+// and where to put the container if so.
+message PrepareEncryptedMigrationResponse {
+  // Whether the destination resolved the KeyRef through its own key
+  // custody. False means the migration must not start: the container
+  // would arrive unopenable after a full data copy.
+  bool can_resolve = 1;
+
+  // Why not, when can_resolve is false. Operator-facing.
+  string reason = 2;
+
+  // The destination storage pool the container must be copied into —
+  // the pool sourced at this tenant's encryptionroot. A copy that
+  // ignores it lands on the destination's default pool, outside the
+  // tenant's encryptionroot, and the container arrives unencrypted
+  // while every daemon-side signal says otherwise.
+  string storage_pool = 3;
+}
+
 // AdoptMigratedContainerResponse confirms the destination registered
 // the container and returns its IP for the source's route swap.
 message AdoptMigratedContainerResponse {

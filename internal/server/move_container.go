@@ -7,6 +7,9 @@ import (
 	"log"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -120,6 +123,46 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		return nil, fmt.Errorf("check incus remote: %w", err)
 	} else if !has {
 		return nil, fmt.Errorf("incus remote %q is not configured on this host; run `incus remote add %s <url>` first", targetRemote, targetRemote)
+	}
+
+	// Pre-flight for an encrypted container (#1360), BEFORE anything is
+	// snapshotted or copied.
+	//
+	// The destination is the only party that can answer either half: whether
+	// its key custody resolves this container's KeyRef, and which storage
+	// pool is sourced at the tenant's encryptionroot. Asking after the copy
+	// would mean spending a full data transfer to discover the container
+	// cannot be unlocked on the far side (design §5).
+	//
+	// An unencrypted container skips this entirely — no extra round trip and
+	// no new failure mode on the path every container takes today.
+	ref, _, encrypted, err := s.encryption.migrationRef(containerName)
+	if err != nil {
+		return nil, fmt.Errorf("resolve encryption state for %s: %w", containerName, err)
+	}
+	if encrypted {
+		refJSON, merr := json.Marshal(ref)
+		if merr != nil {
+			return nil, fmt.Errorf("encode the key ref for %s: %w", containerName, merr)
+		}
+		tenant := tenantFromRef(ref, containerName)
+		prep, perr := prepareFn(targetPeer, extractAuthToken(ctx), &pb.PrepareEncryptedMigrationRequest{
+			Username: req.Username,
+			Tenant:   tenant,
+			KeyRef:   string(refJSON),
+		})
+		if perr != nil {
+			return nil, fmt.Errorf("pre-flight with backend %q: %w", req.TargetBackendId, perr)
+		}
+		if !prep.GetCanResolve() {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"backend %q cannot take encrypted container %s: %s. Nothing was copied",
+				req.TargetBackendId, containerName, prep.GetReason())
+		}
+		// #1203b targets the copy at this pool. Logged now so a migration run
+		// today records where the container was meant to land.
+		log.Printf("[move] pre-flight ok: %s (tenant %s) will land on %s's storage pool %s",
+			containerName, tenant, req.TargetBackendId, prep.GetStoragePool())
 	}
 
 	params := migrationDefaults(req)
@@ -308,6 +351,48 @@ func overrideAdoptForTest(f func(*PeerClient, string, *pb.AdoptMigratedContainer
 	prev := adoptFn
 	adoptFn = f
 	return func() { adoptFn = prev }
+}
+
+// prepareFn is the seam the migration pre-flight goes through, so tests can
+// drive the orchestrator without a peer. Mirrors adoptFn.
+var prepareFn = forwardPrepareEncryptedMigration
+
+// overridePrepareForTest swaps the pre-flight forwarder and returns a restore
+// function.
+func overridePrepareForTest(f func(*PeerClient, string, *pb.PrepareEncryptedMigrationRequest) (*pb.PrepareEncryptedMigrationResponse, error)) func() {
+	prev := prepareFn
+	prepareFn = f
+	return func() { prepareFn = prev }
+}
+
+// forwardPrepareEncryptedMigration issues the pre-flight REST call to a peer
+// over the existing PeerClient generic forwarder.
+//
+// Only the KeyRef travels. There is no field on this request that could carry
+// key material, and that is the point: the destination resolves the reference
+// with its own custody rather than being handed a key.
+func forwardPrepareEncryptedMigration(peer *PeerClient, authToken string, req *pb.PrepareEncryptedMigrationRequest) (*pb.PrepareEncryptedMigrationResponse, error) {
+	body, err := json.Marshal(map[string]interface{}{
+		"username": req.Username,
+		"tenant":   req.Tenant,
+		"key_ref":  req.KeyRef,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal pre-flight request: %w", err)
+	}
+	respBody, code, err := peer.ForwardRequest("POST",
+		fmt.Sprintf("/v1/containers/%s/prepare-encrypted-migration", req.Username), authToken, body)
+	if err != nil {
+		return nil, fmt.Errorf("peer pre-flight RPC: %w", err)
+	}
+	if code >= 400 {
+		return nil, fmt.Errorf("peer pre-flight RPC returned %d: %s", code, string(respBody))
+	}
+	var resp pb.PrepareEncryptedMigrationResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("decode pre-flight response: %w", err)
+	}
+	return &resp, nil
 }
 
 // forwardAdoptMigratedContainer issues the AdoptMigratedContainer

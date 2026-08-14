@@ -173,6 +173,35 @@ service ContainerService {
     };
   }
 
+  // PrepareEncryptedMigration asks this daemon, as a migration
+  // DESTINATION, whether it can take over an encrypted container before
+  // any data is copied — and provisions the tenant's encrypted storage
+  // so the copy has somewhere correct to land.
+  //
+  // Two answers in one call, because they are needed at the same moment
+  // and only the destination can give either: whether its own key
+  // custody resolves the source's KeyRef, and which storage pool is
+  // sourced at that tenant's encryptionroot.
+  //
+  // Without the first, a migration can copy an entire container and only
+  // then discover the destination cannot unlock it, leaving an
+  // unstartable shell. Without the second, the copy lands on the
+  // destination's default pool and the container arrives unencrypted.
+  //
+  // Only the KeyRef crosses the wire; key material never does. Internal
+  // use only — operators don't call this.
+  rpc PrepareEncryptedMigration(PrepareEncryptedMigrationRequest) returns (PrepareEncryptedMigrationResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/prepare-encrypted-migration"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Pre-flight an encrypted migration (internal)";
+      description: "Called by the source daemon before MoveContainer copies anything. The destination reports whether its key custody can resolve the container's KeyRef, and provisions the tenant's encrypted storage pool so the copy lands inside the tenant's encryptionroot. Only the key reference is sent; key material never crosses the wire. Not intended for direct operator use.";
+      tags: "Container Operations";
+    };
+  }
+
   // AdoptMigratedContainer is the destination-side helper RPC called by
   // a peer's MoveContainer after `incus copy` has pushed the LXC to
   // this daemon. It registers the container with this daemon's state
