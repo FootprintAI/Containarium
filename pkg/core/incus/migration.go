@@ -31,8 +31,14 @@ type MigrationRunner interface {
 	// up once via `incus remote add` on the source. The destination
 	// container takes the same name.
 	//
-	// Equivalent to: `incus copy <container>/<fromSnap> <remote>:<container> --instance-only`
-	CopyInitial(container, fromSnap, targetRemote string) error
+	// storagePool, when non-empty, pins the destination pool the copy
+	// lands in (`--storage`). Empty keeps Incus's own choice, which is the
+	// destination's default pool — correct for an unencrypted container and
+	// wrong for an encrypted one, whose data must land inside its tenant's
+	// encryptionroot (#1203).
+	//
+	// Equivalent to: `incus copy <container>/<fromSnap> <remote>:<container> --instance-only [--storage <pool>]`
+	CopyInitial(container, fromSnap, targetRemote, storagePool string) error
 
 	// CopyRefresh syncs the delta from the source's previous-state
 	// snapshot to `targetRemote`. Equivalent to:
@@ -40,7 +46,7 @@ type MigrationRunner interface {
 	// With ZFS/btrfs storage on both ends, this is a fast incremental
 	// (zfs-send-style); with dir-pool storage it falls back to file
 	// rsync, which works but isn't sub-second.
-	CopyRefresh(container, fromSnap, targetRemote string) error
+	CopyRefresh(container, fromSnap, targetRemote, storagePool string) error
 
 	// Stop stops a container. Used at the very start of cutover; any
 	// final state changes after this point are caught by the post-stop
@@ -109,16 +115,24 @@ func (e *ExecRunner) DeleteSnapshot(container, snapshot string) error {
 	return err
 }
 
-func (e *ExecRunner) CopyInitial(container, fromSnap, targetRemote string) error {
+func (e *ExecRunner) CopyInitial(container, fromSnap, targetRemote, storagePool string) error {
 	src := fmt.Sprintf("%s/%s", container, fromSnap)
 	dst := fmt.Sprintf("%s:%s", targetRemote, container)
-	return e.incus("copy", src, dst, "--instance-only")
+	args := []string{"copy", src, dst, "--instance-only"}
+	if storagePool != "" {
+		args = append(args, "--storage", storagePool)
+	}
+	return e.incus(args...)
 }
 
-func (e *ExecRunner) CopyRefresh(container, fromSnap, targetRemote string) error {
+func (e *ExecRunner) CopyRefresh(container, fromSnap, targetRemote, storagePool string) error {
 	src := fmt.Sprintf("%s/%s", container, fromSnap)
 	dst := fmt.Sprintf("%s:%s", targetRemote, container)
-	return e.incus("copy", src, dst, "--refresh")
+	args := []string{"copy", src, dst, "--refresh"}
+	if storagePool != "" {
+		args = append(args, "--storage", storagePool)
+	}
+	return e.incus(args...)
 }
 
 func (e *ExecRunner) Stop(container string) error {

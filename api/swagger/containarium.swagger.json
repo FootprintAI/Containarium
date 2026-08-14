@@ -6146,6 +6146,14 @@
             "type": "string"
           },
           "description": "The source daemon's record of which routes belonged to this\ncontainer, so the destination can recreate them at its own\ncontainer IP. Each entry is \"\u003cfull-domain\u003e|\u003cport\u003e|\u003cprotocol\u003e\".\nEmpty for stateless containers with no exposed ports."
+        },
+        "zfsKeyRef": {
+          "type": "string",
+          "description": "The source's stored KeyRef for an encrypted container, JSON-encoded.\nThe destination records it so it can re-resolve the key on every\nlater start, exactly as the source did. Empty for an unencrypted\ncontainer, which is every container by default.\n\nA reference only — it carries no key bytes. The destination already\nproved it can resolve this ref during the pre-flight."
+        },
+        "zfsPool": {
+          "type": "string",
+          "description": "The destination storage pool the container was copied into — the one\nthe pre-flight returned, sourced at this tenant's encryptionroot.\nThe destination records it because the pool's source IS the\ncontainer's encryptionroot, and every later start has to find it.\nEmpty for an unencrypted container."
         }
       },
       "description": "AdoptMigratedContainerRequest is sent by the source daemon's\nMoveContainer to the destination daemon AFTER `incus copy` has\ncompleted and the LXC exists on the destination's incusd. The\ndestination then registers the container with its own Containarium\nstate (host user account, route record at the new IP).\n\nInternal use only — exposed via REST for daemon-to-daemon coordination\nover the same PeerPool channel used by other forwarding RPCs."
