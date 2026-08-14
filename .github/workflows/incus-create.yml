@@ -216,14 +216,18 @@ jobs:
           # the gRPC surface, so ask it something real.
           ready=""
           for i in $(seq 1 60); do
-            if sudo /tmp/containarium --server localhost:50051 list >/dev/null 2>&1; then
+            if sudo /tmp/containarium --server localhost:50051 list >/tmp/probe.log 2>&1; then
               ready=yes; break
             fi
             sleep 5
           done
           if [ -z "$ready" ]; then
-            echo "::error::the daemon never became ready"
-            tail -50 /tmp/daemon.log
+            # The daemon's own log and the CLIENT's error are different
+            # stories, and the first attempt at this hid the second. Print
+            # both: "never became ready" is not a diagnosis.
+            echo "::error::the daemon never answered the CLI"
+            echo "--- last CLI probe ---"; cat /tmp/probe.log || true
+            echo "--- daemon log tail ---"; tail -40 /tmp/daemon.log
             exit 1
           fi
           grep -E "\[encryption\]" /tmp/daemon.log || true
@@ -261,13 +265,15 @@ jobs:
           sudo /tmp/containarium daemon --standalone > /tmp/daemon-nokeys.log 2>&1 &
           ready=""
           for i in $(seq 1 60); do
-            if sudo /tmp/containarium --server localhost:50051 list >/dev/null 2>&1; then
+            if sudo /tmp/containarium --server localhost:50051 list >/tmp/probe2.log 2>&1; then
               ready=yes; break
             fi
             sleep 5
           done
           if [ -z "$ready" ]; then
-            echo "::error::the daemon never became ready"; tail -50 /tmp/daemon-nokeys.log; exit 1
+            echo "::error::the daemon never answered the CLI"
+            echo "--- last CLI probe ---"; cat /tmp/probe2.log || true
+            tail -40 /tmp/daemon-nokeys.log; exit 1
           fi
 
           if sudo /tmp/containarium --server localhost:50051 create "nokeys$$" \
