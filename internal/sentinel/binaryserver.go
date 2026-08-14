@@ -132,6 +132,17 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// every tenant's backend for anything that could reach this port.
 	mux.Handle("/peer/", auth.SentinelHMACMiddleware(manager.adminSecret, manager.PeerProxyHandler()))
 
+	// Runtime profiles (#1352). Gated by the ADMIN secret for the same reason
+	// as the routes above, and then some: a heap profile is a snapshot of
+	// everything the process holds in memory — tunnel-join tokens, TLS key
+	// material, in-flight bodies. The cluster-wide daemon secret every backend
+	// holds must not be enough to dump the sentinel's memory.
+	//
+	// Exists because #1349 leaked ~18 MB/day for 27 days and was OOM-killed
+	// having never been profiled; see PprofHandler for why this is wired from
+	// runtime/pprof rather than net/http/pprof.
+	mux.Handle(pprofPathPrefix, auth.SentinelHMACMiddleware(manager.adminSecret, manager.PprofHandler()))
+
 	// Status JSON endpoint — always available
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		status := StatusJSON{
