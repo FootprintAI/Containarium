@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -34,12 +35,15 @@ func createTestApp(username, name string) *v1.App {
 }
 
 func TestStoreOperations(t *testing.T) {
-	// Skip if no PostgreSQL available
-	// In real tests, we'd use testcontainers or similar
-	t.Skip("Requires PostgreSQL - run integration tests separately")
+	// Gated on the DSN rather than skipped unconditionally. "Run integration
+	// tests separately" deferred to a lane that did not exist, so these never
+	// ran anywhere (#1300). The store-integration lane sets this.
+	connString := os.Getenv("CONTAINARIUM_TEST_DSN")
+	if connString == "" {
+		t.Skip("set CONTAINARIUM_TEST_DSN to run this against Postgres (the store-integration lane does)")
+	}
 
 	ctx := context.Background()
-	connString := "postgres://containarium:test@localhost:5432/containarium?sslmode=disable"
 
 	store, err := NewStore(ctx, connString)
 	if err != nil {
@@ -102,10 +106,12 @@ func TestStoreOperations(t *testing.T) {
 }
 
 func TestStoreErrors(t *testing.T) {
-	t.Skip("Requires PostgreSQL - run integration tests separately")
+	connString := os.Getenv("CONTAINARIUM_TEST_DSN")
+	if connString == "" {
+		t.Skip("set CONTAINARIUM_TEST_DSN to run this against Postgres (the store-integration lane does)")
+	}
 
 	ctx := context.Background()
-	connString := "postgres://containarium:test@localhost:5432/containarium?sslmode=disable"
 
 	store, err := NewStore(ctx, connString)
 	if err != nil {

@@ -123,11 +123,24 @@ type KeyRef struct {
 
 ### 3. Hook points in the daemon
 
+> **⚠️ The `pre-create` row below is superseded and does not work.** Its premise
+> — that Incus can build an instance on a pre-existing dataset — was disproved
+> against a real Incus 6.0.0 in #1335: Incus creates an instance volume by
+> `zfs clone`-ing the image snapshot, and a ZFS clone inherits encryption from
+> its **origin**, not from where it is placed. A per-instance encryptionroot is
+> therefore unreachable while Incus owns volume creation. The replacement
+> mechanism — one Incus storage pool per tenant, sourced at that tenant's
+> encrypted dataset — is designed in
+> [`docs/architecture/per-tenant-encrypted-storage-pools.md`](architecture/per-tenant-encrypted-storage-pools.md).
+> The other four rows are unaffected, and `pre-start`/`post-stop` shipped in
+> #1232. Row kept rather than deleted so the disproved assumption stays legible
+> to anyone who finds it repeated elsewhere.
+
 The daemon's container lifecycle already has well-defined entry points; we add five new hook calls:
 
 | Hook | Where in code | What it does |
 |---|---|---|
-| `pre-create` | `pkg/core/container/manager.go` `Create()` before `incus launch` | Resolves the per-tenant key via `KeyProvider.Wrap`, pre-creates the ZFS dataset with `encryption=on`, then tells Incus to use that pre-existing dataset (Incus's "instance from an existing zvol" path). |
+| `pre-create` ~~(superseded)~~ | `pkg/core/container/manager.go` `Create()` before `incus launch` | ~~Resolves the per-tenant key via `KeyProvider.Wrap`, pre-creates the ZFS dataset with `encryption=on`, then tells Incus to use that pre-existing dataset (Incus's "instance from an existing zvol" path).~~ **See the note above — Incus has no such path.** |
 | `pre-start` | `internal/server/container_server.go` `StartContainer` | Reads the stored `KeyRef` from container metadata, calls `KeyProvider.Load`, pipes the key to `zfs load-key`. No-op if key already loaded. |
 | `post-stop` | `internal/server/container_server.go` `StopContainer` | Best-effort `zfs unload-key` after the LXC stops. Tolerates "key still in use" if other containers under the same encryptionroot are still running. |
 | `pre-snapshot` | `pkg/core/incus/client.go` snapshot path | Ensures the key is loaded so the snapshot's metadata is readable (ZFS allows snapshots without the key loaded but inspection requires it). |
@@ -209,6 +222,7 @@ None of this lives in OSS. OSS ships only:
 |---|---|---|
 | 2026-05-15 | hsinhoyeh, drafted with Claude | Initial draft. Per-tenant ZFS native encryption design with pluggable KeyProvider, five lifecycle hooks, in-memory key cache, MoveContainer integration. Status: Draft. |
 | 2026-05-15 | hsinhoyeh | Resolved all 5 open questions: tenant_id added to proto with OSS validation, OTel-while-encrypted accepted, snapshot-while-KMS-down allows + warns, cross-cloud migration deferred, rotation control-plane-driven. Status: Draft → Approved. |
+| 2026-08-13 | drafted with Claude (`agent-c9aced4b`) | §3 hook row 1 (`pre-create`) marked superseded: Incus clones the image to make an instance, so it cannot adopt a pre-existing dataset and a clone inherits encryption from its origin (#1335). Replacement designed in `docs/architecture/per-tenant-encrypted-storage-pools.md`. No other section changed. |
 
 ## Verifying the encryption claim (#1200)
 

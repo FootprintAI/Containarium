@@ -28,13 +28,20 @@ type Manager struct {
 
 // CreateOptions holds options for creating a container
 type CreateOptions struct {
-	Username               string
-	Image                  string
-	CPU                    string
-	Memory                 string
-	Disk                   string   // Disk size (e.g., "20GB")
-	GPUs                   []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
-	StaticIP               string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
+	Username string
+	Image    string
+	CPU      string
+	Memory   string
+	Disk     string   // Disk size (e.g., "20GB")
+	GPUs     []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
+	StaticIP string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
+
+	// StoragePool overrides the daemon-wide storage pool for this create.
+	// Empty uses the configured pool (#1213). See box.BoxSpec.StoragePool for
+	// why placement is per-request: per-tenant encryption puts each tenant's
+	// containers on that tenant's own pool (#1199).
+	StoragePool string
+
 	SSHKeys                []string
 	Labels                 map[string]string // Kubernetes-style labels
 	EnablePodman           bool
@@ -188,15 +195,32 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		}
 	}
 
-	// Configure root disk device if disk size is specified
+	// Configure the root disk device when a size OR an explicit pool is
+	// requested.
+	//
+	// The pool half is not symmetry for its own sake. A root disk device used
+	// to be emitted only for an explicit size, so a create that named a pool
+	// but no size inherited the DEFAULT PROFILE's root disk instead — the
+	// daemon-wide pool. For an encrypted create that means landing outside the
+	// tenant's encryptionroot, unencrypted, while reporting success, and
+	// nothing about the request would look wrong (#1339).
+	//
+	// A create that names no pool is unaffected in either direction: same
+	// condition, same pool, same device.
 	diskSize := opts.Disk
 	if diskSize == "" && isWindows {
 		diskSize = "50GB"
 	}
-	if diskSize != "" {
+	if diskSize != "" || opts.StoragePool != "" {
+		pool := opts.StoragePool
+		if pool == "" {
+			pool = m.incus.StoragePool()
+		}
 		config.Disk = &incus.DiskDevice{
 			Path: "/",
-			Pool: m.incus.StoragePool(),
+			Pool: pool,
+			// Empty stays empty — DiskDevice.ToMap omits the size key, so the
+			// box gets the pool's own default rather than a size we invented.
 			Size: diskSize,
 		}
 	}

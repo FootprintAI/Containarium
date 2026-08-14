@@ -176,6 +176,7 @@ func specToCreateOptions(spec box.BoxSpec) container.CreateOptions {
 		SSHKeys:                spec.SSHKeys,
 		Labels:                 spec.Labels,
 		StaticIP:               spec.StaticIP,
+		StoragePool:            spec.StoragePool,
 		EnablePodman:           spec.EnablePodman,
 		EnablePodmanPrivileged: spec.EnablePodmanPrivileged,
 		OSType:                 spec.OSType,

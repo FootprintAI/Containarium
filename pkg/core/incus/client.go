@@ -1826,17 +1826,25 @@ func (c *Client) ContainerDataset(containerName, pool string) (string, error) {
 // buildContainerDataset is the pure half, so the layout can be tested without
 // an Incus server.
 //
-// The doubled "containers/containers" is not a typo: incus nests its instance
-// datasets under a `containers` child of the pool's own `containers` dataset.
-// It is preserved exactly as the quota path has always produced it — changing
-// it would silently point every caller at a dataset that does not exist.
+// Incus's rule is one segment: an instance's dataset is a `containers` child
+// of the pool's ROOT dataset, and the pool's `source` is that root dataset.
+//
+// This used to append `/containers/containers/`, and the doubling was
+// defended in a test as "incus's actual layout, not a typo". It was a typo of
+// a kind — read off a real host's dataset name without noticing that the
+// source already ended in `/containers`. On a daemon-provisioned pool
+// (EnsureStorage sets source to incus-local/containers) the correct answer
+// still READS as `incus-local/containers/containers/<name>`, which is how the
+// extra segment survived review and got pinned by unit tests. A real pool
+// settled it: #1336, and pkg/core/box/lxc's incus-tagged integration test is
+// the assertion that can actually tell the two apart.
 func buildContainerDataset(poolSource, poolName, containerName string) string {
 	zfsPool := poolSource
 	if zfsPool == "" {
 		// A pool created without an explicit source uses its own name.
 		zfsPool = poolName
 	}
-	return fmt.Sprintf("%s/containers/containers/%s", zfsPool, containerName)
+	return fmt.Sprintf("%s/containers/%s", zfsPool, containerName)
 }
 
 // ensureZFSQuotaHeadroom checks if the container's ZFS dataset is at quota and

@@ -54,6 +54,11 @@ func (f *fakeRunner) lastCall() []string {
 	return f.calls[len(f.calls)-1]
 }
 
+// ran reports whether any invocation's joined args contain the substring.
+func (f *fakeRunner) ran(substr string) bool {
+	return strings.Contains(f.allArgs(), substr)
+}
+
 func (f *fakeRunner) allArgs() string {
 	var b strings.Builder
 	for _, c := range f.calls {
@@ -329,4 +334,51 @@ func TestExists(t *testing.T) {
 	if _, err := NewManager(f2).Exists(context.Background(), "pool/c/alice"); err == nil {
 		t.Error("a broken pool must be an error, not 'absent'")
 	}
+}
+
+// EnsureParent exists because a tenant encryptionroot is created at
+// <root>/<tenant>, and `zfs create` does not make intermediate datasets.
+// The daemon derives that root from its storage pool, so on a fresh host the
+// intermediate does not exist and every encrypted create failed with "parent
+// does not exist" — caught by the incus lane in #1341, not by any unit test.
+func TestEnsureParent(t *testing.T) {
+	t.Run("creates the chain when the parent is absent", func(t *testing.T) {
+		r := newFakeRunner()
+		r.errs["list"] = errors.New("exit status 1")
+		r.stderr["list"] = "cannot open 'tank/tenants': dataset does not exist"
+		m := NewManager(r)
+
+		if err := m.EnsureParent(context.Background(), "tank/tenants/alice"); err != nil {
+			t.Fatalf("EnsureParent: %v", err)
+		}
+		if !r.ran("create -p tank/tenants") {
+			t.Errorf("the parent chain was not created; calls=%v", r.calls)
+		}
+	})
+
+	t.Run("an existing parent is left alone", func(t *testing.T) {
+		r := newFakeRunner()
+		m := NewManager(r)
+
+		if err := m.EnsureParent(context.Background(), "tank/tenants/alice"); err != nil {
+			t.Fatalf("EnsureParent: %v", err)
+		}
+		if r.ran("create") {
+			t.Errorf("an existing parent was re-created; calls=%v", r.calls)
+		}
+	})
+
+	// A pool root always exists — creating it is neither possible nor
+	// meaningful, and `zfs create tank` would fail.
+	t.Run("a bare pool parent is a no-op", func(t *testing.T) {
+		r := newFakeRunner()
+		m := NewManager(r)
+
+		if err := m.EnsureParent(context.Background(), "tank/alice"); err != nil {
+			t.Fatalf("EnsureParent: %v", err)
+		}
+		if len(r.calls) != 0 {
+			t.Errorf("zfs was invoked for a pool root; calls=%v", r.calls)
+		}
+	})
 }

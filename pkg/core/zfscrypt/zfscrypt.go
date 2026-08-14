@@ -282,6 +282,46 @@ func (m *Manager) Exists(ctx context.Context, dataset string) (bool, error) {
 	return true, nil
 }
 
+// EnsureParent makes the parent of a dataset exist, creating the whole chain
+// if it does not.
+//
+// `zfs create` does not make intermediate datasets, and a tenant
+// encryptionroot is created at <root>/<tenant> where <root> is derived from
+// the daemon's storage pool. On a host that has never had an encrypted
+// container, that intermediate does not exist, and every encrypted create
+// fails with "parent does not exist" (#1341).
+//
+// The parent is deliberately created UNencrypted: it is a container for
+// datasets, not a dataset that holds data, and each tenant encryptionroot
+// below it carries its own key. Making it an encryptionroot instead would put
+// every tenant under one key — the opposite of the point.
+//
+// A parent that is a bare pool root is a no-op: pools always exist, and
+// `zfs create tank` would fail.
+func (m *Manager) EnsureParent(ctx context.Context, dataset string) error {
+	if err := validateDataset(dataset); err != nil {
+		return err
+	}
+	parent := dataset[:strings.LastIndex(dataset, "/")]
+	if !strings.Contains(parent, "/") {
+		return nil // a pool root, which always exists
+	}
+
+	exists, err := m.Exists(ctx, parent)
+	if err != nil {
+		return fmt.Errorf("check parent dataset %s: %w", parent, err)
+	}
+	if exists {
+		return nil
+	}
+
+	_, stderr, err := m.run.Run(ctx, nil, "create", "-p", parent)
+	if err != nil {
+		return fmt.Errorf("create parent dataset %s: %w: %s", parent, err, strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
 // Destroy removes a dataset. Used to clean up a half-built container so
 // a failed encrypted create leaves no partial state behind.
 func (m *Manager) Destroy(ctx context.Context, dataset string) error {

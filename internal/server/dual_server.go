@@ -145,6 +145,16 @@ type DualServerConfig struct {
 	// Runtime selects the box-lifecycle backend: "lxc" (default) or "k8s".
 	// Set via CONTAINARIUM_RUNTIME env or --runtime flag on daemon start.
 	Runtime string
+
+	// ZFSTenantRoot is the ZFS dataset each tenant's encryptionroot is
+	// created under (--zfs-tenant-root). Empty derives it from the daemon's
+	// storage pool; see DefaultTenantRoot.
+	ZFSTenantRoot string
+
+	// ZFSKeysDir is the directory holding per-tenant encryption keys
+	// (--zfs-keys-dir). Empty means no key custody is configured, which is
+	// the default and leaves every encrypted create refused.
+	ZFSKeysDir string
 }
 
 // managementRouteDomains returns the domains the daemon serves its own
@@ -268,6 +278,50 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// default and resume-on-restart silently never fired (caught live
 	// on a GCP backend while validating #1070).
 	containerServer.SetDaemonConfigStore(config.DaemonConfigStore)
+
+	// Per-tenant encrypted storage (#1341). Wired here so the create path can
+	// place an encrypted container on its tenant's pool; INERT until a
+	// KeyProvider is also configured (#1342), because encryptionHooks.enabled()
+	// is false without one. Nothing an operator can observe changes today.
+	//
+	// Failing to reach Incus (the k8s runtime, or a daemon with no local
+	// Incus) leaves encryption unwired, which makes an encrypted create fail
+	// loudly rather than land somewhere arbitrary.
+	// Key custody (#1342). This is the switch that makes encrypted=true
+	// reachable at all: without a provider, validateEncryption refuses every
+	// encrypted create, which is the state every OSS daemon ships in.
+	//
+	// Installed BEFORE the storage wiring below only for readability —
+	// SetKeyProvider re-attaches to hooks built either side of it, so the
+	// order genuinely does not matter (asserted in key_provider_wiring_test).
+	keyProvider, err := keyProviderFromDir(config.ZFSKeysDir)
+	if err != nil {
+		return nil, err
+	}
+	if keyProvider != nil {
+		containerServer.SetKeyProvider(keyProvider)
+		log.Printf("[encryption] key custody: file-based, keys under %s (--zfs-keys-dir). "+
+			"Encrypted creates are now accepted on this daemon", config.ZFSKeysDir)
+	}
+
+	if encClient, err := incus.New(); err == nil {
+		tenantRoot := config.ZFSTenantRoot
+		derived := false
+		if tenantRoot == "" {
+			tenantRoot, derived = DefaultTenantRoot(encClient), true
+		}
+		if tenantRoot == "" {
+			log.Printf("[encryption] per-tenant dataset root could not be derived from storage pool %q; "+
+				"encrypted creates will be refused until --zfs-tenant-root is set", encClient.StoragePool())
+		} else {
+			containerServer.SetEncryptionStorage(tenantRoot, encClient)
+			how := "--zfs-tenant-root"
+			if derived {
+				how = "derived from the storage pool"
+			}
+			log.Printf("[encryption] per-tenant dataset root: %s (%s)", tenantRoot, how)
+		}
+	}
 	// NOTE: metrics-export resume (StartMetricsExportIfEnabled) is
 	// deliberately NOT called here. The resumed collector snapshots the
 	// daemon's backend_id/region at build time, and neither is populated
@@ -1088,6 +1142,17 @@ skipAppHosting:
 			} else {
 				crewServer.SetRunStore(runStore)
 				log.Printf("Crew-run persistence enabled (Postgres store)")
+				// Reconcile runs the previous daemon was driving when it
+				// stopped. RunCrew records a run as RUNNING before driving it,
+				// so without this they stay RUNNING forever now that the state
+				// is durable — GetCrewRun would answer RUNNING for a run that
+				// can never finish (#1182 AC4). Best-effort: a daemon that
+				// cannot reconcile should still start.
+				if n, fErr := runStore.FailStranded(context.Background(), StrandedByRestart); fErr != nil {
+					log.Printf("Warning: could not reconcile stranded crew runs: %v", fErr)
+				} else if n > 0 {
+					log.Printf("Marked %d crew run(s) FAILED: in flight when the previous daemon stopped", n)
+				}
 			}
 			if taskQueue, qErr := NewPostgresAgentTaskQueue(context.Background(), pool); qErr != nil {
 				log.Printf("Warning: Failed to create Postgres agent task queue: %v", qErr)

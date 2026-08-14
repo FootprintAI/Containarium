@@ -200,3 +200,82 @@ func TestMemCrewRunStore_DriverMutationsDoNotRaceWithReaders(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+// #1182 AC4: a run left RUNNING across a restart must reach a terminal state.
+//
+// RunCrew records a run as RUNNING before driving it, and the store is now
+// durable, so a daemon that stops mid-run leaves that state behind. Without
+// reconciliation GetCrewRun answers RUNNING forever for a run that can never
+// finish — a persistent lie about state, which is worse than the old
+// behaviour of losing the run entirely.
+func TestMemCrewRunStore_FailStrandedTerminatesRunningRuns(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemCrewRunStore()
+
+	mustPut(t, s, &pb.CrewRun{Id: "in-flight", State: pb.CrewRunState_CREW_RUN_STATE_RUNNING})
+	mustPut(t, s, &pb.CrewRun{Id: "done", State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED, ArtifactJson: "{}"})
+	mustPut(t, s, &pb.CrewRun{Id: "already-failed", State: pb.CrewRunState_CREW_RUN_STATE_FAILED, Error: "a real failure"})
+
+	n, err := s.FailStranded(ctx, StrandedByRestart)
+	if err != nil {
+		t.Fatalf("FailStranded: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("reconciled %d runs, want 1 — only the in-flight one was stranded", n)
+	}
+
+	got, _, _ := s.Get(ctx, "in-flight")
+	if got.State != pb.CrewRunState_CREW_RUN_STATE_FAILED {
+		t.Errorf("state = %v, want FAILED — a run nothing is driving must not keep claiming to run",
+			got.State)
+	}
+	if got.Error != StrandedByRestart {
+		t.Errorf("error = %q, want the restart reason — an operator has to be able to tell this "+
+			"from a crew that genuinely failed", got.Error)
+	}
+}
+
+// Terminal runs must be left exactly as they are: overwriting a completed
+// run's artifact, or a failed run's real error, would destroy the record of
+// what actually happened.
+func TestMemCrewRunStore_FailStrandedLeavesTerminalRunsAlone(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemCrewRunStore()
+
+	mustPut(t, s, &pb.CrewRun{Id: "done", State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED, ArtifactJson: "{}"})
+	mustPut(t, s, &pb.CrewRun{Id: "failed", State: pb.CrewRunState_CREW_RUN_STATE_FAILED, Error: "a real failure"})
+
+	if _, err := s.FailStranded(ctx, StrandedByRestart); err != nil {
+		t.Fatalf("FailStranded: %v", err)
+	}
+
+	done, _, _ := s.Get(ctx, "done")
+	if done.State != pb.CrewRunState_CREW_RUN_STATE_COMPLETED || done.ArtifactJson != "{}" {
+		t.Errorf("a completed run was altered: state=%v artifact=%q", done.State, done.ArtifactJson)
+	}
+	failed, _, _ := s.Get(ctx, "failed")
+	if failed.Error != "a real failure" {
+		t.Errorf("a genuine failure reason was overwritten with the restart reason: %q", failed.Error)
+	}
+}
+
+// Running it twice must not keep re-reporting the same runs, or a restart loop
+// would log a growing number of reconciliations that are not happening.
+func TestMemCrewRunStore_FailStrandedIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemCrewRunStore()
+	mustPut(t, s, &pb.CrewRun{Id: "in-flight", State: pb.CrewRunState_CREW_RUN_STATE_RUNNING})
+
+	first, _ := s.FailStranded(ctx, StrandedByRestart)
+	second, _ := s.FailStranded(ctx, StrandedByRestart)
+	if first != 1 || second != 0 {
+		t.Errorf("counts were %d then %d, want 1 then 0", first, second)
+	}
+}
+
+func mustPut(t *testing.T, s CrewRunStore, r *pb.CrewRun) {
+	t.Helper()
+	if err := s.Put(context.Background(), r); err != nil {
+		t.Fatalf("put %s: %v", r.GetId(), err)
+	}
+}
