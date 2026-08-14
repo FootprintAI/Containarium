@@ -115,6 +115,10 @@ func (m *Manager) MetricsHandler() http.HandlerFunc {
 		// BACKEND; this describes the sentinel), so it is rendered separately
 		// and simply appended to the same exposition.
 		fmt.Fprint(w, renderProcessMetrics(collectRuntimeStats(), readProcStats()))
+		// Backend failover + per-backend health (#1358). The preemption
+		// counters above miss a loss that failover absorbs — see
+		// backend_metrics.go for the event that proved it.
+		fmt.Fprint(w, renderBackendMetrics(m.FailoverCount(), m.BackendHealthSnapshot()))
 	}
 }
 
