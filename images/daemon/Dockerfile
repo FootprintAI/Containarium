@@ -16,7 +16,7 @@
 # remain the binary release (`make build-release`).
 
 # --- build the daemon ------------------------------------------------------
-FROM golang:1.26.5-bookworm AS build
+FROM golang:1.26.6-bookworm AS build
 ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
