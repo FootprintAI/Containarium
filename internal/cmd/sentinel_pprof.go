@@ -197,6 +197,13 @@ func runSentinelPprof(cmd *cobra.Command, args []string) error {
 
 	// 0600: the profile may contain tokens and key material lifted straight
 	// out of the sentinel's heap.
+	//
+	// #nosec G304 -- outPath is the operator's own --output flag on a CLI they
+	// are already running under their own uid. Choosing where the file lands
+	// is the flag's entire purpose; there is no fixed root to scope it under,
+	// and the traversal G304 warns about would only reach paths the caller can
+	// already write by hand. Same shape as internal/cmd/recover.go's config
+	// path.
 	f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", outPath, err)

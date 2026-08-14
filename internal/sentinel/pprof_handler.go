@@ -128,7 +128,18 @@ func servePprofNamed(w http.ResponseWriter, r *http.Request, name string) {
 	if err := p.WriteTo(w, debug); err != nil {
 		// Headers are already out; the truncated body is the only signal the
 		// client gets, so make sure the operator sees it host-side too.
-		log.Printf("[sentinel] pprof: writing %s profile failed: %v", name, err)
+		//
+		// Log p.Name(), not the request-derived `name`: they are equal by
+		// construction here (Lookup succeeded), but p.Name() comes from the
+		// runtime's own profile registry rather than the URL, so no caller
+		// can smuggle newlines into the journal.
+		//
+		// #nosec G706 -- p.Name() is a registered runtime profile name, and
+		// %q quotes it besides. gosec chases the taint back through
+		// pprof.Lookup to the request path and doesn't recognize either as a
+		// sanitizer — same false positive already annotated in
+		// binaryserver.go.
+		log.Printf("[sentinel] pprof: writing %q profile failed: %v", p.Name(), err)
 	}
 }
 
