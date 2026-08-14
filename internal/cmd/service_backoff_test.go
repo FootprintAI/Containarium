@@ -42,10 +42,27 @@ func unitSources(t *testing.T) map[string]string {
 		return string(raw)
 	}
 
+	// The sentinel entry is the GENERATED unit, not its source text. It used
+	// to be read("sentinel_service.go"); when #1350 moved the template into
+	// sentinel_unit.go, that read kept succeeding against a file that no
+	// longer held a unit, and every guard below silently stopped covering the
+	// sentinel. Rendering it makes these tests immune to where the template
+	// lives — and is closer to what actually ships anyway.
+	sentinelUnit, err := buildSentinelUnit(sentinelUnitConfig{
+		SpotVM:     "spot-vm",
+		Zone:       "zone",
+		Project:    "project",
+		MemoryHigh: defaultSentinelMemoryHigh,
+		MemoryMax:  defaultSentinelMemoryMax,
+	})
+	if err != nil {
+		t.Fatalf("buildSentinelUnit: %v", err)
+	}
+
 	return map[string]string{
 		"daemon (systemdServiceTemplate)":       systemdServiceTemplate,
 		"daemon (scripts/containarium.service)": read("..", "..", "scripts", "containarium.service"),
-		"sentinel (sentinel_service.go)":        read("sentinel_service.go"),
+		"sentinel (generated unit)":             sentinelUnit,
 	}
 }
 

@@ -14,9 +14,11 @@ import (
 const sentinelSystemdServicePath = "/etc/systemd/system/containarium-sentinel.service"
 
 var (
-	sentinelSvcSpotVM  string
-	sentinelSvcZone    string
-	sentinelSvcProject string
+	sentinelSvcSpotVM     string
+	sentinelSvcZone       string
+	sentinelSvcProject    string
+	sentinelSvcMemoryHigh string
+	sentinelSvcMemoryMax  string
 )
 
 var sentinelServiceCmd = &cobra.Command{
@@ -57,6 +59,10 @@ func init() {
 	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcSpotVM, "spot-vm", "", "Name of the backend spot VM instance (required)")
 	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcZone, "zone", "", "GCP zone (required)")
 	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcProject, "project", "", "GCP project ID (required)")
+	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcMemoryHigh, "memory-high", defaultSentinelMemoryHigh,
+		"Soft memory limit; past it the kernel reclaims inside the sentinel's cgroup instead of stalling the host (#1350). Percentage of RAM or a size like 512M.")
+	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcMemoryMax, "memory-max", defaultSentinelMemoryMax,
+		"Hard memory limit; exceeding it restarts the sentinel (Restart=always) rather than letting the OOM killer take the host down (#1350).")
 }
 
 func runSentinelServiceInstall(cmd *cobra.Command, args []string) error {
@@ -68,53 +74,16 @@ func runSentinelServiceInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--spot-vm, --zone, and --project are required")
 	}
 
-	serviceContent := fmt.Sprintf(`[Unit]
-Description=Containarium Sentinel (HA Proxy)
-Documentation=https://github.com/footprintai/Containarium
-After=network.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/containarium sentinel \
-  --spot-vm %s \
-  --zone %s \
-  --project %s
-Restart=always
-# Keep retrying forever (StartLimitIntervalSec=0 above), but not at full
-# speed. A persistent start failure used to retry every 5s indefinitely:
-# one production host crash-looped 1655 times in ~4 hours, pinning a core
-# and — because each cycle rewrites the bundled monitoring config —
-# restarting alertmanager and vmalert every 7 seconds, so alerting could
-# not have fired during the incident, including on the incident itself
-# (#1152).
-#
-# "Never give up" and "retry at full speed" are separable. RestartSteps
-# interpolates the delay geometrically from RestartSec to
-# RestartMaxDelaySec, so a transient incus hiccup at boot still recovers
-# in seconds while a persistent failure settles to one attempt every 5
-# minutes. That same 4-hour outage would cost ~50 attempts, not 1655.
-#
-# Requires systemd 254+. The documented host floor is Ubuntu 24.04 LTS
-# ("or later", README), which ships 255. On an older host systemd warns
-# and continues, degrading to the previous fixed-interval behaviour
-# rather than failing to start — so this cannot brick a host that
-# predates the directives.
-RestartSec=5s
-RestartSteps=6
-RestartMaxDelaySec=5min
-User=root
-Group=root
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=containarium-sentinel
-
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-`, sentinelSvcSpotVM, sentinelSvcZone, sentinelSvcProject)
+	serviceContent, err := buildSentinelUnit(sentinelUnitConfig{
+		SpotVM:     sentinelSvcSpotVM,
+		Zone:       sentinelSvcZone,
+		Project:    sentinelSvcProject,
+		MemoryHigh: sentinelSvcMemoryHigh,
+		MemoryMax:  sentinelSvcMemoryMax,
+	})
+	if err != nil {
+		return err
+	}
 
 	if err := os.WriteFile(sentinelSystemdServicePath, []byte(serviceContent), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)

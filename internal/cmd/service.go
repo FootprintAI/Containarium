@@ -60,6 +60,21 @@ RestartMaxDelaySec=5min
 User=root
 Group=root
 
+# Memory accounting only — deliberately no MemoryMax here (#1350).
+#
+# The sentinel unit caps its memory, because it is a pure forwarder whose
+# working set is small and well understood (~82 MB) and whose host is 1-2 GB.
+# The daemon is not that: it manages containers, ZFS datasets and gRPC traffic,
+# and its legitimate peak is workload-dependent. A guessed cap on the busiest
+# component risks restart loops under normal load, which is a worse failure
+# than the slow leak a cap guards against.
+#
+# Accounting is the prerequisite either way: it costs nothing, exposes the
+# cgroup memory statistics, and is what makes the working set measurable so a
+# cap can later be chosen from data instead of guessed. #1349 went unnoticed
+# for 27 days precisely because nothing was measuring.
+MemoryAccounting=yes
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
