@@ -76,6 +76,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   available come from separate probes and a skewed read could otherwise
   surface a negative "bytes in use".
 
+## [0.66.0] - 2026-08-14
+
+Scope is everything merged to `main` since v0.65.0 (2026-08-08): 97 commits,
+no breaking changes.
+
+Note: the `[Unreleased]` section above predates v0.62.0 and was not moved into
+the v0.62.0-v0.65.0 releases when those were tagged. It is left untouched here
+rather than being folded into this release, which would misattribute already
+shipped work. See the tracking issue for reconstructing those four sections.
+
+### Added
+
+- **Per-tenant ZFS native encryption for container storage** (#1199). Dataset
+  operations (#1230), pre-start / post-stop hooks (#1232), snapshot and
+  rollback accounting under encryption (#1244, #1258), an explicit storage pool
+  threaded through the create path (#1339, #1345), `EnsureTenantStorage`
+  replacing the pre-create hook (#1346), and `--encrypted` now actually
+  encrypting rather than being accepted and ignored (#1347, #1294).
+  `--zfs-keys-dir` configures key custody (#1342). Verified against a real ZFS
+  pool in CI, including that one tenant's key cannot open another tenant's data
+  (#1241, #1242, #1243).
+
+- **Tenant egress allowlists on the Kubernetes backend** (#1188). A tenant ACL
+  compiles to a NetworkPolicy on top of the default-deny floor, refusing what
+  it cannot express rather than silently narrowing it (#1260, #1261), with a
+  reconciler wired into the daemon (#1263, #1264) and enforcement proven in the
+  e2e lane under Calico (#1235, #1265, #1273).
+
+- **Tenant secrets materialized into the box** (#1190) — delivered to the
+  backend the box actually runs on (#1276), mounted into K8s boxes (#1274), and
+  used to build the agent-box session environment (#1275).
+
+- **SSH session audit on the Kubernetes backend** (#1189). Dropbear login lines
+  are parsed into audit sessions (#1267) behind a backend-neutral session
+  source (#1268, #1270, #1271).
+
+- **Sentinel self-diagnostics** — an admin-gated `/debug/pprof/*` endpoint plus
+  a `containarium sentinel pprof` CLI (#1352), and process-health series
+  (`process_resident_memory_bytes`, `go_goroutines`, `process_open_fds`) on
+  `/metrics` (#1351). Both exist because a ~18 MB/day leak (#1349) ran for 27
+  days undetected and was OOM-killed before anything could profile it.
+
+- **Durable agent and crew state** (#1182) — a crew-run store (#1316) and agent
+  task queue (#1318) behind interfaces, with runs stranded RUNNING by a restart
+  reconciled on startup (#1324).
+
+- **Runner provisioning at organization scope**, and targeting a backend or
+  pool (#1254, #1255). **Configurable incus storage pool** (#1252).
+
+### Fixed
+
+- **The tamper-evident audit chain never verified, and forked under load**
+  (#1326).
+- **Sentinel memory is now bounded by its unit** (#1350) — `MemoryHigh=35%` /
+  `MemoryMax=50%` / `OOMPolicy=stop`, so a leak restarts one process instead of
+  stalling the host. Daemon units get `MemoryAccounting=yes` and deliberately
+  no cap.
+- **Go 1.26.5 -> 1.26.6** (#1354), clearing 7 reachable standard-library
+  vulnerabilities that were failing govulncheck on every pull request.
+- Sentinel: re-assert the loopback alias when a spot reconnects (#1256),
+  fast-retry a failed key/cert sync rather than waiting a full interval
+  (#1236), verify the tunnel handshake before reporting a successful pool join
+  (#1246), and bound the systemd restart rate while still retrying forever
+  (#1233).
+- `ContainerDataset` named a dataset that does not exist (#1335). Postgres run
+  stores were never actually constructed (#1320). A crew run is now recorded
+  while in flight and cloned in the store (#1298). The K8s network-policy
+  reconciler stops on shutdown (#1302). Peers forward the whole create request
+  rather than a hand-copied subset (#1249). The layer4 app is rebuilt after
+  Caddy reverts to its stub (#1245). An alert severity that routes nowhere is
+  rejected (#1304). The gateway emits the `stack` field the web UI already
+  reads (#1323).
+
+### Changed
+
+- **Strong typing over magic strings** — a typed backup engine enum (#1157,
+  #1303), a `SecretDelivery` enum (#1229), typed SSE payloads (#1310), a typed
+  container list (#1309), and a real context on `FetchPeerPKI` (#1308).
+- OpenTelemetry bumped to 1.45.0 / 0.70.0 (#1299); buf plugins pinned to
+  v2.30.0 (#1297).
+
+### Internal
+
+- Stores are now exercised against a real Postgres rather than skipping
+  unconditionally (#1300, #1322, #1325, #1327-#1331), an Incus-exercisable lane
+  covers the daemon's `Create()` path (#1334), CI gates every PR rather than
+  only those targeting `main` (#1237), and lint now covers code behind build
+  tags (#1313). Sentinel tests no longer require `CAP_NET_ADMIN`, mutate the
+  host, or bind ports the machine may already be using (#1278, #1279, #1301,
+  #1306, #1307). Concrete backend hostnames anonymized in test fixtures
+  (#1239).
+
+**Full diff**: https://github.com/FootprintAI/Containarium/compare/v0.65.0...v0.66.0
+
 ## [0.61.0] - 2026-07-27
 
 ### Added
