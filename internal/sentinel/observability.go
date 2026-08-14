@@ -110,6 +110,11 @@ func (m *Manager) MetricsHandler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		fmt.Fprint(w, m.renderMetrics(state, outageSecs))
+		// Process health (#1351) — resident memory, goroutines, fds. Separate
+		// concern from the preemption signal above (that describes the
+		// BACKEND; this describes the sentinel), so it is rendered separately
+		// and simply appended to the same exposition.
+		fmt.Fprint(w, renderProcessMetrics(collectRuntimeStats(), readProcStats()))
 	}
 }
 
