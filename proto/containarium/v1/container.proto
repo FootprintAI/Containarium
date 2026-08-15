@@ -1250,6 +1250,31 @@ message AdoptMigratedContainerRequest {
   string zfs_pool = 4;
 }
 
+// DeleteTenantStorageRequest tears down a departing tenant's encrypted
+// storage (#1343): the Incus storage pool, and the encrypted dataset it is
+// sourced at.
+//
+// Refused while the tenant still has containers — deleting the pool from
+// under a live box destroys its storage.
+message DeleteTenantStorageRequest {
+  // The tenant being offboarded.
+  string tenant = 1;
+}
+
+// DeleteTenantStorageResponse records what was destroyed, so an operator has
+// a statement of what this removed rather than only that it succeeded.
+message DeleteTenantStorageResponse {
+  // Human-readable summary.
+  string message = 1;
+
+  // The Incus storage pool that was deleted.
+  string storage_pool = 2;
+
+  // The ZFS dataset that was destroyed — the tenant's encryptionroot, and
+  // with it the only thing that could decrypt their data.
+  string dataset = 3;
+}
+
 // RewrapContainerRequest rotates the key protecting a container's data
 // (#1204), driven by the control plane during a maintenance window.
 //

@@ -115,8 +115,11 @@ func (f *fakeRefStore) ListEncrypted() ([]string, error) {
 type fakePools struct {
 	sources   map[string]string
 	created   []string
+	deleted   []string
+	onDelete  func()
 	createErr error
 	sourceErr error
+	deleteErr error
 }
 
 func newFakePools() *fakePools { return &fakePools{sources: map[string]string{}} }
@@ -127,6 +130,22 @@ func (f *fakePools) CreateZFSPool(name, source string) error {
 	}
 	f.created = append(f.created, name)
 	f.sources[name] = source
+	return nil
+}
+
+func (f *fakePools) DeleteStoragePool(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	// onDelete lets a test observe what had ALREADY happened at the moment
+	// the pool was deleted. A flag set here unconditionally would record
+	// nothing about order — it would be true whichever way round the calls
+	// ran, which is a check that cannot fail.
+	if f.onDelete != nil {
+		f.onDelete()
+	}
+	f.deleted = append(f.deleted, name)
+	delete(f.sources, name)
 	return nil
 }
 

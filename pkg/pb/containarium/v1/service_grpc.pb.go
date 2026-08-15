@@ -28,6 +28,7 @@ const (
 	ContainerService_StopContainer_FullMethodName             = "/containarium.v1.ContainerService/StopContainer"
 	ContainerService_ResizeContainer_FullMethodName           = "/containarium.v1.ContainerService/ResizeContainer"
 	ContainerService_MoveContainer_FullMethodName             = "/containarium.v1.ContainerService/MoveContainer"
+	ContainerService_DeleteTenantStorage_FullMethodName       = "/containarium.v1.ContainerService/DeleteTenantStorage"
 	ContainerService_RewrapContainer_FullMethodName           = "/containarium.v1.ContainerService/RewrapContainer"
 	ContainerService_PrepareEncryptedMigration_FullMethodName = "/containarium.v1.ContainerService/PrepareEncryptedMigration"
 	ContainerService_AdoptMigratedContainer_FullMethodName    = "/containarium.v1.ContainerService/AdoptMigratedContainer"
@@ -109,6 +110,18 @@ type ContainerServiceClient interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(ctx context.Context, in *MoveContainerRequest, opts ...grpc.CallOption) (*MoveContainerResponse, error)
+	// DeleteTenantStorage tears down a departing tenant's encrypted storage
+	// (#1343) — the Incus storage pool, then the encrypted dataset it is
+	// sourced at, in that order.
+	//
+	// The order is not cosmetic: destroying the dataset first leaves a pool
+	// pointing at nothing, and the daemon walks every pool at startup, so a
+	// mis-ordered teardown breaks startup for every tenant on the host.
+	//
+	// Refused while the tenant still has containers. DESTRUCTIVE and
+	// irreversible: the dataset is the tenant's encryptionroot, so destroying
+	// it destroys the only thing that could decrypt their data. Admin only.
+	DeleteTenantStorage(ctx context.Context, in *DeleteTenantStorageRequest, opts ...grpc.CallOption) (*DeleteTenantStorageResponse, error)
 	// RewrapContainer rotates the key protecting a container's data onto
 	// new key material, without rewriting the data (#1204).
 	//
@@ -429,6 +442,16 @@ func (c *containerServiceClient) MoveContainer(ctx context.Context, in *MoveCont
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MoveContainerResponse)
 	err := c.cc.Invoke(ctx, ContainerService_MoveContainer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) DeleteTenantStorage(ctx context.Context, in *DeleteTenantStorageRequest, opts ...grpc.CallOption) (*DeleteTenantStorageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteTenantStorageResponse)
+	err := c.cc.Invoke(ctx, ContainerService_DeleteTenantStorage_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -937,6 +960,18 @@ type ContainerServiceServer interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error)
+	// DeleteTenantStorage tears down a departing tenant's encrypted storage
+	// (#1343) — the Incus storage pool, then the encrypted dataset it is
+	// sourced at, in that order.
+	//
+	// The order is not cosmetic: destroying the dataset first leaves a pool
+	// pointing at nothing, and the daemon walks every pool at startup, so a
+	// mis-ordered teardown breaks startup for every tenant on the host.
+	//
+	// Refused while the tenant still has containers. DESTRUCTIVE and
+	// irreversible: the dataset is the tenant's encryptionroot, so destroying
+	// it destroys the only thing that could decrypt their data. Admin only.
+	DeleteTenantStorage(context.Context, *DeleteTenantStorageRequest) (*DeleteTenantStorageResponse, error)
 	// RewrapContainer rotates the key protecting a container's data onto
 	// new key material, without rewriting the data (#1204).
 	//
@@ -1199,6 +1234,9 @@ func (UnimplementedContainerServiceServer) ResizeContainer(context.Context, *Res
 }
 func (UnimplementedContainerServiceServer) MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MoveContainer not implemented")
+}
+func (UnimplementedContainerServiceServer) DeleteTenantStorage(context.Context, *DeleteTenantStorageRequest) (*DeleteTenantStorageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteTenantStorage not implemented")
 }
 func (UnimplementedContainerServiceServer) RewrapContainer(context.Context, *RewrapContainerRequest) (*RewrapContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RewrapContainer not implemented")
@@ -1520,6 +1558,24 @@ func _ContainerService_MoveContainer_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).MoveContainer(ctx, req.(*MoveContainerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_DeleteTenantStorage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteTenantStorageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).DeleteTenantStorage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_DeleteTenantStorage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).DeleteTenantStorage(ctx, req.(*DeleteTenantStorageRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2412,6 +2468,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MoveContainer",
 			Handler:    _ContainerService_MoveContainer_Handler,
+		},
+		{
+			MethodName: "DeleteTenantStorage",
+			Handler:    _ContainerService_DeleteTenantStorage_Handler,
 		},
 		{
 			MethodName: "RewrapContainer",

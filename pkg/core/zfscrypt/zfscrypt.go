@@ -356,6 +356,37 @@ func (m *Manager) EnsureParent(ctx context.Context, dataset string) error {
 	return nil
 }
 
+// HasChildren reports whether a dataset has any descendants.
+//
+// The offboarding guard (#1343): a tenant's encryptionroot with children
+// still holds container datasets, and deleting its pool would destroy them.
+//
+// Asked of ZFS rather than of the daemon's own records deliberately. A record
+// can be lost — a config key cleared, a store restored from an older backup —
+// and an enumeration of records would then report "no containers" for a
+// tenant whose data is still there. Storage is the thing being destroyed, so
+// storage is what gets asked.
+func (m *Manager) HasChildren(ctx context.Context, dataset string) (bool, error) {
+	if err := validateDataset(dataset); err != nil {
+		return false, err
+	}
+	stdout, stderr, err := m.run.Run(ctx, nil, "list", "-H", "-o", "name", "-r", dataset)
+	if err != nil {
+		return false, fmt.Errorf("list children of %s: %w: %s", dataset, err, strings.TrimSpace(stderr))
+	}
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		name := strings.TrimSpace(line)
+		// The recursive listing includes the dataset itself, and a sibling
+		// like <dataset>2 shares its prefix — only a "/" separated descendant
+		// counts, or a tenant could never be offboarded while a
+		// similarly-named one exists.
+		if name != "" && strings.HasPrefix(name, dataset+"/") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Destroy removes a dataset. Used to clean up a half-built container so
 // a failed encrypted create leaves no partial state behind.
 func (m *Manager) Destroy(ctx context.Context, dataset string) error {

@@ -114,6 +114,7 @@ func (s *ContainerServer) SetEncryptionStorage(tenantRoot string, client *incus.
 		incusStoragePools{
 			createPool: client.CreateZFSPool,
 			poolSource: client.StoragePoolSource,
+			deletePool: client.DeleteStoragePool,
 		},
 	)
 }

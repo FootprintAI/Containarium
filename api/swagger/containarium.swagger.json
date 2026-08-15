@@ -4971,6 +4971,39 @@
         ]
       }
     },
+    "/v1/tenants/{tenant}/storage": {
+      "delete": {
+        "summary": "Destroy a departing tenant's encrypted storage",
+        "description": "Deletes the tenant's Incus storage pool and then the encrypted dataset it was sourced at. Refused while the tenant still has containers. Irreversible — the dataset is the tenant's encryptionroot, so this destroys the only key path to their data. Admin only.",
+        "operationId": "ContainerService_DeleteTenantStorage",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTenantStorageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "The tenant being offboarded.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/tenants/{username}/compose/disable": {
       "post": {
         "summary": "Disable stops the autostart unit. Does NOT stop the running\ncontainers — use the compose CLI for that.",
@@ -8088,6 +8121,24 @@
           "type": "string"
         }
       }
+    },
+    "DeleteTenantStorageResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Human-readable summary."
+        },
+        "storagePool": {
+          "type": "string",
+          "description": "The Incus storage pool that was deleted."
+        },
+        "dataset": {
+          "type": "string",
+          "description": "The ZFS dataset that was destroyed — the tenant's encryptionroot, and\nwith it the only thing that could decrypt their data."
+        }
+      },
+      "description": "DeleteTenantStorageResponse records what was destroyed, so an operator has\na statement of what this removed rather than only that it succeeded."
     },
     "DeleteVolumeResponse": {
       "type": "object",

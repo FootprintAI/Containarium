@@ -173,6 +173,28 @@ service ContainerService {
     };
   }
 
+  // DeleteTenantStorage tears down a departing tenant's encrypted storage
+  // (#1343) — the Incus storage pool, then the encrypted dataset it is
+  // sourced at, in that order.
+  //
+  // The order is not cosmetic: destroying the dataset first leaves a pool
+  // pointing at nothing, and the daemon walks every pool at startup, so a
+  // mis-ordered teardown breaks startup for every tenant on the host.
+  //
+  // Refused while the tenant still has containers. DESTRUCTIVE and
+  // irreversible: the dataset is the tenant's encryptionroot, so destroying
+  // it destroys the only thing that could decrypt their data. Admin only.
+  rpc DeleteTenantStorage(DeleteTenantStorageRequest) returns (DeleteTenantStorageResponse) {
+    option (google.api.http) = {
+      delete: "/v1/tenants/{tenant}/storage"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Destroy a departing tenant's encrypted storage";
+      description: "Deletes the tenant's Incus storage pool and then the encrypted dataset it was sourced at. Refused while the tenant still has containers. Irreversible — the dataset is the tenant's encryptionroot, so this destroys the only key path to their data. Admin only.";
+      tags: "Container Operations";
+    };
+  }
+
   // RewrapContainer rotates the key protecting a container's data onto
   // new key material, without rewriting the data (#1204).
   //

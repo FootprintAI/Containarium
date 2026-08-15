@@ -67,6 +67,11 @@ func (m *memPools) CreateZFSPool(name, source string) error {
 	return nil
 }
 
+func (m *memPools) DeleteStoragePool(name string) error {
+	delete(m.sources, name)
+	return nil
+}
+
 func (m *memPools) StoragePoolSource(name string) (string, bool, error) {
 	src, ok := m.sources[name]
 	return src, ok, nil

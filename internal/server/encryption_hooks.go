@@ -64,6 +64,9 @@ type storagePoolAPI interface {
 	CreateZFSPool(name, source string) error
 	// StoragePoolSource reports where a pool points, and whether it exists.
 	StoragePoolSource(name string) (source string, exists bool, err error)
+	// DeleteStoragePool removes a pool. Absent is success, so a teardown
+	// interrupted halfway can be re-run (#1343).
+	DeleteStoragePool(name string) error
 }
 
 // encryptionHooks carries the collaborators the lifecycle hooks need.
@@ -492,6 +495,7 @@ func (s incusEncryptionState) SetPool(containerName, pool string) error {
 type incusStoragePools struct {
 	createPool func(name, source string) error
 	poolSource func(name string) (source string, exists bool, err error)
+	deletePool func(name string) error
 }
 
 func (p incusStoragePools) CreateZFSPool(name, source string) error {
@@ -500,6 +504,10 @@ func (p incusStoragePools) CreateZFSPool(name, source string) error {
 
 func (p incusStoragePools) StoragePoolSource(name string) (string, bool, error) {
 	return p.poolSource(name)
+}
+
+func (p incusStoragePools) DeleteStoragePool(name string) error {
+	return p.deletePool(name)
 }
 
 // ListEncrypted returns the containers carrying a key ref, so a rotation can
