@@ -93,15 +93,33 @@ func TestTunnelIntegration(t *testing.T) {
 	registry := NewTunnelRegistry()
 	tunnelServer := NewTunnelServer("", policyAny(token), registry)
 
+	// These callbacks run on the tunnel server's own goroutines, which
+	// OUTLIVE this function: a session closing after the test returns still
+	// invokes OnDisconnect. So they must not touch `t` at all.
+	//
+	// They used to log through t.Logf, and the data race that produced was
+	// real — the read of the test's state raced tRunner's write marking the
+	// test complete (#1374). Calling t.Log after a test returns is
+	// documented misuse; here it also fired only sometimes, depending on
+	// when the session happened to close, so it presented as a flake in
+	// unrelated PRs.
+	//
+	// The sends are non-blocking for the same reason. A buffered-1 channel
+	// accepts the first event; a second would block the server's goroutine
+	// forever, and nothing reads disconnectCh at all.
 	connectCh := make(chan *TunnelSpot, 1)
 	disconnectCh := make(chan string, 1)
 	tunnelServer.OnConnect = func(spot *TunnelSpot) {
-		t.Logf("[integration] spot connected: %s at %s", spot.ID, spot.LocalIP)
-		connectCh <- spot
+		select {
+		case connectCh <- spot:
+		default:
+		}
 	}
 	tunnelServer.OnDisconnect = func(spot *TunnelSpot) {
-		t.Logf("[integration] spot disconnected: %s", spot.ID)
-		disconnectCh <- spot.ID
+		select {
+		case disconnectCh <- spot.ID:
+		default:
+		}
 	}
 
 	go func() { _ = tunnelServer.Serve(ctx, connMux.TunnelListener()) }()
