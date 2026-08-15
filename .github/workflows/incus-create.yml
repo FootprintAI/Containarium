@@ -196,35 +196,48 @@ jobs:
       # v0.66.0 unverified: flag -> KeyProvider -> encrypted create only
       # assembles on a running daemon, and nothing in CI assembled one.
       #
-      # Asserted against the HOST's ZFS state rather than the daemon's report
-      # of itself: a daemon claiming success is the thing under test.
+      # Reached over the REST surface with a JWT rather than gRPC+mTLS: the
+      # CLI looks for a client certificate bundle against a gRPC address even
+      # when the daemon has mTLS off, and generating a CA here would test the
+      # certificate tooling rather than the encrypted-create path.
+      #
+      # Asserted against the HOST's ZFS state, never the daemon's report of
+      # itself — a daemon claiming success is the thing under test.
       - name: Create an encrypted container through the daemon and its flags
+        env:
+          JWT_SECRET: lane-only-secret-not-a-credential
         run: |
           set -euo pipefail
           go build -o /tmp/containarium ./cmd/containarium
           sudo mkdir -p /etc/containarium/keys
 
           # --standalone skips the core LXCs (Postgres, Caddy). With no
-          # Postgres reachable the daemon waits ~2 minutes and then proceeds
-          # with those services disabled, which is fine here — none of them
-          # are on the encrypted-create path.
-          sudo /tmp/containarium daemon --standalone \
+          # Postgres reachable the daemon waits ~2 minutes and proceeds with
+          # those services disabled; none are on the encrypted-create path.
+          sudo /tmp/containarium daemon --standalone --rest \
+            --jwt-secret "$JWT_SECRET" \
             --zfs-keys-dir=/etc/containarium/keys \
             > /tmp/daemon.log 2>&1 &
 
-          # Readiness: the daemon answers RPCs. There is no health endpoint on
-          # the gRPC surface, so ask it something real.
+          TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
+                    --expiry 24h --secret "$JWT_SECRET" | tr -d " \t" | grep -E "^ey" | head -1)
+          test -n "$TOKEN" || { echo "::error::could not mint a token"; exit 1; }
+          export CONTAINARIUM_TOKEN="$TOKEN"
+          SERVER="http://localhost:8080"
+
+          # Readiness: the daemon answers a real RPC. Both the daemon's log
+          # and the CLIENT's error are printed on failure — the first attempt
+          # at this printed only the daemon's, which said it was serving,
+          # turning "the client cannot authenticate" into "the daemon is
+          # broken". Those lead to opposite investigations.
           ready=""
           for i in $(seq 1 60); do
-            if sudo /tmp/containarium --server localhost:50051 list >/tmp/probe.log 2>&1; then
+            if /tmp/containarium --server "$SERVER" list >/tmp/probe.log 2>&1; then
               ready=yes; break
             fi
             sleep 5
           done
           if [ -z "$ready" ]; then
-            # The daemon's own log and the CLIENT's error are different
-            # stories, and the first attempt at this hid the second. Print
-            # both: "never became ready" is not a diagnosis.
             echo "::error::the daemon never answered the CLI"
             echo "--- last CLI probe ---"; cat /tmp/probe.log || true
             echo "--- daemon log tail ---"; tail -40 /tmp/daemon.log
@@ -233,13 +246,13 @@ jobs:
           grep -E "\[encryption\]" /tmp/daemon.log || true
 
           TENANT="lane$$"
-          sudo /tmp/containarium --server localhost:50051 create "$TENANT" \
+          /tmp/containarium --server "$SERVER" create "$TENANT" \
             --no-ssh-key --podman=false --disk 5GB --encrypted
 
-          # The claim, checked on the host. The instance must sit under the
+          # The claim, checked on the host: the instance sits under the
           # TENANT's encryptionroot, not the pool default.
           DS=$(sudo zfs list -H -o name -r | grep "/containers/${TENANT}-container$" | head -1)
-          test -n "$DS" || { echo "::error::no dataset for ${TENANT}-container"; exit 1; }
+          test -n "$DS" || { echo "::error::no dataset for ${TENANT}-container"; sudo zfs list -r; exit 1; }
           ROOT=$(sudo zfs get -H -o value encryptionroot "$DS")
           echo "instance $DS has encryptionroot $ROOT"
           case "$ROOT" in
@@ -247,25 +260,37 @@ jobs:
             *) echo "::error::encryptionroot is $ROOT — the container is not under its tenant's key"; exit 1 ;;
           esac
 
-          # And a stopped container must be ciphertext: the key unloads.
-          sudo /tmp/containarium --server localhost:50051 stop "$TENANT" || true
+          # And a stopped container is ciphertext: the key unloads.
+          /tmp/containarium --server "$SERVER" stop "$TENANT" || true
           sleep 5
           STATUS=$(sudo zfs get -H -o value keystatus "$ROOT")
           echo "keystatus after stop: $STATUS"
+          test "$STATUS" = "unavailable" || {
+            echo "::error::the tenant key is still $STATUS after its last container stopped — a stopped container is NOT ciphertext at rest"; exit 1; }
 
-          sudo /tmp/containarium --server localhost:50051 delete "$TENANT" --force || true
+          /tmp/containarium --server "$SERVER" delete "$TENANT" --force || true
           sudo pkill -f "containarium daemon" || true
+          sleep 3
 
       # The closed default is the promise every OSS daemon ships with, so it
       # gets an assertion rather than trust: without the flag, the same create
-      # must be refused.
+      # must be refused, and refused for the documented reason.
       - name: Without --zfs-keys-dir the same create is refused
+        env:
+          JWT_SECRET: lane-only-secret-not-a-credential
         run: |
           set -euo pipefail
-          sudo /tmp/containarium daemon --standalone > /tmp/daemon-nokeys.log 2>&1 &
+          sudo /tmp/containarium daemon --standalone --rest \
+            --jwt-secret "$JWT_SECRET" > /tmp/daemon-nokeys.log 2>&1 &
+
+          TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
+                    --expiry 24h --secret "$JWT_SECRET" | tr -d " \t" | grep -E "^ey" | head -1)
+          export CONTAINARIUM_TOKEN="$TOKEN"
+          SERVER="http://localhost:8080"
+
           ready=""
           for i in $(seq 1 60); do
-            if sudo /tmp/containarium --server localhost:50051 list >/tmp/probe2.log 2>&1; then
+            if /tmp/containarium --server "$SERVER" list >/tmp/probe2.log 2>&1; then
               ready=yes; break
             fi
             sleep 5
@@ -276,14 +301,14 @@ jobs:
             tail -40 /tmp/daemon-nokeys.log; exit 1
           fi
 
-          if sudo /tmp/containarium --server localhost:50051 create "nokeys$$" \
+          if /tmp/containarium --server "$SERVER" create "nokeys$$" \
                --no-ssh-key --podman=false --disk 5GB --encrypted > /tmp/refusal.log 2>&1; then
             echo "::error::an encrypted create SUCCEEDED on a daemon with no key custody — the closed default regressed"
             exit 1
           fi
           grep -qi "keyprovider" /tmp/refusal.log || {
             echo "::error::refused, but not for the documented reason:"; cat /tmp/refusal.log; exit 1; }
-          echo "closed default holds: $(head -2 /tmp/refusal.log)"
+          echo "closed default holds: $(head -3 /tmp/refusal.log)"
           sudo pkill -f "containarium daemon" || true
 
       # A skip here means the environment check above passed and the test
