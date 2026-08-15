@@ -266,8 +266,14 @@ jobs:
           esac
 
           # And a stopped container is ciphertext: the key unloads.
-          /tmp/containarium --server "$SERVER" stop "$TENANT" || true
-          sleep 5
+          #
+          # `sleep` is the container-level stop; `stop` is `app stop`, for an
+          # app inside a box. Getting that wrong left the container running
+          # and the assertion below correctly reported the key as still
+          # loaded — a real-looking encryption failure caused by the wrong
+          # verb.
+          /tmp/containarium --server "$SERVER" sleep "$TENANT"
+          sleep 10
           STATUS=$(sudo zfs get -H -o value keystatus "$ROOT")
           echo "keystatus after stop: $STATUS"
           test "$STATUS" = "unavailable" || {
