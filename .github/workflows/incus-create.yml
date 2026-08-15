@@ -223,6 +223,11 @@ jobs:
                     --expiry 24h --secret "$JWT_SECRET" | tr -d " \t" | grep -E "^ey" | head -1)
           test -n "$TOKEN" || { echo "::error::could not mint a token"; exit 1; }
           export CONTAINARIUM_TOKEN="$TOKEN"
+          # CONTAINARIUM_HTTP is what actually selects the REST surface. An
+          # http:// address alone does not: the CLI dispatches on this flag,
+          # so without it every call goes down the gRPC path and asks for a
+          # client certificate bundle that does not exist here.
+          export CONTAINARIUM_HTTP=true
           SERVER="http://localhost:8080"
 
           # Readiness: the daemon answers a real RPC. Both the daemon's log
@@ -286,6 +291,11 @@ jobs:
           TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
                     --expiry 24h --secret "$JWT_SECRET" | tr -d " \t" | grep -E "^ey" | head -1)
           export CONTAINARIUM_TOKEN="$TOKEN"
+          # CONTAINARIUM_HTTP is what actually selects the REST surface. An
+          # http:// address alone does not: the CLI dispatches on this flag,
+          # so without it every call goes down the gRPC path and asks for a
+          # client certificate bundle that does not exist here.
+          export CONTAINARIUM_HTTP=true
           SERVER="http://localhost:8080"
 
           ready=""
