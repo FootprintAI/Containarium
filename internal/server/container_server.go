@@ -1033,6 +1033,10 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		pc := toProtoContainer(&st)
 		pc.Pool = s.resolvePool(pc.BackendId)
 		pc.SshHost = s.sshHost
+		// Local boxes only. A peer's containers are described by the peer —
+		// asking THIS daemon's hooks about them would answer from the wrong
+		// key custody and report every remote container as unencrypted.
+		s.withEncryptionState(ctx, pc)
 		protoContainers = append(protoContainers, pc)
 	}
 
@@ -1201,6 +1205,11 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 	protoInfo := toProtoContainer(info)
 	protoInfo.Pool = s.resolvePool(protoInfo.BackendId)
 	protoInfo.SshHost = s.sshHost
+	// #1202: surface KEY_UNAVAILABLE before someone trips over it. ZFS lets
+	// snapshots be taken with the key unloaded and refuses only to read them
+	// back, so without this a tenant accumulates unrestorable snapshots and
+	// nothing says so until a restore is attempted.
+	s.withEncryptionState(ctx, protoInfo)
 	return &pb.GetContainerResponse{
 		Container: protoInfo,
 		// TODO: Add metrics

@@ -7460,9 +7460,12 @@
             "type": "string"
           },
           "description": "All GPU devices attached to this container (device index or PCI address\nper entry). For a single-GPU container this has one entry mirroring\n`gpu_device`; empty when no GPU is attached."
+        },
+        "encryptionState": {
+          "$ref": "#/definitions/EncryptionState",
+          "description": "Whether this container's data is protected by a per-tenant ZFS key, and\nwhether that key is currently loaded (#1202).\n\nKEY_UNAVAILABLE is the one an operator has to act on: the container will\nnot start and its snapshots cannot be inspected until key custody is\nreachable. It is surfaced on status rather than only at the point of\nfailure so the condition is visible before someone trips over it."
         }
-      },
-      "title": "Container represents a complete container instance"
+      }
     },
     "ContainerEvent": {
       "type": "object",
@@ -8329,6 +8332,17 @@
           "description": "Operator-facing summary, set when there's something interesting\nto say beyond the structured fields (e.g. \"already enabled (use\nforce=true to refresh)\")."
         }
       }
+    },
+    "EncryptionState": {
+      "type": "string",
+      "enum": [
+        "ENCRYPTION_STATE_UNSPECIFIED",
+        "ENCRYPTION_STATE_NONE",
+        "ENCRYPTION_STATE_UNLOCKED",
+        "ENCRYPTION_STATE_KEY_UNAVAILABLE"
+      ],
+      "default": "ENCRYPTION_STATE_UNSPECIFIED",
+      "description": "Container represents a complete container instance\nEncryptionState reports whether a container's data is protected by a\nper-tenant ZFS key, and whether that key is currently loaded (#1202).\n\nAn enum rather than a bool or a free-text warning: \"unencrypted\" and\n\"encrypted but currently unopenable\" are different situations with\ndifferent operator responses, and a caller must be able to tell them apart\nwithout parsing prose.\n\n - ENCRYPTION_STATE_UNSPECIFIED: The daemon could not determine the state — it has no encryption wired,\nor the container's encryption state could not be read. Deliberately\ndistinct from NONE: \"we did not check\" must never be reported as\n\"there is nothing to check\".\n - ENCRYPTION_STATE_NONE: Not encrypted with a per-tenant key. Every container ships this way by\ndefault; pool-level encryption, if configured, is a separate control.\n - ENCRYPTION_STATE_UNLOCKED: Encrypted, and the key is loaded — the container's data is readable.\n - ENCRYPTION_STATE_KEY_UNAVAILABLE: Encrypted, and the key is NOT loaded. The container cannot start and its\nsnapshots cannot be inspected until key custody is reachable again.\nZFS still allows snapshots to be TAKEN in this state, which is why the\nbackup window survives a key-custody outage (design resolved decision\n#3) — but reading one back will fail until the key returns."
     },
     "EnqueueAgentTaskRequest": {
       "type": "object",

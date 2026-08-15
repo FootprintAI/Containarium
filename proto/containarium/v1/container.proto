@@ -126,6 +126,35 @@ message NetworkInfo {
 }
 
 // Container represents a complete container instance
+// EncryptionState reports whether a container's data is protected by a
+// per-tenant ZFS key, and whether that key is currently loaded (#1202).
+//
+// An enum rather than a bool or a free-text warning: "unencrypted" and
+// "encrypted but currently unopenable" are different situations with
+// different operator responses, and a caller must be able to tell them apart
+// without parsing prose.
+enum EncryptionState {
+  // The daemon could not determine the state — it has no encryption wired,
+  // or the container's encryption state could not be read. Deliberately
+  // distinct from NONE: "we did not check" must never be reported as
+  // "there is nothing to check".
+  ENCRYPTION_STATE_UNSPECIFIED = 0;
+
+  // Not encrypted with a per-tenant key. Every container ships this way by
+  // default; pool-level encryption, if configured, is a separate control.
+  ENCRYPTION_STATE_NONE = 1;
+
+  // Encrypted, and the key is loaded — the container's data is readable.
+  ENCRYPTION_STATE_UNLOCKED = 2;
+
+  // Encrypted, and the key is NOT loaded. The container cannot start and its
+  // snapshots cannot be inspected until key custody is reachable again.
+  // ZFS still allows snapshots to be TAKEN in this state, which is why the
+  // backup window survives a key-custody outage (design resolved decision
+  // #3) — but reading one back will fail until the key returns.
+  ENCRYPTION_STATE_KEY_UNAVAILABLE = 3;
+}
+
 message Container {
   // Unique container name (typically username-container)
   string name = 1;
@@ -255,6 +284,15 @@ message Container {
   // per entry). For a single-GPU container this has one entry mirroring
   // `gpu_device`; empty when no GPU is attached.
   repeated string gpu_devices = 27;
+
+  // Whether this container's data is protected by a per-tenant ZFS key, and
+  // whether that key is currently loaded (#1202).
+  //
+  // KEY_UNAVAILABLE is the one an operator has to act on: the container will
+  // not start and its snapshots cannot be inspected until key custody is
+  // reachable. It is surfaced on status rather than only at the point of
+  // failure so the condition is visible before someone trips over it.
+  EncryptionState encryption_state = 28;
 }
 
 // ContainerMetrics contains runtime metrics for a container
