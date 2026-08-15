@@ -32,8 +32,16 @@ type CrewRunStore interface {
 	Put(ctx context.Context, r *pb.CrewRun) error
 	// Get returns the run and whether it was found.
 	Get(ctx context.Context, id string) (*pb.CrewRun, bool, error)
-	// FailStranded marks every run still RUNNING as FAILED with the given
-	// reason, returning how many it changed.
+	// FailStranded marks runs still RUNNING as FAILED with the given reason,
+	// returning how many it changed.
+	//
+	// Scoped to `owner` — this daemon's backend id — plus runs with no
+	// recorded owner. A run owned by a PEER is never touched: several daemons
+	// can share one database, and one restarting must not fail another's
+	// in-flight runs (#1322). Unowned runs predate ownership and are still
+	// swept, because on the single-daemon deployment that is the default they
+	// are always this daemon's own, and leaving them would strand every
+	// pre-upgrade run forever.
 	//
 	// Called once at daemon start. RunCrew records a run as RUNNING before it
 	// drives it, so a daemon that dies mid-run leaves that state behind — and
@@ -41,7 +49,7 @@ type CrewRunStore interface {
 	// for a run that can never finish (#1182 AC4). Nothing else reconciles
 	// them: driveCrew has no resumption point, so the honest outcome is a
 	// terminal failure that says why, not a run that claims to be working.
-	FailStranded(ctx context.Context, reason string) (int, error)
+	FailStranded(ctx context.Context, owner, reason string) (int, error)
 }
 
 // StrandedByRestart is the reason recorded for a run the daemon was driving
@@ -82,12 +90,15 @@ func (s *MemCrewRunStore) Get(_ context.Context, id string) (*pb.CrewRun, bool, 
 	return proto.Clone(r).(*pb.CrewRun), true, nil
 }
 
-func (s *MemCrewRunStore) FailStranded(_ context.Context, reason string) (int, error) {
+func (s *MemCrewRunStore) FailStranded(_ context.Context, owner, reason string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for id, r := range s.runs {
 		if r.GetState() != pb.CrewRunState_CREW_RUN_STATE_RUNNING {
+			continue
+		}
+		if !ownedForReconciliation(r.GetOwner(), owner) {
 			continue
 		}
 		updated := proto.Clone(r).(*pb.CrewRun)
@@ -125,6 +136,10 @@ func NewPostgresCrewRunStore(ctx context.Context, pool *pgxpool.Pool) (*Postgres
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 		CREATE INDEX IF NOT EXISTS crew_runs_state_idx ON crew_runs (state);
+		-- #1322: which daemon is driving the run. Added separately so an
+		-- existing deployment picks it up without a migration step; existing
+		-- rows default to '' and are treated as unowned.
+		ALTER TABLE crew_runs ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT '';
 	`
 	if _, err := pool.Exec(ctx, schema); err != nil {
 		return nil, fmt.Errorf("init crew_runs schema: %w", err)
@@ -147,15 +162,19 @@ func (s *PostgresCrewRunStore) Put(ctx context.Context, r *pb.CrewRun) error {
 		return fmt.Errorf("marshal crew run %s: %w", r.GetId(), err)
 	}
 	const q = `
-		INSERT INTO crew_runs (id, crew_id, state, run, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, NOW(), NOW())
+		INSERT INTO crew_runs (id, crew_id, state, run, owner, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			crew_id = EXCLUDED.crew_id,
 			state = EXCLUDED.state,
 			run = EXCLUDED.run,
+			owner = EXCLUDED.owner,
 			updated_at = NOW()
 	`
-	if _, err := s.pool.Exec(ctx, q, r.GetId(), r.GetCrewId(), int32(r.GetState()), body); err != nil {
+	// owner is stored in its own column as well as inside the JSON body: the
+	// reconciliation sweep filters on it in SQL, and filtering on a JSON field
+	// would cost an index this table does not have.
+	if _, err := s.pool.Exec(ctx, q, r.GetId(), r.GetCrewId(), int32(r.GetState()), body, r.GetOwner()); err != nil {
 		return fmt.Errorf("put crew run %s: %w", r.GetId(), err)
 	}
 	return nil
@@ -194,7 +213,10 @@ func (s *PostgresCrewRunStore) Get(ctx context.Context, id string) (*pb.CrewRun,
 // SQL today (#1300). The memory implementation's behaviour is tested, and the
 // orchestration is guarded, but this statement itself is reviewed rather than
 // exercised.
-func (s *PostgresCrewRunStore) FailStranded(ctx context.Context, reason string) (int, error) {
+func (s *PostgresCrewRunStore) FailStranded(ctx context.Context, owner, reason string) (int, error) {
+	// owner = $5 OR owner = '' — this daemon's runs and pre-ownership ones.
+	// A peer's run is deliberately excluded: several daemons share this table
+	// and one restarting must not fail another's in-flight runs (#1322).
 	const q = `
 		UPDATE crew_runs
 		SET state = $1,
@@ -202,13 +224,14 @@ func (s *PostgresCrewRunStore) FailStranded(ctx context.Context, reason string) 
 		            jsonb_set(run::jsonb, '{state}', to_jsonb($2::text), true),
 		            '{error}', to_jsonb($3::text), true)::text::json,
 		    updated_at = NOW()
-		WHERE state = $4
+		WHERE state = $4 AND (owner = $5 OR owner = '')
 	`
 	tag, err := s.pool.Exec(ctx, q,
 		int32(pb.CrewRunState_CREW_RUN_STATE_FAILED),
 		pb.CrewRunState_CREW_RUN_STATE_FAILED.String(),
 		reason,
 		int32(pb.CrewRunState_CREW_RUN_STATE_RUNNING),
+		owner,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("fail stranded crew runs: %w", err)
@@ -220,4 +243,16 @@ func (s *CrewServer) SetRunStore(store CrewRunStore) {
 	if store != nil {
 		s.runs = store
 	}
+}
+
+// ownedForReconciliation reports whether a stranded run is this daemon's to
+// fail.
+//
+// True for its own runs and for runs with no recorded owner; false for a
+// peer's. The unowned case is the deliberate compromise: on the single-daemon
+// deployment that is the default they are always this daemon's own, and
+// excluding them would leave every pre-ownership run RUNNING forever — the
+// exact bug reconciliation exists to fix.
+func ownedForReconciliation(runOwner, daemonOwner string) bool {
+	return runOwner == "" || runOwner == daemonOwner
 }

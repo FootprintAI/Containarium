@@ -456,6 +456,18 @@ message CrewRun {
   string artifact_json = 6;
   // Human-readable error when state is FAILED.
   string error = 7;
+
+  // The daemon driving this run — its backend id (#1322).
+  //
+  // Startup reconciliation marks in-flight runs FAILED because they have no
+  // resumption point. On a deployment where several daemons share one
+  // database, a restart must only reconcile ITS OWN runs: a peer's run is
+  // that peer's to fail, on its own restart. Without this, one daemon
+  // restarting fails every other daemon's live runs.
+  //
+  // Empty on runs written before ownership existed; those are deliberately
+  // left alone rather than guessed at.
+  string owner = 8;
 }
 
 message ListCrewsRequest {}

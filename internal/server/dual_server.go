@@ -1141,6 +1141,7 @@ skipAppHosting:
 				log.Printf("Warning: Failed to create Postgres crew-run store: %v", rErr)
 			} else {
 				crewServer.SetRunStore(runStore)
+				crewServer.SetOwner(config.LocalBackendID)
 				log.Printf("Crew-run persistence enabled (Postgres store)")
 				// Reconcile runs the previous daemon was driving when it
 				// stopped. RunCrew records a run as RUNNING before driving it,
@@ -1148,7 +1149,7 @@ skipAppHosting:
 				// is durable — GetCrewRun would answer RUNNING for a run that
 				// can never finish (#1182 AC4). Best-effort: a daemon that
 				// cannot reconcile should still start.
-				if n, fErr := runStore.FailStranded(context.Background(), StrandedByRestart); fErr != nil {
+				if n, fErr := runStore.FailStranded(context.Background(), config.LocalBackendID, StrandedByRestart); fErr != nil {
 					log.Printf("Warning: could not reconcile stranded crew runs: %v", fErr)
 				} else if n > 0 {
 					log.Printf("Marked %d crew run(s) FAILED: in flight when the previous daemon stopped", n)

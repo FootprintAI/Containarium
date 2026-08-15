@@ -1609,7 +1609,18 @@ type CrewRun struct {
 	// JSON artifact produced by the crew. Populated when state is COMPLETED.
 	ArtifactJson string `protobuf:"bytes,6,opt,name=artifact_json,json=artifactJson,proto3" json:"artifact_json,omitempty"`
 	// Human-readable error when state is FAILED.
-	Error         string `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
+	// The daemon driving this run — its backend id (#1322).
+	//
+	// Startup reconciliation marks in-flight runs FAILED because they have no
+	// resumption point. On a deployment where several daemons share one
+	// database, a restart must only reconcile ITS OWN runs: a peer's run is
+	// that peer's to fail, on its own restart. Without this, one daemon
+	// restarting fails every other daemon's live runs.
+	//
+	// Empty on runs written before ownership existed; those are deliberately
+	// left alone rather than guessed at.
+	Owner         string `protobuf:"bytes,8,opt,name=owner,proto3" json:"owner,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1689,6 +1700,13 @@ func (x *CrewRun) GetArtifactJson() string {
 func (x *CrewRun) GetError() string {
 	if x != nil {
 		return x.Error
+	}
+	return ""
+}
+
+func (x *CrewRun) GetOwner() string {
+	if x != nil {
+		return x.Owner
 	}
 	return ""
 }
@@ -2166,7 +2184,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x129\n" +
 	"\btopology\x18\x04 \x01(\x0e2\x1d.containarium.v1.CrewTopologyR\btopology\x12\x1b\n" +
-	"\tskill_ids\x18\x05 \x03(\tR\bskillIds\"\xdc\x01\n" +
+	"\tskill_ids\x18\x05 \x03(\tR\bskillIds\"\xf2\x01\n" +
 	"\aCrewRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\acrew_id\x18\x02 \x01(\tR\x06crewId\x12\x19\n" +
@@ -2175,7 +2193,8 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"input_json\x18\x05 \x01(\tR\tinputJson\x12#\n" +
 	"\rartifact_json\x18\x06 \x01(\tR\fartifactJson\x12\x14\n" +
-	"\x05error\x18\a \x01(\tR\x05error\"\x12\n" +
+	"\x05error\x18\a \x01(\tR\x05error\x12\x14\n" +
+	"\x05owner\x18\b \x01(\tR\x05owner\"\x12\n" +
 	"\x10ListCrewsRequest\"@\n" +
 	"\x11ListCrewsResponse\x12+\n" +
 	"\x05crews\x18\x01 \x03(\v2\x15.containarium.v1.CrewR\x05crews\" \n" +

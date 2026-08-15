@@ -116,7 +116,7 @@ func TestCrewRunStore_FailStrandedForBothImpls(t *testing.T) {
 			mustPutI(t, s, &pb.CrewRun{Id: "stuck", State: pb.CrewRunState_CREW_RUN_STATE_RUNNING})
 			mustPutI(t, s, &pb.CrewRun{Id: "done", State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED, ArtifactJson: "{}"})
 
-			n, err := s.FailStranded(ctx, StrandedByRestart)
+			n, err := s.FailStranded(ctx, "", StrandedByRestart)
 			if err != nil {
 				t.Fatalf("FailStranded: %v", err)
 			}
@@ -138,7 +138,7 @@ func TestCrewRunStore_FailStrandedForBothImpls(t *testing.T) {
 				t.Errorf("a completed run was altered: %+v", done)
 			}
 
-			if again, _ := s.FailStranded(ctx, StrandedByRestart); again != 0 {
+			if again, _ := s.FailStranded(ctx, "", StrandedByRestart); again != 0 {
 				t.Errorf("second sweep reconciled %d, want 0 (idempotent)", again)
 			}
 		})

@@ -7906,6 +7906,10 @@
         "error": {
           "type": "string",
           "description": "Human-readable error when state is FAILED."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The daemon driving this run — its backend id (#1322).\n\nStartup reconciliation marks in-flight runs FAILED because they have no\nresumption point. On a deployment where several daemons share one\ndatabase, a restart must only reconcile ITS OWN runs: a peer's run is\nthat peer's to fail, on its own restart. Without this, one daemon\nrestarting fails every other daemon's live runs.\n\nEmpty on runs written before ownership existed; those are deliberately\nleft alone rather than guessed at."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."

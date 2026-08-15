@@ -29,7 +29,15 @@ type CrewServer struct {
 	skills  *skills.Manager
 	agents  *AgentSkillServer // reuse RunAgentSkill: provision + scoped token + per-box net policy
 	runs    CrewRunStore
+	// owner identifies this daemon on the runs it drives, so startup
+	// reconciliation can tell its own stranded runs from a peer's live ones
+	// (#1322). Empty on a daemon with no backend id configured, which reads
+	// as unowned — the single-daemon case, where that is correct.
+	owner string
 }
+
+// SetOwner records which daemon this server drives runs as.
+func (s *CrewServer) SetOwner(id string) { s.owner = id }
 
 // NewCrewServer wires the crew service to the agent-skill server (for box
 // provisioning) and the embedded crew + skill catalogs.
@@ -93,6 +101,11 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		TraceId:   trace,
 		State:     pb.CrewRunState_CREW_RUN_STATE_RUNNING,
 		InputJson: req.InputJson,
+		// Which daemon is driving it (#1322). Startup reconciliation fails
+		// runs that are its own or unowned and leaves a peer's alone; without
+		// this every run is unowned and a restart fails all of them, on every
+		// daemon sharing the database.
+		Owner: s.owner,
 	}
 
 	// Record the run before driving it, so an in-flight run is observable.

@@ -216,7 +216,7 @@ func TestMemCrewRunStore_FailStrandedTerminatesRunningRuns(t *testing.T) {
 	mustPut(t, s, &pb.CrewRun{Id: "done", State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED, ArtifactJson: "{}"})
 	mustPut(t, s, &pb.CrewRun{Id: "already-failed", State: pb.CrewRunState_CREW_RUN_STATE_FAILED, Error: "a real failure"})
 
-	n, err := s.FailStranded(ctx, StrandedByRestart)
+	n, err := s.FailStranded(ctx, "", StrandedByRestart)
 	if err != nil {
 		t.Fatalf("FailStranded: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestMemCrewRunStore_FailStrandedLeavesTerminalRunsAlone(t *testing.T) {
 	mustPut(t, s, &pb.CrewRun{Id: "done", State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED, ArtifactJson: "{}"})
 	mustPut(t, s, &pb.CrewRun{Id: "failed", State: pb.CrewRunState_CREW_RUN_STATE_FAILED, Error: "a real failure"})
 
-	if _, err := s.FailStranded(ctx, StrandedByRestart); err != nil {
+	if _, err := s.FailStranded(ctx, "", StrandedByRestart); err != nil {
 		t.Fatalf("FailStranded: %v", err)
 	}
 
@@ -266,8 +266,8 @@ func TestMemCrewRunStore_FailStrandedIsIdempotent(t *testing.T) {
 	s := NewMemCrewRunStore()
 	mustPut(t, s, &pb.CrewRun{Id: "in-flight", State: pb.CrewRunState_CREW_RUN_STATE_RUNNING})
 
-	first, _ := s.FailStranded(ctx, StrandedByRestart)
-	second, _ := s.FailStranded(ctx, StrandedByRestart)
+	first, _ := s.FailStranded(ctx, "", StrandedByRestart)
+	second, _ := s.FailStranded(ctx, "", StrandedByRestart)
 	if first != 1 || second != 0 {
 		t.Errorf("counts were %d then %d, want 1 then 0", first, second)
 	}
