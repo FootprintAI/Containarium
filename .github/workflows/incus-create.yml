@@ -68,6 +68,9 @@ jobs:
       # switch itself is unit-tested in internal/testsupport/incusenv, so a
       # lane that stopped exercising Incus cannot report green by not running.
       CONTAINARIUM_REQUIRE_INCUS: '1'
+      # Every Go test creates from the copy pulled once above, rather than
+      # re-fetching from the public mirror on each create (#1375).
+      CONTAINARIUM_LANE_IMAGE: lane-box
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -140,6 +143,34 @@ jobs:
           # than assume, since a missing range fails at instance start.
           grep -q '^root:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid
           grep -q '^root:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid
+
+      # Pull the box image ONCE, with retries, into the runner's local store.
+      #
+      # Every test used to fetch images:ubuntu/24.04 from
+      # images.linuxcontainers.org at run time — five or more fetches per run
+      # against a third-party mirror. When it hiccuped, every PR touching this
+      # lane failed at once with "The requested image couldn't be found",
+      # which reads as a code failure: two unrelated PRs were investigated for
+      # it in one afternoon (#1375).
+      #
+      # One fetch, retried, and a failure here names the mirror at the step
+      # that talks to it rather than surfacing inside a product test.
+      - name: Pre-pull the box image
+        run: |
+          set -euo pipefail
+          pulled=""
+          for attempt in 1 2 3 4 5; do
+            if sudo incus image copy images:ubuntu/24.04 local: --alias lane-box >/dev/null 2>&1; then
+              pulled=yes; break
+            fi
+            echo "image pull attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$pulled" ]; then
+            echo "::error::could not pull images:ubuntu/24.04 from images.linuxcontainers.org after 5 attempts — the mirror is unavailable, not the code under test"
+            exit 1
+          fi
+          sudo incus image list
 
       # Assert the environment before trusting any result from it. The Go
       # helper does the same check and fails on it (CONTAINARIUM_REQUIRE_INCUS
@@ -252,7 +283,7 @@ jobs:
 
           TENANT="lane$$"
           /tmp/containarium --server "$SERVER" create "$TENANT" \
-            --no-ssh-key --podman=false --disk 5GB --encrypted
+            --no-ssh-key --podman=false --disk 5GB --encrypted --image lane-box
 
           # The claim, checked on the host: the instance sits under the
           # TENANT's encryptionroot, not the pool default.
@@ -318,7 +349,7 @@ jobs:
           fi
 
           if /tmp/containarium --server "$SERVER" create "nokeys$$" \
-               --no-ssh-key --podman=false --disk 5GB --encrypted > /tmp/refusal.log 2>&1; then
+               --no-ssh-key --podman=false --disk 5GB --encrypted --image lane-box > /tmp/refusal.log 2>&1; then
             echo "::error::an encrypted create SUCCEEDED on a daemon with no key custody — the closed default regressed"
             exit 1
           fi

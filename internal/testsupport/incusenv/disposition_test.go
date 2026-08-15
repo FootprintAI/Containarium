@@ -42,3 +42,25 @@ func TestDispositionFor(t *testing.T) {
 		})
 	}
 }
+
+// BoxImage decides where every lane test fetches its image from, so it gets a
+// test that runs in the ordinary suite — the lane itself cannot check its own
+// default, and getting this wrong sends five image fetches per run back to a
+// third-party mirror (#1375).
+func TestBoxImage(t *testing.T) {
+	t.Run("defaults to the public alias", func(t *testing.T) {
+		t.Setenv("CONTAINARIUM_LANE_IMAGE", "")
+		if got := BoxImage(); got != "images:ubuntu/24.04" {
+			t.Errorf("BoxImage() = %q, want the public alias — a developer's laptop has no "+
+				"pre-pulled copy and must still work with no setup", got)
+		}
+	})
+
+	t.Run("honours the override", func(t *testing.T) {
+		t.Setenv("CONTAINARIUM_LANE_IMAGE", "lane-box")
+		if got := BoxImage(); got != "lane-box" {
+			t.Errorf("BoxImage() = %q, want the override — without it CI re-fetches from the "+
+				"public mirror on every create, which is what #1375 was filed for", got)
+		}
+	})
+}

@@ -81,7 +81,7 @@ func TestIntegrationIncus_ContainerDatasetNamesTheRealDataset(t *testing.T) {
 
 	if _, err := New(container.NewWithBackend(client)).Create(ctx, box.BoxSpec{
 		Ref:       box.BoxRef{Tenant: name},
-		Image:     "images:ubuntu/24.04",
+		Image:     incusenv.BoxImage(),
 		OSType:    pb.OSType_OS_TYPE_UBUNTU_2404,
 		AutoStart: true,
 	}); err != nil {
@@ -158,7 +158,7 @@ func TestIntegrationIncus_InstanceOnAPreExistingEncryptedDataset(t *testing.T) {
 	// Now the daemon's own create, onto a dataset that already exists.
 	_, createErr := New(container.NewWithBackend(client)).Create(ctx, box.BoxSpec{
 		Ref:       box.BoxRef{Tenant: name},
-		Image:     "images:ubuntu/24.04",
+		Image:     incusenv.BoxImage(),
 		OSType:    pb.OSType_OS_TYPE_UBUNTU_2404,
 		AutoStart: true,
 	})
@@ -239,7 +239,7 @@ func TestIntegrationIncus_InstanceInheritsEncryptionFromThePoolRoot(t *testing.T
 
 	st, err := New(container.NewWithBackend(client)).Create(ctx, box.BoxSpec{
 		Ref:       box.BoxRef{Tenant: name},
-		Image:     "images:ubuntu/24.04",
+		Image:     incusenv.BoxImage(),
 		OSType:    pb.OSType_OS_TYPE_UBUNTU_2404,
 		AutoStart: true,
 		Resources: box.ResourceLimits{Disk: "5GB"},

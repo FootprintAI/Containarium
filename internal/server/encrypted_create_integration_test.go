@@ -88,7 +88,7 @@ func createEncrypted(t *testing.T, s *ContainerServer, tenant string) string {
 
 	if _, err := s.CreateContainer(ctx, &pb.CreateContainerRequest{
 		Username:  tenant,
-		Image:     "images:ubuntu/24.04",
+		Image:     incusenv.BoxImage(),
 		OsType:    pb.OSType_OS_TYPE_UBUNTU_2404,
 		Encrypted: true,
 		Resources: &pb.ResourceLimits{Disk: "5GB"},
@@ -253,7 +253,7 @@ func TestIntegrationIncus_UnencryptedCreateIsUnchanged(t *testing.T) {
 
 	if _, err := s.CreateContainer(rpcCtx, &pb.CreateContainerRequest{
 		Username:  tenant,
-		Image:     "images:ubuntu/24.04",
+		Image:     incusenv.BoxImage(),
 		OsType:    pb.OSType_OS_TYPE_UBUNTU_2404,
 		Resources: &pb.ResourceLimits{Disk: "5GB"},
 		// Encrypted deliberately unset.

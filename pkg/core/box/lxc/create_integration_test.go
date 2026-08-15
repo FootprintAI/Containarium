@@ -77,7 +77,7 @@ func TestIntegrationIncus_CreateThroughTheDaemonsOwnPath(t *testing.T) {
 
 	st, err := backend.Create(ctx, box.BoxSpec{
 		Ref:       box.BoxRef{Tenant: name},
-		Image:     "images:ubuntu/24.04",
+		Image:     incusenv.BoxImage(),
 		OSType:    pb.OSType_OS_TYPE_UBUNTU_2404,
 		AutoStart: true,
 		// No SSH keys on purpose: seeding them creates a jump-server

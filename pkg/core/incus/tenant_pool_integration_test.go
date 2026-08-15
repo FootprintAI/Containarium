@@ -70,7 +70,7 @@ func TestIntegrationIncus_PoolSourcedAtAnEncryptedDataset(t *testing.T) {
 	// mechanism (#1335).
 	if err := client.CreateContainer(incus.ContainerConfig{
 		Name:  fmt.Sprintf("pooltest%d", os.Getpid()),
-		Image: "images:ubuntu/24.04",
+		Image: incusenv.BoxImage(),
 		Disk:  &incus.DiskDevice{Path: "/", Pool: pool, Size: "3GB"},
 	}); err != nil {
 		t.Fatalf("Incus would not build an instance in a pool sourced at an encrypted dataset: %v\n"+

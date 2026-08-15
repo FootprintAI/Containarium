@@ -15,7 +15,10 @@
 // anywhere. The code that touches a real Incus lives behind the `incus` tag.
 package incusenv
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // RequireEnv is the environment variable that turns "no usable Incus here"
 // from a skip into a failure. Set it in any lane whose job is to prove the
@@ -56,4 +59,21 @@ func DispositionFor(value string) Disposition {
 	default:
 		return Skip
 	}
+}
+
+// BoxImage is the image the lane's tests create containers from.
+//
+// Overridable so CI can point every test at an image already pulled into the
+// runner's local store. Without that, each test fetches
+// `images:ubuntu/24.04` from images.linuxcontainers.org at run time — five or
+// more fetches per run against a third-party mirror, and when that mirror
+// hiccups every PR touching the lane fails at once with "The requested image
+// couldn't be found", which reads as a code failure (#1375).
+//
+// Defaults to the public alias so a developer's laptop needs no setup.
+func BoxImage() string {
+	if img := os.Getenv("CONTAINARIUM_LANE_IMAGE"); img != "" {
+		return img
+	}
+	return "images:ubuntu/24.04"
 }
