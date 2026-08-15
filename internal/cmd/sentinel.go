@@ -13,7 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/sdk/resource"
+
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/sentinel"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +44,9 @@ var (
 	sentinelTunnelTokenPolicies    []string
 	sentinelProxyProtocol          bool
 	sentinelAlertWebhookURL        string
+	sentinelMetricsExport          bool
+	sentinelMetricsExportProject   string
+	sentinelMetricsExportInterval  int32
 )
 
 var sentinelCmd = &cobra.Command{
@@ -89,6 +95,13 @@ func init() {
 	sentinelCmd.Flags().DurationVar(&sentinelCertSyncInterval, "cert-sync-interval", 6*time.Hour, "Interval for syncing TLS certificates from backend (0 to use default 6h)")
 	sentinelCmd.Flags().DurationVar(&sentinelKeySyncInterval, "key-sync-interval", 2*time.Minute, "Interval for syncing SSH keys from backend for sshpiper (0 to use default 2m)")
 	sentinelCmd.Flags().BoolVar(&sentinelProxyProtocol, "proxy-protocol", false, "Prepend a PROXY v2 header to forwarded HTTPS streams so the backend Caddy sees the real client IP (requires Caddy with proxy_protocol listener wrapper trusting the sentinel)")
+	sentinelCmd.Flags().BoolVar(&sentinelMetricsExport, "metrics-export", false,
+		"Push sentinel health series (state, failovers, per-backend health, RSS/goroutines/fds) to Cloud Monitoring (#1358). OFF by default: custom metrics are billed per ingested sample.")
+	sentinelCmd.Flags().StringVar(&sentinelMetricsExportProject, "metrics-export-project", "",
+		"GCP project for --metrics-export. Empty infers it from the metadata server.")
+	sentinelCmd.Flags().Int32Var(&sentinelMetricsExportInterval, "metrics-export-interval", 60,
+		"Export cadence in seconds for --metrics-export. Clamped up to the 60s billing floor.")
+
 	sentinelCmd.Flags().StringVar(&sentinelAlertWebhookURL, "alert-webhook-url", os.Getenv(config.EnvSentinelAlertWebhook), "Webhook POSTed on spot preempted/recovered (always-on alert path; the on-spot vmalert dies with the VM). Falls back to $CONTAINARIUM_SENTINEL_ALERT_WEBHOOK (#514)")
 }
 
@@ -109,6 +122,71 @@ func loadPersistedTunnelTokens(policy *sentinel.TokenPolicy) {
 		log.Printf("[sentinel] loaded %d persisted tunnel token(s) from %s", len(entries), sentinel.DefaultTunnelTokenStorePath)
 	}
 	sentinel.ApplyTunnelTokenStore(entries, policy)
+}
+
+// startSentinelMetricsExport starts the Cloud Monitoring push exporter when
+// --metrics-export is set, returning a stop func (a no-op when disabled or on
+// failure).
+//
+// Failure to export NEVER stops the sentinel. It is a traffic forwarder first
+// and a metrics source second: refusing to start the apex because Cloud
+// Monitoring credentials are missing would trade a monitoring gap for an
+// outage. Same posture as the cert/key sync failures elsewhere in this daemon
+// — log loudly, keep serving.
+func startSentinelMetricsExport(ctx context.Context, m *sentinel.Manager) func() {
+	noop := func() {}
+	if !sentinelMetricsExport {
+		return noop
+	}
+
+	id, err := os.Hostname()
+	if err != nil || id == "" {
+		id = "sentinel"
+	}
+
+	sink := cloudexport.NewGCPSink()
+	if perr := sink.Probe(ctx); perr != nil {
+		// Probe carries an actionable remediation hint; surfacing it here
+		// means the operator learns at startup rather than from silently
+		// absent dashboards.
+		log.Printf("[sentinel] WARNING: metrics export disabled — Cloud Monitoring credentials unusable: %v", perr)
+		return noop
+	}
+
+	exporter, err := sink.NewExporter(ctx, cloudexport.SinkConfig{ProjectID: sentinelMetricsExportProject})
+	if err != nil {
+		log.Printf("[sentinel] WARNING: metrics export disabled — could not build exporter: %v", err)
+		return noop
+	}
+
+	var res *resource.Resource
+	if rp, ok := sink.(cloudexport.ResourceProvider); ok {
+		if r, derr := rp.DetectResource(ctx); derr == nil {
+			res = r
+		} else {
+			log.Printf("[sentinel] metrics export: resource detection failed, using default resource: %v", derr)
+		}
+	}
+
+	stop, err := sentinel.StartMetricsExport(m, sentinel.MetricsExportOptions{
+		Exporter:        exporter,
+		Resource:        res,
+		SentinelID:      id,
+		IntervalSeconds: sentinelMetricsExportInterval,
+	})
+	if err != nil {
+		log.Printf("[sentinel] WARNING: metrics export disabled — %v", err)
+		return noop
+	}
+	log.Printf("[sentinel] metrics export ON → Cloud Monitoring as sentinel=%q every %ds", id, sentinelMetricsExportInterval)
+
+	return func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if serr := stop(shutCtx); serr != nil {
+			log.Printf("[sentinel] metrics export shutdown: %v", serr)
+		}
+	}
 }
 
 func runSentinel(cmd *cobra.Command, args []string) error {
@@ -218,6 +296,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 				}
 			}()
 
+			defer startSentinelMetricsExport(ctx, manager)()
 			return manager.Run(ctx)
 		}
 
@@ -308,6 +387,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			}
 		}()
 
+		defer startSentinelMetricsExport(ctx, manager)()
 		return manager.Run(ctx)
 
 	default:
@@ -344,6 +424,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		cancel()
 	}()
 
+	defer startSentinelMetricsExport(ctx, manager)()
 	return manager.Run(ctx)
 }
 

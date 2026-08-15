@@ -1950,6 +1950,12 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
 
+	// Encryption placement first: a container this daemon cannot unlock must
+	// be refused before any host-side state is created for it (#1203).
+	if err := s.recordAdoptedPlacement(req); err != nil {
+		return nil, err
+	}
+
 	// Host-side jump-server account. EnsureJumpServerAccount handles
 	// the idempotent case so re-running this RPC won't error.
 	if err := container.EnsureJumpServerAccount(req.Username); err != nil {

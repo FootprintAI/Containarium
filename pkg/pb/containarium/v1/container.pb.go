@@ -4768,7 +4768,21 @@ type AdoptMigratedContainerRequest struct {
 	// container, so the destination can recreate them at its own
 	// container IP. Each entry is "<full-domain>|<port>|<protocol>".
 	// Empty for stateless containers with no exposed ports.
-	SourceRoutes  []string `protobuf:"bytes,2,rep,name=source_routes,json=sourceRoutes,proto3" json:"source_routes,omitempty"`
+	SourceRoutes []string `protobuf:"bytes,2,rep,name=source_routes,json=sourceRoutes,proto3" json:"source_routes,omitempty"`
+	// The source's stored KeyRef for an encrypted container, JSON-encoded.
+	// The destination records it so it can re-resolve the key on every
+	// later start, exactly as the source did. Empty for an unencrypted
+	// container, which is every container by default.
+	//
+	// A reference only — it carries no key bytes. The destination already
+	// proved it can resolve this ref during the pre-flight.
+	ZfsKeyRef string `protobuf:"bytes,3,opt,name=zfs_key_ref,json=zfsKeyRef,proto3" json:"zfs_key_ref,omitempty"`
+	// The destination storage pool the container was copied into — the one
+	// the pre-flight returned, sourced at this tenant's encryptionroot.
+	// The destination records it because the pool's source IS the
+	// container's encryptionroot, and every later start has to find it.
+	// Empty for an unencrypted container.
+	ZfsPool       string `protobuf:"bytes,4,opt,name=zfs_pool,json=zfsPool,proto3" json:"zfs_pool,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4815,6 +4829,20 @@ func (x *AdoptMigratedContainerRequest) GetSourceRoutes() []string {
 		return x.SourceRoutes
 	}
 	return nil
+}
+
+func (x *AdoptMigratedContainerRequest) GetZfsKeyRef() string {
+	if x != nil {
+		return x.ZfsKeyRef
+	}
+	return ""
+}
+
+func (x *AdoptMigratedContainerRequest) GetZfsPool() string {
+	if x != nil {
+		return x.ZfsPool
+	}
+	return ""
 }
 
 // PrepareEncryptedMigrationRequest asks a destination daemon whether it
@@ -5369,10 +5397,12 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x0enew_ip_address\x18\x02 \x01(\tR\fnewIpAddress\x12*\n" +
 	"\x11target_backend_id\x18\x03 \x01(\tR\x0ftargetBackendId\x12%\n" +
 	"\x0eiterations_run\x18\x04 \x01(\x05R\riterationsRun\x12)\n" +
-	"\x10downtime_seconds\x18\x05 \x01(\x05R\x0fdowntimeSeconds\"`\n" +
+	"\x10downtime_seconds\x18\x05 \x01(\x05R\x0fdowntimeSeconds\"\x9b\x01\n" +
 	"\x1dAdoptMigratedContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12#\n" +
-	"\rsource_routes\x18\x02 \x03(\tR\fsourceRoutes\"o\n" +
+	"\rsource_routes\x18\x02 \x03(\tR\fsourceRoutes\x12\x1e\n" +
+	"\vzfs_key_ref\x18\x03 \x01(\tR\tzfsKeyRef\x12\x19\n" +
+	"\bzfs_pool\x18\x04 \x01(\tR\azfsPool\"o\n" +
 	" PrepareEncryptedMigrationRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06tenant\x18\x02 \x01(\tR\x06tenant\x12\x17\n" +

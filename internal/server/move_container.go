@@ -136,6 +136,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	//
 	// An unencrypted container skips this entirely — no extra round trip and
 	// no new failure mode on the path every container takes today.
+	var encStoragePool, encRefJSON string
 	ref, _, encrypted, err := s.encryption.migrationRef(containerName)
 	if err != nil {
 		return nil, fmt.Errorf("resolve encryption state for %s: %w", containerName, err)
@@ -145,6 +146,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		if merr != nil {
 			return nil, fmt.Errorf("encode the key ref for %s: %w", containerName, merr)
 		}
+		encRefJSON = string(refJSON)
 		tenant := tenantFromRef(ref, containerName)
 		prep, perr := prepareFn(targetPeer, extractAuthToken(ctx), &pb.PrepareEncryptedMigrationRequest{
 			Username: req.Username,
@@ -159,10 +161,19 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 				"backend %q cannot take encrypted container %s: %s. Nothing was copied",
 				req.TargetBackendId, containerName, prep.GetReason())
 		}
-		// #1203b targets the copy at this pool. Logged now so a migration run
-		// today records where the container was meant to land.
-		log.Printf("[move] pre-flight ok: %s (tenant %s) will land on %s's storage pool %s",
-			containerName, tenant, req.TargetBackendId, prep.GetStoragePool())
+		// Every copy below targets this pool. Without it the container lands
+		// on the destination's default pool — outside the tenant's
+		// encryptionroot, unencrypted — while the pre-flight just said the
+		// migration was safe, which is the more dangerous of the two.
+		encStoragePool = prep.GetStoragePool()
+		if encStoragePool == "" {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"backend %q accepted encrypted container %s but named no storage pool to copy it "+
+					"into; refusing rather than landing it outside its tenant's encryptionroot",
+				req.TargetBackendId, containerName)
+		}
+		log.Printf("[move] pre-flight ok: %s (tenant %s) lands on %s's storage pool %s",
+			containerName, tenant, req.TargetBackendId, encStoragePool)
 	}
 
 	params := migrationDefaults(req)
@@ -193,7 +204,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	createdSnaps = append(createdSnaps, syncName)
 
 	log.Printf("[move] phase 1: initial copy of %s/%s to %s ...", containerName, syncName, targetRemote)
-	if err := s.moveRunner.CopyInitial(containerName, syncName, targetRemote); err != nil {
+	if err := s.moveRunner.CopyInitial(containerName, syncName, targetRemote, encStoragePool); err != nil {
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 1: initial copy: %w", err)
 	}
@@ -211,7 +222,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 		createdSnaps = append(createdSnaps, syncName)
 
 		log.Printf("[move] phase 2 iter %d: delta refresh of %s/%s ...", i, containerName, syncName)
-		if err := s.moveRunner.CopyRefresh(containerName, syncName, targetRemote); err != nil {
+		if err := s.moveRunner.CopyRefresh(containerName, syncName, targetRemote, encStoragePool); err != nil {
 			cleanupSnaps()
 			return nil, fmt.Errorf("phase 2 iter %d: refresh: %w", i, err)
 		}
@@ -255,7 +266,7 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	}
 	createdSnaps = append(createdSnaps, finalSnap)
 
-	if err := s.moveRunner.CopyRefresh(containerName, finalSnap, targetRemote); err != nil {
+	if err := s.moveRunner.CopyRefresh(containerName, finalSnap, targetRemote, encStoragePool); err != nil {
 		rollback()
 		cleanupSnaps()
 		return nil, fmt.Errorf("phase 3: final delta copy: %w", err)
@@ -282,6 +293,11 @@ func (s *ContainerServer) MoveContainer(ctx context.Context, req *pb.MoveContain
 	adoptReq := &pb.AdoptMigratedContainerRequest{
 		Username:     req.Username,
 		SourceRoutes: sourceRoutes,
+		// Empty for an unencrypted container. The destination needs both to
+		// find the encryptionroot on every later start; it already proved
+		// during the pre-flight that it can resolve this ref.
+		ZfsKeyRef: encRefJSON,
+		ZfsPool:   encStoragePool,
 	}
 	adoptResp, err := adoptFn(targetPeer, authToken, adoptReq)
 	if err != nil {
@@ -403,6 +419,8 @@ func forwardAdoptMigratedContainer(peer *PeerClient, authToken string, req *pb.A
 	body, err := json.Marshal(map[string]interface{}{
 		"username":      req.Username,
 		"source_routes": req.SourceRoutes,
+		"zfs_key_ref":   req.ZfsKeyRef,
+		"zfs_pool":      req.ZfsPool,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal adopt request: %w", err)

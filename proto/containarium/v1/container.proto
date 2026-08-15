@@ -1194,6 +1194,22 @@ message AdoptMigratedContainerRequest {
   // container IP. Each entry is "<full-domain>|<port>|<protocol>".
   // Empty for stateless containers with no exposed ports.
   repeated string source_routes = 2;
+
+  // The source's stored KeyRef for an encrypted container, JSON-encoded.
+  // The destination records it so it can re-resolve the key on every
+  // later start, exactly as the source did. Empty for an unencrypted
+  // container, which is every container by default.
+  //
+  // A reference only — it carries no key bytes. The destination already
+  // proved it can resolve this ref during the pre-flight.
+  string zfs_key_ref = 3;
+
+  // The destination storage pool the container was copied into — the one
+  // the pre-flight returned, sourced at this tenant's encryptionroot.
+  // The destination records it because the pool's source IS the
+  // container's encryptionroot, and every later start has to find it.
+  // Empty for an unencrypted container.
+  string zfs_pool = 4;
 }
 
 // PrepareEncryptedMigrationRequest asks a destination daemon whether it

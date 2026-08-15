@@ -196,7 +196,17 @@ func TestMetricsExpositionIsWellFormed(t *testing.T) {
 				t.Errorf("malformed sample line: %q", line)
 				continue
 			}
-			samples = append(samples, f[0])
+			// Strip any label set: sentinel_backend_healthy{backend="gcp"}
+			// declares its TYPE under the bare family name (#1358).
+			name := f[0]
+			if i := strings.IndexByte(name, '{'); i >= 0 {
+				if !strings.HasSuffix(name, "}") {
+					t.Errorf("unterminated label set in sample line: %q", line)
+					continue
+				}
+				name = name[:i]
+			}
+			samples = append(samples, name)
 		}
 	}
 

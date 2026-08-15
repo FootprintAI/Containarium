@@ -27,6 +27,17 @@ type fakeRunner struct {
 	hasRemote       bool
 }
 
+// copyDesc mirrors what the real runner does with the pool: `--storage` is
+// appended only when one is given, so an unencrypted migration's command is
+// byte-identical to what it always was.
+func copyDesc(container, snap, remote, pool string) string {
+	desc := fmt.Sprintf("%s/%s -> %s", container, snap, remote)
+	if pool != "" {
+		desc += " storage=" + pool
+	}
+	return desc
+}
+
 func (f *fakeRunner) log(s string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -41,12 +52,12 @@ func (f *fakeRunner) DeleteSnapshot(c, s string) error {
 	f.log(fmt.Sprintf("delsnap %s/%s", c, s))
 	return nil
 }
-func (f *fakeRunner) CopyInitial(c, s, r string) error {
-	f.log(fmt.Sprintf("copyinit %s/%s -> %s", c, s, r))
+func (f *fakeRunner) CopyInitial(c, s, r, pool string) error {
+	f.log("copyinit " + copyDesc(c, s, r, pool))
 	return f.failCopyInit
 }
-func (f *fakeRunner) CopyRefresh(c, s, r string) error {
-	f.log(fmt.Sprintf("refresh %s/%s -> %s", c, s, r))
+func (f *fakeRunner) CopyRefresh(c, s, r, pool string) error {
+	f.log("refresh " + copyDesc(c, s, r, pool))
 	n := f.copyRefreshN
 	f.copyRefreshN++
 	if err, ok := f.failCopyRefresh[n]; ok {

@@ -147,6 +147,24 @@ type Manager struct {
 	recoveryBackoff     time.Duration
 	nextRecoveryAttempt time.Time
 
+	// Backend-failover observability (#1358). failoverTotal is atomic and
+	// backendHealth is mutex-guarded because both are written by the
+	// health-check loop and read by the /metrics HTTP goroutine. The older
+	// preemptCount/recoveredCount above are plain ints on the "single event
+	// loop writes" convention; these are new, so they use the safe form
+	// rather than extending that assumption to a concurrently-read map.
+	failoverTotal   atomic.Int64
+	backendHealthMu sync.RWMutex
+	backendHealth   map[string]bool
+
+	// switchToProxyFn is the seam over switchToProxy so failoverPrimary's
+	// wiring is testable. The real implementation syncs certs/keys over the
+	// network and rewrites iptables, none of which a unit test can do — which
+	// previously meant the failover COUNTER could be deleted without a single
+	// test failing. Same injection pattern as byocDial below. nil = the real
+	// method; tests substitute a stub.
+	switchToProxyFn func(*Backend) error
+
 	// hmacSecret is the shared HMAC secret used to sign
 	// /sentinel/peers responses (and reused for keysync/certsync
 	// request auth via loadSentinelSecret). Held per-Manager so
@@ -746,6 +764,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			b.healthyCount++
 			if b.healthyCount >= m.config.HealthyThreshold && !b.Healthy {
 				b.Healthy = true
+				m.recordBackendHealth(b.ID, true)
 				log.Printf("[sentinel] backend %s (%s) is healthy", b.ID, b.IP)
 			}
 		} else {
@@ -753,6 +772,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			b.unhealthyCount++
 			if b.unhealthyCount >= m.config.UnhealthyThreshold && b.Healthy {
 				b.Healthy = false
+				m.recordBackendHealth(b.ID, false)
 				log.Printf("[sentinel] backend %s (%s) is unhealthy", b.ID, b.IP)
 
 				// If this was the primary, try failover
@@ -808,13 +828,27 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 	}
 }
 
+// doSwitchToProxy calls the injected seam when one is set, else the real
+// switchToProxy. Keeps failoverPrimary's control flow exercisable in tests.
+func (m *Manager) doSwitchToProxy(b *Backend) error {
+	if m.switchToProxyFn != nil {
+		return m.switchToProxyFn(b)
+	}
+	return m.switchToProxy(b)
+}
+
 // failoverPrimary switches HTTP forwarding to the next healthy backend.
 func (m *Manager) failoverPrimary(ctx context.Context, failed *Backend) {
 	next := m.backends.SelectPrimary()
 	if next != nil && next != failed {
 		log.Printf("[sentinel] failover: %s → %s (%s)", failed.ID, next.ID, next.IP)
-		if err := m.switchToProxy(next); err != nil {
+		if err := m.doSwitchToProxy(next); err != nil {
 			log.Printf("[sentinel] failover failed: %v", err)
+		} else {
+			// Counted only on a switch that actually took effect. A failed
+			// switch is already logged and leaves the primary unchanged, so
+			// counting it would report a failover that never happened.
+			m.recordFailover()
 		}
 	} else {
 		log.Printf("[sentinel] no healthy backend for failover, switching to maintenance")
