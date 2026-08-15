@@ -4931,6 +4931,140 @@ func (x *AdoptMigratedContainerRequest) GetZfsPool() string {
 	return ""
 }
 
+// RewrapContainerRequest rotates the key protecting a container's data
+// (#1204), driven by the control plane during a maintenance window.
+//
+// IMPORTANT: rotation is per-TENANT, not per-container. A tenant's
+// containers share one encryptionroot by design (#1199), so rewrapping the
+// container named here rotates the key for every container that tenant
+// owns. The RPC is named for a container because that is what a caller
+// holds; the response says how many containers were affected so the caller
+// cannot be surprised by it.
+type RewrapContainerRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The container whose tenant's key is being rotated.
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// The NEW key reference, JSON-encoded, already provisioned by whoever
+	// owns key custody. The daemon resolves it through its own KeyProvider —
+	// key material never crosses this wire, exactly as at create time.
+	//
+	// Rotation is control-plane-driven (design resolved decision #5): the
+	// daemon exposes the primitive and holds no rotation schedule of its own.
+	NewKeyRef     string `protobuf:"bytes,2,opt,name=new_key_ref,json=newKeyRef,proto3" json:"new_key_ref,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RewrapContainerRequest) Reset() {
+	*x = RewrapContainerRequest{}
+	mi := &file_containarium_v1_container_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RewrapContainerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RewrapContainerRequest) ProtoMessage() {}
+
+func (x *RewrapContainerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RewrapContainerRequest.ProtoReflect.Descriptor instead.
+func (*RewrapContainerRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *RewrapContainerRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *RewrapContainerRequest) GetNewKeyRef() string {
+	if x != nil {
+		return x.NewKeyRef
+	}
+	return ""
+}
+
+// RewrapContainerResponse reports the outcome of a rotation.
+type RewrapContainerResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Human-readable summary.
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// Every container now protected by the new key — the whole tenant, not
+	// just the one named in the request.
+	RewrappedContainers []string `protobuf:"bytes,2,rep,name=rewrapped_containers,json=rewrappedContainers,proto3" json:"rewrapped_containers,omitempty"`
+	// Whether the named container was running before the rotation and has
+	// been started again afterwards.
+	Restarted     bool `protobuf:"varint,3,opt,name=restarted,proto3" json:"restarted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RewrapContainerResponse) Reset() {
+	*x = RewrapContainerResponse{}
+	mi := &file_containarium_v1_container_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RewrapContainerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RewrapContainerResponse) ProtoMessage() {}
+
+func (x *RewrapContainerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_container_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RewrapContainerResponse.ProtoReflect.Descriptor instead.
+func (*RewrapContainerResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *RewrapContainerResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *RewrapContainerResponse) GetRewrappedContainers() []string {
+	if x != nil {
+		return x.RewrappedContainers
+	}
+	return nil
+}
+
+func (x *RewrapContainerResponse) GetRestarted() bool {
+	if x != nil {
+		return x.Restarted
+	}
+	return false
+}
+
 // PrepareEncryptedMigrationRequest asks a destination daemon whether it
 // can take over an encrypted container, BEFORE any data is copied.
 //
@@ -4956,7 +5090,7 @@ type PrepareEncryptedMigrationRequest struct {
 
 func (x *PrepareEncryptedMigrationRequest) Reset() {
 	*x = PrepareEncryptedMigrationRequest{}
-	mi := &file_containarium_v1_container_proto_msgTypes[60]
+	mi := &file_containarium_v1_container_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4968,7 +5102,7 @@ func (x *PrepareEncryptedMigrationRequest) String() string {
 func (*PrepareEncryptedMigrationRequest) ProtoMessage() {}
 
 func (x *PrepareEncryptedMigrationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[60]
+	mi := &file_containarium_v1_container_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4981,7 +5115,7 @@ func (x *PrepareEncryptedMigrationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareEncryptedMigrationRequest.ProtoReflect.Descriptor instead.
 func (*PrepareEncryptedMigrationRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{60}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *PrepareEncryptedMigrationRequest) GetUsername() string {
@@ -5027,7 +5161,7 @@ type PrepareEncryptedMigrationResponse struct {
 
 func (x *PrepareEncryptedMigrationResponse) Reset() {
 	*x = PrepareEncryptedMigrationResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[61]
+	mi := &file_containarium_v1_container_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5039,7 +5173,7 @@ func (x *PrepareEncryptedMigrationResponse) String() string {
 func (*PrepareEncryptedMigrationResponse) ProtoMessage() {}
 
 func (x *PrepareEncryptedMigrationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[61]
+	mi := &file_containarium_v1_container_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5052,7 +5186,7 @@ func (x *PrepareEncryptedMigrationResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use PrepareEncryptedMigrationResponse.ProtoReflect.Descriptor instead.
 func (*PrepareEncryptedMigrationResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{61}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *PrepareEncryptedMigrationResponse) GetCanResolve() bool {
@@ -5091,7 +5225,7 @@ type AdoptMigratedContainerResponse struct {
 
 func (x *AdoptMigratedContainerResponse) Reset() {
 	*x = AdoptMigratedContainerResponse{}
-	mi := &file_containarium_v1_container_proto_msgTypes[62]
+	mi := &file_containarium_v1_container_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5103,7 +5237,7 @@ func (x *AdoptMigratedContainerResponse) String() string {
 func (*AdoptMigratedContainerResponse) ProtoMessage() {}
 
 func (x *AdoptMigratedContainerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_container_proto_msgTypes[62]
+	mi := &file_containarium_v1_container_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5116,7 +5250,7 @@ func (x *AdoptMigratedContainerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdoptMigratedContainerResponse.ProtoReflect.Descriptor instead.
 func (*AdoptMigratedContainerResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_container_proto_rawDescGZIP(), []int{62}
+	return file_containarium_v1_container_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *AdoptMigratedContainerResponse) GetMessage() string {
@@ -5490,7 +5624,14 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\busername\x18\x01 \x01(\tR\busername\x12#\n" +
 	"\rsource_routes\x18\x02 \x03(\tR\fsourceRoutes\x12\x1e\n" +
 	"\vzfs_key_ref\x18\x03 \x01(\tR\tzfsKeyRef\x12\x19\n" +
-	"\bzfs_pool\x18\x04 \x01(\tR\azfsPool\"o\n" +
+	"\bzfs_pool\x18\x04 \x01(\tR\azfsPool\"T\n" +
+	"\x16RewrapContainerRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
+	"\vnew_key_ref\x18\x02 \x01(\tR\tnewKeyRef\"\x84\x01\n" +
+	"\x17RewrapContainerResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x121\n" +
+	"\x14rewrapped_containers\x18\x02 \x03(\tR\x13rewrappedContainers\x12\x1c\n" +
+	"\trestarted\x18\x03 \x01(\bR\trestarted\"o\n" +
 	" PrepareEncryptedMigrationRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06tenant\x18\x02 \x01(\tR\x06tenant\x12\x17\n" +
@@ -5555,7 +5696,7 @@ func file_containarium_v1_container_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_container_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 69)
+var file_containarium_v1_container_proto_msgTypes = make([]protoimpl.MessageInfo, 71)
 var file_containarium_v1_container_proto_goTypes = []any{
 	(OSType)(0),                               // 0: containarium.v1.OSType
 	(AccessType)(0),                           // 1: containarium.v1.AccessType
@@ -5624,46 +5765,48 @@ var file_containarium_v1_container_proto_goTypes = []any{
 	(*MoveContainerRequest)(nil),              // 64: containarium.v1.MoveContainerRequest
 	(*MoveContainerResponse)(nil),             // 65: containarium.v1.MoveContainerResponse
 	(*AdoptMigratedContainerRequest)(nil),     // 66: containarium.v1.AdoptMigratedContainerRequest
-	(*PrepareEncryptedMigrationRequest)(nil),  // 67: containarium.v1.PrepareEncryptedMigrationRequest
-	(*PrepareEncryptedMigrationResponse)(nil), // 68: containarium.v1.PrepareEncryptedMigrationResponse
-	(*AdoptMigratedContainerResponse)(nil),    // 69: containarium.v1.AdoptMigratedContainerResponse
-	nil,                                       // 70: containarium.v1.Container.LabelsEntry
-	nil,                                       // 71: containarium.v1.CreateContainerRequest.LabelsEntry
-	nil,                                       // 72: containarium.v1.CreateContainerRequest.StackParametersEntry
-	nil,                                       // 73: containarium.v1.ListContainersRequest.LabelFilterEntry
-	nil,                                       // 74: containarium.v1.SetContainerAttributionRequest.LabelsEntry
-	nil,                                       // 75: containarium.v1.SetContainerAttributionResponse.LabelsEntry
-	(*timestamppb.Timestamp)(nil),             // 76: google.protobuf.Timestamp
-	(*descriptorpb.EnumValueOptions)(nil),     // 77: google.protobuf.EnumValueOptions
+	(*RewrapContainerRequest)(nil),            // 67: containarium.v1.RewrapContainerRequest
+	(*RewrapContainerResponse)(nil),           // 68: containarium.v1.RewrapContainerResponse
+	(*PrepareEncryptedMigrationRequest)(nil),  // 69: containarium.v1.PrepareEncryptedMigrationRequest
+	(*PrepareEncryptedMigrationResponse)(nil), // 70: containarium.v1.PrepareEncryptedMigrationResponse
+	(*AdoptMigratedContainerResponse)(nil),    // 71: containarium.v1.AdoptMigratedContainerResponse
+	nil,                                       // 72: containarium.v1.Container.LabelsEntry
+	nil,                                       // 73: containarium.v1.CreateContainerRequest.LabelsEntry
+	nil,                                       // 74: containarium.v1.CreateContainerRequest.StackParametersEntry
+	nil,                                       // 75: containarium.v1.ListContainersRequest.LabelFilterEntry
+	nil,                                       // 76: containarium.v1.SetContainerAttributionRequest.LabelsEntry
+	nil,                                       // 77: containarium.v1.SetContainerAttributionResponse.LabelsEntry
+	(*timestamppb.Timestamp)(nil),             // 78: google.protobuf.Timestamp
+	(*descriptorpb.EnumValueOptions)(nil),     // 79: google.protobuf.EnumValueOptions
 }
 var file_containarium_v1_container_proto_depIdxs = []int32{
 	2,  // 0: containarium.v1.Container.state:type_name -> containarium.v1.ContainerState
 	7,  // 1: containarium.v1.Container.resources:type_name -> containarium.v1.ResourceLimits
 	8,  // 2: containarium.v1.Container.network:type_name -> containarium.v1.NetworkInfo
-	70, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
+	72, // 3: containarium.v1.Container.labels:type_name -> containarium.v1.Container.LabelsEntry
 	0,  // 4: containarium.v1.Container.os_type:type_name -> containarium.v1.OSType
 	1,  // 5: containarium.v1.Container.access_type:type_name -> containarium.v1.AccessType
-	76, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	76, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
+	78, // 6: containarium.v1.Container.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	78, // 7: containarium.v1.Container.stopped_at:type_name -> google.protobuf.Timestamp
 	3,  // 8: containarium.v1.Container.delete_policy:type_name -> containarium.v1.DeletePolicy
 	4,  // 9: containarium.v1.Container.encryption_state:type_name -> containarium.v1.EncryptionState
 	7,  // 10: containarium.v1.CreateContainerRequest.resources:type_name -> containarium.v1.ResourceLimits
-	71, // 11: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
+	73, // 11: containarium.v1.CreateContainerRequest.labels:type_name -> containarium.v1.CreateContainerRequest.LabelsEntry
 	0,  // 12: containarium.v1.CreateContainerRequest.os_type:type_name -> containarium.v1.OSType
-	72, // 13: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
+	74, // 13: containarium.v1.CreateContainerRequest.stack_parameters:type_name -> containarium.v1.CreateContainerRequest.StackParametersEntry
 	9,  // 14: containarium.v1.CreateContainerResponse.container:type_name -> containarium.v1.Container
 	2,  // 15: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
-	73, // 16: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
+	75, // 16: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
 	9,  // 17: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
 	9,  // 18: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
 	10, // 19: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
 	9,  // 20: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
 	9,  // 21: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
-	76, // 22: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	78, // 22: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
 	3,  // 23: containarium.v1.SetContainerDeletePolicyRequest.delete_policy:type_name -> containarium.v1.DeletePolicy
 	3,  // 24: containarium.v1.SetContainerDeletePolicyResponse.delete_policy:type_name -> containarium.v1.DeletePolicy
-	74, // 25: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
-	75, // 26: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
+	76, // 25: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
+	77, // 26: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
 	10, // 27: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
 	9,  // 28: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
 	43, // 29: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
@@ -5677,9 +5820,9 @@ var file_containarium_v1_container_proto_depIdxs = []int32{
 	5,  // 37: containarium.v1.SetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
 	6,  // 38: containarium.v1.SetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
 	5,  // 39: containarium.v1.GetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
-	76, // 40: containarium.v1.GetMetricsExportResponse.last_success_at:type_name -> google.protobuf.Timestamp
+	78, // 40: containarium.v1.GetMetricsExportResponse.last_success_at:type_name -> google.protobuf.Timestamp
 	6,  // 41: containarium.v1.GetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
-	77, // 42: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	79, // 42: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
 	43, // [43:43] is the sub-list for method output_type
 	43, // [43:43] is the sub-list for method input_type
 	43, // [43:43] is the sub-list for extension type_name
@@ -5698,7 +5841,7 @@ func file_containarium_v1_container_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_container_proto_rawDesc), len(file_containarium_v1_container_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   69,
+			NumMessages:   71,
 			NumExtensions: 1,
 			NumServices:   0,
 		},

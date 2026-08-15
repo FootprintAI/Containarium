@@ -99,6 +99,17 @@ func (s *ContainerServer) SetEncryptionStorage(tenantRoot string, client *incus.
 				}
 				return cfg[key], nil
 			},
+			listNames: func() ([]string, error) {
+				infos, err := client.ListContainers()
+				if err != nil {
+					return nil, err
+				}
+				names := make([]string, 0, len(infos))
+				for i := range infos {
+					names = append(names, infos[i].Name)
+				}
+				return names, nil
+			},
 		},
 		incusStoragePools{
 			createPool: client.CreateZFSPool,

@@ -382,3 +382,81 @@ func TestEnsureParent(t *testing.T) {
 		}
 	})
 }
+
+// ChangeKey is the primitive behind control-plane-driven rotation (#1204).
+//
+// It rewraps an existing encryptionroot onto new key material without
+// touching the data: ZFS re-encrypts only the wrapping key, so rotation is
+// O(1) rather than O(dataset).
+func TestChangeKey(t *testing.T) {
+	t.Run("passes the new key on stdin and never on argv", func(t *testing.T) {
+		r := newFakeRunner()
+		m := NewManager(r)
+		newKey := testKey(t, 0x9)
+
+		if err := m.ChangeKey(context.Background(), "tank/tenants/alice", newKey); err != nil {
+			t.Fatalf("ChangeKey: %v", err)
+		}
+
+		call := r.lastCall()
+		if len(call) == 0 || call[0] != "change-key" {
+			t.Fatalf("ran %v, want a change-key", call)
+		}
+		// The rule the whole design rests on: key material travels on stdin.
+		// argv is world-readable through /proc/<pid>/cmdline for the life of
+		// the process.
+		for _, arg := range call {
+			if strings.Contains(arg, string(newKey.Bytes())) {
+				t.Fatalf("key material appeared on argv: %v", call)
+			}
+		}
+		if len(r.stdins) == 0 || !bytes.Equal(r.stdins[len(r.stdins)-1], newKey.Bytes()) {
+			t.Error("the new key did not reach stdin")
+		}
+		if !strings.Contains(r.allArgs(), "keylocation=file:///dev/stdin") {
+			t.Errorf("change-key did not read from stdin: %v", call)
+		}
+	})
+
+	t.Run("refuses an empty key", func(t *testing.T) {
+		r := newFakeRunner()
+		m := NewManager(r)
+
+		if err := m.ChangeKey(context.Background(), "tank/tenants/alice", zfskey.Key{}); err == nil {
+			t.Fatal("an empty key was accepted — the dataset would be left wrapped by nothing")
+		}
+		if len(r.calls) != 0 {
+			t.Errorf("zfs was invoked with an empty key: %v", r.calls)
+		}
+	})
+
+	t.Run("refuses a dataset name that is not one", func(t *testing.T) {
+		r := newFakeRunner()
+		m := NewManager(r)
+
+		if err := m.ChangeKey(context.Background(), "-rf", testKey(t, 0x9)); err == nil {
+			t.Fatal("a flag-shaped dataset name was accepted")
+		}
+		if len(r.calls) != 0 {
+			t.Errorf("zfs was invoked: %v", r.calls)
+		}
+	})
+
+	// A failed rotation must say so. Reporting success would leave the
+	// control plane believing the old key is dead when it is still the only
+	// one that works.
+	t.Run("surfaces the zfs error", func(t *testing.T) {
+		r := newFakeRunner()
+		r.errs["change-key"] = errors.New("exit status 1")
+		r.stderr["change-key"] = "Key must be loaded"
+		m := NewManager(r)
+
+		err := m.ChangeKey(context.Background(), "tank/tenants/alice", testKey(t, 0x9))
+		if err == nil {
+			t.Fatal("a failed change-key was reported as success")
+		}
+		if !strings.Contains(err.Error(), "Key must be loaded") {
+			t.Errorf("zfs's reason was lost: %v", err)
+		}
+	})
+}

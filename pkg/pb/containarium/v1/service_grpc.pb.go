@@ -28,6 +28,7 @@ const (
 	ContainerService_StopContainer_FullMethodName             = "/containarium.v1.ContainerService/StopContainer"
 	ContainerService_ResizeContainer_FullMethodName           = "/containarium.v1.ContainerService/ResizeContainer"
 	ContainerService_MoveContainer_FullMethodName             = "/containarium.v1.ContainerService/MoveContainer"
+	ContainerService_RewrapContainer_FullMethodName           = "/containarium.v1.ContainerService/RewrapContainer"
 	ContainerService_PrepareEncryptedMigration_FullMethodName = "/containarium.v1.ContainerService/PrepareEncryptedMigration"
 	ContainerService_AdoptMigratedContainer_FullMethodName    = "/containarium.v1.ContainerService/AdoptMigratedContainer"
 	ContainerService_ToggleMonitoring_FullMethodName          = "/containarium.v1.ContainerService/ToggleMonitoring"
@@ -108,6 +109,18 @@ type ContainerServiceClient interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(ctx context.Context, in *MoveContainerRequest, opts ...grpc.CallOption) (*MoveContainerResponse, error)
+	// RewrapContainer rotates the key protecting a container's data onto
+	// new key material, without rewriting the data (#1204).
+	//
+	// Rotation is per-TENANT: a tenant's containers share one encryptionroot,
+	// so this rotates the key for every container that tenant owns. The
+	// response lists them.
+	//
+	// The caller supplies the NEW key reference; the daemon resolves it with
+	// its own KeyProvider and never receives key material. OSS ships no
+	// rotation scheduler — cadence is tenant policy owned by the control
+	// plane (design resolved decision #5).
+	RewrapContainer(ctx context.Context, in *RewrapContainerRequest, opts ...grpc.CallOption) (*RewrapContainerResponse, error)
 	// PrepareEncryptedMigration asks this daemon, as a migration
 	// DESTINATION, whether it can take over an encrypted container before
 	// any data is copied — and provisions the tenant's encrypted storage
@@ -416,6 +429,16 @@ func (c *containerServiceClient) MoveContainer(ctx context.Context, in *MoveCont
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MoveContainerResponse)
 	err := c.cc.Invoke(ctx, ContainerService_MoveContainer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) RewrapContainer(ctx context.Context, in *RewrapContainerRequest, opts ...grpc.CallOption) (*RewrapContainerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RewrapContainerResponse)
+	err := c.cc.Invoke(ctx, ContainerService_RewrapContainer_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -914,6 +937,18 @@ type ContainerServiceServer interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error)
+	// RewrapContainer rotates the key protecting a container's data onto
+	// new key material, without rewriting the data (#1204).
+	//
+	// Rotation is per-TENANT: a tenant's containers share one encryptionroot,
+	// so this rotates the key for every container that tenant owns. The
+	// response lists them.
+	//
+	// The caller supplies the NEW key reference; the daemon resolves it with
+	// its own KeyProvider and never receives key material. OSS ships no
+	// rotation scheduler — cadence is tenant policy owned by the control
+	// plane (design resolved decision #5).
+	RewrapContainer(context.Context, *RewrapContainerRequest) (*RewrapContainerResponse, error)
 	// PrepareEncryptedMigration asks this daemon, as a migration
 	// DESTINATION, whether it can take over an encrypted container before
 	// any data is copied — and provisions the tenant's encrypted storage
@@ -1164,6 +1199,9 @@ func (UnimplementedContainerServiceServer) ResizeContainer(context.Context, *Res
 }
 func (UnimplementedContainerServiceServer) MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MoveContainer not implemented")
+}
+func (UnimplementedContainerServiceServer) RewrapContainer(context.Context, *RewrapContainerRequest) (*RewrapContainerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RewrapContainer not implemented")
 }
 func (UnimplementedContainerServiceServer) PrepareEncryptedMigration(context.Context, *PrepareEncryptedMigrationRequest) (*PrepareEncryptedMigrationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PrepareEncryptedMigration not implemented")
@@ -1482,6 +1520,24 @@ func _ContainerService_MoveContainer_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).MoveContainer(ctx, req.(*MoveContainerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_RewrapContainer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RewrapContainerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).RewrapContainer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_RewrapContainer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).RewrapContainer(ctx, req.(*RewrapContainerRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2356,6 +2412,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MoveContainer",
 			Handler:    _ContainerService_MoveContainer_Handler,
+		},
+		{
+			MethodName: "RewrapContainer",
+			Handler:    _ContainerService_RewrapContainer_Handler,
 		},
 		{
 			MethodName: "PrepareEncryptedMigration",

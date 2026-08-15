@@ -96,6 +96,19 @@ func (f *fakeRefStore) SetPool(name, pool string) error {
 	return nil
 }
 
+// ListEncrypted lets the rotation path enumerate the containers sharing an
+// encryptionroot (#1204).
+func (f *fakeRefStore) ListEncrypted() ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	names := make([]string, 0, len(f.refs))
+	for name := range f.refs {
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 // fakePools stands in for the Incus storage-pool API. It records what was
 // created so a test can tell "reused an existing pool" from "made a second
 // one" — the difference between a tenant having one encryptionroot and two.

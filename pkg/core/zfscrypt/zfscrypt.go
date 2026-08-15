@@ -152,6 +152,40 @@ func (m *Manager) CreateEncrypted(ctx context.Context, dataset string, key zfske
 	return nil
 }
 
+// ChangeKey rewraps an encryptionroot onto new key material (#1204).
+//
+// Only the wrapping key changes: ZFS re-encrypts the dataset's master key,
+// not the data, so rotation costs the same on a 1 GB dataset as on a 1 TB
+// one. The data itself is never rewritten, which is what makes rotation a
+// maintenance-window operation rather than a migration.
+//
+// The dataset's key must already be loaded — ZFS cannot rewrap what it
+// cannot open — so callers rotate a running-or-just-loaded encryptionroot,
+// not a cold one.
+//
+// The new key travels on stdin for the same reason every other key does:
+// argv is world-readable through /proc/<pid>/cmdline for the life of the
+// process, and a temp file leaves key material on disk.
+func (m *Manager) ChangeKey(ctx context.Context, dataset string, key zfskey.Key) error {
+	if err := validateDataset(dataset); err != nil {
+		return err
+	}
+	if key.IsZero() {
+		return fmt.Errorf("refusing to rewrap %s with an empty key", dataset)
+	}
+
+	_, stderr, err := m.run.Run(ctx, key.Bytes(),
+		"change-key",
+		"-o", "keyformat=raw",
+		"-o", "keylocation=file:///dev/stdin",
+		dataset,
+	)
+	if err != nil {
+		return fmt.Errorf("change key for %s: %w: %s", dataset, err, strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
 // LoadKey makes an encrypted dataset readable. It is a no-op when the
 // key is already loaded, so a restarted daemon re-running the pre-start
 // hook does not fail.

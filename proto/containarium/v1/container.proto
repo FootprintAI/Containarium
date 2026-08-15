@@ -1250,6 +1250,42 @@ message AdoptMigratedContainerRequest {
   string zfs_pool = 4;
 }
 
+// RewrapContainerRequest rotates the key protecting a container's data
+// (#1204), driven by the control plane during a maintenance window.
+//
+// IMPORTANT: rotation is per-TENANT, not per-container. A tenant's
+// containers share one encryptionroot by design (#1199), so rewrapping the
+// container named here rotates the key for every container that tenant
+// owns. The RPC is named for a container because that is what a caller
+// holds; the response says how many containers were affected so the caller
+// cannot be surprised by it.
+message RewrapContainerRequest {
+  // The container whose tenant's key is being rotated.
+  string username = 1;
+
+  // The NEW key reference, JSON-encoded, already provisioned by whoever
+  // owns key custody. The daemon resolves it through its own KeyProvider —
+  // key material never crosses this wire, exactly as at create time.
+  //
+  // Rotation is control-plane-driven (design resolved decision #5): the
+  // daemon exposes the primitive and holds no rotation schedule of its own.
+  string new_key_ref = 2;
+}
+
+// RewrapContainerResponse reports the outcome of a rotation.
+message RewrapContainerResponse {
+  // Human-readable summary.
+  string message = 1;
+
+  // Every container now protected by the new key — the whole tenant, not
+  // just the one named in the request.
+  repeated string rewrapped_containers = 2;
+
+  // Whether the named container was running before the rotation and has
+  // been started again afterwards.
+  bool restarted = 3;
+}
+
 // PrepareEncryptedMigrationRequest asks a destination daemon whether it
 // can take over an encrypted container, BEFORE any data is copied.
 //

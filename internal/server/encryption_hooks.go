@@ -447,6 +447,10 @@ func tenantFromRef(ref zfskey.KeyRef, containerName string) string {
 type incusEncryptionState struct {
 	setConfig func(containerName, key, value string) error
 	getConfig func(containerName, key string) (string, error)
+	// listNames enumerates every container this daemon knows about. Only
+	// rotation needs it (#1204) — the create, start and migration paths all
+	// address one container by name.
+	listNames func() ([]string, error)
 }
 
 func (s incusEncryptionState) GetKeyRef(containerName string) (zfskey.KeyRef, bool, error) {
@@ -496,4 +500,35 @@ func (p incusStoragePools) CreateZFSPool(name, source string) error {
 
 func (p incusStoragePools) StoragePoolSource(name string) (string, bool, error) {
 	return p.poolSource(name)
+}
+
+// ListEncrypted returns the containers carrying a key ref, so a rotation can
+// be recorded against every container sharing an encryptionroot (#1204).
+//
+// Reads the ref rather than trusting a naming convention: a container is
+// encrypted if and only if it records a key, which is the same test every
+// other hook applies.
+func (s incusEncryptionState) ListEncrypted() ([]string, error) {
+	if s.listNames == nil {
+		return nil, fmt.Errorf("this daemon cannot enumerate containers")
+	}
+	names, err := s.listNames()
+	if err != nil {
+		return nil, err
+	}
+	var encrypted []string
+	for _, name := range names {
+		raw, err := s.getConfig(name, keyRefConfigKey)
+		if err != nil {
+			// One unreadable container must not hide the rest; the caller
+			// re-keys what it can see and the omission surfaces as that
+			// container failing to start, which is loud.
+			log.Printf("[encryption] could not read the key ref of %s while enumerating: %v", name, err)
+			continue
+		}
+		if raw != "" {
+			encrypted = append(encrypted, name)
+		}
+	}
+	return encrypted, nil
 }

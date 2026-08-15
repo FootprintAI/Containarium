@@ -173,6 +173,29 @@ service ContainerService {
     };
   }
 
+  // RewrapContainer rotates the key protecting a container's data onto
+  // new key material, without rewriting the data (#1204).
+  //
+  // Rotation is per-TENANT: a tenant's containers share one encryptionroot,
+  // so this rotates the key for every container that tenant owns. The
+  // response lists them.
+  //
+  // The caller supplies the NEW key reference; the daemon resolves it with
+  // its own KeyProvider and never receives key material. OSS ships no
+  // rotation scheduler — cadence is tenant policy owned by the control
+  // plane (design resolved decision #5).
+  rpc RewrapContainer(RewrapContainerRequest) returns (RewrapContainerResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/rewrap"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Rotate a tenant's encryption key";
+      description: "Rewraps the tenant's ZFS encryptionroot onto new key material supplied as a key reference. Only the wrapping key changes, so the cost is independent of dataset size. Affects every container the tenant owns, which the response lists. Admin only.";
+      tags: "Container Operations";
+    };
+  }
+
   // PrepareEncryptedMigration asks this daemon, as a migration
   // DESTINATION, whether it can take over an encrypted container before
   // any data is copied — and provisions the tenant's encrypted storage

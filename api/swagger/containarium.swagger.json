@@ -2595,6 +2595,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/rewrap": {
+      "post": {
+        "summary": "Rotate a tenant's encryption key",
+        "description": "Rewraps the tenant's ZFS encryptionroot onto new key material supplied as a key reference. Only the wrapping key changes, so the cost is independent of dataset size. Affects every container the tenant owns, which the response lists. Admin only.",
+        "operationId": "ContainerService_RewrapContainer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RewrapContainerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The container whose tenant's key is being rotated.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RewrapContainerBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/ssh-keys": {
       "post": {
         "summary": "Add SSH key",
@@ -11073,6 +11114,37 @@
           "description": "Human-readable confirmation, intended for CLI output."
         }
       }
+    },
+    "RewrapContainerBody": {
+      "type": "object",
+      "properties": {
+        "newKeyRef": {
+          "type": "string",
+          "description": "The NEW key reference, JSON-encoded, already provisioned by whoever\nowns key custody. The daemon resolves it through its own KeyProvider —\nkey material never crosses this wire, exactly as at create time.\n\nRotation is control-plane-driven (design resolved decision #5): the\ndaemon exposes the primitive and holds no rotation schedule of its own."
+        }
+      },
+      "description": "RewrapContainerRequest rotates the key protecting a container's data\n(#1204), driven by the control plane during a maintenance window.\n\nIMPORTANT: rotation is per-TENANT, not per-container. A tenant's\ncontainers share one encryptionroot by design (#1199), so rewrapping the\ncontainer named here rotates the key for every container that tenant\nowns. The RPC is named for a container because that is what a caller\nholds; the response says how many containers were affected so the caller\ncannot be surprised by it."
+    },
+    "RewrapContainerResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Human-readable summary."
+        },
+        "rewrappedContainers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every container now protected by the new key — the whole tenant, not\njust the one named in the request."
+        },
+        "restarted": {
+          "type": "boolean",
+          "description": "Whether the named container was running before the rotation and has\nbeen started again afterwards."
+        }
+      },
+      "description": "RewrapContainerResponse reports the outcome of a rotation."
     },
     "RouteEvent": {
       "type": "object",

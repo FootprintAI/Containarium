@@ -395,3 +395,65 @@ func TestIntegrationEncryption_EnsureTenantStorageLeavesNothingWhenKeysAreUnavai
 			"for this container fails on a name that already exists", dataset)
 	}
 }
+
+// #1204 AC1 and AC3, against a real pool: rotation completes, the new key
+// opens the dataset, and **the old key stops working**.
+//
+// The negative is the whole point. A rewrap that silently left the old key
+// valid would look identical to a successful rotation from the daemon's
+// side — same exit code, same recorded ref — while the key the control plane
+// just retired still opened the data. Only ZFS can answer whether the old
+// key was actually retired, so only a real pool can assert it.
+func TestIntegrationEncryption_RotationRetiresTheOldKey(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	// A tenant with its encryptionroot, provisioned through the hook.
+	pool, _, err := h.hooks.EnsureTenantStorage(ctx, "acme")
+	if err != nil {
+		t.Fatalf("EnsureTenantStorage: %v", err)
+	}
+	root := h.pool.Dataset("acme")
+	if _, ok := h.pools.sources[pool]; !ok {
+		t.Fatalf("no pool source recorded for %s", pool)
+	}
+
+	oldKey, _, err := h.keys.Wrap(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+
+	// Rotate onto fresh material. In production the control plane provisions
+	// this and passes only its ref; here the harness plays that part.
+	newKeys, err := zfskey.NewFileKeyProvider(filepath.Join(t.TempDir(), "rotated"))
+	if err != nil {
+		t.Fatalf("NewFileKeyProvider: %v", err)
+	}
+	newKey, _, err := newKeys.Wrap(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Wrap(new): %v", err)
+	}
+
+	if err := h.hooks.zfs.ChangeKey(ctx, root, newKey); err != nil {
+		t.Fatalf("ChangeKey on %s: %v", root, err)
+	}
+
+	// Unload so the next load has to actually unwrap rather than answer from
+	// the already-loaded key.
+	zfspool.UnmountIfMounted(t, root)
+	if err := h.hooks.zfs.UnloadKey(ctx, root); err != nil {
+		t.Fatalf("UnloadKey: %v", err)
+	}
+
+	// AC3: the retired key must be refused.
+	if err := h.hooks.zfs.LoadKey(ctx, root, oldKey); err == nil {
+		t.Fatal("the OLD key still opens the dataset after rotation — the control plane would " +
+			"retire a key that still grants access, which is worse than not rotating at all")
+	}
+
+	// AC1: the new key opens it.
+	if err := h.hooks.zfs.LoadKey(ctx, root, newKey); err != nil {
+		t.Fatalf("the new key does not open the rotated dataset: %v — the tenant's data is now "+
+			"unreachable by either key, which is the one outcome rotation must never produce", err)
+	}
+}
