@@ -101,6 +101,50 @@ func TestTrafficStore_SavedConnectionIsQueryableWithItsCounters(t *testing.T) {
 	}
 }
 
+// GetAggregates groups by dest_ip, which is the OTHER read path that scans an
+// INET column into a Go string (#1397). Tested separately because the two
+// queries are built independently — fixing one and not the other would leave
+// the aggregates view broken while history worked, and nothing else would say
+// so.
+func TestTrafficStore_AggregatesGroupedByDestIPAreReadable(t *testing.T) {
+	ctx := context.Background()
+	store, container := trafficTestStore(t)
+	now := time.Now().UTC().Truncate(time.Hour)
+
+	for i, id := range []string{"agg-a", "agg-b"} {
+		conn := aConnection(container, id, now.Add(time.Duration(i)*time.Minute))
+		if err := store.SaveConnection(ctx, conn); err != nil {
+			t.Fatalf("SaveConnection(%s): %v", id, err)
+		}
+	}
+
+	aggs, err := store.GetAggregates(ctx, AggregateParams{
+		ContainerName: container,
+		StartTime:     now.Add(-time.Hour),
+		EndTime:       now.Add(time.Hour),
+		Interval:      "1h",
+		GroupByDestIP: true,
+	})
+	if err != nil {
+		t.Fatalf("GetAggregates: %v — this is the second read path over an INET column, and it "+
+			"is built separately from QueryConnections", err)
+	}
+	if len(aggs) == 0 {
+		t.Fatal("no aggregates for two connections just written")
+	}
+	if got := aggs[0].GetDestIp(); got != "93.184.216.34" {
+		t.Errorf("dest_ip = %q, want 93.184.216.34 — grouped-by-IP aggregates name the "+
+			"destination, and an empty one makes the view useless", got)
+	}
+	var sent int64
+	for _, a := range aggs {
+		sent += a.GetBytesSent()
+	}
+	if sent != 2000 {
+		t.Errorf("summed bytes_sent = %d, want 2000 from two 1000-byte connections", sent)
+	}
+}
+
 // The container filter is the tenancy boundary of this table: every query goes
 // through it, and a leak here shows one tenant another's connection history.
 func TestTrafficStore_QueryIsScopedToOneContainer(t *testing.T) {

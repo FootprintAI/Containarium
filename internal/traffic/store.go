@@ -177,9 +177,18 @@ type QueryParams struct {
 
 // QueryConnections retrieves historical connections matching the criteria
 func (s *Store) QueryConnections(ctx context.Context, params QueryParams) ([]*pb.HistoricalConnection, int32, error) {
-	// Build query dynamically based on filters
+	// Build query dynamically based on filters.
+	//
+	// source_ip and dest_ip are cast to text (#1397). The columns are INET,
+	// the scan targets are Go strings, and pgx v5 refuses to decode INET into
+	// a string in binary format — so before this cast EVERY query that matched
+	// a row failed with "cannot scan inet (OID 869) in binary format into
+	// *string", and connection history was unreadable whenever it was
+	// non-empty. A cast rather than a pgtype/netip scan target keeps the
+	// conversion where the type mismatch actually is, and leaves the proto's
+	// string fields unchanged.
 	baseQuery := `
-		SELECT id, container_name, protocol, source_ip, source_port, dest_ip, dest_port,
+		SELECT id, container_name, protocol, source_ip::text, source_port, dest_ip::text, dest_port,
 		       direction, bytes_sent, bytes_received, started_at, ended_at, duration_seconds
 		FROM traffic_connections
 		WHERE container_name = $1 AND started_at >= $2 AND started_at <= $3
@@ -316,7 +325,10 @@ func (s *Store) GetAggregates(ctx context.Context, params AggregateParams) ([]*p
 	groupCols := "date_trunc('hour', started_at)"
 
 	if params.GroupByDestIP {
-		selectCols += ", dest_ip"
+		// ::text for the same reason as QueryConnections (#1397) — the column
+		// is INET and the scan target is a Go string. Grouped on the raw
+		// column so the cast cannot change how rows are bucketed.
+		selectCols += ", dest_ip::text"
 		groupCols += ", dest_ip"
 	}
 	if params.GroupByDestPort {
