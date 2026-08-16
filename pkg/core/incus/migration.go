@@ -89,12 +89,20 @@ func (e *ExecRunner) incus(args ...string) error {
 	return nil
 }
 
-// Snapshot — `incus snapshot <container> <snapshot>`. If the snapshot
-// already exists (rerun after partial failure), the underlying CLI
-// errors with "snapshot already exists" — we swallow that to keep
-// retry idempotent.
+// Snapshot — `incus snapshot create <container> <snapshot>` (#1392).
+//
+// `incus snapshot` is a command GROUP in Incus 6.x, not a verb. This used to
+// call `incus snapshot <container> <snapshot>`, which that version rejects
+// with `unknown command "<container>" for "incus snapshot"` — so MoveContainer
+// failed on its very first call, before any copy. No test caught it because
+// every move test substitutes a fake MigrationRunner and the real ExecRunner
+// is wired only in production; the migration logic was covered, the CLI
+// surface under it was not covered at all.
+//
+// If the snapshot already exists (rerun after a partial failure) the CLI errors
+// with "already exists" — swallowed to keep retry idempotent.
 func (e *ExecRunner) Snapshot(container, snapshot string) error {
-	err := e.incus("snapshot", container, snapshot)
+	err := e.incus("snapshot", "create", container, snapshot)
 	if err == nil {
 		return nil
 	}
@@ -104,8 +112,15 @@ func (e *ExecRunner) Snapshot(container, snapshot string) error {
 	return err
 }
 
+// DeleteSnapshot — `incus snapshot delete <container> <snapshot>` (#1392).
+//
+// This used to call `incus delete <container>/<snapshot>`, which Incus 6.x
+// rejects with `Invalid instance name`. That message matches neither of the
+// absent-snapshot strings below, so a failed cleanup surfaced as a hard error
+// rather than being swallowed — and every migration left its sync snapshots
+// behind, pinning disk on both hosts.
 func (e *ExecRunner) DeleteSnapshot(container, snapshot string) error {
-	err := e.incus("delete", container+"/"+snapshot)
+	err := e.incus("snapshot", "delete", container, snapshot)
 	if err == nil {
 		return nil
 	}

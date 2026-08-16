@@ -13,6 +13,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/testsupport/incusenv"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -35,9 +36,14 @@ import (
 // premise from plausible into disproved (#1384) — applied here to a defect in
 // shipped code rather than to a design.
 //
-// It asserts nothing about which syntax SHOULD win. It asserts that for each
-// operation, at least one candidate works, and it logs which — because the
-// point is to learn the answer, and a probe that presumes it is not a probe.
+// It calls the PRODUCTION ExecRunner methods rather than probing raw argv.
+// Probing argv would only prove that some syntax works, while leaving
+// ExecRunner free to use a different one — which is precisely the gap that let
+// #1392 ship. What needs testing is the function the daemon actually calls.
+//
+// probeCandidates below survives for the one case that still needs it: #1390's
+// test has to produce an Incus-level snapshot across Incus versions without
+// depending on the runner it is investigating.
 
 // incusRun runs the incus CLI and returns combined output plus whether it
 // succeeded, without failing the test — a non-zero exit is data here.
@@ -68,11 +74,12 @@ func firstLine(s string) string {
 	return s
 }
 
-// TestIntegrationIncus_MigrationRunnerCLISurface establishes the syntax for
-// every command pkg/core/incus/migration.go shells out to.
+// TestIntegrationIncus_MigrationRunnerCLISurface exercises every command
+// pkg/core/incus/migration.go shells out to, against a real Incus.
 //
-// Deliberately NOT a fix: this PR establishes facts. The fix to ExecRunner is
-// its own change, designed against what this records.
+// This is the test #1392 needed and did not have. It fails if a future Incus
+// changes any of these commands under the runner, instead of that surfacing as
+// a migration failing in production.
 func TestIntegrationIncus_MigrationRunnerCLISurface(t *testing.T) {
 	s, _, _ := encTestEnv(t)
 
@@ -97,42 +104,42 @@ func TestIntegrationIncus_MigrationRunnerCLISurface(t *testing.T) {
 	}
 
 	const snap = "probe-snap"
+	runner := &incus.ExecRunner{}
 
-	// 1. Snapshot — the one already known to be wrong.
-	snapArgv := probeCandidates(t, "snapshot", [][]string{
-		{"snapshot", instance, snap},           // what ExecRunner.Snapshot does today
-		{"snapshot", "create", instance, snap}, // Incus 6.x command group
-	})
-	if snapArgv == nil {
-		t.Fatal("no candidate creates a snapshot — the migration runner cannot work at all, and " +
-			"the fix needs a syntax this test does not know about")
+	// The production methods, called directly. Probing raw argv would prove
+	// that SOME syntax works while leaving ExecRunner free to use another —
+	// which is exactly the gap that let #1392 ship. What needs testing is the
+	// function the daemon actually calls.
+	if err := runner.Snapshot(instance, snap); err != nil {
+		t.Fatalf("ExecRunner.Snapshot against a real Incus: %v\n\n"+
+			"This is MoveContainer's FIRST call, so migration is broken end to end on this "+
+			"version. Re-run the raw-syntax probe below to find the form this Incus accepts.", err)
 	}
-	if snapArgv[0] == "snapshot" && len(snapArgv) == 3 {
-		t.Log("ExecRunner.Snapshot's current syntax works on this Incus; the failure seen in " +
-			"#1390's test came from somewhere else and needs re-examining")
-	} else {
-		t.Errorf("DEFECT: ExecRunner.Snapshot shells out to `incus snapshot <c> <n>`, which this "+
-			"Incus rejects. The working form is `incus %s`. MoveContainer fails at phase 1 on "+
-			"this version, and no test caught it because every move test uses a fake runner",
-			strings.Join(snapArgv, " "))
-	}
+	t.Log("FACT: ExecRunner.Snapshot works against this Incus")
 
-	// 2. DeleteSnapshot — `incus delete <c>/<snap>`.
-	delArgv := probeCandidates(t, "delete-snapshot", [][]string{
-		{"delete", instance + "/" + snap},      // what ExecRunner.DeleteSnapshot does today
-		{"snapshot", "delete", instance, snap}, // the command-group form
-	})
-	if delArgv == nil {
-		t.Error("DEFECT: no candidate deletes a snapshot — a migration would leave its sync " +
-			"snapshots behind on every run")
+	// Idempotency is matched on the CLI's message text, so it breaks silently
+	// whenever the CLI is corrected under it — as it just was. A retry after a
+	// partial failure re-snapshots the same name and must not error.
+	if err := runner.Snapshot(instance, snap); err != nil {
+		t.Errorf("re-snapshotting an existing name failed: %v — MoveContainer retries after a "+
+			"partial failure, and this is the swallow that makes that safe", err)
 	}
 
-	// 3/4. Stop and Start, used either side of the cutover.
-	if argv := probeCandidates(t, "stop", [][]string{{"stop", instance}}); argv == nil {
-		t.Error("DEFECT: `incus stop` failed — the migration cutover cannot stop the source")
+	if err := runner.DeleteSnapshot(instance, snap); err != nil {
+		t.Errorf("ExecRunner.DeleteSnapshot against a real Incus: %v — every migration would "+
+			"leave its sync snapshots behind, pinning disk on both hosts", err)
 	}
-	if argv := probeCandidates(t, "start", [][]string{{"start", instance}}); argv == nil {
-		t.Error("DEFECT: `incus start` failed — a rolled-back migration cannot restart the source")
+	// And deleting one that is already gone must stay a no-op, same reasoning.
+	if err := runner.DeleteSnapshot(instance, snap); err != nil {
+		t.Errorf("deleting an absent snapshot returned %v, want nil — a cleanup that already "+
+			"ran must not fail the migration", err)
+	}
+
+	if err := runner.Stop(instance); err != nil {
+		t.Errorf("ExecRunner.Stop: %v — the migration cutover cannot stop the source", err)
+	}
+	if err := runner.Start(instance); err != nil {
+		t.Errorf("ExecRunner.Start: %v — a rolled-back migration cannot restart the source", err)
 	}
 
 	// 5/6. Copy. Not run for real (it needs a second daemon), so only the
