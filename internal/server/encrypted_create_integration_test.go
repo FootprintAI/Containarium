@@ -608,13 +608,28 @@ func TestIntegrationIncus_TenantSnapshotAPISeesIncusOwnSnapshots(t *testing.T) {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 
-	// Take an Incus-level snapshot exactly as MoveContainer does.
-	runner := &incus.ExecRunner{}
+	// Take an Incus-level snapshot, the way MoveContainer means to.
+	//
+	// NOT through incus.ExecRunner.Snapshot, which is what MoveContainer
+	// actually calls: this test's first run showed that shells out to
+	// `incus snapshot <c> <name>`, and Incus 6.0.0 rejects it because
+	// `incus snapshot` is a command GROUP there. That is a separate defect in
+	// production migration code — see
+	// TestIntegrationIncus_MigrationRunnerCLISurface, which establishes the
+	// whole surface, and the issue filed from it.
+	//
+	// Both forms are tried here so this test survives whichever Incus the lane
+	// runs, and so it keeps working after ExecRunner is fixed.
 	const incusSnap = "containarium-move-sync0"
-	if err := runner.Snapshot(instance, incusSnap); err != nil {
-		t.Fatalf("incus snapshot: %v", err)
+	snapArgv := probeCandidates(t, "snapshot", [][]string{
+		{"snapshot", "create", instance, incusSnap},
+		{"snapshot", instance, incusSnap},
+	})
+	if snapArgv == nil {
+		t.Fatal("could not create an Incus-level snapshot by any known syntax, so the leak this " +
+			"test exists to pin cannot be produced")
 	}
-	t.Cleanup(func() { _ = runner.DeleteSnapshot(instance, incusSnap) })
+	t.Cleanup(func() { _, _ = incusRun("delete", instance+"/"+incusSnap) })
 
 	// And a tenant-facing one through the shipped API, so the listing below
 	// has one of each to tell apart.
