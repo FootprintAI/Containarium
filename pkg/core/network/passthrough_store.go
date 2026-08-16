@@ -93,7 +93,15 @@ func (s *postgresPassthroughStore) initSchema(ctx context.Context) error {
 	return err
 }
 
-// Save saves or updates a passthrough route (upsert by external_port + protocol)
+// Save saves or updates a passthrough route (upsert by external_port + protocol).
+//
+// Creation attribution is READ BACK rather than assumed. The DO UPDATE list
+// deliberately omits created_by and created_at, so an upsert cannot rewrite
+// who opened a port — but the caller's struct still carried whatever they
+// passed in, which on an update is somebody else's name and a creation time
+// that never happened. A caller logging the returned record then reports the
+// wrong creator for a published port, which is exactly the question asked
+// during an incident (#1300).
 func (s *postgresPassthroughStore) Save(ctx context.Context, route *PassthroughRecord) error {
 	query := `
 		INSERT INTO passthrough_routes (external_port, target_ip, target_port, protocol,
@@ -106,7 +114,7 @@ func (s *postgresPassthroughStore) Save(ctx context.Context, route *PassthroughR
 			description = EXCLUDED.description,
 			active = EXCLUDED.active,
 			updated_at = EXCLUDED.updated_at
-		RETURNING id
+		RETURNING id, created_by, created_at
 	`
 
 	now := time.Now()
@@ -130,7 +138,7 @@ func (s *postgresPassthroughStore) Save(ctx context.Context, route *PassthroughR
 		route.CreatedBy,
 		route.CreatedAt,
 		route.UpdatedAt,
-	).Scan(&route.ID)
+	).Scan(&route.ID, &route.CreatedBy, &route.CreatedAt)
 
 	if err != nil {
 		return fmt.Errorf("failed to save passthrough route: %w", err)
