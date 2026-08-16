@@ -560,3 +560,140 @@ func TestIntegrationIncus_RollbackRestoresDataAndRefusesWithoutTheKey(t *testing
 	}
 	t.Logf("rollback restored the data, and is refused with the key unloaded: %v", err)
 }
+
+// What Incus names ITS ZFS snapshots, and what the tenant snapshot API does
+// with them (#1390).
+//
+// The daemon now snapshots two ways on one dataset:
+//
+//   - `incus snapshot <container> <name>` — Incus-managed, recorded in Incus's
+//     own database, used by MoveContainer for its sync points.
+//   - `zfs snapshot <dataset>@<name>` — the tenant-facing API shipped in
+//     #1160a.
+//
+// `zfscrypt.ListSnapshots` runs `zfs list -t snapshot -r <dataset>`
+// UNFILTERED, so it returns both. Nothing in the repo records what Incus names
+// its snapshots, and that detail decides the fix: a distinct prefix means
+// filter and refuse by name; no distinguishable prefix means list through
+// Incus instead.
+//
+// This test establishes the fact rather than guessing it — the ordering that
+// turned #1160c's premise from plausible into disproved (#1384).
+//
+// It is a CHARACTERIZATION test: it asserts the behaviour that exists today,
+// which is the defective one, so it passes now and FAILS the moment the leak
+// is fixed. Asserting the correct behaviour instead would leave a red test on
+// main until someone got to it, and a permanently-red lane teaches everyone to
+// ignore it.
+func TestIntegrationIncus_TenantSnapshotAPISeesIncusOwnSnapshots(t *testing.T) {
+	s, _, _ := encTestEnv(t)
+	ctx := context.Background()
+
+	tenant := fmt.Sprintf("reg%d", os.Getpid())
+	instance := tenant + "-container"
+	t.Cleanup(func() { incusenv.DeleteInstance(t, instance) })
+
+	rpcCtx, cancel := context.WithTimeout(
+		tenantWithScopes(tenant, auth.ScopeContainersRead, auth.ScopeContainersWrite), 25*time.Minute)
+	defer cancel()
+
+	// An ordinary unencrypted container: this defect has nothing to do with
+	// encryption, and using the plain path keeps that clear.
+	if _, err := s.CreateContainer(rpcCtx, &pb.CreateContainerRequest{
+		Username:  tenant,
+		Image:     incusenv.BoxImage(),
+		OsType:    pb.OSType_OS_TYPE_UBUNTU_2404,
+		Resources: &pb.ResourceLimits{Disk: "5GB"},
+	}); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+
+	// Take an Incus-level snapshot exactly as MoveContainer does.
+	runner := &incus.ExecRunner{}
+	const incusSnap = "containarium-move-sync0"
+	if err := runner.Snapshot(instance, incusSnap); err != nil {
+		t.Fatalf("incus snapshot: %v", err)
+	}
+	t.Cleanup(func() { _ = runner.DeleteSnapshot(instance, incusSnap) })
+
+	// And a tenant-facing one through the shipped API, so the listing below
+	// has one of each to tell apart.
+	if _, err := s.CreateContainerSnapshot(rpcCtx, &pb.CreateContainerSnapshotRequest{
+		Username: tenant, Name: "tenant-taken",
+	}); err != nil {
+		t.Fatalf("CreateContainerSnapshot: %v", err)
+	}
+
+	// THE FACT: what ZFS actually calls Incus's snapshot.
+	dataset := incusenv.DatasetFor(t, instance)
+	if dataset == "" {
+		t.Fatalf("instance %s has no ZFS dataset", instance)
+	}
+	zfs := zfscrypt.NewManager(zfscrypt.ExecRunner{})
+	onDisk, err := zfs.ListSnapshots(ctx, dataset)
+	if err != nil {
+		t.Fatalf("list snapshots of %s: %v", dataset, err)
+	}
+	t.Logf("FACT for #1390: ZFS snapshots on %s after one `incus snapshot %s` and one "+
+		"CreateContainerSnapshot: %v", dataset, incusSnap, onDisk)
+
+	// The tenant-facing listing, which is where the defect shows.
+	resp, err := s.ListContainerSnapshots(rpcCtx, &pb.ListContainerSnapshotsRequest{Username: tenant})
+	if err != nil {
+		t.Fatalf("ListContainerSnapshots: %v", err)
+	}
+	var names []string
+	for _, snap := range resp.GetSnapshots() {
+		names = append(names, snap.GetName())
+	}
+	t.Logf("FACT for #1390: ListContainerSnapshots reports %v", names)
+
+	// The tenant's own snapshot must be there — otherwise the rest says
+	// nothing, because an empty listing would also contain no Incus snapshot.
+	tenantVisible := false
+	for _, n := range names {
+		if n == "tenant-taken" {
+			tenantVisible = true
+		}
+	}
+	if !tenantVisible {
+		t.Fatalf("the tenant's own snapshot is missing from %v — this test cannot say anything "+
+			"about leakage until the listing is known to work", names)
+	}
+
+	// Which of the reported names corresponds to Incus's snapshot? Matched by
+	// substring rather than by an assumed prefix, precisely because the prefix
+	// is the unknown this test exists to record.
+	leaked := ""
+	for _, n := range names {
+		if strings.Contains(n, incusSnap) {
+			leaked = n
+		}
+	}
+	// This is a CHARACTERIZATION assertion: it pins the behaviour that exists
+	// today, which is the defective one. Written this way deliberately.
+	//
+	// Asserting the CORRECT behaviour would leave a red test on main until
+	// someone fixes it, and a permanently-red lane teaches everyone to ignore
+	// it. Merely LOGGING whichever answer came back would be worse: a check
+	// that cannot fail proves nothing and rots silently, which is how the
+	// premise in #1160c survived review for as long as it did.
+	//
+	// So this passes while the defect exists and FAILS the moment it is fixed,
+	// telling whoever fixed it to convert this into the positive assertion.
+	if leaked == "" {
+		t.Fatalf("#1390 no longer reproduces: no name in %v contains %q.\n\n"+
+			"If you just fixed the leak, this test has done its job — replace this block with "+
+			"the positive assertion (Incus's snapshot must NOT appear, and DeleteContainerSnapshot "+
+			"must refuse it by name) rather than deleting the test. If you did not touch the "+
+			"snapshot paths, something else changed how Incus names its snapshots, and the fix "+
+			"designed against the old name may no longer be right.", names, incusSnap)
+	}
+
+	t.Logf("REPRODUCED #1390: the tenant snapshot API reports Incus's own snapshot as %q. "+
+		"During a migration these are live sync points; a tenant deleting an unfamiliar row "+
+		"destroys one, and Incus's database is left referencing a snapshot that no longer "+
+		"exists.\n\nThe ZFS-level name is in the FACT line above — that is what decides whether "+
+		"the fix is a prefix filter, an Incus-side listing, or reconciling the two registries.",
+		leaked)
+}
