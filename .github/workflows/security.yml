@@ -64,7 +64,7 @@ jobs:
           # not, and is now told apart from a tool that ran and found things.
           set -o pipefail
           rc=0
-          govulncheck -show verbose ./this-package-does-not-exist/... 2>&1 | tee govulncheck-output.txt || rc=$?  # CANARY
+          govulncheck -show verbose ./... 2>&1 | tee govulncheck-output.txt || rc=$?
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
             echo "::error::govulncheck did not complete (exit $rc). A scan that did not run is not a clean scan."
             exit 1
