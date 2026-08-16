@@ -12,6 +12,24 @@
 // designed against demonstrated behaviour rather than against a plausible
 // reading of the manual.
 //
+// # What the lane answered
+//
+// The design's premise is WRONG. ZFS does NOT confine a clone to its origin's
+// encryptionroot: a clone of tenant A's snapshot can be created under tenant
+// B's dataset. What ZFS refuses to do is re-key it — the clone's
+// encryptionroot stays A's, so B cannot read it even holding B's key.
+//
+// That is the same rule #1335 found for Incus instance volumes (a clone
+// inherits encryption from its ORIGIN, not its location), and it moves the
+// problem rather than removing it: the isolation claim holds, but tenant A's
+// data can come to rest inside tenant B's subtree, where B's lifecycle
+// operations act on it. A cross-tenant clone must therefore be refused by the
+// DAEMON; ZFS will not refuse it.
+//
+// Also established: cloning requires the origin's key loaded, and a clone
+// pins its origin snapshot ("snapshot has dependent clones") — which is the
+// error #1160a's delete path already reports.
+//
 // The reason to spend a lane test on this is specific and recent. #1199's
 // original design was built on an untested assumption about what Incus would
 // accept, the assumption was wrong, and the whole mechanism had to be
@@ -31,22 +49,33 @@ import (
 
 // Question 1: can a clone land in a DIFFERENT tenant's encryptionroot?
 //
-// This is the one that decides whether a cross-tenant clone API is even
-// expressible. If ZFS permits it, the clone would be readable with the
-// destination tenant's key — a cross-tenant data path, and the whole point of
-// per-tenant encryption is that no such path exists. If ZFS refuses, the
-// constraint is enforced beneath us and the API simply cannot offer it.
-func TestIntegrationClone_AcrossEncryptionrootsIsRefused(t *testing.T) {
+// ANSWERED, and the design's premise was wrong. #1160c was scoped on the
+// claim that "a ZFS clone must stay within its origin's encryptionroot, so a
+// clone across tenants is not expressible". ZFS permits the clone. What it
+// does NOT do is re-key it: the clone lands under tenant B's path while its
+// encryptionroot remains tenant A's.
+//
+// This is the same rule #1335 found for Incus instance volumes — a clone
+// inherits encryption from its ORIGIN, not from its location — and it is why
+// per-tenant encryptionroots had to move above the level Incus manages.
+//
+// So the hazard is not the one the design feared. B's key does not open the
+// clone (asserted below, because that is the security-relevant half). The
+// hazard is placement: tenant A's data comes to rest inside tenant B's
+// dataset tree, where B's lifecycle operations — offboarding above all
+// (#1343) — will act on it.
+func TestIntegrationClone_LandsInAnotherTenantButKeepsItsOriginsKey(t *testing.T) {
 	zfspool.Require(t)
 	ctx := context.Background()
 	p := zfspool.New(t)
 	m := NewManager(nil)
 
-	dsA, dsB := p.Dataset("tenant-a"), p.Dataset("tenant-b")
-	if err := m.CreateEncrypted(ctx, dsA, testKey(t, 0xAA)); err != nil {
+	dsA, keyA := p.Dataset("tenant-a"), testKey(t, 0xAA)
+	dsB, keyB := p.Dataset("tenant-b"), testKey(t, 0xBB)
+	if err := m.CreateEncrypted(ctx, dsA, keyA); err != nil {
 		t.Fatalf("CreateEncrypted(A): %v", err)
 	}
-	if err := m.CreateEncrypted(ctx, dsB, testKey(t, 0xBB)); err != nil {
+	if err := m.CreateEncrypted(ctx, dsB, keyB); err != nil {
 		t.Fatalf("CreateEncrypted(B): %v", err)
 	}
 
@@ -55,21 +84,51 @@ func TestIntegrationClone_AcrossEncryptionrootsIsRefused(t *testing.T) {
 		t.Fatalf("Snapshot(A): %v", err)
 	}
 
-	// A's snapshot, cloned INTO B's encryptionroot.
+	// A's snapshot, cloned INTO B's subtree. ZFS allows this.
 	target := dsB + "/from-a"
-	_, stderr, err := m.run.Run(ctx, nil, "clone", snap, target)
-	if err == nil {
-		// If this ever passes, the design's constraint is wrong and something
-		// much more serious is: A's data would be reachable under B's key.
-		root, rootErr := m.EncryptionRoot(ctx, target)
-		t.Fatalf("ZFS CLONED %s into another tenant's encryptionroot as %s (its encryptionroot is "+
-			"now %q, err %v).\n\nThis contradicts the container-snapshots design AND the isolation "+
-			"claim behind #1199: tenant A's data would be readable by whoever holds B's key. "+
-			"#1160c cannot be designed until this is understood.", snap, target, root, rootErr)
+	if _, stderr, err := m.run.Run(ctx, nil, "clone", snap, target); err != nil {
+		t.Fatalf("clone across encryptionroots failed: %v: %s\n\nIf ZFS has started refusing "+
+			"this, the design's original constraint is correct after all and #1160c gets simpler "+
+			"— rewrite this test to pin the refusal", err, strings.TrimSpace(stderr))
 	}
 
-	t.Logf("confirmed: cloning across encryptionroots is refused by ZFS — %s",
-		strings.TrimSpace(stderr))
+	// THE fact: location changed, key did not.
+	root, err := m.EncryptionRoot(ctx, target)
+	if err != nil {
+		t.Fatalf("EncryptionRoot(clone): %v", err)
+	}
+	if root != dsA {
+		t.Fatalf("clone %s has encryptionroot %q, want the ORIGIN's %q — if a clone were re-keyed "+
+			"to its destination, tenant B would gain a readable copy of tenant A's data and the "+
+			"isolation claim behind #1199 would be false", target, root, dsA)
+	}
+
+	// The security half, asserted rather than inferred from the string above.
+	// Take A's key away while B's stays loaded: if the clone were readable
+	// under B's key, it would still be mountable now.
+	zfspool.UnmountIfMounted(t, target)
+	zfspool.UnmountIfMounted(t, dsA)
+	if err := m.UnloadKey(ctx, dsA); err != nil {
+		t.Fatalf("UnloadKey(A): %v — the assertion below would prove nothing", err)
+	}
+	if status, err := m.KeyStatus(ctx, dsB); err != nil || status != KeyAvailable {
+		t.Fatalf("precondition: B's key is %q (err %v), want it still loaded", status, err)
+	}
+	if status, err := m.KeyStatus(ctx, target); err != nil || status != KeyUnavailable {
+		t.Fatalf("the clone living under tenant B reports keystatus %q (err %v), want %q — B "+
+			"holds a loaded key and must still not be able to read A's cloned data",
+			status, err, KeyUnavailable)
+	}
+
+	t.Logf("FACT for #1160c: a clone CAN be placed under another tenant (%s), but keeps its "+
+		"origin's encryptionroot (%s) and is unreadable when the origin's key is unloaded, even "+
+		"with the destination tenant's key available.\n\n"+
+		"Consequences the design must answer:\n"+
+		"  - The stated constraint ('not expressible') is wrong; a cross-tenant clone is "+
+		"expressible and must be refused by the DAEMON, not left to ZFS.\n"+
+		"  - Offboarding (#1343) walks a tenant's own subtree: it would destroy a clone of "+
+		"another tenant's data sitting under the departing tenant, and would miss one that the "+
+		"departing tenant left under someone else.", target, root)
 }
 
 // Question 2: a clone WITHIN the same encryptionroot — the case #1160c would
@@ -155,14 +214,16 @@ func TestIntegrationClone_KeyRequirement(t *testing.T) {
 
 	_, stderr, err := m.run.Run(ctx, nil, "clone", snap, tenant+"/clone")
 
-	// HYPOTHESIS, asserted rather than logged: cloning needs the key, because
-	// the clone is a new dataset that has to inherit the origin's wrapping
-	// key. A test that merely reports whichever answer it got cannot fail, so
-	// it would pin nothing and rot silently — this one fails loudly if ZFS
-	// disagrees, and the failure message carries the real answer.
+	// CONFIRMED on the lane: cloning needs the key. ZFS creates the clone but
+	// cannot mount it ("encryption key not loaded"), so the command fails.
+	//
+	// Kept as an assertion rather than a log: a test that reports whichever
+	// answer it gets cannot fail, so it pins nothing and rots silently. If a
+	// future ZFS changes this, CI says so instead of the API quietly being
+	// documented wrong.
 	if err == nil {
-		t.Fatalf("FACT for #1160c, and NOT the hypothesis: `zfs clone` SUCCEEDED with the key " +
-			"unloaded.\n\nThat is the same rule as snapshot create/delete (#1160a), so the clone " +
+		t.Fatalf("`zfs clone` SUCCEEDED with the key unloaded, which is NOT what the lane " +
+			"established.\n\nThat is the same rule as snapshot create/delete (#1160a), so the clone " +
 			"RPC needs no key precondition — but the clone is then unreadable too, and its " +
 			"response has to say so. Rewrite this assertion to pin the real behaviour.")
 	}
@@ -207,12 +268,13 @@ func TestIntegrationClone_PinsItsOriginSnapshot(t *testing.T) {
 			"case, so this is a different problem", err, strings.TrimSpace(stderr))
 	}
 
-	// HYPOTHESIS: ZFS refuses to destroy a snapshot a clone depends on. This
-	// is the assumption #1160a's DeleteContainerSnapshot error-path test was
-	// written against, so it is already load-bearing for shipped code.
+	// CONFIRMED on the lane: "snapshot has dependent clones". This is the
+	// message #1160a's DeleteContainerSnapshot error-path test was written
+	// against, so it is load-bearing for already-shipped code rather than a
+	// note for a future slice.
 	if err := m.DestroySnapshot(ctx, snap); err == nil {
-		t.Fatalf("FACT for #1160c, and NOT the hypothesis: a snapshot with a live clone WAS " +
-			"destroyed.\n\nThat means delete needs no new guard — and that #1160a's " +
+		t.Fatalf("a snapshot with a live clone WAS destroyed, which is NOT what the lane " +
+			"established.\n\nThat means delete needs no new guard — and that #1160a's " +
 			"'dependent clones' error-path test is asserting a message this ZFS never emits. " +
 			"Both need revisiting.")
 	} else {
