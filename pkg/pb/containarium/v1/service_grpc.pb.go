@@ -28,6 +28,9 @@ const (
 	ContainerService_StopContainer_FullMethodName             = "/containarium.v1.ContainerService/StopContainer"
 	ContainerService_ResizeContainer_FullMethodName           = "/containarium.v1.ContainerService/ResizeContainer"
 	ContainerService_MoveContainer_FullMethodName             = "/containarium.v1.ContainerService/MoveContainer"
+	ContainerService_CreateContainerSnapshot_FullMethodName   = "/containarium.v1.ContainerService/CreateContainerSnapshot"
+	ContainerService_ListContainerSnapshots_FullMethodName    = "/containarium.v1.ContainerService/ListContainerSnapshots"
+	ContainerService_DeleteContainerSnapshot_FullMethodName   = "/containarium.v1.ContainerService/DeleteContainerSnapshot"
 	ContainerService_DeleteTenantStorage_FullMethodName       = "/containarium.v1.ContainerService/DeleteTenantStorage"
 	ContainerService_RewrapContainer_FullMethodName           = "/containarium.v1.ContainerService/RewrapContainer"
 	ContainerService_PrepareEncryptedMigration_FullMethodName = "/containarium.v1.ContainerService/PrepareEncryptedMigration"
@@ -110,6 +113,23 @@ type ContainerServiceClient interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(ctx context.Context, in *MoveContainerRequest, opts ...grpc.CallOption) (*MoveContainerResponse, error)
+	// CreateContainerSnapshot takes a point-in-time ZFS snapshot of a
+	// container's dataset (#1160).
+	//
+	// On ContainerService rather than VolumeService because the subject is a
+	// container: the dataset is an implementation detail the daemon resolves
+	// itself, and the tenant authorization here is already the right shape.
+	// See docs/architecture/container-snapshots.md.
+	//
+	// Succeeds with the encryption key unloaded — ZFS permits it, and blocking
+	// on key custody would let a transient outage suppress the backup window.
+	CreateContainerSnapshot(ctx context.Context, in *CreateContainerSnapshotRequest, opts ...grpc.CallOption) (*CreateContainerSnapshotResponse, error)
+	// ListContainerSnapshots lists a container's snapshots with their space
+	// usage. The usage is the point: a forgotten snapshot silently pins disk,
+	// and nothing else in the API reports it.
+	ListContainerSnapshots(ctx context.Context, in *ListContainerSnapshotsRequest, opts ...grpc.CallOption) (*ListContainerSnapshotsResponse, error)
+	// DeleteContainerSnapshot removes a snapshot and reports what it freed.
+	DeleteContainerSnapshot(ctx context.Context, in *DeleteContainerSnapshotRequest, opts ...grpc.CallOption) (*DeleteContainerSnapshotResponse, error)
 	// DeleteTenantStorage tears down a departing tenant's encrypted storage
 	// (#1343) — the Incus storage pool, then the encrypted dataset it is
 	// sourced at, in that order.
@@ -442,6 +462,36 @@ func (c *containerServiceClient) MoveContainer(ctx context.Context, in *MoveCont
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MoveContainerResponse)
 	err := c.cc.Invoke(ctx, ContainerService_MoveContainer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) CreateContainerSnapshot(ctx context.Context, in *CreateContainerSnapshotRequest, opts ...grpc.CallOption) (*CreateContainerSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateContainerSnapshotResponse)
+	err := c.cc.Invoke(ctx, ContainerService_CreateContainerSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListContainerSnapshots(ctx context.Context, in *ListContainerSnapshotsRequest, opts ...grpc.CallOption) (*ListContainerSnapshotsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListContainerSnapshotsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListContainerSnapshots_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) DeleteContainerSnapshot(ctx context.Context, in *DeleteContainerSnapshotRequest, opts ...grpc.CallOption) (*DeleteContainerSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteContainerSnapshotResponse)
+	err := c.cc.Invoke(ctx, ContainerService_DeleteContainerSnapshot_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -960,6 +1010,23 @@ type ContainerServiceServer interface {
 	// for active workloads on dir-pool. Prereq: incus remotes
 	// configured both ways between the source and target VMs.
 	MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error)
+	// CreateContainerSnapshot takes a point-in-time ZFS snapshot of a
+	// container's dataset (#1160).
+	//
+	// On ContainerService rather than VolumeService because the subject is a
+	// container: the dataset is an implementation detail the daemon resolves
+	// itself, and the tenant authorization here is already the right shape.
+	// See docs/architecture/container-snapshots.md.
+	//
+	// Succeeds with the encryption key unloaded — ZFS permits it, and blocking
+	// on key custody would let a transient outage suppress the backup window.
+	CreateContainerSnapshot(context.Context, *CreateContainerSnapshotRequest) (*CreateContainerSnapshotResponse, error)
+	// ListContainerSnapshots lists a container's snapshots with their space
+	// usage. The usage is the point: a forgotten snapshot silently pins disk,
+	// and nothing else in the API reports it.
+	ListContainerSnapshots(context.Context, *ListContainerSnapshotsRequest) (*ListContainerSnapshotsResponse, error)
+	// DeleteContainerSnapshot removes a snapshot and reports what it freed.
+	DeleteContainerSnapshot(context.Context, *DeleteContainerSnapshotRequest) (*DeleteContainerSnapshotResponse, error)
 	// DeleteTenantStorage tears down a departing tenant's encrypted storage
 	// (#1343) — the Incus storage pool, then the encrypted dataset it is
 	// sourced at, in that order.
@@ -1234,6 +1301,15 @@ func (UnimplementedContainerServiceServer) ResizeContainer(context.Context, *Res
 }
 func (UnimplementedContainerServiceServer) MoveContainer(context.Context, *MoveContainerRequest) (*MoveContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MoveContainer not implemented")
+}
+func (UnimplementedContainerServiceServer) CreateContainerSnapshot(context.Context, *CreateContainerSnapshotRequest) (*CreateContainerSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateContainerSnapshot not implemented")
+}
+func (UnimplementedContainerServiceServer) ListContainerSnapshots(context.Context, *ListContainerSnapshotsRequest) (*ListContainerSnapshotsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListContainerSnapshots not implemented")
+}
+func (UnimplementedContainerServiceServer) DeleteContainerSnapshot(context.Context, *DeleteContainerSnapshotRequest) (*DeleteContainerSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteContainerSnapshot not implemented")
 }
 func (UnimplementedContainerServiceServer) DeleteTenantStorage(context.Context, *DeleteTenantStorageRequest) (*DeleteTenantStorageResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTenantStorage not implemented")
@@ -1558,6 +1634,60 @@ func _ContainerService_MoveContainer_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).MoveContainer(ctx, req.(*MoveContainerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_CreateContainerSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateContainerSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).CreateContainerSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_CreateContainerSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).CreateContainerSnapshot(ctx, req.(*CreateContainerSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListContainerSnapshots_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListContainerSnapshotsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListContainerSnapshots(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListContainerSnapshots_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListContainerSnapshots(ctx, req.(*ListContainerSnapshotsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_DeleteContainerSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteContainerSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).DeleteContainerSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_DeleteContainerSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).DeleteContainerSnapshot(ctx, req.(*DeleteContainerSnapshotRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2468,6 +2598,18 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MoveContainer",
 			Handler:    _ContainerService_MoveContainer_Handler,
+		},
+		{
+			MethodName: "CreateContainerSnapshot",
+			Handler:    _ContainerService_CreateContainerSnapshot_Handler,
+		},
+		{
+			MethodName: "ListContainerSnapshots",
+			Handler:    _ContainerService_ListContainerSnapshots_Handler,
+		},
+		{
+			MethodName: "DeleteContainerSnapshot",
+			Handler:    _ContainerService_DeleteContainerSnapshot_Handler,
 		},
 		{
 			MethodName: "DeleteTenantStorage",

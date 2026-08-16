@@ -47,6 +47,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/network"
 	corecryptosecrets "github.com/footprintai/containarium/pkg/core/secrets"
 	"github.com/footprintai/containarium/pkg/core/skills"
+	"github.com/footprintai/containarium/pkg/core/zfscrypt"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc"
@@ -321,6 +322,17 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			}
 			log.Printf("[encryption] per-tenant dataset root: %s (%s)", tenantRoot, how)
 		}
+
+		// Container snapshots (#1160). Deliberately OUTSIDE the tenant-root
+		// branch above: an unencrypted container has a dataset too, and that
+		// is almost every container today — gating snapshots on encryption
+		// being configured would ship the feature to nobody.
+		//
+		// It must come AFTER SetEncryptionStorage, though, because it reads
+		// the encryption record to find which pool an encrypted container was
+		// placed on. Wired first, every encrypted container would resolve to
+		// the default pool's dataset — which is a different tenant's storage.
+		containerServer.SetSnapshotStorage(zfscrypt.NewManager(nil), encClient.ContainerDataset)
 	}
 	// NOTE: metrics-export resume (StartMetricsExportIfEnabled) is
 	// deliberately NOT called here. The resumed collector snapshots the

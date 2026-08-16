@@ -56,6 +56,11 @@ func encTestServer(t *testing.T, client *incus.Client, tenantRoot string) *Conta
 	// The production wiring, then the provider on top — SetEncryptionStorage
 	// reads s.keyProvider, which is set above.
 	s.SetEncryptionStorage(tenantRoot, client)
+	// Same order the daemon uses (dual_server.go): snapshots read the
+	// encryption record to find which pool a container was placed on, so
+	// wiring them first would resolve every encrypted container to the
+	// default pool's dataset (#1160).
+	s.SetSnapshotStorage(zfscrypt.NewManager(nil), client.ContainerDataset)
 	return s
 }
 
@@ -336,4 +341,118 @@ func TestIntegrationIncus_StoppingTheLastContainerUnloadsTheTenantKey(t *testing
 			"way to release the pool's mount before unloading.", root, status)
 	}
 	t.Logf("the tenant key is unloaded after the last container stops; %s is ciphertext at rest", root)
+}
+
+// Container snapshots against a real encrypted container (#1160 slice a,
+// which is what makes #1202's third criterion demonstrable).
+//
+// Two things only a real pool can settle:
+//
+//  1. WHICH dataset gets snapshotted. An encrypted container lives under its
+//     tenant's pool, not the default one, and the daemon resolves that through
+//     incus.ContainerDataset. The unit tests drive a fake resolver, so they
+//     would stay green against a layout ZFS does not have — which is exactly
+//     how #1336 shipped a dataset name with a doubled path segment, defended
+//     by unit tests, for months.
+//
+//  2. That the lifecycle works with the key UNLOADED. ZFS documents this and
+//     zfscrypt asserts it directly; what is unproven until here is that the
+//     daemon's path — pool lookup, dataset resolution, the RPC — does not
+//     introduce a key dependency of its own along the way.
+func TestIntegrationIncus_SnapshotsAnEncryptedContainerWithTheKeyUnloaded(t *testing.T) {
+	s, _, tenantRoot := encTestEnv(t)
+	zfs := zfscrypt.NewManager(zfscrypt.ExecRunner{})
+	ctx := context.Background()
+
+	tenant := fmt.Sprintf("snp%d", os.Getpid())
+	t.Cleanup(func() { _ = zfs.Destroy(context.Background(), tenantRoot+"/"+tenant) })
+
+	instance := createEncrypted(t, s, tenant)
+	root := tenantRoot + "/" + tenant
+	writeCtx := tenantWithScopes(tenant, auth.ScopeContainersRead, auth.ScopeContainersWrite)
+
+	// (1) A snapshot while the container runs, and the proof that it landed on
+	// the container's ACTUAL dataset rather than a plausible-looking name.
+	if _, err := s.CreateContainerSnapshot(writeCtx, &pb.CreateContainerSnapshotRequest{
+		Username: tenant, Name: "running",
+	}); err != nil {
+		t.Fatalf("CreateContainerSnapshot on a running encrypted container: %v", err)
+	}
+
+	dataset := incusenv.DatasetFor(t, instance)
+	if dataset == "" {
+		t.Fatalf("instance %s has no ZFS dataset", instance)
+	}
+	onDisk, err := zfs.ListSnapshots(ctx, dataset)
+	if err != nil {
+		t.Fatalf("list snapshots of %s directly: %v", dataset, err)
+	}
+	// Asked of ZFS about the dataset Incus reports for the instance — not of
+	// the daemon, which would answer from the same resolution being tested.
+	want := dataset + "@running"
+	found := false
+	for _, s := range onDisk {
+		if s == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ZFS reports %v under the instance's real dataset %s, and %q is not among them.\n\n"+
+			"The daemon resolved some other dataset — on a tenant pool that means either another "+
+			"tenant's storage or nothing at all, and the snapshot an operator believes they took "+
+			"does not exist", onDisk, dataset, want)
+	}
+
+	// (2) Now unload the key the way the daemon does, and prove the whole
+	// lifecycle still works. Blocking here would mean a key-custody outage
+	// silently suppresses the backup window — the one time backups matter.
+	if err := s.boxes().Stop(ctx, box.BoxRef{Tenant: tenant}, true); err != nil {
+		t.Fatalf("stopping %s: %v", instance, err)
+	}
+	s.encryption.PostStop(ctx, instance)
+
+	if status, err := zfs.KeyStatus(ctx, root); err != nil {
+		t.Fatalf("KeyStatus(%s): %v", root, err)
+	} else if status != zfscrypt.KeyUnavailable {
+		t.Fatalf("precondition: the key is %q after stopping the last container, want %q — the "+
+			"rest of this test would prove nothing about an unkeyed dataset", status, zfscrypt.KeyUnavailable)
+	}
+
+	if _, err := s.CreateContainerSnapshot(writeCtx, &pb.CreateContainerSnapshotRequest{
+		Username: tenant, Name: "unkeyed",
+	}); err != nil {
+		t.Fatalf("snapshotting with the key unloaded failed: %v — a key-custody outage would then "+
+			"silently stop backups", err)
+	}
+
+	list, err := s.ListContainerSnapshots(writeCtx, &pb.ListContainerSnapshotsRequest{Username: tenant})
+	if err != nil {
+		t.Fatalf("ListContainerSnapshots with the key unloaded: %v", err)
+	}
+	names := map[string]bool{}
+	for _, snap := range list.GetSnapshots() {
+		names[snap.GetName()] = true
+	}
+	if !names["running"] || !names["unkeyed"] {
+		t.Fatalf("list returned %v, want both snapshots — names are metadata and readable without "+
+			"the key", list.GetSnapshots())
+	}
+
+	if _, err := s.DeleteContainerSnapshot(writeCtx, &pb.DeleteContainerSnapshotRequest{
+		Username: tenant, Name: "unkeyed",
+	}); err != nil {
+		t.Fatalf("deleting with the key unloaded failed: %v — retention would stall exactly when "+
+			"custody is down, turning an outage into unbounded growth", err)
+	}
+
+	after, err := zfs.ListSnapshots(ctx, dataset)
+	if err != nil {
+		t.Fatalf("list snapshots after the delete: %v", err)
+	}
+	for _, s := range after {
+		if s == dataset+"@unkeyed" {
+			t.Fatalf("the snapshot survived a successful-looking delete: %v", after)
+		}
+	}
+	t.Logf("snapshot lifecycle works on %s with the key unloaded; remaining: %v", dataset, after)
 }

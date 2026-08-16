@@ -1250,6 +1250,61 @@ message AdoptMigratedContainerRequest {
   string zfs_pool = 4;
 }
 
+// ContainerSnapshot is a point-in-time ZFS snapshot of a container's
+// dataset (#1160).
+message ContainerSnapshot {
+  // Snapshot name, unique per container.
+  string name = 1;
+
+  // Bytes uniquely held by this snapshot — space that would be freed by
+  // deleting it. Surfaced because a forgotten snapshot silently pins disk,
+  // and nothing else in the API would say so.
+  int64 used_bytes = 2;
+
+  // Bytes the snapshot references in total, including data it shares with
+  // the live dataset. Much larger than used_bytes for a fresh snapshot, and
+  // not the number that matters for reclaiming space.
+  int64 referenced_bytes = 3;
+}
+
+// CreateContainerSnapshotRequest snapshots a container's dataset.
+//
+// Succeeds even when the container's encryption key is unloaded: ZFS allows
+// it, and blocking on key-custody reachability would let a transient outage
+// suppress the backup window (encryption design, resolved decision #3).
+message CreateContainerSnapshotRequest {
+  // The container to snapshot.
+  string username = 1;
+
+  // Snapshot name. Must be unique for this container.
+  string name = 2;
+}
+
+message CreateContainerSnapshotResponse {
+  ContainerSnapshot snapshot = 1;
+  string message = 2;
+}
+
+message ListContainerSnapshotsRequest {
+  string username = 1;
+}
+
+message ListContainerSnapshotsResponse {
+  repeated ContainerSnapshot snapshots = 1;
+}
+
+message DeleteContainerSnapshotRequest {
+  string username = 1;
+  string name = 2;
+}
+
+message DeleteContainerSnapshotResponse {
+  string message = 1;
+
+  // Bytes reclaimed — what the snapshot uniquely held.
+  int64 freed_bytes = 2;
+}
+
 // DeleteTenantStorageRequest tears down a departing tenant's encrypted
 // storage (#1343): the Incus storage pool, and the encrypted dataset it is
 // sourced at.

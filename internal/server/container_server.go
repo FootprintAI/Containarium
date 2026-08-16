@@ -91,7 +91,11 @@ type ContainerServer struct {
 	// encryption carries the per-tenant dataset hooks (#1199/#1201). A
 	// nil value is a valid no-op receiver, so the lifecycle paths do not
 	// branch on whether encryption is configured.
-	encryption          *encryptionHooks
+	encryption *encryptionHooks
+	// snapshots is the container-snapshot surface (#1160). nil when the
+	// storage backend is not ZFS, which the handlers report rather than
+	// panic on.
+	snapshots           *snapshotOps
 	collaboratorManager *container.CollaboratorManager
 	emitter             *events.Emitter
 	pendingCreations    map[string]*PendingCreation

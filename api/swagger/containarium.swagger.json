@@ -2636,6 +2636,115 @@
         ]
       }
     },
+    "/v1/containers/{username}/snapshots": {
+      "get": {
+        "summary": "List a container's snapshots",
+        "description": "Lists the container's ZFS snapshots, each with the bytes it uniquely holds (what deleting it would free) and the bytes it references in total.",
+        "operationId": "ContainerService_ListContainerSnapshots",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListContainerSnapshotsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      },
+      "post": {
+        "summary": "Snapshot a container",
+        "description": "Takes a point-in-time ZFS snapshot of the container's dataset. Instant and space-efficient: it shares blocks with the live dataset until they diverge. Works while the container runs, and while its encryption key is unloaded.",
+        "operationId": "ContainerService_CreateContainerSnapshot",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CreateContainerSnapshotResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The container to snapshot.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateContainerSnapshotBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
+    "/v1/containers/{username}/snapshots/{name}": {
+      "delete": {
+        "summary": "Delete a container snapshot",
+        "description": "Removes the snapshot and reports the bytes reclaimed. Works while the container's encryption key is unloaded.",
+        "operationId": "ContainerService_DeleteContainerSnapshot",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteContainerSnapshotResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/ssh-keys": {
       "post": {
         "summary": "Add SSH key",
@@ -7600,6 +7709,26 @@
       },
       "title": "ContainerMetrics contains runtime metrics for a container"
     },
+    "ContainerSnapshot": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Snapshot name, unique per container."
+        },
+        "usedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes uniquely held by this snapshot — space that would be freed by\ndeleting it. Surfaced because a forgotten snapshot silently pins disk,\nand nothing else in the API would say so."
+        },
+        "referencedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes the snapshot references in total, including data it shares with\nthe live dataset. Much larger than used_bytes for a fresh snapshot, and\nnot the number that matters for reclaiming space."
+        }
+      },
+      "description": "ContainerSnapshot is a point-in-time ZFS snapshot of a container's\ndataset (#1160)."
+    },
     "ContainerState": {
       "type": "string",
       "enum": [
@@ -7854,6 +7983,27 @@
       },
       "title": "CreateContainerResponse is the response from creating a container"
     },
+    "CreateContainerSnapshotBody": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Snapshot name. Must be unique for this container."
+        }
+      },
+      "description": "CreateContainerSnapshotRequest snapshots a container's dataset.\n\nSucceeds even when the container's encryption key is unloaded: ZFS allows\nit, and blocking on key-custody reachability would let a transient outage\nsuppress the backup window (encryption design, resolved decision #3)."
+    },
+    "CreateContainerSnapshotResponse": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "$ref": "#/definitions/ContainerSnapshot"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "CreateVolumeRequest": {
       "type": "object",
       "properties": {
@@ -8080,6 +8230,19 @@
         }
       },
       "title": "DeleteContainerResponse is the response from deleting a container"
+    },
+    "DeleteContainerSnapshotResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "freedBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes reclaimed — what the snapshot uniquely held."
+        }
+      }
     },
     "DeleteNetworkPolicyResponse": {
       "type": "object"
@@ -9578,6 +9741,18 @@
         }
       },
       "title": "ListCollaboratorsResponse is the response from listing collaborators"
+    },
+    "ListContainerSnapshotsResponse": {
+      "type": "object",
+      "properties": {
+        "snapshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ContainerSnapshot"
+          }
+        }
+      }
     },
     "ListContainersResponse": {
       "type": "object",

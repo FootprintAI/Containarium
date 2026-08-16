@@ -173,6 +173,54 @@ service ContainerService {
     };
   }
 
+  // CreateContainerSnapshot takes a point-in-time ZFS snapshot of a
+  // container's dataset (#1160).
+  //
+  // On ContainerService rather than VolumeService because the subject is a
+  // container: the dataset is an implementation detail the daemon resolves
+  // itself, and the tenant authorization here is already the right shape.
+  // See docs/architecture/container-snapshots.md.
+  //
+  // Succeeds with the encryption key unloaded — ZFS permits it, and blocking
+  // on key custody would let a transient outage suppress the backup window.
+  rpc CreateContainerSnapshot(CreateContainerSnapshotRequest) returns (CreateContainerSnapshotResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/snapshots"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Snapshot a container";
+      description: "Takes a point-in-time ZFS snapshot of the container's dataset. Instant and space-efficient: it shares blocks with the live dataset until they diverge. Works while the container runs, and while its encryption key is unloaded.";
+      tags: "Container Operations";
+    };
+  }
+
+  // ListContainerSnapshots lists a container's snapshots with their space
+  // usage. The usage is the point: a forgotten snapshot silently pins disk,
+  // and nothing else in the API reports it.
+  rpc ListContainerSnapshots(ListContainerSnapshotsRequest) returns (ListContainerSnapshotsResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/snapshots"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List a container's snapshots";
+      description: "Lists the container's ZFS snapshots, each with the bytes it uniquely holds (what deleting it would free) and the bytes it references in total.";
+      tags: "Container Operations";
+    };
+  }
+
+  // DeleteContainerSnapshot removes a snapshot and reports what it freed.
+  rpc DeleteContainerSnapshot(DeleteContainerSnapshotRequest) returns (DeleteContainerSnapshotResponse) {
+    option (google.api.http) = {
+      delete: "/v1/containers/{username}/snapshots/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a container snapshot";
+      description: "Removes the snapshot and reports the bytes reclaimed. Works while the container's encryption key is unloaded.";
+      tags: "Container Operations";
+    };
+  }
+
   // DeleteTenantStorage tears down a departing tenant's encrypted storage
   // (#1343) — the Incus storage pool, then the encrypted dataset it is
   // sourced at, in that order.

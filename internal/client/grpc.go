@@ -1187,3 +1187,41 @@ func (c *GRPCClient) StopEgressProxy(containerName string) error {
 	}
 	return nil
 }
+
+// --- container snapshots (#1160) ----------------------------------------
+
+// CreateContainerSnapshot snapshots a container's dataset via gRPC.
+func (c *GRPCClient) CreateContainerSnapshot(req *pb.CreateContainerSnapshotRequest) (*pb.CreateContainerSnapshotResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := c.client.CreateContainerSnapshot(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create snapshot: %w", err)
+	}
+	return resp, nil
+}
+
+// ListContainerSnapshots lists a container's snapshots via gRPC.
+func (c *GRPCClient) ListContainerSnapshots(req *pb.ListContainerSnapshotsRequest) (*pb.ListContainerSnapshotsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.ListContainerSnapshots(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots: %w", err)
+	}
+	return resp, nil
+}
+
+// DeleteContainerSnapshot destroys a snapshot via gRPC.
+func (c *GRPCClient) DeleteContainerSnapshot(req *pb.DeleteContainerSnapshotRequest) (*pb.DeleteContainerSnapshotResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := c.client.DeleteContainerSnapshot(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete snapshot: %w", err)
+	}
+	return resp, nil
+}
