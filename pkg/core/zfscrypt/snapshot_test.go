@@ -206,3 +206,47 @@ func TestSnapshotUsageRejectsUnparseableOutput(t *testing.T) {
 		t.Error("accepted human-readable sizes as byte counts")
 	}
 }
+
+// An UNENCRYPTED snapshot's contents are readable, so inspecting one must
+// pass (#1160b).
+//
+// This is not hypothetical tidying. EnsureInspectable propagated KeyStatus's
+// error verbatim, and KeyStatus errors on an unencrypted dataset — so the
+// guard would have refused inspection and rollback for essentially every
+// container on the platform, while the tests above (which only ever supply an
+// encrypted dataset) stayed green.
+func TestEnsureInspectablePassesForAnUnencryptedDataset(t *testing.T) {
+	f := newFakeRunner()
+	f.stdout["get"] = "-" // what ZFS reports for a dataset with no encryption
+	if err := NewManager(f).EnsureInspectable(context.Background(), "pool/c/bob@snap"); err != nil {
+		t.Fatalf("EnsureInspectable on an unencrypted dataset = %v, want nil — its contents can "+
+			"be read, which is the question this asks", err)
+	}
+}
+
+// "zfs did not answer" is not "there is no key here". A guard that treats
+// them alike either blocks the fleet or fails open on a broken pool.
+func TestEnsureInspectableStillFailsWhenZFSCannotAnswer(t *testing.T) {
+	f := newFakeRunner()
+	f.errs["get"] = errors.New("exit status 1")
+	f.stderr["get"] = "cannot open 'pool/c/bob': dataset does not exist"
+
+	err := NewManager(f).EnsureInspectable(context.Background(), "pool/c/bob@snap")
+	if err == nil {
+		t.Fatal("an unreadable keystatus was reported as inspectable")
+	}
+	if errors.Is(err, ErrNotEncrypted) {
+		t.Errorf("a zfs failure was classified as 'not encrypted': %v", err)
+	}
+}
+
+func TestKeyStatusMarksAnUnencryptedDatasetDistinctly(t *testing.T) {
+	f := newFakeRunner()
+	f.stdout["get"] = "-"
+
+	_, err := NewManager(f).KeyStatus(context.Background(), "pool/c/bob")
+	if !errors.Is(err, ErrNotEncrypted) {
+		t.Fatalf("err = %v, want ErrNotEncrypted — callers distinguish this from a real failure, "+
+			"and matching on the message instead is what the sentinel exists to avoid", err)
+	}
+}

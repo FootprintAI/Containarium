@@ -221,6 +221,25 @@ service ContainerService {
     };
   }
 
+  // RollbackContainerSnapshot returns a container's dataset to the state
+  // captured by a snapshot (#1160b).
+  //
+  // Destructive, and guarded three ways: it refuses a running container
+  // (unless force), refuses to destroy newer snapshots (unless destroy_newer),
+  // and refuses when the encryption key is unavailable — a rollback whose
+  // result cannot be read is not a restore (#1202 AC2).
+  rpc RollbackContainerSnapshot(RollbackContainerSnapshotRequest) returns (RollbackContainerSnapshotResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/snapshots/{name}/rollback"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Roll a container back to a snapshot";
+      description: "Discards everything written since the snapshot. Refuses a running container unless force is set, refuses to destroy newer snapshots unless destroy_newer is set, and refuses when the container's encryption key is unavailable.";
+      tags: "Container Operations";
+    };
+  }
+
   // DeleteTenantStorage tears down a departing tenant's encrypted storage
   // (#1343) — the Incus storage pool, then the encrypted dataset it is
   // sourced at, in that order.

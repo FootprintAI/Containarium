@@ -35,7 +35,8 @@ window. Reading a snapshot back does need the key.
 
   containarium snapshot create alice --name before-upgrade --server <host>
   containarium snapshot list alice --server <host>
-  containarium snapshot delete alice before-upgrade --server <host>`,
+  containarium snapshot delete alice before-upgrade --server <host>
+  containarium snapshot rollback alice before-upgrade --force --server <host>`,
 }
 
 func init() {
@@ -49,6 +50,7 @@ type snapshotAPI interface {
 	CreateContainerSnapshot(req *pb.CreateContainerSnapshotRequest) (*pb.CreateContainerSnapshotResponse, error)
 	ListContainerSnapshots(req *pb.ListContainerSnapshotsRequest) (*pb.ListContainerSnapshotsResponse, error)
 	DeleteContainerSnapshot(req *pb.DeleteContainerSnapshotRequest) (*pb.DeleteContainerSnapshotResponse, error)
+	RollbackContainerSnapshot(req *pb.RollbackContainerSnapshotRequest) (*pb.RollbackContainerSnapshotResponse, error)
 	Close() error
 }
 

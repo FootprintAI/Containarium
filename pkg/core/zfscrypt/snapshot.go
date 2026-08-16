@@ -2,6 +2,7 @@ package zfscrypt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -117,6 +118,14 @@ func (m *Manager) EnsureInspectable(ctx context.Context, snapshot string) error 
 
 	status, err := m.KeyStatus(ctx, dataset)
 	if err != nil {
+		// An unencrypted snapshot's contents are readable, which is the
+		// question this function asks — so that is a pass, not a failure.
+		// Returning the error here would refuse inspection of every
+		// unencrypted container on the platform, which is nearly all of
+		// them.
+		if errors.Is(err, ErrNotEncrypted) {
+			return nil
+		}
 		return err
 	}
 	if status != KeyAvailable {

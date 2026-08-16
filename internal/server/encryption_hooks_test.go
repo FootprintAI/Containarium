@@ -164,6 +164,11 @@ type zfsFake struct {
 	stdout map[string]string
 	errs   map[string]error
 	stderr map[string]string
+	// onCall fires with the subcommand before each call is answered, so a
+	// test can observe what had already happened at that point. Ordering
+	// assertions need it: a flag the fake sets unconditionally is true
+	// either way round and proves nothing.
+	onCall func(sub string)
 }
 
 func newZFSFake() *zfsFake {
@@ -188,11 +193,14 @@ func (z *zfsFake) datasetPresent(encryptionRoot string) {
 }
 
 func (z *zfsFake) Run(_ context.Context, _ []byte, args ...string) (string, string, error) {
-	z.calls = append(z.calls, strings.Join(args, " "))
 	sub := ""
 	if len(args) > 0 {
 		sub = args[0]
 	}
+	if z.onCall != nil {
+		z.onCall(sub)
+	}
+	z.calls = append(z.calls, strings.Join(args, " "))
 	return z.stdout[sub], z.stderr[sub], z.errs[sub]
 }
 

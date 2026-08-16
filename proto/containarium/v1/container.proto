@@ -1305,6 +1305,42 @@ message DeleteContainerSnapshotResponse {
   int64 freed_bytes = 2;
 }
 
+// RollbackContainerSnapshotRequest returns a container's dataset to the state
+// captured by a snapshot.
+//
+// Destructive twice over: everything written since the snapshot is discarded,
+// and any snapshot taken after it must be destroyed too. Both are refusals by
+// default (#1160b).
+message RollbackContainerSnapshotRequest {
+  string username = 1;
+
+  // The snapshot to roll back to.
+  string name = 2;
+
+  // Stop the container first. Without it, a rollback of a running container
+  // is refused: ZFS would fail on the busy dataset anyway, and "dataset is
+  // busy" is a far worse message than "stop the container first".
+  bool force = 3;
+
+  // Destroy snapshots taken after the target, which ZFS requires in order to
+  // roll back past them. Opt-in because it silently widens the blast radius
+  // from "lose writes since the snapshot" to "lose other restore points too".
+  bool destroy_newer = 4;
+}
+
+message RollbackContainerSnapshotResponse {
+  string message = 1;
+
+  // Whether the daemon stopped the container to perform the rollback. It is
+  // left stopped — restarting it is the caller's decision, since the data
+  // underneath just changed.
+  bool container_stopped = 2;
+
+  // Snapshots destroyed to make the rollback possible, so the caller has a
+  // record of the restore points they no longer have.
+  repeated string destroyed_snapshots = 3;
+}
+
 // DeleteTenantStorageRequest tears down a departing tenant's encrypted
 // storage (#1343): the Incus storage pool, and the encrypted dataset it is
 // sourced at.

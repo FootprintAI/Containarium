@@ -31,6 +31,7 @@ const (
 	ContainerService_CreateContainerSnapshot_FullMethodName   = "/containarium.v1.ContainerService/CreateContainerSnapshot"
 	ContainerService_ListContainerSnapshots_FullMethodName    = "/containarium.v1.ContainerService/ListContainerSnapshots"
 	ContainerService_DeleteContainerSnapshot_FullMethodName   = "/containarium.v1.ContainerService/DeleteContainerSnapshot"
+	ContainerService_RollbackContainerSnapshot_FullMethodName = "/containarium.v1.ContainerService/RollbackContainerSnapshot"
 	ContainerService_DeleteTenantStorage_FullMethodName       = "/containarium.v1.ContainerService/DeleteTenantStorage"
 	ContainerService_RewrapContainer_FullMethodName           = "/containarium.v1.ContainerService/RewrapContainer"
 	ContainerService_PrepareEncryptedMigration_FullMethodName = "/containarium.v1.ContainerService/PrepareEncryptedMigration"
@@ -130,6 +131,14 @@ type ContainerServiceClient interface {
 	ListContainerSnapshots(ctx context.Context, in *ListContainerSnapshotsRequest, opts ...grpc.CallOption) (*ListContainerSnapshotsResponse, error)
 	// DeleteContainerSnapshot removes a snapshot and reports what it freed.
 	DeleteContainerSnapshot(ctx context.Context, in *DeleteContainerSnapshotRequest, opts ...grpc.CallOption) (*DeleteContainerSnapshotResponse, error)
+	// RollbackContainerSnapshot returns a container's dataset to the state
+	// captured by a snapshot (#1160b).
+	//
+	// Destructive, and guarded three ways: it refuses a running container
+	// (unless force), refuses to destroy newer snapshots (unless destroy_newer),
+	// and refuses when the encryption key is unavailable — a rollback whose
+	// result cannot be read is not a restore (#1202 AC2).
+	RollbackContainerSnapshot(ctx context.Context, in *RollbackContainerSnapshotRequest, opts ...grpc.CallOption) (*RollbackContainerSnapshotResponse, error)
 	// DeleteTenantStorage tears down a departing tenant's encrypted storage
 	// (#1343) — the Incus storage pool, then the encrypted dataset it is
 	// sourced at, in that order.
@@ -492,6 +501,16 @@ func (c *containerServiceClient) DeleteContainerSnapshot(ctx context.Context, in
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteContainerSnapshotResponse)
 	err := c.cc.Invoke(ctx, ContainerService_DeleteContainerSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) RollbackContainerSnapshot(ctx context.Context, in *RollbackContainerSnapshotRequest, opts ...grpc.CallOption) (*RollbackContainerSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RollbackContainerSnapshotResponse)
+	err := c.cc.Invoke(ctx, ContainerService_RollbackContainerSnapshot_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1027,6 +1046,14 @@ type ContainerServiceServer interface {
 	ListContainerSnapshots(context.Context, *ListContainerSnapshotsRequest) (*ListContainerSnapshotsResponse, error)
 	// DeleteContainerSnapshot removes a snapshot and reports what it freed.
 	DeleteContainerSnapshot(context.Context, *DeleteContainerSnapshotRequest) (*DeleteContainerSnapshotResponse, error)
+	// RollbackContainerSnapshot returns a container's dataset to the state
+	// captured by a snapshot (#1160b).
+	//
+	// Destructive, and guarded three ways: it refuses a running container
+	// (unless force), refuses to destroy newer snapshots (unless destroy_newer),
+	// and refuses when the encryption key is unavailable — a rollback whose
+	// result cannot be read is not a restore (#1202 AC2).
+	RollbackContainerSnapshot(context.Context, *RollbackContainerSnapshotRequest) (*RollbackContainerSnapshotResponse, error)
 	// DeleteTenantStorage tears down a departing tenant's encrypted storage
 	// (#1343) — the Incus storage pool, then the encrypted dataset it is
 	// sourced at, in that order.
@@ -1310,6 +1337,9 @@ func (UnimplementedContainerServiceServer) ListContainerSnapshots(context.Contex
 }
 func (UnimplementedContainerServiceServer) DeleteContainerSnapshot(context.Context, *DeleteContainerSnapshotRequest) (*DeleteContainerSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteContainerSnapshot not implemented")
+}
+func (UnimplementedContainerServiceServer) RollbackContainerSnapshot(context.Context, *RollbackContainerSnapshotRequest) (*RollbackContainerSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RollbackContainerSnapshot not implemented")
 }
 func (UnimplementedContainerServiceServer) DeleteTenantStorage(context.Context, *DeleteTenantStorageRequest) (*DeleteTenantStorageResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTenantStorage not implemented")
@@ -1688,6 +1718,24 @@ func _ContainerService_DeleteContainerSnapshot_Handler(srv interface{}, ctx cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).DeleteContainerSnapshot(ctx, req.(*DeleteContainerSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_RollbackContainerSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackContainerSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).RollbackContainerSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_RollbackContainerSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).RollbackContainerSnapshot(ctx, req.(*RollbackContainerSnapshotRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2610,6 +2658,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteContainerSnapshot",
 			Handler:    _ContainerService_DeleteContainerSnapshot_Handler,
+		},
+		{
+			MethodName: "RollbackContainerSnapshot",
+			Handler:    _ContainerService_RollbackContainerSnapshot_Handler,
 		},
 		{
 			MethodName: "DeleteTenantStorage",

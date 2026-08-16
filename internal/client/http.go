@@ -2109,3 +2109,31 @@ func (c *HTTPClient) DeleteContainerSnapshot(req *pb.DeleteContainerSnapshotRequ
 	}
 	return out, nil
 }
+
+// RollbackContainerSnapshot rolls a container back to a snapshot via HTTP.
+func (c *HTTPClient) RollbackContainerSnapshot(req *pb.RollbackContainerSnapshotRequest) (*pb.RollbackContainerSnapshotResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	path := fmt.Sprintf("/v1/containers/%s/snapshots/%s/rollback",
+		url.PathEscape(req.GetUsername()), url.PathEscape(req.GetName()))
+	resp, err := c.doRequest(ctx, http.MethodPost, path, json.RawMessage(body))
+	if err != nil {
+		return nil, fmt.Errorf("rollback snapshot: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "rollback snapshot")
+	}
+	out := &pb.RollbackContainerSnapshotResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}

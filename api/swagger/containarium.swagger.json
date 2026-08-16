@@ -2745,6 +2745,53 @@
         ]
       }
     },
+    "/v1/containers/{username}/snapshots/{name}/rollback": {
+      "post": {
+        "summary": "Roll a container back to a snapshot",
+        "description": "Discards everything written since the snapshot. Refuses a running container unless force is set, refuses to destroy newer snapshots unless destroy_newer is set, and refuses when the container's encryption key is unavailable.",
+        "operationId": "ContainerService_RollbackContainerSnapshot",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RollbackContainerSnapshotResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "description": "The snapshot to roll back to.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RollbackContainerSnapshotBody"
+            }
+          }
+        ],
+        "tags": [
+          "Container Operations"
+        ]
+      }
+    },
     "/v1/containers/{username}/ssh-keys": {
       "post": {
         "summary": "Add SSH key",
@@ -11375,6 +11422,39 @@
         }
       },
       "description": "RewrapContainerResponse reports the outcome of a rotation."
+    },
+    "RollbackContainerSnapshotBody": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean",
+          "description": "Stop the container first. Without it, a rollback of a running container\nis refused: ZFS would fail on the busy dataset anyway, and \"dataset is\nbusy\" is a far worse message than \"stop the container first\"."
+        },
+        "destroyNewer": {
+          "type": "boolean",
+          "description": "Destroy snapshots taken after the target, which ZFS requires in order to\nroll back past them. Opt-in because it silently widens the blast radius\nfrom \"lose writes since the snapshot\" to \"lose other restore points too\"."
+        }
+      },
+      "description": "RollbackContainerSnapshotRequest returns a container's dataset to the state\ncaptured by a snapshot.\n\nDestructive twice over: everything written since the snapshot is discarded,\nand any snapshot taken after it must be destroyed too. Both are refusals by\ndefault (#1160b)."
+    },
+    "RollbackContainerSnapshotResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "containerStopped": {
+          "type": "boolean",
+          "description": "Whether the daemon stopped the container to perform the rollback. It is\nleft stopped — restarting it is the caller's decision, since the data\nunderneath just changed."
+        },
+        "destroyedSnapshots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Snapshots destroyed to make the rollback possible, so the caller has a\nrecord of the restore points they no longer have."
+        }
+      }
     },
     "RouteEvent": {
       "type": "object",

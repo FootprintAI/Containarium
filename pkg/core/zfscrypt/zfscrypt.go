@@ -258,6 +258,16 @@ func isKeyInUse(stderr string) bool {
 	return strings.Contains(s, "busy") || strings.Contains(s, "in use")
 }
 
+// ErrNotEncrypted reports that a dataset carries no encryption at all.
+//
+// A sentinel rather than a message, because it is the one "error" that is
+// often the right answer. Most containers on this platform are unencrypted,
+// so a caller asking a key question about one has to tell "there is no key
+// here" apart from "the key is missing" and from "zfs did not answer" — a
+// guard that cannot tell them apart either blocks the whole fleet or fails
+// open on a broken pool.
+var ErrNotEncrypted = fmt.Errorf("dataset is not encrypted")
+
 // KeyStatus reports whether the dataset's key is currently loaded.
 func (m *Manager) KeyStatus(ctx context.Context, dataset string) (KeyStatus, error) {
 	if err := validateDataset(dataset); err != nil {
@@ -273,11 +283,13 @@ func (m *Manager) KeyStatus(ctx context.Context, dataset string) (KeyStatus, err
 	case string(KeyUnavailable):
 		return KeyUnavailable, nil
 	case "", "-":
-		// An unencrypted dataset reports "-". Treated as an error
-		// rather than as "unavailable": the caller asked about an
-		// encrypted dataset and got one that is not, which means the
-		// two sides disagree about what this container is.
-		return "", fmt.Errorf("dataset %s is not encrypted (keystatus %q)", dataset, v)
+		// An unencrypted dataset reports "-". Still an error, because the
+		// caller asked a key question about a dataset that has no key —
+		// the two sides disagree about what this container is. But it is a
+		// DISTINGUISHABLE error: some callers (EnsureInspectable) have a
+		// correct answer for an unencrypted dataset, and must not confuse
+		// "there is no key to be missing" with "zfs did not answer".
+		return "", fmt.Errorf("dataset %s: %w (keystatus %q)", dataset, ErrNotEncrypted, v)
 	default:
 		return "", fmt.Errorf("unexpected keystatus %q for %s", v, dataset)
 	}
@@ -296,7 +308,7 @@ func (m *Manager) EncryptionRoot(ctx context.Context, dataset string) (string, e
 	}
 	root := strings.TrimSpace(stdout)
 	if root == "" || root == "-" {
-		return "", fmt.Errorf("dataset %s has no encryptionroot (it is not encrypted)", dataset)
+		return "", fmt.Errorf("dataset %s has no encryptionroot: %w", dataset, ErrNotEncrypted)
 	}
 	return root, nil
 }

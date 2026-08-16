@@ -54,10 +54,12 @@ func captureErr(t *testing.T, fn func() error) error {
 }
 
 type fakeSnapshotAPI struct {
-	created  *pb.CreateContainerSnapshotRequest
-	deleted  *pb.DeleteContainerSnapshotRequest
-	listResp *pb.ListContainerSnapshotsResponse
-	err      error
+	created      *pb.CreateContainerSnapshotRequest
+	deleted      *pb.DeleteContainerSnapshotRequest
+	listResp     *pb.ListContainerSnapshotsResponse
+	rolledBack   *pb.RollbackContainerSnapshotRequest
+	rollbackResp *pb.RollbackContainerSnapshotResponse
+	err          error
 }
 
 func (f *fakeSnapshotAPI) CreateContainerSnapshot(req *pb.CreateContainerSnapshotRequest) (*pb.CreateContainerSnapshotResponse, error) {
@@ -83,6 +85,14 @@ func (f *fakeSnapshotAPI) DeleteContainerSnapshot(req *pb.DeleteContainerSnapsho
 		return nil, f.err
 	}
 	return &pb.DeleteContainerSnapshotResponse{FreedBytes: 4096}, nil
+}
+
+func (f *fakeSnapshotAPI) RollbackContainerSnapshot(req *pb.RollbackContainerSnapshotRequest) (*pb.RollbackContainerSnapshotResponse, error) {
+	f.rolledBack = req
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.rollbackResp, nil
 }
 
 func (f *fakeSnapshotAPI) Close() error { return nil }
@@ -222,5 +232,81 @@ func TestHumanBytes(t *testing.T) {
 		if got := humanBytes(c.in); got != c.want {
 			t.Errorf("humanBytes(%d) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// Rollback CLI (#1160b). The flags gate a destructive operation, so what
+// matters is that they reach the daemon exactly as typed — a `--force` that
+// silently does not travel turns a refusal into a confusing one, and a
+// `--destroy-newer` that travels when unset destroys restore points nobody
+// agreed to lose.
+func TestSnapshotRollback_ForwardsTheDestructiveFlags(t *testing.T) {
+	cases := []struct {
+		name                      string
+		force, destroyNewer       bool
+		wantForce, wantDestroyNew bool
+	}{
+		{name: "neither"},
+		{name: "force only", force: true, wantForce: true},
+		{name: "destroy-newer only", destroyNewer: true, wantDestroyNew: true},
+		{name: "both", force: true, destroyNewer: true, wantForce: true, wantDestroyNew: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			api := &fakeSnapshotAPI{rollbackResp: &pb.RollbackContainerSnapshotResponse{}}
+			withSnapshotAPI(t, api)
+			snapshotRollbackForce, snapshotRollbackDestroyNewer = c.force, c.destroyNewer
+			t.Cleanup(func() { snapshotRollbackForce, snapshotRollbackDestroyNewer = false, false })
+
+			captureStdout(t, func() {
+				if err := runSnapshotRollback(nil, []string{"alice", "nightly"}); err != nil {
+					t.Fatalf("runSnapshotRollback: %v", err)
+				}
+			})
+
+			if api.rolledBack.GetForce() != c.wantForce {
+				t.Errorf("force = %v, want %v", api.rolledBack.GetForce(), c.wantForce)
+			}
+			if api.rolledBack.GetDestroyNewer() != c.wantDestroyNew {
+				t.Errorf("destroy_newer = %v, want %v", api.rolledBack.GetDestroyNewer(), c.wantDestroyNew)
+			}
+		})
+	}
+}
+
+// Two things the operator must not have to discover for themselves: that the
+// container is down, and which restore points are gone.
+func TestSnapshotRollback_ReportsTheAftermath(t *testing.T) {
+	withSnapshotAPI(t, &fakeSnapshotAPI{rollbackResp: &pb.RollbackContainerSnapshotResponse{
+		ContainerStopped:   true,
+		DestroyedSnapshots: []string{"weekly", "monthly"},
+	}})
+
+	out := captureStdout(t, func() {
+		if err := runSnapshotRollback(nil, []string{"alice", "nightly"}); err != nil {
+			t.Fatalf("runSnapshotRollback: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "stopped") {
+		t.Errorf("the output does not say the container is down, so an operator would assume it "+
+			"came back up:\n%s", out)
+	}
+	for _, want := range []string{"weekly", "monthly"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the destroyed snapshot %q is not named — nothing else records which restore "+
+				"points were lost:\n%s", want, out)
+		}
+	}
+}
+
+func TestSnapshotRollback_PropagatesTheRefusal(t *testing.T) {
+	withSnapshotAPI(t, &fakeSnapshotAPI{err: errors.New("container alice is running")})
+
+	if err := captureErr(t, func() error {
+		return runSnapshotRollback(nil, []string{"alice", "nightly"})
+	}); err == nil {
+		t.Fatal("a refused rollback exited 0, so a script would carry on as if the data had been " +
+			"restored")
 	}
 }

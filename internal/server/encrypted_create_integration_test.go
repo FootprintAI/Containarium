@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -455,4 +456,107 @@ func TestIntegrationIncus_SnapshotsAnEncryptedContainerWithTheKeyUnloaded(t *tes
 		}
 	}
 	t.Logf("snapshot lifecycle works on %s with the key unloaded; remaining: %v", dataset, after)
+}
+
+// Rollback against a real encrypted container (#1160b).
+//
+// Two claims the unit tests cannot make, because both are properties of ZFS
+// rather than of the daemon:
+//
+//  1. A rollback actually restores the data. The fake asserts that `zfs
+//     rollback` was invoked; only a real pool can show that a file written
+//     after the snapshot is gone afterwards, and one written before survives.
+//  2. The key guard fires on a genuinely unkeyed dataset. The unit test feeds
+//     the fake a canned "unavailable"; here the key is really unloaded, so
+//     the guard is proven against ZFS's real keystatus rather than against a
+//     string this test chose.
+func TestIntegrationIncus_RollbackRestoresDataAndRefusesWithoutTheKey(t *testing.T) {
+	s, _, tenantRoot := encTestEnv(t)
+	zfs := zfscrypt.NewManager(zfscrypt.ExecRunner{})
+	ctx := context.Background()
+
+	tenant := fmt.Sprintf("rbk%d", os.Getpid())
+	t.Cleanup(func() { _ = zfs.Destroy(context.Background(), tenantRoot+"/"+tenant) })
+
+	instance := createEncrypted(t, s, tenant)
+	root := tenantRoot + "/" + tenant
+	rbCtx := tenantWithScopes(tenant, auth.ScopeContainersRead, auth.ScopeContainersWrite)
+
+	exec, ok := s.boxes().(box.ExecCapable)
+	if !ok {
+		t.Fatalf("the box backend cannot exec, so this test cannot show that rollback restores " +
+			"anything; it would degrade to asserting that a command ran")
+	}
+	run := func(what string, cmd ...string) string {
+		t.Helper()
+		stdout, stderr, err := exec.Exec(ctx, box.BoxRef{Tenant: tenant}, cmd)
+		if err != nil {
+			t.Fatalf("%s: %v (stderr: %s)", what, err, stderr)
+		}
+		return stdout
+	}
+
+	// A file that exists at snapshot time, and must survive the rollback.
+	run("seed the container", "sh", "-c", "echo before > /root/marker")
+	if _, err := s.CreateContainerSnapshot(rbCtx, &pb.CreateContainerSnapshotRequest{
+		Username: tenant, Name: "restorepoint",
+	}); err != nil {
+		t.Fatalf("CreateContainerSnapshot: %v", err)
+	}
+	// ...and a change made after it, which must not.
+	run("dirty the container", "sh", "-c", "echo after > /root/marker")
+
+	// Guard 1, against a really-running container.
+	if _, err := s.RollbackContainerSnapshot(rbCtx, &pb.RollbackContainerSnapshotRequest{
+		Username: tenant, Name: "restorepoint",
+	}); err == nil {
+		t.Fatal("rolled back a running container without force — ZFS refuses a busy dataset, so " +
+			"this either failed obscurely or operated on something that was not mounted")
+	}
+
+	// Forced: the daemon stops it, rolls back, and leaves it stopped.
+	resp, ferr := s.RollbackContainerSnapshot(rbCtx, &pb.RollbackContainerSnapshotRequest{
+		Username: tenant, Name: "restorepoint", Force: true,
+	})
+	if ferr != nil {
+		t.Fatalf("forced rollback: %v", ferr)
+	}
+	if !resp.GetContainerStopped() {
+		t.Error("the response does not report stopping a container that was running")
+	}
+
+	// The data claim. Start it again and read the marker back.
+	if err := s.boxes().Start(ctx, box.BoxRef{Tenant: tenant}); err != nil {
+		t.Fatalf("restarting %s after the rollback: %v", instance, err)
+	}
+	out := run("read the marker back", "cat", "/root/marker")
+	if strings.TrimSpace(out) != "before" {
+		t.Fatalf("marker = %q after rolling back, want %q — the rollback ran without restoring "+
+			"anything, which is the outcome an operator would discover during an incident",
+			strings.TrimSpace(out), "before")
+	}
+
+	// Guard 3, against a genuinely unloaded key rather than a canned string.
+	if err := s.boxes().Stop(ctx, box.BoxRef{Tenant: tenant}, true); err != nil {
+		t.Fatalf("stopping %s: %v", instance, err)
+	}
+	s.encryption.PostStop(ctx, instance)
+	if st, err := zfs.KeyStatus(ctx, root); err != nil {
+		t.Fatalf("KeyStatus(%s): %v", root, err)
+	} else if st != zfscrypt.KeyUnavailable {
+		t.Fatalf("precondition: keystatus is %q, want %q — the guard below would prove nothing",
+			st, zfscrypt.KeyUnavailable)
+	}
+
+	_, err := s.RollbackContainerSnapshot(rbCtx, &pb.RollbackContainerSnapshotRequest{
+		Username: tenant, Name: "restorepoint",
+	})
+	if err == nil {
+		t.Fatal("rolled back to a snapshot the daemon cannot read — the operator would believe " +
+			"they had restored data that is ciphertext to them")
+	}
+	if !strings.Contains(err.Error(), "key") {
+		t.Errorf("the refusal does not name key custody, so it reads like corruption: %v", err)
+	}
+	t.Logf("rollback restored the data, and is refused with the key unloaded: %v", err)
 }
