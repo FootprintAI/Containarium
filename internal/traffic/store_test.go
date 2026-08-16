@@ -92,8 +92,15 @@ func TestTrafficStore_SavedConnectionIsQueryableWithItsCounters(t *testing.T) {
 	}
 
 	c := got[0]
+	// The bare address, with no /32 — a plain ::text cast on an INET appends
+	// the netmask, and an address that does not compare equal to the one the
+	// caller stored is worse than an error.
 	if c.GetDestIp() != "93.184.216.34" || c.GetDestPort() != 443 {
-		t.Errorf("destination = %s:%d, want 93.184.216.34:443", c.GetDestIp(), c.GetDestPort())
+		t.Errorf("destination = %s:%d, want 93.184.216.34:443 (no netmask suffix)",
+			c.GetDestIp(), c.GetDestPort())
+	}
+	if c.GetSourceIp() != "10.0.0.10" {
+		t.Errorf("source = %s, want 10.0.0.10 (no netmask suffix)", c.GetSourceIp())
 	}
 	if c.GetBytesSent() != 1000 || c.GetBytesReceived() != 2000 {
 		t.Errorf("bytes = %d/%d, want 1000/2000 — the counters are what quota and anomaly "+
