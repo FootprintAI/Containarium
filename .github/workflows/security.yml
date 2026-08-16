@@ -52,22 +52,38 @@ jobs:
 
       - name: Run govulncheck
         run: |
-          # Run govulncheck and capture output for review.
-          # Allow exit code 3 (vulns found) when all findings are upstream
-          # issues with no fix available (Fixed in: N/A).
-          govulncheck -show verbose ./... 2>&1 | tee govulncheck-output.txt || true
-
-          # Fail the build only if there are vulns with a known fix we haven't applied
-          if grep -q "Fixed in:" govulncheck-output.txt && ! grep -q "Fixed in: N/A" govulncheck-output.txt; then
-            echo "::error::govulncheck found vulnerabilities with available fixes"
+          # govulncheck's exit codes are documented: 0 = no vulnerabilities,
+          # 3 = vulnerabilities found, anything else = the scan did not
+          # complete. `|| true` swallowed all three alike — and since every
+          # check below is a grep over the report, a scan that never ran left
+          # an empty file, matched nothing, and printed "govulncheck passed".
+          #
+          # That is a gate which is green precisely when the scanner is
+          # broken. Exit code 3 is still tolerated, because unfixable upstream
+          # findings are the normal state here; a tool that failed to run is
+          # not, and is now told apart from a tool that ran and found things.
+          set -o pipefail
+          rc=0
+          govulncheck -show verbose ./this-package-does-not-exist/... 2>&1 | tee govulncheck-output.txt || rc=$?  # CANARY
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            echo "::error::govulncheck did not complete (exit $rc). A scan that did not run is not a clean scan."
             exit 1
           fi
-          # Check if ALL "Fixed in:" lines are N/A (unfixable upstream)
+          if [ ! -s govulncheck-output.txt ]; then
+            echo "::error::govulncheck produced no output. An empty report is not a clean report."
+            exit 1
+          fi
+
+          # Fail only on vulnerabilities that have a fix we have not applied.
+          # One condition, not two: the previous first check ("there are
+          # findings and NONE is N/A") is a strict subset of this one ("at
+          # least one finding is not N/A"), so it never fired on its own and
+          # only made the authoritative rule harder to identify.
           if grep "Fixed in:" govulncheck-output.txt | grep -qv "N/A"; then
             echo "::error::govulncheck found vulnerabilities with available fixes"
             exit 1
           fi
-          echo "govulncheck passed (any remaining vulns have no upstream fix)"
+          echo "govulncheck passed (the scan ran; any remaining vulns have no upstream fix)"
 
   trivy:
     name: Dependency Scan (Trivy)
