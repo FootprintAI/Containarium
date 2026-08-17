@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/footprintai/containarium/internal/client"
+	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -36,7 +37,11 @@ cluster is READY.
   containarium cluster delete demo --server <host>`,
 }
 
-var clusterOwner string
+var (
+	clusterOwner    string
+	clusterNodesMin int32
+	clusterNodesMax int32
+)
 
 var clusterCreateCmd = &cobra.Command{
 	Use:   "create <name>",
@@ -92,6 +97,8 @@ func init() {
 	rootCmd.AddCommand(clusterCmd)
 	clusterCmd.AddCommand(clusterCreateCmd, clusterListCmd, clusterGetCmd, clusterDeleteCmd, clusterKubeconfigCmd, clusterNodePoolCmd)
 	clusterCmd.PersistentFlags().StringVar(&clusterOwner, "owner", "", "owning tenant (admin only; default: the authenticated user)")
+	clusterCreateCmd.Flags().Int32Var(&clusterNodesMin, "nodes-min", -1, "small size class's minimum worker count (default: platform preset)")
+	clusterCreateCmd.Flags().Int32Var(&clusterNodesMax, "nodes-max", -1, "small size class's maximum worker count (default: platform preset)")
 	clusterNodePoolCmd.Flags().StringArrayVar(&clusterGroups, "group", nil,
 		"node group as name=<g>,cpu=<n>,memory=<x>GB,disk=<x>GB,min=<n>,max=<n> (repeatable, required)")
 }
@@ -116,6 +123,35 @@ func newClusterClient() (clusterAPI, error) {
 		return client.NewHTTPClient(serverAddr, authToken)
 	}
 	return client.NewGRPCClient(serverAddr, certsDir, insecure)
+}
+
+// createNodeGroups applies --nodes-min/--nodes-max to the platform
+// presets' small class (other classes keep their preset bounds; use
+// `cluster node-pool` for full control). Returns nil when neither flag
+// is set, so the server applies its presets untouched.
+func createNodeGroups(cmd *cobra.Command) ([]*pb.NodeGroup, error) {
+	if !cmd.Flags().Changed("nodes-min") && !cmd.Flags().Changed("nodes-max") {
+		return nil, nil
+	}
+	var out []*pb.NodeGroup
+	for _, g := range clusterstore.DefaultNodeGroups() {
+		g := g
+		if g.Name == "small" {
+			if cmd.Flags().Changed("nodes-min") {
+				g.MinNodes = clusterNodesMin
+			}
+			if cmd.Flags().Changed("nodes-max") {
+				g.MaxNodes = clusterNodesMax
+			}
+		}
+		out = append(out, &pb.NodeGroup{
+			Name:     g.Name,
+			Size:     &pb.ResourceLimits{Cpu: g.Size.CPU, Memory: g.Size.Memory, Disk: g.Size.Disk},
+			MinNodes: g.MinNodes,
+			MaxNodes: g.MaxNodes,
+		})
+	}
+	return out, nil
 }
 
 // parseNodeGroup parses one --group flag value into a typed NodeGroup.
@@ -199,7 +235,13 @@ func runClusterCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	resp, err := c.CreateCluster(&pb.CreateClusterRequest{Name: args[0], Owner: clusterOwner})
+	req := &pb.CreateClusterRequest{Name: args[0], Owner: clusterOwner}
+	if groups, gerr := createNodeGroups(cmd); gerr != nil {
+		return gerr
+	} else if groups != nil {
+		req.NodeGroups = groups
+	}
+	resp, err := c.CreateCluster(req)
 	if err != nil {
 		return err
 	}
