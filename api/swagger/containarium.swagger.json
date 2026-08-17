@@ -46,6 +46,10 @@
       "description": "BackupService provides logical (pg_dump) database backups for the\ndatabases running inside Containarium containers, stored off-host.\nSee docs/DB-BACKUP-OPERATIONS.md for the operational runbook and the\nISO 27001 A.8.13 control mapping."
     },
     {
+      "name": "ClusterService",
+      "description": "ClusterService manages tenant-facing managed Kubernetes clusters (#1413).\n\nA managed cluster is a platform-operated k3s control plane plus worker\nnodes that are Containarium VMs, grouped into typed size classes the\ncluster-autoscaler expands by fit simulation. The tenant's only surface\nis this service and the kubeconfig it returns — the control-plane VM is\nplatform territory (no tenant SSH, absent from the tenant's container\nlist), and worker VMs are cluster-internal.\n\nDesign: docs/architecture/managed-k8s-clusters.md. Provisioning is\nasynchronous: CreateCluster records the desired cluster and returns; a\ndaemon-side reconciler (#1414) converges VMs and flips the cluster to\nREADY. Kubeconfig and node-join material are read on demand from the\ncontrol-plane VM and are never persisted by the platform."
+    },
+    {
       "name": "ComposeAutostartService"
     },
     {
@@ -1511,6 +1515,270 @@
         ],
         "tags": [
           "System"
+        ]
+      }
+    },
+    "/v1/clusters": {
+      "get": {
+        "summary": "List managed clusters",
+        "operationId": "ClusterService_ListClusters",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListClustersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "owner",
+            "description": "Owner filter. Non-admin callers may only list their own clusters;\nempty = the authenticated caller (admins: all clusters).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Clusters"
+        ]
+      },
+      "post": {
+        "summary": "Create a managed Kubernetes cluster",
+        "description": "Records the cluster and returns immediately in state PROVISIONING; a reconciler provisions the control-plane and worker VMs asynchronously. Fails fast on hosts that cannot run VMs.",
+        "operationId": "ClusterService_CreateCluster",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CreateClusterResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateClusterRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Clusters"
+        ]
+      }
+    },
+    "/v1/clusters/{name}": {
+      "get": {
+        "summary": "Get a managed cluster",
+        "operationId": "ClusterService_GetCluster",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetClusterResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "owner",
+            "description": "Owning tenant. Empty = the authenticated caller.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Clusters"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a managed cluster",
+        "description": "Tears down control-plane and worker VMs, the published API endpoint, and all cluster state. A re-created cluster of the same name starts empty.",
+        "operationId": "ClusterService_DeleteCluster",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteClusterResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "owner",
+            "description": "Owning tenant. Empty = the authenticated caller.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Clusters"
+        ]
+      }
+    },
+    "/v1/clusters/{name}/kubeconfig": {
+      "get": {
+        "summary": "Get a cluster's kubeconfig",
+        "description": "Only available once the cluster is READY. The kubeconfig is read from the control-plane VM on each call and is not persisted by the platform.",
+        "operationId": "ClusterService_GetClusterKubeconfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetClusterKubeconfigResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "owner",
+            "description": "Owning tenant. Empty = the authenticated caller.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Clusters"
+        ]
+      }
+    },
+    "/v1/clusters/{name}/node-pool": {
+      "post": {
+        "summary": "Update a cluster's node groups",
+        "operationId": "ClusterService_UpdateClusterNodePool",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/UpdateClusterNodePoolResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/UpdateClusterNodePoolBody"
+            }
+          }
+        ],
+        "tags": [
+          "Clusters"
+        ]
+      }
+    },
+    "/v1/clusters/{name}/status": {
+      "get": {
+        "summary": "Get a cluster's status",
+        "description": "Control-plane health, per-node-group counts vs min/max, and the most recent scale events with reasons.",
+        "operationId": "ClusterService_GetClusterStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetClusterStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "owner",
+            "description": "Owning tenant. Empty = the authenticated caller.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "eventsLimit",
+            "description": "Max scale events to return, newest first. 0 = server default (20).",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Clusters"
         ]
       }
     },
@@ -7307,6 +7575,105 @@
       "default": "CLOUD_METRICS_PROVIDER_UNSPECIFIED",
       "description": "CloudMetricsProvider identifies which host cloud's native monitoring\nreceives the opt-in export (#1069). Typed so the toggle can never be a\nmagic string. AWS is reserved for a future Sink implementation;\nSetMetricsExport rejects it with UNIMPLEMENTED until one exists.\n\n - CLOUD_METRICS_PROVIDER_UNSPECIFIED: Unset. SetMetricsExport rejects this with INVALID_ARGUMENT when\nenabled=true; GetMetricsExport returns it when export has never been\nconfigured.\n - CLOUD_METRICS_PROVIDER_GCP: Google Cloud Monitoring (Cloud Operations). The only implemented\nprovider in the MVP.\n - CLOUD_METRICS_PROVIDER_AWS: Amazon CloudWatch. Reserved — no Sink implementation yet;\nSetMetricsExport returns UNIMPLEMENTED."
     },
+    "Cluster": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Cluster name, unique per owner."
+        },
+        "owner": {
+          "type": "string",
+          "description": "Owning tenant (username)."
+        },
+        "state": {
+          "$ref": "#/definitions/ClusterState"
+        },
+        "stateReason": {
+          "type": "string",
+          "description": "Why the cluster is in ERROR/DEGRADED, empty otherwise."
+        },
+        "k3sVersion": {
+          "type": "string",
+          "description": "Pinned k3s version the cluster runs (set by the provisioner)."
+        },
+        "nodeGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NodeGroup"
+          },
+          "description": "Worker size classes."
+        },
+        "apiEndpoint": {
+          "type": "string",
+          "description": "External API endpoint (host:port), set once published."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "Cluster is a managed Kubernetes cluster."
+    },
+    "ClusterNode": {
+      "type": "object",
+      "properties": {
+        "vmName": {
+          "type": "string",
+          "description": "Incus VM name (e.g. \"\u003ctenant\u003e-k8s-\u003ccluster\u003e-small-1\")."
+        },
+        "role": {
+          "$ref": "#/definitions/ClusterNodeRole"
+        },
+        "nodeGroup": {
+          "type": "string",
+          "description": "Owning node group; empty for the control plane."
+        },
+        "state": {
+          "$ref": "#/definitions/ClusterNodeState"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "ClusterNode is one VM belonging to a cluster."
+    },
+    "ClusterNodeRole": {
+      "type": "string",
+      "enum": [
+        "CLUSTER_NODE_ROLE_UNSPECIFIED",
+        "CLUSTER_NODE_ROLE_CONTROL_PLANE",
+        "CLUSTER_NODE_ROLE_WORKER"
+      ],
+      "default": "CLUSTER_NODE_ROLE_UNSPECIFIED",
+      "description": "ClusterNodeRole distinguishes the platform-owned control plane from\ntenant-workload workers."
+    },
+    "ClusterNodeState": {
+      "type": "string",
+      "enum": [
+        "CLUSTER_NODE_STATE_UNSPECIFIED",
+        "CLUSTER_NODE_STATE_PROVISIONING",
+        "CLUSTER_NODE_STATE_READY",
+        "CLUSTER_NODE_STATE_DRAINING"
+      ],
+      "default": "CLUSTER_NODE_STATE_UNSPECIFIED",
+      "description": "ClusterNodeState is a node's coarse lifecycle state."
+    },
+    "ClusterState": {
+      "type": "string",
+      "enum": [
+        "CLUSTER_STATE_UNSPECIFIED",
+        "CLUSTER_STATE_PROVISIONING",
+        "CLUSTER_STATE_READY",
+        "CLUSTER_STATE_DEGRADED",
+        "CLUSTER_STATE_DELETING",
+        "CLUSTER_STATE_ERROR"
+      ],
+      "default": "CLUSTER_STATE_UNSPECIFIED",
+      "description": "ClusterState is the lifecycle state of a managed cluster.\n\n - CLUSTER_STATE_PROVISIONING: Recorded; the reconciler is provisioning VMs.\n - CLUSTER_STATE_READY: Control plane serving and every group's min nodes Ready.\n - CLUSTER_STATE_DEGRADED: Serving, but observed state diverges from desired (e.g. a lost\nnode being replaced).\n - CLUSTER_STATE_DELETING: Teardown in progress.\n - CLUSTER_STATE_ERROR: Provisioning or reconciliation failed; state_reason says why."
+    },
     "Collaborator": {
       "type": "object",
       "properties": {
@@ -7886,6 +8253,38 @@
         }
       }
     },
+    "CreateClusterRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Cluster name (DNS-label syntax)."
+        },
+        "owner": {
+          "type": "string",
+          "description": "Owning tenant. Empty = the authenticated caller. Setting another\ntenant requires the admin role."
+        },
+        "nodeGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NodeGroup"
+          },
+          "description": "Worker size classes. Empty = the platform's default presets."
+        }
+      }
+    },
+    "CreateClusterResponse": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "$ref": "#/definitions/Cluster"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "CreateContainerRequest": {
       "type": "object",
       "properties": {
@@ -8257,6 +8656,14 @@
       }
     },
     "DeleteBackupResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "DeleteClusterResponse": {
       "type": "object",
       "properties": {
         "message": {
@@ -9002,6 +9409,53 @@
         "lastCollectionAt": {
           "type": "string",
           "title": "When the summary was last collected"
+        }
+      }
+    },
+    "GetClusterKubeconfigResponse": {
+      "type": "object",
+      "properties": {
+        "kubeconfig": {
+          "type": "string",
+          "description": "kubeconfig YAML with the server URL rewritten to api_endpoint."
+        }
+      }
+    },
+    "GetClusterResponse": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "$ref": "#/definitions/Cluster"
+        }
+      }
+    },
+    "GetClusterStatusResponse": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "$ref": "#/definitions/Cluster"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ClusterNode"
+          }
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NodeGroupStatus"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ScaleEvent"
+          },
+          "description": "Newest first."
         }
       }
     },
@@ -9770,6 +10224,18 @@
         }
       }
     },
+    "ListClustersResponse": {
+      "type": "object",
+      "properties": {
+        "clusters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Cluster"
+          }
+        }
+      }
+    },
     "ListCollaboratorsResponse": {
       "type": "object",
       "properties": {
@@ -10398,6 +10864,43 @@
         }
       },
       "title": "NetworkTopology represents the complete network visualization"
+    },
+    "NodeGroup": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Group name, unique within the cluster (e.g. \"small\")."
+        },
+        "size": {
+          "$ref": "#/definitions/ResourceLimits",
+          "description": "VM size for every node in this group. GPU fields are rejected for\ncluster nodes in v1 (GPU node pools are a later phase), and so is\nstorage_class (a box-PVC concept with no meaning on a node VM)."
+        },
+        "minNodes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Nodes the reconciler keeps at minimum (\u003e= 0)."
+        },
+        "maxNodes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Hard ceiling the autoscaler may not exceed (\u003e= min_nodes, \u003e= 1\nacross the pool)."
+        }
+      },
+      "description": "NodeGroup is a typed worker size class. The autoscaler advertises one\nnode group per class and picks the class whose template fits pending\npods; the template it advertises MUST equal `size` (truthfulness the\nfit simulation depends on)."
+    },
+    "NodeGroupStatus": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "$ref": "#/definitions/NodeGroup"
+        },
+        "currentNodes": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "description": "NodeGroupStatus is a group's observed count against its bounds."
     },
     "OSType": {
       "type": "string",
@@ -11533,6 +12036,39 @@
         }
       }
     },
+    "ScaleEvent": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "kind": {
+          "$ref": "#/definitions/ScaleEventKind"
+        },
+        "nodeGroup": {
+          "type": "string",
+          "description": "Node group the event concerns; empty for cluster-wide events."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable reason (\"2 pods pending\", \"at max_nodes (3)\")."
+        }
+      },
+      "description": "ScaleEvent is one entry in the cluster's scale history."
+    },
+    "ScaleEventKind": {
+      "type": "string",
+      "enum": [
+        "SCALE_EVENT_KIND_UNSPECIFIED",
+        "SCALE_EVENT_KIND_SCALE_UP",
+        "SCALE_EVENT_KIND_SCALE_DOWN",
+        "SCALE_EVENT_KIND_REFUSED",
+        "SCALE_EVENT_KIND_NODE_REPLACED"
+      ],
+      "default": "SCALE_EVENT_KIND_UNSPECIFIED",
+      "description": "ScaleEventKind categorizes entries in a cluster's scale history.\n\n - SCALE_EVENT_KIND_REFUSED: A scale request was refused (group max, daemon cap, or host\nadmission gate) — surfaced here rather than silently clamped.\n - SCALE_EVENT_KIND_NODE_REPLACED: A failed/lost node was replaced by the reconciler."
+    },
     "ScanJob": {
       "type": "object",
       "properties": {
@@ -12653,6 +13189,34 @@
         }
       },
       "title": "UpdateAlertingConfigResponse returns updated alerting configuration"
+    },
+    "UpdateClusterNodePoolBody": {
+      "type": "object",
+      "properties": {
+        "owner": {
+          "type": "string",
+          "description": "Owning tenant. Empty = the authenticated caller."
+        },
+        "nodeGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/NodeGroup"
+          },
+          "description": "Replacement set of node groups (validated like create)."
+        }
+      }
+    },
+    "UpdateClusterNodePoolResponse": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "$ref": "#/definitions/Cluster"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
     },
     "UpdateContainerACLBody": {
       "type": "object",
