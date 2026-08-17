@@ -1,0 +1,22 @@
+# Generation for the vendored externalgrpc contract AND its k8s.io
+# import chain. Everything generates into pkg/pb/thirdparty as
+# protobuf-go-native types: k8s.io's own modules dropped their legacy
+# (gogo) proto methods in v0.36, so referencing them from generated
+# code panics at runtime — the vendored chain must be self-contained.
+# Wire format is identical to upstream's, so the stock CA binary
+# interoperates unmodified.
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/footprintai/containarium/pkg/pb/thirdparty
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.11
+    out: ../../pkg/pb/thirdparty
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc/go:v1.6.2
+    out: ../../pkg/pb/thirdparty
+    opt:
+      - paths=source_relative
