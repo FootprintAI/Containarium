@@ -1,0 +1,302 @@
+package server
+
+// Reconciler coverage (#1414): the REAL Manager and MemStore drive a
+// stateful fake host, entered through the real ClusterServer handlers —
+// so these tests pin the whole daemon-side loop except Incus itself
+// (which the gated KVM e2e lane #1418 owns).
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	clustercore "github.com/footprintai/containarium/pkg/core/cluster"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
+
+// stateHost is a stateful VMHost fake: created VMs exist and run,
+// pushed files persist, and the in-cluster kubectl reports every
+// existing VM as a Ready node.
+type stateHost struct {
+	mu     sync.Mutex
+	vms    map[string]*stateVM
+	files  map[string][]byte
+	capErr error
+}
+
+type stateVM struct {
+	labels  map[string]string
+	running bool
+}
+
+func newStateHost() *stateHost {
+	return &stateHost{vms: map[string]*stateVM{}, files: map[string][]byte{}}
+}
+
+func (h *stateHost) VMCapable() error { return h.capErr }
+
+func (h *stateHost) CreateVM(spec clustercore.NodeSpec) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.vms[spec.Name]; ok {
+		return fmt.Errorf("vm %s already exists", spec.Name)
+	}
+	h.vms[spec.Name] = &stateVM{labels: spec.Labels, running: true}
+	// A booted CP "writes" its own kubeconfig and join token.
+	if spec.Labels[clustercore.LabelClusterRole] == clustercore.RoleControlPlane {
+		h.files[spec.Name+":"+clustercore.KubeconfigPath] = []byte("clusters:\n- cluster:\n    server: https://127.0.0.1:6443\n")
+		h.files[spec.Name+":"+clustercore.NodeTokenPath] = []byte("K10::join-token")
+	}
+	return nil
+}
+
+func (h *stateHost) Start(name string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	vm, ok := h.vms[name]
+	if !ok {
+		return fmt.Errorf("no vm %s", name)
+	}
+	vm.running = true
+	return nil
+}
+
+func (h *stateHost) Delete(name string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.vms[name]; !ok {
+		return fmt.Errorf("no vm %s", name)
+	}
+	delete(h.vms, name)
+	return nil
+}
+
+func (h *stateHost) WaitReady(name string, _ time.Duration) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.vms[name]; !ok {
+		return "", fmt.Errorf("no vm %s", name)
+	}
+	return "10.166.11.5", nil
+}
+
+func (h *stateHost) Push(name, path string, content []byte, mode string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.files[name+":"+path] = content
+	return nil
+}
+
+func (h *stateHost) Read(name, path string) ([]byte, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if c, ok := h.files[name+":"+path]; ok {
+		return c, nil
+	}
+	return nil, errors.New("no such file")
+}
+
+func (h *stateHost) Exec(name string, cmd []string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(cmd) >= 2 && cmd[1] == "kubectl" {
+		var b strings.Builder
+		for vm := range h.vms {
+			fmt.Fprintf(&b, "%s   Ready   <none>   1m   v-test\n", vm)
+		}
+		return b.String(), nil
+	}
+	return "", nil
+}
+
+func (h *stateHost) ClusterVMs(tenant, clusterName string) (clustercore.Observed, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	obs := clustercore.Observed{Workers: map[string][]clustercore.ObservedVM{}}
+	for name, vm := range h.vms {
+		if vm.labels[clustercore.LabelCluster] != clusterName || vm.labels[clustercore.LabelClusterOwner] != tenant {
+			continue
+		}
+		o := clustercore.ObservedVM{Name: name, Running: vm.running}
+		switch vm.labels[clustercore.LabelClusterRole] {
+		case clustercore.RoleControlPlane:
+			cp := o
+			obs.CP = &cp
+		case clustercore.RoleWorker:
+			g := vm.labels[clustercore.LabelNodeGroup]
+			obs.Workers[g] = append(obs.Workers[g], o)
+		}
+	}
+	return obs, nil
+}
+
+func testReconcilerRig(t *testing.T) (*ClusterServer, *ClusterReconciler, *stateHost) {
+	t.Helper()
+	host := newStateHost()
+	mgr := clustercore.NewManagerWithLoader(host, func() ([]byte, error) { return []byte("k3s-bin"), nil })
+	srv := clusterTestServer()
+	rec := NewClusterReconciler(srv.Store(), mgr)
+	srv.SetReconciler(rec)
+	return srv, rec, host
+}
+
+func TestReconciler_ProvisionsToReady(t *testing.T) {
+	srv, rec, host := testReconcilerRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo") // default presets: small min=1
+
+	// Pass 1: control plane first, no workers yet.
+	rec.ReconcileOnce(ctx)
+	if _, ok := host.vms["alice-k8s-demo-cp"]; !ok {
+		t.Fatalf("pass 1 did not create the control plane; vms=%v", vmNames(host))
+	}
+	if len(host.vms) != 1 {
+		t.Fatalf("pass 1 created workers before the CP was observed running: %v", vmNames(host))
+	}
+
+	// Pass 2: worker to min, endpoint recorded, cluster READY (the
+	// fake cluster API reports both nodes Ready).
+	rec.ReconcileOnce(ctx)
+	if _, ok := host.vms["alice-k8s-demo-small-1"]; !ok {
+		t.Fatalf("pass 2 did not create the small worker: %v", vmNames(host))
+	}
+	// Worker got the binary, the 0600 token, and a join script.
+	if string(host.files["alice-k8s-demo-small-1:"+clustercore.AgentTokenPath]) != "K10::join-token" {
+		t.Fatal("worker did not receive the CP's join token")
+	}
+
+	rec.ReconcileOnce(ctx) // settle
+	got, err := srv.GetCluster(tenantCtx("alice"), &pb.GetClusterRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Cluster.State != pb.ClusterState_CLUSTER_STATE_READY {
+		t.Fatalf("state = %v, want READY (reason %q)", got.Cluster.State, got.Cluster.StateReason)
+	}
+	if got.Cluster.ApiEndpoint != "10.166.11.5:6443" {
+		t.Fatalf("endpoint = %q (publish seam nil → CP IP)", got.Cluster.ApiEndpoint)
+	}
+
+	// Kubeconfig now flows through the reconciler's reader, rewritten
+	// to the recorded endpoint.
+	kc, err := srv.GetClusterKubeconfig(tenantCtx("alice"), &pb.GetClusterKubeconfigRequest{Name: "demo"})
+	if err != nil {
+		t.Fatalf("kubeconfig: %v", err)
+	}
+	if !strings.Contains(kc.Kubeconfig, "server: https://10.166.11.5:6443") {
+		t.Fatalf("kubeconfig not rewritten:\n%s", kc.Kubeconfig)
+	}
+
+	// Status shows the worker row and per-group counts.
+	st, err := srv.GetClusterStatus(tenantCtx("alice"), &pb.GetClusterStatusRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Nodes) != 2 {
+		t.Fatalf("status nodes = %d, want cp+worker", len(st.Nodes))
+	}
+}
+
+func TestReconciler_ReplacesLostWorker(t *testing.T) {
+	srv, rec, host := testReconcilerRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+
+	// Kill the worker out-of-band.
+	delete(host.vms, "alice-k8s-demo-small-1")
+
+	rec.ReconcileOnce(ctx)
+	if _, ok := host.vms["alice-k8s-demo-small-1"]; !ok {
+		t.Fatalf("lost worker not replaced: %v", vmNames(host))
+	}
+	// The replacement is on the scale-event record.
+	st, err := srv.GetClusterStatus(tenantCtx("alice"), &pb.GetClusterStatusRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Events) == 0 {
+		t.Fatal("no scale events recorded for the replacement")
+	}
+}
+
+func TestReconciler_AsyncDeleteDrainsEverything(t *testing.T) {
+	srv, rec, host := testReconcilerRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+
+	resp, err := srv.DeleteCluster(tenantCtx("alice"), &pb.DeleteClusterRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Message, "in progress") {
+		t.Fatalf("async delete message = %q", resp.Message)
+	}
+	// Record still present (DELETING) until the reconciler drains it.
+	if _, err := srv.GetCluster(tenantCtx("alice"), &pb.GetClusterRequest{Name: "demo"}); err != nil {
+		t.Fatalf("record vanished before the reconciler ran: %v", err)
+	}
+
+	rec.ReconcileOnce(ctx) // deletes VMs
+	rec.ReconcileOnce(ctx) // observes empty, drops rows
+	if len(host.vms) != 0 {
+		t.Fatalf("VMs survived deletion: %v", vmNames(host))
+	}
+	_, err = srv.GetCluster(tenantCtx("alice"), &pb.GetClusterRequest{Name: "demo"})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("record after drain = %v, want NotFound", err)
+	}
+	// Name immediately reusable.
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+}
+
+func TestReconciler_AdmissionRefusalIsLoud(t *testing.T) {
+	srv, rec, host := testReconcilerRig(t)
+	ctx := context.Background()
+	rec.SetAdmission(func(owner, cpu string) error { return errors.New("host at capacity") })
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+
+	rec.ReconcileOnce(ctx)
+	if len(host.vms) != 0 {
+		t.Fatalf("VM created despite admission refusal: %v", vmNames(host))
+	}
+	st, err := srv.GetClusterStatus(tenantCtx("alice"), &pb.GetClusterStatusRequest{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Events) == 0 || st.Events[0].Kind != pb.ScaleEventKind_SCALE_EVENT_KIND_REFUSED {
+		t.Fatalf("refusal not recorded as a REFUSED event: %+v", st.Events)
+	}
+}
+
+func TestReconciler_VMCapabilityGatesCreate(t *testing.T) {
+	srv, _, host := testReconcilerRig(t)
+	host.capErr = clustercore.ErrVMsUnsupported
+
+	_, err := srv.CreateCluster(tenantCtx("alice"), &pb.CreateClusterRequest{Name: "demo"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("create on a VM-incapable host = %v, want FailedPrecondition", err)
+	}
+	if !strings.Contains(err.Error(), "virtual machines") {
+		t.Fatalf("error does not explain the capability gap: %v", err)
+	}
+}
+
+func vmNames(h *stateHost) []string {
+	var out []string
+	for n := range h.vms {
+		out = append(out, n)
+	}
+	return out
+}
