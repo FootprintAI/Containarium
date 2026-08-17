@@ -347,6 +347,50 @@ func TestZapStore_AlertSummaryExcludesSuppressedAndResolved(t *testing.T) {
 	}
 }
 
+// The risk breakdown must actually count findings (#1400).
+//
+// ZAP emits capitalised risks ("High"), stored verbatim; both consumers
+// matched lowercase, so every risk count was permanently zero while the alerts
+// themselves stored and listed correctly. Asserted through CountAlertsByRisk
+// too, because that one is read as byRisk["high"] by manager.go to write the
+// scan run's own counts — a separate path with the same mismatch.
+func TestZapStore_RiskCountsAreCaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	store, tag := zapTestStore(t)
+
+	run, err := store.CreateScanRun(ctx, "manual", "alice-container")
+	if err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+	// Exactly as ZAP emits them.
+	if err := store.SaveAlerts(ctx, run, []Alert{
+		anAlert(tag+"-h1", "High", "https://a.example.com/1"),
+		anAlert(tag+"-h2", "High", "https://a.example.com/2"),
+		anAlert(tag+"-m1", "Medium", "https://a.example.com/3"),
+	}); err != nil {
+		t.Fatalf("SaveAlerts: %v", err)
+	}
+
+	byRisk, err := store.CountAlertsByRisk(ctx, run)
+	if err != nil {
+		t.Fatalf("CountAlertsByRisk: %v", err)
+	}
+	if byRisk["high"] != 2 || byRisk["medium"] != 1 {
+		t.Errorf("byRisk = %v, want high=2 medium=1 — manager.go reads these keys to write the "+
+			"scan run's counts, so a miss records every completed scan as having found nothing",
+			byRisk)
+	}
+
+	summary, err := store.GetAlertSummary(ctx)
+	if err != nil {
+		t.Fatalf("GetAlertSummary: %v", err)
+	}
+	if summary.HighCount < 2 {
+		t.Errorf("summary HighCount = %d, want at least the 2 just saved — this is what the "+
+			"dashboard renders, and zero reads as 'no vulnerabilities'", summary.HighCount)
+	}
+}
+
 func TestZapStore_SchemaInitIsRepeatable(t *testing.T) {
 	ctx := context.Background()
 	store, tag := zapTestStore(t)
