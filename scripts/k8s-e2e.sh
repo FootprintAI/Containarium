@@ -88,7 +88,7 @@ fi
 # old name, so bumping the version alone 404s — which is how this first broke.
 # Both are release assets, so nothing here or in the compiler can catch a bad
 # pair; TestE2EControllerAssetNameMatchesVersion does it instead.
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.4}"
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.5}"
 echo "==> installing agent-sandbox controller ${AGENT_SANDBOX_VERSION}"
 command -v kubectl >/dev/null || { echo "kubectl is required to install the agent-sandbox controller" >&2; exit 1; }
 kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/sandbox.yaml"
