@@ -211,7 +211,7 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 		}
 		_ = s.store.DeleteNode(ctx, owner, name, n.GetName())
 	}
-	target := g.EffectiveTarget() - int32(len(req.Nodes))
+	target := g.EffectiveTarget() - int32(len(req.Nodes)) //nolint:gosec // batch length is bounded by the group's int32 max_nodes (validated above)
 	if target < g.MinNodes {
 		target = g.MinNodes
 	}
