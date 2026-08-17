@@ -448,6 +448,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register volume service gateway: %w", err)
 	}
 
+	// Register ClusterService gateway handler — managed K8s clusters (#1413)
+	if err := pb.RegisterClusterServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register cluster service gateway: %w", err)
+	}
+
 	// Register KmsService gateway handler (KMS status / envelope
 	// coverage / migration).
 	if err := pb.RegisterKmsServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {

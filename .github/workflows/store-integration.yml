@@ -19,6 +19,7 @@ on:
     # checks that have not started (#1215).
     paths:
       - 'internal/server/**'
+      - 'internal/cluster/**'
       - 'internal/audit/**'
       - 'internal/secrets/**'
       - 'internal/app/**'
@@ -30,6 +31,7 @@ on:
     branches: [main]
     paths:
       - 'internal/server/**'
+      - 'internal/cluster/**'
       - 'internal/audit/**'
       - 'internal/secrets/**'
       - 'internal/app/**'
@@ -65,7 +67,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -84,7 +86,7 @@ jobs:
           set -o pipefail
 
           go test -tags=integration -count=1 -timeout 10m -v \
-            ./internal/server/ ./internal/audit/ ./internal/auth/ \
+            ./internal/server/ ./internal/cluster/ ./internal/audit/ ./internal/auth/ \
             ./internal/alert/ ./internal/collaborator/ 2>&1 | tee integration.log
 
           # internal/secrets and internal/app carry their Postgres tests
@@ -107,7 +109,7 @@ jobs:
 
           # And a run that matched nothing would also be green. Require that
           # the suite actually executed.
-          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations TestRevocationStore_RevokedTokenReadsAsRevoked TestCollaboratorStore_ListingIsScopedToTheSubject TestRouteStore_SaveIsAnUpsertByDomain TestAlertStore_RuleRoundTrips TestPassthroughStore_PortAndProtocolAreDistinctRoutes TestDaemonConfigStore_SetAllRollsBackAPartialBatch TestSecurityStore_FailedJobRetriesThenGivesUp; do
+          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations TestRevocationStore_RevokedTokenReadsAsRevoked TestCollaboratorStore_ListingIsScopedToTheSubject TestRouteStore_SaveIsAnUpsertByDomain TestAlertStore_RuleRoundTrips TestPassthroughStore_PortAndProtocolAreDistinctRoutes TestDaemonConfigStore_SetAllRollsBackAPartialBatch TestSecurityStore_FailedJobRetriesThenGivesUp TestClusterStore_ContractHoldsForBothImpls; do
             if ! grep -q -- "--- PASS: $want" integration.log; then
               echo "::error::$want did not run — renamed, retagged, or filtered out."
               exit 1
