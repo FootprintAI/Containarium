@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/footprintai/containarium/internal/client"
@@ -12,9 +14,10 @@ import (
 
 // Managed Kubernetes clusters (#1413): a platform-operated k3s control
 // plane plus worker VMs in typed size classes. This CLI covers the
-// lifecycle verbs; `cluster status` rendering (#1417) and node-size
-// flags (#1414) arrive with their stories. gRPC-only (mirrors volume
-// and other server-side verbs).
+// lifecycle verbs and node-pool editing; `cluster status` rendering
+// (#1417) and node-size create flags (#1414) arrive with their
+// stories. Dual transport like backup/agent/crew: gRPC by default,
+// REST with --http (the token-authenticated path).
 
 var clusterCmd = &cobra.Command{
 	Use:   "cluster",
@@ -70,17 +73,85 @@ var clusterKubeconfigCmd = &cobra.Command{
 	RunE:  runClusterKubeconfig,
 }
 
-func init() {
-	rootCmd.AddCommand(clusterCmd)
-	clusterCmd.AddCommand(clusterCreateCmd, clusterListCmd, clusterGetCmd, clusterDeleteCmd, clusterKubeconfigCmd)
-	clusterCmd.PersistentFlags().StringVar(&clusterOwner, "owner", "", "owning tenant (admin only; default: the authenticated user)")
+var clusterGroups []string
+
+var clusterNodePoolCmd = &cobra.Command{
+	Use:   "node-pool <name>",
+	Short: "Replace a cluster's node groups (size classes and min/max bounds)",
+	Long: `Replace the cluster's node groups. Each --group is one size class as
+key=value pairs; the set you pass REPLACES the current set.
+
+  containarium cluster node-pool demo \
+    --group name=small,cpu=2,memory=4GB,disk=40GB,min=1,max=5 \
+    --group name=large,cpu=8,memory=16GB,disk=160GB,min=0,max=2`,
+	Args: cobra.ExactArgs(1),
+	RunE: runClusterNodePool,
 }
 
-func newClusterGRPCClient() (*client.GRPCClient, error) {
+func init() {
+	rootCmd.AddCommand(clusterCmd)
+	clusterCmd.AddCommand(clusterCreateCmd, clusterListCmd, clusterGetCmd, clusterDeleteCmd, clusterKubeconfigCmd, clusterNodePoolCmd)
+	clusterCmd.PersistentFlags().StringVar(&clusterOwner, "owner", "", "owning tenant (admin only; default: the authenticated user)")
+	clusterNodePoolCmd.Flags().StringArrayVar(&clusterGroups, "group", nil,
+		"node group as name=<g>,cpu=<n>,memory=<x>GB,disk=<x>GB,min=<n>,max=<n> (repeatable, required)")
+}
+
+// clusterAPI is the transport-neutral surface the cluster verbs use;
+// implemented by both the gRPC and the HTTP client.
+type clusterAPI interface {
+	CreateCluster(req *pb.CreateClusterRequest) (*pb.CreateClusterResponse, error)
+	ListClusters(owner string) (*pb.ListClustersResponse, error)
+	GetCluster(name, owner string) (*pb.GetClusterResponse, error)
+	DeleteCluster(name, owner string) (*pb.DeleteClusterResponse, error)
+	GetClusterKubeconfig(name, owner string) (*pb.GetClusterKubeconfigResponse, error)
+	UpdateClusterNodePool(req *pb.UpdateClusterNodePoolRequest) (*pb.UpdateClusterNodePoolResponse, error)
+	Close() error
+}
+
+func newClusterClient() (clusterAPI, error) {
 	if serverAddr == "" {
 		return nil, fmt.Errorf("--server is required")
 	}
+	if httpMode {
+		return client.NewHTTPClient(serverAddr, authToken)
+	}
 	return client.NewGRPCClient(serverAddr, certsDir, insecure)
+}
+
+// parseNodeGroup parses one --group flag value into a typed NodeGroup.
+func parseNodeGroup(spec string) (*pb.NodeGroup, error) {
+	g := &pb.NodeGroup{Size: &pb.ResourceLimits{}}
+	for _, kv := range strings.Split(spec, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		if !ok {
+			return nil, fmt.Errorf("--group %q: %q is not key=value", spec, kv)
+		}
+		switch k {
+		case "name":
+			g.Name = v
+		case "cpu":
+			g.Size.Cpu = v
+		case "memory":
+			g.Size.Memory = v
+		case "disk":
+			g.Size.Disk = v
+		case "min":
+			n, err := strconv.ParseInt(v, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("--group %q: min: %w", spec, err)
+			}
+			g.MinNodes = int32(n)
+		case "max":
+			n, err := strconv.ParseInt(v, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("--group %q: max: %w", spec, err)
+			}
+			g.MaxNodes = int32(n)
+		default:
+			return nil, fmt.Errorf("--group %q: unknown key %q (want name/cpu/memory/disk/min/max)", spec, k)
+		}
+	}
+	return g, nil
 }
 
 func printCluster(c *pb.Cluster) {
@@ -123,7 +194,7 @@ func clusterStateString(s pb.ClusterState) string {
 }
 
 func runClusterCreate(cmd *cobra.Command, args []string) error {
-	c, err := newClusterGRPCClient()
+	c, err := newClusterClient()
 	if err != nil {
 		return err
 	}
@@ -138,7 +209,7 @@ func runClusterCreate(cmd *cobra.Command, args []string) error {
 }
 
 func runClusterList(cmd *cobra.Command, args []string) error {
-	c, err := newClusterGRPCClient()
+	c, err := newClusterClient()
 	if err != nil {
 		return err
 	}
@@ -161,7 +232,7 @@ func runClusterList(cmd *cobra.Command, args []string) error {
 }
 
 func runClusterGet(cmd *cobra.Command, args []string) error {
-	c, err := newClusterGRPCClient()
+	c, err := newClusterClient()
 	if err != nil {
 		return err
 	}
@@ -175,7 +246,7 @@ func runClusterGet(cmd *cobra.Command, args []string) error {
 }
 
 func runClusterDelete(cmd *cobra.Command, args []string) error {
-	c, err := newClusterGRPCClient()
+	c, err := newClusterClient()
 	if err != nil {
 		return err
 	}
@@ -189,7 +260,7 @@ func runClusterDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runClusterKubeconfig(cmd *cobra.Command, args []string) error {
-	c, err := newClusterGRPCClient()
+	c, err := newClusterClient()
 	if err != nil {
 		return err
 	}
@@ -202,5 +273,33 @@ func runClusterKubeconfig(cmd *cobra.Command, args []string) error {
 	// `KUBECONFIG=<(...)` both work; the notice goes to stderr.
 	fmt.Print(resp.Kubeconfig)
 	fmt.Fprintln(os.Stderr, "kubeconfig fetched; treat it as a credential")
+	return nil
+}
+
+func runClusterNodePool(cmd *cobra.Command, args []string) error {
+	if len(clusterGroups) == 0 {
+		return fmt.Errorf("at least one --group is required (the set you pass replaces the current set)")
+	}
+	groups := make([]*pb.NodeGroup, 0, len(clusterGroups))
+	for _, spec := range clusterGroups {
+		g, err := parseNodeGroup(spec)
+		if err != nil {
+			return err
+		}
+		groups = append(groups, g)
+	}
+	c, err := newClusterClient()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+	resp, err := c.UpdateClusterNodePool(&pb.UpdateClusterNodePoolRequest{
+		Name: args[0], Owner: clusterOwner, NodeGroups: groups,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp.Message)
+	printCluster(resp.Cluster)
 	return nil
 }

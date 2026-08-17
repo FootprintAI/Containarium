@@ -140,6 +140,9 @@ func (m *MemStore) UpsertNode(ctx context.Context, n *Node) error {
 func (m *MemStore) ListNodes(ctx context.Context, owner, name string) ([]*Node, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, ok := m.clusters[key(owner, name)]; !ok {
+		return nil, ErrNotFound
+	}
 	var out []*Node
 	for _, n := range m.nodes {
 		if n.Owner == owner && n.Cluster == name {
@@ -151,10 +154,11 @@ func (m *MemStore) ListNodes(ctx context.Context, owner, name string) ([]*Node, 
 	return out, nil
 }
 
-func (m *MemStore) DeleteNode(ctx context.Context, vmName string) error {
+func (m *MemStore) DeleteNode(ctx context.Context, owner, name, vmName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.nodes[vmName]; !ok {
+	n, ok := m.nodes[vmName]
+	if !ok || n.Owner != owner || n.Cluster != name {
 		return ErrNotFound
 	}
 	delete(m.nodes, vmName)

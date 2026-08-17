@@ -82,8 +82,8 @@ func storeErr(err error) error {
 // groupsFromProto converts and screens the typed node groups. GPU and
 // per-box storage-class fields exist on the shared ResourceLimits
 // message but have no meaning on a cluster node in v1 — GPU pools are
-// a later phase, so requests carrying them are rejected loudly rather
-// than silently dropped.
+// a later phase and storage_class is a box-PVC concept — so requests
+// carrying either are rejected loudly rather than silently dropped.
 func groupsFromProto(in []*pb.NodeGroup) ([]cluster.NodeGroup, error) {
 	out := make([]cluster.NodeGroup, 0, len(in))
 	for _, g := range in {
@@ -92,6 +92,9 @@ func groupsFromProto(in []*pb.NodeGroup) ([]cluster.NodeGroup, error) {
 		}
 		if g.Size.Gpu != "" || len(g.Size.Gpus) > 0 { //nolint:staticcheck // deliberately reading the deprecated field to reject it
 			return nil, status.Errorf(codes.InvalidArgument, "node group %q: GPU node pools are not supported yet (later phase)", g.Name)
+		}
+		if g.Size.StorageClass != "" {
+			return nil, status.Errorf(codes.InvalidArgument, "node group %q: storage_class does not apply to cluster nodes", g.Name)
 		}
 		out = append(out, cluster.NodeGroup{
 			Name:     g.Name,
@@ -143,16 +146,26 @@ func clusterToProto(c *cluster.Cluster) *pb.Cluster {
 	return out
 }
 
+var nodeRoleToProto = map[string]pb.ClusterNodeRole{
+	cluster.RoleControlPlane: pb.ClusterNodeRole_CLUSTER_NODE_ROLE_CONTROL_PLANE,
+	cluster.RoleWorker:       pb.ClusterNodeRole_CLUSTER_NODE_ROLE_WORKER,
+}
+
+var nodeStateToProto = map[cluster.NodeState]pb.ClusterNodeState{
+	cluster.NodeStateProvisioning: pb.ClusterNodeState_CLUSTER_NODE_STATE_PROVISIONING,
+	cluster.NodeStateReady:        pb.ClusterNodeState_CLUSTER_NODE_STATE_READY,
+	cluster.NodeStateDraining:     pb.ClusterNodeState_CLUSTER_NODE_STATE_DRAINING,
+}
+
 func nodeToProto(n *cluster.Node) *pb.ClusterNode {
-	role := pb.ClusterNodeRole_CLUSTER_NODE_ROLE_WORKER
-	if n.Role == cluster.RoleControlPlane {
-		role = pb.ClusterNodeRole_CLUSTER_NODE_ROLE_CONTROL_PLANE
-	}
+	// Unknown role/state map to UNSPECIFIED — drift between the store
+	// and the API surfaces as an explicit "unspecified", not as a
+	// silently-defaulted worker.
 	return &pb.ClusterNode{
 		VmName:    n.VMName,
-		Role:      role,
+		Role:      nodeRoleToProto[n.Role],
 		NodeGroup: n.Group,
-		State:     n.State,
+		State:     nodeStateToProto[n.State],
 		CreatedAt: timestamppb.New(n.CreatedAt),
 	}
 }
@@ -214,7 +227,7 @@ func (s *ClusterServer) ListClusters(ctx context.Context, req *pb.ListClustersRe
 		if !ok {
 			return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
 		}
-		if !hasRole(roles, auth.RoleAdmin) {
+		if !auth.HasRole(roles, auth.RoleAdmin) {
 			owner = username // non-admins list their own; admins list all
 		}
 	}
@@ -227,15 +240,6 @@ func (s *ClusterServer) ListClusters(ctx context.Context, req *pb.ListClustersRe
 		resp.Clusters = append(resp.Clusters, clusterToProto(c))
 	}
 	return resp, nil
-}
-
-func hasRole(roles []string, want string) bool {
-	for _, r := range roles {
-		if r == want {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *ClusterServer) GetCluster(ctx context.Context, req *pb.GetClusterRequest) (*pb.GetClusterResponse, error) {
@@ -299,7 +303,23 @@ func (s *ClusterServer) GetClusterKubeconfig(ctx context.Context, req *pb.GetClu
 	return &pb.GetClusterKubeconfigResponse{Kubeconfig: kc}, nil
 }
 
-const defaultEventsLimit = 20
+const (
+	defaultEventsLimit = 20
+	maxEventsLimit     = 1000 // house precedent: audit/traffic stores clamp both ends
+)
+
+// clampEventsLimit bounds a client-supplied events limit: non-positive
+// values take the default, and the ceiling stops a tenant turning the
+// append-only event history into a memory amplification per call.
+func clampEventsLimit(v int32) int {
+	if v <= 0 {
+		return defaultEventsLimit
+	}
+	if v > maxEventsLimit {
+		return maxEventsLimit
+	}
+	return int(v)
+}
 
 func (s *ClusterServer) GetClusterStatus(ctx context.Context, req *pb.GetClusterStatusRequest) (*pb.GetClusterStatusResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeClustersRead); err != nil {
@@ -317,11 +337,7 @@ func (s *ClusterServer) GetClusterStatus(ctx context.Context, req *pb.GetCluster
 	if err != nil {
 		return nil, storeErr(err)
 	}
-	limit := int(req.EventsLimit)
-	if limit <= 0 {
-		limit = defaultEventsLimit
-	}
-	events, err := s.store.ListEvents(ctx, owner, req.Name, limit)
+	events, err := s.store.ListEvents(ctx, owner, req.Name, clampEventsLimit(req.EventsLimit))
 	if err != nil {
 		return nil, storeErr(err)
 	}

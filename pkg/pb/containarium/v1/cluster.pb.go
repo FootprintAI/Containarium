@@ -140,6 +140,59 @@ func (ClusterNodeRole) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_cluster_proto_rawDescGZIP(), []int{1}
 }
 
+// ClusterNodeState is a node's coarse lifecycle state.
+type ClusterNodeState int32
+
+const (
+	ClusterNodeState_CLUSTER_NODE_STATE_UNSPECIFIED  ClusterNodeState = 0
+	ClusterNodeState_CLUSTER_NODE_STATE_PROVISIONING ClusterNodeState = 1
+	ClusterNodeState_CLUSTER_NODE_STATE_READY        ClusterNodeState = 2
+	ClusterNodeState_CLUSTER_NODE_STATE_DRAINING     ClusterNodeState = 3
+)
+
+// Enum value maps for ClusterNodeState.
+var (
+	ClusterNodeState_name = map[int32]string{
+		0: "CLUSTER_NODE_STATE_UNSPECIFIED",
+		1: "CLUSTER_NODE_STATE_PROVISIONING",
+		2: "CLUSTER_NODE_STATE_READY",
+		3: "CLUSTER_NODE_STATE_DRAINING",
+	}
+	ClusterNodeState_value = map[string]int32{
+		"CLUSTER_NODE_STATE_UNSPECIFIED":  0,
+		"CLUSTER_NODE_STATE_PROVISIONING": 1,
+		"CLUSTER_NODE_STATE_READY":        2,
+		"CLUSTER_NODE_STATE_DRAINING":     3,
+	}
+)
+
+func (x ClusterNodeState) Enum() *ClusterNodeState {
+	p := new(ClusterNodeState)
+	*p = x
+	return p
+}
+
+func (x ClusterNodeState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ClusterNodeState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_cluster_proto_enumTypes[2].Descriptor()
+}
+
+func (ClusterNodeState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_cluster_proto_enumTypes[2]
+}
+
+func (x ClusterNodeState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ClusterNodeState.Descriptor instead.
+func (ClusterNodeState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_cluster_proto_rawDescGZIP(), []int{2}
+}
+
 // ScaleEventKind categorizes entries in a cluster's scale history.
 type ScaleEventKind int32
 
@@ -183,11 +236,11 @@ func (x ScaleEventKind) String() string {
 }
 
 func (ScaleEventKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_cluster_proto_enumTypes[2].Descriptor()
+	return file_containarium_v1_cluster_proto_enumTypes[3].Descriptor()
 }
 
 func (ScaleEventKind) Type() protoreflect.EnumType {
-	return &file_containarium_v1_cluster_proto_enumTypes[2]
+	return &file_containarium_v1_cluster_proto_enumTypes[3]
 }
 
 func (x ScaleEventKind) Number() protoreflect.EnumNumber {
@@ -196,7 +249,7 @@ func (x ScaleEventKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ScaleEventKind.Descriptor instead.
 func (ScaleEventKind) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_cluster_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_cluster_proto_rawDescGZIP(), []int{3}
 }
 
 // NodeGroup is a typed worker size class. The autoscaler advertises one
@@ -208,7 +261,8 @@ type NodeGroup struct {
 	// Group name, unique within the cluster (e.g. "small").
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// VM size for every node in this group. GPU fields are rejected for
-	// cluster nodes in v1 (GPU node pools are a later phase).
+	// cluster nodes in v1 (GPU node pools are a later phase), and so is
+	// storage_class (a box-PVC concept with no meaning on a node VM).
 	Size *ResourceLimits `protobuf:"bytes,2,opt,name=size,proto3" json:"size,omitempty"`
 	// Nodes the reconciler keeps at minimum (>= 0).
 	MinNodes int32 `protobuf:"varint,3,opt,name=min_nodes,json=minNodes,proto3" json:"min_nodes,omitempty"`
@@ -284,9 +338,8 @@ type ClusterNode struct {
 	VmName string          `protobuf:"bytes,1,opt,name=vm_name,json=vmName,proto3" json:"vm_name,omitempty"`
 	Role   ClusterNodeRole `protobuf:"varint,2,opt,name=role,proto3,enum=containarium.v1.ClusterNodeRole" json:"role,omitempty"`
 	// Owning node group; empty for the control plane.
-	NodeGroup string `protobuf:"bytes,3,opt,name=node_group,json=nodeGroup,proto3" json:"node_group,omitempty"`
-	// Coarse observed state (e.g. "provisioning", "ready", "draining").
-	State         string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
+	NodeGroup     string                 `protobuf:"bytes,3,opt,name=node_group,json=nodeGroup,proto3" json:"node_group,omitempty"`
+	State         ClusterNodeState       `protobuf:"varint,4,opt,name=state,proto3,enum=containarium.v1.ClusterNodeState" json:"state,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -343,11 +396,11 @@ func (x *ClusterNode) GetNodeGroup() string {
 	return ""
 }
 
-func (x *ClusterNode) GetState() string {
+func (x *ClusterNode) GetState() ClusterNodeState {
 	if x != nil {
 		return x.State
 	}
-	return ""
+	return ClusterNodeState_CLUSTER_NODE_STATE_UNSPECIFIED
 }
 
 func (x *ClusterNode) GetCreatedAt() *timestamppb.Timestamp {
@@ -1340,13 +1393,13 @@ const file_containarium_v1_cluster_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04size\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\x04size\x12\x1b\n" +
 	"\tmin_nodes\x18\x03 \x01(\x05R\bminNodes\x12\x1b\n" +
-	"\tmax_nodes\x18\x04 \x01(\x05R\bmaxNodes\"\xcc\x01\n" +
+	"\tmax_nodes\x18\x04 \x01(\x05R\bmaxNodes\"\xef\x01\n" +
 	"\vClusterNode\x12\x17\n" +
 	"\avm_name\x18\x01 \x01(\tR\x06vmName\x124\n" +
 	"\x04role\x18\x02 \x01(\x0e2 .containarium.v1.ClusterNodeRoleR\x04role\x12\x1d\n" +
 	"\n" +
-	"node_group\x18\x03 \x01(\tR\tnodeGroup\x12\x14\n" +
-	"\x05state\x18\x04 \x01(\tR\x05state\x129\n" +
+	"node_group\x18\x03 \x01(\tR\tnodeGroup\x127\n" +
+	"\x05state\x18\x04 \x01(\x0e2!.containarium.v1.ClusterNodeStateR\x05state\x129\n" +
 	"\n" +
 	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xa4\x01\n" +
 	"\n" +
@@ -1427,7 +1480,12 @@ const file_containarium_v1_cluster_proto_rawDesc = "" +
 	"\x0fClusterNodeRole\x12!\n" +
 	"\x1dCLUSTER_NODE_ROLE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fCLUSTER_NODE_ROLE_CONTROL_PLANE\x10\x01\x12\x1c\n" +
-	"\x18CLUSTER_NODE_ROLE_WORKER\x10\x02*\xb4\x01\n" +
+	"\x18CLUSTER_NODE_ROLE_WORKER\x10\x02*\x9a\x01\n" +
+	"\x10ClusterNodeState\x12\"\n" +
+	"\x1eCLUSTER_NODE_STATE_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fCLUSTER_NODE_STATE_PROVISIONING\x10\x01\x12\x1c\n" +
+	"\x18CLUSTER_NODE_STATE_READY\x10\x02\x12\x1f\n" +
+	"\x1bCLUSTER_NODE_STATE_DRAINING\x10\x03*\xb4\x01\n" +
 	"\x0eScaleEventKind\x12 \n" +
 	"\x1cSCALE_EVENT_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19SCALE_EVENT_KIND_SCALE_UP\x10\x01\x12\x1f\n" +
@@ -1463,73 +1521,75 @@ func file_containarium_v1_cluster_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_cluster_proto_rawDescData
 }
 
-var file_containarium_v1_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_v1_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_containarium_v1_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_containarium_v1_cluster_proto_goTypes = []any{
 	(ClusterState)(0),                     // 0: containarium.v1.ClusterState
 	(ClusterNodeRole)(0),                  // 1: containarium.v1.ClusterNodeRole
-	(ScaleEventKind)(0),                   // 2: containarium.v1.ScaleEventKind
-	(*NodeGroup)(nil),                     // 3: containarium.v1.NodeGroup
-	(*ClusterNode)(nil),                   // 4: containarium.v1.ClusterNode
-	(*ScaleEvent)(nil),                    // 5: containarium.v1.ScaleEvent
-	(*Cluster)(nil),                       // 6: containarium.v1.Cluster
-	(*CreateClusterRequest)(nil),          // 7: containarium.v1.CreateClusterRequest
-	(*CreateClusterResponse)(nil),         // 8: containarium.v1.CreateClusterResponse
-	(*ListClustersRequest)(nil),           // 9: containarium.v1.ListClustersRequest
-	(*ListClustersResponse)(nil),          // 10: containarium.v1.ListClustersResponse
-	(*GetClusterRequest)(nil),             // 11: containarium.v1.GetClusterRequest
-	(*GetClusterResponse)(nil),            // 12: containarium.v1.GetClusterResponse
-	(*DeleteClusterRequest)(nil),          // 13: containarium.v1.DeleteClusterRequest
-	(*DeleteClusterResponse)(nil),         // 14: containarium.v1.DeleteClusterResponse
-	(*GetClusterKubeconfigRequest)(nil),   // 15: containarium.v1.GetClusterKubeconfigRequest
-	(*GetClusterKubeconfigResponse)(nil),  // 16: containarium.v1.GetClusterKubeconfigResponse
-	(*GetClusterStatusRequest)(nil),       // 17: containarium.v1.GetClusterStatusRequest
-	(*NodeGroupStatus)(nil),               // 18: containarium.v1.NodeGroupStatus
-	(*GetClusterStatusResponse)(nil),      // 19: containarium.v1.GetClusterStatusResponse
-	(*UpdateClusterNodePoolRequest)(nil),  // 20: containarium.v1.UpdateClusterNodePoolRequest
-	(*UpdateClusterNodePoolResponse)(nil), // 21: containarium.v1.UpdateClusterNodePoolResponse
-	(*ResourceLimits)(nil),                // 22: containarium.v1.ResourceLimits
-	(*timestamppb.Timestamp)(nil),         // 23: google.protobuf.Timestamp
+	(ClusterNodeState)(0),                 // 2: containarium.v1.ClusterNodeState
+	(ScaleEventKind)(0),                   // 3: containarium.v1.ScaleEventKind
+	(*NodeGroup)(nil),                     // 4: containarium.v1.NodeGroup
+	(*ClusterNode)(nil),                   // 5: containarium.v1.ClusterNode
+	(*ScaleEvent)(nil),                    // 6: containarium.v1.ScaleEvent
+	(*Cluster)(nil),                       // 7: containarium.v1.Cluster
+	(*CreateClusterRequest)(nil),          // 8: containarium.v1.CreateClusterRequest
+	(*CreateClusterResponse)(nil),         // 9: containarium.v1.CreateClusterResponse
+	(*ListClustersRequest)(nil),           // 10: containarium.v1.ListClustersRequest
+	(*ListClustersResponse)(nil),          // 11: containarium.v1.ListClustersResponse
+	(*GetClusterRequest)(nil),             // 12: containarium.v1.GetClusterRequest
+	(*GetClusterResponse)(nil),            // 13: containarium.v1.GetClusterResponse
+	(*DeleteClusterRequest)(nil),          // 14: containarium.v1.DeleteClusterRequest
+	(*DeleteClusterResponse)(nil),         // 15: containarium.v1.DeleteClusterResponse
+	(*GetClusterKubeconfigRequest)(nil),   // 16: containarium.v1.GetClusterKubeconfigRequest
+	(*GetClusterKubeconfigResponse)(nil),  // 17: containarium.v1.GetClusterKubeconfigResponse
+	(*GetClusterStatusRequest)(nil),       // 18: containarium.v1.GetClusterStatusRequest
+	(*NodeGroupStatus)(nil),               // 19: containarium.v1.NodeGroupStatus
+	(*GetClusterStatusResponse)(nil),      // 20: containarium.v1.GetClusterStatusResponse
+	(*UpdateClusterNodePoolRequest)(nil),  // 21: containarium.v1.UpdateClusterNodePoolRequest
+	(*UpdateClusterNodePoolResponse)(nil), // 22: containarium.v1.UpdateClusterNodePoolResponse
+	(*ResourceLimits)(nil),                // 23: containarium.v1.ResourceLimits
+	(*timestamppb.Timestamp)(nil),         // 24: google.protobuf.Timestamp
 }
 var file_containarium_v1_cluster_proto_depIdxs = []int32{
-	22, // 0: containarium.v1.NodeGroup.size:type_name -> containarium.v1.ResourceLimits
+	23, // 0: containarium.v1.NodeGroup.size:type_name -> containarium.v1.ResourceLimits
 	1,  // 1: containarium.v1.ClusterNode.role:type_name -> containarium.v1.ClusterNodeRole
-	23, // 2: containarium.v1.ClusterNode.created_at:type_name -> google.protobuf.Timestamp
-	23, // 3: containarium.v1.ScaleEvent.at:type_name -> google.protobuf.Timestamp
-	2,  // 4: containarium.v1.ScaleEvent.kind:type_name -> containarium.v1.ScaleEventKind
-	0,  // 5: containarium.v1.Cluster.state:type_name -> containarium.v1.ClusterState
-	3,  // 6: containarium.v1.Cluster.node_groups:type_name -> containarium.v1.NodeGroup
-	23, // 7: containarium.v1.Cluster.created_at:type_name -> google.protobuf.Timestamp
-	3,  // 8: containarium.v1.CreateClusterRequest.node_groups:type_name -> containarium.v1.NodeGroup
-	6,  // 9: containarium.v1.CreateClusterResponse.cluster:type_name -> containarium.v1.Cluster
-	6,  // 10: containarium.v1.ListClustersResponse.clusters:type_name -> containarium.v1.Cluster
-	6,  // 11: containarium.v1.GetClusterResponse.cluster:type_name -> containarium.v1.Cluster
-	3,  // 12: containarium.v1.NodeGroupStatus.group:type_name -> containarium.v1.NodeGroup
-	6,  // 13: containarium.v1.GetClusterStatusResponse.cluster:type_name -> containarium.v1.Cluster
-	4,  // 14: containarium.v1.GetClusterStatusResponse.nodes:type_name -> containarium.v1.ClusterNode
-	18, // 15: containarium.v1.GetClusterStatusResponse.groups:type_name -> containarium.v1.NodeGroupStatus
-	5,  // 16: containarium.v1.GetClusterStatusResponse.events:type_name -> containarium.v1.ScaleEvent
-	3,  // 17: containarium.v1.UpdateClusterNodePoolRequest.node_groups:type_name -> containarium.v1.NodeGroup
-	6,  // 18: containarium.v1.UpdateClusterNodePoolResponse.cluster:type_name -> containarium.v1.Cluster
-	7,  // 19: containarium.v1.ClusterService.CreateCluster:input_type -> containarium.v1.CreateClusterRequest
-	9,  // 20: containarium.v1.ClusterService.ListClusters:input_type -> containarium.v1.ListClustersRequest
-	11, // 21: containarium.v1.ClusterService.GetCluster:input_type -> containarium.v1.GetClusterRequest
-	13, // 22: containarium.v1.ClusterService.DeleteCluster:input_type -> containarium.v1.DeleteClusterRequest
-	15, // 23: containarium.v1.ClusterService.GetClusterKubeconfig:input_type -> containarium.v1.GetClusterKubeconfigRequest
-	17, // 24: containarium.v1.ClusterService.GetClusterStatus:input_type -> containarium.v1.GetClusterStatusRequest
-	20, // 25: containarium.v1.ClusterService.UpdateClusterNodePool:input_type -> containarium.v1.UpdateClusterNodePoolRequest
-	8,  // 26: containarium.v1.ClusterService.CreateCluster:output_type -> containarium.v1.CreateClusterResponse
-	10, // 27: containarium.v1.ClusterService.ListClusters:output_type -> containarium.v1.ListClustersResponse
-	12, // 28: containarium.v1.ClusterService.GetCluster:output_type -> containarium.v1.GetClusterResponse
-	14, // 29: containarium.v1.ClusterService.DeleteCluster:output_type -> containarium.v1.DeleteClusterResponse
-	16, // 30: containarium.v1.ClusterService.GetClusterKubeconfig:output_type -> containarium.v1.GetClusterKubeconfigResponse
-	19, // 31: containarium.v1.ClusterService.GetClusterStatus:output_type -> containarium.v1.GetClusterStatusResponse
-	21, // 32: containarium.v1.ClusterService.UpdateClusterNodePool:output_type -> containarium.v1.UpdateClusterNodePoolResponse
-	26, // [26:33] is the sub-list for method output_type
-	19, // [19:26] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	2,  // 2: containarium.v1.ClusterNode.state:type_name -> containarium.v1.ClusterNodeState
+	24, // 3: containarium.v1.ClusterNode.created_at:type_name -> google.protobuf.Timestamp
+	24, // 4: containarium.v1.ScaleEvent.at:type_name -> google.protobuf.Timestamp
+	3,  // 5: containarium.v1.ScaleEvent.kind:type_name -> containarium.v1.ScaleEventKind
+	0,  // 6: containarium.v1.Cluster.state:type_name -> containarium.v1.ClusterState
+	4,  // 7: containarium.v1.Cluster.node_groups:type_name -> containarium.v1.NodeGroup
+	24, // 8: containarium.v1.Cluster.created_at:type_name -> google.protobuf.Timestamp
+	4,  // 9: containarium.v1.CreateClusterRequest.node_groups:type_name -> containarium.v1.NodeGroup
+	7,  // 10: containarium.v1.CreateClusterResponse.cluster:type_name -> containarium.v1.Cluster
+	7,  // 11: containarium.v1.ListClustersResponse.clusters:type_name -> containarium.v1.Cluster
+	7,  // 12: containarium.v1.GetClusterResponse.cluster:type_name -> containarium.v1.Cluster
+	4,  // 13: containarium.v1.NodeGroupStatus.group:type_name -> containarium.v1.NodeGroup
+	7,  // 14: containarium.v1.GetClusterStatusResponse.cluster:type_name -> containarium.v1.Cluster
+	5,  // 15: containarium.v1.GetClusterStatusResponse.nodes:type_name -> containarium.v1.ClusterNode
+	19, // 16: containarium.v1.GetClusterStatusResponse.groups:type_name -> containarium.v1.NodeGroupStatus
+	6,  // 17: containarium.v1.GetClusterStatusResponse.events:type_name -> containarium.v1.ScaleEvent
+	4,  // 18: containarium.v1.UpdateClusterNodePoolRequest.node_groups:type_name -> containarium.v1.NodeGroup
+	7,  // 19: containarium.v1.UpdateClusterNodePoolResponse.cluster:type_name -> containarium.v1.Cluster
+	8,  // 20: containarium.v1.ClusterService.CreateCluster:input_type -> containarium.v1.CreateClusterRequest
+	10, // 21: containarium.v1.ClusterService.ListClusters:input_type -> containarium.v1.ListClustersRequest
+	12, // 22: containarium.v1.ClusterService.GetCluster:input_type -> containarium.v1.GetClusterRequest
+	14, // 23: containarium.v1.ClusterService.DeleteCluster:input_type -> containarium.v1.DeleteClusterRequest
+	16, // 24: containarium.v1.ClusterService.GetClusterKubeconfig:input_type -> containarium.v1.GetClusterKubeconfigRequest
+	18, // 25: containarium.v1.ClusterService.GetClusterStatus:input_type -> containarium.v1.GetClusterStatusRequest
+	21, // 26: containarium.v1.ClusterService.UpdateClusterNodePool:input_type -> containarium.v1.UpdateClusterNodePoolRequest
+	9,  // 27: containarium.v1.ClusterService.CreateCluster:output_type -> containarium.v1.CreateClusterResponse
+	11, // 28: containarium.v1.ClusterService.ListClusters:output_type -> containarium.v1.ListClustersResponse
+	13, // 29: containarium.v1.ClusterService.GetCluster:output_type -> containarium.v1.GetClusterResponse
+	15, // 30: containarium.v1.ClusterService.DeleteCluster:output_type -> containarium.v1.DeleteClusterResponse
+	17, // 31: containarium.v1.ClusterService.GetClusterKubeconfig:output_type -> containarium.v1.GetClusterKubeconfigResponse
+	20, // 32: containarium.v1.ClusterService.GetClusterStatus:output_type -> containarium.v1.GetClusterStatusResponse
+	22, // 33: containarium.v1.ClusterService.UpdateClusterNodePool:output_type -> containarium.v1.UpdateClusterNodePoolResponse
+	27, // [27:34] is the sub-list for method output_type
+	20, // [20:27] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_cluster_proto_init() }
@@ -1543,7 +1603,7 @@ func file_containarium_v1_cluster_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_cluster_proto_rawDesc), len(file_containarium_v1_cluster_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,

@@ -31,7 +31,11 @@ type Store interface {
 	Delete(ctx context.Context, owner, name string) error
 	UpsertNode(ctx context.Context, n *Node) error
 	ListNodes(ctx context.Context, owner, name string) ([]*Node, error)
-	DeleteNode(ctx context.Context, vmName string) error
+	// DeleteNode is scoped to (owner, cluster): a VM name is only
+	// deletable through its own cluster, so a caller holding a
+	// constructible cross-tenant VM name cannot remove another
+	// tenant's node row.
+	DeleteNode(ctx context.Context, owner, name, vmName string) error
 	AppendEvent(ctx context.Context, owner, name string, e Event) error
 	// ListEvents returns the newest events first, at most limit
 	// (limit <= 0 = all).
@@ -212,11 +216,15 @@ func (s *PGStore) UpsertNode(ctx context.Context, n *Node) error {
 	if err != nil {
 		return err
 	}
+	// The conflict update replaces the WHOLE record (cluster binding
+	// and created_at included) so re-registering a reused VM name
+	// behaves identically on both store impls.
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO k8s_cluster_nodes (vm_name, cluster_id, role, node_group, state, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (vm_name) DO UPDATE SET role = EXCLUDED.role, node_group = EXCLUDED.node_group, state = EXCLUDED.state`,
-		n.VMName, id, n.Role, n.Group, n.State, n.CreatedAt)
+		ON CONFLICT (vm_name) DO UPDATE SET cluster_id = EXCLUDED.cluster_id, role = EXCLUDED.role,
+			node_group = EXCLUDED.node_group, state = EXCLUDED.state, created_at = EXCLUDED.created_at`,
+		n.VMName, id, n.Role, n.Group, string(n.State), n.CreatedAt)
 	return err
 }
 
@@ -234,16 +242,22 @@ func (s *PGStore) ListNodes(ctx context.Context, owner, name string) ([]*Node, e
 	var out []*Node
 	for rows.Next() {
 		n := &Node{Owner: owner, Cluster: name}
-		if err := rows.Scan(&n.VMName, &n.Role, &n.Group, &n.State, &n.CreatedAt); err != nil {
+		var state string
+		if err := rows.Scan(&n.VMName, &n.Role, &n.Group, &state, &n.CreatedAt); err != nil {
 			return nil, err
 		}
+		n.State = NodeState(state)
 		out = append(out, n)
 	}
 	return out, rows.Err()
 }
 
-func (s *PGStore) DeleteNode(ctx context.Context, vmName string) error {
-	return s.exec1(ctx, `DELETE FROM k8s_cluster_nodes WHERE vm_name = $1`, vmName)
+func (s *PGStore) DeleteNode(ctx context.Context, owner, name, vmName string) error {
+	id, err := s.clusterID(ctx, owner, name)
+	if err != nil {
+		return err
+	}
+	return s.exec1(ctx, `DELETE FROM k8s_cluster_nodes WHERE vm_name = $1 AND cluster_id = $2`, vmName, id)
 }
 
 func (s *PGStore) AppendEvent(ctx context.Context, owner, name string, e Event) error {

@@ -1286,3 +1286,10 @@ func (c *GRPCClient) GetClusterStatus(name, owner string, eventsLimit int32) (*p
 	defer cancel()
 	return c.clusterClient.GetClusterStatus(ctx, &pb.GetClusterStatusRequest{Name: name, Owner: owner, EventsLimit: eventsLimit})
 }
+
+// UpdateClusterNodePool replaces a cluster's node groups.
+func (c *GRPCClient) UpdateClusterNodePool(req *pb.UpdateClusterNodePoolRequest) (*pb.UpdateClusterNodePoolResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return c.clusterClient.UpdateClusterNodePool(ctx, req)
+}

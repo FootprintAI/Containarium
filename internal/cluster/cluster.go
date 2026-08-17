@@ -52,6 +52,17 @@ const (
 	RoleWorker       = "worker"
 )
 
+// NodeState is a node's coarse lifecycle state. Mirrors
+// pb.ClusterNodeState; typed so the reconciler cannot persist a value
+// the API cannot express.
+type NodeState string
+
+const (
+	NodeStateProvisioning NodeState = "provisioning"
+	NodeStateReady        NodeState = "ready"
+	NodeStateDraining     NodeState = "draining"
+)
+
 // Size is a node VM size in the house resource-limit format
 // (cpu "4", memory "8GB", disk "80GB"). GPU fields are deliberately
 // absent: GPU node pools are a later phase and requests carrying them
@@ -91,7 +102,7 @@ type Node struct {
 	VMName    string
 	Role      string
 	Group     string
-	State     string
+	State     NodeState
 	CreatedAt time.Time
 }
 

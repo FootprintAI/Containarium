@@ -195,6 +195,9 @@ func TestClusterServer_CreateSemantics(t *testing.T) {
 		{"nil size", &pb.CreateClusterRequest{Name: "ok", NodeGroups: []*pb.NodeGroup{
 			{Name: "small", MaxNodes: 1},
 		}}, "size"},
+		{"storage_class rejected", &pb.CreateClusterRequest{Name: "ok", NodeGroups: []*pb.NodeGroup{
+			{Name: "small", Size: &pb.ResourceLimits{Cpu: "2", Memory: "4GB", Disk: "40GB", StorageClass: "fast-nvme"}, MaxNodes: 1},
+		}}, "storage_class"},
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
@@ -327,4 +330,23 @@ func TestClusterServer_StatusAndNodePool(t *testing.T) {
 
 	_, err = s.UpdateClusterNodePool(ctx, &pb.UpdateClusterNodePoolRequest{Name: "demo"})
 	wantCode(t, err, codes.InvalidArgument)
+}
+
+func TestClampEventsLimit(t *testing.T) {
+	cases := []struct {
+		in   int32
+		want int
+	}{
+		{0, defaultEventsLimit},
+		{-5, defaultEventsLimit},
+		{1, 1},
+		{1000, 1000},
+		{1001, maxEventsLimit},
+		{2147483647, maxEventsLimit},
+	}
+	for _, tc := range cases {
+		if got := clampEventsLimit(tc.in); got != tc.want {
+			t.Fatalf("clampEventsLimit(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
 }

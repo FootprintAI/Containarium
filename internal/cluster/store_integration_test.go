@@ -140,23 +140,50 @@ func TestClusterStore_ContractHoldsForBothImpls(t *testing.T) {
 				t.Fatalf("groups after update: %+v", got.NodeGroups)
 			}
 
-			// Nodes: upsert requires the cluster; update-in-place on conflict.
+			// Nodes: upsert requires the cluster; a re-upsert replaces the
+			// WHOLE record (created_at included) identically on both impls.
+			created := time.Now().UTC().Truncate(time.Millisecond)
 			node := &Node{Owner: "alice", Cluster: "demo", VMName: "alice-k8s-demo-small-1",
-				Role: RoleWorker, Group: "small", State: "provisioning", CreatedAt: time.Now().UTC()}
+				Role: RoleWorker, Group: "small", State: NodeStateProvisioning, CreatedAt: created}
 			if err := s.UpsertNode(ctx, node); err != nil {
 				t.Fatalf("UpsertNode: %v", err)
 			}
-			node.State = "ready"
+			node.State = NodeStateReady
+			node.CreatedAt = created.Add(time.Hour) // replaced node, reused VM name
 			if err := s.UpsertNode(ctx, node); err != nil {
 				t.Fatalf("UpsertNode update: %v", err)
 			}
-			orphan := &Node{Owner: "alice", Cluster: "nope", VMName: "x", Role: RoleWorker, State: "y", CreatedAt: time.Now().UTC()}
+			orphan := &Node{Owner: "alice", Cluster: "nope", VMName: "x", Role: RoleWorker, State: NodeStateReady, CreatedAt: created}
 			if err := s.UpsertNode(ctx, orphan); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("UpsertNode orphan = %v, want ErrNotFound", err)
 			}
 			nodes, err := s.ListNodes(ctx, "alice", "demo")
-			if err != nil || len(nodes) != 1 || nodes[0].State != "ready" {
+			if err != nil || len(nodes) != 1 || nodes[0].State != NodeStateReady {
 				t.Fatalf("ListNodes = %+v (%v), want 1 ready node", nodes, err)
+			}
+			if !nodes[0].CreatedAt.Equal(created.Add(time.Hour)) {
+				t.Fatalf("re-upsert kept stale created_at %v, want %v", nodes[0].CreatedAt, created.Add(time.Hour))
+			}
+			// ListNodes on a missing cluster is NotFound, not (nil, nil) —
+			// a reconciler must distinguish "empty" from "gone".
+			if _, err := s.ListNodes(ctx, "alice", "nope"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("ListNodes missing cluster = %v, want ErrNotFound", err)
+			}
+
+			// DeleteNode is (owner, cluster)-scoped: the same VM name is
+			// not deletable through someone else's cluster.
+			if err := s.DeleteNode(ctx, "bob", "demo", "alice-k8s-demo-small-1"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("cross-cluster DeleteNode = %v, want ErrNotFound", err)
+			}
+			if err := s.DeleteNode(ctx, "alice", "demo", "alice-k8s-demo-small-1"); err != nil {
+				t.Fatalf("DeleteNode: %v", err)
+			}
+			if err := s.DeleteNode(ctx, "alice", "demo", "alice-k8s-demo-small-1"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("second DeleteNode = %v, want ErrNotFound", err)
+			}
+			// Re-add so the delete-cascade assertions below still see a node.
+			if err := s.UpsertNode(ctx, node); err != nil {
+				t.Fatalf("UpsertNode re-add: %v", err)
 			}
 
 			// Events: append-ordered, newest first, limit respected.

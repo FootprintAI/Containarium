@@ -7631,8 +7631,7 @@
           "description": "Owning node group; empty for the control plane."
         },
         "state": {
-          "type": "string",
-          "description": "Coarse observed state (e.g. \"provisioning\", \"ready\", \"draining\")."
+          "$ref": "#/definitions/ClusterNodeState"
         },
         "createdAt": {
           "type": "string",
@@ -7650,6 +7649,17 @@
       ],
       "default": "CLUSTER_NODE_ROLE_UNSPECIFIED",
       "description": "ClusterNodeRole distinguishes the platform-owned control plane from\ntenant-workload workers."
+    },
+    "ClusterNodeState": {
+      "type": "string",
+      "enum": [
+        "CLUSTER_NODE_STATE_UNSPECIFIED",
+        "CLUSTER_NODE_STATE_PROVISIONING",
+        "CLUSTER_NODE_STATE_READY",
+        "CLUSTER_NODE_STATE_DRAINING"
+      ],
+      "default": "CLUSTER_NODE_STATE_UNSPECIFIED",
+      "description": "ClusterNodeState is a node's coarse lifecycle state."
     },
     "ClusterState": {
       "type": "string",
@@ -10864,7 +10874,7 @@
         },
         "size": {
           "$ref": "#/definitions/ResourceLimits",
-          "description": "VM size for every node in this group. GPU fields are rejected for\ncluster nodes in v1 (GPU node pools are a later phase)."
+          "description": "VM size for every node in this group. GPU fields are rejected for\ncluster nodes in v1 (GPU node pools are a later phase), and so is\nstorage_class (a box-PVC concept with no meaning on a node VM)."
         },
         "minNodes": {
           "type": "integer",

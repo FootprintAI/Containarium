@@ -1141,58 +1141,61 @@ skipAppHosting:
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
-		} else if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
-			log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
-			pool.Close()
 		} else {
-			npServer.SetStore(pgStore)
-			log.Printf("NetworkPolicy persistence enabled (Postgres store)")
-			// Operator signatures (#661 PR-B) share the same pool.
-			if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
-				log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)
-			} else {
-				npServer.SetSignatureStore(sigStore)
-				log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
-			}
-
-			// Agent run state (#1182) shares the same pool. Same best-effort
-			// posture: on failure the in-memory store stays, so the daemon comes
-			// up either way — it just loses runs across a restart, which is the
-			// behavior that predates this.
-			if runStore, rErr := NewPostgresCrewRunStore(context.Background(), pool); rErr != nil {
-				log.Printf("Warning: Failed to create Postgres crew-run store: %v", rErr)
-			} else {
-				crewServer.SetRunStore(runStore)
-				crewServer.SetOwner(config.LocalBackendID)
-				log.Printf("Crew-run persistence enabled (Postgres store)")
-				// Reconcile runs the previous daemon was driving when it
-				// stopped. RunCrew records a run as RUNNING before driving it,
-				// so without this they stay RUNNING forever now that the state
-				// is durable — GetCrewRun would answer RUNNING for a run that
-				// can never finish (#1182 AC4). Best-effort: a daemon that
-				// cannot reconcile should still start.
-				if n, fErr := runStore.FailStranded(context.Background(), config.LocalBackendID, StrandedByRestart); fErr != nil {
-					log.Printf("Warning: could not reconcile stranded crew runs: %v", fErr)
-				} else if n > 0 {
-					log.Printf("Marked %d crew run(s) FAILED: in flight when the previous daemon stopped", n)
-				}
-			}
-			if taskQueue, qErr := NewPostgresAgentTaskQueue(context.Background(), pool); qErr != nil {
-				log.Printf("Warning: Failed to create Postgres agent task queue: %v", qErr)
-			} else {
-				agentSkillServer.SetTaskQueue(taskQueue)
-				log.Printf("Agent task-queue persistence enabled (Postgres store)")
-			}
-			// Managed-cluster state (#1413) shares the same pool. Same
-			// best-effort posture: on failure the in-memory store stays,
-			// so the daemon comes up either way — clusters just don't
-			// survive a restart, which only matters once the reconciler
-			// (#1414) provisions real VMs against them.
+			// Managed-cluster state (#1413) is wired FIRST and
+			// independently: a network-policy store failure below must
+			// not silently leave clusters on the in-memory store (the
+			// pool therefore stays open even if the netpol store fails).
+			// Best-effort like its siblings: on failure the in-memory
+			// store stays and the daemon comes up either way.
 			if clStore, cErr := clusterstore.NewPGStore(context.Background(), pool); cErr != nil {
 				log.Printf("Warning: Failed to create Postgres cluster store: %v", cErr)
 			} else {
 				clusterServer.SetStore(clStore)
 				log.Printf("Managed-cluster persistence enabled (Postgres store)")
+			}
+
+			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
+				log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
+			} else {
+				npServer.SetStore(pgStore)
+				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
+				// Operator signatures (#661 PR-B) share the same pool.
+				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
+					log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)
+				} else {
+					npServer.SetSignatureStore(sigStore)
+					log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
+				}
+
+				// Agent run state (#1182) shares the same pool. Same best-effort
+				// posture: on failure the in-memory store stays, so the daemon comes
+				// up either way — it just loses runs across a restart, which is the
+				// behavior that predates this.
+				if runStore, rErr := NewPostgresCrewRunStore(context.Background(), pool); rErr != nil {
+					log.Printf("Warning: Failed to create Postgres crew-run store: %v", rErr)
+				} else {
+					crewServer.SetRunStore(runStore)
+					crewServer.SetOwner(config.LocalBackendID)
+					log.Printf("Crew-run persistence enabled (Postgres store)")
+					// Reconcile runs the previous daemon was driving when it
+					// stopped. RunCrew records a run as RUNNING before driving it,
+					// so without this they stay RUNNING forever now that the state
+					// is durable — GetCrewRun would answer RUNNING for a run that
+					// can never finish (#1182 AC4). Best-effort: a daemon that
+					// cannot reconcile should still start.
+					if n, fErr := runStore.FailStranded(context.Background(), config.LocalBackendID, StrandedByRestart); fErr != nil {
+						log.Printf("Warning: could not reconcile stranded crew runs: %v", fErr)
+					} else if n > 0 {
+						log.Printf("Marked %d crew run(s) FAILED: in flight when the previous daemon stopped", n)
+					}
+				}
+				if taskQueue, qErr := NewPostgresAgentTaskQueue(context.Background(), pool); qErr != nil {
+					log.Printf("Warning: Failed to create Postgres agent task queue: %v", qErr)
+				} else {
+					agentSkillServer.SetTaskQueue(taskQueue)
+					log.Printf("Agent task-queue persistence enabled (Postgres store)")
+				}
 			}
 		}
 	}

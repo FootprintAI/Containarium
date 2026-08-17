@@ -139,6 +139,14 @@ enum ClusterNodeRole {
   CLUSTER_NODE_ROLE_WORKER = 2;
 }
 
+// ClusterNodeState is a node's coarse lifecycle state.
+enum ClusterNodeState {
+  CLUSTER_NODE_STATE_UNSPECIFIED = 0;
+  CLUSTER_NODE_STATE_PROVISIONING = 1;
+  CLUSTER_NODE_STATE_READY = 2;
+  CLUSTER_NODE_STATE_DRAINING = 3;
+}
+
 // ScaleEventKind categorizes entries in a cluster's scale history.
 enum ScaleEventKind {
   SCALE_EVENT_KIND_UNSPECIFIED = 0;
@@ -159,7 +167,8 @@ message NodeGroup {
   // Group name, unique within the cluster (e.g. "small").
   string name = 1;
   // VM size for every node in this group. GPU fields are rejected for
-  // cluster nodes in v1 (GPU node pools are a later phase).
+  // cluster nodes in v1 (GPU node pools are a later phase), and so is
+  // storage_class (a box-PVC concept with no meaning on a node VM).
   ResourceLimits size = 2;
   // Nodes the reconciler keeps at minimum (>= 0).
   int32 min_nodes = 3;
@@ -175,8 +184,7 @@ message ClusterNode {
   ClusterNodeRole role = 2;
   // Owning node group; empty for the control plane.
   string node_group = 3;
-  // Coarse observed state (e.g. "provisioning", "ready", "draining").
-  string state = 4;
+  ClusterNodeState state = 4;
   google.protobuf.Timestamp created_at = 5;
 }
 
