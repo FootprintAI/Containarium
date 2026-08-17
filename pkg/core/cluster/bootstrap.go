@@ -137,3 +137,72 @@ func RewriteKubeconfigServer(kubeconfig, endpoint string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// CA (cluster-autoscaler) deployment paths on the control-plane VM.
+// Everything lives outside the tenant-visible Kubernetes API: the CA
+// runs as a containerd task under systemd, and its mTLS client
+// credential is a file on the platform-owned VM.
+const (
+	CACredDir         = "/etc/containarium/ca"
+	CAClientCertPath  = CACredDir + "/client.crt"
+	CAClientKeyPath   = CACredDir + "/client.key"
+	CACACertPath      = CACredDir + "/ca.crt"
+	CACloudConfigPath = CACredDir + "/cloud-config.yaml"
+)
+
+// CADeploy parameterizes the autoscaler unit on the control plane.
+type CADeploy struct {
+	// ProviderAddr is the daemon's CA-provider mTLS listener as
+	// reachable from the VM (host bridge IP:port).
+	ProviderAddr string
+}
+
+// RenderCACloudConfig renders the stock externalgrpc cloud-config: the
+// provider address plus the mTLS client credential paths (the client's
+// only supported auth mechanism).
+func RenderCACloudConfig(d CADeploy) string {
+	return fmt.Sprintf("address: %q\nkey: %q\ncert: %q\ncacert: %q\n",
+		d.ProviderAddr, CAClientKeyPath, CAClientCertPath, CACACertPath)
+}
+
+// RenderCAUnitScript renders the script that installs and starts the
+// cluster-autoscaler systemd unit: the digest-pinned stock image run
+// as a plain containerd task via `k3s ctr` — never a Pod, so no
+// tenant with cluster-admin can exec into it or read its credential.
+func RenderCAUnitScript(d CADeploy) string {
+	return fmt.Sprintf(`#!/bin/sh
+# containarium managed-cluster autoscaler bootstrap (#1415).
+# Stock cluster-autoscaler, digest-pinned, as a containerd task —
+# outside the tenant-visible Kubernetes API surface.
+set -eu
+
+cat > /etc/systemd/system/k3s-cluster-autoscaler.service <<'UNIT'
+[Unit]
+Description=containarium managed-cluster autoscaler (externalgrpc)
+After=k3s.service
+Requires=k3s.service
+
+[Service]
+ExecStartPre=%[1]s ctr images pull %[2]s
+ExecStartPre=-%[1]s ctr task kill --signal SIGKILL cluster-autoscaler
+ExecStartPre=-%[1]s ctr container rm cluster-autoscaler
+ExecStart=%[1]s ctr run --rm --net-host \
+  --mount type=bind,src=%[3]s,dst=%[3]s,options=rbind:ro \
+  --mount type=bind,src=/etc/rancher/k3s/k3s.yaml,dst=/etc/kubeconfig,options=rbind:ro \
+  %[2]s cluster-autoscaler \
+  /cluster-autoscaler \
+  --cloud-provider=externalgrpc \
+  --cloud-config=%[4]s \
+  --kubeconfig=/etc/kubeconfig \
+  --stderrthreshold=info
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now k3s-cluster-autoscaler.service
+`, K3sBinaryPath, CAImage, CACredDir, CACloudConfigPath)
+}

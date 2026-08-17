@@ -28,6 +28,13 @@ const (
 	K3sVersion = "v1.33.4+k3s1"
 	// K3sSHA256 is the sha256 of the linux-amd64 `k3s` binary.
 	K3sSHA256 = "10da34c350ab8a02e4513a6021046db9e9afecc31bae77419bc6444cbd7b1400"
+
+	// CAImage is the digest-pinned stock cluster-autoscaler image the
+	// control-plane VM runs (as a containerd task via `k3s ctr`,
+	// OUTSIDE the tenant-visible Kubernetes API — see the design's
+	// trust boundaries). Version matches the k3s 1.33 line; digest is
+	// registry.k8s.io's manifest-list digest for v1.33.0.
+	CAImage = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.33.0@sha256:6ef10d108e0e45ecd883e074682330bbd4a3403e767ad56804800f2f4ee816da"
 )
 
 // DefaultArtifactBase is the host-side artifact cache root.

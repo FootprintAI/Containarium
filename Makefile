@@ -57,6 +57,8 @@ proto: ## Generate Go code from protobuf definitions
 		echo "Error: buf is not installed. Install with: brew install bufbuild/buf/buf"; \
 		exit 1; \
 	fi
+	@echo "==> Generating vendored externalgrpc stubs (#1415)..."
+	@cd third_party/proto && buf generate
 	@echo "==> Protobuf code generated successfully"
 
 swagger-ui: ## Download and install Swagger UI static files

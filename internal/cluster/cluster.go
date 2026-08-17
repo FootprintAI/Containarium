@@ -79,6 +79,25 @@ type NodeGroup struct {
 	Size     Size   `json:"size"`
 	MinNodes int32  `json:"min_nodes"`
 	MaxNodes int32  `json:"max_nodes"`
+	// TargetNodes is the autoscaler-owned desired size (#1415): the
+	// CA provider raises/lowers it and the reconciler converges to
+	// it. Zero/unset means "no autoscaler decision yet" — the
+	// effective target is then MinNodes. Never persisted below
+	// MinNodes or above MaxNodes.
+	TargetNodes int32 `json:"target_nodes,omitempty"`
+}
+
+// EffectiveTarget is the node count the reconciler converges the group
+// to: the autoscaler's target clamped into [MinNodes, MaxNodes].
+func (g NodeGroup) EffectiveTarget() int32 {
+	t := g.TargetNodes
+	if t < g.MinNodes {
+		t = g.MinNodes
+	}
+	if t > g.MaxNodes {
+		t = g.MaxNodes
+	}
+	return t
 }
 
 // Cluster is the persisted record of a managed cluster.
