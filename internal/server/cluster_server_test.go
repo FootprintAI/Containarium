@@ -105,7 +105,10 @@ func TestClusterServer_TenantIsolation(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"Get", func() error { _, err := s.GetCluster(alice, &pb.GetClusterRequest{Name: "demo", Owner: "bob"}); return err }},
+		{"Get", func() error {
+			_, err := s.GetCluster(alice, &pb.GetClusterRequest{Name: "demo", Owner: "bob"})
+			return err
+		}},
 		{"Status", func() error {
 			_, err := s.GetClusterStatus(alice, &pb.GetClusterStatusRequest{Name: "demo", Owner: "bob"})
 			return err
@@ -114,7 +117,10 @@ func TestClusterServer_TenantIsolation(t *testing.T) {
 			_, err := s.GetClusterKubeconfig(alice, &pb.GetClusterKubeconfigRequest{Name: "demo", Owner: "bob"})
 			return err
 		}},
-		{"Delete", func() error { _, err := s.DeleteCluster(alice, &pb.DeleteClusterRequest{Name: "demo", Owner: "bob"}); return err }},
+		{"Delete", func() error {
+			_, err := s.DeleteCluster(alice, &pb.DeleteClusterRequest{Name: "demo", Owner: "bob"})
+			return err
+		}},
 		{"UpdateNodePool", func() error {
 			_, err := s.UpdateClusterNodePool(alice, &pb.UpdateClusterNodePoolRequest{Name: "demo", Owner: "bob", NodeGroups: []*pb.NodeGroup{}})
 			return err

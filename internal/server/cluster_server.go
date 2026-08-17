@@ -90,7 +90,7 @@ func groupsFromProto(in []*pb.NodeGroup) ([]cluster.NodeGroup, error) {
 		if g.Size == nil {
 			return nil, status.Errorf(codes.InvalidArgument, "node group %q: size is required", g.Name)
 		}
-		if g.Size.Gpu != "" || len(g.Size.Gpus) > 0 {
+		if g.Size.Gpu != "" || len(g.Size.Gpus) > 0 { //nolint:staticcheck // deliberately reading the deprecated field to reject it
 			return nil, status.Errorf(codes.InvalidArgument, "node group %q: GPU node pools are not supported yet (later phase)", g.Name)
 		}
 		out = append(out, cluster.NodeGroup{
