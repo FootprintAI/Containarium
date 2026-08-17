@@ -109,10 +109,13 @@ As a tenant, I want my cluster to start with a configured node pool of
 Containarium VMs that join automatically, so there is capacity to
 schedule onto from minute one.
 **Acceptance criteria:**
-- [ ] `cluster create --nodes-min N --nodes-max M --node-cpu C
-  --node-memory G` provisions N worker VMs that appear `Ready` in
-  `kubectl get nodes` without manual steps.
-- [ ] Node VM size is a typed proto message (no magic-string sizes).
+- [ ] `cluster create --nodes-min N --nodes-max M` provisions N worker
+  VMs — drawn from typed node size classes (platform presets, e.g.
+  small/medium/large) — that appear `Ready` in `kubectl get nodes`
+  without manual steps.
+- [ ] Node size classes are typed proto messages (no magic-string
+  sizes); the autoscaler may pick among them so a pod larger than the
+  small class still schedules (see design doc).
 - [ ] A deleted/failed worker VM is detected and replaced (converges
   back to at least `nodes-min`).
 - [ ] Worker VMs are internal to the cluster: not SSH-routable as tenant
@@ -181,10 +184,13 @@ the automation is doing, and hard caps on what it may consume.
   partial today; GPU nodes ride on finishing it, plus device-plugin
   install. High-value (it is the substrate's differentiator) but not
   needed to prove the managed-cluster loop.
-- **P2 — node vertical resize:** live-growing an existing node VM
-  (`ResizeContainer` already resizes live) instead of adding a node.
-  Deferred on a real risk: kubelet does not reliably re-read machine
-  capacity without restart; needs a spike.
+- **P2 — in-place node grow:** live-growing an existing node VM
+  instead of adding one. Mechanically feasible (VM CPU hotplug +
+  grow-only memory; a k3s-agent restart re-registers capacity without
+  disturbing running pods), but deferred until the MVP's node size
+  classes prove insufficient. Trigger is scheduling pressure bounded by
+  the host overcommit gate — never measured VM utilization (see the
+  design doc's "Who decides what").
 - **P2 — HA control plane, PV/CSI beyond k3s local-path, multi-host
   node placement across pools.**
 
