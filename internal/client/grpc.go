@@ -26,6 +26,7 @@ type GRPCClient struct {
 	kmsClient     pb.KmsServiceClient
 	agentClient   pb.AgentSkillServiceClient
 	crewClient    pb.CrewServiceClient
+	clusterClient pb.ClusterServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -83,6 +84,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	kmsClient := pb.NewKmsServiceClient(conn)
 	agentClient := pb.NewAgentSkillServiceClient(conn)
 	crewClient := pb.NewCrewServiceClient(conn)
+	clusterClient := pb.NewClusterServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -95,6 +97,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		kmsClient:     kmsClient,
 		agentClient:   agentClient,
 		crewClient:    crewClient,
+		clusterClient: clusterClient,
 	}, nil
 }
 
@@ -1236,4 +1239,50 @@ func (c *GRPCClient) RollbackContainerSnapshot(req *pb.RollbackContainerSnapshot
 		return nil, fmt.Errorf("failed to roll back snapshot: %w", err)
 	}
 	return resp, nil
+}
+
+// --- managed Kubernetes clusters (#1413) -------------------------------
+
+// CreateCluster records a new managed cluster (provisioning is
+// asynchronous on the daemon).
+func (c *GRPCClient) CreateCluster(req *pb.CreateClusterRequest) (*pb.CreateClusterResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return c.clusterClient.CreateCluster(ctx, req)
+}
+
+// ListClusters lists managed clusters (owner "" = the caller's own;
+// admins list all).
+func (c *GRPCClient) ListClusters(owner string) (*pb.ListClustersResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.clusterClient.ListClusters(ctx, &pb.ListClustersRequest{Owner: owner})
+}
+
+// GetCluster fetches one managed cluster.
+func (c *GRPCClient) GetCluster(name, owner string) (*pb.GetClusterResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.clusterClient.GetCluster(ctx, &pb.GetClusterRequest{Name: name, Owner: owner})
+}
+
+// DeleteCluster tears down a managed cluster.
+func (c *GRPCClient) DeleteCluster(name, owner string) (*pb.DeleteClusterResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	return c.clusterClient.DeleteCluster(ctx, &pb.DeleteClusterRequest{Name: name, Owner: owner})
+}
+
+// GetClusterKubeconfig reads a READY cluster's admin kubeconfig.
+func (c *GRPCClient) GetClusterKubeconfig(name, owner string) (*pb.GetClusterKubeconfigResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return c.clusterClient.GetClusterKubeconfig(ctx, &pb.GetClusterKubeconfigRequest{Name: name, Owner: owner})
+}
+
+// GetClusterStatus returns nodes, per-group counts, and scale events.
+func (c *GRPCClient) GetClusterStatus(name, owner string, eventsLimit int32) (*pb.GetClusterStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.clusterClient.GetClusterStatus(ctx, &pb.GetClusterStatusRequest{Name: name, Owner: owner, EventsLimit: eventsLimit})
 }

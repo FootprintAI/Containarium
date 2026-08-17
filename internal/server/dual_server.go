@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/autosleep"
 	"github.com/footprintai/containarium/internal/cloud"
+	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	"github.com/footprintai/containarium/internal/collaborator"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/events"
@@ -521,6 +522,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// cephfs storage pool (single-node ZFS hosts get a clear error).
 	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
 	log.Printf("Volume service enabled")
+
+	// Register ClusterService — managed Kubernetes clusters (#1413).
+	// Lifecycle state only; VM provisioning is the reconciler's job
+	// (#1414). Starts on the in-memory store and is swapped to Postgres
+	// below once the pool is up (same degrade posture as the network
+	// policy and crew-run stores).
+	clusterServer := NewClusterServer(clusterstore.NewMemStore())
+	pb.RegisterClusterServiceServer(grpcServer, clusterServer)
+	log.Printf("Cluster service enabled (in-memory store; Postgres swap below)")
 
 	// KMS admin service — read the active backend, envelope
 	// coverage, and trigger legacy→envelope migration. Backed by
@@ -1172,6 +1182,17 @@ skipAppHosting:
 			} else {
 				agentSkillServer.SetTaskQueue(taskQueue)
 				log.Printf("Agent task-queue persistence enabled (Postgres store)")
+			}
+			// Managed-cluster state (#1413) shares the same pool. Same
+			// best-effort posture: on failure the in-memory store stays,
+			// so the daemon comes up either way — clusters just don't
+			// survive a restart, which only matters once the reconciler
+			// (#1414) provisions real VMs against them.
+			if clStore, cErr := clusterstore.NewPGStore(context.Background(), pool); cErr != nil {
+				log.Printf("Warning: Failed to create Postgres cluster store: %v", cErr)
+			} else {
+				clusterServer.SetStore(clStore)
+				log.Printf("Managed-cluster persistence enabled (Postgres store)")
 			}
 		}
 	}
