@@ -580,11 +580,13 @@ func TestIntegrationIncus_RollbackRestoresDataAndRefusesWithoutTheKey(t *testing
 // This test establishes the fact rather than guessing it — the ordering that
 // turned #1160c's premise from plausible into disproved (#1384).
 //
-// It is a CHARACTERIZATION test: it asserts the behaviour that exists today,
-// which is the defective one, so it passes now and FAILS the moment the leak
-// is fixed. Asserting the correct behaviour instead would leave a red test on
-// main until someone got to it, and a permanently-red lane teaches everyone to
-// ignore it.
+// It began as a characterization test pinning the leak, and was converted to
+// the positive assertion when the fix landed — which is what it asked its
+// reader to do. It is kept rather than retired because the underlying
+// condition has not gone away: two mechanisms still write snapshots to one
+// dataset, and only the filtering in between is new. If Incus changes the
+// prefix it uses, incusSnapshotPrefix silently stops matching and every guard
+// built on it opens; this is the test that notices.
 func TestIntegrationIncus_TenantSnapshotAPISeesIncusOwnSnapshots(t *testing.T) {
 	s, _, _ := encTestEnv(t)
 	ctx := context.Background()
@@ -629,7 +631,9 @@ func TestIntegrationIncus_TenantSnapshotAPISeesIncusOwnSnapshots(t *testing.T) {
 		t.Fatal("could not create an Incus-level snapshot by any known syntax, so the leak this " +
 			"test exists to pin cannot be produced")
 	}
-	t.Cleanup(func() { _, _ = incusRun("delete", instance+"/"+incusSnap) })
+	// `incus snapshot delete`, not `incus delete <c>/<snap>` — the latter is
+	// what #1392 established this Incus rejects.
+	t.Cleanup(func() { _, _ = incusRun("snapshot", "delete", instance, incusSnap) })
 
 	// And a tenant-facing one through the shipped API, so the listing below
 	// has one of each to tell apart.
@@ -685,30 +689,27 @@ func TestIntegrationIncus_TenantSnapshotAPISeesIncusOwnSnapshots(t *testing.T) {
 			leaked = n
 		}
 	}
-	// This is a CHARACTERIZATION assertion: it pins the behaviour that exists
-	// today, which is the defective one. Written this way deliberately.
+	// THE assertion, now positive (#1390 fixed).
 	//
-	// Asserting the CORRECT behaviour would leave a red test on main until
-	// someone fixes it, and a permanently-red lane teaches everyone to ignore
-	// it. Merely LOGGING whichever answer came back would be worse: a check
-	// that cannot fail proves nothing and rots silently, which is how the
-	// premise in #1160c survived review for as long as it did.
-	//
-	// So this passes while the defect exists and FAILS the moment it is fixed,
-	// telling whoever fixed it to convert this into the positive assertion.
-	if leaked == "" {
-		t.Fatalf("#1390 no longer reproduces: no name in %v contains %q.\n\n"+
-			"If you just fixed the leak, this test has done its job — replace this block with "+
-			"the positive assertion (Incus's snapshot must NOT appear, and DeleteContainerSnapshot "+
-			"must refuse it by name) rather than deleting the test. If you did not touch the "+
-			"snapshot paths, something else changed how Incus names its snapshots, and the fix "+
-			"designed against the old name may no longer be right.", names, incusSnap)
+	// This block used to be a characterization assertion pinning the leak,
+	// with instructions to convert it once the filter landed. It has been
+	// converted rather than deleted: the leak is a property of two mechanisms
+	// sharing one dataset, which is still true — only the filtering is new.
+	if leaked != "" {
+		t.Fatalf("the tenant snapshot API reports Incus's own snapshot as %q.\n\n"+
+			"ZFS shows %v on this dataset, and the tenant listing must contain the tenant's "+
+			"snapshots and nothing else. During a migration these are live sync points, and a "+
+			"tenant deleting a row they do not recognise destroys one — leaving Incus's database "+
+			"referencing a snapshot that no longer exists.\n\n"+
+			"If Incus has changed the prefix it gives its ZFS snapshots, incusSnapshotPrefix in "+
+			"container_snapshot.go is now wrong and every guard built on it is silently open.",
+			leaked, onDisk)
 	}
 
-	t.Logf("REPRODUCED #1390: the tenant snapshot API reports Incus's own snapshot as %q. "+
-		"During a migration these are live sync points; a tenant deleting an unfamiliar row "+
-		"destroys one, and Incus's database is left referencing a snapshot that no longer "+
-		"exists.\n\nThe ZFS-level name is in the FACT line above — that is what decides whether "+
-		"the fix is a prefix filter, an Incus-side listing, or reconciling the two registries.",
-		leaked)
+	// And the filter must not have swallowed everything: an empty listing
+	// would satisfy the assertion above while breaking the feature. Already
+	// checked via tenantVisible before this point, so this only records the
+	// shape for whoever reads the log.
+	t.Logf("#1390 holds: ZFS shows %d snapshot(s) on the dataset, the tenant API reports %v — "+
+		"Incus's %q is present on disk and correctly hidden", len(onDisk), names, incusSnap)
 }
