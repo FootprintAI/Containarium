@@ -306,7 +306,7 @@ func (r *ClusterReconciler) WireEndpointPublisher(network *NetworkServer, advert
 		}
 		sysCtx := auth.ContextWithSystemIdentity(ctx)
 		if _, err := network.AddPassthroughRoute(sysCtx, &pb.AddPassthroughRouteRequest{
-			ExternalPort:  int32(port),
+			ExternalPort:  int32(port), //nolint:gosec // freeClusterPort draws from parsePortRange's validated [1024,65535]
 			TargetIp:      cpIP,
 			TargetPort:    6443,
 			Protocol:      pb.RouteProtocol_ROUTE_PROTOCOL_TCP,
@@ -323,7 +323,7 @@ func (r *ClusterReconciler) WireEndpointPublisher(network *NetworkServer, advert
 		}
 		sysCtx := auth.ContextWithSystemIdentity(ctx)
 		_, err := network.DeletePassthroughRoute(sysCtx, &pb.DeletePassthroughRouteRequest{
-			ExternalPort: int32(port),
+			ExternalPort: int32(port), //nolint:gosec // portFromEndpoint rejects values outside [1,65535]
 			Protocol:     pb.RouteProtocol_ROUTE_PROTOCOL_TCP,
 		})
 		if err != nil && status.Code(err) == codes.NotFound {
@@ -372,7 +372,7 @@ func portFromEndpoint(endpoint string) int {
 		return 0
 	}
 	p, err := strconv.Atoi(portStr)
-	if err != nil {
+	if err != nil || p < 1 || p > 65535 {
 		return 0
 	}
 	return p
