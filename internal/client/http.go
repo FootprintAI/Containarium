@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // HTTPClient wraps an HTTP connection to the containarium REST API
@@ -2134,6 +2135,118 @@ func (c *HTTPClient) RollbackContainerSnapshot(req *pb.RollbackContainerSnapshot
 	out := &pb.RollbackContainerSnapshotResponse{}
 	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// --- managed Kubernetes clusters (#1413) -------------------------------
+
+func clusterQuery(owner string) string {
+	if owner == "" {
+		return ""
+	}
+	return "?owner=" + url.QueryEscape(owner)
+}
+
+// clusterDo runs one REST call against the cluster surface and decodes
+// the protojson response into out.
+func (c *HTTPClient) clusterDo(method, path, label string, reqBody []byte, out proto.Message) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, method, path, reqBody)
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpError(bodyBytes, resp.StatusCode, label)
+	}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+// CreateCluster records a new managed cluster via REST.
+func (c *HTTPClient) CreateCluster(req *pb.CreateClusterRequest) (*pb.CreateClusterResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.CreateClusterResponse{}
+	if err := c.clusterDo(http.MethodPost, "/v1/clusters", "create cluster", body, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListClusters lists managed clusters via REST.
+func (c *HTTPClient) ListClusters(owner string) (*pb.ListClustersResponse, error) {
+	out := &pb.ListClustersResponse{}
+	if err := c.clusterDo(http.MethodGet, "/v1/clusters"+clusterQuery(owner), "list clusters", nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetCluster fetches one managed cluster via REST.
+func (c *HTTPClient) GetCluster(name, owner string) (*pb.GetClusterResponse, error) {
+	out := &pb.GetClusterResponse{}
+	path := "/v1/clusters/" + url.PathEscape(name) + clusterQuery(owner)
+	if err := c.clusterDo(http.MethodGet, path, "get cluster", nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DeleteCluster tears down a managed cluster via REST.
+func (c *HTTPClient) DeleteCluster(name, owner string) (*pb.DeleteClusterResponse, error) {
+	out := &pb.DeleteClusterResponse{}
+	path := "/v1/clusters/" + url.PathEscape(name) + clusterQuery(owner)
+	if err := c.clusterDo(http.MethodDelete, path, "delete cluster", nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetClusterKubeconfig reads a READY cluster's admin kubeconfig via REST.
+func (c *HTTPClient) GetClusterKubeconfig(name, owner string) (*pb.GetClusterKubeconfigResponse, error) {
+	out := &pb.GetClusterKubeconfigResponse{}
+	path := "/v1/clusters/" + url.PathEscape(name) + "/kubeconfig" + clusterQuery(owner)
+	if err := c.clusterDo(http.MethodGet, path, "get kubeconfig", nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetClusterStatus returns nodes, per-group counts, and scale events via REST.
+func (c *HTTPClient) GetClusterStatus(name, owner string, eventsLimit int32) (*pb.GetClusterStatusResponse, error) {
+	out := &pb.GetClusterStatusResponse{}
+	path := "/v1/clusters/" + url.PathEscape(name) + "/status" + clusterQuery(owner)
+	if eventsLimit > 0 {
+		sep := "?"
+		if owner != "" {
+			sep = "&"
+		}
+		path += fmt.Sprintf("%sevents_limit=%d", sep, eventsLimit)
+	}
+	if err := c.clusterDo(http.MethodGet, path, "get cluster status", nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UpdateClusterNodePool replaces a cluster's node groups via REST.
+func (c *HTTPClient) UpdateClusterNodePool(req *pb.UpdateClusterNodePoolRequest) (*pb.UpdateClusterNodePoolResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.UpdateClusterNodePoolResponse{}
+	path := "/v1/clusters/" + url.PathEscape(req.Name) + "/node-pool"
+	if err := c.clusterDo(http.MethodPost, path, "update node pool", body, out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

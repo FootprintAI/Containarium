@@ -1,0 +1,193 @@
+package cluster
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+)
+
+// VMHost is the narrow host surface the manager drives — implemented
+// by IncusHost in production and by a fake in tests, so orchestration
+// sequences are unit-testable (the nodevm Runner-seam precedent).
+type VMHost interface {
+	// VMCapable returns nil when the host can run VMs, or a typed,
+	// user-facing error when it cannot (the design's hard create-time
+	// requirement).
+	VMCapable() error
+	CreateVM(spec NodeSpec) error
+	Start(name string) error
+	Delete(name string) error
+	// WaitReady blocks until the guest agent is up and networked,
+	// returning the VM's primary IP.
+	WaitReady(name string, timeout time.Duration) (string, error)
+	Push(name, path string, content []byte, mode string) error
+	Read(name, path string) ([]byte, error)
+	Exec(name string, cmd []string) (string, error)
+	// ClusterVMs lists this cluster's VMs by label, bucketed as the
+	// reconciler's Observed shape.
+	ClusterVMs(tenant, clusterName string) (Observed, error)
+}
+
+// Manager provisions cluster VMs. It is stateless: every method takes
+// what it needs, and persistence stays with the caller.
+type Manager struct {
+	host VMHost
+	// k3sBinary loads the host-cached, checksum-verified binary
+	// (EnsureK3s). A loader keeps ~70MB out of memory until a
+	// provision actually happens.
+	k3sBinary func() ([]byte, error)
+	// waitReadyTimeout is how long a fresh VM gets to boot + network.
+	waitReadyTimeout time.Duration
+}
+
+// NewManager builds a Manager on a host. artifactBase is the host
+// cache root (DefaultArtifactBase in production).
+func NewManager(host VMHost, artifactBase string) *Manager {
+	return &Manager{
+		host: host,
+		k3sBinary: func() ([]byte, error) {
+			path, err := EnsureK3s(context.Background(), artifactBase)
+			if err != nil {
+				return nil, err
+			}
+			return os.ReadFile(path)
+		},
+		waitReadyTimeout: 3 * time.Minute,
+	}
+}
+
+// NewManagerWithLoader builds a Manager with an explicit binary
+// loader — the seam tests (and callers with pre-staged artifacts) use
+// instead of the EnsureK3s download path.
+func NewManagerWithLoader(host VMHost, loader func() ([]byte, error)) *Manager {
+	return &Manager{host: host, k3sBinary: loader, waitReadyTimeout: 3 * time.Minute}
+}
+
+// VMCapable surfaces the host's VM capability probe.
+func (m *Manager) VMCapable() error { return m.host.VMCapable() }
+
+// Observe returns the host's view of a cluster's VMs.
+func (m *Manager) Observe(tenant, clusterName string) (Observed, error) {
+	return m.host.ClusterVMs(tenant, clusterName)
+}
+
+// StartVM restarts a stopped cluster VM.
+func (m *Manager) StartVM(name string) error { return m.host.Start(name) }
+
+// DeleteVM force-removes a cluster VM.
+func (m *Manager) DeleteVM(name string) error { return m.host.Delete(name) }
+
+const bootstrapScriptPath = "/root/containarium-bootstrap.sh"
+
+// ProvisionCP creates and bootstraps the control-plane VM: create →
+// start → wait → push pinned binary + rendered script → exec. Returns
+// the VM's IP (workers join over it). cpSize is the smallest preset —
+// the control plane is platform overhead, not tenant capacity.
+func (m *Manager) ProvisionCP(tenant, clusterName string, cpSize DesiredGroup, tlsSANs []string) (string, error) {
+	name := CPName(tenant, clusterName)
+	spec := NodeSpec{
+		Name: name, CPU: cpSize.CPU, Memory: cpSize.Memory, Disk: cpSize.Disk,
+		Labels: VMLabels(tenant, clusterName, RoleControlPlane, ""),
+	}
+	if err := m.host.CreateVM(spec); err != nil {
+		return "", fmt.Errorf("create control-plane VM: %w", err)
+	}
+	ip, err := m.host.WaitReady(name, m.waitReadyTimeout)
+	if err != nil {
+		return "", fmt.Errorf("control-plane VM %s not ready: %w", name, err)
+	}
+	bin, err := m.k3sBinary()
+	if err != nil {
+		return "", err
+	}
+	if err := m.host.Push(name, K3sBinaryPath, bin, "0755"); err != nil {
+		return "", fmt.Errorf("push k3s binary: %w", err)
+	}
+	script := RenderServerScript(ServerBootstrap{TLSSANs: append([]string{ip}, tlsSANs...)})
+	if err := m.host.Push(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
+		return "", fmt.Errorf("push bootstrap script: %w", err)
+	}
+	if _, err := m.host.Exec(name, []string{"sh", bootstrapScriptPath}); err != nil {
+		return "", fmt.Errorf("control-plane bootstrap: %w", err)
+	}
+	return ip, nil
+}
+
+// ProvisionWorker creates and joins one worker VM to a running control
+// plane. The join token is read from the CP and pushed 0600 — it never
+// leaves the host or lands in a store.
+func (m *Manager) ProvisionWorker(tenant, clusterName string, g DesiredGroup, vmName, cpIP string) error {
+	cp := CPName(tenant, clusterName)
+	token, err := m.host.Read(cp, NodeTokenPath)
+	if err != nil {
+		return fmt.Errorf("read join token from %s: %w", cp, err)
+	}
+	spec := NodeSpec{
+		Name: vmName, CPU: g.CPU, Memory: g.Memory, Disk: g.Disk,
+		Labels: VMLabels(tenant, clusterName, RoleWorker, g.Name),
+	}
+	if err := m.host.CreateVM(spec); err != nil {
+		return fmt.Errorf("create worker VM: %w", err)
+	}
+	if _, err := m.host.WaitReady(vmName, m.waitReadyTimeout); err != nil {
+		return fmt.Errorf("worker VM %s not ready: %w", vmName, err)
+	}
+	bin, err := m.k3sBinary()
+	if err != nil {
+		return err
+	}
+	if err := m.host.Push(vmName, K3sBinaryPath, bin, "0755"); err != nil {
+		return fmt.Errorf("push k3s binary: %w", err)
+	}
+	if err := m.host.Push(vmName, AgentTokenPath, token, "0600"); err != nil {
+		return fmt.Errorf("push join token: %w", err)
+	}
+	script := RenderAgentScript(AgentBootstrap{ServerURL: "https://" + cpIP + ":6443"})
+	if err := m.host.Push(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
+		return fmt.Errorf("push bootstrap script: %w", err)
+	}
+	if _, err := m.host.Exec(vmName, []string{"sh", bootstrapScriptPath}); err != nil {
+		return fmt.Errorf("worker bootstrap: %w", err)
+	}
+	return nil
+}
+
+// Kubeconfig reads the CP's admin kubeconfig on demand and rewrites
+// its server URL to the published endpoint. Never persisted.
+func (m *Manager) Kubeconfig(tenant, clusterName, endpoint string) (string, error) {
+	raw, err := m.host.Read(CPName(tenant, clusterName), KubeconfigPath)
+	if err != nil {
+		return "", fmt.Errorf("read kubeconfig: %w", err)
+	}
+	kc := string(raw)
+	if endpoint != "" {
+		kc = RewriteKubeconfigServer(kc, endpoint)
+	}
+	return kc, nil
+}
+
+// CPIP returns the control-plane VM's current IP.
+func (m *Manager) CPIP(tenant, clusterName string) (string, error) {
+	return m.host.WaitReady(CPName(tenant, clusterName), 30*time.Second)
+}
+
+// ReadyNodes counts Ready nodes as the cluster's own API reports them,
+// via `k3s kubectl` on the CP — observed state from the cluster, not
+// from our rows.
+func (m *Manager) ReadyNodes(tenant, clusterName string) (int, error) {
+	out, err := m.host.Exec(CPName(tenant, clusterName),
+		[]string{K3sBinaryPath, "kubectl", "get", "nodes", "--no-headers"})
+	if err != nil {
+		return 0, fmt.Errorf("kubectl get nodes: %w", err)
+	}
+	ready := 0
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == "Ready" {
+			ready++
+		}
+	}
+	return ready, nil
+}
