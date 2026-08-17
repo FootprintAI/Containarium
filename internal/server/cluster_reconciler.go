@@ -40,6 +40,17 @@ type ClusterReconciler struct {
 	publish   func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
 	unpublish func(ctx context.Context, c *clusterstore.Cluster) error
 
+	// vpaDisabled turns off VPA deployment (CONTAINARIUM_CLUSTER_VPA=false);
+	// default is on — pod vertical autoscaling is a P0 story (#1416).
+	vpaDisabled bool
+
+	// caAddr + mintCACert enable autoscaler deployment onto each
+	// cluster's control plane (#1415, mTLS transport). Nil mint =
+	// clusters run without an autoscaler (reconciler still converges
+	// to min).
+	caAddr     string
+	mintCACert func(owner, name string) (clustercore.CACredentials, error)
+
 	interval time.Duration
 }
 
@@ -51,6 +62,16 @@ func NewClusterReconciler(store clusterstore.Store, mgr *clustercore.Manager) *C
 
 // SetAdmission wires the CPU-admission gate.
 func (r *ClusterReconciler) SetAdmission(f func(owner, cpu string) error) { r.admit = f }
+
+// SetVPADisabled turns off VPA deployment into new clusters.
+func (r *ClusterReconciler) SetVPADisabled(v bool) { r.vpaDisabled = v }
+
+// SetCADeployer wires autoscaler deployment: providerAddr is the
+// daemon's CA-provider mTLS listener as reachable from cluster VMs,
+// mint issues each cluster's client credential.
+func (r *ClusterReconciler) SetCADeployer(providerAddr string, mint func(owner, name string) (clustercore.CACredentials, error)) {
+	r.caAddr, r.mintCACert = providerAddr, mint
+}
 
 // SetEndpointPublisher wires endpoint publish/unpublish.
 func (r *ClusterReconciler) SetEndpointPublisher(
@@ -109,8 +130,12 @@ func desiredFrom(c *clusterstore.Cluster) clustercore.Desired {
 		Deleting: c.State == clusterstore.StateDeleting,
 	}
 	for _, g := range c.NodeGroups {
+		// Decide's Min is the CREATION target: the autoscaler-owned
+		// target size clamped into [min, max] (#1415). Decide itself
+		// stays scale-up-only; explicit removals go through the CA
+		// provider's DeleteNodes.
 		d.Groups = append(d.Groups, clustercore.DesiredGroup{
-			Name: g.Name, Min: int(g.MinNodes), Max: int(g.MaxNodes),
+			Name: g.Name, Min: int(g.EffectiveTarget()), Max: int(g.MaxNodes),
 			CPU: g.Size.CPU, Memory: g.Size.Memory, Disk: g.Size.Disk,
 		})
 	}
@@ -257,9 +282,29 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 		c.APIEndpoint = endpoint
 	}
 
+	// VPA rides the settle path: a transient deploy failure retries
+	// every pass until READY; DeployVPA is idempotent and never
+	// rotates a deployed webhook secret.
+	if !r.vpaDisabled && c.State != clusterstore.StateReady {
+		if err := r.mgr.DeployVPA(c.Owner, c.Name); err != nil {
+			return fmt.Errorf("deploy VPA: %w", err)
+		}
+	}
+
+	// The autoscaler rides the settle path too: DeployCA is idempotent.
+	if r.mintCACert != nil && c.State != clusterstore.StateReady {
+		creds, err := r.mintCACert(c.Owner, c.Name)
+		if err != nil {
+			return fmt.Errorf("mint autoscaler credential: %w", err)
+		}
+		if err := r.mgr.DeployCA(c.Owner, c.Name, clustercore.CADeploy{ProviderAddr: r.caAddr}, creds); err != nil {
+			return fmt.Errorf("deploy autoscaler: %w", err)
+		}
+	}
+
 	expected := 1 // control plane
 	for _, g := range c.NodeGroups {
-		expected += int(g.MinNodes)
+		expected += int(g.EffectiveTarget())
 	}
 	ready, err := r.mgr.ReadyNodes(c.Owner, c.Name)
 	if err != nil {
