@@ -1224,6 +1224,10 @@ skipAppHosting:
 			} else {
 				log.Printf("[cluster] CONTAINARIUM_CLUSTER_ADVERTISE_ADDR unset; cluster API endpoints use VM IPs (host-local reach only)")
 			}
+			if os.Getenv("CONTAINARIUM_CLUSTER_VPA") == "false" {
+				clusterReconciler.SetVPADisabled(true)
+				log.Printf("[cluster] VPA deployment disabled by CONTAINARIUM_CLUSTER_VPA=false")
+			}
 			clusterServer.SetReconciler(clusterReconciler)
 			go clusterReconciler.Run(context.Background())
 			log.Printf("Managed-cluster reconciler enabled")

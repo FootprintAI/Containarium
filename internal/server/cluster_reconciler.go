@@ -40,6 +40,10 @@ type ClusterReconciler struct {
 	publish   func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
 	unpublish func(ctx context.Context, c *clusterstore.Cluster) error
 
+	// vpaDisabled turns off VPA deployment (CONTAINARIUM_CLUSTER_VPA=false);
+	// default is on — pod vertical autoscaling is a P0 story (#1416).
+	vpaDisabled bool
+
 	interval time.Duration
 }
 
@@ -51,6 +55,9 @@ func NewClusterReconciler(store clusterstore.Store, mgr *clustercore.Manager) *C
 
 // SetAdmission wires the CPU-admission gate.
 func (r *ClusterReconciler) SetAdmission(f func(owner, cpu string) error) { r.admit = f }
+
+// SetVPADisabled turns off VPA deployment into new clusters.
+func (r *ClusterReconciler) SetVPADisabled(v bool) { r.vpaDisabled = v }
 
 // SetEndpointPublisher wires endpoint publish/unpublish.
 func (r *ClusterReconciler) SetEndpointPublisher(
@@ -255,6 +262,15 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 			return fmt.Errorf("record endpoint: %w", err)
 		}
 		c.APIEndpoint = endpoint
+	}
+
+	// VPA rides the settle path: a transient deploy failure retries
+	// every pass until READY; DeployVPA is idempotent and never
+	// rotates a deployed webhook secret.
+	if !r.vpaDisabled && c.State != clusterstore.StateReady {
+		if err := r.mgr.DeployVPA(c.Owner, c.Name); err != nil {
+			return fmt.Errorf("deploy VPA: %w", err)
+		}
 	}
 
 	expected := 1 // control plane
