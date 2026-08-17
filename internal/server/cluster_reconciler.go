@@ -44,6 +44,13 @@ type ClusterReconciler struct {
 	// default is on — pod vertical autoscaling is a P0 story (#1416).
 	vpaDisabled bool
 
+	// caAddr + mintCACert enable autoscaler deployment onto each
+	// cluster's control plane (#1415, mTLS transport). Nil mint =
+	// clusters run without an autoscaler (reconciler still converges
+	// to min).
+	caAddr     string
+	mintCACert func(owner, name string) (clustercore.CACredentials, error)
+
 	interval time.Duration
 }
 
@@ -58,6 +65,13 @@ func (r *ClusterReconciler) SetAdmission(f func(owner, cpu string) error) { r.ad
 
 // SetVPADisabled turns off VPA deployment into new clusters.
 func (r *ClusterReconciler) SetVPADisabled(v bool) { r.vpaDisabled = v }
+
+// SetCADeployer wires autoscaler deployment: providerAddr is the
+// daemon's CA-provider mTLS listener as reachable from cluster VMs,
+// mint issues each cluster's client credential.
+func (r *ClusterReconciler) SetCADeployer(providerAddr string, mint func(owner, name string) (clustercore.CACredentials, error)) {
+	r.caAddr, r.mintCACert = providerAddr, mint
+}
 
 // SetEndpointPublisher wires endpoint publish/unpublish.
 func (r *ClusterReconciler) SetEndpointPublisher(
@@ -274,6 +288,17 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 	if !r.vpaDisabled && c.State != clusterstore.StateReady {
 		if err := r.mgr.DeployVPA(c.Owner, c.Name); err != nil {
 			return fmt.Errorf("deploy VPA: %w", err)
+		}
+	}
+
+	// The autoscaler rides the settle path too: DeployCA is idempotent.
+	if r.mintCACert != nil && c.State != clusterstore.StateReady {
+		creds, err := r.mintCACert(c.Owner, c.Name)
+		if err != nil {
+			return fmt.Errorf("mint autoscaler credential: %w", err)
+		}
+		if err := r.mgr.DeployCA(c.Owner, c.Name, clustercore.CADeploy{ProviderAddr: r.caAddr}, creds); err != nil {
+			return fmt.Errorf("deploy autoscaler: %w", err)
 		}
 	}
 

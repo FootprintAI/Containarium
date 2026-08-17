@@ -1235,6 +1235,46 @@ skipAppHosting:
 				clusterReconciler.SetVPADisabled(true)
 				log.Printf("[cluster] VPA deployment disabled by CONTAINARIUM_CLUSTER_VPA=false")
 			}
+			// CA-provider mTLS surface (#1415, transport option 1):
+			// per-cluster client certificates — the stock externalgrpc
+			// client's only auth mechanism. Requires the advertise
+			// address cluster VMs reach the daemon on; without it,
+			// clusters run without an autoscaler (reconciler still
+			// converges each group to its min).
+			if caAdvertise := os.Getenv("CONTAINARIUM_CLUSTER_CA_ADVERTISE"); caAdvertise != "" {
+				pkiDir := os.Getenv("CONTAINARIUM_CLUSTER_CA_PKI_DIR")
+				if pkiDir == "" {
+					pkiDir = "/etc/containarium/cluster-ca"
+				}
+				caListen := os.Getenv("CONTAINARIUM_CLUSTER_CA_LISTEN")
+				if caListen == "" {
+					caListen = "0.0.0.0:36442"
+				}
+				if pki, pkiErr := LoadOrCreateClusterPKI(pkiDir); pkiErr != nil {
+					log.Printf("[cluster] autoscaler disabled: cluster PKI: %v", pkiErr)
+				} else {
+					sanHost := caAdvertise
+					if h, _, splitErr := net.SplitHostPort(caAdvertise); splitErr == nil {
+						sanHost = h
+					}
+					caProvider := NewCAProviderServer(clusterServer.Store(), clusterMgr)
+					if _, _, lErr := StartClusterCAListener(caListen, []string{sanHost}, pki, caProvider); lErr != nil {
+						log.Printf("[cluster] autoscaler disabled: CA-provider listener: %v", lErr)
+					} else {
+						clusterReconciler.SetCADeployer(caAdvertise, func(owner, name string) (clustercore.CACredentials, error) {
+							cert, key, mErr := pki.MintClientCert(owner, name)
+							if mErr != nil {
+								return clustercore.CACredentials{}, mErr
+							}
+							return clustercore.CACredentials{ClientCertPEM: cert, ClientKeyPEM: key, CACertPEM: pki.CAPEM()}, nil
+						})
+						log.Printf("Managed-cluster autoscaler enabled (provider %s)", caAdvertise)
+					}
+				}
+			} else {
+				log.Printf("[cluster] CONTAINARIUM_CLUSTER_CA_ADVERTISE unset; clusters run without an autoscaler")
+			}
+
 			clusterServer.SetReconciler(clusterReconciler)
 			go clusterReconciler.Run(context.Background())
 			log.Printf("Managed-cluster reconciler enabled")

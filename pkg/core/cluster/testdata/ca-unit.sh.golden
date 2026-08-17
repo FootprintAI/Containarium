@@ -1,0 +1,34 @@
+#!/bin/sh
+# containarium managed-cluster autoscaler bootstrap (#1415).
+# Stock cluster-autoscaler, digest-pinned, as a containerd task —
+# outside the tenant-visible Kubernetes API surface.
+set -eu
+
+cat > /etc/systemd/system/k3s-cluster-autoscaler.service <<'UNIT'
+[Unit]
+Description=containarium managed-cluster autoscaler (externalgrpc)
+After=k3s.service
+Requires=k3s.service
+
+[Service]
+ExecStartPre=/usr/local/bin/k3s ctr images pull registry.k8s.io/autoscaling/cluster-autoscaler:v1.33.0@sha256:6ef10d108e0e45ecd883e074682330bbd4a3403e767ad56804800f2f4ee816da
+ExecStartPre=-/usr/local/bin/k3s ctr task kill --signal SIGKILL cluster-autoscaler
+ExecStartPre=-/usr/local/bin/k3s ctr container rm cluster-autoscaler
+ExecStart=/usr/local/bin/k3s ctr run --rm --net-host \
+  --mount type=bind,src=/etc/containarium/ca,dst=/etc/containarium/ca,options=rbind:ro \
+  --mount type=bind,src=/etc/rancher/k3s/k3s.yaml,dst=/etc/kubeconfig,options=rbind:ro \
+  registry.k8s.io/autoscaling/cluster-autoscaler:v1.33.0@sha256:6ef10d108e0e45ecd883e074682330bbd4a3403e767ad56804800f2f4ee816da cluster-autoscaler \
+  /cluster-autoscaler \
+  --cloud-provider=externalgrpc \
+  --cloud-config=/etc/containarium/ca/cloud-config.yaml \
+  --kubeconfig=/etc/kubeconfig \
+  --stderrthreshold=info
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now k3s-cluster-autoscaler.service
