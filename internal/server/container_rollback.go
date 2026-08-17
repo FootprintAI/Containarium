@@ -46,6 +46,11 @@ func (s *ContainerServer) RollbackContainerSnapshot(ctx context.Context, req *pb
 		return nil, status.Error(codes.InvalidArgument,
 			"snapshot name is required; without one the reference would be a bare '@'")
 	}
+	// Rolling back through the storage layer rewrites the dataset under Incus
+	// exactly as destructively as deleting one of its snapshots (#1390).
+	if err := refuseIncusManaged("roll back to", req.GetName()); err != nil {
+		return nil, err
+	}
 	snapshot := dataset + "@" + req.GetName()
 
 	// Guard 3 first, because it is the cheapest and the only one whose remedy
