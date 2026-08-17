@@ -530,6 +530,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// below once the pool is up (same degrade posture as the network
 	// policy and crew-run stores).
 	clusterServer := NewClusterServer(clusterstore.NewMemStore())
+	if capsErr := clusterServer.SetCapsFromEnv(
+		os.Getenv("CONTAINARIUM_CLUSTER_MAX_NODES"),
+		os.Getenv("CONTAINARIUM_CLUSTER_MAX_NODE_SIZE")); capsErr != nil {
+		// Fail closed: a typo'd cap must not become an unlimited one.
+		clusterServer.SetCaps(clusterCaps{configErr: capsErr})
+		log.Printf("ERROR: %v — cluster creates/updates will be refused until the caps are fixed", capsErr)
+	}
 	pb.RegisterClusterServiceServer(grpcServer, clusterServer)
 	log.Printf("Cluster service enabled (in-memory store; Postgres swap below)")
 
