@@ -86,3 +86,31 @@ func TestRewriteKubeconfigServer(t *testing.T) {
 		t.Fatalf("indentation lost:\n%s", got)
 	}
 }
+
+func TestRenderCAUnitScript(t *testing.T) {
+	got := RenderCAUnitScript(CADeploy{ProviderAddr: "10.0.0.1:36442"})
+	golden(t, "ca-unit.sh.golden", got)
+	for _, must := range []string{
+		CAImage, // digest-pinned, never a floating tag
+		"--cloud-provider=externalgrpc",
+		"--cloud-config=" + CACloudConfigPath,
+		"ctr run", // containerd task, not a Pod — outside the tenant-visible API
+	} {
+		if !strings.Contains(got, must) {
+			t.Fatalf("CA unit script missing %q", must)
+		}
+	}
+	if strings.Contains(got, "kubectl apply") || strings.Contains(got, "Pod") {
+		t.Fatal("the autoscaler must not run as a Kubernetes object")
+	}
+}
+
+func TestRenderCACloudConfig(t *testing.T) {
+	got := RenderCACloudConfig(CADeploy{ProviderAddr: "10.0.0.1:36442"})
+	golden(t, "ca-cloud-config.yaml.golden", got)
+	for _, must := range []string{`address: "10.0.0.1:36442"`, CAClientKeyPath, CAClientCertPath, CACACertPath} {
+		if !strings.Contains(got, must) {
+			t.Fatalf("cloud-config missing %q", must)
+		}
+	}
+}

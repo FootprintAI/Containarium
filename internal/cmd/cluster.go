@@ -78,7 +78,17 @@ var clusterKubeconfigCmd = &cobra.Command{
 	RunE:  runClusterKubeconfig,
 }
 
-var clusterGroups []string
+var (
+	clusterGroups      []string
+	clusterEventsLimit int32
+)
+
+var clusterStatusCmd = &cobra.Command{
+	Use:   "status <name>",
+	Short: "Show a cluster's nodes, per-group counts, and scale history",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runClusterStatus,
+}
 
 var clusterNodePoolCmd = &cobra.Command{
 	Use:   "node-pool <name>",
@@ -95,7 +105,8 @@ key=value pairs; the set you pass REPLACES the current set.
 
 func init() {
 	rootCmd.AddCommand(clusterCmd)
-	clusterCmd.AddCommand(clusterCreateCmd, clusterListCmd, clusterGetCmd, clusterDeleteCmd, clusterKubeconfigCmd, clusterNodePoolCmd)
+	clusterCmd.AddCommand(clusterCreateCmd, clusterListCmd, clusterGetCmd, clusterDeleteCmd, clusterKubeconfigCmd, clusterNodePoolCmd, clusterStatusCmd)
+	clusterStatusCmd.Flags().Int32Var(&clusterEventsLimit, "events", 10, "scale events to show, newest first")
 	clusterCmd.PersistentFlags().StringVar(&clusterOwner, "owner", "", "owning tenant (admin only; default: the authenticated user)")
 	clusterCreateCmd.Flags().Int32Var(&clusterNodesMin, "nodes-min", -1, "small size class's minimum worker count (default: platform preset)")
 	clusterCreateCmd.Flags().Int32Var(&clusterNodesMax, "nodes-max", -1, "small size class's maximum worker count (default: platform preset)")
@@ -111,6 +122,7 @@ type clusterAPI interface {
 	GetCluster(name, owner string) (*pb.GetClusterResponse, error)
 	DeleteCluster(name, owner string) (*pb.DeleteClusterResponse, error)
 	GetClusterKubeconfig(name, owner string) (*pb.GetClusterKubeconfigResponse, error)
+	GetClusterStatus(name, owner string, eventsLimit int32) (*pb.GetClusterStatusResponse, error)
 	UpdateClusterNodePool(req *pb.UpdateClusterNodePoolRequest) (*pb.UpdateClusterNodePoolResponse, error)
 	Close() error
 }
@@ -344,4 +356,71 @@ func runClusterNodePool(cmd *cobra.Command, args []string) error {
 	fmt.Println(resp.Message)
 	printCluster(resp.Cluster)
 	return nil
+}
+
+func clusterNodeStateString(s pb.ClusterNodeState) string {
+	switch s {
+	case pb.ClusterNodeState_CLUSTER_NODE_STATE_PROVISIONING:
+		return "provisioning"
+	case pb.ClusterNodeState_CLUSTER_NODE_STATE_READY:
+		return "ready"
+	case pb.ClusterNodeState_CLUSTER_NODE_STATE_DRAINING:
+		return "draining"
+	default:
+		return "unknown"
+	}
+}
+
+func scaleEventKindString(k pb.ScaleEventKind) string {
+	switch k {
+	case pb.ScaleEventKind_SCALE_EVENT_KIND_SCALE_UP:
+		return "scale-up"
+	case pb.ScaleEventKind_SCALE_EVENT_KIND_SCALE_DOWN:
+		return "scale-down"
+	case pb.ScaleEventKind_SCALE_EVENT_KIND_REFUSED:
+		return "REFUSED"
+	case pb.ScaleEventKind_SCALE_EVENT_KIND_NODE_REPLACED:
+		return "node-replaced"
+	default:
+		return "unknown"
+	}
+}
+
+func runClusterStatus(cmd *cobra.Command, args []string) error {
+	c, err := newClusterClient()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+	st, err := c.GetClusterStatus(args[0], clusterOwner, clusterEventsLimit)
+	if err != nil {
+		return err
+	}
+	printCluster(st.Cluster)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "\nGROUP\tSIZE\tNODES\tBOUNDS")
+	for _, g := range st.Groups {
+		fmt.Fprintf(w, "%s\tcpu=%s mem=%s disk=%s\t%d\t%d..%d\n",
+			g.Group.Name, g.Group.Size.Cpu, g.Group.Size.Memory, g.Group.Size.Disk,
+			g.CurrentNodes, g.Group.MinNodes, g.Group.MaxNodes)
+	}
+	if len(st.Nodes) > 0 {
+		fmt.Fprintln(w, "\nNODE\tROLE\tGROUP\tSTATE")
+		for _, n := range st.Nodes {
+			role := "worker"
+			if n.Role == pb.ClusterNodeRole_CLUSTER_NODE_ROLE_CONTROL_PLANE {
+				role = "control-plane"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", n.VmName, role, n.NodeGroup, clusterNodeStateString(n.State))
+		}
+	}
+	if len(st.Events) > 0 {
+		fmt.Fprintln(w, "\nWHEN\tEVENT\tGROUP\tREASON")
+		for _, e := range st.Events {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+				e.At.AsTime().Format("2006-01-02 15:04:05"), scaleEventKindString(e.Kind), e.NodeGroup, e.Reason)
+		}
+	}
+	return w.Flush()
 }

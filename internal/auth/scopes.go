@@ -110,6 +110,11 @@ const (
 	// cannot take control of a cluster.
 	ScopeClustersRead  = "clusters:read"
 	ScopeClustersWrite = "clusters:write"
+	// clusters:scale is the cluster-autoscaler machine credential's
+	// ONLY scope (#1415): resize the token's own cluster's node pool
+	// within server-enforced bounds. It grants no read of other
+	// clusters, no kubeconfig, no create/delete.
+	ScopeClustersScale = "clusters:scale"
 
 	// read-only scopes for surfaces that were admin-only, so a least-privilege
 	// (e.g. compliance/evidence) token can read one without full admin (#621).
@@ -136,7 +141,7 @@ var AllScopes = []string{
 	ScopeTokensWrite,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
-	ScopeClustersRead, ScopeClustersWrite,
+	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
 }
 
