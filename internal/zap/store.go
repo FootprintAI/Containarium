@@ -455,11 +455,18 @@ func (s *Store) GetAlertSummary(ctx context.Context) (*AlertSummary, error) {
 		return nil, fmt.Errorf("failed to get zap alert summary: %w", err)
 	}
 
+	// lower(risk) (#1400). ZAP emits capitalised risk values — "High",
+	// "Medium", "Low", "Informational" (see scanner.go's zapAlert) — and they
+	// are stored verbatim, but the switch below matches lowercase. Without the
+	// normalisation no case ever matched, so every risk count in the summary
+	// was permanently zero while the alerts themselves stored and listed
+	// correctly. Done in SQL rather than in Go so the grouping and the
+	// matching cannot disagree again.
 	rows, err := s.pool.Query(ctx, `
-		SELECT risk, COUNT(*)
+		SELECT lower(risk), COUNT(*)
 		FROM zap_alerts
 		WHERE status = 'open'
-		GROUP BY risk
+		GROUP BY lower(risk)
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get zap risk counts: %w", err)
@@ -534,11 +541,17 @@ func (s *Store) MarkResolved(ctx context.Context, scanRunID string, seenFingerpr
 
 // CountAlertsByRisk returns a map of risk -> count for alerts in a scan run
 func (s *Store) CountAlertsByRisk(ctx context.Context, scanRunID string) (map[string]int, error) {
+	// lower(risk) for the same reason as GetAlertSummary (#1400). Here the
+	// mismatch was quieter still: the map is pre-seeded with lowercase keys
+	// and then assigned under the database's capitalised ones, so it came back
+	// holding both "high": 0 and "High": 3 — and manager.go reads
+	// byRisk["high"], recording every completed scan run as having found
+	// nothing.
 	rows, err := s.pool.Query(ctx, `
-		SELECT risk, COUNT(*)
+		SELECT lower(risk), COUNT(*)
 		FROM zap_alerts
 		WHERE last_scan_run_id = $1
-		GROUP BY risk
+		GROUP BY lower(risk)
 	`, scanRunID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count zap alerts by risk: %w", err)

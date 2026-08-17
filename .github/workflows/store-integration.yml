@@ -26,6 +26,7 @@ on:
       - 'internal/alert/**'
       - 'pkg/core/network/**'
       - 'internal/pentest/**'
+      - 'internal/zap/**'
       - '.github/workflows/store-integration.yml'
   push:
     branches: [main]
@@ -38,6 +39,7 @@ on:
       - 'internal/alert/**'
       - 'pkg/core/network/**'
       - 'internal/pentest/**'
+      - 'internal/zap/**'
       - '.github/workflows/store-integration.yml'
 
 permissions:
@@ -95,7 +97,7 @@ jobs:
           # run separately", which meant nowhere.
           go test -count=1 -timeout 5m -v \
             ./internal/secrets/ ./internal/app/ ./pkg/core/network/ \
-            ./internal/pentest/ 2>&1 | tee -a integration.log
+            ./internal/pentest/ ./internal/zap/ 2>&1 | tee -a integration.log
 
           # A skipped test here is indistinguishable from a passing one, and
           # this lane exists because that ambiguity hid the gap for so long.
@@ -109,7 +111,7 @@ jobs:
 
           # And a run that matched nothing would also be green. Require that
           # the suite actually executed.
-          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations TestRevocationStore_RevokedTokenReadsAsRevoked TestCollaboratorStore_ListingIsScopedToTheSubject TestRouteStore_SaveIsAnUpsertByDomain TestAlertStore_RuleRoundTrips TestPassthroughStore_PortAndProtocolAreDistinctRoutes TestDaemonConfigStore_SetAllRollsBackAPartialBatch TestPentestStore_ConcurrentClaimsGetDistinctJobs TestClusterStore_ContractHoldsForBothImpls; do
+          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations TestRevocationStore_RevokedTokenReadsAsRevoked TestCollaboratorStore_ListingIsScopedToTheSubject TestRouteStore_SaveIsAnUpsertByDomain TestAlertStore_RuleRoundTrips TestPassthroughStore_PortAndProtocolAreDistinctRoutes TestDaemonConfigStore_SetAllRollsBackAPartialBatch TestPentestStore_ConcurrentClaimsGetDistinctJobs TestZapStore_MarkResolvedClosesOnlyWhatThisScanDidNotSee TestZapStore_RiskCountsAreCaseInsensitive TestClusterStore_ContractHoldsForBothImpls; do
             if ! grep -q -- "--- PASS: $want" integration.log; then
               echo "::error::$want did not run — renamed, retagged, or filtered out."
               exit 1
