@@ -34,6 +34,49 @@ import (
 // the key — that is what zfscrypt.EnsureInspectable exists for, and it belongs
 // with the inspection verbs rather than here.
 
+// incusSnapshotPrefix is the prefix Incus gives the ZFS snapshots backing its
+// own instance snapshots (#1390).
+//
+// Established on the Incus lane rather than read from documentation: an
+// `incus snapshot create <c> sync0` produces `<dataset>@snapshot-sync0`. See
+// TestIntegrationIncus_TenantSnapshotAPISeesIncusOwnSnapshots, which is what
+// catches this if a future Incus changes the convention — it is an
+// implementation detail of Incus, not a contract it publishes.
+//
+// The daemon snapshots two ways on one dataset: `incus snapshot`, which
+// MoveContainer uses for its migration sync points, and `zfs snapshot`, this
+// API. ZFS lists both, so without this prefix the tenant surface reports
+// Incus's snapshots as though a tenant took them, and lets a tenant destroy
+// one — during a migration, that is a live sync point, and Incus's database is
+// left referencing a snapshot that no longer exists.
+const incusSnapshotPrefix = "snapshot-"
+
+// incusManaged reports whether a snapshot name belongs to Incus.
+//
+// A PREFIX test, deliberately not a substring one: "pre-snapshot-upgrade" is a
+// perfectly ordinary name a tenant might choose, and refusing it would be a
+// usability regression nobody would connect back to this.
+func incusManaged(snapshotName string) bool {
+	return strings.HasPrefix(snapshotName, incusSnapshotPrefix)
+}
+
+// refuseIncusManaged rejects an operation aimed at one of Incus's snapshots.
+//
+// Shared by delete and rollback so the two cannot drift: both rewrite or
+// remove state Incus believes it owns, and a guard on only one of them is the
+// same bug with a smaller blast radius.
+func refuseIncusManaged(verb, name string) error {
+	if !incusManaged(name) {
+		return nil
+	}
+	return status.Errorf(codes.InvalidArgument,
+		"%q is an Incus-managed snapshot, not one of yours — refusing to %s it. Incus records "+
+			"these in its own database (migrations use them as sync points), so removing one "+
+			"through the storage layer leaves Incus referencing a snapshot that no longer exists. "+
+			"Snapshots you created do not carry the %q prefix",
+		name, verb, incusSnapshotPrefix)
+}
+
 // snapshotOps is the daemon's container-snapshot surface: a zfscrypt manager
 // plus the two lookups needed to name the right dataset.
 //
@@ -127,10 +170,21 @@ func (s *ContainerServer) CreateContainerSnapshot(ctx context.Context, req *pb.C
 		return nil, err
 	}
 
-	// Name validation lives in zfscrypt, which rejects anything containing
-	// '@', '/' or whitespace. Routing through it rather than concatenating
-	// here is the point: a name like "../other" would otherwise address a
-	// different dataset entirely.
+	// Incus's namespace is reserved (#1390). Without this, a tenant snapshot
+	// called "snapshot-foo" lands on the same ZFS name as Incus's snapshot
+	// "foo" — and at best is created and then hidden by the listing filter,
+	// which is worse than refusing it: the caller is told it exists and can
+	// never see it again.
+	if incusManaged(req.GetName()) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"snapshot names beginning with %q are reserved for Incus's own snapshots (#1390); "+
+				"choose another name", incusSnapshotPrefix)
+	}
+
+	// The rest of name validation lives in zfscrypt, which rejects anything
+	// containing '@', '/' or whitespace. Routing through it rather than
+	// concatenating here is the point: a name like "../other" would otherwise
+	// address a different dataset entirely.
 	full, err := ops.zfs.Snapshot(ctx, dataset, req.GetName())
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -169,7 +223,15 @@ func (s *ContainerServer) ListContainerSnapshots(ctx context.Context, req *pb.Li
 
 	out := make([]*pb.ContainerSnapshot, 0, len(names))
 	for _, full := range names {
-		snap := &pb.ContainerSnapshot{Name: snapshotShortName(full)}
+		short := snapshotShortName(full)
+		// Incus's own snapshots are not the tenant's to see (#1390). They are
+		// listed by ZFS because both mechanisms write to one dataset, but a
+		// migration's sync points are not something a tenant took, and a row
+		// they do not recognise is a row they may delete.
+		if incusManaged(short) {
+			continue
+		}
+		snap := &pb.ContainerSnapshot{Name: short}
 		// Usage is decoration. A snapshot whose properties cannot be read is
 		// still listed with zeroes: dropping the row would hide a snapshot
 		// that exists, and an unreadable property is most likely on a pool
@@ -190,6 +252,9 @@ func (s *ContainerServer) DeleteContainerSnapshot(ctx context.Context, req *pb.D
 	}
 	if req.GetName() == "" {
 		return nil, status.Error(codes.InvalidArgument, "snapshot name is required")
+	}
+	if err := refuseIncusManaged("delete", req.GetName()); err != nil {
+		return nil, err
 	}
 	full := dataset + "@" + req.GetName()
 

@@ -457,3 +457,122 @@ func TestSetSnapshotStorage_WorksWithoutEncryptionConfigured(t *testing.T) {
 		t.Errorf("zfs calls = %v, want the default pool's dataset", z.calls)
 	}
 }
+
+// Incus's own snapshots must not appear in, or be reachable through, the
+// tenant snapshot API (#1390).
+//
+// The daemon snapshots two ways on one dataset: `incus snapshot`, used by
+// MoveContainer for its sync points, and `zfs snapshot`, this API. The lane
+// established that Incus prefixes its ZFS snapshots with `snapshot-`
+// (TestIntegrationIncus_TenantSnapshotAPISeesIncusOwnSnapshots), and that the
+// unfiltered listing therefore reported them as though a tenant had taken
+// them — and would let a tenant destroy one, leaving Incus's database
+// referencing a snapshot that no longer exists. During a migration those are
+// live sync points.
+
+func TestListContainerSnapshots_HidesIncusManagedSnapshots(t *testing.T) {
+	z := newZFSFake()
+	delete(z.errs, "list")
+	// What the lane actually reported, in the order ZFS returned it.
+	z.stdout["list"] = "tank/default/containers/bob-container@snapshot-containarium-move-sync0\n" +
+		"tank/default/containers/bob-container@tenant-taken"
+	z.stdout["get"] = "1024\t65536"
+	s := snapshotFixture(t, z, map[string]string{})
+
+	resp, err := s.ListContainerSnapshots(tenantWithScopes("bob", auth.ScopeContainersRead),
+		&pb.ListContainerSnapshotsRequest{Username: "bob"})
+	if err != nil {
+		t.Fatalf("ListContainerSnapshots: %v", err)
+	}
+
+	var names []string
+	for _, snap := range resp.GetSnapshots() {
+		names = append(names, snap.GetName())
+	}
+	// The tenant's own must survive — a filter that hid everything would pass
+	// the negative assertion below while breaking the feature.
+	if len(names) != 1 || names[0] != "tenant-taken" {
+		t.Fatalf("listing = %v, want exactly [tenant-taken]", names)
+	}
+}
+
+// Delete must refuse by name, and say whose snapshot it is. Silently filtering
+// it from the list is not enough: a caller who saw the name in `zfs list`, or
+// in an older client, can still ask for it.
+func TestDeleteContainerSnapshot_RefusesAnIncusManagedSnapshot(t *testing.T) {
+	z := newZFSFake()
+	s := snapshotFixture(t, z, map[string]string{})
+
+	_, err := s.DeleteContainerSnapshot(writeCtx("bob"),
+		&pb.DeleteContainerSnapshotRequest{Username: "bob", Name: "snapshot-containarium-move-sync0"})
+	if err == nil {
+		t.Fatal("a tenant destroyed an Incus-managed snapshot — during a migration that is a " +
+			"live sync point, and Incus's database is left referencing a snapshot that is gone")
+	}
+	if !strings.Contains(err.Error(), "Incus") {
+		t.Errorf("the refusal does not say who owns the snapshot, so the operator cannot tell it "+
+			"from their own: %v", err)
+	}
+	if z.ran("destroy") {
+		t.Fatalf("zfs destroy ran anyway; calls=%v", z.calls)
+	}
+}
+
+// Rollback through the ZFS path would rewrite the dataset under Incus just as
+// destructively, so it refuses the same way.
+func TestRollbackContainerSnapshot_RefusesAnIncusManagedSnapshot(t *testing.T) {
+	z := keyed(newZFSFake())
+	s := rollbackFixture(t, z, stoppedBoxes())
+
+	_, err := s.RollbackContainerSnapshot(writeCtx("bob"),
+		&pb.RollbackContainerSnapshotRequest{Username: "bob", Name: "snapshot-sync0"})
+	if err == nil {
+		t.Fatal("rolled a container back to an Incus-managed snapshot through the ZFS path")
+	}
+	if z.ran("rollback") {
+		t.Fatalf("zfs rollback ran anyway; calls=%v", z.calls)
+	}
+}
+
+// The collision the filter would otherwise create.
+//
+// Incus's snapshot named "foo" is `@snapshot-foo` on disk. If a tenant may
+// name their own snapshot "snapshot-foo", it lands on the same ZFS name — so
+// it either collides with Incus's or, at best, is created and then hidden by
+// the filter above, which is worse than refusing it: the caller is told the
+// snapshot exists and can never see it again.
+func TestCreateContainerSnapshot_RefusesTheIncusReservedPrefix(t *testing.T) {
+	z := newZFSFake()
+	s := snapshotFixture(t, z, map[string]string{})
+
+	_, err := s.CreateContainerSnapshot(writeCtx("bob"),
+		&pb.CreateContainerSnapshotRequest{Username: "bob", Name: "snapshot-mine"})
+	if err == nil {
+		t.Fatal("a tenant created a snapshot in Incus's reserved namespace — it would collide " +
+			"with an Incus snapshot of the same name, and the listing filter would hide it")
+	}
+	if !strings.Contains(err.Error(), "snapshot-") {
+		t.Errorf("the refusal does not name the reserved prefix, so the caller cannot pick a "+
+			"working name: %v", err)
+	}
+	if z.ran("snapshot") {
+		t.Fatalf("zfs snapshot ran anyway; calls=%v", z.calls)
+	}
+}
+
+// The prefix check must be a prefix check, not a substring one: a tenant
+// snapshot legitimately called "pre-snapshot-upgrade" contains the string but
+// is not in Incus's namespace, and refusing it would be a silent usability
+// regression nobody would connect to this fix.
+func TestContainerSnapshots_ReservedPrefixIsAPrefixNotASubstring(t *testing.T) {
+	z := newZFSFake()
+	s := snapshotFixture(t, z, map[string]string{})
+
+	if _, err := s.CreateContainerSnapshot(writeCtx("bob"),
+		&pb.CreateContainerSnapshotRequest{Username: "bob", Name: "pre-snapshot-upgrade"}); err != nil {
+		t.Fatalf("a legitimate name containing but not starting with the prefix was refused: %v", err)
+	}
+	if !z.ran("snapshot tank/default/containers/bob-container@pre-snapshot-upgrade") {
+		t.Errorf("the snapshot was not taken; calls=%v", z.calls)
+	}
+}
