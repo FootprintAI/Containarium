@@ -116,8 +116,12 @@ func desiredFrom(c *clusterstore.Cluster) clustercore.Desired {
 		Deleting: c.State == clusterstore.StateDeleting,
 	}
 	for _, g := range c.NodeGroups {
+		// Decide's Min is the CREATION target: the autoscaler-owned
+		// target size clamped into [min, max] (#1415). Decide itself
+		// stays scale-up-only; explicit removals go through the CA
+		// provider's DeleteNodes.
 		d.Groups = append(d.Groups, clustercore.DesiredGroup{
-			Name: g.Name, Min: int(g.MinNodes), Max: int(g.MaxNodes),
+			Name: g.Name, Min: int(g.EffectiveTarget()), Max: int(g.MaxNodes),
 			CPU: g.Size.CPU, Memory: g.Size.Memory, Disk: g.Size.Disk,
 		})
 	}
@@ -275,7 +279,7 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 
 	expected := 1 // control plane
 	for _, g := range c.NodeGroups {
-		expected += int(g.MinNodes)
+		expected += int(g.EffectiveTarget())
 	}
 	ready, err := r.mgr.ReadyNodes(c.Owner, c.Name)
 	if err != nil {

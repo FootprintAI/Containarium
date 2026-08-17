@@ -1,0 +1,10 @@
+# Vendored third-party protos (externalgrpc + its k8s.io import chain).
+# Lint/breaking are upstream's concern, not ours — this module exists so
+# `buf generate` can compile externalgrpc.proto against its imports.
+version: v2
+modules:
+  - path: .
+lint:
+  use: []
+breaking:
+  use: []
