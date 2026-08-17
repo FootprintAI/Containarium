@@ -1,0 +1,4 @@
+address: "10.0.0.1:36442"
+key: "/etc/containarium/ca/client.key"
+cert: "/etc/containarium/ca/client.crt"
+cacert: "/etc/containarium/ca/ca.crt"
