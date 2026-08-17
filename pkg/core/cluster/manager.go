@@ -191,3 +191,42 @@ func (m *Manager) ReadyNodes(tenant, clusterName string) (int, error) {
 	}
 	return ready, nil
 }
+
+// CACredentials is the per-cluster mTLS client credential the CA unit
+// presents to the daemon's provider listener.
+type CACredentials struct {
+	ClientCertPEM []byte
+	ClientKeyPEM  []byte
+	CACertPEM     []byte
+}
+
+// DeployCA installs the cluster-autoscaler onto a provisioned control
+// plane: credential files (key 0600), the externalgrpc cloud-config,
+// and the digest-pinned unit. Idempotent — re-running replaces the
+// files and re-enables the unit.
+func (m *Manager) DeployCA(tenant, clusterName string, d CADeploy, creds CACredentials) error {
+	cp := CPName(tenant, clusterName)
+	files := []struct {
+		path    string
+		content []byte
+		mode    string
+	}{
+		{CAClientCertPath, creds.ClientCertPEM, "0644"},
+		{CAClientKeyPath, creds.ClientKeyPEM, "0600"},
+		{CACACertPath, creds.CACertPEM, "0644"},
+		{CACloudConfigPath, []byte(RenderCACloudConfig(d)), "0644"},
+	}
+	for _, f := range files {
+		if err := m.host.Push(cp, f.path, f.content, f.mode); err != nil {
+			return fmt.Errorf("push %s: %w", f.path, err)
+		}
+	}
+	script := RenderCAUnitScript(d)
+	if err := m.host.Push(cp, "/root/containarium-ca-bootstrap.sh", []byte(script), "0755"); err != nil {
+		return fmt.Errorf("push CA bootstrap: %w", err)
+	}
+	if _, err := m.host.Exec(cp, []string{"sh", "/root/containarium-ca-bootstrap.sh"}); err != nil {
+		return fmt.Errorf("CA bootstrap: %w", err)
+	}
+	return nil
+}

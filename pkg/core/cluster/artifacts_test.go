@@ -26,6 +26,9 @@ func TestPinnedArtifacts(t *testing.T) {
 	if got := k3sDownloadURL(); got != "https://github.com/k3s-io/k3s/releases/download/v1.33.4+k3s1/k3s" {
 		t.Fatalf("download URL = %q", got)
 	}
+	if CAImage != "registry.k8s.io/autoscaling/cluster-autoscaler:v1.33.0@sha256:6ef10d108e0e45ecd883e074682330bbd4a3403e767ad56804800f2f4ee816da" {
+		t.Fatal("CAImage pin changed — re-verify the digest against registry.k8s.io before shipping it into tenant clusters")
+	}
 }
 
 func TestVerifySHA256(t *testing.T) {

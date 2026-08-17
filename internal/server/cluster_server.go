@@ -44,6 +44,9 @@ type ClusterServer struct {
 	// records to DELETING for the reconciler to drain instead of
 	// dropping rows that may have live VMs behind them.
 	asyncDelete bool
+	// caps is the operator ceiling on configurable cluster size
+	// (#1417); zero values = unlimited.
+	caps clusterCaps
 }
 
 // NewClusterServer builds the server on a Store (in-memory at startup;
@@ -214,6 +217,9 @@ func (s *ClusterServer) CreateCluster(ctx context.Context, req *pb.CreateCluster
 	}
 	if err := cluster.ValidateNodeGroups(groups); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := s.enforceCaps(ctx, owner, req.Name, groups, false); err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -416,6 +422,9 @@ func (s *ClusterServer) UpdateClusterNodePool(ctx context.Context, req *pb.Updat
 	}
 	if err := cluster.ValidateNodeGroups(groups); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := s.enforceCaps(ctx, owner, req.Name, groups, true); err != nil {
+		return nil, err
 	}
 	if err := s.store.UpdateNodeGroups(ctx, owner, req.Name, groups); err != nil {
 		return nil, storeErr(err)
