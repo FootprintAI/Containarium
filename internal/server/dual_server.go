@@ -42,6 +42,7 @@ import (
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
+	clustercore "github.com/footprintai/containarium/pkg/core/cluster"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -1197,6 +1198,35 @@ skipAppHosting:
 					log.Printf("Agent task-queue persistence enabled (Postgres store)")
 				}
 			}
+		}
+	}
+
+	// Managed-cluster reconciler (#1414): converges cluster records into
+	// control-plane + worker VMs (pure Decide policy in
+	// pkg/core/cluster). Wired AFTER the Postgres store swap so it
+	// shares whichever store the cluster server ended up on. Set
+	// CONTAINARIUM_CLUSTER_RECONCILER=false to disable.
+	if os.Getenv("CONTAINARIUM_CLUSTER_RECONCILER") != "false" {
+		if clusterIncus, cErr := incus.New(); cErr != nil {
+			log.Printf("[cluster] reconciler disabled: incus unavailable: %v", cErr)
+		} else {
+			clusterMgr := clustercore.NewManager(clustercore.NewIncusHost(clusterIncus), clustercore.DefaultArtifactBase)
+			clusterReconciler := NewClusterReconciler(clusterServer.Store(), clusterMgr)
+			clusterReconciler.SetAdmission(containerServer.admitCPUCapacity)
+			if adv := os.Getenv("CONTAINARIUM_CLUSTER_ADVERTISE_ADDR"); adv != "" && networkServer != nil {
+				portRange := os.Getenv("CONTAINARIUM_CLUSTER_PORT_RANGE")
+				if portRange == "" {
+					portRange = "36443-36542"
+				}
+				if pErr := clusterReconciler.WireEndpointPublisher(networkServer, adv, portRange); pErr != nil {
+					log.Printf("[cluster] endpoint publisher disabled: %v", pErr)
+				}
+			} else {
+				log.Printf("[cluster] CONTAINARIUM_CLUSTER_ADVERTISE_ADDR unset; cluster API endpoints use VM IPs (host-local reach only)")
+			}
+			clusterServer.SetReconciler(clusterReconciler)
+			go clusterReconciler.Run(context.Background())
+			log.Printf("Managed-cluster reconciler enabled")
 		}
 	}
 

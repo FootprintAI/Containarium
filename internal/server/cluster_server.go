@@ -29,13 +29,21 @@ type KubeconfigReader interface {
 // record desired state and the reconciler (#1414) converges VMs — so
 // this server stays thin: authz, validation, store transitions.
 //
-// Until the reconciler lands, DeleteCluster removes rows directly
-// (nothing has provisioned VMs yet) and GetClusterKubeconfig answers
-// Unimplemented on a READY cluster; #1414 replaces both seams.
+// Without a reconciler wired (SetReconciler), DeleteCluster removes
+// rows directly (nothing can have provisioned VMs) and
+// GetClusterKubeconfig answers Unimplemented on a READY cluster.
 type ClusterServer struct {
 	pb.UnimplementedClusterServiceServer
 	store      cluster.Store
 	kubeconfig KubeconfigReader
+	// vmCapable is the create-time capability probe (#1414): a host
+	// that cannot run VMs refuses cluster creation with a typed
+	// error instead of provisioning doomed records.
+	vmCapable func() error
+	// asyncDelete marks the reconciler as wired: DeleteCluster flips
+	// records to DELETING for the reconciler to drain instead of
+	// dropping rows that may have live VMs behind them.
+	asyncDelete bool
 }
 
 // NewClusterServer builds the server on a Store (in-memory at startup;
@@ -51,6 +59,17 @@ func (s *ClusterServer) SetStore(store cluster.Store) { s.store = store }
 
 // SetKubeconfigReader wires the provisioner-backed kubeconfig path (#1414).
 func (s *ClusterServer) SetKubeconfigReader(r KubeconfigReader) { s.kubeconfig = r }
+
+// Store exposes the backing store so the reconciler shares it.
+func (s *ClusterServer) Store() cluster.Store { return s.store }
+
+// SetReconciler wires the #1414 reconciler: kubeconfig reads, the VM
+// capability probe, and reconciler-drained deletes.
+func (s *ClusterServer) SetReconciler(r *ClusterReconciler) {
+	s.kubeconfig = r
+	s.vmCapable = r.VMCapable
+	s.asyncDelete = true
+}
 
 // resolveOwner defaults an empty request owner to the authenticated
 // subject and enforces tenant isolation for the resolved value.
@@ -181,6 +200,11 @@ func (s *ClusterServer) CreateCluster(ctx context.Context, req *pb.CreateCluster
 	if err := cluster.ValidateName(req.Name); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	if s.vmCapable != nil {
+		if err := s.vmCapable(); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+		}
+	}
 	groups, err := groupsFromProto(req.NodeGroups)
 	if err != nil {
 		return nil, err
@@ -265,9 +289,20 @@ func (s *ClusterServer) DeleteCluster(ctx context.Context, req *pb.DeleteCluster
 	if err != nil {
 		return nil, err
 	}
-	// Until the reconciler (#1414) exists nothing has provisioned VMs,
-	// so removing rows IS the whole teardown. #1414 turns this into a
-	// DELETING transition the reconciler drains.
+	if s.asyncDelete {
+		// The reconciler owns teardown: flip to DELETING and let it
+		// drain VMs, the endpoint, and finally the rows.
+		if _, err := s.store.Get(ctx, owner, req.Name); err != nil {
+			return nil, storeErr(err)
+		}
+		if err := s.store.SetState(ctx, owner, req.Name, cluster.StateDeleting, ""); err != nil {
+			return nil, storeErr(err)
+		}
+		log.Printf("[cluster] deletion requested owner=%s name=%s", owner, req.Name)
+		return &pb.DeleteClusterResponse{Message: "cluster deletion in progress: " + req.Name}, nil
+	}
+	// No reconciler wired → nothing can have provisioned VMs, so
+	// removing rows IS the whole teardown.
 	if err := s.store.Delete(ctx, owner, req.Name); err != nil {
 		return nil, storeErr(err)
 	}
