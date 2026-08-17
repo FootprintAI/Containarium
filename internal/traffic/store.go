@@ -177,9 +177,23 @@ type QueryParams struct {
 
 // QueryConnections retrieves historical connections matching the criteria
 func (s *Store) QueryConnections(ctx context.Context, params QueryParams) ([]*pb.HistoricalConnection, int32, error) {
-	// Build query dynamically based on filters
+	// Build query dynamically based on filters.
+	//
+	// source_ip and dest_ip go through host() (#1397). The columns are INET,
+	// the scan targets are Go strings, and pgx v5 refuses to decode INET into
+	// a string in binary format — so without this EVERY query that matched a
+	// row failed with "cannot scan inet (OID 869) in binary format into
+	// *string", and connection history was unreadable whenever it was
+	// non-empty.
+	//
+	// host(), not ::text: a plain ::text cast renders an INET with its
+	// netmask, so a single host address comes back as "93.184.216.34/32" and
+	// the API hands clients an address that will not compare equal to the one
+	// they stored. host() yields the bare address, for IPv4 and IPv6 alike.
+	// Caught only because the test asserts the VALUE rather than merely that
+	// the query returned without error.
 	baseQuery := `
-		SELECT id, container_name, protocol, source_ip, source_port, dest_ip, dest_port,
+		SELECT id, container_name, protocol, host(source_ip), source_port, host(dest_ip), dest_port,
 		       direction, bytes_sent, bytes_received, started_at, ended_at, duration_seconds
 		FROM traffic_connections
 		WHERE container_name = $1 AND started_at >= $2 AND started_at <= $3
@@ -316,7 +330,11 @@ func (s *Store) GetAggregates(ctx context.Context, params AggregateParams) ([]*p
 	groupCols := "date_trunc('hour', started_at)"
 
 	if params.GroupByDestIP {
-		selectCols += ", dest_ip"
+		// host() for the same reason as QueryConnections (#1397) — the column
+		// is INET, the scan target is a Go string, and a bare ::text cast
+		// would append the netmask. Grouped on the raw column so the
+		// conversion cannot change how rows are bucketed.
+		selectCols += ", host(dest_ip)"
 		groupCols += ", dest_ip"
 	}
 	if params.GroupByDestPort {
