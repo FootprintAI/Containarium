@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/autosleep"
 	"github.com/footprintai/containarium/internal/cloud"
+	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	"github.com/footprintai/containarium/internal/collaborator"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/events"
@@ -41,6 +42,7 @@ import (
 	zapscanner "github.com/footprintai/containarium/internal/zap"
 	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
+	clustercore "github.com/footprintai/containarium/pkg/core/cluster"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -521,6 +523,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// cephfs storage pool (single-node ZFS hosts get a clear error).
 	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
 	log.Printf("Volume service enabled")
+
+	// Register ClusterService — managed Kubernetes clusters (#1413).
+	// Lifecycle state only; VM provisioning is the reconciler's job
+	// (#1414). Starts on the in-memory store and is swapped to Postgres
+	// below once the pool is up (same degrade posture as the network
+	// policy and crew-run stores).
+	clusterServer := NewClusterServer(clusterstore.NewMemStore())
+	pb.RegisterClusterServiceServer(grpcServer, clusterServer)
+	log.Printf("Cluster service enabled (in-memory store; Postgres swap below)")
 
 	// KMS admin service — read the active backend, envelope
 	// coverage, and trigger legacy→envelope migration. Backed by
@@ -1131,48 +1142,91 @@ skipAppHosting:
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
-		} else if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
-			log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
-			pool.Close()
 		} else {
-			npServer.SetStore(pgStore)
-			log.Printf("NetworkPolicy persistence enabled (Postgres store)")
-			// Operator signatures (#661 PR-B) share the same pool.
-			if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
-				log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)
+			// Managed-cluster state (#1413) is wired FIRST and
+			// independently: a network-policy store failure below must
+			// not silently leave clusters on the in-memory store (the
+			// pool therefore stays open even if the netpol store fails).
+			// Best-effort like its siblings: on failure the in-memory
+			// store stays and the daemon comes up either way.
+			if clStore, cErr := clusterstore.NewPGStore(context.Background(), pool); cErr != nil {
+				log.Printf("Warning: Failed to create Postgres cluster store: %v", cErr)
 			} else {
-				npServer.SetSignatureStore(sigStore)
-				log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
+				clusterServer.SetStore(clStore)
+				log.Printf("Managed-cluster persistence enabled (Postgres store)")
 			}
 
-			// Agent run state (#1182) shares the same pool. Same best-effort
-			// posture: on failure the in-memory store stays, so the daemon comes
-			// up either way — it just loses runs across a restart, which is the
-			// behavior that predates this.
-			if runStore, rErr := NewPostgresCrewRunStore(context.Background(), pool); rErr != nil {
-				log.Printf("Warning: Failed to create Postgres crew-run store: %v", rErr)
+			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
+				log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
 			} else {
-				crewServer.SetRunStore(runStore)
-				crewServer.SetOwner(config.LocalBackendID)
-				log.Printf("Crew-run persistence enabled (Postgres store)")
-				// Reconcile runs the previous daemon was driving when it
-				// stopped. RunCrew records a run as RUNNING before driving it,
-				// so without this they stay RUNNING forever now that the state
-				// is durable — GetCrewRun would answer RUNNING for a run that
-				// can never finish (#1182 AC4). Best-effort: a daemon that
-				// cannot reconcile should still start.
-				if n, fErr := runStore.FailStranded(context.Background(), config.LocalBackendID, StrandedByRestart); fErr != nil {
-					log.Printf("Warning: could not reconcile stranded crew runs: %v", fErr)
-				} else if n > 0 {
-					log.Printf("Marked %d crew run(s) FAILED: in flight when the previous daemon stopped", n)
+				npServer.SetStore(pgStore)
+				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
+				// Operator signatures (#661 PR-B) share the same pool.
+				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
+					log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)
+				} else {
+					npServer.SetSignatureStore(sigStore)
+					log.Printf("NetworkPolicy signature persistence enabled (Postgres store)")
+				}
+
+				// Agent run state (#1182) shares the same pool. Same best-effort
+				// posture: on failure the in-memory store stays, so the daemon comes
+				// up either way — it just loses runs across a restart, which is the
+				// behavior that predates this.
+				if runStore, rErr := NewPostgresCrewRunStore(context.Background(), pool); rErr != nil {
+					log.Printf("Warning: Failed to create Postgres crew-run store: %v", rErr)
+				} else {
+					crewServer.SetRunStore(runStore)
+					crewServer.SetOwner(config.LocalBackendID)
+					log.Printf("Crew-run persistence enabled (Postgres store)")
+					// Reconcile runs the previous daemon was driving when it
+					// stopped. RunCrew records a run as RUNNING before driving it,
+					// so without this they stay RUNNING forever now that the state
+					// is durable — GetCrewRun would answer RUNNING for a run that
+					// can never finish (#1182 AC4). Best-effort: a daemon that
+					// cannot reconcile should still start.
+					if n, fErr := runStore.FailStranded(context.Background(), config.LocalBackendID, StrandedByRestart); fErr != nil {
+						log.Printf("Warning: could not reconcile stranded crew runs: %v", fErr)
+					} else if n > 0 {
+						log.Printf("Marked %d crew run(s) FAILED: in flight when the previous daemon stopped", n)
+					}
+				}
+				if taskQueue, qErr := NewPostgresAgentTaskQueue(context.Background(), pool); qErr != nil {
+					log.Printf("Warning: Failed to create Postgres agent task queue: %v", qErr)
+				} else {
+					agentSkillServer.SetTaskQueue(taskQueue)
+					log.Printf("Agent task-queue persistence enabled (Postgres store)")
 				}
 			}
-			if taskQueue, qErr := NewPostgresAgentTaskQueue(context.Background(), pool); qErr != nil {
-				log.Printf("Warning: Failed to create Postgres agent task queue: %v", qErr)
+		}
+	}
+
+	// Managed-cluster reconciler (#1414): converges cluster records into
+	// control-plane + worker VMs (pure Decide policy in
+	// pkg/core/cluster). Wired AFTER the Postgres store swap so it
+	// shares whichever store the cluster server ended up on. Set
+	// CONTAINARIUM_CLUSTER_RECONCILER=false to disable.
+	if os.Getenv("CONTAINARIUM_CLUSTER_RECONCILER") != "false" {
+		if clusterIncus, cErr := incus.New(); cErr != nil {
+			log.Printf("[cluster] reconciler disabled: incus unavailable: %v", cErr)
+		} else {
+			clusterMgr := clustercore.NewManager(clustercore.NewIncusHost(clusterIncus), clustercore.DefaultArtifactBase)
+			clusterReconciler := NewClusterReconciler(clusterServer.Store(), clusterMgr)
+			clusterReconciler.SetAdmission(containerServer.admitCPUCapacity)
+			if adv := os.Getenv("CONTAINARIUM_CLUSTER_ADVERTISE_ADDR"); adv != "" && networkServer != nil {
+				portRange := os.Getenv("CONTAINARIUM_CLUSTER_PORT_RANGE")
+				if portRange == "" {
+					portRange = "36443-36542"
+				}
+				if pErr := clusterReconciler.WireEndpointPublisher(networkServer, adv, portRange); pErr != nil {
+					log.Printf("[cluster] endpoint publisher disabled: %v", pErr)
+				}
 			} else {
-				agentSkillServer.SetTaskQueue(taskQueue)
-				log.Printf("Agent task-queue persistence enabled (Postgres store)")
+				log.Printf("[cluster] CONTAINARIUM_CLUSTER_ADVERTISE_ADDR unset; cluster API endpoints use VM IPs (host-local reach only)")
 			}
+			clusterServer.SetReconciler(clusterReconciler)
+			go clusterReconciler.Run(context.Background())
+			log.Printf("Managed-cluster reconciler enabled")
 		}
 	}
 

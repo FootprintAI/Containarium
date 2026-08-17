@@ -1,0 +1,308 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "containarium/v1/container.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// ClusterService manages tenant-facing managed Kubernetes clusters (#1413).
+//
+// A managed cluster is a platform-operated k3s control plane plus worker
+// nodes that are Containarium VMs, grouped into typed size classes the
+// cluster-autoscaler expands by fit simulation. The tenant's only surface
+// is this service and the kubeconfig it returns — the control-plane VM is
+// platform territory (no tenant SSH, absent from the tenant's container
+// list), and worker VMs are cluster-internal.
+//
+// Design: docs/architecture/managed-k8s-clusters.md. Provisioning is
+// asynchronous: CreateCluster records the desired cluster and returns; a
+// daemon-side reconciler (#1414) converges VMs and flips the cluster to
+// READY. Kubeconfig and node-join material are read on demand from the
+// control-plane VM and are never persisted by the platform.
+service ClusterService {
+  // CreateCluster records a new managed cluster and starts provisioning.
+  rpc CreateCluster(CreateClusterRequest) returns (CreateClusterResponse) {
+    option (google.api.http) = {
+      post: "/v1/clusters"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create a managed Kubernetes cluster";
+      description: "Records the cluster and returns immediately in state PROVISIONING; a reconciler provisions the control-plane and worker VMs asynchronously. Fails fast on hosts that cannot run VMs.";
+      tags: "Clusters";
+    };
+  }
+
+  // ListClusters lists the caller's clusters (admins see all).
+  rpc ListClusters(ListClustersRequest) returns (ListClustersResponse) {
+    option (google.api.http) = {
+      get: "/v1/clusters"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List managed clusters";
+      tags: "Clusters";
+    };
+  }
+
+  // GetCluster returns one cluster's desired/observed metadata.
+  rpc GetCluster(GetClusterRequest) returns (GetClusterResponse) {
+    option (google.api.http) = {
+      get: "/v1/clusters/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a managed cluster";
+      tags: "Clusters";
+    };
+  }
+
+  // DeleteCluster tears down the cluster: all VMs, the API passthrough
+  // route, persisted rows, and minted machine tokens.
+  rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse) {
+    option (google.api.http) = {
+      delete: "/v1/clusters/{name}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a managed cluster";
+      description: "Tears down control-plane and worker VMs, the published API endpoint, and all cluster state. A re-created cluster of the same name starts empty.";
+      tags: "Clusters";
+    };
+  }
+
+  // GetClusterKubeconfig returns an admin kubeconfig for the cluster,
+  // read on demand from the control-plane VM (never stored) with the
+  // server URL rewritten to the published external endpoint.
+  rpc GetClusterKubeconfig(GetClusterKubeconfigRequest) returns (GetClusterKubeconfigResponse) {
+    option (google.api.http) = {
+      get: "/v1/clusters/{name}/kubeconfig"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a cluster's kubeconfig";
+      description: "Only available once the cluster is READY. The kubeconfig is read from the control-plane VM on each call and is not persisted by the platform.";
+      tags: "Clusters";
+    };
+  }
+
+  // GetClusterStatus returns nodes, per-group counts, and recent scale
+  // events — including refusals (a scale-up past a group's max or the
+  // host admission gate is recorded, never silently clamped).
+  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/clusters/{name}/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a cluster's status";
+      description: "Control-plane health, per-node-group counts vs min/max, and the most recent scale events with reasons.";
+      tags: "Clusters";
+    };
+  }
+
+  // UpdateClusterNodePool replaces the cluster's node groups (size
+  // classes and min/max bounds). The reconciler and autoscaler converge
+  // node counts to the new bounds asynchronously.
+  rpc UpdateClusterNodePool(UpdateClusterNodePoolRequest) returns (UpdateClusterNodePoolResponse) {
+    option (google.api.http) = {
+      post: "/v1/clusters/{name}/node-pool"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Update a cluster's node groups";
+      tags: "Clusters";
+    };
+  }
+}
+
+// ClusterState is the lifecycle state of a managed cluster.
+enum ClusterState {
+  CLUSTER_STATE_UNSPECIFIED = 0;
+  // Recorded; the reconciler is provisioning VMs.
+  CLUSTER_STATE_PROVISIONING = 1;
+  // Control plane serving and every group's min nodes Ready.
+  CLUSTER_STATE_READY = 2;
+  // Serving, but observed state diverges from desired (e.g. a lost
+  // node being replaced).
+  CLUSTER_STATE_DEGRADED = 3;
+  // Teardown in progress.
+  CLUSTER_STATE_DELETING = 4;
+  // Provisioning or reconciliation failed; state_reason says why.
+  CLUSTER_STATE_ERROR = 5;
+}
+
+// ClusterNodeRole distinguishes the platform-owned control plane from
+// tenant-workload workers.
+enum ClusterNodeRole {
+  CLUSTER_NODE_ROLE_UNSPECIFIED = 0;
+  CLUSTER_NODE_ROLE_CONTROL_PLANE = 1;
+  CLUSTER_NODE_ROLE_WORKER = 2;
+}
+
+// ClusterNodeState is a node's coarse lifecycle state.
+enum ClusterNodeState {
+  CLUSTER_NODE_STATE_UNSPECIFIED = 0;
+  CLUSTER_NODE_STATE_PROVISIONING = 1;
+  CLUSTER_NODE_STATE_READY = 2;
+  CLUSTER_NODE_STATE_DRAINING = 3;
+}
+
+// ScaleEventKind categorizes entries in a cluster's scale history.
+enum ScaleEventKind {
+  SCALE_EVENT_KIND_UNSPECIFIED = 0;
+  SCALE_EVENT_KIND_SCALE_UP = 1;
+  SCALE_EVENT_KIND_SCALE_DOWN = 2;
+  // A scale request was refused (group max, daemon cap, or host
+  // admission gate) — surfaced here rather than silently clamped.
+  SCALE_EVENT_KIND_REFUSED = 3;
+  // A failed/lost node was replaced by the reconciler.
+  SCALE_EVENT_KIND_NODE_REPLACED = 4;
+}
+
+// NodeGroup is a typed worker size class. The autoscaler advertises one
+// node group per class and picks the class whose template fits pending
+// pods; the template it advertises MUST equal `size` (truthfulness the
+// fit simulation depends on).
+message NodeGroup {
+  // Group name, unique within the cluster (e.g. "small").
+  string name = 1;
+  // VM size for every node in this group. GPU fields are rejected for
+  // cluster nodes in v1 (GPU node pools are a later phase), and so is
+  // storage_class (a box-PVC concept with no meaning on a node VM).
+  ResourceLimits size = 2;
+  // Nodes the reconciler keeps at minimum (>= 0).
+  int32 min_nodes = 3;
+  // Hard ceiling the autoscaler may not exceed (>= min_nodes, >= 1
+  // across the pool).
+  int32 max_nodes = 4;
+}
+
+// ClusterNode is one VM belonging to a cluster.
+message ClusterNode {
+  // Incus VM name (e.g. "<tenant>-k8s-<cluster>-small-1").
+  string vm_name = 1;
+  ClusterNodeRole role = 2;
+  // Owning node group; empty for the control plane.
+  string node_group = 3;
+  ClusterNodeState state = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// ScaleEvent is one entry in the cluster's scale history.
+message ScaleEvent {
+  google.protobuf.Timestamp at = 1;
+  ScaleEventKind kind = 2;
+  // Node group the event concerns; empty for cluster-wide events.
+  string node_group = 3;
+  // Human-readable reason ("2 pods pending", "at max_nodes (3)").
+  string reason = 4;
+}
+
+// Cluster is a managed Kubernetes cluster.
+message Cluster {
+  // Cluster name, unique per owner.
+  string name = 1;
+  // Owning tenant (username).
+  string owner = 2;
+  ClusterState state = 3;
+  // Why the cluster is in ERROR/DEGRADED, empty otherwise.
+  string state_reason = 4;
+  // Pinned k3s version the cluster runs (set by the provisioner).
+  string k3s_version = 5;
+  // Worker size classes.
+  repeated NodeGroup node_groups = 6;
+  // External API endpoint (host:port), set once published.
+  string api_endpoint = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message CreateClusterRequest {
+  // Cluster name (DNS-label syntax).
+  string name = 1;
+  // Owning tenant. Empty = the authenticated caller. Setting another
+  // tenant requires the admin role.
+  string owner = 2;
+  // Worker size classes. Empty = the platform's default presets.
+  repeated NodeGroup node_groups = 3;
+}
+
+message CreateClusterResponse {
+  Cluster cluster = 1;
+  string message = 2;
+}
+
+message ListClustersRequest {
+  // Owner filter. Non-admin callers may only list their own clusters;
+  // empty = the authenticated caller (admins: all clusters).
+  string owner = 1;
+}
+
+message ListClustersResponse {
+  repeated Cluster clusters = 1;
+}
+
+message GetClusterRequest {
+  string name = 1;
+  // Owning tenant. Empty = the authenticated caller.
+  string owner = 2;
+}
+
+message GetClusterResponse {
+  Cluster cluster = 1;
+}
+
+message DeleteClusterRequest {
+  string name = 1;
+  // Owning tenant. Empty = the authenticated caller.
+  string owner = 2;
+}
+
+message DeleteClusterResponse {
+  string message = 1;
+}
+
+message GetClusterKubeconfigRequest {
+  string name = 1;
+  // Owning tenant. Empty = the authenticated caller.
+  string owner = 2;
+}
+
+message GetClusterKubeconfigResponse {
+  // kubeconfig YAML with the server URL rewritten to api_endpoint.
+  string kubeconfig = 1;
+}
+
+message GetClusterStatusRequest {
+  string name = 1;
+  // Owning tenant. Empty = the authenticated caller.
+  string owner = 2;
+  // Max scale events to return, newest first. 0 = server default (20).
+  int32 events_limit = 3;
+}
+
+// NodeGroupStatus is a group's observed count against its bounds.
+message NodeGroupStatus {
+  NodeGroup group = 1;
+  int32 current_nodes = 2;
+}
+
+message GetClusterStatusResponse {
+  Cluster cluster = 1;
+  repeated ClusterNode nodes = 2;
+  repeated NodeGroupStatus groups = 3;
+  // Newest first.
+  repeated ScaleEvent events = 4;
+}
+
+message UpdateClusterNodePoolRequest {
+  string name = 1;
+  // Owning tenant. Empty = the authenticated caller.
+  string owner = 2;
+  // Replacement set of node groups (validated like create).
+  repeated NodeGroup node_groups = 3;
+}
+
+message UpdateClusterNodePoolResponse {
+  Cluster cluster = 1;
+  string message = 2;
+}
