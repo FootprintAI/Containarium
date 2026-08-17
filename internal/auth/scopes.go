@@ -101,6 +101,16 @@ const (
 	ScopeCrewsRead = "crews:read"
 	ScopeCrewsRun  = "crews:run"
 
+	// managed Kubernetes clusters (ClusterServer, #1413).
+	// clusters:read lists/inspects clusters and their scale history;
+	// clusters:write creates/deletes clusters, edits node pools, and
+	// fetches the kubeconfig — the kubeconfig is deliberately behind
+	// the WRITE scope because it is cluster-admin material (holding it
+	// mutates the cluster's workloads), so an inspection-only token
+	// cannot take control of a cluster.
+	ScopeClustersRead  = "clusters:read"
+	ScopeClustersWrite = "clusters:write"
+
 	// read-only scopes for surfaces that were admin-only, so a least-privilege
 	// (e.g. compliance/evidence) token can read one without full admin (#621).
 	ScopeAuditRead         = "audit:read"          // audit-log query
@@ -126,6 +136,7 @@ var AllScopes = []string{
 	ScopeTokensWrite,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
+	ScopeClustersRead, ScopeClustersWrite,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
 }
 
