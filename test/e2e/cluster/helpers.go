@@ -90,6 +90,112 @@ func ParseSabotage(value string) (SabotageMode, error) {
 	}
 }
 
+// IsolationMode is the node isolation class the lane exercises
+// (#1430). The same six-step journey runs in both classes; what
+// changes is the `cluster create` call and what the runner must be
+// able to do (KVM for VMs, container-node preconditions otherwise).
+type IsolationMode int
+
+const (
+	// IsolationVM is the default: cluster nodes are Incus VMs, the
+	// class the self-hosted KVM lane gates (#1418).
+	IsolationVM IsolationMode = iota
+	// IsolationContainer: cluster nodes are Incus system containers
+	// (#1429), the class the GitHub-hosted lane runs without KVM.
+	IsolationContainer
+)
+
+func (m IsolationMode) String() string {
+	if m == IsolationContainer {
+		return "container"
+	}
+	return "vm"
+}
+
+// ParseIsolation maps CONTAINARIUM_E2E_ISOLATION onto a mode. Unset is
+// VM so the KVM lane's environment keeps meaning exactly what it meant
+// before this knob existed. Unknown values are an error, for
+// ParseSabotage's reason: a typo'd container run that silently took the
+// VM path would report "container mode works" having never asked for a
+// container node.
+func ParseIsolation(value string) (IsolationMode, error) {
+	switch strings.TrimSpace(value) {
+	case "", "vm":
+		return IsolationVM, nil
+	case "container":
+		return IsolationContainer, nil
+	default:
+		return IsolationVM, fmt.Errorf("unknown CONTAINARIUM_E2E_ISOLATION value %q (want empty, vm or container)", value)
+	}
+}
+
+// CreateArgs returns the extra `containarium cluster create` arguments
+// for the mode. VM mode adds none — the KVM lane invokes the CLI
+// byte-identically to its pre-#1430 self, and the daemon's own default
+// (never the weaker class) decides.
+func (m IsolationMode) CreateArgs() []string {
+	if m == IsolationContainer {
+		return []string{"--isolation", "container"}
+	}
+	return nil
+}
+
+// ClusterInstance is one Incus instance as the lane observes it.
+type ClusterInstance struct {
+	Name string
+	// Type is Incus's instance type ("container" or "virtual-machine").
+	// Carried for logs only — see ClusterInstanceNames.
+	Type string
+}
+
+// ClusterInstanceNames returns the names of the instances belonging to
+// a cluster, matched on the cluster's name prefix and NOTHING else,
+// sorted. The type is deliberately not a filter: a container-mode
+// cluster's nodes are Incus containers and a VM-mode cluster's are VMs,
+// so a type filter would make one of the two lanes observe an empty
+// cluster and report "no leftover nodes" as a pass.
+func ClusterInstanceNames(all []ClusterInstance, prefix string) []string {
+	var out []string
+	for _, inst := range all {
+		if strings.HasPrefix(inst.Name, prefix) {
+			out = append(out, inst.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// incusInstanceType is Incus's own name for the instance class the
+// mode provisions ("container" / "virtual-machine" on the API).
+func (m IsolationMode) incusInstanceType() string {
+	if m == IsolationContainer {
+		return "container"
+	}
+	return "virtual-machine"
+}
+
+// WrongClassInstances returns "name (type)" for every instance of the
+// cluster whose Incus instance type is not the class the lane asked
+// for, sorted. This is what makes the isolation knob provable: a
+// container-mode run whose daemon quietly provisioned VMs (or the
+// reverse) would otherwise run the entire journey and report the wrong
+// class as green. A type Incus did not report counts as a mismatch —
+// an unverified class is not a verified one.
+func WrongClassInstances(all []ClusterInstance, prefix string, mode IsolationMode) []string {
+	want := mode.incusInstanceType()
+	var out []string
+	for _, inst := range all {
+		if !strings.HasPrefix(inst.Name, prefix) {
+			continue
+		}
+		if inst.Type != want {
+			out = append(out, fmt.Sprintf("%s (%s)", inst.Name, inst.Type))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // MaxRestartDelta returns the largest restart-count increase across
 // containers between two observations keyed by pod/container name. A
 // container unseen before counts from zero; one gone in after (its pod

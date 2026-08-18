@@ -200,3 +200,160 @@ func TestMaxRestartDelta(t *testing.T) {
 		})
 	}
 }
+
+func TestParseIsolation(t *testing.T) {
+	tests := []struct {
+		value    string
+		want     IsolationMode
+		wantArgs []string
+		wantErr  bool
+	}{
+		// Unset is VM: the KVM lane (#1418) sets nothing, and must keep
+		// invoking `cluster create <name>` with no extra arguments.
+		{value: "", want: IsolationVM, wantArgs: nil},
+		{value: "vm", want: IsolationVM, wantArgs: nil},
+		{value: "container", want: IsolationContainer, wantArgs: []string{"--isolation", "container"}},
+		{value: "  container \n", want: IsolationContainer, wantArgs: []string{"--isolation", "container"}},
+		// Fail closed, like ParseSabotage: a typo'd container run that
+		// quietly took the VM path would report "container mode works"
+		// having never asked for a container node.
+		{value: "containers", wantErr: true},
+		{value: "VM", wantErr: true},
+		{value: "none", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run("value="+tt.value, func(t *testing.T) {
+			got, err := ParseIsolation(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("want error for %q, got mode %v", tt.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("mode = %v, want %v", got, tt.want)
+			}
+			if args := got.CreateArgs(); !reflect.DeepEqual(args, tt.wantArgs) {
+				t.Fatalf("CreateArgs = %v, want %v", args, tt.wantArgs)
+			}
+		})
+	}
+}
+
+func TestWrongClassInstances(t *testing.T) {
+	// The knob has to be provable: a container lane whose daemon quietly
+	// provisioned VMs (or a VM lane that got containers) would run the
+	// whole journey and report the wrong class as green. Incus's own
+	// instance type is the observed state that settles it.
+	tests := []struct {
+		name   string
+		all    []ClusterInstance
+		mode   IsolationMode
+		want   []string
+		prefix string
+	}{
+		{
+			name:   "container mode with container nodes is clean",
+			all:    []ClusterInstance{{Name: "c-cp", Type: "container"}, {Name: "c-small-1", Type: "container"}},
+			mode:   IsolationContainer,
+			prefix: "c-",
+			want:   nil,
+		},
+		{
+			name:   "container mode that got a VM names it",
+			all:    []ClusterInstance{{Name: "c-cp", Type: "container"}, {Name: "c-small-1", Type: "virtual-machine"}},
+			mode:   IsolationContainer,
+			prefix: "c-",
+			want:   []string{"c-small-1 (virtual-machine)"},
+		},
+		{
+			name:   "vm mode that got a container names it",
+			all:    []ClusterInstance{{Name: "c-cp", Type: "container"}},
+			mode:   IsolationVM,
+			prefix: "c-",
+			want:   []string{"c-cp (container)"},
+		},
+		{
+			name:   "an unreported type is a mismatch, not a pass",
+			all:    []ClusterInstance{{Name: "c-cp", Type: ""}},
+			mode:   IsolationContainer,
+			prefix: "c-",
+			want:   []string{`c-cp ()`},
+		},
+		{
+			name:   "instances outside the cluster are none of our business",
+			all:    []ClusterInstance{{Name: "other-box", Type: "virtual-machine"}},
+			mode:   IsolationContainer,
+			prefix: "c-",
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := WrongClassInstances(tt.all, tt.prefix, tt.mode)
+			if len(got) == 0 && len(tt.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("WrongClassInstances = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClusterInstanceNames(t *testing.T) {
+	// Container-mode nodes are Incus containers and VM-mode nodes are
+	// Incus VMs, so the lane's instance-listing assertions match on the
+	// cluster's name prefix and NEVER on the instance type — a type
+	// filter would make the container lane observe an empty cluster and
+	// call that "no leftover nodes".
+	all := []ClusterInstance{
+		{Name: "e2etenant-k8s-lane-cp", Type: "virtual-machine"},
+		{Name: "e2etenant-k8s-lane-small-1", Type: "container"},
+		{Name: "othertenant-k8s-lane-cp", Type: "container"},
+		{Name: "e2etenant-k8s-other-cp", Type: "container"},
+		{Name: "unrelated-box", Type: "container"},
+	}
+	tests := []struct {
+		name   string
+		all    []ClusterInstance
+		prefix string
+		want   []string
+	}{
+		{
+			name:   "both instance types match on prefix alone",
+			all:    all,
+			prefix: "e2etenant-k8s-lane-",
+			want:   []string{"e2etenant-k8s-lane-cp", "e2etenant-k8s-lane-small-1"},
+		},
+		{
+			name:   "another tenant's or cluster's instances never match",
+			all:    all,
+			prefix: "nosuchtenant-k8s-lane-",
+			want:   nil,
+		},
+		{
+			name: "output is sorted for stable logs",
+			all: []ClusterInstance{
+				{Name: "p-b", Type: "container"},
+				{Name: "p-a", Type: "virtual-machine"},
+			},
+			prefix: "p-",
+			want:   []string{"p-a", "p-b"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClusterInstanceNames(tt.all, tt.prefix)
+			if len(got) == 0 && len(tt.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("ClusterInstanceNames = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

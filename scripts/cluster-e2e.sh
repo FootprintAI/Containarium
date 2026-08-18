@@ -1,25 +1,41 @@
 #!/usr/bin/env bash
 #
-# cluster-e2e.sh — the gated KVM e2e lane for managed Kubernetes
-# clusters (#1418). Builds the CLI+daemon from this tree, starts a real
-# daemon against a real Postgres on a VM-capable Incus host, and runs
-# the six-step MVP journey in test/e2e/cluster/ against it.
+# cluster-e2e.sh — the gated e2e lane for managed Kubernetes clusters
+# (#1418). Builds the CLI+daemon from this tree, starts a real daemon
+# against a real Postgres on a real Incus host, and runs the six-step
+# MVP journey in test/e2e/cluster/ against it.
 #
 # Local use:   sudo -v && bash scripts/cluster-e2e.sh
 # Sabotage:    CONTAINARIUM_E2E_SABOTAGE=join-token bash scripts/cluster-e2e.sh
 #              (expected to exit non-zero — that is the point; the
 #              workflow's prove-can-fail job asserts it)
+# Container:   CONTAINARIUM_E2E_ISOLATION=container \
+#              CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES=true \
+#              bash scripts/cluster-e2e.sh
 # CI:          .github/workflows/cluster-e2e.yml on the self-hosted
-#              incus+kvm runner (nightly + release tags, not per-PR).
+#              incus+kvm runner (nightly + release tags, not per-PR), and
+#              .github/workflows/cluster-container-e2e.yml on a
+#              GitHub-hosted runner for the container class (#1430).
+#
+# Isolation (#1430): CONTAINARIUM_E2E_ISOLATION selects the class the
+# journey runs in — unset/`vm` (default, unchanged) or `container`.
+# Container mode also needs the operator opt-in
+# CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES=true, which this script only
+# passes through: whether a host may weaken the tenant boundary is the
+# operator's assertion to make, never the test script's.
 #
 # Host requirements (the runner-provisioning half of #1418):
-#   - Capacity for the journey's worst case: ~16 vCPU (CP 2 + up to
-#     3×small 2 + one large 8), ~32 GB RAM, ~500 GB free in the Incus
-#     pool. On a smaller host the daemon's CPU-admission gate will
+#   - VM mode: capacity for the journey's worst case — ~16 vCPU (CP 2 +
+#     up to 3×small 2 + one large 8), ~32 GB RAM, ~500 GB free in the
+#     Incus pool. On a smaller host the daemon's CPU-admission gate will
 #     correctly REFUSE the larger-class scale-up and the lane goes red
 #     for an environmental reason that looks like a product bug.
 #   - Incus with a usable storage pool at /var/lib/incus/unix.socket
-#   - KVM (/dev/kvm) — cluster nodes are VMs, not containers
+#   - VM mode only: KVM (/dev/kvm). Container-mode nodes are Incus
+#     system containers, which is why that lane can run KVM-less on a
+#     GitHub-hosted runner; its preconditions (nesting, cgroup v2,
+#     br_netfilter, overlay) are probed by the daemon itself, which
+#     refuses loudly rather than provisioning a broken node.
 #   - Go toolchain, passwordless sudo for the invoking user
 #   - Postgres reachable via CONTAINARIUM_POSTGRES_URL, or Docker/Podman
 #     available so the script can start a throwaway one
@@ -34,6 +50,11 @@ cd "$REPO_ROOT"
 
 GRPC_PORT="${CONTAINARIUM_E2E_GRPC_PORT:-15051}"
 HTTP_PORT="${CONTAINARIUM_E2E_HTTP_PORT:-18080}"
+ISOLATION="${CONTAINARIUM_E2E_ISOLATION:-vm}"
+# The Go-side bound. Kept a knob so a lane whose job timeout is tighter
+# than the KVM lane's 150m can still let the test time out first and
+# print its diagnostics; the default is the KVM lane's unchanged value.
+GO_TIMEOUT="${CONTAINARIUM_E2E_GO_TIMEOUT:-110m}"
 WORKDIR="$(mktemp -d)"
 BIN="$WORKDIR/containarium"
 DAEMON_LOG="$WORKDIR/daemon.log"
@@ -41,14 +62,31 @@ PG_CONTAINER=""
 DAEMON_PID=""
 
 # The tenant/cluster names the Go test uses; the sweep below must match.
-VM_PREFIX="e2etenant-k8s-lane-"
+# Instances, not VMs: in container mode the same names are Incus system
+# containers, and `incus list` reports both classes (#1430).
+INSTANCE_PREFIX="e2etenant-k8s-lane-"
 
 log() { echo "==> $*"; }
 
 fail() { echo "FATAL: $*" >&2; exit 1; }
 
 # --- pre-flight: fail loudly, never skip silently -----------------------
-[ -e /dev/kvm ] || fail "no /dev/kvm — this lane needs a KVM-capable host (nested virt on a VM runner)"
+case "$ISOLATION" in
+  vm)
+    [ -e /dev/kvm ] || fail "no /dev/kvm — VM-mode nodes need a KVM-capable host (nested virt on a VM runner)"
+    ;;
+  container)
+    # No KVM check: container-mode nodes are system containers. The
+    # host's container-node preconditions are the daemon's probe to
+    # make (#1429), and it refuses the create rather than provisioning
+    # a node that cannot work.
+    [ -n "${CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES:-}" ] \
+      || fail "container mode needs the operator opt-in CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES=true; without it the daemon refuses container creates and the lane goes red for a configuration reason"
+    ;;
+  *)
+    fail "unknown CONTAINARIUM_E2E_ISOLATION=$ISOLATION (want vm or container)"
+    ;;
+esac
 [ -S /var/lib/incus/unix.socket ] || fail "no Incus socket at /var/lib/incus/unix.socket"
 command -v go >/dev/null || fail "no Go toolchain"
 sudo -n true 2>/dev/null || fail "needs passwordless sudo (daemon and Incus operations run as root)"
@@ -62,10 +100,12 @@ cleanup() {
     sleep 2
     sudo kill -9 "$DAEMON_PID" 2>/dev/null
   fi
-  # Sweep any VMs a red run left behind, so the next nightly starts clean.
-  for vm in $(sudo incus list --format csv --columns n 2>/dev/null | grep "^${VM_PREFIX}" || true); do
-    log "sweeping leftover VM $vm"
-    sudo incus delete --force "$vm" 2>/dev/null
+  # Sweep any instances a red run left behind, so the next run starts
+  # clean. `incus list` reports containers and VMs alike, so this sweeps
+  # both isolation classes.
+  for inst in $(sudo incus list --format csv --columns n 2>/dev/null | grep "^${INSTANCE_PREFIX}" || true); do
+    log "sweeping leftover instance $inst"
+    sudo incus delete --force "$inst" 2>/dev/null
   done
   if [ -n "$PG_CONTAINER" ]; then
     log "stopping throwaway postgres"
@@ -110,10 +150,11 @@ JWT_SECRET="${CONTAINARIUM_JWT_SECRET:-$(head -c 32 /dev/urandom | od -An -tx1 |
 ADVERTISE_HOST="${CONTAINARIUM_E2E_ADVERTISE_HOST:-$(ip -4 route get 1.1.1.1 | sed -n 's/.*src \([0-9.]*\).*/\1/p')}"
 [ -n "$ADVERTISE_HOST" ] || fail "could not determine the host's advertise address; set CONTAINARIUM_E2E_ADVERTISE_HOST"
 
-log "starting daemon (grpc :$GRPC_PORT http :$HTTP_PORT advertise $ADVERTISE_HOST)"
+log "starting daemon (grpc :$GRPC_PORT http :$HTTP_PORT advertise $ADVERTISE_HOST isolation $ISOLATION)"
 sudo env \
   CONTAINARIUM_JWT_SECRET="$JWT_SECRET" \
   CONTAINARIUM_POSTGRES_URL="$CONTAINARIUM_POSTGRES_URL" \
+  CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES="${CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES:-}" \
   CONTAINARIUM_CLUSTER_ADVERTISE_ADDR="$ADVERTISE_HOST" \
   CONTAINARIUM_CLUSTER_CA_ADVERTISE="$ADVERTISE_HOST:36442" \
   CONTAINARIUM_CLUSTER_CA_PKI_DIR="$WORKDIR/cluster-ca" \
@@ -124,20 +165,29 @@ DAEMON_PID=$!
 # Readiness: any HTTP answer on the gateway port means the REST surface
 # is up. Authenticated calls are the Go test's job — it mints its own
 # tenant token from the same secret.
-log "waiting for the daemon's HTTP gateway"
-for i in $(seq 1 60); do
+#
+# The bound is 6 minutes, not the 2 it used to be: on a COLD host (an
+# ephemeral GitHub-hosted runner, as opposed to a warm self-hosted one)
+# the daemon spends up to 2 minutes waiting for core containers that
+# have never existed before proceeding without them, and the old bound
+# declared that a dead daemon. A warm host still answers in seconds, so
+# nothing changes for the KVM lane except how long a genuinely stuck
+# daemon takes to be reported.
+DAEMON_WAIT_TRIES="${CONTAINARIUM_E2E_DAEMON_WAIT_TRIES:-180}"
+log "waiting for the daemon's HTTP gateway (up to $((DAEMON_WAIT_TRIES * 2))s)"
+for i in $(seq 1 "$DAEMON_WAIT_TRIES"); do
   if ! sudo kill -0 "$DAEMON_PID" 2>/dev/null; then
     fail "daemon exited during startup"
   fi
   if curl -s -o /dev/null "http://127.0.0.1:$HTTP_PORT/v1/clusters"; then
     break
   fi
-  [ "$i" = 60 ] && fail "daemon HTTP gateway not answering after 120s"
+  [ "$i" = "$DAEMON_WAIT_TRIES" ] && fail "daemon HTTP gateway not answering after $((DAEMON_WAIT_TRIES * 2))s"
   sleep 2
 done
 
 # --- run the lane --------------------------------------------------------
-log "running the six-step journey (sabotage: ${CONTAINARIUM_E2E_SABOTAGE:-none})"
+log "running the six-step journey (isolation: $ISOLATION, sabotage: ${CONTAINARIUM_E2E_SABOTAGE:-none})"
 sudo env \
   PATH="$PATH" HOME="$HOME" GOFLAGS="${GOFLAGS:-}" GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)" \
   CONTAINARIUM_REQUIRE_INCUS=1 \
@@ -146,4 +196,10 @@ sudo env \
   CONTAINARIUM_E2E_ADVERTISE_HOST="$ADVERTISE_HOST" \
   CONTAINARIUM_JWT_SECRET="$JWT_SECRET" \
   CONTAINARIUM_E2E_SABOTAGE="${CONTAINARIUM_E2E_SABOTAGE:-}" \
-  go test -tags 'incus cluster_e2e' -count=1 -timeout 110m -v ./test/e2e/cluster/
+  CONTAINARIUM_E2E_ISOLATION="$ISOLATION" \
+  CONTAINARIUM_E2E_READY_TIMEOUT="${CONTAINARIUM_E2E_READY_TIMEOUT:-}" \
+  CONTAINARIUM_E2E_SCALEUP_TIMEOUT="${CONTAINARIUM_E2E_SCALEUP_TIMEOUT:-}" \
+  CONTAINARIUM_E2E_VPA_TIMEOUT="${CONTAINARIUM_E2E_VPA_TIMEOUT:-}" \
+  CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT="${CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT:-}" \
+  CONTAINARIUM_E2E_DELETE_TIMEOUT="${CONTAINARIUM_E2E_DELETE_TIMEOUT:-}" \
+  go test -tags 'incus cluster_e2e' -count=1 -timeout "$GO_TIMEOUT" -v ./test/e2e/cluster/

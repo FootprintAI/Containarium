@@ -1,0 +1,168 @@
+name: Managed clusters container-mode e2e
+
+# The container-node e2e lane (#1430): the same six-step tenant journey
+# as the KVM lane, run with cluster nodes provisioned as Incus SYSTEM
+# CONTAINERS (#1428/#1429) instead of VMs — which is why it needs no KVM
+# and fits on a plain GitHub-hosted `ubuntu-latest` runner. Design:
+# docs/architecture/cluster-container-node-pools.md, "Test strategy".
+#
+# THIS LANE IS NOT A SUBSTITUTE FOR THE KVM LANE (#1234 rule: a lane
+# tests only the mode it actually runs). `.github/workflows/cluster-e2e.yml`
+# remains the definition-of-done gate for VM-mode clusters — the default
+# and the only class with a hardware isolation boundary. Nothing here
+# exercises the qemu path, VM boot, or VM-sized capacity, and a green run
+# here says nothing about any of them. What it buys is the shared ~95% —
+# create, kubeconfig-from-outside, autoscaler scale-up, larger-class fit,
+# VPA, scale-down, delete — moved from "nightly on scarce self-hosted
+# hardware" to "cheap and frequent on every PR that touches the path".
+#
+# Runner contract: a stock `ubuntu-latest`, provisioned in-job following
+# the incus-create.yml precedent — Incus + dnsmasq, unprivileged-userns
+# AppArmor relaxed, iptables FORWARD reopened (Docker sets it to DROP),
+# subuid/subgid for root, and a ZFS pool named the way the daemon's own
+# storage detection probes for it. No /dev/kvm anywhere.
+#
+# Operator opt-in: the daemon refuses container-node creates unless
+# CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES=true. Set here because a
+# throwaway CI runner IS a single trust domain — the same assertion an
+# operator makes on a single-tenant host, never a product default.
+#
+# Prove-the-lane-can-fail (#1418 guardrail, reused): dispatch with
+# sabotage=join-token. Worker join tokens are corrupted so no node can
+# register; the JOB goes green only if the SUITE goes red. Run it once
+# after this lane first lands, and after any change to the journey's
+# assertions — a green lane that has never failed proves nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'test/e2e/cluster/**'
+      - 'scripts/cluster-e2e.sh'
+      - 'scripts/ci-incus-container-host.sh'
+      - 'pkg/core/cluster/**'
+      - 'internal/cluster/**'
+      - 'internal/server/cluster_*.go'
+      - '.github/workflows/cluster-container-e2e.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no
+  # checks at all, which looks the same as checks not having started
+  # (#1215). Duplicated rather than anchored: GitHub Actions does not
+  # expand YAML anchors.
+  pull_request:
+    paths:
+      - 'test/e2e/cluster/**'
+      - 'scripts/cluster-e2e.sh'
+      - 'scripts/ci-incus-container-host.sh'
+      - 'pkg/core/cluster/**'
+      - 'internal/cluster/**'
+      - 'internal/server/cluster_*.go'
+      - '.github/workflows/cluster-container-e2e.yml'
+  workflow_dispatch:
+    inputs:
+      sabotage:
+        description: 'Deliberate breakage; join-token proves the lane can fail'
+        type: choice
+        options: ['none', 'join-token']
+        default: 'none'
+
+permissions:
+  contents: read
+
+# One run at a time per ref: each run owns the runner's Incus and the
+# fixed CA-provider port. Runners are per-job here, so unlike the KVM
+# lane this does not have to serialize across refs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container-e2e:
+    name: six-step journey (container nodes, no KVM)
+    if: github.event_name != 'workflow_dispatch' || inputs.sabotage == 'none'
+    runs-on: ubuntu-latest
+    # Budget: create ~8m + scale-up ~8m + larger class ~8m + VPA ~12m +
+    # scale-down ~30m (stock cluster-autoscaler: 10m delay-after-add +
+    # 10m unneeded — irreducible without retuning CA) + delete ~8m, plus
+    # ~10m of runner provisioning. Container nodes boot in seconds where
+    # VMs take minutes, which is why this fits well inside the KVM lane's
+    # 150m.
+    timeout-minutes: 100
+    env:
+      # The journey, in the class this lane exists to cover.
+      CONTAINARIUM_E2E_ISOLATION: container
+      # Operator opt-in (see header): a throwaway runner is one trust
+      # domain. Without this the daemon refuses the create, by design.
+      CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES: 'true'
+      # A missing/unusable Incus fails the lane instead of skipping it.
+      CONTAINARIUM_REQUIRE_INCUS: '1'
+      # Container nodes boot far faster than VMs, so the waits are
+      # tightened HERE rather than in the test's defaults — the KVM lane
+      # keeps its own bounds unchanged.
+      CONTAINARIUM_E2E_READY_TIMEOUT: 10m
+      CONTAINARIUM_E2E_SCALEUP_TIMEOUT: 10m
+      CONTAINARIUM_E2E_VPA_TIMEOUT: 12m
+      # Not tightened: this one is cluster-autoscaler's own schedule, not
+      # the node runtime's speed.
+      CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT: 30m
+      CONTAINARIUM_E2E_DELETE_TIMEOUT: 8m
+      # Below the job timeout on purpose: the Go test must be the thing
+      # that times out, so it prints its diagnostics before the runner is
+      # taken away.
+      CONTAINARIUM_E2E_GO_TIMEOUT: 85m
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Provision Incus (the incus-create.yml precedent, minus KVM)
+        run: bash scripts/ci-incus-container-host.sh
+
+      - name: Run the lane
+        # No pipe around the script: its exit status is `go test`'s, and
+        # the job's is the script's. A lane whose exit code is piped away
+        # is a lane that cannot report red.
+        run: bash scripts/cluster-e2e.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          sudo incus list || true
+          sudo incus info || true
+          free -m || true
+          df -h /mnt / || true
+
+  prove-lane-can-fail:
+    name: sabotage run (suite must go red)
+    if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'join-token'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CONTAINARIUM_E2E_ISOLATION: container
+      CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES: 'true'
+      CONTAINARIUM_REQUIRE_INCUS: '1'
+      CONTAINARIUM_E2E_SABOTAGE: join-token
+      # Sabotaged workers can never register; don't wait the full
+      # production bound to learn what we broke on purpose.
+      CONTAINARIUM_E2E_READY_TIMEOUT: 10m
+      CONTAINARIUM_E2E_GO_TIMEOUT: 35m
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Provision Incus (the incus-create.yml precedent, minus KVM)
+        run: bash scripts/ci-incus-container-host.sh
+
+      - name: Corrupt join tokens and expect the suite to fail
+        # Inversion is explicit and lives only in this dispatch-only
+        # job: green here means the lane DETECTED the sabotage.
+        run: |
+          if bash scripts/cluster-e2e.sh; then
+            echo "::error::lane stayed GREEN under join-token sabotage — it cannot fail, so its green proves nothing"
+            exit 1
+          fi
+          echo "lane went red under sabotage: it can fail, and its green is evidence."
