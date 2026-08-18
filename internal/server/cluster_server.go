@@ -47,6 +47,9 @@ type ClusterServer struct {
 	// caps is the operator ceiling on configurable cluster size
 	// (#1417); zero values = unlimited.
 	caps clusterCaps
+	// isolation is the operator's per-host opt-in for the weaker node
+	// isolation class (#1428). Zero value = container nodes refused.
+	isolation isolationGate
 }
 
 // NewClusterServer builds the server on a Store (in-memory at startup;
@@ -160,7 +163,10 @@ func clusterToProto(c *cluster.Cluster) *pb.Cluster {
 		StateReason: c.StateReason,
 		K3SVersion:  c.K3sVersion,
 		ApiEndpoint: c.APIEndpoint,
-		CreatedAt:   timestamppb.New(c.CreatedAt),
+		// Resolved on the way out too, so a row written before the
+		// column existed still reads as a definite class (#1428).
+		NodeIsolation: isolationToProto[c.NodeIsolation.OrDefault()],
+		CreatedAt:     timestamppb.New(c.CreatedAt),
 	}
 	for _, g := range c.NodeGroups {
 		out.NodeGroups = append(out.NodeGroups, groupToProto(g))
@@ -203,6 +209,13 @@ func (s *ClusterServer) CreateCluster(ctx context.Context, req *pb.CreateCluster
 	if err := cluster.ValidateName(req.Name); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	// Isolation is decided before anything is recorded: a refused class
+	// leaves no row behind, and the refusal names the flag the operator
+	// would have to set.
+	isolation, err := s.enforceIsolation(req.NodeIsolation)
+	if err != nil {
+		return nil, err
+	}
 	if s.vmCapable != nil {
 		if err := s.vmCapable(); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -224,18 +237,19 @@ func (s *ClusterServer) CreateCluster(ctx context.Context, req *pb.CreateCluster
 
 	now := time.Now().UTC()
 	c := &cluster.Cluster{
-		ID:         uuid.NewString(),
-		Owner:      owner,
-		Name:       req.Name,
-		State:      cluster.StateProvisioning,
-		NodeGroups: groups,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:            uuid.NewString(),
+		Owner:         owner,
+		Name:          req.Name,
+		State:         cluster.StateProvisioning,
+		NodeGroups:    groups,
+		NodeIsolation: isolation,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := s.store.Create(ctx, c); err != nil {
 		return nil, storeErr(err)
 	}
-	log.Printf("[cluster] created owner=%s name=%s groups=%d", owner, req.Name, len(groups))
+	log.Printf("[cluster] created owner=%s name=%s groups=%d isolation=%s", owner, req.Name, len(groups), isolation)
 	return &pb.CreateClusterResponse{
 		Cluster: clusterToProto(c),
 		Message: "cluster recorded; provisioning runs asynchronously",

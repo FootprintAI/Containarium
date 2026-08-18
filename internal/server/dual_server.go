@@ -537,6 +537,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		clusterServer.SetCaps(clusterCaps{configErr: capsErr})
 		log.Printf("ERROR: %v — cluster creates/updates will be refused until the caps are fixed", capsErr)
 	}
+	// Node isolation opt-in (#1428): unset means container node pools
+	// are refused on this host, which is the right default for a shared
+	// multi-tenant one. A typo'd value refuses them too, loudly.
+	clusterServer.SetIsolationGateFromEnv(os.Getenv("CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES"))
 	pb.RegisterClusterServiceServer(grpcServer, clusterServer)
 	log.Printf("Cluster service enabled (in-memory store; Postgres swap below)")
 

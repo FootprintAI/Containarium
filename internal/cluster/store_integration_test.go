@@ -224,3 +224,107 @@ func TestClusterStore_ContractHoldsForBothImpls(t *testing.T) {
 		})
 	}
 }
+
+// The isolation class is part of the cluster row, not a server-side
+// afterthought: both impls must round-trip it, and both must resolve an
+// unset value to the safe class (#1428). A store that quietly persisted
+// "" would make "which clusters share a kernel with this host"
+// unanswerable from the data.
+func TestClusterStore_NodeIsolationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	for impl, s := range stores(t) {
+		t.Run(impl, func(t *testing.T) {
+			// Explicit container isolation round-trips verbatim.
+			cc := mkCluster("alice", "shared-kernel")
+			cc.NodeIsolation = IsolationContainer
+			if err := s.Create(ctx, cc); err != nil {
+				t.Fatalf("Create container cluster: %v", err)
+			}
+			// Explicit vm isolation round-trips verbatim.
+			cv := mkCluster("alice", "hw-isolated")
+			cv.NodeIsolation = IsolationVM
+			if err := s.Create(ctx, cv); err != nil {
+				t.Fatalf("Create vm cluster: %v", err)
+			}
+			// An unset class is persisted as the safe default, not as "".
+			cu := mkCluster("alice", "unset")
+			if err := s.Create(ctx, cu); err != nil {
+				t.Fatalf("Create unset cluster: %v", err)
+			}
+
+			for name, want := range map[string]Isolation{
+				"shared-kernel": IsolationContainer,
+				"hw-isolated":   IsolationVM,
+				"unset":         IsolationVM,
+			} {
+				got, err := s.Get(ctx, "alice", name)
+				if err != nil {
+					t.Fatalf("Get %s: %v", name, err)
+				}
+				if got.NodeIsolation != want {
+					t.Fatalf("Get %s isolation = %q, want %q", name, got.NodeIsolation, want)
+				}
+			}
+
+			// List carries it too — the auditor's query is a list, not a
+			// walk of individual gets.
+			all, err := s.List(ctx, "alice")
+			if err != nil || len(all) != 3 {
+				t.Fatalf("List = %d clusters (%v), want 3", len(all), err)
+			}
+			for _, c := range all {
+				if c.NodeIsolation != IsolationVM && c.NodeIsolation != IsolationContainer {
+					t.Fatalf("List %s isolation = %q, want a resolved class", c.Name, c.NodeIsolation)
+				}
+			}
+		})
+	}
+}
+
+// Rows written before this column existed must read back as VM, never
+// as "" — the migration decides the class of every legacy cluster, and
+// the only safe answer is the strong one. Postgres-only: MemStore has
+// no on-disk history to migrate.
+func TestClusterStore_LegacyRowsDefaultToVM(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	freshSchema(t, pool)
+
+	// The pre-#1428 k8s_clusters shape, and a row inside it.
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE k8s_clusters (
+			id UUID PRIMARY KEY,
+			owner TEXT NOT NULL,
+			name TEXT NOT NULL,
+			state TEXT NOT NULL,
+			state_reason TEXT NOT NULL DEFAULT '',
+			k3s_version TEXT NOT NULL DEFAULT '',
+			api_endpoint TEXT NOT NULL DEFAULT '',
+			node_groups JSONB NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL,
+			UNIQUE(owner, name)
+		)`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO k8s_clusters (id, owner, name, state, node_groups, created_at, updated_at)
+		VALUES ($1, 'alice', 'legacy', 'ready', '[]'::jsonb, $2, $2)`,
+		uuid.NewString(), now); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	// The constructor migrates in place; the legacy row keeps its data.
+	s, err := NewPGStore(ctx, pool)
+	if err != nil {
+		t.Fatalf("NewPGStore over legacy schema: %v", err)
+	}
+	got, err := s.Get(ctx, "alice", "legacy")
+	if err != nil {
+		t.Fatalf("Get legacy row: %v", err)
+	}
+	if got.NodeIsolation != IsolationVM {
+		t.Fatalf("legacy row isolation = %q, want %q", got.NodeIsolation, IsolationVM)
+	}
+}

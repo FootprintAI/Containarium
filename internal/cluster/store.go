@@ -69,11 +69,16 @@ func (s *PGStore) initSchema(ctx context.Context) error {
 			k3s_version TEXT NOT NULL DEFAULT '',
 			api_endpoint TEXT NOT NULL DEFAULT '',
 			node_groups JSONB NOT NULL,
+			node_isolation TEXT NOT NULL DEFAULT 'vm',
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL,
 			UNIQUE(owner, name)
 		);
 		CREATE INDEX IF NOT EXISTS idx_k8s_clusters_owner ON k8s_clusters(owner);
+		-- #1428: clusters recorded before the isolation class existed
+		-- were all VMs; the DEFAULT states that for the existing rows
+		-- rather than leaving their boundary unknown.
+		ALTER TABLE k8s_clusters ADD COLUMN IF NOT EXISTS node_isolation TEXT NOT NULL DEFAULT 'vm';
 
 		CREATE TABLE IF NOT EXISTS k8s_cluster_nodes (
 			vm_name TEXT PRIMARY KEY,
@@ -115,9 +120,10 @@ func (s *PGStore) Create(ctx context.Context, c *Cluster) error {
 		return fmt.Errorf("marshal node groups: %w", err)
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO k8s_clusters (id, owner, name, state, state_reason, k3s_version, api_endpoint, node_groups, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		c.ID, c.Owner, c.Name, string(c.State), c.StateReason, c.K3sVersion, c.APIEndpoint, groups, c.CreatedAt, c.UpdatedAt)
+		INSERT INTO k8s_clusters (id, owner, name, state, state_reason, k3s_version, api_endpoint, node_groups, node_isolation, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		c.ID, c.Owner, c.Name, string(c.State), c.StateReason, c.K3sVersion, c.APIEndpoint, groups,
+		string(c.NodeIsolation.OrDefault()), c.CreatedAt, c.UpdatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
 		return ErrAlreadyExists
@@ -127,9 +133,9 @@ func (s *PGStore) Create(ctx context.Context, c *Cluster) error {
 
 func scanCluster(row pgx.Row) (*Cluster, error) {
 	var c Cluster
-	var state string
+	var state, isolation string
 	var groups []byte
-	err := row.Scan(&c.ID, &c.Owner, &c.Name, &state, &c.StateReason, &c.K3sVersion, &c.APIEndpoint, &groups, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Owner, &c.Name, &state, &c.StateReason, &c.K3sVersion, &c.APIEndpoint, &groups, &isolation, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -137,13 +143,14 @@ func scanCluster(row pgx.Row) (*Cluster, error) {
 		return nil, err
 	}
 	c.State = State(state)
+	c.NodeIsolation = Isolation(isolation).OrDefault()
 	if err := json.Unmarshal(groups, &c.NodeGroups); err != nil {
 		return nil, fmt.Errorf("unmarshal node groups: %w", err)
 	}
 	return &c, nil
 }
 
-const clusterCols = `id, owner, name, state, state_reason, k3s_version, api_endpoint, node_groups, created_at, updated_at`
+const clusterCols = `id, owner, name, state, state_reason, k3s_version, api_endpoint, node_groups, node_isolation, created_at, updated_at`
 
 func (s *PGStore) Get(ctx context.Context, owner, name string) (*Cluster, error) {
 	return scanCluster(s.pool.QueryRow(ctx,

@@ -52,6 +52,32 @@ const (
 	RoleWorker       = "worker"
 )
 
+// Isolation is a cluster's node isolation class — the boundary that
+// contains a tenant kernel exploit. Mirrors pb.NodeIsolation; the
+// string form is what the store persists.
+//
+// Design: docs/architecture/cluster-container-node-pools.md.
+type Isolation string
+
+const (
+	// IsolationVM gives every node its own kernel (Incus VM). The
+	// default, and the only class safe on a shared multi-tenant host.
+	IsolationVM Isolation = "vm"
+	// IsolationContainer runs nodes as Incus system containers sharing
+	// the host kernel — operator-gated, single-trust-domain hosts only.
+	IsolationContainer Isolation = "container"
+)
+
+// OrDefault resolves an unset class to the strong one. The weaker
+// class is only ever reached by an explicit request; omitting the
+// field can never downgrade a boundary.
+func (i Isolation) OrDefault() Isolation {
+	if i == "" {
+		return IsolationVM
+	}
+	return i
+}
+
 // NodeState is a node's coarse lifecycle state. Mirrors
 // pb.ClusterNodeState; typed so the reconciler cannot persist a value
 // the API cannot express.
@@ -110,8 +136,12 @@ type Cluster struct {
 	K3sVersion  string
 	APIEndpoint string
 	NodeGroups  []NodeGroup
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// NodeIsolation is the cluster's isolation class, fixed at create
+	// and never rewritten. Stores resolve an unset value to
+	// IsolationVM, so a read never has to guess.
+	NodeIsolation Isolation
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // Node is one VM belonging to a cluster.

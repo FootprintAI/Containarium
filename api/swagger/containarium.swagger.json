@@ -7612,6 +7612,10 @@
         "createdAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "nodeIsolation": {
+          "$ref": "#/definitions/NodeIsolation",
+          "description": "Isolation class of this cluster's nodes. Always populated on read\n(never UNSPECIFIED) so an auditor can answer \"which clusters share\na kernel with this host\" from any cluster read."
         }
       },
       "description": "Cluster is a managed Kubernetes cluster."
@@ -8271,6 +8275,10 @@
             "$ref": "#/definitions/NodeGroup"
           },
           "description": "Worker size classes. Empty = the platform's default presets."
+        },
+        "nodeIsolation": {
+          "$ref": "#/definitions/NodeIsolation",
+          "description": "Requested node isolation class. Unspecified = VM. CONTAINER is\nrefused with FailedPrecondition unless the host carries the\noperator opt-in."
         }
       }
     },
@@ -10901,6 +10909,16 @@
         }
       },
       "description": "NodeGroupStatus is a group's observed count against its bounds."
+    },
+    "NodeIsolation": {
+      "type": "string",
+      "enum": [
+        "NODE_ISOLATION_UNSPECIFIED",
+        "NODE_ISOLATION_VM",
+        "NODE_ISOLATION_CONTAINER"
+      ],
+      "default": "NODE_ISOLATION_UNSPECIFIED",
+      "description": "NodeIsolation is the isolation class of a cluster's nodes: the\nboundary that contains a tenant kernel exploit. Cluster-level and\nimmutable after create.\n\nVM is the default and the only class safe on a shared multi-tenant\nhost. CONTAINER runs each node as an Incus system container sharing\nthe host kernel — weaker by construction, so it is operator-gated:\nthe daemon permits it only where the operator has declared the host\na single trust domain. UNSPECIFIED resolves to VM server-side; the\nweaker class is never reached by omission.\n\nDesign: docs/architecture/cluster-container-node-pools.md.\n\n - NODE_ISOLATION_VM: Each node is an Incus VM — hardware-virtualized kernel boundary.\n - NODE_ISOLATION_CONTAINER: Each node is an Incus system container sharing the host kernel.\nRequires the operator opt-in on the target host."
     },
     "OSType": {
       "type": "string",
