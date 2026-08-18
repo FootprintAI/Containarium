@@ -1,7 +1,7 @@
 # Design: container node pools for managed Kubernetes clusters
 
 **Date:** 2026-08-18
-**Status:** proposed
+**Status:** accepted
 **Stack:** protobuf/gRPC (grpc-gateway) + the existing host daemon; Go 1.26 throughout (no new languages)
 **Extends:** `docs/architecture/managed-k8s-clusters.md` (the VM-only design this
 document adds a second isolation class to — everything not named here is
