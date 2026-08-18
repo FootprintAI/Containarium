@@ -5,6 +5,15 @@ set -eu
 
 chmod 0755 /usr/local/bin/k3s
 chmod 0600 /etc/containarium/k3s-agent-token
+mkdir -p /var/lib/rancher/k3s/agent/etc/containerd
+cat > /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl <<'CONTAINERD_TMPL'
+{{ template "base" . }}
+
+[plugins.'io.containerd.cri.v1.runtime']
+  enable_unprivileged_ports = false
+  enable_unprivileged_icmp = false
+CONTAINERD_TMPL
+
 
 cat > /etc/systemd/system/k3s-agent.service <<'UNIT'
 [Unit]

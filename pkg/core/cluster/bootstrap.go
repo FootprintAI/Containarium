@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -94,6 +95,11 @@ type AgentBootstrap struct {
 	ServerURL string
 	// Isolation selects the node runtime variant; see ServerBootstrap.
 	Isolation Isolation
+	// KubeletArgs are extra `k3s agent` flags. Container-class nodes
+	// use them to pin allocatable to the size the daemon asked for,
+	// because cadvisor reads the outer host's /proc (#1439). Empty on
+	// the VM path, whose unit stays byte-identical to its golden.
+	KubeletArgs []string
 }
 
 // RenderAgentScript renders a worker first-boot script: a systemd unit
@@ -105,7 +111,7 @@ func RenderAgentScript(b AgentBootstrap) string {
 set -eu
 
 chmod 0755 %[1]s
-chmod 0600 %[2]s
+chmod 0600 %[2]s%[5]s
 
 cat > /etc/systemd/system/k3s-agent.service <<'UNIT'
 [Unit]
@@ -115,7 +121,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-%[4]sExecStart=%[1]s agent --server %[3]s --token-file %[2]s
+%[4]sExecStart=%[1]s agent --server %[3]s --token-file %[2]s%[6]s
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -126,7 +132,33 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now k3s-agent.service
-`, K3sBinaryPath, AgentTokenPath, b.ServerURL, kmsgShimUnitLine(b.Isolation))
+`, K3sBinaryPath, AgentTokenPath, b.ServerURL, kmsgShimUnitLine(b.Isolation),
+		containerdTemplateStanza(b.Isolation), kubeletArgsSuffix(b.KubeletArgs))
+}
+
+// containerdTemplateStanza writes the containerd config template
+// before k3s first starts, on the container path only. k3s reads the
+// template when it generates containerd's config, so it must exist
+// before the unit comes up — not applied afterwards and restarted.
+func containerdTemplateStanza(iso Isolation) string {
+	if iso != IsolationContainer {
+		return ""
+	}
+	return fmt.Sprintf(`
+mkdir -p %[1]s
+cat > %[2]s <<'CONTAINERD_TMPL'
+%[3]sCONTAINERD_TMPL
+`, filepath.Dir(ContainerdConfigTemplatePath), ContainerdConfigTemplatePath, ContainerdConfigTemplate())
+}
+
+// kubeletArgsSuffix appends extra flags to the k3s ExecStart line.
+// Empty input renders nothing, so a node needing no correction keeps
+// the stock command line.
+func kubeletArgsSuffix(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return " " + strings.Join(args, " ")
 }
 
 // RewriteKubeconfigServer replaces the server URL in a k3s admin
