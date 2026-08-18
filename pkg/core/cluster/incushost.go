@@ -52,7 +52,10 @@ func (h *IncusHost) ContainerNodeCapable() error {
 	}))
 }
 
-func (h *IncusHost) CreateNode(spec NodeSpec, isolation Isolation) error {
+// nodeContainerConfig is the Incus config one cluster node is created
+// from. Pure (no Incus calls) so the shape Incus validates is
+// unit-testable — see nodeconfig_test.go and #1435.
+func nodeContainerConfig(spec NodeSpec, isolation Isolation, pool string) incus.ContainerConfig {
 	cfg := incus.ContainerConfig{
 		Name:         spec.Name,
 		Image:        "images:ubuntu/24.04", // the nodevm default; VM image bake is a later phase
@@ -70,8 +73,18 @@ func (h *IncusHost) CreateNode(spec NodeSpec, isolation Isolation) error {
 		cfg.ExtraConfig = ContainerNodeConfig()
 	}
 	if spec.Disk != "" {
-		cfg.Disk = &incus.DiskDevice{Size: spec.Disk}
+		// Path and Pool alongside the size, as every other caller in the
+		// tree does: Incus refuses a root disk that carries only a size
+		// ("Disk entry is missing the required source or path property"),
+		// and it refuses it at instance creation — inside the
+		// reconciler's provisioning loop, not at config time (#1435).
+		cfg.Disk = &incus.DiskDevice{Path: "/", Pool: pool, Size: spec.Disk}
 	}
+	return cfg
+}
+
+func (h *IncusHost) CreateNode(spec NodeSpec, isolation Isolation) error {
+	cfg := nodeContainerConfig(spec, isolation, h.client.StoragePool())
 	if err := h.client.CreateContainer(cfg); err != nil {
 		return err
 	}
