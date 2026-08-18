@@ -61,6 +61,27 @@ func VMLabels(tenant, clusterName, role, group string) map[string]string {
 	return l
 }
 
+// Isolation is a cluster's node isolation class as the provisioning
+// seam carries it (#1429): which Incus instance type backs a node and
+// which capability probe must pass before creating it. Mirrors
+// internal/cluster.Isolation / pb.NodeIsolation without importing
+// either — this package depends on neither the store nor the wire
+// contract.
+type Isolation string
+
+const (
+	// IsolationVM backs each node with an Incus VM (its own kernel) —
+	// the default class. Everywhere the seam branches, any value
+	// other than IsolationContainer takes the VM path: an unknown
+	// class must never resolve to the weaker boundary.
+	IsolationVM Isolation = "vm"
+	// IsolationContainer backs each node with an Incus system
+	// container sharing the host kernel. Operator-gated upstream
+	// (#1428); down here it selects the container profile and the
+	// kmsg-shimmed bootstrap variant.
+	IsolationContainer Isolation = "container"
+)
+
 // NodeSpec is everything the host needs to create one cluster VM.
 type NodeSpec struct {
 	Name   string

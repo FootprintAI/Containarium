@@ -376,6 +376,12 @@ type ContainerConfig struct {
 	EnablePodmanPrivileged bool // Full Docker support (requires privileged container + AppArmor disabled)
 	AutoStart              bool
 
+	// ExtraConfig is applied verbatim as Incus instance config keys,
+	// after the fields above. Used by the cluster container-node
+	// profile (#1429: security.nesting for k3s node containers);
+	// callers own the keys they set.
+	ExtraConfig map[string]string
+
 	// Env is a map of environment variables to set inside the
 	// container, equivalent to `incus config set <name>
 	// environment.<KEY> <value>`. Visible to every shell session and
@@ -796,6 +802,11 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 	// Auto-start on boot
 	if config.AutoStart {
 		req.Config["boot.autostart"] = "true"
+	}
+
+	// Caller-owned instance config (see ExtraConfig).
+	for k, v := range config.ExtraConfig {
+		req.Config[k] = v
 	}
 
 	// Environment variables — Incus stores these as `environment.<KEY>`

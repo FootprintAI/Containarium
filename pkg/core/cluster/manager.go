@@ -16,7 +16,14 @@ type VMHost interface {
 	// user-facing error when it cannot (the design's hard create-time
 	// requirement).
 	VMCapable() error
-	CreateVM(spec NodeSpec) error
+	// ContainerNodeCapable is the container-class counterpart
+	// (#1429): nil when the host can run k3s node containers, or a
+	// refusal naming every missing (or unverifiable) precondition.
+	ContainerNodeCapable() error
+	// CreateNode creates one cluster node backed by the instance type
+	// the isolation class selects: an Incus VM, or a system container
+	// carrying the container node profile (#1429).
+	CreateNode(spec NodeSpec, isolation Isolation) error
 	Start(name string) error
 	Delete(name string) error
 	// WaitReady blocks until the guest agent is up and networked,
@@ -68,6 +75,9 @@ func NewManagerWithLoader(host VMHost, loader func() ([]byte, error)) *Manager {
 // VMCapable surfaces the host's VM capability probe.
 func (m *Manager) VMCapable() error { return m.host.VMCapable() }
 
+// ContainerNodeCapable surfaces the host's container-node probe (#1429).
+func (m *Manager) ContainerNodeCapable() error { return m.host.ContainerNodeCapable() }
+
 // Observe returns the host's view of a cluster's VMs.
 func (m *Manager) Observe(tenant, clusterName string) (Observed, error) {
 	return m.host.ClusterVMs(tenant, clusterName)
@@ -85,14 +95,14 @@ const bootstrapScriptPath = "/root/containarium-bootstrap.sh"
 // start → wait → push pinned binary + rendered script → exec. Returns
 // the VM's IP (workers join over it). cpSize is the smallest preset —
 // the control plane is platform overhead, not tenant capacity.
-func (m *Manager) ProvisionCP(tenant, clusterName string, cpSize DesiredGroup, tlsSANs []string) (string, error) {
+func (m *Manager) ProvisionCP(tenant, clusterName string, iso Isolation, cpSize DesiredGroup, tlsSANs []string) (string, error) {
 	name := CPName(tenant, clusterName)
 	spec := NodeSpec{
 		Name: name, CPU: cpSize.CPU, Memory: cpSize.Memory, Disk: cpSize.Disk,
 		Labels: VMLabels(tenant, clusterName, RoleControlPlane, ""),
 	}
-	if err := m.host.CreateVM(spec); err != nil {
-		return "", fmt.Errorf("create control-plane VM: %w", err)
+	if err := m.host.CreateNode(spec, iso); err != nil {
+		return "", fmt.Errorf("create control-plane node: %w", err)
 	}
 	ip, err := m.host.WaitReady(name, m.waitReadyTimeout)
 	if err != nil {
@@ -105,7 +115,7 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, cpSize DesiredGroup, t
 	if err := m.host.Push(name, K3sBinaryPath, bin, "0755"); err != nil {
 		return "", fmt.Errorf("push k3s binary: %w", err)
 	}
-	script := RenderServerScript(ServerBootstrap{TLSSANs: append([]string{ip}, tlsSANs...)})
+	script := RenderServerScript(ServerBootstrap{TLSSANs: append([]string{ip}, tlsSANs...), Isolation: iso})
 	if err := m.host.Push(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return "", fmt.Errorf("push bootstrap script: %w", err)
 	}
@@ -118,7 +128,7 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, cpSize DesiredGroup, t
 // ProvisionWorker creates and joins one worker VM to a running control
 // plane. The join token is read from the CP and pushed 0600 — it never
 // leaves the host or lands in a store.
-func (m *Manager) ProvisionWorker(tenant, clusterName string, g DesiredGroup, vmName, cpIP string) error {
+func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g DesiredGroup, vmName, cpIP string) error {
 	cp := CPName(tenant, clusterName)
 	token, err := m.host.Read(cp, NodeTokenPath)
 	if err != nil {
@@ -128,8 +138,8 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, g DesiredGroup, vm
 		Name: vmName, CPU: g.CPU, Memory: g.Memory, Disk: g.Disk,
 		Labels: VMLabels(tenant, clusterName, RoleWorker, g.Name),
 	}
-	if err := m.host.CreateVM(spec); err != nil {
-		return fmt.Errorf("create worker VM: %w", err)
+	if err := m.host.CreateNode(spec, iso); err != nil {
+		return fmt.Errorf("create worker node: %w", err)
 	}
 	if _, err := m.host.WaitReady(vmName, m.waitReadyTimeout); err != nil {
 		return fmt.Errorf("worker VM %s not ready: %w", vmName, err)
@@ -144,7 +154,7 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, g DesiredGroup, vm
 	if err := m.host.Push(vmName, AgentTokenPath, token, "0600"); err != nil {
 		return fmt.Errorf("push join token: %w", err)
 	}
-	script := RenderAgentScript(AgentBootstrap{ServerURL: "https://" + cpIP + ":6443"})
+	script := RenderAgentScript(AgentBootstrap{ServerURL: "https://" + cpIP + ":6443", Isolation: iso})
 	if err := m.host.Push(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return fmt.Errorf("push bootstrap script: %w", err)
 	}

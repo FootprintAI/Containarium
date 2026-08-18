@@ -88,8 +88,25 @@ func (r *ClusterReconciler) ReadKubeconfig(ctx context.Context, c *clusterstore.
 	return r.mgr.Kubeconfig(c.Owner, c.Name, c.APIEndpoint)
 }
 
-// VMCapable is the create-time capability probe.
-func (r *ClusterReconciler) VMCapable() error { return r.mgr.VMCapable() }
+// NodeCapable is the create-time capability probe for one isolation
+// class (#1429): the seam carries the class and the probe dispatches
+// on it — a VM cluster needs VM capability, a container cluster needs
+// the container-node preconditions, never both.
+func (r *ClusterReconciler) NodeCapable(iso clusterstore.Isolation) error {
+	if coreIsolation(iso) == clustercore.IsolationContainer {
+		return r.mgr.ContainerNodeCapable()
+	}
+	return r.mgr.VMCapable()
+}
+
+// coreIsolation maps the stored class onto the provisioning seam's.
+// Anything that is not the explicit weaker class provisions VMs.
+func coreIsolation(i clusterstore.Isolation) clustercore.Isolation {
+	if i.OrDefault() == clusterstore.IsolationContainer {
+		return clustercore.IsolationContainer
+	}
+	return clustercore.IsolationVM
+}
 
 // Run ticks until ctx ends.
 func (r *ClusterReconciler) Run(ctx context.Context) {
@@ -148,6 +165,7 @@ var cpSize = clustercore.DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}
 
 func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstore.Cluster) error {
 	desired := desiredFrom(c)
+	iso := coreIsolation(c.NodeIsolation)
 	observed, err := r.mgr.Observe(c.Owner, c.Name)
 	if err != nil {
 		return fmt.Errorf("observe: %w", err)
@@ -165,7 +183,7 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 			if err := r.admitSize(c, cpSize, "control-plane"); err != nil {
 				return nil // refusal recorded; retry next pass
 			}
-			cpIP, err := r.mgr.ProvisionCP(c.Owner, c.Name, cpSize, nil)
+			cpIP, err := r.mgr.ProvisionCP(c.Owner, c.Name, iso, cpSize, nil)
 			if err != nil {
 				return fmt.Errorf("provision control plane: %w", err)
 			}
@@ -185,7 +203,7 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 			if err != nil {
 				return fmt.Errorf("control-plane IP: %w", err)
 			}
-			if err := r.mgr.ProvisionWorker(c.Owner, c.Name, g, act.Name, cpIP); err != nil {
+			if err := r.mgr.ProvisionWorker(c.Owner, c.Name, iso, g, act.Name, cpIP); err != nil {
 				return fmt.Errorf("provision worker %s: %w", act.Name, err)
 			}
 			_ = r.store.UpsertNode(ctx, &clusterstore.Node{

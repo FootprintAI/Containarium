@@ -31,6 +31,11 @@ type ServerBootstrap struct {
 	// the external endpoint and the VM IP, so the rewritten
 	// kubeconfig verifies.
 	TLSSANs []string
+	// Isolation selects the node runtime variant: the container path
+	// prepends the boot-time /dev/kmsg shim into the unit (#1429);
+	// the zero value renders the VM script byte-identically to
+	// pre-#1429.
+	Isolation Isolation
 }
 
 // RenderServerScript renders the control-plane first-boot script: a
@@ -59,7 +64,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=%[1]s server --disable traefik --node-taint node-role.kubernetes.io/control-plane=:NoSchedule --write-kubeconfig-mode 0600%[2]s
+%[5]sExecStart=%[1]s server --disable traefik --node-taint node-role.kubernetes.io/control-plane=:NoSchedule --write-kubeconfig-mode 0600%[2]s
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -78,7 +83,7 @@ until [ -s %[3]s ] && [ -s %[4]s ]; do
   [ "$i" -gt 120 ] && { echo "k3s server did not come up" >&2; exit 1; }
   sleep 2
 done
-`, K3sBinaryPath, sanFlags.String(), KubeconfigPath, NodeTokenPath)
+`, K3sBinaryPath, sanFlags.String(), KubeconfigPath, NodeTokenPath, kmsgShimUnitLine(b.Isolation))
 }
 
 // AgentBootstrap parameterizes a worker script.
@@ -87,6 +92,8 @@ type AgentBootstrap struct {
 	// (https://<cp-ip>:6443) — workers join over the private bridge,
 	// not the published endpoint.
 	ServerURL string
+	// Isolation selects the node runtime variant; see ServerBootstrap.
+	Isolation Isolation
 }
 
 // RenderAgentScript renders a worker first-boot script: a systemd unit
@@ -108,7 +115,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=%[1]s agent --server %[3]s --token-file %[2]s
+%[4]sExecStart=%[1]s agent --server %[3]s --token-file %[2]s
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -119,7 +126,7 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now k3s-agent.service
-`, K3sBinaryPath, AgentTokenPath, b.ServerURL)
+`, K3sBinaryPath, AgentTokenPath, b.ServerURL, kmsgShimUnitLine(b.Isolation))
 }
 
 // RewriteKubeconfigServer replaces the server URL in a k3s admin

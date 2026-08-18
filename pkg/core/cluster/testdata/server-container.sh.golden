@@ -1,0 +1,35 @@
+#!/bin/sh
+# containarium managed-cluster control-plane bootstrap (#1414).
+# The k3s binary is pre-pushed; this script only wires and starts it.
+set -eu
+
+chmod 0755 /usr/local/bin/k3s
+
+cat > /etc/systemd/system/k3s.service <<'UNIT'
+[Unit]
+Description=containarium managed k3s server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/bin/sh -c '[ -e /dev/kmsg ] || ln -s /dev/console /dev/kmsg'
+ExecStart=/usr/local/bin/k3s server --disable traefik --node-taint node-role.kubernetes.io/control-plane=:NoSchedule --write-kubeconfig-mode 0600 --tls-san 10.166.11.5 --tls-san 203.0.113.10
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now k3s.service
+
+# Bootstrap is done when the admin kubeconfig and the join token exist.
+i=0
+until [ -s /etc/rancher/k3s/k3s.yaml ] && [ -s /var/lib/rancher/k3s/server/node-token ]; do
+  i=$((i+1))
+  [ "$i" -gt 120 ] && { echo "k3s server did not come up" >&2; exit 1; }
+  sleep 2
+done

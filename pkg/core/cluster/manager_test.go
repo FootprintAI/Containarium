@@ -11,24 +11,31 @@ import (
 // fakeHost records every VMHost call so tests assert the exact
 // orchestration sequence — the part of the manager that matters.
 type fakeHost struct {
-	calls    []string
-	files    map[string][]byte // "<vm>:<path>" → content
-	execOut  map[string]string // "<vm>:<argv0...>" → stdout
-	readErr  error
-	capError error
+	calls             []string
+	files             map[string][]byte // "<vm>:<path>" → content
+	execOut           map[string]string // "<vm>:<argv0...>" → stdout
+	readErr           error
+	capError          error
+	containerCapError error
+	// isolations records the isolation class CreateNode was called
+	// with, per node name (#1429 acceptance: the fake records the
+	// isolation per call).
+	isolations map[string]Isolation
 }
 
 func newFakeHost() *fakeHost {
-	return &fakeHost{files: map[string][]byte{}, execOut: map[string]string{}}
+	return &fakeHost{files: map[string][]byte{}, execOut: map[string]string{}, isolations: map[string]Isolation{}}
 }
 
 func (f *fakeHost) record(format string, a ...any) {
 	f.calls = append(f.calls, fmt.Sprintf(format, a...))
 }
 
-func (f *fakeHost) VMCapable() error { return f.capError }
-func (f *fakeHost) CreateVM(spec NodeSpec) error {
+func (f *fakeHost) VMCapable() error            { return f.capError }
+func (f *fakeHost) ContainerNodeCapable() error { return f.containerCapError }
+func (f *fakeHost) CreateNode(spec NodeSpec, isolation Isolation) error {
 	f.record("create %s cpu=%s mem=%s disk=%s role=%s", spec.Name, spec.CPU, spec.Memory, spec.Disk, spec.Labels[LabelClusterRole])
+	f.isolations[spec.Name] = isolation
 	return nil
 }
 func (f *fakeHost) Start(name string) error  { f.record("start %s", name); return nil }
@@ -72,7 +79,7 @@ func TestProvisionCPSequence(t *testing.T) {
 	f := newFakeHost()
 	m := testManager(f)
 
-	ip, err := m.ProvisionCP("alice", "demo", DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"})
+	ip, err := m.ProvisionCP("alice", "demo", IsolationVM, DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"})
 	if err != nil {
 		t.Fatalf("ProvisionCP: %v", err)
 	}
@@ -102,7 +109,7 @@ func TestProvisionWorkerSequence(t *testing.T) {
 	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10secret::token")
 	m := testManager(f)
 
-	err := m.ProvisionWorker("alice", "demo",
+	err := m.ProvisionWorker("alice", "demo", IsolationVM,
 		DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
 		"alice-k8s-demo-small-1", "10.166.11.5")
 	if err != nil {
@@ -130,7 +137,7 @@ func TestProvisionWorkerSequence(t *testing.T) {
 	// A CP whose token can't be read must fail BEFORE creating a VM.
 	f2 := newFakeHost()
 	f2.readErr = errors.New("no such file")
-	if err := testManager(f2).ProvisionWorker("alice", "demo", DesiredGroup{Name: "small"}, "alice-k8s-demo-small-1", "10.0.0.1"); err == nil {
+	if err := testManager(f2).ProvisionWorker("alice", "demo", IsolationVM, DesiredGroup{Name: "small"}, "alice-k8s-demo-small-1", "10.0.0.1"); err == nil {
 		t.Fatal("worker provisioned without a join token")
 	}
 	for _, c := range f2.calls {
@@ -179,5 +186,51 @@ func assertCalls(t *testing.T, got, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("call %d:\n  got  %q\n  want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// The seam carries the isolation class end to end (#1429): CreateNode
+// receives it verbatim, and the bootstrap script the node executes is
+// the matching variant (kmsg shim only on the container path).
+func TestProvisionCarriesIsolationThroughTheSeam(t *testing.T) {
+	cases := []struct {
+		name     string
+		iso      Isolation
+		wantShim bool
+	}{
+		{"vm nodes", IsolationVM, false},
+		{"container nodes", IsolationContainer, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeHost()
+			m := testManager(f)
+
+			if _, err := m.ProvisionCP("alice", "demo", tc.iso, DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, nil); err != nil {
+				t.Fatalf("ProvisionCP: %v", err)
+			}
+			if got := f.isolations["alice-k8s-demo-cp"]; got != tc.iso {
+				t.Fatalf("CP CreateNode isolation = %q, want %q", got, tc.iso)
+			}
+			cpScript := string(f.files["alice-k8s-demo-cp:"+bootstrapScriptPath])
+			if strings.Contains(cpScript, "kmsg") != tc.wantShim {
+				t.Fatalf("CP script kmsg shim = %v, want %v:\n%s", !tc.wantShim, tc.wantShim, cpScript)
+			}
+
+			f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10secret::token")
+			err := m.ProvisionWorker("alice", "demo", tc.iso,
+				DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
+				"alice-k8s-demo-small-1", "10.166.11.5")
+			if err != nil {
+				t.Fatalf("ProvisionWorker: %v", err)
+			}
+			if got := f.isolations["alice-k8s-demo-small-1"]; got != tc.iso {
+				t.Fatalf("worker CreateNode isolation = %q, want %q", got, tc.iso)
+			}
+			wScript := string(f.files["alice-k8s-demo-small-1:"+bootstrapScriptPath])
+			if strings.Contains(wScript, "kmsg") != tc.wantShim {
+				t.Fatalf("worker script kmsg shim = %v, want %v:\n%s", !tc.wantShim, tc.wantShim, wScript)
+			}
+		})
 	}
 }

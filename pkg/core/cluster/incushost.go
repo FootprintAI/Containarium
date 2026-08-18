@@ -38,7 +38,21 @@ func (h *IncusHost) VMCapable() error {
 	return nil
 }
 
-func (h *IncusHost) CreateVM(spec NodeSpec) error {
+// ContainerNodeCapable probes the container-node preconditions on the
+// real host (#1429): the observation lives in GatherContainerNodeFacts
+// and the verdict in CheckContainerNodeFacts, both in
+// containerprofile.go — the one place holding this knowledge.
+func (h *IncusHost) ContainerNodeCapable() error {
+	return CheckContainerNodeFacts(GatherContainerNodeFacts("/", func() (string, error) {
+		info, err := h.client.GetServerInfo()
+		if err != nil {
+			return "", err
+		}
+		return info.Environment.Driver, nil
+	}))
+}
+
+func (h *IncusHost) CreateNode(spec NodeSpec, isolation Isolation) error {
 	cfg := incus.ContainerConfig{
 		Name:         spec.Name,
 		Image:        "images:ubuntu/24.04", // the nodevm default; VM image bake is a later phase
@@ -46,6 +60,14 @@ func (h *IncusHost) CreateVM(spec NodeSpec) error {
 		Memory:       spec.Memory,
 		InstanceType: api.InstanceTypeVM,
 		AutoStart:    true,
+	}
+	if isolation == IsolationContainer {
+		// The container node profile — nesting, no privileged — comes
+		// from ContainerNodeConfig; anything that is not the explicit
+		// weaker class provisions a VM (never default to the weaker
+		// boundary).
+		cfg.InstanceType = api.InstanceTypeContainer
+		cfg.ExtraConfig = ContainerNodeConfig()
 	}
 	if spec.Disk != "" {
 		cfg.Disk = &incus.DiskDevice{Size: spec.Disk}

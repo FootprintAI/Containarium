@@ -36,10 +36,12 @@ type ClusterServer struct {
 	pb.UnimplementedClusterServiceServer
 	store      cluster.Store
 	kubeconfig KubeconfigReader
-	// vmCapable is the create-time capability probe (#1414): a host
-	// that cannot run VMs refuses cluster creation with a typed
-	// error instead of provisioning doomed records.
-	vmCapable func() error
+	// nodeCapable is the create-time capability probe (#1414, #1429):
+	// dispatched on the requested isolation class, it refuses cluster
+	// creation with a typed error instead of provisioning doomed
+	// records — a VM cluster on a KVM-less host, a container cluster
+	// on a host missing the container-node preconditions.
+	nodeCapable func(cluster.Isolation) error
 	// asyncDelete marks the reconciler as wired: DeleteCluster flips
 	// records to DELETING for the reconciler to drain instead of
 	// dropping rows that may have live VMs behind them.
@@ -73,7 +75,7 @@ func (s *ClusterServer) Store() cluster.Store { return s.store }
 // capability probe, and reconciler-drained deletes.
 func (s *ClusterServer) SetReconciler(r *ClusterReconciler) {
 	s.kubeconfig = r
-	s.vmCapable = r.VMCapable
+	s.nodeCapable = r.NodeCapable
 	s.asyncDelete = true
 }
 
@@ -216,8 +218,8 @@ func (s *ClusterServer) CreateCluster(ctx context.Context, req *pb.CreateCluster
 	if err != nil {
 		return nil, err
 	}
-	if s.vmCapable != nil {
-		if err := s.vmCapable(); err != nil {
+	if s.nodeCapable != nil {
+		if err := s.nodeCapable(isolation); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 		}
 	}
