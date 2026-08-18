@@ -24,30 +24,45 @@ import (
 // -v3 name; the older name is ignored by these releases.
 const ContainerdConfigTemplatePath = "/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl"
 
-// ContainerdConfigTemplate returns the containerd config template for
-// container-class nodes.
-//
-// Without it every pod sandbox dies in an unprivileged container:
+// ContainerdGeneratedConfigPath is where k3s writes the containerd
+// config it generates on start. On container-class nodes the bootstrap
+// derives the config template FROM this file — a hand-written template
+// cannot safely extend it, because k3s's base template already
+// declares [plugins.'io.containerd.cri.v1.runtime'] and re-declaring a
+// TOML table is invalid, so containerd refuses the whole config and
+// k3s never starts (#1444).
+const ContainerdGeneratedConfigPath = "/var/lib/rancher/k3s/agent/etc/containerd/config.toml"
+
+// containerdUnprivilegedToggles are the CRI plugin settings that make
+// runc write sysctls (net.ipv4.ip_unprivileged_port_start) an
+// unprivileged container may not touch. With either enabled every pod
+// sandbox dies:
 //
 //	runc create failed: ... open sysctl net.ipv4.ip_unprivileged_port_start:
 //	  reopen fd 8: permission denied
 //
-// because the CRI plugin sets net.ipv4.ip_unprivileged_port_start=0 for
-// each sandbox. Turning the two toggles off stops it asking. Verified
-// live on a nested host: node Ready, system pods Running, no privileged
-// flag anywhere.
-//
-// The cost is real and documented: pods on container-class nodes cannot
-// bind ports below 1024 without CAP_NET_BIND_SERVICE, and unprivileged
-// ICMP is unavailable. VM-class nodes are unaffected — they never get
-// this template.
-func ContainerdConfigTemplate() string {
-	return `{{ template "base" . }}
+// Flipping both to false was verified live on a nested host: node
+// Ready, system pods Running, no privileged flag anywhere (design
+// Amendment 1). The cost is real and documented: pods on
+// container-class nodes cannot bind ports below 1024 without
+// CAP_NET_BIND_SERVICE, and unprivileged ICMP is unavailable.
+// VM-class nodes are unaffected — they never get the derivation.
+var containerdUnprivilegedToggles = []string{
+	"enable_unprivileged_ports",
+	"enable_unprivileged_icmp",
+}
 
-[plugins.'io.containerd.cri.v1.runtime']
-  enable_unprivileged_ports = false
-  enable_unprivileged_icmp = false
-`
+// ContainerdDeriveTemplateSedArgs returns the sed arguments (sans the
+// input file) that turn k3s's generated containerd config into the
+// config template for container-class nodes: an exact copy with the
+// two unprivileged toggles flipped to false. Exported so the tests
+// run the very same derivation the bootstrap embeds.
+func ContainerdDeriveTemplateSedArgs() []string {
+	var args []string
+	for _, key := range containerdUnprivilegedToggles {
+		args = append(args, "-e", fmt.Sprintf("s/%s = true/%s = false/", key, key))
+	}
+	return args
 }
 
 // Reserved is the slice of a node's observed capacity that does NOT

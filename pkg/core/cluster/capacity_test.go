@@ -1,31 +1,124 @@
 package cluster
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"text/template"
+
+	"github.com/BurntSushi/toml"
 )
 
-// The containerd template is what turns "every pod sandbox fails" into
-// a working node (design Amendment 1, verified live). These tests pin
-// the two settings that matter and the fact that the VM path renders
-// nothing at all.
-func TestContainerdConfigTemplate(t *testing.T) {
-	tmpl := ContainerdConfigTemplate()
-	for _, want := range []string{
-		"[plugins.'io.containerd.cri.v1.runtime']",
-		"enable_unprivileged_ports = false",
-		"enable_unprivileged_icmp = false",
-	} {
-		if !strings.Contains(tmpl, want) {
-			t.Errorf("template missing %q:\n%s", want, tmpl)
-		}
+// The containerd sysctl fix is DERIVED on the node from the config
+// k3s itself generated — never a hand-written template. k3s's base
+// template already declares [plugins.'io.containerd.cri.v1.runtime'],
+// so a template that re-declares the table renders to invalid TOML,
+// containerd cannot parse its config, and k3s never starts (#1444 —
+// the container lane's control plane proved it). A golden alone did
+// NOT catch that: a golden pins what we render, not whether it
+// parses. These tests run the exact sed derivation the bootstrap
+// embeds against a fixture shaped like a real generated config,
+// render the result the way k3s renders a config template, and PARSE
+// it with a TOML library.
+
+const containerdGeneratedFixture = "testdata/containerd-generated-config.toml"
+
+// renderAsK3sWould renders a config-v3.toml.tmpl body the way k3s
+// does: as a text/template with "base" defined as the config k3s
+// would itself generate.
+func renderAsK3sWould(t *testing.T, tmplBody, base string) (string, error) {
+	t.Helper()
+	root := template.New("config-v3.toml.tmpl")
+	template.Must(root.New("base").Parse(base))
+	if _, err := root.Parse(tmplBody); err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := root.Execute(&buf, nil); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// containerdConfig is the slice of containerd's config the fix cares
+// about, decoded from the rendered TOML.
+type containerdConfig struct {
+	Version int `toml:"version"`
+	Plugins struct {
+		Runtime struct {
+			EnableUnprivilegedPorts bool `toml:"enable_unprivileged_ports"`
+			EnableUnprivilegedICMP  bool `toml:"enable_unprivileged_icmp"`
+		} `toml:"io.containerd.cri.v1.runtime"`
+	} `toml:"plugins"`
+}
+
+func TestDerivedContainerdTemplateIsValidTOML(t *testing.T) {
+	base, err := os.ReadFile(containerdGeneratedFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The exact derivation the bootstrap runs on the node.
+	out, err := exec.Command("sed",
+		append(ContainerdDeriveTemplateSedArgs(), containerdGeneratedFixture)...).Output()
+	if err != nil {
+		t.Fatalf("sed derivation failed: %v", err)
+	}
+	rendered, err := renderAsK3sWould(t, string(out), string(base))
+	if err != nil {
+		t.Fatalf("k3s could not render the derived template: %v", err)
+	}
+	var cfg containerdConfig
+	if err := toml.Unmarshal([]byte(rendered), &cfg); err != nil {
+		t.Fatalf("rendered template is invalid TOML — containerd would refuse it and k3s would never start: %v\n%s", err, rendered)
+	}
+	if cfg.Version != 3 {
+		t.Errorf("version = %d, want 3 (k3s 1.33+ emits config version 3)", cfg.Version)
 	}
 	// The sysctl writes runc cannot perform in an unprivileged
-	// container are exactly what these disable — a template that
-	// re-enables them would restore the failure.
-	if strings.Contains(tmpl, "= true") {
-		t.Errorf("template enables an unprivileged-port/icmp sysctl:\n%s", tmpl)
+	// container are exactly what these disable — leaving either true
+	// kills every pod sandbox (design Amendment 1).
+	if cfg.Plugins.Runtime.EnableUnprivilegedPorts {
+		t.Error("enable_unprivileged_ports is still true after derivation")
+	}
+	if cfg.Plugins.Runtime.EnableUnprivilegedICMP {
+		t.Error("enable_unprivileged_icmp is still true after derivation")
+	}
+	// The runtime table k3s's base template emits must be declared
+	// exactly once — a second declaration is the #1444 regression.
+	if n := strings.Count(rendered, "[plugins.'io.containerd.cri.v1.runtime']"); n != 1 {
+		t.Errorf("runtime table declared %d times, want exactly 1:\n%s", n, rendered)
+	}
+}
+
+// Prove the validator above can actually fail: feed it the exact
+// broken form this issue removes — `{{ template "base" . }}` plus a
+// re-declaration of the runtime table — and require the TOML parse to
+// reject it. If a future TOML library upgrade started accepting
+// duplicate tables, this test would flag that the valid-TOML check
+// lost its teeth.
+func TestValidatorRejectsRedeclaredBaseTable(t *testing.T) {
+	base, err := os.ReadFile(containerdGeneratedFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := `{{ template "base" . }}
+
+[plugins.'io.containerd.cri.v1.runtime']
+  enable_unprivileged_ports = false
+  enable_unprivileged_icmp = false
+`
+	// text/template renders the duplicate happily — the invalidity
+	// only exists at the TOML layer, which is why a golden missed it.
+	rendered, err := renderAsK3sWould(t, broken, string(base))
+	if err != nil {
+		t.Fatalf("template render: %v", err)
+	}
+	var cfg containerdConfig
+	if err := toml.Unmarshal([]byte(rendered), &cfg); err == nil {
+		t.Fatal("TOML parser accepted a re-declared runtime table — this suite would not have caught #1444")
 	}
 }
 
@@ -122,11 +215,34 @@ func TestAgentScriptCarriesTemplateAndReservedArgs(t *testing.T) {
 	if !strings.Contains(container, ContainerdConfigTemplatePath) {
 		t.Error("container agent script does not write the containerd template")
 	}
-	if !strings.Contains(container, "enable_unprivileged_ports = false") {
-		t.Error("container agent script does not disable the unprivileged-port sysctl")
+	if !strings.Contains(container, ContainerdGeneratedConfigPath) {
+		t.Error("container agent script does not derive the template from the generated config")
+	}
+	if !strings.Contains(container, "systemctl restart k3s-agent.service") {
+		t.Error("container agent script does not restart k3s after deriving the template")
 	}
 	if !strings.Contains(container, "system-reserved=cpu=6") {
 		t.Error("container agent script does not pass the kubelet reservation")
+	}
+	// The #1444 regression: a hand-written template re-declaring a
+	// table k3s's base template already emits. Neither form may come
+	// back — the derivation copies the generated config instead.
+	if strings.Contains(container, "{{ template") {
+		t.Error("container agent script embeds a hand-written containerd template (#1444)")
+	}
+	if strings.Contains(container, "[plugins.") {
+		t.Error("container agent script re-declares a containerd table k3s already emits (#1444)")
+	}
+	// The generated config exists only after k3s starts, so the
+	// derivation must come after the unit is enabled — and its wait
+	// must fail loudly, never skip silently (#1444).
+	enable := strings.Index(container, "systemctl enable --now k3s-agent.service")
+	derive := strings.Index(container, ContainerdGeneratedConfigPath)
+	if enable == -1 || derive < enable {
+		t.Error("containerd derivation must run after k3s-agent is enabled")
+	}
+	if !strings.Contains(container, "was never generated") {
+		t.Error("containerd derivation wait does not fail loudly on timeout")
 	}
 
 	// The VM path must stay exactly what it was: no template, no args,
@@ -135,6 +251,45 @@ func TestAgentScriptCarriesTemplateAndReservedArgs(t *testing.T) {
 	for _, unwanted := range []string{ContainerdConfigTemplatePath, "system-reserved", "enable_unprivileged"} {
 		if strings.Contains(vm, unwanted) {
 			t.Errorf("VM agent script contains container-only content %q", unwanted)
+		}
+	}
+}
+
+// k3s server runs an embedded agent: the control plane starts
+// containerd exactly like a worker does, so it needs the sysctl fix
+// too — the container lane's run 5 failed on the CP first (#1444).
+func TestServerScriptCarriesContainerdDerivation(t *testing.T) {
+	container := RenderServerScript(ServerBootstrap{
+		TLSSANs:   []string{"203.0.113.10"},
+		Isolation: IsolationContainer,
+	})
+	for _, must := range []string{
+		ContainerdGeneratedConfigPath,
+		ContainerdConfigTemplatePath,
+		"systemctl restart k3s.service",
+		"was never generated", // the bounded wait fails loudly
+	} {
+		if !strings.Contains(container, must) {
+			t.Errorf("container server script missing %q", must)
+		}
+	}
+	if strings.Contains(container, "{{ template") {
+		t.Error("container server script embeds a hand-written containerd template (#1444)")
+	}
+	if strings.Contains(container, "[plugins.") {
+		t.Error("container server script re-declares a containerd table k3s already emits (#1444)")
+	}
+	enable := strings.Index(container, "systemctl enable --now k3s.service")
+	derive := strings.Index(container, ContainerdGeneratedConfigPath)
+	if enable == -1 || derive < enable {
+		t.Error("containerd derivation must run after k3s is enabled")
+	}
+
+	// The VM path must stay exactly what it was.
+	vm := RenderServerScript(ServerBootstrap{TLSSANs: []string{"203.0.113.10"}})
+	for _, unwanted := range []string{ContainerdConfigTemplatePath, "enable_unprivileged", "systemctl restart"} {
+		if strings.Contains(vm, unwanted) {
+			t.Errorf("VM server script contains container-only content %q", unwanted)
 		}
 	}
 }

@@ -5,15 +5,6 @@ set -eu
 
 chmod 0755 /usr/local/bin/k3s
 chmod 0600 /etc/containarium/k3s-agent-token
-mkdir -p /var/lib/rancher/k3s/agent/etc/containerd
-cat > /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl <<'CONTAINERD_TMPL'
-{{ template "base" . }}
-
-[plugins.'io.containerd.cri.v1.runtime']
-  enable_unprivileged_ports = false
-  enable_unprivileged_icmp = false
-CONTAINERD_TMPL
-
 
 cat > /etc/systemd/system/k3s-agent.service <<'UNIT'
 [Unit]
@@ -35,3 +26,19 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now k3s-agent.service
+
+# containerd's CRI plugin makes runc write sysctls an unprivileged
+# container may not touch, killing every pod sandbox. Derive the config
+# template from the config k3s just generated, with the two toggles
+# flipped -- a hand-written template would re-declare a table the base
+# template already emits, which is invalid TOML (#1444).
+i=0
+until [ -s /var/lib/rancher/k3s/agent/etc/containerd/config.toml ]; do
+  i=$((i+1))
+  [ "$i" -gt 120 ] && { echo "containerd config /var/lib/rancher/k3s/agent/etc/containerd/config.toml was never generated" >&2; exit 1; }
+  sleep 2
+done
+sed -e 's/enable_unprivileged_ports = true/enable_unprivileged_ports = false/' -e 's/enable_unprivileged_icmp = true/enable_unprivileged_icmp = false/' /var/lib/rancher/k3s/agent/etc/containerd/config.toml > /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+grep -q 'enable_unprivileged_ports = false' /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl || { echo "derived containerd template does not disable enable_unprivileged_ports" >&2; exit 1; }
+grep -q 'enable_unprivileged_icmp = false' /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl || { echo "derived containerd template does not disable enable_unprivileged_icmp" >&2; exit 1; }
+systemctl restart k3s-agent.service

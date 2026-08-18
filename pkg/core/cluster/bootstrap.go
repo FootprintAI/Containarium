@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -76,7 +75,7 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now k3s.service
-
+%[6]s
 # Bootstrap is done when the admin kubeconfig and the join token exist.
 i=0
 until [ -s %[3]s ] && [ -s %[4]s ]; do
@@ -84,7 +83,8 @@ until [ -s %[3]s ] && [ -s %[4]s ]; do
   [ "$i" -gt 120 ] && { echo "k3s server did not come up" >&2; exit 1; }
   sleep 2
 done
-`, K3sBinaryPath, sanFlags.String(), KubeconfigPath, NodeTokenPath, kmsgShimUnitLine(b.Isolation))
+`, K3sBinaryPath, sanFlags.String(), KubeconfigPath, NodeTokenPath, kmsgShimUnitLine(b.Isolation),
+		containerdTemplateStanza(b.Isolation, "k3s.service"))
 }
 
 // AgentBootstrap parameterizes a worker script.
@@ -111,7 +111,7 @@ func RenderAgentScript(b AgentBootstrap) string {
 set -eu
 
 chmod 0755 %[1]s
-chmod 0600 %[2]s%[5]s
+chmod 0600 %[2]s
 
 cat > /etc/systemd/system/k3s-agent.service <<'UNIT'
 [Unit]
@@ -132,23 +132,53 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now k3s-agent.service
-`, K3sBinaryPath, AgentTokenPath, b.ServerURL, kmsgShimUnitLine(b.Isolation),
-		containerdTemplateStanza(b.Isolation), kubeletArgsSuffix(b.KubeletArgs))
+%[5]s`, K3sBinaryPath, AgentTokenPath, b.ServerURL, kmsgShimUnitLine(b.Isolation),
+		containerdTemplateStanza(b.Isolation, "k3s-agent.service"), kubeletArgsSuffix(b.KubeletArgs))
 }
 
-// containerdTemplateStanza writes the containerd config template
-// before k3s first starts, on the container path only. k3s reads the
-// template when it generates containerd's config, so it must exist
-// before the unit comes up — not applied afterwards and restarted.
-func containerdTemplateStanza(iso Isolation) string {
+// containerdTemplateStanza derives the containerd config template that
+// disables the unprivileged sysctl toggles, on the container path only.
+//
+// The template is an exact copy of the config k3s just generated with
+// the two toggles flipped — never a hand-written template: k3s's base
+// template already declares [plugins.'io.containerd.cri.v1.runtime'],
+// so a template re-declaring the table renders to invalid TOML,
+// containerd refuses the whole config, and k3s never starts (#1444).
+// That also means the stanza must run AFTER the unit is enabled — the
+// generated config does not exist before k3s's first start — and then
+// restart k3s so containerd re-reads it. The wait is bounded and every
+// failure path exits loudly: a silent skip would leave every pod
+// sandbox broken behind a green bootstrap.
+func containerdTemplateStanza(iso Isolation, service string) string {
 	if iso != IsolationContainer {
 		return ""
 	}
+	var seds strings.Builder
+	sedArgs := ContainerdDeriveTemplateSedArgs()
+	for i := 0; i+1 < len(sedArgs); i += 2 {
+		fmt.Fprintf(&seds, " %s '%s'", sedArgs[i], sedArgs[i+1])
+	}
+	var guards strings.Builder
+	for _, key := range containerdUnprivilegedToggles {
+		fmt.Fprintf(&guards,
+			"grep -q '%[1]s = false' %[2]s || { echo \"derived containerd template does not disable %[1]s\" >&2; exit 1; }\n",
+			key, ContainerdConfigTemplatePath)
+	}
 	return fmt.Sprintf(`
-mkdir -p %[1]s
-cat > %[2]s <<'CONTAINERD_TMPL'
-%[3]sCONTAINERD_TMPL
-`, filepath.Dir(ContainerdConfigTemplatePath), ContainerdConfigTemplatePath, ContainerdConfigTemplate())
+# containerd's CRI plugin makes runc write sysctls an unprivileged
+# container may not touch, killing every pod sandbox. Derive the config
+# template from the config k3s just generated, with the two toggles
+# flipped -- a hand-written template would re-declare a table the base
+# template already emits, which is invalid TOML (#1444).
+i=0
+until [ -s %[1]s ]; do
+  i=$((i+1))
+  [ "$i" -gt 120 ] && { echo "containerd config %[1]s was never generated" >&2; exit 1; }
+  sleep 2
+done
+sed%[2]s %[1]s > %[3]s
+%[4]ssystemctl restart %[5]s
+`, ContainerdGeneratedConfigPath, seds.String(), ContainerdConfigTemplatePath, guards.String(), service)
 }
 
 // kubeletArgsSuffix appends extra flags to the k3s ExecStart line.
