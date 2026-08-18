@@ -184,3 +184,96 @@ set becomes a placement constraint in the multi-backend scheduler, and
 (b) kernel hardening for the shared-kernel class (seccomp/AppArmor
 profiles per node container). Neither changes the contract surface
 designed here.
+
+---
+
+## Amendment 1 — what running it taught us (2026-08-19)
+
+The first real run of the container-mode lane (#1430) produced two
+findings that this design had assumed away. Both were then run down
+empirically on a nested Incus host — an LXC box whose own Incus creates
+the node containers, i.e. the harshest environment we intend to
+support. Recorded here because the original text is now wrong without
+them.
+
+### 1. Pod sandboxes fail — and the no-privileged line SURVIVES
+
+**Observed.** k3s starts fine in an unprivileged system container
+(node reached `Ready`), but every pod sandbox failed:
+
+```
+runc create failed: unable to start container process: error during container init:
+open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied
+```
+
+containerd's CRI plugin sets `net.ipv4.ip_unprivileged_port_start=0`
+for every sandbox (`enable_unprivileged_ports = true` in the generated
+config); an unprivileged container may not write it.
+
+**Proven fix — configuration, not privilege.** A containerd config
+template on container-mode nodes setting
+
+```toml
+[plugins.'io.containerd.cri.v1.runtime']
+  enable_unprivileged_ports = false
+  enable_unprivileged_icmp  = false
+```
+
+was applied to a live probe: k3s restarted, the node came back
+`Ready`, and `coredns`, `local-path-provisioner` and `metrics-server`
+all reached `Running` with zero remaining sysctl errors. **No
+`security.privileged`.** The design's hard line stands, and this
+template joins the container profile as a required part of it.
+
+**Cost, recorded honestly.** Container-class nodes therefore differ
+from VM-class nodes in tenant-visible behaviour: pods cannot bind
+ports below 1024 without `CAP_NET_BIND_SERVICE`, and unprivileged
+ICMP is unavailable. That is a real capability difference between the
+two isolation classes and belongs in the product docs, not just here.
+
+### 2. Node capacity is fiction — and lxcfs does not save us
+
+**Observed.** A node container created with `limits.cpu=2`,
+`limits.memory=3GB` advertised to Kubernetes:
+
+```
+capacity: 8 cpu / 65841348Ki memory        (truth: 2 cpu / 3 GB)
+```
+
+`nproc` reports 2 correctly (it reads scheduler affinity), but
+cadvisor derives node capacity from `/proc/cpuinfo` and
+`/proc/meminfo`, which show the outer host's values.
+
+**lxcfs is not the answer.** The probe host had lxcfs installed and
+mounted, and the nested child instances still saw host values —
+masking does not propagate to a nested Incus's own instances. A design
+that says "require lxcfs" would be requiring something already present
+and still broken.
+
+**Why this is a correctness bug, not cosmetics.** The scheduler packs
+pods against allocatable, and cluster-autoscaler's fit simulation
+reads the same number. A node claiming four times its real CPU and
+twenty times its real memory means pods are scheduled where they
+cannot run and **scale-up is never triggered** — the autoscaling story
+this whole feature exists for, silently disabled.
+
+**Required fix.** Allocatable must be derived from the size the daemon
+already knows (`NodeSpec`), not from what cadvisor believes:
+kubelet args pinning reserved resources to (observed capacity −
+requested size) so allocatable equals the size class. The capability
+probe must additionally compare observed `/proc` capacity against the
+requested limits and refuse the host when they disagree and the
+reservation cannot be computed — a node that lies about its size is
+worse than no node, because every downstream decision is made on the
+lie.
+
+### Consequences for the stories as merged
+
+- `pkg/core/cluster/containerprofile.go` (#1429, merged) is
+  **incomplete**: it needs the containerd template and the
+  allocatable-pinning kubelet args.
+- `ContainerNodeCapable()` (#1429, merged) is **insufficient**: it
+  checks modules and cgroups, not capacity truthfulness.
+- The container-mode lane (#1430) cannot go green until both land, and
+  its journey must assert scale-up actually triggers — the assertion
+  that would have caught finding 2 on day one.
