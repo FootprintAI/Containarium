@@ -153,10 +153,10 @@ func (m *Manager) DeployVPA(tenant, clusterName string) error {
 	if err != nil {
 		return fmt.Errorf("generate VPA webhook certs: %w", err)
 	}
-	if err := m.host.Push(cp, VPACertsPath, secret, "0600"); err != nil {
+	if err := m.pushFile(cp, VPACertsPath, secret, "0600"); err != nil {
 		return fmt.Errorf("push VPA certs manifest: %w", err)
 	}
-	if err := m.host.Push(cp, VPAManifestPath, manifests, "0644"); err != nil {
+	if err := m.pushFile(cp, VPAManifestPath, manifests, "0644"); err != nil {
 		return fmt.Errorf("push VPA manifests: %w", err)
 	}
 	return nil

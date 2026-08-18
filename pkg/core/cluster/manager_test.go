@@ -3,6 +3,7 @@ package cluster
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,12 @@ func TestProvisionCPSequence(t *testing.T) {
 	want := []string{
 		"create alice-k8s-demo-cp cpu=2 mem=4GB disk=40GB role=control-plane",
 		"wait alice-k8s-demo-cp",
+		// Each push is preceded by its parent mkdir (#1442): Incus
+		// answers Not Found for a missing parent, and these
+		// directories do not exist in a fresh node image.
+		"exec alice-k8s-demo-cp:mkdir -p " + filepath.Dir(K3sBinaryPath),
 		"push alice-k8s-demo-cp:" + K3sBinaryPath + " mode=0755",
+		"exec alice-k8s-demo-cp:mkdir -p " + filepath.Dir(bootstrapScriptPath),
 		"push alice-k8s-demo-cp:" + bootstrapScriptPath + " mode=0755",
 		"exec alice-k8s-demo-cp:sh " + bootstrapScriptPath,
 	}
@@ -122,8 +128,13 @@ func TestProvisionWorkerSequence(t *testing.T) {
 		"read alice-k8s-demo-cp:" + NodeTokenPath,
 		"create alice-k8s-demo-small-1 cpu=2 mem=4GB disk=40GB role=worker",
 		"wait alice-k8s-demo-small-1",
+		"exec alice-k8s-demo-small-1:mkdir -p " + filepath.Dir(K3sBinaryPath),
 		"push alice-k8s-demo-small-1:" + K3sBinaryPath + " mode=0755",
+		// The one that was actually failing in production: /etc/containarium
+		// does not exist in a fresh image, so this push returned Not Found.
+		"exec alice-k8s-demo-small-1:mkdir -p " + filepath.Dir(AgentTokenPath),
 		"push alice-k8s-demo-small-1:" + AgentTokenPath + " mode=0600",
+		"exec alice-k8s-demo-small-1:mkdir -p " + filepath.Dir(bootstrapScriptPath),
 		"push alice-k8s-demo-small-1:" + bootstrapScriptPath + " mode=0755",
 		"exec alice-k8s-demo-small-1:sh " + bootstrapScriptPath,
 	}
@@ -268,5 +279,40 @@ func TestProvisionWorkerRefusesUnhonourableCapacity(t *testing.T) {
 		DesiredGroup{Name: "small", CPU: "8", Memory: "16GB", Disk: "40GB"},
 		"alice-k8s-demo-small-1", "10.0.0.1"); err != nil {
 		t.Fatalf("VM provisioning must not consult the container capacity probe: %v", err)
+	}
+}
+
+// Every path the cluster flow pushes to lives in a directory that does
+// not exist in a fresh node image, and Incus answers "Not Found" for a
+// missing parent. The parent must therefore be created BEFORE the push
+// — ordering is the assertion, since a push that happens to succeed
+// proves nothing about a fresh node (#1442).
+func TestPushCreatesParentDirectoryFirst(t *testing.T) {
+	f := newFakeHost()
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("token")
+
+	if err := testManager(f).ProvisionWorker("alice", "demo", IsolationVM,
+		DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
+		"alice-k8s-demo-small-1", "10.0.0.1"); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	mkdirAt, pushAt := -1, -1
+	for i, call := range f.calls {
+		if mkdirAt < 0 && strings.Contains(call, "mkdir") && strings.Contains(call, "/etc/containarium") {
+			mkdirAt = i
+		}
+		if pushAt < 0 && strings.Contains(call, "push ") && strings.Contains(call, AgentTokenPath) {
+			pushAt = i
+		}
+	}
+	if mkdirAt < 0 {
+		t.Fatalf("no parent directory was created for %s: %v", AgentTokenPath, f.calls)
+	}
+	if pushAt < 0 {
+		t.Fatalf("join token was never pushed: %v", f.calls)
+	}
+	if mkdirAt > pushAt {
+		t.Fatalf("parent directory created AFTER the push (mkdir at %d, push at %d): %v", mkdirAt, pushAt, f.calls)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -95,6 +96,22 @@ func (m *Manager) DeleteVM(name string) error { return m.host.Delete(name) }
 
 const bootstrapScriptPath = "/root/containarium-bootstrap.sh"
 
+// pushFile writes a file into a node, creating its parent directory
+// first. Incus answers "Not Found" when the parent is missing, and
+// none of the directories the cluster flow writes into
+// (/etc/containarium, its ca/ subdir, k3s's manifests dir) exist in a
+// fresh node image — so every push failed until the parent was made
+// (#1442). mkdir -p is idempotent, so this is safe on the paths whose
+// parent already exists.
+func (m *Manager) pushFile(name, path string, content []byte, mode string) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "/" && dir != "." {
+		if _, err := m.host.Exec(name, []string{"mkdir", "-p", dir}); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
+	return m.host.Push(name, path, content, mode)
+}
+
 // ProvisionCP creates and bootstraps the control-plane VM: create →
 // start → wait → push pinned binary + rendered script → exec. Returns
 // the VM's IP (workers join over it). cpSize is the smallest preset —
@@ -116,11 +133,11 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, iso Isolation, cpSize 
 	if err != nil {
 		return "", err
 	}
-	if err := m.host.Push(name, K3sBinaryPath, bin, "0755"); err != nil {
+	if err := m.pushFile(name, K3sBinaryPath, bin, "0755"); err != nil {
 		return "", fmt.Errorf("push k3s binary: %w", err)
 	}
 	script := RenderServerScript(ServerBootstrap{TLSSANs: append([]string{ip}, tlsSANs...), Isolation: iso})
-	if err := m.host.Push(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
+	if err := m.pushFile(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return "", fmt.Errorf("push bootstrap script: %w", err)
 	}
 	if _, err := m.host.Exec(name, []string{"sh", bootstrapScriptPath}); err != nil {
@@ -163,14 +180,14 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g D
 	if err != nil {
 		return err
 	}
-	if err := m.host.Push(vmName, K3sBinaryPath, bin, "0755"); err != nil {
+	if err := m.pushFile(vmName, K3sBinaryPath, bin, "0755"); err != nil {
 		return fmt.Errorf("push k3s binary: %w", err)
 	}
-	if err := m.host.Push(vmName, AgentTokenPath, token, "0600"); err != nil {
+	if err := m.pushFile(vmName, AgentTokenPath, token, "0600"); err != nil {
 		return fmt.Errorf("push join token: %w", err)
 	}
 	script := RenderAgentScript(AgentBootstrap{ServerURL: "https://" + cpIP + ":6443", Isolation: iso})
-	if err := m.host.Push(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
+	if err := m.pushFile(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return fmt.Errorf("push bootstrap script: %w", err)
 	}
 	if _, err := m.host.Exec(vmName, []string{"sh", bootstrapScriptPath}); err != nil {
@@ -242,12 +259,12 @@ func (m *Manager) DeployCA(tenant, clusterName string, d CADeploy, creds CACrede
 		{CACloudConfigPath, []byte(RenderCACloudConfig(d)), "0644"},
 	}
 	for _, f := range files {
-		if err := m.host.Push(cp, f.path, f.content, f.mode); err != nil {
+		if err := m.pushFile(cp, f.path, f.content, f.mode); err != nil {
 			return fmt.Errorf("push %s: %w", f.path, err)
 		}
 	}
 	script := RenderCAUnitScript(d)
-	if err := m.host.Push(cp, "/root/containarium-ca-bootstrap.sh", []byte(script), "0755"); err != nil {
+	if err := m.pushFile(cp, "/root/containarium-ca-bootstrap.sh", []byte(script), "0755"); err != nil {
 		return fmt.Errorf("push CA bootstrap: %w", err)
 	}
 	if _, err := m.host.Exec(cp, []string{"sh", "/root/containarium-ca-bootstrap.sh"}); err != nil {
