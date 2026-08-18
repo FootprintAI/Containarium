@@ -2,10 +2,18 @@
 
 package clustere2e
 
-// The gated KVM e2e lane (#1418): the managed-clusters MVP journey run
-// against real everything — real Incus VMs, real k3s, real
-// cluster-autoscaler, real VPA — on a VM-capable host. Design:
+// The gated e2e lane (#1418): the managed-clusters MVP journey run
+// against real everything — real Incus instances, real k3s, real
+// cluster-autoscaler, real VPA. Design:
 // docs/architecture/managed-k8s-clusters.md, "End-to-end".
+//
+// One journey, two isolation classes (#1430). CONTAINARIUM_E2E_ISOLATION
+// selects which: unset/vm is the VM class the self-hosted KVM lane gates,
+// `container` is the Incus-system-container class (#1428/#1429) the
+// GitHub-hosted lane runs without KVM. Only the `cluster create` call
+// differs; every assertion below is shared, and none of them may look at
+// the instance TYPE — a container-mode node is an Incus container, so a
+// type filter would silently observe an empty cluster.
 //
 // Every assertion is against observed cluster or Incus state (the k8s
 // API through the tenant kubeconfig, the Incus API, TCP reachability),
@@ -27,6 +35,7 @@ package clustere2e
 //	CONTAINARIUM_JWT_SECRET         daemon's JWT secret; the lane mints its tenant token
 //	CONTAINARIUM_E2E_ADVERTISE_HOST host the kubeconfig must point at ("outside" reach)
 //	CONTAINARIUM_E2E_SABOTAGE       "" or "join-token" (prove-the-lane-can-fail runs)
+//	CONTAINARIUM_E2E_ISOLATION      "", "vm" (default) or "container" (#1430)
 //	CONTAINARIUM_REQUIRE_INCUS      "1" in the lane: a missing environment fails, not skips
 //
 // Timeouts (durations, optional): CONTAINARIUM_E2E_READY_TIMEOUT
@@ -72,9 +81,10 @@ const (
 	burnImage = "registry.k8s.io/e2e-test-images/busybox:1.36.1-1"
 )
 
-// vmPrefix is the Incus name prefix every VM of the lane cluster
-// carries (spec.go's naming scheme).
-var vmPrefix = tenant + "-k8s-" + clusterName + "-"
+// instancePrefix is the Incus name prefix every node of the lane
+// cluster carries (spec.go's naming scheme), whatever its isolation
+// class: VMs in the KVM lane, system containers in the container lane.
+var instancePrefix = tenant + "-k8s-" + clusterName + "-"
 
 type lane struct {
 	t             *testing.T
@@ -82,14 +92,15 @@ type lane struct {
 	server        string
 	token         string
 	advertiseHost string
+	isolation     IsolationMode
 	incus         *incus.Client
 
 	cs  *kubernetes.Clientset
 	dyn dynamic.Interface
 
-	kubeconfig    []byte
-	baselineNodes []string
-	baselineVMs   []string
+	kubeconfig        []byte
+	baselineNodes     []string
+	baselineInstances []string
 }
 
 func env(t *testing.T, key string) string {
@@ -140,6 +151,12 @@ func TestManagedClusterJourney(t *testing.T) {
 		t.Fatalf("mint tenant token: %v", err)
 	}
 
+	l.isolation, err = ParseIsolation(os.Getenv("CONTAINARIUM_E2E_ISOLATION"))
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	t.Logf("isolation class under test: %s", l.isolation)
+
 	sabotage, err := ParseSabotage(os.Getenv("CONTAINARIUM_E2E_SABOTAGE"))
 	if err != nil {
 		t.Fatalf("%v", err)
@@ -167,7 +184,7 @@ func TestManagedClusterJourney(t *testing.T) {
 		{"2_overflow_scales_up_via_new_ready_node", l.stepOverflowScaleUp},
 		{"3_big_pod_lands_on_larger_class_node", l.stepLargerClass},
 		{"4_vpa_raises_requests_without_restart_loop", l.stepVPA},
-		{"5_scale_to_zero_drains_and_deletes_vm", l.stepScaleToZero},
+		{"5_scale_to_zero_drains_and_deletes_instance", l.stepScaleToZero},
 		{"6_delete_leaves_nothing", l.stepDelete},
 	}
 	for _, s := range steps {
@@ -204,8 +221,11 @@ func (l *lane) runCLI(args ...string) (string, error) {
 func (l *lane) stepCreate() error {
 	readyTimeout := timeoutEnv("CONTAINARIUM_E2E_READY_TIMEOUT", 15*time.Minute)
 
-	if out, err := l.runCLI("cluster", "create", clusterName); err != nil {
-		return fmt.Errorf("cluster create: %v\n%s", err, out)
+	// CLI-first, and the isolation class is a CLI flag exactly as a
+	// tenant would pass it (#1428). VM mode adds no flag at all.
+	createArgs := append([]string{"cluster", "create", clusterName}, l.isolation.CreateArgs()...)
+	if out, err := l.runCLI(createArgs...); err != nil {
+		return fmt.Errorf("cluster create (%s): %v\n%s", l.isolation, err, out)
 	}
 
 	// The kubeconfig RPC is FailedPrecondition until the cluster is
@@ -266,8 +286,18 @@ func (l *lane) stepCreate() error {
 	for name := range ready {
 		l.baselineNodes = append(l.baselineNodes, name)
 	}
-	l.baselineVMs = l.clusterVMs()
-	l.t.Logf("baseline nodes: %v, VMs: %v", l.baselineNodes, l.baselineVMs)
+	l.baselineInstances = l.clusterInstances()
+	l.t.Logf("baseline nodes: %v, instances: %v", l.baselineNodes, l.baselineInstances)
+
+	// Observed Incus state, not the daemon's report of itself: the
+	// nodes really are of the class this run asked for. Without this a
+	// container-mode lane whose daemon quietly provisioned VMs would
+	// run the whole journey and report VM behaviour as container
+	// behaviour (#1430).
+	if wrong := WrongClassInstances(l.observedInstances(), instancePrefix, l.isolation); len(wrong) > 0 {
+		return fmt.Errorf("isolation %s requested, but Incus reports instances of another class: %s",
+			l.isolation, strings.Join(wrong, ", "))
+	}
 	return nil
 }
 
@@ -495,27 +525,28 @@ func (l *lane) stepScaleToZero() error {
 	}
 
 	baseline := map[string]bool{}
-	for _, v := range l.baselineVMs {
+	for _, v := range l.baselineInstances {
 		baseline[v] = true
 	}
 
-	return l.waitFor("surplus nodes drained and VMs deleted", scaledownTimeout, 20*time.Second, func() (bool, string) {
+	return l.waitFor("surplus nodes drained and instances deleted", scaledownTimeout, 20*time.Second, func() (bool, string) {
 		// Observed k8s state: no surplus node is Ready anymore. (The
-		// Node *object* may linger NotReady after its VM dies — k3s
-		// has no cloud node-lifecycle controller to reap it — so
-		// Ready-ness plus the VM check below is the robust signal.)
+		// Node *object* may linger NotReady after its instance dies —
+		// k3s has no cloud node-lifecycle controller to reap it — so
+		// Ready-ness plus the instance check below is the robust
+		// signal.)
 		ready, _ := l.readyNodes()
 		surplusNodes := NewReadyNodes(l.baselineNodes, ready)
 
-		// Observed Incus state: no VM beyond the baseline set.
-		var surplusVMs []string
-		for _, vm := range l.clusterVMs() {
-			if !baseline[vm] {
-				surplusVMs = append(surplusVMs, vm)
+		// Observed Incus state: no instance beyond the baseline set.
+		var surplusInstances []string
+		for _, name := range l.clusterInstances() {
+			if !baseline[name] {
+				surplusInstances = append(surplusInstances, name)
 			}
 		}
-		return len(surplusNodes) == 0 && len(surplusVMs) == 0,
-			fmt.Sprintf("surplus nodes=%v surplus VMs=%v", surplusNodes, surplusVMs)
+		return len(surplusNodes) == 0 && len(surplusInstances) == 0,
+			fmt.Sprintf("surplus nodes=%v surplus instances=%v", surplusNodes, surplusInstances)
 	})
 }
 
@@ -533,7 +564,7 @@ func (l *lane) stepDelete() error {
 		return fmt.Errorf("cluster delete: %v\n%s", err, out)
 	}
 
-	return l.waitFor("no rows, no VMs, no passthrough", deleteTimeout, 10*time.Second, func() (bool, string) {
+	return l.waitFor("no rows, no instances, no passthrough", deleteTimeout, 10*time.Second, func() (bool, string) {
 		// No rows, observed through the product API.
 		out, err := l.runCLI("cluster", "get", clusterName)
 		if err == nil {
@@ -543,9 +574,9 @@ func (l *lane) stepDelete() error {
 			return false, fmt.Sprintf("cluster get: %s", strings.TrimSpace(out))
 		}
 
-		// No VMs, observed through Incus.
-		if vms := l.clusterVMs(); len(vms) > 0 {
-			return false, fmt.Sprintf("VMs remain: %v", vms)
+		// No instances of either class, observed through Incus.
+		if insts := l.clusterInstances(); len(insts) > 0 {
+			return false, fmt.Sprintf("instances remain: %v", insts)
 		}
 
 		// No passthrough rule: the published API endpoint stopped
@@ -562,9 +593,12 @@ func (l *lane) stepDelete() error {
 // --- sabotage ------------------------------------------------------------
 
 // sabotageJoinTokens continuously corrupts the pre-pushed join token on
-// every worker VM and kills any running agent, so no worker can ever
-// register: the lane MUST go red. This is the #1418 guardrail — a lane
-// that stays green under this cannot fail, and proves nothing.
+// every worker instance and kills any running agent, so no worker can
+// ever register: the lane MUST go red. This is the #1418 guardrail — a
+// lane that stays green under this cannot fail, and proves nothing. It
+// is isolation-agnostic: Incus exec reaches a system container the same
+// way it reaches a VM, so the container lane proves itself the same way
+// (#1430).
 func (l *lane) sabotageJoinTokens(stop <-chan struct{}) {
 	for {
 		select {
@@ -572,7 +606,7 @@ func (l *lane) sabotageJoinTokens(stop <-chan struct{}) {
 			return
 		case <-time.After(3 * time.Second):
 		}
-		for _, vm := range l.clusterVMs() {
+		for _, vm := range l.clusterInstances() {
 			if strings.HasSuffix(vm, "-cp") {
 				continue
 			}
@@ -606,20 +640,31 @@ func (l *lane) readyNodes() (map[string]bool, string) {
 	return out, strings.Join(parts, ", ")
 }
 
-// clusterVMs lists the lane cluster's VMs as Incus sees them.
-func (l *lane) clusterVMs() []string {
+// clusterInstances lists the lane cluster's Incus instances as Incus
+// sees them: VMs in VM mode, system containers in container mode.
+// ListContainers asks Incus for InstanceTypeAny and ClusterInstanceNames
+// matches on the name prefix alone, so one assertion sees both classes
+// (#1430) — see TestClusterInstanceNames for why the type is never a
+// filter.
+func (l *lane) clusterInstances() []string {
+	return ClusterInstanceNames(l.observedInstances(), instancePrefix)
+}
+
+// observedInstances is every instance Incus reports, name and class.
+// ListContainers asks for InstanceTypeAny, so containers and VMs are
+// both in here and the filtering is the caller's (and the pure
+// helpers') business.
+func (l *lane) observedInstances() []ClusterInstance {
 	all, err := l.incus.ListContainers()
 	if err != nil {
 		l.t.Logf("incus list: %v", err)
 		return nil
 	}
-	var vms []string
+	observed := make([]ClusterInstance, 0, len(all))
 	for _, c := range all {
-		if strings.HasPrefix(c.Name, vmPrefix) {
-			vms = append(vms, c.Name)
-		}
+		observed = append(observed, ClusterInstance{Name: c.Name, Type: c.InstanceType})
 	}
-	return vms
+	return observed
 }
 
 func (l *lane) restartCounts(ctx context.Context, selector string) (map[string]int32, error) {
@@ -661,7 +706,7 @@ func (l *lane) waitFor(what string, timeout, interval time.Duration, probe func(
 func (l *lane) dumpDiagnostics() {
 	out, err := l.runCLI("cluster", "status", clusterName)
 	l.t.Logf("cluster status (err=%v):\n%s", err, out)
-	l.t.Logf("incus VMs with prefix %s: %v", vmPrefix, l.clusterVMs())
+	l.t.Logf("incus instances with prefix %s: %v", instancePrefix, l.clusterInstances())
 	if l.cs != nil {
 		if evs, err := l.cs.CoreV1().Events("default").List(context.Background(), metav1.ListOptions{Limit: 30}); err == nil {
 			var lines []string
