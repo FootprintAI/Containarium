@@ -1,0 +1,109 @@
+name: Managed clusters KVM e2e
+
+# The definition-of-done lane for the managed-Kubernetes-clusters MVP
+# (#1418): the six-step tenant journey from the design's "End-to-end"
+# section, run with real everything — Incus VMs, k3s, cluster-autoscaler,
+# VPA — by scripts/cluster-e2e.sh + test/e2e/cluster/.
+#
+# Cadence per the design's CI-gates section: NIGHTLY + RELEASE-BLOCKING
+# (tag push), not per-PR — a full run provisions VMs for over an hour.
+# Pull requests touching the lane get only the cheap job: compile the
+# gated package and run its untagged unit tests, so the lane's own logic
+# cannot rot unnoticed between nightlies.
+#
+# Runner contract (the provisioning half of #1418): a SELF-HOSTED runner
+# labeled `incus` + `kvm`, with Incus and its unix socket, /dev/kvm,
+# a Go toolchain, passwordless sudo, docker or podman (throwaway
+# Postgres), and egress to github.com + registry.k8s.io. Details in the
+# header of scripts/cluster-e2e.sh.
+#
+# Prove-the-lane-can-fail (#1418 guardrail): dispatch with
+# sabotage=join-token. The script corrupts worker join tokens so no node
+# can register; the JOB goes green only if the SUITE goes red. Run it
+# once when the runner first comes up, and after any change to the
+# lane's assertions — a green lane that has never failed proves nothing.
+
+on:
+  schedule:
+    # Nightly, off-peak for the self-hosted host.
+    - cron: '30 2 * * *'
+  push:
+    tags:
+      - 'v*'   # release-blocking: docs/RELEASE-PROCESS.md gates publishing on this run
+  workflow_dispatch:
+    inputs:
+      sabotage:
+        description: 'Deliberate breakage; join-token proves the lane can fail'
+        type: choice
+        options: ['none', 'join-token']
+        default: 'none'
+  pull_request:
+    paths:
+      - 'test/e2e/cluster/**'
+      - 'scripts/cluster-e2e.sh'
+      - '.github/workflows/cluster-e2e.yml'
+
+permissions:
+  contents: read
+
+# One run at a time regardless of ref: every run owns the runner's Incus
+# (VM capacity, the fixed CA-provider port, the sweep of e2etenant VMs).
+concurrency:
+  group: cluster-e2e-kvm
+  cancel-in-progress: false
+
+jobs:
+  build-unit:
+    name: compile lane + helper unit tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+      - name: Compile the gated e2e package
+        run: go vet -tags 'incus cluster_e2e' ./test/e2e/cluster/
+      - name: Helper unit tests (pure, no Incus)
+        # This is the only invocation list carrying this package's unit
+        # tests — no repo-wide `go test ./...` lane exists to catch it.
+        run: go test -race -count=1 -v ./test/e2e/cluster/
+      - name: Lane script syntax
+        run: bash -n scripts/cluster-e2e.sh
+
+  kvm-e2e:
+    name: six-step journey (real VMs)
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.sabotage == 'none')
+    runs-on: [self-hosted, incus, kvm]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the lane
+        # No pipes around the go test inside — its exit status is the
+        # script's, and the script's is the job's.
+        run: bash scripts/cluster-e2e.sh
+
+  prove-lane-can-fail:
+    name: sabotage run (suite must go red)
+    if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'join-token'
+    runs-on: [self-hosted, incus, kvm]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Corrupt join tokens and expect the suite to fail
+        # Inversion is explicit and lives only in this dispatch-only
+        # job: green here means the lane DETECTED the sabotage.
+        env:
+          CONTAINARIUM_E2E_SABOTAGE: join-token
+          # Sabotaged workers can never register; don't wait the full
+          # production bound to learn what we broke on purpose.
+          CONTAINARIUM_E2E_READY_TIMEOUT: 12m
+        run: |
+          if bash scripts/cluster-e2e.sh; then
+            echo "::error::lane stayed GREEN under join-token sabotage — it cannot fail, so its green proves nothing"
+            exit 1
+          fi
+          echo "lane went red under sabotage: it can fail, and its green is evidence."

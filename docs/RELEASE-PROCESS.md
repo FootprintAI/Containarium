@@ -70,6 +70,12 @@ anyway; it's the only thing a non-release build has to go on.
    artifacts and `SHA256SUMS.txt`, that `containarium version` on a
    freshly downloaded binary reports the new tag, and that the image
    and PyPI publishes succeeded.
+6. **Wait for the managed-clusters KVM e2e lane to go green on the
+   tag** (`.github/workflows/cluster-e2e.yml`, also runs nightly). It
+   is release-blocking (#1418): a red or missing run means the release
+   is not announced or deployed anywhere until the lane passes on that
+   tag — the publish workflows above don't wait for it, so this gate
+   is yours to enforce.
 
 ## What a tag push actually publishes
 
