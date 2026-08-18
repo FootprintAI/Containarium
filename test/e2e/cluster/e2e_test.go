@@ -36,6 +36,7 @@ package clustere2e
 // _DELETE_TIMEOUT (10m).
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -183,11 +184,19 @@ func TestManagedClusterJourney(t *testing.T) {
 
 // --- CLI ----------------------------------------------------------------
 
+// runCLI returns stdout alone on success: `cluster kubeconfig` writes
+// the credential to stdout and a notice to stderr, and merging the two
+// would corrupt the YAML this test parses. On error the streams are
+// joined — cobra reports errors on stderr, and callers match on them.
 func (l *lane) runCLI(args ...string) (string, error) {
 	full := append([]string{"--http", "--server", l.server, "--token", l.token}, args...)
 	cmd := exec.Command(l.cli, full...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return strings.TrimSpace(stdout.String() + "\n" + stderr.String()), err
+	}
+	return stdout.String(), nil
 }
 
 // --- step 1: create → kubeconfig works from outside ---------------------
@@ -491,8 +500,10 @@ func (l *lane) stepScaleToZero() error {
 	}
 
 	return l.waitFor("surplus nodes drained and VMs deleted", scaledownTimeout, 20*time.Second, func() (bool, string) {
-		// Observed k8s state: the node objects are gone (a drained,
-		// deleted node deregisters; a merely cordoned one would linger).
+		// Observed k8s state: no surplus node is Ready anymore. (The
+		// Node *object* may linger NotReady after its VM dies — k3s
+		// has no cloud node-lifecycle controller to reap it — so
+		// Ready-ness plus the VM check below is the robust signal.)
 		ready, _ := l.readyNodes()
 		surplusNodes := NewReadyNodes(l.baselineNodes, ready)
 

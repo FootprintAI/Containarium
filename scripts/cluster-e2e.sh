@@ -13,6 +13,11 @@
 #              incus+kvm runner (nightly + release tags, not per-PR).
 #
 # Host requirements (the runner-provisioning half of #1418):
+#   - Capacity for the journey's worst case: ~16 vCPU (CP 2 + up to
+#     3×small 2 + one large 8), ~32 GB RAM, ~500 GB free in the Incus
+#     pool. On a smaller host the daemon's CPU-admission gate will
+#     correctly REFUSE the larger-class scale-up and the lane goes red
+#     for an environmental reason that looks like a product bug.
 #   - Incus with a usable storage pool at /var/lib/incus/unix.socket
 #   - KVM (/dev/kvm) — cluster nodes are VMs, not containers
 #   - Go toolchain, passwordless sudo for the invoking user
