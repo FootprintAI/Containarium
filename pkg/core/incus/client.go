@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	gopath "path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -2263,20 +2264,52 @@ func (c *Client) WriteFile(containerName, path string, content []byte, mode stri
 	return nil
 }
 
-// ReadFile reads content from a file inside a container
-func (c *Client) ReadFile(containerName, path string) ([]byte, error) {
-	reader, _, err := c.server.GetInstanceFile(containerName, path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
-	}
-	defer reader.Close()
+// maxSymlinkHops bounds how many links ReadFile follows before
+// declaring a loop. Deep legitimate chains are 1-2 hops; anything
+// near this bound is a cycle.
+const maxSymlinkHops = 10
 
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file content: %w", err)
+// ReadFile reads content from a file inside a container, following
+// symlinks to the real file.
+//
+// Incus's file API answers a read of a symlink with the link *target
+// path* as the response body (response Type "symlink"), not the
+// file's content — so ignoring the type metadata silently returns a
+// path string where the caller expects file bytes. k3s's join token
+// at server/node-token is exactly such a symlink, which is how
+// workers were pushed a "token" with no CA hash (#1446).
+func (c *Client) ReadFile(containerName, filePath string) ([]byte, error) {
+	current := filePath
+	for hop := 0; ; hop++ {
+		reader, resp, err := c.server.GetInstanceFile(containerName, current)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read file %s: %w", current, err)
+		}
+		if resp != nil && resp.Type == "directory" {
+			// Incus returns a nil reader for directories.
+			return nil, fmt.Errorf("failed to read file %s: it is a directory", current)
+		}
+		content, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read file content of %s: %w", current, err)
+		}
+		if resp == nil || resp.Type != "symlink" {
+			return content, nil
+		}
+		if hop >= maxSymlinkHops {
+			return nil, fmt.Errorf("failed to read file %s: too many symlink hops (loop?)", filePath)
+		}
+		target := strings.TrimSpace(string(content))
+		if target == "" {
+			return nil, fmt.Errorf("failed to read file %s: symlink %s has an empty target", filePath, current)
+		}
+		// Instance paths are POSIX regardless of the host platform.
+		if !gopath.IsAbs(target) {
+			target = gopath.Join(gopath.Dir(current), target)
+		}
+		current = target
 	}
-
-	return content, nil
 }
 
 // ExecWithOutput executes a command inside a container and returns stdout/stderr

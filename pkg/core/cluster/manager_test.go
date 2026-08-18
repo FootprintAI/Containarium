@@ -115,7 +115,12 @@ func TestProvisionCPSequence(t *testing.T) {
 
 func TestProvisionWorkerSequence(t *testing.T) {
 	f := newFakeHost()
-	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10secret::token")
+	// Shaped like a real k3s node-token — CA hash, separator,
+	// credential, trailing newline — so byte-identity below means
+	// the CA hash and the newline both survived the round trip
+	// (#1446). Value is synthetic.
+	const nodeToken = "K10aaaabbbbccccddddeeeeffff00001111222233334444555566667777888899::server:0123456789abcdef\n"
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte(nodeToken)
 	m := testManager(f)
 
 	err := m.ProvisionWorker("alice", "demo", IsolationVM,
@@ -140,8 +145,10 @@ func TestProvisionWorkerSequence(t *testing.T) {
 	}
 	assertCalls(t, f.calls, want)
 
-	if got := string(f.files["alice-k8s-demo-small-1:"+AgentTokenPath]); got != "K10secret::token" {
-		t.Fatalf("token pushed = %q", got)
+	// Byte-identical to what the CP has at NodeTokenPath — no
+	// truncation, no transformation, newline intact (#1446).
+	if got := string(f.files["alice-k8s-demo-small-1:"+AgentTokenPath]); got != nodeToken {
+		t.Fatalf("token pushed = %q, want the CP's node-token byte-identical %q", got, nodeToken)
 	}
 	script := string(f.files["alice-k8s-demo-small-1:"+bootstrapScriptPath])
 	if !strings.Contains(script, "--server https://10.166.11.5:6443") {
