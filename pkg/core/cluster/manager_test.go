@@ -17,6 +17,7 @@ type fakeHost struct {
 	readErr           error
 	capError          error
 	containerCapError error
+	capacityError     error
 	// isolations records the isolation class CreateNode was called
 	// with, per node name (#1429 acceptance: the fake records the
 	// isolation per call).
@@ -33,6 +34,8 @@ func (f *fakeHost) record(format string, a ...any) {
 
 func (f *fakeHost) VMCapable() error            { return f.capError }
 func (f *fakeHost) ContainerNodeCapable() error { return f.containerCapError }
+
+func (f *fakeHost) NodeCapacityCapable(NodeSpec) error { return f.capacityError }
 func (f *fakeHost) CreateNode(spec NodeSpec, isolation Isolation) error {
 	f.record("create %s cpu=%s mem=%s disk=%s role=%s", spec.Name, spec.CPU, spec.Memory, spec.Disk, spec.Labels[LabelClusterRole])
 	f.isolations[spec.Name] = isolation
@@ -232,5 +235,38 @@ func TestProvisionCarriesIsolationThroughTheSeam(t *testing.T) {
 				t.Fatalf("worker script kmsg shim = %v, want %v:\n%s", !tc.wantShim, tc.wantShim, wScript)
 			}
 		})
+	}
+}
+
+// A container node whose host cannot honour its size must be refused
+// BEFORE creation: creating it produces a node advertising capacity it
+// does not have, which the scheduler and the autoscaler both believe
+// (#1439, design Amendment 1).
+func TestProvisionWorkerRefusesUnhonourableCapacity(t *testing.T) {
+	f := newFakeHost()
+	f.capacityError = errors.New("host observes 2 cpu but node was sized 8")
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("token")
+
+	err := testManager(f).ProvisionWorker("alice", "demo", IsolationContainer,
+		DesiredGroup{Name: "small", CPU: "8", Memory: "16GB", Disk: "40GB"},
+		"alice-k8s-demo-small-1", "10.0.0.1")
+	if err == nil {
+		t.Fatal("provisioning must refuse a node the host cannot size truthfully")
+	}
+	for _, call := range f.calls {
+		if strings.HasPrefix(call, "CreateNode") {
+			t.Fatalf("node was created despite the capacity refusal: %v", f.calls)
+		}
+	}
+
+	// The VM path is not subject to this check — a VM gets its own
+	// kernel and reports its own size honestly.
+	f2 := newFakeHost()
+	f2.capacityError = errors.New("would refuse a container node")
+	f2.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("token")
+	if err := testManager(f2).ProvisionWorker("alice", "demo", IsolationVM,
+		DesiredGroup{Name: "small", CPU: "8", Memory: "16GB", Disk: "40GB"},
+		"alice-k8s-demo-small-1", "10.0.0.1"); err != nil {
+		t.Fatalf("VM provisioning must not consult the container capacity probe: %v", err)
 	}
 }

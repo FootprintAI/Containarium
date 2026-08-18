@@ -52,6 +52,22 @@ func (h *IncusHost) ContainerNodeCapable() error {
 	}))
 }
 
+// NodeCapacityCapable is the per-node half of the container probe
+// (#1439): the kernel preconditions can all hold on a host that still
+// cannot honour the size this node asked for. Refusing here beats
+// creating a node that would advertise capacity it does not have —
+// the scheduler and the autoscaler both believe node allocatable.
+func (h *IncusHost) NodeCapacityCapable(spec NodeSpec) error {
+	cpu, mem, err := HostCapacity("/")
+	if err != nil {
+		// Fail closed: an unreadable /proc means the lie cannot be
+		// measured, not that there is no lie.
+		return fmt.Errorf("%w: cannot read host capacity, so a container node's advertised size cannot be made truthful: %v",
+			ErrContainerNodesUnsupported, err)
+	}
+	return CheckNodeCapacity(cpu, mem, spec)
+}
+
 // nodeContainerConfig is the Incus config one cluster node is created
 // from. Pure (no Incus calls) so the shape Incus validates is
 // unit-testable — see nodeconfig_test.go and #1435.

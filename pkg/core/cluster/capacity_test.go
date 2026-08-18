@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -135,5 +136,43 @@ func TestAgentScriptCarriesTemplateAndReservedArgs(t *testing.T) {
 		if strings.Contains(vm, unwanted) {
 			t.Errorf("VM agent script contains container-only content %q", unwanted)
 		}
+	}
+}
+
+// The host's /proc is what a container node will observe as its own
+// capacity, so the daemon can predict the lie before creating anything.
+func TestHostCapacity(t *testing.T) {
+	cpu, mem, err := HostCapacity("testdata/proc-8cpu")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cpu != 8 {
+		t.Errorf("cpu = %d, want 8 (processor lines in /proc/cpuinfo)", cpu)
+	}
+	if want := int64(65841348) * 1024; mem != want {
+		t.Errorf("mem = %d, want %d (MemTotal kB → bytes)", mem, want)
+	}
+	if _, _, err := HostCapacity("testdata/does-not-exist"); err == nil {
+		t.Error("missing /proc must be an error, not a zero capacity")
+	}
+}
+
+func TestCheckNodeCapacity(t *testing.T) {
+	// The real case from the design amendment: an 8-cpu/63GB host
+	// hosting a 2-cpu/3GB node. Admitted — the gap is reservable.
+	if err := CheckNodeCapacity(8, 64<<30, NodeSpec{CPU: "2", Memory: "3GB"}); err != nil {
+		t.Errorf("host larger than the node must be admitted: %v", err)
+	}
+	// A host that cannot honour the size is refused, and the refusal
+	// names the mismatch rather than saying "unsupported".
+	err := CheckNodeCapacity(2, 2_000_000_000, NodeSpec{CPU: "8", Memory: "16GB"})
+	if err == nil {
+		t.Fatal("host smaller than the requested node size must be refused")
+	}
+	if !strings.Contains(err.Error(), "8") || !strings.Contains(err.Error(), "2") {
+		t.Errorf("refusal does not name the observed/requested mismatch: %v", err)
+	}
+	if !errors.Is(err, ErrContainerNodesUnsupported) {
+		t.Errorf("refusal should carry the container-node sentinel: %v", err)
 	}
 }

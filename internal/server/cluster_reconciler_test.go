@@ -30,6 +30,7 @@ type stateHost struct {
 	files           map[string][]byte
 	capErr          error
 	containerCapErr error
+	capacityErr     error
 	// isolations records the class each node was created with (#1429).
 	isolations map[string]clustercore.Isolation
 }
@@ -45,6 +46,8 @@ func newStateHost() *stateHost {
 
 func (h *stateHost) VMCapable() error            { return h.capErr }
 func (h *stateHost) ContainerNodeCapable() error { return h.containerCapErr }
+
+func (h *stateHost) NodeCapacityCapable(clustercore.NodeSpec) error { return h.capacityErr }
 
 func (h *stateHost) CreateNode(spec clustercore.NodeSpec, isolation clustercore.Isolation) error {
 	h.mu.Lock()

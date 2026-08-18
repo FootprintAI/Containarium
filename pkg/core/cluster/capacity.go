@@ -12,8 +12,11 @@ package cluster
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // ContainerdConfigTemplatePath is where k3s reads a containerd config
@@ -134,4 +137,63 @@ func ParseSizeBytes(s string) (int64, error) {
 	default: // TB
 		return n * 1_000_000_000_000, nil
 	}
+}
+
+// HostCapacity reads what a container node on this host will observe as
+// its own capacity: the host's /proc, because cadvisor inside the node
+// reads exactly these files and lxcfs masking does not reach a nested
+// Incus's own instances (design Amendment 1).
+//
+// sysRoot is the filesystem root ("/" in production, a fixture in
+// tests). A /proc it cannot read is an error, never a zero capacity —
+// zero would compute a reservation that silently starves the node.
+func HostCapacity(sysRoot string) (cpu int, memBytes int64, err error) {
+	cpuinfo, err := os.ReadFile(filepath.Join(sysRoot, "proc/cpuinfo"))
+	if err != nil {
+		return 0, 0, fmt.Errorf("read cpuinfo: %w", err)
+	}
+	for _, line := range strings.Split(string(cpuinfo), "\n") {
+		if strings.HasPrefix(line, "processor") {
+			cpu++
+		}
+	}
+	if cpu == 0 {
+		return 0, 0, fmt.Errorf("no processor lines in %s/proc/cpuinfo", sysRoot)
+	}
+
+	meminfo, err := os.ReadFile(filepath.Join(sysRoot, "proc/meminfo"))
+	if err != nil {
+		return 0, 0, fmt.Errorf("read meminfo: %w", err)
+	}
+	for _, line := range strings.Split(string(meminfo), "\n") {
+		if !strings.HasPrefix(line, "MemTotal:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			break
+		}
+		kb, convErr := strconv.ParseInt(fields[1], 10, 64)
+		if convErr != nil {
+			return 0, 0, fmt.Errorf("MemTotal %q: %w", fields[1], convErr)
+		}
+		return cpu, kb * 1024, nil
+	}
+	return 0, 0, fmt.Errorf("no MemTotal in %s/proc/meminfo", sysRoot)
+}
+
+// CheckNodeCapacity is the create-time half of the capability probe:
+// a host may satisfy every kernel precondition and still be unable to
+// host the node that was asked for.
+//
+// It refuses when the capacity a node would observe is smaller than
+// the size requested, because then no reservation makes allocatable
+// truthful — and a node that lies about its size is worse than no
+// node, since the scheduler and the autoscaler's fit simulation both
+// believe it.
+func CheckNodeCapacity(observedCPU int, observedMemBytes int64, spec NodeSpec) error {
+	if _, err := ReservedResources(observedCPU, observedMemBytes, spec); err != nil {
+		return fmt.Errorf("%w: %v", ErrContainerNodesUnsupported, err)
+	}
+	return nil
 }

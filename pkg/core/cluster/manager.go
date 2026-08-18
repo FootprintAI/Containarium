@@ -20,6 +20,10 @@ type VMHost interface {
 	// (#1429): nil when the host can run k3s node containers, or a
 	// refusal naming every missing (or unverifiable) precondition.
 	ContainerNodeCapable() error
+	// NodeCapacityCapable is the per-node half of the container probe
+	// (#1439): nil when a container node of this size can advertise a
+	// truthful capacity on this host, a refusal when it cannot.
+	NodeCapacityCapable(spec NodeSpec) error
 	// CreateNode creates one cluster node backed by the instance type
 	// the isolation class selects: an Incus VM, or a system container
 	// carrying the container node profile (#1429).
@@ -137,6 +141,17 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g D
 	spec := NodeSpec{
 		Name: vmName, CPU: g.CPU, Memory: g.Memory, Disk: g.Disk,
 		Labels: VMLabels(tenant, clusterName, RoleWorker, g.Name),
+	}
+	// Container nodes read the host's /proc as their own capacity, so
+	// a host too small for this size would produce a node advertising
+	// resources it does not have (#1439). Refuse before creating it:
+	// the scheduler and the autoscaler's fit simulation both trust
+	// node allocatable, so the lie is not locally contained. VM nodes
+	// get their own kernel and report honestly, so they skip this.
+	if iso == IsolationContainer {
+		if err := m.host.NodeCapacityCapable(spec); err != nil {
+			return fmt.Errorf("worker node capacity: %w", err)
+		}
 	}
 	if err := m.host.CreateNode(spec, iso); err != nil {
 		return fmt.Errorf("create worker node: %w", err)
