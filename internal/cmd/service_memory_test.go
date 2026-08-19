@@ -3,6 +3,9 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -19,6 +22,12 @@ import (
 // The distinction these tests protect: with MemoryHigh, reclaim pressure stays
 // inside the sentinel's own cgroup instead of evicting the host's page cache.
 // The failure becomes local and survivable rather than taking the apex down.
+//
+// Corrected by #1454: that holds only where reclaim can make progress. With no
+// swap and an anon-dominated cgroup there is nothing to reclaim, so a
+// MemoryHigh BELOW MemoryMax stalls the process below its cap indefinitely —
+// never restarted, still reported healthy. The band, not the cap, was the bug;
+// see TestSentinelUnitMemoryBandRules.
 
 func sentinelUnitForTest(t *testing.T) string {
 	t.Helper()
@@ -123,30 +132,54 @@ func TestParseSystemdMemoryValue(t *testing.T) {
 	}
 }
 
-// A MemoryHigh at or above MemoryMax is the no-throttle behaviour with extra
-// words: the cgroup would hit the hard cap without ever having been reclaimed
-// under pressure first, which is exactly the #1349 failure shape.
-func TestSentinelUnitRejectsHighAtOrAboveMax(t *testing.T) {
+// #1454 inverted the rule these cases used to assert.
+//
+// The old rule REQUIRED MemoryHigh below MemoryMax, on the reasoning that
+// reaching the cap without being reclaimed first was the #1349 shape. That
+// reasoning holds only where reclaim can make progress. On a swapless host
+// with an anon-dominated cgroup it cannot: page cache is gone within minutes
+// and there is nothing left to evict, so the band between the two limits is a
+// trap the process can neither leave nor die in. It stalls below the cap
+// forever, Restart=always never fires, and systemd still reports it running.
+//
+// So: above max is still rejected, below max is rejected only without swap,
+// and equal — the new default — is always allowed.
+func TestSentinelUnitMemoryBandRules(t *testing.T) {
 	tests := []struct {
-		name, high, max, wantErr string
+		name, high, max string
+		hasSwap         bool
+		wantErr         string
 	}{
-		{name: "equal percentages", high: "50%", max: "50%", wantErr: "must be below"},
-		{name: "high above max, percent", high: "80%", max: "50%", wantErr: "must be below"},
-		{name: "equal sizes", high: "512M", max: "512M", wantErr: "must be below"},
-		{name: "high above max, sizes", high: "1G", max: "512M", wantErr: "must be below"},
-		{name: "valid percentages", high: "35%", max: "50%"},
-		{name: "valid sizes", high: "256M", max: "512M"},
-		// Mixed units cannot be compared without knowing physical RAM, so they
+		// Equal is the default and must always build.
+		{name: "equal percentages, no swap", high: "50%", max: "50%"},
+		{name: "equal percentages, swap", high: "50%", max: "50%", hasSwap: true},
+		{name: "equal sizes, no swap", high: "512M", max: "512M"},
+
+		// The regression this issue is about: a band on a swapless host.
+		{name: "band without swap, percent", high: "35%", max: "50%", wantErr: "no swap"},
+		{name: "band without swap, sizes", high: "256M", max: "512M", wantErr: "no swap"},
+
+		// The same band is legitimate where anon can actually be paged out.
+		{name: "band with swap, percent", high: "35%", max: "50%", hasSwap: true},
+		{name: "band with swap, sizes", high: "256M", max: "512M", hasSwap: true},
+
+		// Above the cap is incoherent regardless of swap: MemoryMax binds
+		// first, so the advertised throttle can never engage.
+		{name: "high above max, percent", high: "80%", max: "50%", wantErr: "must not be above"},
+		{name: "high above max, sizes", high: "1G", max: "512M", wantErr: "must not be above"},
+		{name: "high above max, with swap", high: "80%", max: "50%", hasSwap: true, wantErr: "must not be above"},
+
+		// Mixed units cannot be ordered without knowing physical RAM, so they
 		// are allowed through rather than guessed at.
 		{name: "mixed units pass validation", high: "35%", max: "512M"},
-		{name: "infinity max is always above", high: "35%", max: "infinity"},
+		{name: "infinity max is not comparable", high: "35%", max: "infinity"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := buildSentinelUnit(sentinelUnitConfig{
 				SpotVM: "vm", Zone: "z", Project: "p",
-				MemoryHigh: tc.high, MemoryMax: tc.max,
+				MemoryHigh: tc.high, MemoryMax: tc.max, HostHasSwap: tc.hasSwap,
 			})
 			if tc.wantErr == "" {
 				if err != nil {
@@ -164,41 +197,75 @@ func TestSentinelUnitRejectsHighAtOrAboveMax(t *testing.T) {
 	}
 }
 
-// The defaults have to leave real headroom over the sentinel's actual working
-// set, or the cap causes restart loops — a worse failure than the slow leak it
-// guards against. Cold start was 82 MB when #1349 was diagnosed; on the 1 GB
-// host these percentages must sit several times above that.
-func TestSentinelMemoryDefaultsLeaveHeadroom(t *testing.T) {
-	const (
-		oneGiB            = 1024 * 1024 * 1024
-		observedColdStart = 82 * 1024 * 1024
-		observedLeakPeak  = 565 * 1024 * 1024 // RSS at the OOM kill
-	)
+// The shipped defaults must not themselves open a throttle band — that is the
+// #1454 bug, and defaults are what almost every host actually runs. A host with
+// no swap is the case that matters, since that is what the sentinel fleet is.
+func TestSentinelMemoryDefaultsHaveNoThrottleBand(t *testing.T) {
+	if defaultSentinelMemoryHigh != defaultSentinelMemoryMax {
+		t.Errorf("default MemoryHigh (%s) != MemoryMax (%s): on a swapless host that band is where "+
+			"the cgroup stalls below the cap and never gets restarted (#1454)",
+			defaultSentinelMemoryHigh, defaultSentinelMemoryMax)
+	}
+	if _, err := buildSentinelUnit(sentinelUnitConfig{
+		SpotVM: "vm", Zone: "z", Project: "p",
+		MemoryHigh: defaultSentinelMemoryHigh, MemoryMax: defaultSentinelMemoryMax,
+		HostHasSwap: false,
+	}); err != nil {
+		t.Fatalf("defaults must build on a swapless host, got: %v", err)
+	}
+}
 
-	highPct, err := percentValue(defaultSentinelMemoryHigh)
-	if err != nil {
-		t.Fatalf("default MemoryHigh is not a percentage: %v", err)
-	}
-	maxPct, err := percentValue(defaultSentinelMemoryMax)
-	if err != nil {
-		t.Fatalf("default MemoryMax is not a percentage: %v", err)
+// hostHasSwap decides which of the two band rules applies, so a
+// misparse silently re-enables the #1454 configuration on a swapless host.
+// Unreadable or malformed input must read as "no swap" — the conservative
+// direction, since that only ever tightens the check.
+func TestHostHasSwap(t *testing.T) {
+	const meminfo = `MemTotal:         978352 kB
+MemFree:           67784 kB
+SwapTotal:      %s kB
+SwapFree:              0 kB
+`
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "no swap", content: fmt.Sprintf(meminfo, "0"), want: false},
+		{name: "has swap", content: fmt.Sprintf(meminfo, "2097148"), want: true},
+		{name: "SwapTotal absent", content: "MemTotal: 978352 kB\n", want: false},
+		{name: "unparseable value", content: "SwapTotal:  banana kB\n", want: false},
+		{name: "no value at all", content: "SwapTotal:\n", want: false},
+		{name: "empty file", content: "", want: false},
 	}
 
-	highBytes := oneGiB * highPct / 100
-	maxBytes := oneGiB * maxPct / 100
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "meminfo")
+			if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+			t.Cleanup(func(orig string) func() {
+				return func() { procMeminfoPath = orig }
+			}(procMeminfoPath))
+			procMeminfoPath = path
 
-	if highBytes < 3*observedColdStart {
-		t.Errorf("MemoryHigh default (%s = %d bytes on a 1 GB host) is under 3x the observed "+
-			"82 MB cold start; a busy sentinel would be throttled in normal operation",
-			defaultSentinelMemoryHigh, highBytes)
+			if got := hostHasSwap(); got != tc.want {
+				t.Errorf("hostHasSwap() = %v, want %v", got, tc.want)
+			}
+		})
 	}
-	// The whole point: both bounds must engage below where #1349 actually got
-	// to, or they would not have changed that outcome at all.
-	if maxBytes >= observedLeakPeak {
-		t.Errorf("MemoryMax default (%s = %d bytes on a 1 GB host) is at or above the 565 MB the "+
-			"#1349 leak reached — the cap would never have fired", defaultSentinelMemoryMax, maxBytes)
-	}
-	if highBytes >= maxBytes {
-		t.Errorf("MemoryHigh (%d) must be below MemoryMax (%d)", highBytes, maxBytes)
+}
+
+// A missing /proc/meminfo must not read as "has swap" — that would let the
+// install path emit the throttle band on exactly the hosts it cannot verify.
+func TestHostHasSwapMissingFileIsConservative(t *testing.T) {
+	t.Cleanup(func(orig string) func() {
+		return func() { procMeminfoPath = orig }
+	}(procMeminfoPath))
+	procMeminfoPath = filepath.Join(t.TempDir(), "definitely-absent")
+
+	if hostHasSwap() {
+		t.Error("hostHasSwap() = true for an unreadable /proc/meminfo; it must fail closed so an " +
+			"unverifiable host still gets the no-band configuration (#1454)")
 	}
 }

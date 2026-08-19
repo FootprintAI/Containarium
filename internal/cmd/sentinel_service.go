@@ -7,11 +7,48 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 const sentinelSystemdServicePath = "/etc/systemd/system/containarium-sentinel.service"
+
+// procMeminfoPath is a variable so tests can point it at a fixture.
+var procMeminfoPath = "/proc/meminfo"
+
+// hostHasSwap reports whether this host can page anonymous memory out, which
+// is what decides whether a MemoryHigh below MemoryMax is a safety valve or the
+// #1454 livelock.
+//
+// Unreadable or unparseable /proc/meminfo is reported as NO swap. That is the
+// conservative direction: it only ever tightens the check, and the failure it
+// guards against (a cgroup stalled below its cap, never restarted, still
+// reporting healthy) is far more expensive than an install that asks the
+// operator to be explicit.
+func hostHasSwap() bool {
+	data, err := os.ReadFile(procMeminfoPath)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		rest, ok := strings.CutPrefix(line, "SwapTotal:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return false
+		}
+		kb, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			return false
+		}
+		return kb > 0
+	}
+	return false
+}
 
 var (
 	sentinelSvcSpotVM     string
@@ -60,7 +97,9 @@ func init() {
 	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcZone, "zone", "", "GCP zone (required)")
 	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcProject, "project", "", "GCP project ID (required)")
 	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcMemoryHigh, "memory-high", defaultSentinelMemoryHigh,
-		"Soft memory limit; past it the kernel reclaims inside the sentinel's cgroup instead of stalling the host (#1350). Percentage of RAM or a size like 512M.")
+		"Soft memory limit; past it the kernel reclaims inside the sentinel's cgroup instead of stalling the host (#1350). "+
+			"Defaults to --memory-max: a lower value is refused unless the host has swap, because a swapless cgroup stalls "+
+			"between the two limits instead of restarting (#1454). Percentage of RAM or a size like 512M.")
 	sentinelServiceInstallCmd.Flags().StringVar(&sentinelSvcMemoryMax, "memory-max", defaultSentinelMemoryMax,
 		"Hard memory limit; exceeding it restarts the sentinel (Restart=always) rather than letting the OOM killer take the host down (#1350).")
 }
@@ -75,11 +114,12 @@ func runSentinelServiceInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	serviceContent, err := buildSentinelUnit(sentinelUnitConfig{
-		SpotVM:     sentinelSvcSpotVM,
-		Zone:       sentinelSvcZone,
-		Project:    sentinelSvcProject,
-		MemoryHigh: sentinelSvcMemoryHigh,
-		MemoryMax:  sentinelSvcMemoryMax,
+		SpotVM:      sentinelSvcSpotVM,
+		Zone:        sentinelSvcZone,
+		Project:     sentinelSvcProject,
+		MemoryHigh:  sentinelSvcMemoryHigh,
+		MemoryMax:   sentinelSvcMemoryMax,
+		HostHasSwap: hostHasSwap(),
 	})
 	if err != nil {
 		return err
