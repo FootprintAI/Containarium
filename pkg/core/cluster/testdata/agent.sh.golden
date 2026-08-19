@@ -17,6 +17,11 @@ Type=notify
 ExecStart=/usr/local/bin/k3s agent --server https://10.166.11.5:6443 --token-file /etc/containarium/k3s-agent-token
 Restart=always
 RestartSec=5
+# A node legitimately takes longer than systemd's default 90s to signal
+# readiness -- an agent waits for the server to finish coming up -- and a
+# Type=notify unit that has not signalled by then is killed mid-start,
+# restarted, and never joins (#1450). Upstream k3s's unit does the same.
+TimeoutStartSec=0
 LimitNOFILE=1048576
 
 [Install]

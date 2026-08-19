@@ -375,3 +375,27 @@ func TestDeriveContainerdTemplate(t *testing.T) {
 		t.Error("a config without the toggles must be an error, not a silent pass-through")
 	}
 }
+
+// A k3s node legitimately takes longer than systemd's default 90s
+// start timeout: the agent waits for the server to finish coming up,
+// and a Type=notify unit that has not signalled readiness by then is
+// killed and restarted, so it never joins (#1450, observed in the
+// container lane's run 9). Upstream k3s's own unit sets
+// TimeoutStartSec=0 for this reason.
+func TestK3sUnitsDisableStartTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"server/vm", RenderServerScript(ServerBootstrap{TLSSANs: []string{"203.0.113.10"}})},
+		{"server/container", RenderServerScript(ServerBootstrap{TLSSANs: []string{"203.0.113.10"}, Isolation: IsolationContainer})},
+		{"agent/vm", RenderAgentScript(AgentBootstrap{ServerURL: "https://10.0.0.1:6443"})},
+		{"agent/container", RenderAgentScript(AgentBootstrap{ServerURL: "https://10.0.0.1:6443", Isolation: IsolationContainer})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(tc.script, "TimeoutStartSec=0") {
+				t.Errorf("unit has no TimeoutStartSec=0; systemd will kill it at 90s while it is still legitimately starting:\n%s", tc.script)
+			}
+		})
+	}
+}

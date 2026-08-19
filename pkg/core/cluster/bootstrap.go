@@ -67,6 +67,11 @@ Type=notify
 %[5]sExecStart=%[1]s server --disable traefik --node-taint node-role.kubernetes.io/control-plane=:NoSchedule --write-kubeconfig-mode 0600%[2]s
 Restart=always
 RestartSec=5
+# A node legitimately takes longer than systemd's default 90s to signal
+# readiness -- an agent waits for the server to finish coming up -- and a
+# Type=notify unit that has not signalled by then is killed mid-start,
+# restarted, and never joins (#1450). Upstream k3s's unit does the same.
+TimeoutStartSec=0
 LimitNOFILE=1048576
 
 [Install]
@@ -124,6 +129,11 @@ Type=notify
 %[4]sExecStart=%[1]s agent --server %[3]s --token-file %[2]s%[6]s
 Restart=always
 RestartSec=5
+# A node legitimately takes longer than systemd's default 90s to signal
+# readiness -- an agent waits for the server to finish coming up -- and a
+# Type=notify unit that has not signalled by then is killed mid-start,
+# restarted, and never joins (#1450). Upstream k3s's unit does the same.
+TimeoutStartSec=0
 LimitNOFILE=1048576
 
 [Install]
