@@ -510,15 +510,22 @@ func (pm *PassthroughManager) AddRoute(externalPort int, targetIP string, target
 		return fmt.Errorf("failed to enable IP forwarding: %w, output: %s", err, string(output))
 	}
 
-	// Add PREROUTING DNAT rule
-	// Exclude traffic from container network to allow containers to use the same port externally
-	cmd = exec.Command("iptables", "-t", "nat", "-A", "PREROUTING",
-		"-p", protocol,
-		"!", "-s", pm.networkCIDR,
-		"--dport", fmt.Sprintf("%d", externalPort),
-		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", targetIP, targetPort))
+	// Add PREROUTING DNAT rule — traffic arriving on an interface.
+	// Excludes the container network so containers can still reach
+	// external services on the same port.
+	cmd = exec.Command("iptables", passthroughPreRoutingArgs(externalPort, targetIP, targetPort, protocol, pm.networkCIDR)...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add DNAT rule: %w, output: %s", err, string(output))
+	}
+
+	// Add OUTPUT DNAT rule — traffic generated ON this host. PREROUTING
+	// never sees those packets, so without this the published endpoint
+	// refuses connections from the daemon host itself: the e2e lane and
+	// any operator curling it (#1459). PortForwarder has always done
+	// both chains for the same reason.
+	cmd = exec.Command("iptables", passthroughOutputArgs(externalPort, targetIP, targetPort, protocol)...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add OUTPUT DNAT rule: %w, output: %s", err, string(output))
 	}
 
 	// Add POSTROUTING MASQUERADE rule for return traffic
@@ -587,6 +594,19 @@ func (pm *PassthroughManager) RemoveRoute(externalPort int, protocol string) err
 		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", targetIP, targetPort))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to remove DNAT rule: %w, output: %s", err, string(output))
+	}
+
+	// Remove the OUTPUT DNAT rule (#1459). Leaving it behind would
+	// silently redirect a later, unrelated local connection on this
+	// port to a container that no longer serves it. Tolerated as
+	// best-effort so removal still succeeds on a host whose route
+	// predates the OUTPUT rule.
+	cmd = exec.Command("iptables", "-t", "nat", "-D", "OUTPUT",
+		"-p", protocol, "-m", "addrtype", "--dst-type", "LOCAL",
+		"--dport", fmt.Sprintf("%d", externalPort),
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", targetIP, targetPort))
+	if err := cmd.Run(); err != nil {
+		log.Printf("  Passthrough OUTPUT rule may not exist (route predates #1459) (ignored): %v", err)
 	}
 
 	// Remove POSTROUTING MASQUERADE rule
