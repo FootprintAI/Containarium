@@ -51,9 +51,25 @@ ssh -L 4566:localhost:4566 rw1@<host>
 psql -h localhost -p 4566 -d dev -U root
 ```
 
-This is a property of the platform, not of RisingWave: until Containarium grows
-an L4/TCP ingress, every Postgres/Redis/Kafka-shaped workload reaches its wire
-protocol over SSH.
+This is a property of the recipe surface, not of RisingWave or of the platform.
+Containarium *does* have TCP passthrough — `containarium passthrough add`
+installs an iptables DNAT rule from a host port straight to a box — but
+`RecipePort` can only describe an HTTP port, so a recipe cannot ask for one.
+Until it can ([#1462](https://github.com/FootprintAI/Containarium/issues/1462)),
+every Postgres/Redis/Kafka-shaped recipe reaches its wire protocol over SSH.
+
+If you want SQL reachable without a tunnel today, add the passthrough route by
+hand after deploying — mind that the host port is global, so two RisingWave
+boxes cannot both take `:4566`:
+
+```bash
+containarium passthrough add --port 4566 \
+    --target-ip <box-ip> --target-port 4566 --server <host>
+```
+
+A passthrough route is a raw hole from the host's public interface to the box,
+with no TLS and no auth in front of it. Restrict it at the firewall, or stay on
+the tunnel.
 
 ## Prerequisites
 
@@ -192,8 +208,10 @@ curl -X POST https://rw1-webhook.<base-domain>/webhook/dev/public/wh_events \
   and an external meta store, run RisingWave's own `docker-compose.yml` in a
   box created with the `docker` stack, and use `compose_enable` so the stack
   survives a host reboot.
-- **SQL is not publicly routable.** See above — SSH local-forward until the
-  platform has an L4/TCP ingress.
+- **SQL is not routable *from the recipe*.** `RecipePort` is HTTP-only, so the
+  recipe cannot declare `:4566` as a passthrough port; see
+  [#1462](https://github.com/FootprintAI/Containarium/issues/1462). SSH
+  local-forward, or add the passthrough route by hand — see above.
 - **Local backend only (v1).** A recipe deploys on the backend its `--server`
   daemon manages; `--backend-id`/`--pool` returns `Unimplemented`.
 - The recipe does not take a backup. `containarium backup create <name>` covers the

@@ -799,6 +799,11 @@ recipes:
   #   ssh -L 4566:localhost:4566 <box>
   #   psql -h localhost -p 4566 -d dev -U root
   #
+  # TCP passthrough does exist on the platform (`containarium passthrough add`,
+  # iptables DNAT) — it just isn't reachable from a recipe, because RecipePort
+  # has no protocol field. See #1462; when that lands, :4566 moves into the
+  # port list as a TCP route and the tunnel becomes optional.
+  #
   # Scaling past one box (S3/MinIO state store, external meta store) means the
   # multi-service `standalone` topology, which is a compose stack in a
   # docker-stack box — not this recipe. See docs/integrations/risingwave.md.
