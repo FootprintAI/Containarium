@@ -113,27 +113,32 @@ func (m *Manager) pushFile(name, path string, content []byte, mode string) error
 }
 
 // containerKubeletArgs assembles the kubelet flags a container-class
-// node needs: the user-namespace gate every such node requires
-// (#1452), plus a reservation that makes allocatable truthful when the
-// host is bigger than the node asked for (#1439). Empty on the VM
-// path, whose units stay byte-identical.
+// node needs.
 //
-// A reservation that cannot be computed is NOT fatal here: the gate is
-// what makes kubelet start at all, and a node that starts with
-// imperfect allocatable beats a node that does not start. The capacity
-// probe in ProvisionWorker is the place that refuses a host too small
-// to host the node truthfully.
-func (m *Manager) containerKubeletArgs(iso Isolation, spec NodeSpec) []string {
+// Today that is only the user-namespace gate (#1452): kubelet writes
+// kernel sysctls an unprivileged container may not touch, and without
+// the gate ContainerManager never starts.
+//
+// It deliberately does NOT reserve resources. #1452 wired a
+// reservation computed as (daemon host capacity - requested size), on
+// Amendment 1's premise that a container node always reports the
+// host's capacity. That premise holds only on a NESTED host, where
+// lxcfs masking does not reach the inner instances. On a plain host
+// running Incus directly the node sees its real limit, and the
+// reservation becomes larger than the node's whole capacity -- kubelet
+// rejects it ("capacity >= reservation") and refuses to start, so the
+// correction meant to make allocatable truthful prevented the node
+// from running at all (#1456).
+//
+// ReservedResources and HostCapacity remain: they are correct as
+// functions. What was wrong was applying them unconditionally, from
+// the wrong vantage point. #1456 covers deciding from the node itself
+// whether a correction is needed.
+func (m *Manager) containerKubeletArgs(iso Isolation, _ NodeSpec) []string {
 	if iso != IsolationContainer {
 		return nil
 	}
-	var extra []string
-	if cpu, mem, err := HostCapacity("/"); err == nil {
-		if reserved, rErr := ReservedResources(cpu, mem, spec); rErr == nil {
-			extra = KubeletReservedArgs(reserved)
-		}
-	}
-	return ContainerKubeletArgs(extra)
+	return ContainerKubeletArgs(nil)
 }
 
 // ProvisionCP creates and bootstraps the control-plane VM: create →

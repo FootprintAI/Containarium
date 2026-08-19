@@ -427,3 +427,29 @@ func TestProvisionWiresContainerKubeletArgs(t *testing.T) {
 		t.Error("VM control-plane script carries a container-only kubelet gate")
 	}
 }
+
+// A container node must not be handed a reservation inferred from the
+// daemon host's /proc. Where lxcfs works the node sees its own limits,
+// and such a reservation exceeds the node's entire capacity — kubelet
+// rejects it and refuses to start, which is worse than an uncorrected
+// allocatable (#1456, observed on the CI runner in run 11).
+func TestProvisionDoesNotReserveFromHostCapacity(t *testing.T) {
+	f := newFakeHost()
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+	f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
+		"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+	m := testManager(f)
+
+	if _, err := m.ProvisionCP("alice", "demo", IsolationContainer,
+		DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"}); err != nil {
+		t.Fatalf("ProvisionCP: %v", err)
+	}
+	script := string(f.files["alice-k8s-demo-cp:"+bootstrapScriptPath])
+	if strings.Contains(script, "system-reserved") {
+		t.Errorf("node was given a reservation inferred from the daemon host (#1456):\n%s", script)
+	}
+	// The gate that makes kubelet start at all must still be there.
+	if !strings.Contains(script, "KubeletInUserNamespace=true") {
+		t.Error("dropping the reservation also dropped the user-namespace gate")
+	}
+}
