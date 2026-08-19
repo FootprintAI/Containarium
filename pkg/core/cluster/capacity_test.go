@@ -399,3 +399,46 @@ func TestK3sUnitsDisableStartTimeout(t *testing.T) {
 		})
 	}
 }
+
+// kubelet's ContainerManager writes kernel sysctls at startup, which an
+// unprivileged container may not touch — it fails with "Failed to start
+// ContainerManager" and names its own remedy: the KubeletInUserNamespace
+// feature gate (#1452, observed on the control plane in run 10).
+//
+// BOTH node roles need it: k3s server runs an embedded kubelet.
+func TestContainerKubeletArgsEnableUserNamespace(t *testing.T) {
+	args := ContainerKubeletArgs(nil)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "KubeletInUserNamespace=true") {
+		t.Fatalf("container kubelet args do not enable KubeletInUserNamespace: %v", args)
+	}
+
+	// A reservation composes with it rather than replacing it.
+	withReservation := strings.Join(ContainerKubeletArgs(KubeletReservedArgs(Reserved{CPU: 6, MemoryBytes: 1 << 30})), " ")
+	if !strings.Contains(withReservation, "KubeletInUserNamespace=true") || !strings.Contains(withReservation, "system-reserved") {
+		t.Errorf("reservation dropped the feature gate or vice versa: %s", withReservation)
+	}
+}
+
+// Both bootstrap scripts must carry the gate on the container path —
+// the control plane's embedded kubelet fails identically to a worker's.
+func TestBothScriptsCarryUserNamespaceGate(t *testing.T) {
+	server := RenderServerScript(ServerBootstrap{
+		TLSSANs: []string{"203.0.113.10"}, Isolation: IsolationContainer,
+		KubeletArgs: ContainerKubeletArgs(nil),
+	})
+	agent := RenderAgentScript(AgentBootstrap{
+		ServerURL: "https://10.0.0.1:6443", Isolation: IsolationContainer,
+		KubeletArgs: ContainerKubeletArgs(nil),
+	})
+	for name, script := range map[string]string{"server": server, "agent": agent} {
+		if !strings.Contains(script, "KubeletInUserNamespace=true") {
+			t.Errorf("%s script does not enable KubeletInUserNamespace", name)
+		}
+	}
+	// VM path untouched.
+	vm := RenderServerScript(ServerBootstrap{TLSSANs: []string{"203.0.113.10"}})
+	if strings.Contains(vm, "KubeletInUserNamespace") {
+		t.Error("VM server script carries a container-only kubelet gate")
+	}
+}

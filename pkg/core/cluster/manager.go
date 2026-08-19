@@ -112,6 +112,30 @@ func (m *Manager) pushFile(name, path string, content []byte, mode string) error
 	return m.host.Push(name, path, content, mode)
 }
 
+// containerKubeletArgs assembles the kubelet flags a container-class
+// node needs: the user-namespace gate every such node requires
+// (#1452), plus a reservation that makes allocatable truthful when the
+// host is bigger than the node asked for (#1439). Empty on the VM
+// path, whose units stay byte-identical.
+//
+// A reservation that cannot be computed is NOT fatal here: the gate is
+// what makes kubelet start at all, and a node that starts with
+// imperfect allocatable beats a node that does not start. The capacity
+// probe in ProvisionWorker is the place that refuses a host too small
+// to host the node truthfully.
+func (m *Manager) containerKubeletArgs(iso Isolation, spec NodeSpec) []string {
+	if iso != IsolationContainer {
+		return nil
+	}
+	var extra []string
+	if cpu, mem, err := HostCapacity("/"); err == nil {
+		if reserved, rErr := ReservedResources(cpu, mem, spec); rErr == nil {
+			extra = KubeletReservedArgs(reserved)
+		}
+	}
+	return ContainerKubeletArgs(extra)
+}
+
 // ProvisionCP creates and bootstraps the control-plane VM: create →
 // start → wait → push pinned binary + rendered script → exec. Returns
 // the VM's IP (workers join over it). cpSize is the smallest preset —
@@ -136,7 +160,11 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, iso Isolation, cpSize 
 	if err := m.pushFile(name, K3sBinaryPath, bin, "0755"); err != nil {
 		return "", fmt.Errorf("push k3s binary: %w", err)
 	}
-	script := RenderServerScript(ServerBootstrap{TLSSANs: append([]string{ip}, tlsSANs...), Isolation: iso})
+	script := RenderServerScript(ServerBootstrap{
+		TLSSANs:     append([]string{ip}, tlsSANs...),
+		Isolation:   iso,
+		KubeletArgs: m.containerKubeletArgs(iso, spec),
+	})
 	if err := m.pushFile(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return "", fmt.Errorf("push bootstrap script: %w", err)
 	}
@@ -205,7 +233,11 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g D
 			return fmt.Errorf("push containerd template: %w", err)
 		}
 	}
-	script := RenderAgentScript(AgentBootstrap{ServerURL: "https://" + cpIP + ":6443", Isolation: iso})
+	script := RenderAgentScript(AgentBootstrap{
+		ServerURL:   "https://" + cpIP + ":6443",
+		Isolation:   iso,
+		KubeletArgs: m.containerKubeletArgs(iso, spec),
+	})
 	if err := m.pushFile(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return fmt.Errorf("push bootstrap script: %w", err)
 	}

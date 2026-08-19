@@ -248,3 +248,22 @@ func DeriveContainerdTemplate(generated []byte) ([]byte, error) {
 	}
 	return []byte(out), nil
 }
+
+// ContainerKubeletArgs are the kubelet flags every container-class node
+// needs, with any additional args (e.g. a reservation) appended.
+//
+// kubelet's ContainerManager writes kernel sysctls at startup —
+// /proc/sys/kernel/panic_on_oops, /proc/sys/vm/overcommit_memory,
+// /proc/sys/kernel/panic — which an unprivileged container may not
+// touch. It fails with "Failed to start ContainerManager" and names the
+// remedy itself: the KubeletInUserNamespace feature gate makes it skip
+// those writes (#1452).
+//
+// This applies to BOTH roles: k3s server runs an embedded kubelet, so a
+// control plane fails identically to a worker without it — which is why
+// the control plane could report `ready` (its files exist) while its
+// supervisor never finished starting and no agent could ever join.
+func ContainerKubeletArgs(extra []string) []string {
+	args := []string{"--kubelet-arg=feature-gates=KubeletInUserNamespace=true"}
+	return append(args, extra...)
+}

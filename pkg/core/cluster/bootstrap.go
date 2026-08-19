@@ -36,6 +36,11 @@ type ServerBootstrap struct {
 	// the zero value renders the VM script byte-identically to
 	// pre-#1429.
 	Isolation Isolation
+	// KubeletArgs are extra `k3s server` flags. k3s server runs an
+	// embedded kubelet, so a container-class control plane needs the
+	// same kubelet treatment a worker does (#1452). Empty on the VM
+	// path, whose unit stays byte-identical to its golden.
+	KubeletArgs []string
 }
 
 // RenderServerScript renders the control-plane first-boot script: a
@@ -64,7 +69,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-%[5]sExecStart=%[1]s server --disable traefik --node-taint node-role.kubernetes.io/control-plane=:NoSchedule --write-kubeconfig-mode 0600%[2]s
+%[5]sExecStart=%[1]s server --disable traefik --node-taint node-role.kubernetes.io/control-plane=:NoSchedule --write-kubeconfig-mode 0600%[2]s%[7]s
 Restart=always
 RestartSec=5
 # A node legitimately takes longer than systemd's default 90s to signal
@@ -89,7 +94,7 @@ until [ -s %[3]s ] && [ -s %[4]s ]; do
   sleep 2
 done
 `, K3sBinaryPath, sanFlags.String(), KubeconfigPath, NodeTokenPath, kmsgShimUnitLine(b.Isolation),
-		containerdTemplateStanza(b.Isolation, "k3s.service"))
+		containerdTemplateStanza(b.Isolation, "k3s.service"), kubeletArgsSuffix(b.KubeletArgs))
 }
 
 // AgentBootstrap parameterizes a worker script.

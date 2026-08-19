@@ -384,3 +384,46 @@ func TestProvisionWorkerFailsLoudlyWithoutCPContainerdConfig(t *testing.T) {
 		t.Errorf("error does not name what failed: %v", err)
 	}
 }
+
+// #1440 added KubeletArgs and its rendering, but nothing ever populated
+// it — the reservation was dead code and the tests pinned rendering
+// rather than wiring (#1452). These assert the WIRING: what the manager
+// actually writes into the node's bootstrap script.
+func TestProvisionWiresContainerKubeletArgs(t *testing.T) {
+	f := newFakeHost()
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+	f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
+		"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+	m := testManager(f)
+
+	if _, err := m.ProvisionCP("alice", "demo", IsolationContainer,
+		DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"}); err != nil {
+		t.Fatalf("ProvisionCP: %v", err)
+	}
+	cpScript := string(f.files["alice-k8s-demo-cp:"+bootstrapScriptPath])
+	if !strings.Contains(cpScript, "KubeletInUserNamespace=true") {
+		t.Errorf("control-plane script has no KubeletInUserNamespace gate:\n%s", cpScript)
+	}
+
+	if err := m.ProvisionWorker("alice", "demo", IsolationContainer,
+		DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
+		"alice-k8s-demo-small-1", "10.0.0.1"); err != nil {
+		t.Fatalf("ProvisionWorker: %v", err)
+	}
+	workerScript := string(f.files["alice-k8s-demo-small-1:"+bootstrapScriptPath])
+	if !strings.Contains(workerScript, "KubeletInUserNamespace=true") {
+		t.Errorf("worker script has no KubeletInUserNamespace gate:\n%s", workerScript)
+	}
+
+	// The VM path must not acquire container-only kubelet flags.
+	f2 := newFakeHost()
+	f2.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+	m2 := testManager(f2)
+	if _, err := m2.ProvisionCP("alice", "demo", IsolationVM,
+		DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"}); err != nil {
+		t.Fatalf("ProvisionCP(vm): %v", err)
+	}
+	if strings.Contains(string(f2.files["alice-k8s-demo-cp:"+bootstrapScriptPath]), "KubeletInUserNamespace") {
+		t.Error("VM control-plane script carries a container-only kubelet gate")
+	}
+}
