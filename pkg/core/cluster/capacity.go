@@ -212,3 +212,39 @@ func CheckNodeCapacity(observedCPU int, observedMemBytes int64, spec NodeSpec) e
 	}
 	return nil
 }
+
+// DeriveContainerdTemplate turns a *generated* containerd config into
+// the template a container-class node should use: the same content
+// with the unprivileged-port/ICMP toggles flipped off.
+//
+// This is the Go-side counterpart of the sed the control-plane
+// bootstrap runs, and it exists because a **worker cannot derive its
+// own** (#1448): k3s agent writes config.toml only after it has
+// retrieved configuration from the server, so a worker that waits for
+// that file blocks on something downstream of the startup it is
+// blocking. The daemon instead derives from the control plane's
+// already-generated config — same pinned k3s version, same base shape
+// — and pushes the result before the agent first starts.
+//
+// A config that does not contain a toggle is an ERROR, not a
+// pass-through: silently shipping a template that leaves the toggles
+// enabled would restore the failure #1444 fixed, with nothing to say
+// so. #1444's loudness is the property being preserved here.
+func DeriveContainerdTemplate(generated []byte) ([]byte, error) {
+	out := string(generated)
+	for _, key := range containerdUnprivilegedToggles {
+		enabled := key + " = true"
+		disabled := key + " = false"
+		switch {
+		case strings.Contains(out, enabled):
+			out = strings.ReplaceAll(out, enabled, disabled)
+		case strings.Contains(out, disabled):
+			// Already off — nothing to flip, still correct.
+		default:
+			return nil, fmt.Errorf(
+				"generated containerd config contains no %q setting to disable; "+
+					"the config shape changed and a container node would run with pod sandboxes broken", key)
+		}
+	}
+	return []byte(out), nil
+}

@@ -133,7 +133,21 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now k3s-agent.service
 %[5]s`, K3sBinaryPath, AgentTokenPath, b.ServerURL, kmsgShimUnitLine(b.Isolation),
-		containerdTemplateStanza(b.Isolation, "k3s-agent.service"), kubeletArgsSuffix(b.KubeletArgs))
+		workerContainerdNote(b.Isolation), kubeletArgsSuffix(b.KubeletArgs))
+}
+
+// workerContainerdNote documents why a worker carries no in-band
+// containerd derivation. A worker cannot derive its own: k3s agent
+// writes config.toml only after retrieving configuration from the
+// server, so waiting for it here blocks on something downstream of the
+// startup being blocked (#1448). The daemon pushes the derived
+// template — taken from the control plane's generated config — before
+// this script runs.
+func workerContainerdNote(iso Isolation) string {
+	if iso != IsolationContainer {
+		return ""
+	}
+	return "\n# containerd template was pushed by the daemon before boot (#1448).\n"
 }
 
 // containerdTemplateStanza derives the containerd config template that

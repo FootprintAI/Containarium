@@ -186,6 +186,25 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g D
 	if err := m.pushFile(vmName, AgentTokenPath, token, "0600"); err != nil {
 		return fmt.Errorf("push join token: %w", err)
 	}
+	// A container-class worker cannot derive its own containerd
+	// template: k3s agent writes config.toml only after retrieving
+	// configuration from the server, so waiting for it in the bootstrap
+	// blocks on something downstream of the startup being blocked
+	// (#1448). Derive from the control plane's generated config — same
+	// pinned k3s version, same base shape — and push it before boot.
+	if iso == IsolationContainer {
+		generated, err := m.host.Read(cp, ContainerdGeneratedConfigPath)
+		if err != nil {
+			return fmt.Errorf("read containerd config from %s: %w", cp, err)
+		}
+		tmpl, err := DeriveContainerdTemplate(generated)
+		if err != nil {
+			return fmt.Errorf("derive containerd template: %w", err)
+		}
+		if err := m.pushFile(vmName, ContainerdConfigTemplatePath, tmpl, "0644"); err != nil {
+			return fmt.Errorf("push containerd template: %w", err)
+		}
+	}
 	script := RenderAgentScript(AgentBootstrap{ServerURL: "https://" + cpIP + ":6443", Isolation: iso})
 	if err := m.pushFile(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return fmt.Errorf("push bootstrap script: %w", err)

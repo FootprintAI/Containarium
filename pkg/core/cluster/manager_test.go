@@ -225,6 +225,11 @@ func TestProvisionCarriesIsolationThroughTheSeam(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeHost()
+			// #1448: a container-mode provision derives the worker's
+			// containerd template from the CP's generated config, so the
+			// fake CP must have one — its absence is a loud failure by design.
+			f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
+				"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
 			m := testManager(f)
 
 			if _, err := m.ProvisionCP("alice", "demo", tc.iso, DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, nil); err != nil {
@@ -321,5 +326,61 @@ func TestPushCreatesParentDirectoryFirst(t *testing.T) {
 	}
 	if mkdirAt > pushAt {
 		t.Fatalf("parent directory created AFTER the push (mkdir at %d, push at %d): %v", mkdirAt, pushAt, f.calls)
+	}
+}
+
+// The worker's containerd template is derived by the daemon from the
+// control plane's generated config and pushed BEFORE the bootstrap
+// runs — a worker cannot produce that file itself until it has already
+// joined (#1448). Ordering is the assertion: pushing it after the
+// agent starts would be the same deadlock wearing a different hat.
+func TestProvisionWorkerPushesContainerdTemplateBeforeBootstrap(t *testing.T) {
+	f := newFakeHost()
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+	f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
+		"version = 3\n[plugins.'io.containerd.cri.v1.runtime']\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+
+	if err := testManager(f).ProvisionWorker("alice", "demo", IsolationContainer,
+		DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
+		"alice-k8s-demo-small-1", "10.0.0.1"); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	got := string(f.files["alice-k8s-demo-small-1:"+ContainerdConfigTemplatePath])
+	if !strings.Contains(got, "enable_unprivileged_ports = false") ||
+		!strings.Contains(got, "enable_unprivileged_icmp = false") {
+		t.Fatalf("worker did not receive a derived containerd template, got %q", got)
+	}
+
+	tmplAt, bootstrapAt := -1, -1
+	for i, call := range f.calls {
+		if tmplAt < 0 && strings.Contains(call, "push ") && strings.Contains(call, ContainerdConfigTemplatePath) {
+			tmplAt = i
+		}
+		if bootstrapAt < 0 && strings.Contains(call, "exec ") && strings.Contains(call, bootstrapScriptPath) {
+			bootstrapAt = i
+		}
+	}
+	if tmplAt < 0 || bootstrapAt < 0 || tmplAt > bootstrapAt {
+		t.Fatalf("template must be pushed before the bootstrap runs (tmpl %d, bootstrap %d): %v", tmplAt, bootstrapAt, f.calls)
+	}
+}
+
+// A control plane whose generated config cannot be read must fail the
+// worker loudly: shipping a node with pod sandboxes broken and a green
+// bootstrap is exactly the silent failure #1448 warned against.
+func TestProvisionWorkerFailsLoudlyWithoutCPContainerdConfig(t *testing.T) {
+	f := newFakeHost()
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+	// No CP containerd config on purpose.
+
+	err := testManager(f).ProvisionWorker("alice", "demo", IsolationContainer,
+		DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
+		"alice-k8s-demo-small-1", "10.0.0.1")
+	if err == nil {
+		t.Fatal("provisioning must fail when the containerd template cannot be derived")
+	}
+	if !strings.Contains(err.Error(), "containerd") {
+		t.Errorf("error does not name what failed: %v", err)
 	}
 }

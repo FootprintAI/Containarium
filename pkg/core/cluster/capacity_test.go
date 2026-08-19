@@ -206,47 +206,35 @@ func TestKubeletReservedArgs(t *testing.T) {
 
 // The template and the reserved args only matter if the node actually
 // receives them, so pin the wiring, not just the pure functions.
-func TestAgentScriptCarriesTemplateAndReservedArgs(t *testing.T) {
+func TestAgentScriptCarriesReservedArgs(t *testing.T) {
 	container := RenderAgentScript(AgentBootstrap{
 		ServerURL:   "https://10.0.0.1:6443",
 		Isolation:   IsolationContainer,
 		KubeletArgs: KubeletReservedArgs(Reserved{CPU: 6, MemoryBytes: 61_000_000_000}),
 	})
-	if !strings.Contains(container, ContainerdConfigTemplatePath) {
-		t.Error("container agent script does not write the containerd template")
-	}
-	if !strings.Contains(container, ContainerdGeneratedConfigPath) {
-		t.Error("container agent script does not derive the template from the generated config")
-	}
-	if !strings.Contains(container, "systemctl restart k3s-agent.service") {
-		t.Error("container agent script does not restart k3s after deriving the template")
-	}
 	if !strings.Contains(container, "system-reserved=cpu=6") {
 		t.Error("container agent script does not pass the kubelet reservation")
 	}
 	// The #1444 regression: a hand-written template re-declaring a
-	// table k3s's base template already emits. Neither form may come
-	// back — the derivation copies the generated config instead.
+	// table k3s's base template already emits. It must never come back
+	// in any bootstrap script.
 	if strings.Contains(container, "{{ template") {
 		t.Error("container agent script embeds a hand-written containerd template (#1444)")
 	}
 	if strings.Contains(container, "[plugins.") {
 		t.Error("container agent script re-declares a containerd table k3s already emits (#1444)")
 	}
-	// The generated config exists only after k3s starts, so the
-	// derivation must come after the unit is enabled — and its wait
-	// must fail loudly, never skip silently (#1444).
-	enable := strings.Index(container, "systemctl enable --now k3s-agent.service")
-	derive := strings.Index(container, ContainerdGeneratedConfigPath)
-	if enable == -1 || derive < enable {
-		t.Error("containerd derivation must run after k3s-agent is enabled")
-	}
-	if !strings.Contains(container, "was never generated") {
-		t.Error("containerd derivation wait does not fail loudly on timeout")
-	}
 
-	// The VM path must stay exactly what it was: no template, no args,
-	// no behaviour bought with a change to the other isolation class.
+	// This test used to assert the agent derived its containerd
+	// template in-band (wait for the generated config -> sed ->
+	// restart). That behaviour was #1448: an agent writes that config
+	// only after it has joined, so the wait deadlocked. The inverse is
+	// now pinned by TestAgentScriptDoesNotWaitForContainerdConfig, and
+	// the daemon-side push it was replaced with by
+	// TestProvisionWorkerPushesContainerdTemplateBeforeBootstrap. The
+	// control plane keeps the in-band derivation, asserted by
+	// TestServerScriptCarriesContainerdDerivation.
+
 	vm := RenderAgentScript(AgentBootstrap{ServerURL: "https://10.0.0.1:6443", Isolation: IsolationVM})
 	for _, unwanted := range []string{ContainerdConfigTemplatePath, "system-reserved", "enable_unprivileged"} {
 		if strings.Contains(vm, unwanted) {
@@ -255,9 +243,6 @@ func TestAgentScriptCarriesTemplateAndReservedArgs(t *testing.T) {
 	}
 }
 
-// k3s server runs an embedded agent: the control plane starts
-// containerd exactly like a worker does, so it needs the sysctl fix
-// too — the container lane's run 5 failed on the CP first (#1444).
 func TestServerScriptCarriesContainerdDerivation(t *testing.T) {
 	container := RenderServerScript(ServerBootstrap{
 		TLSSANs:   []string{"203.0.113.10"},
@@ -329,5 +314,64 @@ func TestCheckNodeCapacity(t *testing.T) {
 	}
 	if !errors.Is(err, ErrContainerNodesUnsupported) {
 		t.Errorf("refusal should carry the container-node sentinel: %v", err)
+	}
+}
+
+// A worker cannot derive its own containerd template: k3s agent writes
+// config.toml only after it has retrieved configuration from the
+// server, so a bootstrap that waits for that file blocks on something
+// downstream of the startup it is blocking (#1448, observed in the
+// container lane's run 8). The control plane has no such problem — k3s
+// server starts containerd immediately — so only the agent path changes.
+func TestAgentScriptDoesNotWaitForContainerdConfig(t *testing.T) {
+	container := RenderAgentScript(AgentBootstrap{
+		ServerURL: "https://10.0.0.1:6443",
+		Isolation: IsolationContainer,
+	})
+	for _, forbidden := range []string{
+		ContainerdGeneratedConfigPath, // the file the agent cannot produce yet
+		"was never generated",         // the wait's failure message
+		"systemctl restart",           // the restart that followed the wait
+	} {
+		if strings.Contains(container, forbidden) {
+			t.Errorf("agent script still derives containerd config in-band (%q) — it deadlocks (#1448)", forbidden)
+		}
+	}
+
+	// The control-plane path keeps its proven behaviour.
+	server := RenderServerScript(ServerBootstrap{TLSSANs: []string{"203.0.113.10"}, Isolation: IsolationContainer})
+	for _, want := range []string{ContainerdGeneratedConfigPath, "systemctl restart k3s.service"} {
+		if !strings.Contains(server, want) {
+			t.Errorf("server script lost its containerd derivation (%q)", want)
+		}
+	}
+}
+
+// The worker's template is instead derived by the daemon from the
+// control plane's already-generated config and pushed before the agent
+// starts. Deriving in Go keeps the failure loud: a config that cannot
+// be flipped is an error, not a silently-unmodified template.
+func TestDeriveContainerdTemplate(t *testing.T) {
+	generated := "version = 3\n\n[plugins.'io.containerd.cri.v1.runtime']\n" +
+		"  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n"
+
+	got, err := DeriveContainerdTemplate([]byte(generated))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"enable_unprivileged_ports = false", "enable_unprivileged_icmp = false"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("derived template missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(string(got), "= true") {
+		t.Errorf("derived template still enables a toggle:\n%s", got)
+	}
+
+	// A config missing a toggle entirely must ERROR rather than return
+	// a template that silently leaves pods broken — the whole point of
+	// #1444's loud failure, preserved on the new path.
+	if _, err := DeriveContainerdTemplate([]byte("version = 3\n")); err == nil {
+		t.Error("a config without the toggles must be an error, not a silent pass-through")
 	}
 }
