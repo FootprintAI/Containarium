@@ -37,8 +37,12 @@ type ClusterReconciler struct {
 	// publish allocates/records the external API endpoint for a
 	// cluster whose control plane is up; unpublish reverses it.
 	// Seamed for tests; production wires the passthrough route.
-	publish   func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
-	unpublish func(ctx context.Context, c *clusterstore.Cluster) error
+	// advertiseHost is the address tenants reach a cluster's API on.
+	// It must be a subject-alt-name on the control plane's certificate,
+	// or the kubeconfig we hand the tenant cannot verify (#1461).
+	advertiseHost string
+	publish       func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
+	unpublish     func(ctx context.Context, c *clusterstore.Cluster) error
 
 	// vpaDisabled turns off VPA deployment (CONTAINARIUM_CLUSTER_VPA=false);
 	// default is on — pod vertical autoscaling is a P0 story (#1416).
@@ -183,7 +187,7 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 			if err := r.admitSize(c, cpSize, "control-plane"); err != nil {
 				return nil // refusal recorded; retry next pass
 			}
-			cpIP, err := r.mgr.ProvisionCP(c.Owner, c.Name, iso, cpSize, nil)
+			cpIP, err := r.mgr.ProvisionCP(c.Owner, c.Name, iso, cpSize, r.controlPlaneSANs())
 			if err != nil {
 				return fmt.Errorf("provision control plane: %w", err)
 			}
@@ -357,7 +361,25 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 // external port from portRange, DNAT it to <cp>:6443, and record
 // <advertiseAddr>:<port> as the cluster's API endpoint. Invoked with
 // the _system identity — this is a daemon-internal reconciler path.
+// controlPlaneSANs are the extra subject-alt-names the API server
+// certificate must carry. The node's own IP is added by the manager;
+// this adds the published endpoint's host, which is what a tenant's
+// kubeconfig actually dials (#1461).
+func (r *ClusterReconciler) controlPlaneSANs() []string {
+	if r.advertiseHost == "" {
+		return nil
+	}
+	return []string{r.advertiseHost}
+}
+
+// SetAdvertiseHost records the address the published endpoint uses, so
+// the control plane's certificate can cover it. Without this the cert
+// covers only the node's own IP and the kubeconfig fails verification
+// against the endpoint it points at (#1461).
+func (r *ClusterReconciler) SetAdvertiseHost(host string) { r.advertiseHost = host }
+
 func (r *ClusterReconciler) WireEndpointPublisher(network *NetworkServer, advertiseAddr, portRange string) error {
+	r.SetAdvertiseHost(advertiseAddr)
 	lo, hi, err := parsePortRange(portRange)
 	if err != nil {
 		return err
