@@ -716,4 +716,49 @@ func (l *lane) dumpDiagnostics() {
 			l.t.Logf("recent k8s events:\n%s", strings.Join(lines, "\n"))
 		}
 	}
+	l.dumpNodeJournals()
+}
+
+// dumpNodeJournals prints each node's systemd journal for the units
+// that actually run the cluster. Without this a failure inside k3s or
+// the autoscaler is invisible: run 15 lost ten minutes to an
+// autoscaler that never scaled, and the log that would have said why
+// was on the control plane, uncollected.
+//
+// The autoscaler is a systemd unit (`ctr run` task) on the control
+// plane, not a pod, so it appears in no kubectl output at all — it is
+// the unit most likely to be missed and the one hardest to reach after
+// the run is torn down.
+func (l *lane) dumpNodeJournals() {
+	units := map[string][]string{
+		"cp":     {"k3s", "k3s-cluster-autoscaler"},
+		"worker": {"k3s-agent"},
+	}
+	for _, name := range l.clusterInstances() {
+		role := "worker"
+		if strings.HasSuffix(name, "-cp") {
+			role = "cp"
+		}
+		args := []string{"journalctl", "--no-pager", "-n", "120"}
+		for _, u := range units[role] {
+			args = append(args, "-u", u)
+		}
+		stdout, stderr, err := l.incus.ExecWithOutput(name, args)
+		if err != nil {
+			l.t.Logf("journal %s: %v\n%s", name, err, stderr)
+			continue
+		}
+		l.t.Logf("journal %s (%s):\n%s", name, strings.Join(units[role], ","), stdout)
+	}
+	// Unit state separately: a unit that never started has an empty
+	// journal, which reads identically to a unit that started and said
+	// nothing. `is-active` tells those two apart.
+	for _, name := range l.clusterInstances() {
+		if !strings.HasSuffix(name, "-cp") {
+			continue
+		}
+		stdout, _, _ := l.incus.ExecWithOutput(name,
+			[]string{"systemctl", "is-active", "k3s-cluster-autoscaler"})
+		l.t.Logf("autoscaler unit on %s: %s", name, strings.TrimSpace(stdout))
+	}
 }

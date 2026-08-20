@@ -112,10 +112,22 @@ cleanup() {
     "$CONTAINER_RUNTIME" rm -f "$PG_CONTAINER" >/dev/null 2>&1
   fi
   if [ $status -ne 0 ] && [ -f "$DAEMON_LOG" ]; then
-    echo "---- daemon log (last 100 lines) ----"
-    tail -100 "$DAEMON_LOG"
+    # Cluster lines first, over the WHOLE log. The tail alone is not
+    # enough: the daemon decides at startup whether the autoscaler and
+    # the endpoint publisher are wired at all, and says so once. In run
+    # 15 that verdict sat ~200 lines above the tail window, so a lane
+    # that failed on a missing scale-up could not answer "was the
+    # autoscaler ever enabled?" from its own log.
+    echo "---- daemon log: cluster/autoscaler lines (whole run) ----"
+    grep -E '\[cluster\]|autoscaler|[Pp]assthrough|Managed-cluster' "$DAEMON_LOG" || echo "(none)"
+    echo "---- daemon log (last 200 lines) ----"
+    tail -200 "$DAEMON_LOG"
   fi
-  rm -rf "$WORKDIR"
+  # The daemon runs under sudo and creates root-owned trees here (the
+  # cluster CA PKI dir among them), so an unprivileged rm leaves them
+  # behind and prints a permission error that looks like a real
+  # failure. Remove as root, matching who created it.
+  sudo rm -rf "$WORKDIR" 2>/dev/null || rm -rf "$WORKDIR"
   exit $status
 }
 trap cleanup EXIT
