@@ -29,7 +29,7 @@ const (
 	// bundle — the reviewable surface (golden-tested like the k3s
 	// binary pin): what runs inside tenant clusters changes only as
 	// a visible re-vendor diff.
-	VPAManifestSHA256 = "6804cbac5efe0b4f258ed6d8a61477ccf304aff9c7f37e6b4bef0a9a94e8518b"
+	VPAManifestSHA256 = "a74ea4c0e47561d4fd0bb9003a5e005dd5eb43fe173161b7dd86ff97ffebecd4"
 )
 
 //go:embed vpa/manifests.yaml
