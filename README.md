@@ -119,6 +119,10 @@ Now Claude Code, Cursor, or any MCP-speaking agent can call
 `shell_exec`, `read_file`, `write_file`, `list_directory`,
 `move_file`, `delete_file` directly inside Alice's container.
 
+Agent has no MCP client? Run it *inside* the box instead — see
+[docs/integrations/pi.md](docs/integrations/pi.md) for the
+[pi](https://pi.dev) walkthrough (installs, keys, code sync, sessions).
+
 ### 5. Make it reachable on a public hostname
 
 ```bash
