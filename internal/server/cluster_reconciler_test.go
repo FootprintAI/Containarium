@@ -393,7 +393,7 @@ func TestReconciler_ProvisionIsolationMatchesCluster(t *testing.T) {
 //
 // The design always intended this ("TLSSANs are ... the external
 // endpoint and the VM IP, so the rewritten kubeconfig verifies"); the
-// reconciler simply passed nil (#1461).
+// reconciler simply passed nil (#1464).
 func TestReconcilerGivesControlPlaneTheAdvertiseSAN(t *testing.T) {
 	srv, rec, host := testReconcilerRig(t)
 	rec.SetAdvertiseHost("198.51.100.20")

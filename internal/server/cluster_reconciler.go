@@ -39,7 +39,7 @@ type ClusterReconciler struct {
 	// Seamed for tests; production wires the passthrough route.
 	// advertiseHost is the address tenants reach a cluster's API on.
 	// It must be a subject-alt-name on the control plane's certificate,
-	// or the kubeconfig we hand the tenant cannot verify (#1461).
+	// or the kubeconfig we hand the tenant cannot verify (#1464).
 	advertiseHost string
 	publish       func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
 	unpublish     func(ctx context.Context, c *clusterstore.Cluster) error
@@ -364,7 +364,7 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 // controlPlaneSANs are the extra subject-alt-names the API server
 // certificate must carry. The node's own IP is added by the manager;
 // this adds the published endpoint's host, which is what a tenant's
-// kubeconfig actually dials (#1461).
+// kubeconfig actually dials (#1464).
 func (r *ClusterReconciler) controlPlaneSANs() []string {
 	if r.advertiseHost == "" {
 		return nil
@@ -375,7 +375,7 @@ func (r *ClusterReconciler) controlPlaneSANs() []string {
 // SetAdvertiseHost records the address the published endpoint uses, so
 // the control plane's certificate can cover it. Without this the cert
 // covers only the node's own IP and the kubeconfig fails verification
-// against the endpoint it points at (#1461).
+// against the endpoint it points at (#1464).
 func (r *ClusterReconciler) SetAdvertiseHost(host string) { r.advertiseHost = host }
 
 func (r *ClusterReconciler) WireEndpointPublisher(network *NetworkServer, advertiseAddr, portRange string) error {
