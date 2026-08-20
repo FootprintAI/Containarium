@@ -30,6 +30,9 @@ type VMHost interface {
 	// carrying the container node profile (#1429).
 	CreateNode(spec NodeSpec, isolation Isolation) error
 	Start(name string) error
+	// Stop halts a node. Deleting a running instance is refused by
+	// Incus, so this is a required step of removal, not a nicety.
+	Stop(name string) error
 	Delete(name string) error
 	// WaitReady blocks until the guest agent is up and networked,
 	// returning the VM's primary IP.
@@ -91,8 +94,24 @@ func (m *Manager) Observe(tenant, clusterName string) (Observed, error) {
 // StartVM restarts a stopped cluster VM.
 func (m *Manager) StartVM(name string) error { return m.host.Start(name) }
 
-// DeleteVM force-removes a cluster VM.
-func (m *Manager) DeleteVM(name string) error { return m.host.Delete(name) }
+// DeleteVM removes a cluster node, stopping it first.
+//
+// Incus refuses to delete a running instance ("Instance is running"),
+// so the stop is part of the removal rather than an optimisation. The
+// tenant container path has always done this; the cluster path did
+// not, which meant the autoscaler could never complete a scale-down
+// and `cluster delete` left every instance of the cluster running on
+// the host (#1475).
+//
+// A stop error is deliberately ignored: the common case is a node that
+// is already stopped, which Incus reports as an error, and any stop
+// failure that actually matters resurfaces as a delete failure. The
+// delete's error is the one the caller sees — the autoscaler retries on
+// it, so swallowing it would make a failed scale-down look successful.
+func (m *Manager) DeleteVM(name string) error {
+	_ = m.host.Stop(name)
+	return m.host.Delete(name)
+}
 
 const bootstrapScriptPath = "/root/containarium-bootstrap.sh"
 

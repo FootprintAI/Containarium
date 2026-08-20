@@ -23,6 +23,8 @@ type fakeHost struct {
 	// with, per node name (#1429 acceptance: the fake records the
 	// isolation per call).
 	isolations map[string]Isolation
+	stopErr    error
+	deleteErr  error
 }
 
 func newFakeHost() *fakeHost {
@@ -42,8 +44,12 @@ func (f *fakeHost) CreateNode(spec NodeSpec, isolation Isolation) error {
 	f.isolations[spec.Name] = isolation
 	return nil
 }
-func (f *fakeHost) Start(name string) error  { f.record("start %s", name); return nil }
-func (f *fakeHost) Delete(name string) error { f.record("delete %s", name); return nil }
+func (f *fakeHost) Start(name string) error { f.record("start %s", name); return nil }
+func (f *fakeHost) Stop(name string) error  { f.record("stop %s", name); return f.stopErr }
+func (f *fakeHost) Delete(name string) error {
+	f.record("delete %s", name)
+	return f.deleteErr
+}
 func (f *fakeHost) WaitReady(name string, _ time.Duration) (string, error) {
 	f.record("wait %s", name)
 	return "10.166.11.5", nil
@@ -451,5 +457,71 @@ func TestProvisionDoesNotReserveFromHostCapacity(t *testing.T) {
 	// The gate that makes kubelet start at all must still be there.
 	if !strings.Contains(script, "KubeletInUserNamespace=true") {
 		t.Error("dropping the reservation also dropped the user-namespace gate")
+	}
+}
+
+// Incus refuses to delete a running instance ("Instance is running"),
+// so a node must be stopped first. The tenant container path has always
+// done this (pkg/core/container/manager.go stops if running, then
+// deletes); the cluster path did not, which meant scale-down could
+// never remove a node and `cluster delete` left every instance of the
+// cluster running on the host (#1475).
+func TestDeleteNodeStopsBeforeDeleting(t *testing.T) {
+	f := newFakeHost()
+	m := NewManager(f, DefaultArtifactBase)
+
+	if err := m.DeleteVM("alice-k8s-demo-small-1"); err != nil {
+		t.Fatalf("DeleteVM: %v", err)
+	}
+
+	var stopAt, deleteAt = -1, -1
+	for i, c := range f.calls {
+		switch c {
+		case "stop alice-k8s-demo-small-1":
+			stopAt = i
+		case "delete alice-k8s-demo-small-1":
+			deleteAt = i
+		}
+	}
+	if stopAt < 0 {
+		t.Fatalf("node was never stopped; Incus will refuse the delete:\n%v", f.calls)
+	}
+	if deleteAt < 0 || deleteAt < stopAt {
+		t.Fatalf("delete must follow the stop, got %v", f.calls)
+	}
+}
+
+// An already-stopped node reports an error from stop, and that must not
+// prevent the delete — otherwise a node that was stopped by any other
+// means becomes undeletable.
+func TestDeleteNodeDeletesEvenWhenStopFails(t *testing.T) {
+	f := newFakeHost()
+	f.stopErr = errors.New("The instance is already stopped")
+	m := NewManager(f, DefaultArtifactBase)
+
+	if err := m.DeleteVM("alice-k8s-demo-small-1"); err != nil {
+		t.Fatalf("a failing stop must not block the delete: %v", err)
+	}
+	found := false
+	for _, c := range f.calls {
+		if c == "delete alice-k8s-demo-small-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("delete was never attempted: %v", f.calls)
+	}
+}
+
+// The delete's own error is what the caller must see — the autoscaler
+// retries on it, and swallowing it would make a failed scale-down look
+// like a successful one.
+func TestDeleteNodeReturnsTheDeleteError(t *testing.T) {
+	f := newFakeHost()
+	f.deleteErr = errors.New("boom")
+	m := NewManager(f, DefaultArtifactBase)
+
+	if err := m.DeleteVM("alice-k8s-demo-small-1"); err == nil {
+		t.Fatal("a failed delete must be reported, not swallowed")
 	}
 }

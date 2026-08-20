@@ -110,7 +110,13 @@ func (h *IncusHost) CreateNode(spec NodeSpec, isolation Isolation) error {
 	return h.client.StartContainer(spec.Name)
 }
 
-func (h *IncusHost) Start(name string) error  { return h.client.StartContainer(name) }
+func (h *IncusHost) Start(name string) error { return h.client.StartContainer(name) }
+
+// Stop halts an instance, forcing it: a cluster node being removed is
+// not asked politely, and a graceful stop that hangs would block the
+// autoscaler's scale-down behind a 30s timeout per node.
+func (h *IncusHost) Stop(name string) error { return h.client.StopContainer(name, true) }
+
 func (h *IncusHost) Delete(name string) error { return h.client.DeleteContainer(name) }
 
 func (h *IncusHost) WaitReady(name string, timeout time.Duration) (string, error) {

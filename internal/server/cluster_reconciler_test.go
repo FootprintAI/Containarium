@@ -76,6 +76,20 @@ func (h *stateHost) Start(name string) error {
 	return nil
 }
 
+// Stop mirrors Incus: stopping an instance that is not there is an
+// error, and stopping one that is already stopped is too. DeleteVM
+// ignores both, which is what this fake is here to let us prove.
+func (h *stateHost) Stop(name string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	vm, ok := h.vms[name]
+	if !ok {
+		return fmt.Errorf("no vm %s", name)
+	}
+	vm.running = false
+	return nil
+}
+
 func (h *stateHost) Delete(name string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
