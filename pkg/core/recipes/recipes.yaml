@@ -848,16 +848,16 @@ recipes:
       - podman volume create risingwave-data
       - 'podman pull "docker.io/risingwavelabs/risingwave:${CONTAINARIUM_PARAM_VERSION}" >/dev/null'
       - podman rm -f risingwave >/dev/null 2>&1 || true
-      # --user root: named Podman volumes are created root-owned and the
-      # image's own user cannot write to the mount. The box is already an
-      # unprivileged LXC, so root in the inner container crosses no new
-      # boundary.
+      # No --user override: the image sets no User, so it already runs as root
+      # and writes the root-owned named volume fine (verified on a live box,
+      # v3.0.0). An explicit --user root would be a no-op that reads like a
+      # deliberate privilege choice.
       #
       # --listen-addr is passed explicitly even though 0.0.0.0:4566 is the
       # frontend default: a loopback bind would silently make the published
       # port unreachable, and that failure looks like a hung psql.
       - |
-        podman run -d --name risingwave --restart=always --user root \
+        podman run -d --name risingwave --restart=always \
           -p 4566:4566 -p 5691:5691 -p 4560:4560 \
           -v risingwave-data:/var/lib/risingwave \
           -e RUST_BACKTRACE=1 \

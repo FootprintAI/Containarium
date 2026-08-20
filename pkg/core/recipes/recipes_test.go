@@ -163,7 +163,6 @@ func TestRisingWaveRecipe(t *testing.T) {
 		"--listen-addr 0.0.0.0:4566", // a loopback bind makes the published port unreachable
 		"-p 4566:4566",               // published on the box for SSH local-forward
 		"--restart=always",           // survives box reboot and SSH logout
-		"--user root",                // root-owned named volume must be writable
 		"/dev/tcp/127.0.0.1/4566",    // readiness gate: boot failure surfaces at deploy time
 	} {
 		if !strings.Contains(joined, want) {
