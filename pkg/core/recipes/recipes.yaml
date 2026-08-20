@@ -845,3 +845,80 @@ recipes:
           ${ENTRY:+--entrypoint "$ENTRY"} \
           "${CONTAINARIUM_PARAM_OCI_IMAGE}" "$@" >/dev/null
         echo "oci-service: ${CONTAINARIUM_PARAM_OCI_IMAGE} up on box port 8080 (container port ${CONTAINARIUM_PARAM_SERVICE_PORT})"
+
+  # agentcore-cli puts AWS's own agent toolchain (@aws/agentcore) INSIDE a box,
+  # so the box becomes the control plane for agents that run on Amazon Bedrock
+  # AgentCore. The runtime stays AWS's; the operator surface becomes ours.
+  #
+  # This is docs/integrations/pi.md's shape — run the tooling inside the box —
+  # applied to AWS's CLI instead of an agent. What it buys (see
+  # docs/AGENTCORE-GATEWAY-INTERCEPTOR-SPIKE.md, "Placement C"):
+  #
+  #   - every `agentcore deploy` / `invoke` is a shell_exec through agent-box,
+  #     so the deploy and invoke path is auditable by construction;
+  #   - AWS credentials live in the tenant secrets mount (/run/secrets, tmpfs,
+  #     0440) instead of on a laptop or in CI;
+  #   - the invoke path crosses OUR egress, so eBPF netpolicy and the Tier-3
+  #     WAF apply to it — that is the ingress interposition we otherwise have
+  #     no place to stand for;
+  #   - the box is where the Gateway interceptor Lambda gets built and
+  #     registered (examples/agentcore-interceptor/).
+  #
+  # Credentials are deliberately NOT recipe parameters — a parameter would be
+  # recorded in the deploy request. Mount them as a secret named
+  # `aws-credentials` (standard AWS shared-credentials INI) and the profile
+  # script below points the SDK at it; the file never leaves tmpfs.
+  #
+  # `agentcore deploy` builds remotely via CodeBuild and pushes to ECR, so it
+  # needs no local container runtime and should work in a plain LXC box.
+  # `agentcore dev` runs containers locally with source mounted at /app —
+  # nested containers in LXC are historically fragile (cf. kind, which cannot
+  # run nested at all: /dev/kmsg is blocked). This recipe does NOT promise the
+  # `dev` path works; test it before relying on it.
+  - id: agentcore-cli
+    name: AgentCore CLI
+    description: Box preloaded with AWS's @aws/agentcore CLI (Node 20 + uv + awscli) for creating, deploying, and invoking agents on Amazon Bedrock AgentCore. Credentials come from the `aws-credentials` secret, never from a parameter.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "2"
+      memory: 4GB
+      disk: 30GB
+    parameters:
+      - name: aws_region
+        label: AWS region
+        description: Region AgentCore resources are created in. Note AgentCore is not available in every region — check availability before choosing.
+        type: string
+        default: us-west-2
+      - name: agentcore_version
+        label: AgentCore CLI version
+        description: npm version spec for @aws/agentcore (e.g. 1.2.3). Empty installs the latest published version.
+        type: string
+        default: ""
+    post_start:
+      - DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip git ca-certificates
+      - 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash -'
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+      - 'npm install -g "@aws/agentcore${CONTAINARIUM_PARAM_AGENTCORE_VERSION:+@$CONTAINARIUM_PARAM_AGENTCORE_VERSION}"'
+      # uv is required for Python agents (the default template language).
+      - 'curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh'
+      # awscli is how the interceptor Lambda gets deployed and how the gateway
+      # is wired; the agentcore CLI does not cover those verbs.
+      - 'curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install --update && rm -rf /tmp/awscli.zip /tmp/aws'
+      - mkdir -p /opt/agentcore
+      # Point the SDK at the secrets mount rather than copying anything to
+      # disk. Conditional, so a box provisioned before the secret exists still
+      # comes up green and picks the credentials up on the next login.
+      # Unquoted heredoc so the region is baked in at provision time; the
+      # runtime references stay literal via backslash escapes.
+      - |
+        cat > /etc/profile.d/10-agentcore.sh <<PROFILE
+        export AWS_REGION="${CONTAINARIUM_PARAM_AWS_REGION:-us-west-2}"
+        export AWS_DEFAULT_REGION="\$AWS_REGION"
+        if [ -r /run/secrets/aws-credentials ]; then
+          export AWS_SHARED_CREDENTIALS_FILE=/run/secrets/aws-credentials
+        fi
+        PROFILE
+      - chmod 0644 /etc/profile.d/10-agentcore.sh
+      - 'echo "agentcore-cli: $(agentcore --version 2>/dev/null || echo installed), region ${CONTAINARIUM_PARAM_AWS_REGION:-us-west-2}; set the aws-credentials secret to authenticate"'

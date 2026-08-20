@@ -62,8 +62,8 @@ What the box still buys you, unchanged:
 - Outbound egress from the box to the provider's API. Plain boxes have normal
   outbound access; if your operator has armed eBPF egress enforcement, the
   provider domain has to be allowed (see [Limitations](#limitations)).
-- The stock `images:ubuntu/24.04` LXC image is minimal — `curl` and `tmux` are
-  installed in step 2, not assumed.
+- The stock `images:ubuntu/24.04` box has `curl` and `git` but no `tmux` and no
+  Node; step 2 covers what to add.
 
 ## 1. Create the box
 
@@ -85,14 +85,16 @@ expect, or leave `--idle-stop` off for agent boxes.
 ## 2. Install pi in the box
 
 ```bash
-ssh alice 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive \
-    apt-get install -y -qq curl tmux git'
 ssh alice 'curl -fsSL https://pi.dev/install.sh | sh'
 ssh alice 'pi --version'
+ssh alice 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y -qq tmux'      # only needed for `connect --session`
 ```
 
-With Node ≥ 20 in the box, `npm i -g --ignore-scripts
-@earendil-works/pi-coding-agent` works too.
+The stock `images:ubuntu/24.04` box ships `curl` and `git`, so the installer
+runs as-is. It has no `tmux` and no Node — install tmux if you want detachable
+sessions (step 5), and Node ≥ 20 if you prefer `npm i -g --ignore-scripts
+@earendil-works/pi-coding-agent` over the installer.
 
 pi keeps everything under `/home/alice/.pi/` — config, `models.json`,
 extensions, skills, and session files. That's on the box's persistent disk, so
@@ -102,29 +104,37 @@ task.
 ## 3. Give pi its key as a tenant secret
 
 Don't paste the key into an SSH command — it lands in your laptop's shell
-history and the box's process table. Use the secrets store:
-
-```bash
-containarium secrets set alice ANTHROPIC_API_KEY sk-ant-...
-containarium secrets refresh alice
-ssh alice 'printenv ANTHROPIC_API_KEY >/dev/null && echo present'
-```
-
-`secrets set` encrypts at rest on the daemon and stamps
-`environment.ANTHROPIC_API_KEY` on the container; `secrets refresh` pushes the
-current store to a running box without a restart. Running processes keep their
-old environment (POSIX inherit-at-fork) — new sessions and new execs see the
-new value, so reconnect after a rotation.
-
-If the login shell doesn't show the variable on your backend, use file-based
-delivery instead and source it from the box's profile:
+history and the box's process table. Use the secrets store, with **file-based
+delivery**:
 
 ```bash
 containarium secrets set alice ANTHROPIC_API_KEY sk-ant-... --delivery compose
 containarium secrets refresh alice
 ssh alice "grep -q containarium/secrets.env ~/.profile || \
     echo 'set -a; . /run/containarium/secrets.env; set +a' >> ~/.profile"
+ssh alice 'bash -lc "printenv ANTHROPIC_API_KEY >/dev/null && echo present"'
 ```
+
+`secrets set` encrypts at rest on the daemon (AES-256-GCM) and `secrets
+refresh` pushes the current store to a running box without a restart.
+`--delivery compose` writes a shared dotenv file at
+`/run/containarium/secrets.env` (tmpfs); `--delivery file` writes one file per
+secret at `/run/secrets/<NAME>` if you'd rather read them individually.
+
+### Why not the default `env` delivery
+
+The default (`--delivery env`) stamps `environment.<NAME>=<value>` on the LXC.
+That reaches container-start processes and nested docker/compose apps — but
+**not an SSH shell session**, which is where pi runs. The login path rebuilds
+the environment from scratch (`sshd` → the box's login wrapper → `su -` →
+`bash`), and `su -` drops inherited variables by design. Measured on a stock
+Ubuntu 24.04 box: a variable present in the container's systemd manager
+environment is visible to a `systemd-run` unit and absent from every SSH
+session, interactive or not.
+
+So `printenv ANTHROPIC_API_KEY` over SSH is not a good check for `env`
+delivery — it will read as failure even when the stamp is correctly applied.
+Use `compose`/`file` delivery for anything a *shell* has to see.
 
 pi's own `/login` flow also works if you'd rather authenticate interactively
 inside the box; the credential then lives in `~/.pi/` on the box's disk instead
