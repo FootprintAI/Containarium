@@ -1002,7 +1002,11 @@ recipes:
       - 'curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh'
       # awscli is how the interceptor Lambda gets deployed and how the gateway
       # is wired; the agentcore CLI does not cover those verbs.
-      - 'curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install --update && rm -rf /tmp/awscli.zip /tmp/aws'
+      # `uname -m` yields exactly the suffixes AWS publishes (x86_64 /
+      # aarch64), so this is a 1:1 map — hardcoding x86_64 failed
+      # provisioning outright on an arm64 host, since this step is not
+      # best-effort.
+      - 'curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscli.zip && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install --update && rm -rf /tmp/awscli.zip /tmp/aws'
       - mkdir -p /opt/agentcore
       # Point the SDK at the secrets mount rather than copying anything to
       # disk. Conditional, so a box provisioned before the secret exists still
