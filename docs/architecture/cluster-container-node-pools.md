@@ -231,10 +231,28 @@ ports below 1024 without `CAP_NET_BIND_SERVICE`, and unprivileged
 ICMP is unavailable. That is a real capability difference between the
 two isolation classes and belongs in the product docs, not just here.
 
-### 2. Node capacity is fiction — and lxcfs does not save us
+### 2. Node capacity is fiction *on a nested host* — and lxcfs does not save us
 
-**Observed.** A node container created with `limits.cpu=2`,
-`limits.memory=3GB` advertised to Kubernetes:
+> **Corrected 2026-08-20 (#1456).** As first written, this section
+> claimed container nodes misreport capacity, full stop, and prescribed
+> an unconditional reservation. Both are wrong. The measurement below
+> was taken on a nested Incus host and holds only there; on a plain
+> Incus host lxcfs works and the node sees its real limits. Applying
+> the reservation unconditionally computed 12.8 GB of reserved memory
+> for a 4 GB node, and kubelet refused to start:
+>
+> ```
+> invalid Node Allocatable configuration. Resource "memory" has a
+> reservation of {{12766414848 0}} but capacity of {{3999997952 0}}.
+> ```
+>
+> The correction meant to make allocatable truthful stopped the node
+> from running at all, on exactly the hosts where nothing needed
+> correcting. The original text is kept below so the reasoning is
+> auditable; read it as scoped to nested hosts.
+
+**Observed (nested host only).** A node container created with
+`limits.cpu=2`, `limits.memory=3GB` advertised to Kubernetes:
 
 ```
 capacity: 8 cpu / 65841348Ki memory        (truth: 2 cpu / 3 GB)
@@ -257,23 +275,38 @@ twenty times its real memory means pods are scheduled where they
 cannot run and **scale-up is never triggered** — the autoscaling story
 this whole feature exists for, silently disabled.
 
-**Required fix.** Allocatable must be derived from the size the daemon
-already knows (`NodeSpec`), not from what cadvisor believes:
+**Required fix — superseded.** This section originally called for
 kubelet args pinning reserved resources to (observed capacity −
-requested size) so allocatable equals the size class. The capability
-probe must additionally compare observed `/proc` capacity against the
-requested limits and refuse the host when they disagree and the
-reservation cannot be computed — a node that lies about its size is
-worse than no node, because every downstream decision is made on the
-lie.
+requested size), computed from the daemon host's `/proc`. That shipped
+in #1452 and was removed in #1457 for the reason in the correction
+above: the daemon host's capacity is not the node's capacity, and on a
+plain host the two differ by enough to make kubelet reject the config.
+
+What survives is the shape of the answer, not its trigger. A
+reservation is correct **only when the node actually misreports**, and
+that can only be established from the node itself after boot — never
+inferred from the daemon host. `ReservedResources`,
+`KubeletReservedArgs` and `HostCapacity` remain in
+`pkg/core/cluster/capacity.go` and remain correct as functions; nothing
+currently calls them, by design, until the *when* is settled.
+
+**Still true, and still unsolved:** on a nested host a node claiming
+four times its real CPU and twenty times its real memory means pods are
+scheduled where they cannot run and **scale-up is never triggered** —
+the autoscaling story this feature exists for, silently disabled.
+Deferred, tracked in #1466. The consequence of the deferral is that
+container node pools on a nested Incus host are usable but must not be
+trusted to autoscale.
 
 ### Consequences for the stories as merged
 
 - `pkg/core/cluster/containerprofile.go` (#1429, merged) is
   **incomplete**: it needs the containerd template and the
   allocatable-pinning kubelet args.
-- `ContainerNodeCapable()` (#1429, merged) is **insufficient**: it
-  checks modules and cgroups, not capacity truthfulness.
-- The container-mode lane (#1430) cannot go green until both land, and
-  its journey must assert scale-up actually triggers — the assertion
-  that would have caught finding 2 on day one.
+- `ContainerNodeCapable()` (#1429, merged) does not check capacity
+  truthfulness. On a plain host it does not need to; on a nested host
+  that gap is #1466.
+- The container-mode lane (#1430) runs on a plain GitHub-hosted runner,
+  so finding 2 does not gate it. Its journey should still assert
+  scale-up actually triggers — the assertion that would have caught
+  finding 2 on day one, and the one that would catch #1466 regressing.
