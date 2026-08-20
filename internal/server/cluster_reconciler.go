@@ -37,12 +37,14 @@ type ClusterReconciler struct {
 	// publish allocates/records the external API endpoint for a
 	// cluster whose control plane is up; unpublish reverses it.
 	// Seamed for tests; production wires the passthrough route.
-	// advertiseHost is the address tenants reach a cluster's API on.
-	// It must be a subject-alt-name on the control plane's certificate,
-	// or the kubeconfig we hand the tenant cannot verify (#1464).
+	publish   func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
+	unpublish func(ctx context.Context, c *clusterstore.Cluster) error
+
+	// advertiseHost is the host part of the address publish hands out,
+	// recorded by WireEndpointPublisher. It must be a subject-alt-name
+	// on the control plane's certificate, or the kubeconfig we give the
+	// tenant cannot verify against the endpoint it dials (#1464).
 	advertiseHost string
-	publish       func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
-	unpublish     func(ctx context.Context, c *clusterstore.Cluster) error
 
 	// vpaDisabled turns off VPA deployment (CONTAINARIUM_CLUSTER_VPA=false);
 	// default is on — pod vertical autoscaling is a P0 story (#1416).
@@ -356,15 +358,12 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 
 // --- endpoint publishing over the passthrough surface ------------------
 
-// WireEndpointPublisher connects the reconciler to the durable
-// passthrough surface (design: create flow step 3): allocate an
-// external port from portRange, DNAT it to <cp>:6443, and record
-// <advertiseAddr>:<port> as the cluster's API endpoint. Invoked with
-// the _system identity — this is a daemon-internal reconciler path.
 // controlPlaneSANs are the extra subject-alt-names the API server
 // certificate must carry. The node's own IP is added by the manager;
 // this adds the published endpoint's host, which is what a tenant's
-// kubeconfig actually dials (#1464).
+// kubeconfig actually dials (#1464). Empty until
+// WireEndpointPublisher runs — with no published endpoint there is no
+// extra name to cover.
 func (r *ClusterReconciler) controlPlaneSANs() []string {
 	if r.advertiseHost == "" {
 		return nil
@@ -372,14 +371,16 @@ func (r *ClusterReconciler) controlPlaneSANs() []string {
 	return []string{r.advertiseHost}
 }
 
-// SetAdvertiseHost records the address the published endpoint uses, so
-// the control plane's certificate can cover it. Without this the cert
-// covers only the node's own IP and the kubeconfig fails verification
-// against the endpoint it points at (#1464).
-func (r *ClusterReconciler) SetAdvertiseHost(host string) { r.advertiseHost = host }
-
+// WireEndpointPublisher connects the reconciler to the durable
+// passthrough surface (design: create flow step 3): allocate an
+// external port from portRange, DNAT it to <cp>:6443, and record
+// <advertiseAddr>:<port> as the cluster's API endpoint. Invoked with
+// the _system identity — this is a daemon-internal reconciler path.
 func (r *ClusterReconciler) WireEndpointPublisher(network *NetworkServer, advertiseAddr, portRange string) error {
-	r.SetAdvertiseHost(advertiseAddr)
+	// Recorded here rather than through a setter of its own: a SAN for
+	// an endpoint nobody publishes is worse than no SAN, so the two
+	// stay welded to one call.
+	r.advertiseHost = advertiseAddr
 	lo, hi, err := parsePortRange(portRange)
 	if err != nil {
 		return err

@@ -396,7 +396,7 @@ func TestReconciler_ProvisionIsolationMatchesCluster(t *testing.T) {
 // reconciler simply passed nil (#1464).
 func TestReconcilerGivesControlPlaneTheAdvertiseSAN(t *testing.T) {
 	srv, rec, host := testReconcilerRig(t)
-	rec.SetAdvertiseHost("198.51.100.20")
+	rec.advertiseHost = "198.51.100.20"
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 
 	rec.ReconcileOnce(context.Background())
