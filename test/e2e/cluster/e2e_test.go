@@ -717,6 +717,81 @@ func (l *lane) dumpDiagnostics() {
 		}
 	}
 	l.dumpNodeJournals()
+	l.dumpVPA()
+}
+
+// dumpVPA prints what the VPA stack is doing. The components live in
+// kube-system and the VPA object carries its recommendation in status,
+// so a plain look at the default namespace — which is all the rest of
+// dumpDiagnostics does — shows a workload sitting at its original
+// requests with no hint as to why.
+//
+// Three distinct failures look identical from the workload's side: the
+// recommender never ran, it ran and produced no recommendation (no
+// metrics to work from), or it recommended and the updater never
+// applied it. These are the three things that tell them apart.
+func (l *lane) dumpVPA() {
+	if l.cs == nil {
+		return
+	}
+	ctx := context.Background()
+	pods, err := l.cs.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		l.t.Logf("kube-system pods: %v", err)
+	} else {
+		var lines []string
+		for _, p := range pods.Items {
+			restarts := 0
+			for _, cs := range p.Status.ContainerStatuses {
+				restarts += int(cs.RestartCount)
+			}
+			lines = append(lines, fmt.Sprintf("%s %s restarts=%d %s",
+				p.Name, p.Status.Phase, restarts, p.Status.Reason))
+		}
+		l.t.Logf("kube-system pods:\n%s", strings.Join(lines, "\n"))
+	}
+	// The recommendation itself: present means the recommender has
+	// metrics and the updater is the suspect; absent means the
+	// recommender is.
+	if l.dyn != nil {
+		obj, err := l.dyn.Resource(vpaGVR).Namespace("default").
+			Get(ctx, "burner", metav1.GetOptions{})
+		if err != nil {
+			l.t.Logf("VPA object: %v", err)
+		} else {
+			status, _, _ := unstructured.NestedMap(obj.Object, "status")
+			l.t.Logf("VPA burner status: %v", status)
+		}
+	}
+	// Node metrics are what the recommender consumes. If this is empty
+	// or errors, no recommendation was ever possible and the VPA
+	// components are not the bug.
+	raw, err := l.cs.RESTClient().Get().
+		AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
+	if err != nil {
+		l.t.Logf("metrics.k8s.io nodes: %v", err)
+	} else {
+		l.t.Logf("metrics.k8s.io nodes: %s", truncate(string(raw), 1200))
+	}
+	for _, ns := range []string{"kube-system"} {
+		evs, err := l.cs.CoreV1().Events(ns).List(ctx, metav1.ListOptions{Limit: 30})
+		if err != nil {
+			continue
+		}
+		var lines []string
+		for _, e := range evs.Items {
+			lines = append(lines, fmt.Sprintf("%s %s/%s: %s",
+				e.Reason, e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Message))
+		}
+		l.t.Logf("%s events:\n%s", ns, strings.Join(lines, "\n"))
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "... (truncated)"
 }
 
 // dumpNodeJournals prints each node's systemd journal for the units
