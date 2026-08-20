@@ -159,6 +159,27 @@ enum ScaleEventKind {
   SCALE_EVENT_KIND_NODE_REPLACED = 4;
 }
 
+// NodeIsolation is the isolation class of a cluster's nodes: the
+// boundary that contains a tenant kernel exploit. Cluster-level and
+// immutable after create.
+//
+// VM is the default and the only class safe on a shared multi-tenant
+// host. CONTAINER runs each node as an Incus system container sharing
+// the host kernel — weaker by construction, so it is operator-gated:
+// the daemon permits it only where the operator has declared the host
+// a single trust domain. UNSPECIFIED resolves to VM server-side; the
+// weaker class is never reached by omission.
+//
+// Design: docs/architecture/cluster-container-node-pools.md.
+enum NodeIsolation {
+  NODE_ISOLATION_UNSPECIFIED = 0;
+  // Each node is an Incus VM — hardware-virtualized kernel boundary.
+  NODE_ISOLATION_VM = 1;
+  // Each node is an Incus system container sharing the host kernel.
+  // Requires the operator opt-in on the target host.
+  NODE_ISOLATION_CONTAINER = 2;
+}
+
 // NodeGroup is a typed worker size class. The autoscaler advertises one
 // node group per class and picks the class whose template fits pending
 // pods; the template it advertises MUST equal `size` (truthfulness the
@@ -214,6 +235,10 @@ message Cluster {
   // External API endpoint (host:port), set once published.
   string api_endpoint = 7;
   google.protobuf.Timestamp created_at = 8;
+  // Isolation class of this cluster's nodes. Always populated on read
+  // (never UNSPECIFIED) so an auditor can answer "which clusters share
+  // a kernel with this host" from any cluster read.
+  NodeIsolation node_isolation = 9;
 }
 
 message CreateClusterRequest {
@@ -224,6 +249,10 @@ message CreateClusterRequest {
   string owner = 2;
   // Worker size classes. Empty = the platform's default presets.
   repeated NodeGroup node_groups = 3;
+  // Requested node isolation class. Unspecified = VM. CONTAINER is
+  // refused with FailedPrecondition unless the host carries the
+  // operator opt-in.
+  NodeIsolation node_isolation = 4;
 }
 
 message CreateClusterResponse {

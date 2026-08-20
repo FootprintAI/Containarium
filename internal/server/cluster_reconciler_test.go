@@ -25,10 +25,14 @@ import (
 // pushed files persist, and the in-cluster kubectl reports every
 // existing VM as a Ready node.
 type stateHost struct {
-	mu     sync.Mutex
-	vms    map[string]*stateVM
-	files  map[string][]byte
-	capErr error
+	mu              sync.Mutex
+	vms             map[string]*stateVM
+	files           map[string][]byte
+	capErr          error
+	containerCapErr error
+	capacityErr     error
+	// isolations records the class each node was created with (#1429).
+	isolations map[string]clustercore.Isolation
 }
 
 type stateVM struct {
@@ -37,18 +41,22 @@ type stateVM struct {
 }
 
 func newStateHost() *stateHost {
-	return &stateHost{vms: map[string]*stateVM{}, files: map[string][]byte{}}
+	return &stateHost{vms: map[string]*stateVM{}, files: map[string][]byte{}, isolations: map[string]clustercore.Isolation{}}
 }
 
-func (h *stateHost) VMCapable() error { return h.capErr }
+func (h *stateHost) VMCapable() error            { return h.capErr }
+func (h *stateHost) ContainerNodeCapable() error { return h.containerCapErr }
 
-func (h *stateHost) CreateVM(spec clustercore.NodeSpec) error {
+func (h *stateHost) NodeCapacityCapable(clustercore.NodeSpec) error { return h.capacityErr }
+
+func (h *stateHost) CreateNode(spec clustercore.NodeSpec, isolation clustercore.Isolation) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, ok := h.vms[spec.Name]; ok {
 		return fmt.Errorf("vm %s already exists", spec.Name)
 	}
 	h.vms[spec.Name] = &stateVM{labels: spec.Labels, running: true}
+	h.isolations[spec.Name] = isolation
 	// A booted CP "writes" its own kubeconfig and join token.
 	if spec.Labels[clustercore.LabelClusterRole] == clustercore.RoleControlPlane {
 		h.files[spec.Name+":"+clustercore.KubeconfigPath] = []byte("clusters:\n- cluster:\n    server: https://127.0.0.1:6443\n")
@@ -65,6 +73,20 @@ func (h *stateHost) Start(name string) error {
 		return fmt.Errorf("no vm %s", name)
 	}
 	vm.running = true
+	return nil
+}
+
+// Stop mirrors Incus: stopping an instance that is not there is an
+// error, and stopping one that is already stopped is too. DeleteVM
+// ignores both, which is what this fake is here to let us prove.
+func (h *stateHost) Stop(name string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	vm, ok := h.vms[name]
+	if !ok {
+		return fmt.Errorf("no vm %s", name)
+	}
+	vm.running = false
 	return nil
 }
 
@@ -299,4 +321,105 @@ func vmNames(h *stateHost) []string {
 		out = append(out, n)
 	}
 	return out
+}
+
+// The create-time capability probe dispatches on the cluster's
+// isolation class (#1429): a VM cluster is gated by VMCapable only, a
+// container cluster by ContainerNodeCapable only.
+func TestReconciler_CapabilityProbeMatchesIsolation(t *testing.T) {
+	vmErr := clustercore.ErrVMsUnsupported
+	containerErr := fmt.Errorf("%w: br_netfilter: kernel module not present", clustercore.ErrContainerNodesUnsupported)
+
+	cases := []struct {
+		name            string
+		isolation       pb.NodeIsolation
+		vmCapErr        error
+		containerCapErr error
+		wantCode        codes.Code // OK = create allowed
+		wantIn          string
+	}{
+		{"vm cluster gated by the VM probe", pb.NodeIsolation_NODE_ISOLATION_VM, vmErr, nil, codes.FailedPrecondition, "virtual machines"},
+		{"vm cluster ignores the container probe", pb.NodeIsolation_NODE_ISOLATION_VM, nil, containerErr, codes.OK, ""},
+		{"container cluster gated by the container probe, refusal names the precondition", pb.NodeIsolation_NODE_ISOLATION_CONTAINER, nil, containerErr, codes.FailedPrecondition, "br_netfilter"},
+		{"container cluster does not require VM capability", pb.NodeIsolation_NODE_ISOLATION_CONTAINER, vmErr, nil, codes.OK, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _, host := testReconcilerRig(t)
+			srv.SetIsolationGateFromEnv("true")
+			host.capErr, host.containerCapErr = tc.vmCapErr, tc.containerCapErr
+
+			_, err := srv.CreateCluster(tenantCtx("alice"), &pb.CreateClusterRequest{
+				Name: "demo", NodeIsolation: tc.isolation,
+			})
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("CreateCluster = %v, want code %v", err, tc.wantCode)
+			}
+			if tc.wantIn != "" && !strings.Contains(err.Error(), tc.wantIn) {
+				t.Fatalf("refusal %q does not name %q", err, tc.wantIn)
+			}
+		})
+	}
+}
+
+// A container cluster's nodes are provisioned as container nodes all
+// the way down the seam; a default cluster's stay VM (#1429).
+func TestReconciler_ProvisionIsolationMatchesCluster(t *testing.T) {
+	cases := []struct {
+		name      string
+		isolation pb.NodeIsolation
+		want      clustercore.Isolation
+	}{
+		{"default cluster provisions VM nodes", pb.NodeIsolation_NODE_ISOLATION_UNSPECIFIED, clustercore.IsolationVM},
+		{"container cluster provisions container nodes", pb.NodeIsolation_NODE_ISOLATION_CONTAINER, clustercore.IsolationContainer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, rec, host := testReconcilerRig(t)
+			srv.SetIsolationGateFromEnv("true")
+			ctx := context.Background()
+			if _, err := srv.CreateCluster(tenantCtx("alice"), &pb.CreateClusterRequest{
+				Name: "demo", NodeIsolation: tc.isolation,
+			}); err != nil {
+				t.Fatalf("CreateCluster: %v", err)
+			}
+
+			rec.ReconcileOnce(ctx) // control plane
+			rec.ReconcileOnce(ctx) // workers to min
+			if len(host.vms) < 2 {
+				t.Fatalf("expected CP + worker, got %v", vmNames(host))
+			}
+			for name := range host.vms {
+				if got := host.isolations[name]; got != tc.want {
+					t.Fatalf("node %s created with isolation %q, want %q", name, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// The published endpoint must be a subject-alt-name on the API server
+// certificate, or the kubeconfig the product hands a tenant cannot
+// verify — precisely what run 14 of the container lane hit:
+//
+//	x509: certificate is valid for 10.100.0.102, 10.43.0.1, 127.0.0.1,
+//	  ::1, fd42:..., not <advertise-host>
+//
+// The design always intended this ("TLSSANs are ... the external
+// endpoint and the VM IP, so the rewritten kubeconfig verifies"); the
+// reconciler simply passed nil (#1464).
+func TestReconcilerGivesControlPlaneTheAdvertiseSAN(t *testing.T) {
+	srv, rec, host := testReconcilerRig(t)
+	rec.advertiseHost = "198.51.100.20"
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+
+	rec.ReconcileOnce(context.Background())
+
+	script := string(host.files["alice-k8s-demo-cp:/root/containarium-bootstrap.sh"])
+	if script == "" {
+		t.Fatal("control plane was never bootstrapped")
+	}
+	if !strings.Contains(script, "--tls-san 198.51.100.20") {
+		t.Errorf("control-plane cert will not cover the published endpoint:\n%s", script)
+	}
 }

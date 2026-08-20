@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -16,8 +17,22 @@ type VMHost interface {
 	// user-facing error when it cannot (the design's hard create-time
 	// requirement).
 	VMCapable() error
-	CreateVM(spec NodeSpec) error
+	// ContainerNodeCapable is the container-class counterpart
+	// (#1429): nil when the host can run k3s node containers, or a
+	// refusal naming every missing (or unverifiable) precondition.
+	ContainerNodeCapable() error
+	// NodeCapacityCapable is the per-node half of the container probe
+	// (#1439): nil when a container node of this size can advertise a
+	// truthful capacity on this host, a refusal when it cannot.
+	NodeCapacityCapable(spec NodeSpec) error
+	// CreateNode creates one cluster node backed by the instance type
+	// the isolation class selects: an Incus VM, or a system container
+	// carrying the container node profile (#1429).
+	CreateNode(spec NodeSpec, isolation Isolation) error
 	Start(name string) error
+	// Stop halts a node. Deleting a running instance is refused by
+	// Incus, so this is a required step of removal, not a nicety.
+	Stop(name string) error
 	Delete(name string) error
 	// WaitReady blocks until the guest agent is up and networked,
 	// returning the VM's primary IP.
@@ -68,6 +83,9 @@ func NewManagerWithLoader(host VMHost, loader func() ([]byte, error)) *Manager {
 // VMCapable surfaces the host's VM capability probe.
 func (m *Manager) VMCapable() error { return m.host.VMCapable() }
 
+// ContainerNodeCapable surfaces the host's container-node probe (#1429).
+func (m *Manager) ContainerNodeCapable() error { return m.host.ContainerNodeCapable() }
+
 // Observe returns the host's view of a cluster's VMs.
 func (m *Manager) Observe(tenant, clusterName string) (Observed, error) {
 	return m.host.ClusterVMs(tenant, clusterName)
@@ -76,23 +94,84 @@ func (m *Manager) Observe(tenant, clusterName string) (Observed, error) {
 // StartVM restarts a stopped cluster VM.
 func (m *Manager) StartVM(name string) error { return m.host.Start(name) }
 
-// DeleteVM force-removes a cluster VM.
-func (m *Manager) DeleteVM(name string) error { return m.host.Delete(name) }
+// DeleteVM removes a cluster node, stopping it first.
+//
+// Incus refuses to delete a running instance ("Instance is running"),
+// so the stop is part of the removal rather than an optimisation. The
+// tenant container path has always done this; the cluster path did
+// not, which meant the autoscaler could never complete a scale-down
+// and `cluster delete` left every instance of the cluster running on
+// the host (#1475).
+//
+// A stop error is deliberately ignored: the common case is a node that
+// is already stopped, which Incus reports as an error, and any stop
+// failure that actually matters resurfaces as a delete failure. The
+// delete's error is the one the caller sees — the autoscaler retries on
+// it, so swallowing it would make a failed scale-down look successful.
+func (m *Manager) DeleteVM(name string) error {
+	_ = m.host.Stop(name)
+	return m.host.Delete(name)
+}
 
 const bootstrapScriptPath = "/root/containarium-bootstrap.sh"
+
+// pushFile writes a file into a node, creating its parent directory
+// first. Incus answers "Not Found" when the parent is missing, and
+// none of the directories the cluster flow writes into
+// (/etc/containarium, its ca/ subdir, k3s's manifests dir) exist in a
+// fresh node image — so every push failed until the parent was made
+// (#1442). mkdir -p is idempotent, so this is safe on the paths whose
+// parent already exists.
+func (m *Manager) pushFile(name, path string, content []byte, mode string) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "/" && dir != "." {
+		if _, err := m.host.Exec(name, []string{"mkdir", "-p", dir}); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
+	return m.host.Push(name, path, content, mode)
+}
+
+// containerKubeletArgs assembles the kubelet flags a container-class
+// node needs.
+//
+// Today that is only the user-namespace gate (#1452): kubelet writes
+// kernel sysctls an unprivileged container may not touch, and without
+// the gate ContainerManager never starts.
+//
+// It deliberately does NOT reserve resources. #1452 wired a
+// reservation computed as (daemon host capacity - requested size), on
+// Amendment 1's premise that a container node always reports the
+// host's capacity. That premise holds only on a NESTED host, where
+// lxcfs masking does not reach the inner instances. On a plain host
+// running Incus directly the node sees its real limit, and the
+// reservation becomes larger than the node's whole capacity -- kubelet
+// rejects it ("capacity >= reservation") and refuses to start, so the
+// correction meant to make allocatable truthful prevented the node
+// from running at all (#1456).
+//
+// ReservedResources and HostCapacity remain: they are correct as
+// functions. What was wrong was applying them unconditionally, from
+// the wrong vantage point. #1456 covers deciding from the node itself
+// whether a correction is needed.
+func (m *Manager) containerKubeletArgs(iso Isolation, _ NodeSpec) []string {
+	if iso != IsolationContainer {
+		return nil
+	}
+	return ContainerKubeletArgs(nil)
+}
 
 // ProvisionCP creates and bootstraps the control-plane VM: create →
 // start → wait → push pinned binary + rendered script → exec. Returns
 // the VM's IP (workers join over it). cpSize is the smallest preset —
 // the control plane is platform overhead, not tenant capacity.
-func (m *Manager) ProvisionCP(tenant, clusterName string, cpSize DesiredGroup, tlsSANs []string) (string, error) {
+func (m *Manager) ProvisionCP(tenant, clusterName string, iso Isolation, cpSize DesiredGroup, tlsSANs []string) (string, error) {
 	name := CPName(tenant, clusterName)
 	spec := NodeSpec{
 		Name: name, CPU: cpSize.CPU, Memory: cpSize.Memory, Disk: cpSize.Disk,
 		Labels: VMLabels(tenant, clusterName, RoleControlPlane, ""),
 	}
-	if err := m.host.CreateVM(spec); err != nil {
-		return "", fmt.Errorf("create control-plane VM: %w", err)
+	if err := m.host.CreateNode(spec, iso); err != nil {
+		return "", fmt.Errorf("create control-plane node: %w", err)
 	}
 	ip, err := m.host.WaitReady(name, m.waitReadyTimeout)
 	if err != nil {
@@ -102,11 +181,15 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, cpSize DesiredGroup, t
 	if err != nil {
 		return "", err
 	}
-	if err := m.host.Push(name, K3sBinaryPath, bin, "0755"); err != nil {
+	if err := m.pushFile(name, K3sBinaryPath, bin, "0755"); err != nil {
 		return "", fmt.Errorf("push k3s binary: %w", err)
 	}
-	script := RenderServerScript(ServerBootstrap{TLSSANs: append([]string{ip}, tlsSANs...)})
-	if err := m.host.Push(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
+	script := RenderServerScript(ServerBootstrap{
+		TLSSANs:     append([]string{ip}, tlsSANs...),
+		Isolation:   iso,
+		KubeletArgs: m.containerKubeletArgs(iso, spec),
+	})
+	if err := m.pushFile(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return "", fmt.Errorf("push bootstrap script: %w", err)
 	}
 	if _, err := m.host.Exec(name, []string{"sh", bootstrapScriptPath}); err != nil {
@@ -118,7 +201,7 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, cpSize DesiredGroup, t
 // ProvisionWorker creates and joins one worker VM to a running control
 // plane. The join token is read from the CP and pushed 0600 — it never
 // leaves the host or lands in a store.
-func (m *Manager) ProvisionWorker(tenant, clusterName string, g DesiredGroup, vmName, cpIP string) error {
+func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g DesiredGroup, vmName, cpIP string) error {
 	cp := CPName(tenant, clusterName)
 	token, err := m.host.Read(cp, NodeTokenPath)
 	if err != nil {
@@ -128,8 +211,19 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, g DesiredGroup, vm
 		Name: vmName, CPU: g.CPU, Memory: g.Memory, Disk: g.Disk,
 		Labels: VMLabels(tenant, clusterName, RoleWorker, g.Name),
 	}
-	if err := m.host.CreateVM(spec); err != nil {
-		return fmt.Errorf("create worker VM: %w", err)
+	// Container nodes read the host's /proc as their own capacity, so
+	// a host too small for this size would produce a node advertising
+	// resources it does not have (#1439). Refuse before creating it:
+	// the scheduler and the autoscaler's fit simulation both trust
+	// node allocatable, so the lie is not locally contained. VM nodes
+	// get their own kernel and report honestly, so they skip this.
+	if iso == IsolationContainer {
+		if err := m.host.NodeCapacityCapable(spec); err != nil {
+			return fmt.Errorf("worker node capacity: %w", err)
+		}
+	}
+	if err := m.host.CreateNode(spec, iso); err != nil {
+		return fmt.Errorf("create worker node: %w", err)
 	}
 	if _, err := m.host.WaitReady(vmName, m.waitReadyTimeout); err != nil {
 		return fmt.Errorf("worker VM %s not ready: %w", vmName, err)
@@ -138,14 +232,37 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, g DesiredGroup, vm
 	if err != nil {
 		return err
 	}
-	if err := m.host.Push(vmName, K3sBinaryPath, bin, "0755"); err != nil {
+	if err := m.pushFile(vmName, K3sBinaryPath, bin, "0755"); err != nil {
 		return fmt.Errorf("push k3s binary: %w", err)
 	}
-	if err := m.host.Push(vmName, AgentTokenPath, token, "0600"); err != nil {
+	if err := m.pushFile(vmName, AgentTokenPath, token, "0600"); err != nil {
 		return fmt.Errorf("push join token: %w", err)
 	}
-	script := RenderAgentScript(AgentBootstrap{ServerURL: "https://" + cpIP + ":6443"})
-	if err := m.host.Push(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
+	// A container-class worker cannot derive its own containerd
+	// template: k3s agent writes config.toml only after retrieving
+	// configuration from the server, so waiting for it in the bootstrap
+	// blocks on something downstream of the startup being blocked
+	// (#1448). Derive from the control plane's generated config — same
+	// pinned k3s version, same base shape — and push it before boot.
+	if iso == IsolationContainer {
+		generated, err := m.host.Read(cp, ContainerdGeneratedConfigPath)
+		if err != nil {
+			return fmt.Errorf("read containerd config from %s: %w", cp, err)
+		}
+		tmpl, err := DeriveContainerdTemplate(generated)
+		if err != nil {
+			return fmt.Errorf("derive containerd template: %w", err)
+		}
+		if err := m.pushFile(vmName, ContainerdConfigTemplatePath, tmpl, "0644"); err != nil {
+			return fmt.Errorf("push containerd template: %w", err)
+		}
+	}
+	script := RenderAgentScript(AgentBootstrap{
+		ServerURL:   "https://" + cpIP + ":6443",
+		Isolation:   iso,
+		KubeletArgs: m.containerKubeletArgs(iso, spec),
+	})
+	if err := m.pushFile(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
 		return fmt.Errorf("push bootstrap script: %w", err)
 	}
 	if _, err := m.host.Exec(vmName, []string{"sh", bootstrapScriptPath}); err != nil {
@@ -217,12 +334,12 @@ func (m *Manager) DeployCA(tenant, clusterName string, d CADeploy, creds CACrede
 		{CACloudConfigPath, []byte(RenderCACloudConfig(d)), "0644"},
 	}
 	for _, f := range files {
-		if err := m.host.Push(cp, f.path, f.content, f.mode); err != nil {
+		if err := m.pushFile(cp, f.path, f.content, f.mode); err != nil {
 			return fmt.Errorf("push %s: %w", f.path, err)
 		}
 	}
 	script := RenderCAUnitScript(d)
-	if err := m.host.Push(cp, "/root/containarium-ca-bootstrap.sh", []byte(script), "0755"); err != nil {
+	if err := m.pushFile(cp, "/root/containarium-ca-bootstrap.sh", []byte(script), "0755"); err != nil {
 		return fmt.Errorf("push CA bootstrap: %w", err)
 	}
 	if _, err := m.host.Exec(cp, []string{"sh", "/root/containarium-ca-bootstrap.sh"}); err != nil {

@@ -14,6 +14,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
+ExecStartPre=/bin/sh -c '[ -e /dev/kmsg ] || ln -s /dev/console /dev/kmsg'
 ExecStart=/usr/local/bin/k3s agent --server https://10.166.11.5:6443 --token-file /etc/containarium/k3s-agent-token
 Restart=always
 RestartSec=5
@@ -30,3 +31,5 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now k3s-agent.service
+
+# containerd template was pushed by the daemon before boot (#1448).

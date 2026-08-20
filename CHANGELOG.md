@@ -31,6 +31,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sentinel `MemoryHigh` no longer sits below `MemoryMax` by default** (#1454,
+  correcting #1350). A soft cap under the hard cap only helps if reclaim can
+  make progress, and progress needs page cache or swap. The sentinel hosts have
+  no swap and the #1349 burst is anonymous memory, so file cache is exhausted
+  within minutes and reclaim has nothing left to evict: the cgroup parks between
+  the two limits and is throttled indefinitely. It never reaches the cap, so
+  `Restart=always` never fires and systemd keeps reporting `active (running)`
+  while the process serves nothing.
+
+  Measured on a production sentinel: `memory.events` `high=556267` with
+  `oom_kill=0`, PSI `full avg300=86.10`, and `pgsteal`/`pgscan` of 3% — about 90
+  minutes of total edge outage, ended by hand, where the OOM-and-restart path it
+  replaced recovered in seconds. It surfaced as `Permission denied (publickey)`
+  on every SSH attempt, because the stalled process could not open an upstream
+  and sshpiper re-prompted until clients ran out of keys.
+
+  `MemoryHigh` now defaults to `MemoryMax`, so there is no window to stall in;
+  reclaim still runs at the threshold and the `high` counter still serves as an
+  early signal. `containarium sentinel service install` refuses a `--memory-high`
+  below `--memory-max` unless the host actually has swap, and reads an
+  unreadable `/proc/meminfo` as "no swap" so an unverifiable host still gets the
+  safe configuration.
+
 - **Sentinel no longer tears down a backend's own reconnect (#769).** After a
   backend host reboots — a routine event when it runs on preemptible capacity
   — it reconnects its tunnel under the same spot id. `TunnelRegistry.Register`

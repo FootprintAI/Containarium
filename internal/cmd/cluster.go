@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -38,10 +39,48 @@ cluster is READY.
 }
 
 var (
-	clusterOwner    string
-	clusterNodesMin int32
-	clusterNodesMax int32
+	clusterOwner     string
+	clusterNodesMin  int32
+	clusterNodesMax  int32
+	clusterIsolation isolationFlag
 )
+
+// isolationFlag is the enum-backed --isolation flag (#1428). Cobra
+// rejects anything that is not a NodeIsolation value at parse time, so
+// a typo is a CLI error rather than a request that silently falls back
+// to the default class on the daemon.
+type isolationFlag struct{ value pb.NodeIsolation }
+
+func (f *isolationFlag) String() string { return nodeIsolationString(f.value) }
+
+func (f *isolationFlag) Type() string { return "isolation" }
+
+func (f *isolationFlag) Set(s string) error {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "vm":
+		f.value = pb.NodeIsolation_NODE_ISOLATION_VM
+	case "container":
+		f.value = pb.NodeIsolation_NODE_ISOLATION_CONTAINER
+	default:
+		f.value = pb.NodeIsolation_NODE_ISOLATION_UNSPECIFIED
+		return fmt.Errorf("invalid isolation %q (expected vm or container)", s)
+	}
+	return nil
+}
+
+// nodeIsolationString renders the class for humans. An unrecognized
+// value reads as "unknown", never as "vm": a boundary the CLI cannot
+// name must not look like the strong one.
+func nodeIsolationString(i pb.NodeIsolation) string {
+	switch i {
+	case pb.NodeIsolation_NODE_ISOLATION_VM:
+		return "vm"
+	case pb.NodeIsolation_NODE_ISOLATION_CONTAINER:
+		return "container"
+	default:
+		return "unknown"
+	}
+}
 
 var clusterCreateCmd = &cobra.Command{
 	Use:   "create <name>",
@@ -110,6 +149,9 @@ func init() {
 	clusterCmd.PersistentFlags().StringVar(&clusterOwner, "owner", "", "owning tenant (admin only; default: the authenticated user)")
 	clusterCreateCmd.Flags().Int32Var(&clusterNodesMin, "nodes-min", -1, "small size class's minimum worker count (default: platform preset)")
 	clusterCreateCmd.Flags().Int32Var(&clusterNodesMax, "nodes-max", -1, "small size class's maximum worker count (default: platform preset)")
+	clusterCreateCmd.Flags().Var(&clusterIsolation, "isolation",
+		"node isolation class: vm (default) or container. Container nodes share the host kernel and are only "+
+			"accepted where the operator has opted the host in; the daemon refuses them otherwise")
 	clusterNodePoolCmd.Flags().StringArrayVar(&clusterGroups, "group", nil,
 		"node group as name=<g>,cpu=<n>,memory=<x>GB,disk=<x>GB,min=<n>,max=<n> (repeatable, required)")
 }
@@ -202,11 +244,18 @@ func parseNodeGroup(spec string) (*pb.NodeGroup, error) {
 	return g, nil
 }
 
-func printCluster(c *pb.Cluster) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+func printCluster(c *pb.Cluster) { printClusterTo(os.Stdout, c) }
+
+// printClusterTo renders one cluster's metadata. Used by `cluster get`
+// and `cluster status`, so the isolation class shows up on every
+// cluster read — "which clusters share a kernel with this host" is
+// answerable without querying the daemon's config.
+func printClusterTo(out io.Writer, c *pb.Cluster) {
+	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintf(w, "Name:\t%s\n", c.Name)
 	fmt.Fprintf(w, "Owner:\t%s\n", c.Owner)
 	fmt.Fprintf(w, "State:\t%s\n", clusterStateString(c.State))
+	fmt.Fprintf(w, "Isolation:\t%s\n", nodeIsolationString(c.NodeIsolation))
 	if c.StateReason != "" {
 		fmt.Fprintf(w, "Reason:\t%s\n", c.StateReason)
 	}
@@ -247,7 +296,13 @@ func runClusterCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	req := &pb.CreateClusterRequest{Name: args[0], Owner: clusterOwner}
+	req := &pb.CreateClusterRequest{
+		Name: args[0], Owner: clusterOwner,
+		// Unset stays UNSPECIFIED on the wire and resolves to VM
+		// server-side — the CLI does not pick a class the caller
+		// did not ask for.
+		NodeIsolation: clusterIsolation.value,
+	}
 	if groups, gerr := createNodeGroups(cmd); gerr != nil {
 		return gerr
 	} else if groups != nil {
@@ -276,11 +331,20 @@ func runClusterList(cmd *cobra.Command, args []string) error {
 		fmt.Println("No clusters.")
 		return nil
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tOWNER\tSTATE\tGROUPS\tAPI ENDPOINT")
-	for _, cl := range resp.Clusters {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
-			cl.Name, cl.Owner, clusterStateString(cl.State), len(cl.NodeGroups), cl.ApiEndpoint)
+	return writeClusterList(os.Stdout, resp.Clusters)
+}
+
+// writeClusterList renders the `cluster list` table. ISOLATION is a
+// first-class column, not a detail behind `cluster get`: an auditor
+// scanning the fleet needs the weak-boundary clusters to stand out in
+// the list itself.
+func writeClusterList(out io.Writer, clusters []*pb.Cluster) error {
+	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tOWNER\tSTATE\tISOLATION\tGROUPS\tAPI ENDPOINT")
+	for _, cl := range clusters {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n",
+			cl.Name, cl.Owner, clusterStateString(cl.State), nodeIsolationString(cl.NodeIsolation),
+			len(cl.NodeGroups), cl.ApiEndpoint)
 	}
 	return w.Flush()
 }

@@ -43,7 +43,11 @@ func (m *MemStore) Create(ctx context.Context, c *Cluster) error {
 	if _, ok := m.clusters[k]; ok {
 		return ErrAlreadyExists
 	}
-	m.clusters[k] = copyCluster(c)
+	stored := copyCluster(c)
+	// Same resolution the Postgres column DEFAULT performs, so a read
+	// never returns an unset isolation class from either impl (#1428).
+	stored.NodeIsolation = stored.NodeIsolation.OrDefault()
+	m.clusters[k] = stored
 	return nil
 }
 

@@ -103,6 +103,20 @@ func TestRenderCAUnitScript(t *testing.T) {
 	if strings.Contains(got, "kubectl apply") || strings.Contains(got, "Pod") {
 		t.Fatal("the autoscaler must not run as a Kubernetes object")
 	}
+	// The task must run as uid 0. Upstream's image is distroless
+	// nonroot, and everything it needs to read is root-owned and
+	// tight: k3s writes /etc/rancher/k3s/k3s.yaml 0600, and we push
+	// the mTLS client key 0600 ourselves. Run 16 caught the first of
+	// those —
+	//
+	//	Failed to build config: error loading config file
+	//	"/etc/kubeconfig": open /etc/kubeconfig: permission denied
+	//
+	// — and loosening file modes would only move the failure onto the
+	// private key, then leak it. See #1470.
+	if !strings.Contains(got, "--user 0") {
+		t.Fatalf("autoscaler task must run as uid 0 or it cannot read its own 0600 credentials:\n%s", got)
+	}
 }
 
 func TestRenderCACloudConfig(t *testing.T) {
@@ -112,5 +126,54 @@ func TestRenderCACloudConfig(t *testing.T) {
 		if !strings.Contains(got, must) {
 			t.Fatalf("cloud-config missing %q", must)
 		}
+	}
+}
+
+// --- container-variant renders (#1429) --------------------------------
+//
+// The container path prepends the boot-time /dev/kmsg shim into the
+// systemd unit; the VM path stays byte-identical to its pre-#1429
+// golden (pinned above by TestRenderServerScript/TestRenderAgentScript).
+
+func TestRenderServerScriptContainerVariant(t *testing.T) {
+	got := RenderServerScript(ServerBootstrap{
+		TLSSANs:   []string{"203.0.113.10", "10.166.11.5"},
+		Isolation: IsolationContainer,
+	})
+	golden(t, "server-container.sh.golden", got)
+
+	// The shim runs inside the unit, before k3s, so it re-applies on
+	// every boot (/dev is a fresh tmpfs each start).
+	if !strings.Contains(got, "ln -s /dev/console /dev/kmsg") {
+		t.Fatal("container server unit is missing the /dev/kmsg shim")
+	}
+	if !strings.Contains(got, "ExecStartPre="+KmsgShimCommand+"\nExecStart=") {
+		t.Fatal("kmsg shim is not rendered into the unit before k3s starts")
+	}
+	if strings.Contains(got, "security.privileged") {
+		t.Fatal("bootstrap must not touch security.privileged")
+	}
+
+	// The zero-value (VM) render carries no shim.
+	vm := RenderServerScript(ServerBootstrap{TLSSANs: []string{"203.0.113.10", "10.166.11.5"}})
+	if strings.Contains(vm, "kmsg") {
+		t.Fatal("VM server script grew a kmsg shim")
+	}
+}
+
+func TestRenderAgentScriptContainerVariant(t *testing.T) {
+	got := RenderAgentScript(AgentBootstrap{
+		ServerURL: "https://10.166.11.5:6443",
+		Isolation: IsolationContainer,
+	})
+	golden(t, "agent-container.sh.golden", got)
+
+	if !strings.Contains(got, "ExecStartPre="+KmsgShimCommand+"\nExecStart=") {
+		t.Fatal("kmsg shim is not rendered into the agent unit before k3s starts")
+	}
+
+	vm := RenderAgentScript(AgentBootstrap{ServerURL: "https://10.166.11.5:6443"})
+	if strings.Contains(vm, "kmsg") {
+		t.Fatal("VM agent script grew a kmsg shim")
 	}
 }
