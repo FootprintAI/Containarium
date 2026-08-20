@@ -143,12 +143,24 @@ if [ -z "${CONTAINARIUM_POSTGRES_URL:-}" ]; then
     -e POSTGRES_USER=containarium -e POSTGRES_PASSWORD=e2e -e POSTGRES_DB=containarium \
     -p "127.0.0.1:${PG_PORT}:5432" postgres:16-alpine >/dev/null
   export CONTAINARIUM_POSTGRES_URL="postgres://containarium:e2e@127.0.0.1:${PG_PORT}/containarium?sslmode=disable"
-  for _ in $(seq 1 30); do
+  # 90s, not 30s. Run 18 died here: on a cold runner the image pull is
+  # followed by initdb on contended IO, and 30s was not always enough.
+  # A flake at this line costs a full lane run (~15 min) and produces a
+  # red build that has nothing to do with the product.
+  for _ in $(seq 1 90); do
     "$CONTAINER_RUNTIME" exec "$PG_CONTAINER" pg_isready -U containarium >/dev/null 2>&1 && break
     sleep 1
   done
-  "$CONTAINER_RUNTIME" exec "$PG_CONTAINER" pg_isready -U containarium >/dev/null 2>&1 \
-    || fail "postgres did not become ready"
+  if ! "$CONTAINER_RUNTIME" exec "$PG_CONTAINER" pg_isready -U containarium >/dev/null 2>&1; then
+    # Say why, rather than just that. Without this the failure is
+    # indistinguishable between "still starting", "crashed on startup"
+    # and "port already bound".
+    echo "---- postgres container state ----"
+    "$CONTAINER_RUNTIME" ps -a --filter "name=$PG_CONTAINER" 2>&1 || true
+    echo "---- postgres container log ----"
+    "$CONTAINER_RUNTIME" logs "$PG_CONTAINER" 2>&1 | tail -40 || true
+    fail "postgres did not become ready"
+  fi
 else
   CONTAINER_RUNTIME=""
 fi
