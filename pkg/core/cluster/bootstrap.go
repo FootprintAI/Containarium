@@ -267,6 +267,20 @@ func RenderCACloudConfig(d CADeploy) string {
 // cluster-autoscaler systemd unit: the digest-pinned stock image run
 // as a plain containerd task via `k3s ctr` — never a Pod, so no
 // tenant with cluster-admin can exec into it or read its credential.
+// The task runs as uid 0. Upstream's cluster-autoscaler image is
+// distroless nonroot, and every file the autoscaler must read on the
+// control plane is root-owned and tight: k3s writes
+// /etc/rancher/k3s/k3s.yaml 0600, and DeployCA pushes the mTLS client
+// key 0600. Run 16 of the container lane caught the first of those —
+//
+//	Failed to build config: error loading config file
+//	"/etc/kubeconfig": open /etc/kubeconfig: permission denied
+//
+// followed by exit 255 and a unit stuck restarting forever. Loosening
+// the file modes instead would only move the failure onto the private
+// key and then leave it readable to every user on the node, so the
+// credentials stay 0600 and the task gets the uid that can read them
+// (#1470).
 func RenderCAUnitScript(d CADeploy) string {
 	return fmt.Sprintf(`#!/bin/sh
 # containarium managed-cluster autoscaler bootstrap (#1415).
@@ -284,7 +298,7 @@ Requires=k3s.service
 ExecStartPre=%[1]s ctr images pull %[2]s
 ExecStartPre=-%[1]s ctr task kill --signal SIGKILL cluster-autoscaler
 ExecStartPre=-%[1]s ctr container rm cluster-autoscaler
-ExecStart=%[1]s ctr run --rm --net-host \
+ExecStart=%[1]s ctr run --rm --net-host --user 0 \
   --mount type=bind,src=%[3]s,dst=%[3]s,options=rbind:ro \
   --mount type=bind,src=/etc/rancher/k3s/k3s.yaml,dst=/etc/kubeconfig,options=rbind:ro \
   %[2]s cluster-autoscaler \

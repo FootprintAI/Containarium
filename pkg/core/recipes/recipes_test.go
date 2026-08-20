@@ -129,6 +129,69 @@ func TestOCIServiceRecipe(t *testing.T) {
 	}
 }
 
+func TestRisingWaveRecipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("risingwave")
+	if err != nil {
+		t.Fatalf("expected built-in recipe risingwave: %v", err)
+	}
+	if r.RequiresGpu {
+		t.Error("risingwave should not require a GPU")
+	}
+	// Only the HTTP ports are routed. :4566 is Postgres wire protocol and
+	// Caddy is an HTTP reverse proxy, so routing it would produce a URL that
+	// no psql can use — it is reached over SSH local-forward instead.
+	got := map[int32]string{}
+	for _, p := range r.Ports {
+		got[p.ContainerPort] = p.Subdomain
+	}
+	if len(r.Ports) != 2 || got[5691] != "dashboard" || got[4560] != "webhook" {
+		t.Errorf("risingwave should route only the dashboard (:5691) and webhook (:4560) ports; got %+v", r.Ports)
+	}
+	if _, routed := got[4566]; routed {
+		t.Error("risingwave must not route :4566 -- pgwire cannot traverse an HTTP reverse proxy")
+	}
+
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"single_node",                // one process, embedded SQLite meta + local-FS state
+		"--store-directory",          // v3 flag name; NOT --state-store-directory
+		"/var/lib/risingwave",        // persisted on the named volume, not the container layer
+		"--listen-addr 0.0.0.0:4566", // a loopback bind makes the published port unreachable
+		"-p 4566:4566",               // published on the box for SSH local-forward
+		"--restart=always",           // survives box reboot and SSH logout
+		"--user root",                // root-owned named volume must be writable
+		"/dev/tcp/127.0.0.1/4566",    // readiness gate: boot failure surfaces at deploy time
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("risingwave post_start missing %q", want)
+		}
+	}
+
+	// Both tuning parameters are optional -- the recipe must deploy with no
+	// --param at all.
+	params := map[string]*pb.RecipeParam{}
+	for _, p := range r.Parameters {
+		params[p.Name] = p
+	}
+	if params["version"] == nil || params["version"].Default == "" {
+		t.Error("risingwave should pin a default version tag")
+	}
+	for _, name := range []string{"total_memory_bytes", "parallelism"} {
+		if p := params[name]; p == nil {
+			t.Errorf("risingwave should declare a %q parameter", name)
+		} else if p.Required {
+			t.Errorf("%q must be optional (auto-detect when empty)", name)
+		}
+	}
+	if _, err := ResolveParameters(r, map[string]string{}); err != nil {
+		t.Errorf("risingwave should resolve with no parameters: %v", err)
+	}
+}
+
 func TestGetUnknown(t *testing.T) {
 	m := New()
 	_ = m.LoadEmbedded()

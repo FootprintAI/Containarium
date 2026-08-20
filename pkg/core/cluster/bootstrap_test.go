@@ -103,6 +103,20 @@ func TestRenderCAUnitScript(t *testing.T) {
 	if strings.Contains(got, "kubectl apply") || strings.Contains(got, "Pod") {
 		t.Fatal("the autoscaler must not run as a Kubernetes object")
 	}
+	// The task must run as uid 0. Upstream's image is distroless
+	// nonroot, and everything it needs to read is root-owned and
+	// tight: k3s writes /etc/rancher/k3s/k3s.yaml 0600, and we push
+	// the mTLS client key 0600 ourselves. Run 16 caught the first of
+	// those —
+	//
+	//	Failed to build config: error loading config file
+	//	"/etc/kubeconfig": open /etc/kubeconfig: permission denied
+	//
+	// — and loosening file modes would only move the failure onto the
+	// private key, then leak it. See #1470.
+	if !strings.Contains(got, "--user 0") {
+		t.Fatalf("autoscaler task must run as uid 0 or it cannot read its own 0600 credentials:\n%s", got)
+	}
 }
 
 func TestRenderCACloudConfig(t *testing.T) {

@@ -14,7 +14,7 @@ Requires=k3s.service
 ExecStartPre=/usr/local/bin/k3s ctr images pull registry.k8s.io/autoscaling/cluster-autoscaler:v1.33.0@sha256:6ef10d108e0e45ecd883e074682330bbd4a3403e767ad56804800f2f4ee816da
 ExecStartPre=-/usr/local/bin/k3s ctr task kill --signal SIGKILL cluster-autoscaler
 ExecStartPre=-/usr/local/bin/k3s ctr container rm cluster-autoscaler
-ExecStart=/usr/local/bin/k3s ctr run --rm --net-host \
+ExecStart=/usr/local/bin/k3s ctr run --rm --net-host --user 0 \
   --mount type=bind,src=/etc/containarium/ca,dst=/etc/containarium/ca,options=rbind:ro \
   --mount type=bind,src=/etc/rancher/k3s/k3s.yaml,dst=/etc/kubeconfig,options=rbind:ro \
   registry.k8s.io/autoscaling/cluster-autoscaler:v1.33.0@sha256:6ef10d108e0e45ecd883e074682330bbd4a3403e767ad56804800f2f4ee816da cluster-autoscaler \

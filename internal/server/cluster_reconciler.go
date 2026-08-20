@@ -40,6 +40,12 @@ type ClusterReconciler struct {
 	publish   func(ctx context.Context, c *clusterstore.Cluster, cpIP string) (string, error)
 	unpublish func(ctx context.Context, c *clusterstore.Cluster) error
 
+	// advertiseHost is the host part of the address publish hands out,
+	// recorded by WireEndpointPublisher. It must be a subject-alt-name
+	// on the control plane's certificate, or the kubeconfig we give the
+	// tenant cannot verify against the endpoint it dials (#1464).
+	advertiseHost string
+
 	// vpaDisabled turns off VPA deployment (CONTAINARIUM_CLUSTER_VPA=false);
 	// default is on — pod vertical autoscaling is a P0 story (#1416).
 	vpaDisabled bool
@@ -183,7 +189,7 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 			if err := r.admitSize(c, cpSize, "control-plane"); err != nil {
 				return nil // refusal recorded; retry next pass
 			}
-			cpIP, err := r.mgr.ProvisionCP(c.Owner, c.Name, iso, cpSize, nil)
+			cpIP, err := r.mgr.ProvisionCP(c.Owner, c.Name, iso, cpSize, r.controlPlaneSANs())
 			if err != nil {
 				return fmt.Errorf("provision control plane: %w", err)
 			}
@@ -352,12 +358,29 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 
 // --- endpoint publishing over the passthrough surface ------------------
 
+// controlPlaneSANs are the extra subject-alt-names the API server
+// certificate must carry. The node's own IP is added by the manager;
+// this adds the published endpoint's host, which is what a tenant's
+// kubeconfig actually dials (#1464). Empty until
+// WireEndpointPublisher runs — with no published endpoint there is no
+// extra name to cover.
+func (r *ClusterReconciler) controlPlaneSANs() []string {
+	if r.advertiseHost == "" {
+		return nil
+	}
+	return []string{r.advertiseHost}
+}
+
 // WireEndpointPublisher connects the reconciler to the durable
 // passthrough surface (design: create flow step 3): allocate an
 // external port from portRange, DNAT it to <cp>:6443, and record
 // <advertiseAddr>:<port> as the cluster's API endpoint. Invoked with
 // the _system identity — this is a daemon-internal reconciler path.
 func (r *ClusterReconciler) WireEndpointPublisher(network *NetworkServer, advertiseAddr, portRange string) error {
+	// Recorded here rather than through a setter of its own: a SAN for
+	// an endpoint nobody publishes is worse than no SAN, so the two
+	// stay welded to one call.
+	r.advertiseHost = advertiseAddr
 	lo, hi, err := parsePortRange(portRange)
 	if err != nil {
 		return err

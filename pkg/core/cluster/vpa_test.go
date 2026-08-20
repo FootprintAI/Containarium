@@ -1,11 +1,15 @@
 package cluster
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
+	"gopkg.in/yaml.v3"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -142,3 +146,44 @@ func TestDeployVPA(t *testing.T) {
 type errNotDeployed struct{}
 
 func (errNotDeployed) Error() string { return "no such file" }
+
+// The VPA bundle is three Deployments. Asserting on the manifest as
+// *text* is not enough and this is how we learned it: the previous
+// check looked for the string "vpa-admission-controller", which
+// appears in its ServiceAccount and RBAC, so it passed while the
+// admission-controller Deployment was being silently discarded by a
+// missing `---` separator (#1473). Parse the documents and count the
+// objects Kubernetes would actually get.
+func TestVPAManifestsCarryAllThreeDeployments(t *testing.T) {
+	raw, err := VPAManifests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	type object struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+	}
+	got := map[string]bool{}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	for {
+		var o object
+		err := dec.Decode(&o)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("VPA manifests are not valid YAML: %v", err)
+		}
+		if o.Kind == "Deployment" {
+			got[o.Metadata.Name] = true
+		}
+	}
+	for _, want := range []string{"vpa-recommender", "vpa-updater", "vpa-admission-controller"} {
+		if !got[want] {
+			t.Errorf("Deployment %q is missing from the parsed manifests (got %v) — "+
+				"without the admission controller a recommendation is computed and never applied", want, got)
+		}
+	}
+}

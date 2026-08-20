@@ -784,6 +784,103 @@ recipes:
           -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \
           docker.io/library/caddy:2 >/dev/null
 
+  # RisingWave is a streaming database that speaks the Postgres wire protocol.
+  # `single_node` collapses meta + compute + frontend + compactor into one
+  # process backed by an embedded SQLite meta store and a local-FS object
+  # store, so the box needs no MinIO/Postgres sidecars — which is what makes
+  # it a one-box recipe rather than a compose stack.
+  #
+  # Two of its three interesting ports are HTTP and therefore routable:
+  #   :5691  dashboard
+  #   :4560  webhook source — POST events straight into a table over HTTPS
+  # The third, :4566, is Postgres wire protocol. Recipe ports become Caddy
+  # HTTP reverse-proxy routes, so :4566 is deliberately NOT listed here; it is
+  # published on the box and reached over SSH local-forward instead:
+  #   ssh -L 4566:localhost:4566 <box>
+  #   psql -h localhost -p 4566 -d dev -U root
+  #
+  # TCP passthrough does exist on the platform (`containarium passthrough add`,
+  # iptables DNAT) — it just isn't reachable from a recipe, because RecipePort
+  # has no protocol field. See #1462; when that lands, :4566 moves into the
+  # port list as a TCP route and the tunnel becomes optional.
+  #
+  # Scaling past one box (S3/MinIO state store, external meta store) means the
+  # multi-service `standalone` topology, which is a compose stack in a
+  # docker-stack box — not this recipe. See docs/integrations/risingwave.md.
+  - id: risingwave
+    name: RisingWave
+    description: Streaming database in single-node mode — Postgres-compatible SQL on :4566, dashboard and webhook ingestion on public hostnames, state on a persistent Podman volume.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "8"
+      memory: 16GB
+      disk: 100GB
+    ports:
+      - container_port: 5691
+        subdomain: dashboard
+      - container_port: 4560
+        subdomain: webhook
+    volumes:
+      - name: risingwave-data
+        path: /var/lib/risingwave
+    parameters:
+      - name: version
+        label: RisingWave version
+        description: Image tag of risingwavelabs/risingwave to run.
+        type: string
+        default: v3.0.0
+      - name: total_memory_bytes
+        label: Total memory (bytes)
+        description: >-
+          Memory RisingWave divides between frontend, compute, and compactor.
+          Empty lets it auto-detect, which reads the HOST's available memory
+          from inside the LXC and can over-commit the box — set this to
+          roughly 80% of the box's memory limit for anything long-lived.
+        type: string
+        default: ""
+      - name: parallelism
+        label: Compute parallelism
+        description: Streaming/batch parallelism for the compute node. Empty auto-detects from CPU count.
+        type: string
+        default: ""
+    post_start:
+      - podman volume create risingwave-data
+      - 'podman pull "docker.io/risingwavelabs/risingwave:${CONTAINARIUM_PARAM_VERSION}" >/dev/null'
+      - podman rm -f risingwave >/dev/null 2>&1 || true
+      # --user root: named Podman volumes are created root-owned and the
+      # image's own user cannot write to the mount. The box is already an
+      # unprivileged LXC, so root in the inner container crosses no new
+      # boundary.
+      #
+      # --listen-addr is passed explicitly even though 0.0.0.0:4566 is the
+      # frontend default: a loopback bind would silently make the published
+      # port unreachable, and that failure looks like a hung psql.
+      - |
+        podman run -d --name risingwave --restart=always --user root \
+          -p 4566:4566 -p 5691:5691 -p 4560:4560 \
+          -v risingwave-data:/var/lib/risingwave \
+          -e RUST_BACKTRACE=1 \
+          "docker.io/risingwavelabs/risingwave:${CONTAINARIUM_PARAM_VERSION}" \
+          single_node \
+          --store-directory /var/lib/risingwave \
+          --listen-addr 0.0.0.0:4566 \
+          ${CONTAINARIUM_PARAM_TOTAL_MEMORY_BYTES:+--total-memory-bytes "$CONTAINARIUM_PARAM_TOTAL_MEMORY_BYTES"} \
+          ${CONTAINARIUM_PARAM_PARALLELISM:+--parallelism "$CONTAINARIUM_PARAM_PARALLELISM"} >/dev/null
+      # Block until SQL accepts connections so a boot failure — most often a
+      # host without the AVX2/NEON SIMD extensions RisingWave requires —
+      # surfaces at deploy time instead of on the user's first psql.
+      - |
+        for _ in $(seq 1 90); do
+          if (exec 3<>/dev/tcp/127.0.0.1/4566) 2>/dev/null; then
+            echo "risingwave: SQL up on :4566, dashboard :5691, webhook :4560"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "risingwave: :4566 did not open in 180s -- check 'podman logs risingwave'" >&2
+        exit 1
+
   # oci-service is the GENERIC single-container service mechanism: run ANY
   # caller-specified OCI image as an always-on service in an isolated box.
   # It is deliberately application-agnostic (open-core line: OSS ships the

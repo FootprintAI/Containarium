@@ -76,6 +76,20 @@ func (h *stateHost) Start(name string) error {
 	return nil
 }
 
+// Stop mirrors Incus: stopping an instance that is not there is an
+// error, and stopping one that is already stopped is too. DeleteVM
+// ignores both, which is what this fake is here to let us prove.
+func (h *stateHost) Stop(name string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	vm, ok := h.vms[name]
+	if !ok {
+		return fmt.Errorf("no vm %s", name)
+	}
+	vm.running = false
+	return nil
+}
+
 func (h *stateHost) Delete(name string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -381,5 +395,31 @@ func TestReconciler_ProvisionIsolationMatchesCluster(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The published endpoint must be a subject-alt-name on the API server
+// certificate, or the kubeconfig the product hands a tenant cannot
+// verify — precisely what run 14 of the container lane hit:
+//
+//	x509: certificate is valid for 10.100.0.102, 10.43.0.1, 127.0.0.1,
+//	  ::1, fd42:..., not <advertise-host>
+//
+// The design always intended this ("TLSSANs are ... the external
+// endpoint and the VM IP, so the rewritten kubeconfig verifies"); the
+// reconciler simply passed nil (#1464).
+func TestReconcilerGivesControlPlaneTheAdvertiseSAN(t *testing.T) {
+	srv, rec, host := testReconcilerRig(t)
+	rec.advertiseHost = "198.51.100.20"
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+
+	rec.ReconcileOnce(context.Background())
+
+	script := string(host.files["alice-k8s-demo-cp:/root/containarium-bootstrap.sh"])
+	if script == "" {
+		t.Fatal("control plane was never bootstrapped")
+	}
+	if !strings.Contains(script, "--tls-san 198.51.100.20") {
+		t.Errorf("control-plane cert will not cover the published endpoint:\n%s", script)
 	}
 }
