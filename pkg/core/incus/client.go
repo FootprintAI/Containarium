@@ -1286,24 +1286,62 @@ func (c *Client) Exec(containerName string, command []string) error {
 	})
 }
 
-// WaitForNetwork waits for the container to have a network IP
-func (c *Client) WaitForNetwork(containerName string, timeout time.Duration) (string, error) {
-	deadline := time.Now().Add(timeout)
+// waitNetPollMin and waitNetPollMax bound the WaitForNetwork poll interval.
+//
+// This loop used to sleep a flat 1s between checks, which put a ~1s quantum
+// on every container create: a DHCP lease landing at 300ms was not observed
+// until 1s, and every caller of Manager.Create paid the difference. Opening
+// at 25ms and backing off to 500ms sees a fast lease almost immediately,
+// while a slow one — a Windows VM is given 120s — settles into a half-second
+// cadence instead of thousands of round-trips on the Incus socket.
+//
+// vars, not consts, so tests can zero them; production keeps the defaults.
+var (
+	waitNetPollMin = 25 * time.Millisecond
+	waitNetPollMax = 500 * time.Millisecond
+)
 
-	for time.Now().Before(deadline) {
+// WaitForNetwork waits for the container to have a network IP.
+func (c *Client) WaitForNetwork(containerName string, timeout time.Duration) (string, error) {
+	return waitForIP(timeout, func() (string, error) {
 		info, err := c.GetContainer(containerName)
 		if err != nil {
 			return "", err
 		}
+		return info.IPAddress, nil
+	})
+}
 
-		if info.IPAddress != "" {
-			return info.IPAddress, nil
+// waitForIP polls get until it returns a non-empty address or timeout
+// elapses, backing off from waitNetPollMin to waitNetPollMax between
+// attempts. An error from get is returned immediately — a lookup that fails
+// is not a container that hasn't leased yet.
+//
+// Split out (mirroring stateWithRetry) so tests can exercise the polling
+// against a fake get func without a real Incus server.
+func waitForIP(timeout time.Duration, get func() (string, error)) (string, error) {
+	deadline := time.Now().Add(timeout)
+	poll := waitNetPollMin
+
+	for {
+		ip, err := get()
+		if err != nil {
+			return "", err
+		}
+		if ip != "" {
+			return ip, nil
 		}
 
-		time.Sleep(1 * time.Second)
+		// Never sleep past the deadline: clamping here makes the last
+		// attempt land on it rather than overshooting by a full interval,
+		// which is what turned a 30s budget into a 31s one.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", fmt.Errorf("timeout waiting for container network")
+		}
+		time.Sleep(min(poll, remaining))
+		poll = min(poll*2, waitNetPollMax)
 	}
-
-	return "", fmt.Errorf("timeout waiting for container network")
 }
 
 // GetContainerIP returns the IP address of a container, or empty string if not found
