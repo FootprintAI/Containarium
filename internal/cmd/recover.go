@@ -409,20 +409,30 @@ func syncSSHAccounts() error {
 			continue
 		}
 
-		// Extract SSH key
-		sshKey, err := mgr.ExtractSSHKey(c.Name, username, false)
-		if err != nil || sshKey == "" {
+		// Extract EVERY authorized key, not just the first — this is the same
+		// recovery scenario as sync-accounts, and restoring one key out of
+		// several silently revokes the rest (#1477).
+		sshKeys, err := mgr.ExtractSSHKeys(c.Name, username, false)
+		if err != nil || len(sshKeys) == 0 {
 			failed++
 			continue
 		}
 
-		// Create account
-		if err := container.CreateJumpServerAccount(username, sshKey, false); err != nil {
+		// Seed the account, then authorize the remaining keys.
+		if err := container.CreateJumpServerAccount(username, sshKeys[0], false); err != nil {
 			failed++
 			continue
 		}
+		installed := 1
+		for _, k := range sshKeys[1:] {
+			if err := container.AddAuthorizedKey(username, k); err != nil {
+				fmt.Printf("  ! %s: could not authorize an additional key: %v\n", username, err)
+				continue
+			}
+			installed++
+		}
 
-		fmt.Printf("  ✓ Restored account: %s\n", username)
+		fmt.Printf("  ✓ Restored account: %s (%d key(s))\n", username, installed)
 		restored++
 	}
 

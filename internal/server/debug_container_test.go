@@ -31,14 +31,18 @@ func TestDiagnose(t *testing.T) {
 			wantFirstHas: "start",
 		},
 		{
+			// Three actions since #1478: dry-run preview, the repair, then
+			// delete+recreate LAST. The first must be non-destructive — the
+			// container and its data are intact in this failure mode, so an
+			// operator reading top-down must not meet "destroy the box" first.
 			name: "running but host user missing",
 			report: &pb.DebugContainerResponse{
 				ContainerState: "running",
 				HostUserExists: false,
 			},
 			wantCause:    "host-level Linux user is missing",
-			wantActionCt: 2,
-			wantFirstHas: "recreate the container",
+			wantActionCt: 3,
+			wantFirstHas: "sync-accounts",
 		},
 		{
 			name: "running, user exists, shell file missing",
@@ -106,7 +110,7 @@ func TestDiagnose(t *testing.T) {
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
-			cause, actions := diagnose("alice", c.report)
+			cause, actions := Diagnose("alice", c.report)
 			assert.Contains(t, cause, c.wantCause)
 			assert.Len(t, actions, c.wantActionCt)
 			if c.wantFirstHas != "" && len(actions) > 0 {
