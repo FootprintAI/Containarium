@@ -73,6 +73,13 @@ storageClass: ""
 # kernel. Set to "runsc" to run boxes inside a gVisor sandbox instead; that
 # requires a RuntimeClass named "runsc" in the cluster AND gVisor installed on
 # every node the daemon schedules onto, or box pods will not start.
+#
+# Caveat: `kubectl port-forward`/`kubectl exec` directly against a `runsc`-
+# scheduled box pod does not work (a gVisor networking characteristic, not a
+# Containarium bug — see kubernetes-sigs/agent-sandbox#158, and this repo's
+# own #1489). Real pod-to-pod networking is unaffected, so reach a gVisor box
+# through the sshpiper gateway (`gateway.service`, below) — never by
+# port-forwarding straight to the box pod.
 runtimeClass: ""
 
 # -- Annotations to add to all resources

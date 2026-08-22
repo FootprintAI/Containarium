@@ -43,8 +43,11 @@ its known_hosts pin, and its scoped key are identical to the LXC path.
 | SSH ingress | **In-cluster `sshpiper` Deployment** | Reuse the sentinel reverse-proxy pattern; per-user fan-out behind one IP. |
 | Isolation | **Namespace-per-tenant + default-deny NetworkPolicy** | Soft multi-tenancy; the K8s expression of eBPF deny-by-default + egress allowlist. |
 
-Hard isolation (gVisor/Kata `RuntimeClass`) and ephemeral/pooled lifecycles
-are explicitly **out of scope for v1** — see "Deferred".
+Ephemeral/pooled lifecycles are explicitly **out of scope for v1** — see
+"Deferred". Hard isolation via `RuntimeClass` shipped after v1 (#1122, see
+"Shipped features" below) — gVisor (`runsc`) works for a box's real,
+designed traffic (SSH/MCP over pod networking), with one known upstream
+gap on local debugging access; Kata remains unevaluated.
 
 ## Topology
 
@@ -741,6 +744,40 @@ The GPU *type* (L4, A100, etc.) is expressed via node affinity, driven by a
 node. This is deliberately different from the LXC/GCE path, where the daemon
 selects the exact machine type; on K8s, the scheduler owns that decision.
 
+### Hard isolation via RuntimeClass (#1122)
+
+`Config.RuntimeClass` (`CONTAINARIUM_K8S_RUNTIME_CLASS` / chart
+`runtimeClass`) sets `RuntimeClassName` on every box pod. Empty (default)
+leaves it unset — pods run on `runc`, sharing the host kernel, byte-identical
+to pre-#1122 behavior. Set to `runsc` to schedule boxes behind a gVisor
+sandbox instead, on a node pool where gVisor is installed and a `RuntimeClass`
+named `runsc` exists. Daemon-wide, not per-box: the runtime is a property of
+the node pool the daemon schedules onto.
+
+**Verified working** (live kind cluster with `runsc` installed as a
+containerd runtime handler, manual QA 2026-08-22, following up on this PR):
+pod genuinely runs on the gVisor kernel; SSH/dropbear handshake and the
+`ForceCommand` pin; a full MCP `initialize` round-trip; `shell_exec`
+(fork/pipe/exec); `write_file`; PVC-backed storage permissions (identical to
+`runc`); and default-deny `NetworkPolicy` enforcement (both directions) —
+all pass over the box's real, designed traffic path (SSH/MCP over pod
+networking, the same path the sshpiper gateway uses in production).
+
+**Known gap:** `kubectl port-forward` / `kubectl exec` dialed directly
+against a `runsc`-scheduled box pod does not work — `connection refused`,
+even though the same port is fully reachable over real pod-to-pod
+networking. This is an upstream gVisor/kubelet characteristic, not a
+Containarium defect: the exact same failure is documented independently at
+[kubernetes-sigs/agent-sandbox#158](https://github.com/kubernetes-sigs/agent-sandbox/issues/158)
+("planned to be supported later" — no committed timeline as of this
+writing). Tracked here as #1489. **Practical consequence:** never reach a
+gVisor box by port-forwarding straight to its pod — go through the sshpiper
+gateway (a NodePort/LoadBalancer, or a port-forward to `svc/sshpiper`
+itself, which is not gVisor-scheduled) the same way production traffic
+does. See [`KIND-QUICKSTART.md`](KIND-QUICKSTART.md) and
+[`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) for the
+gateway-based access path.
+
 ### Tenant secret delivery (#1190)
 
 A tenant's secrets are materialized into a per-tenant Secret and mounted into
@@ -871,8 +908,9 @@ release so the post-upgrade cleanup in step 1 works, then it gets dropped.
 
 ## Deferred (not in v1)
 
-- **Hard isolation** (gVisor/Kata `RuntimeClass`) — for tenants needing a
-  VM/syscall boundary closer to the LXC trust boundary.
+- **Kata `RuntimeClass`** — gVisor shipped instead (#1122, see "Shipped
+  features"); Kata (a VM-per-pod boundary rather than gVisor's userspace
+  kernel) remains unevaluated.
 - **Ephemeral / pooled lifecycles** — spin-up-on-connect or warm-pool leasing.
   agent-sandbox ships SandboxTemplate/SandboxWarmPool/SandboxClaim for this,
   but claim adoption is same-namespace-only (`ErrCrossNamespaceAdoption`), so

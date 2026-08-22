@@ -87,6 +87,15 @@ ssh -i <agent-private-key> <tenant>@"$GW"
   and `ssh -p 2222 <tenant>@127.0.0.1`.
 - **kindnet doesn't enforce NetworkPolicy** — the box default-deny policy is a
   no-op there; use a Calico-backed kind config to exercise enforcement.
+- **gVisor boxes: only port-forward to `svc/sshpiper`, never to a box pod.**
+  sshpiper itself always runs on the cluster's default runtime, so
+  port-forwarding to it works regardless of what `RuntimeClass` boxes use.
+  A box pod scheduled under a gVisor `RuntimeClass` (e.g. `runsc`) is fully
+  reachable over real pod networking — which is exactly the path sshpiper's
+  upstream connection uses — but `kubectl port-forward`/`kubectl exec`
+  straight to that box pod's SSH port does not work (upstream gVisor
+  characteristic: kubernetes-sigs/agent-sandbox#158, reproduced here as
+  #1489). Always go through the gateway for a gVisor box.
 
 ## Security notes
 

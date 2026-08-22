@@ -65,8 +65,14 @@ kubectl exec -n tenant-mybox box -- \
 ```
 
 > **SSH access** requires the full agent-box image and sshpiper (installed by
-> the chart). Forward port 32022 from the kind node to reach the SSH gateway:
-> `ssh -p 32022 mybox@localhost`
+> the chart). The chart exposes the gateway as a real `NodePort` (32022 by
+> default) — kind maps that straight through to the host, so
+> `ssh -p 32022 mybox@localhost` reaches sshpiper directly, no
+> `kubectl port-forward` involved. Keep it that way if you set
+> `runtimeClass: runsc` (below): `kubectl port-forward`/`kubectl exec`
+> straight to a gVisor-scheduled box pod does not work (a gVisor
+> characteristic, not a Containarium bug — see #1489), but the NodePort →
+> sshpiper → box path is real pod networking the whole way and is unaffected.
 
 ---
 
@@ -145,7 +151,12 @@ turn this into an actual SSH-reachable gateway.
 > Alternative: if you don't need gateway routing for this quickstart at all,
 > set `CONTAINARIUM_K8S_GATEWAY_NAMESPACE=""` on the daemon (step 5) instead
 > of creating the namespace/CRD — `create` then skips the Pipe step
-> entirely.
+> entirely. **Don't do this if boxes run under a gVisor `RuntimeClass`**
+> (`CONTAINARIUM_K8S_RUNTIME_CLASS=runsc` / chart `runtimeClass: runsc`):
+> without the gateway, the only way left to reach the box is
+> `kubectl port-forward`/`kubectl exec` straight to its pod, and that
+> doesn't work under gVisor (#1489) — the gateway is then your only working
+> access path.
 
 ## 5. Start the daemon
 
