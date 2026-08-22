@@ -774,17 +774,54 @@ pod genuinely runs on the gVisor kernel; SSH/dropbear handshake and the
 all pass over the box's real, designed traffic path (SSH/MCP over pod
 networking, the same path the sshpiper gateway uses in production).
 
-**Known gap:** `kubectl port-forward` / `kubectl exec` dialed directly
-against a `runsc`-scheduled box pod does not work — `connection refused`,
-even though the same port is fully reachable over real pod-to-pod
-networking. This is an upstream gVisor/kubelet characteristic, not a
-Containarium defect: the exact same failure is documented independently at
+![A terminal recording: kubectl port-forward to a gVisor-scheduled box fails, then a real SSH/MCP session against the same box succeeds over pod networking, running shell_exec to show the gVisor kernel string](images/gvisor-showcase.gif)
+
+*Recorded 2026-08-22 on a local kind+gVisor test cluster. Shows `kubectl
+port-forward` failing against the `runsc` box, then a real SSH session
+completing an MCP `initialize` and a `shell_exec(cat /proc/version)` call
+against the box's actual K8s Service DNS name — real pod-to-pod traffic,
+not a port-forward or a `kubectl exec`. The recording does not include the
+sshpiper gateway hop itself: that hop hit a separate, still-unresolved
+authentication failure during this same verification pass (#1493), so this
+clip demonstrates the box's reachability and function under `runsc`, not a
+fully gateway-through-to-box round trip.*
+
+**Known gap:** `kubectl port-forward` dialed directly against a
+`runsc`-scheduled box pod does not work — `connection refused`, even
+though the same port is fully reachable over real pod-to-pod networking
+(demonstrated above). This is an upstream gVisor/kubelet characteristic,
+not a Containarium defect: the exact same failure is documented
+independently at
 [kubernetes-sigs/agent-sandbox#158](https://github.com/kubernetes-sigs/agent-sandbox/issues/158)
 ("planned to be supported later" — no committed timeline as of this
-writing). Tracked here as #1489. **Practical consequence:** never reach a
-gVisor box by port-forwarding straight to its pod — go through the sshpiper
-gateway (a NodePort/LoadBalancer, or a port-forward to `svc/sshpiper`
-itself, which is not gVisor-scheduled) the same way production traffic
+writing). Tracked here as #1489.
+
+> **Correction (2026-08-22):** the line originally here also claimed
+> `kubectl exec` does not work against a `runsc` box. Re-verified directly
+> against a live `runsc` box and that claim is **wrong** — `kubectl exec`
+> (spawning a fresh process: `id`, `uname -a`, `ls`, an interactive `-it`
+> shell) works normally under gVisor every time it was tried. Only
+> `kubectl port-forward` — dialing an *existing listening socket* from
+> outside the sandbox — fails. The distinction matters: `exec` doesn't
+> touch the sandboxed network stack at all, so it was never actually
+> exposed to the same limitation.
+>
+> Separately, this same verification pass found the Helm-chart-deployed
+> gateway path has two more issues, neither specific to gVisor: the
+> chart's default-deny `NetworkPolicy` can't actually match the chart's
+> own sshpiper pod (#1492, label mismatch — blocks real traffic
+> regardless of runtime class), and even after fixing that, sshpiper's own
+> pubkey check rejected a client key that byte-for-byte matched what was
+> registered (#1493, root cause not yet isolated). **So "the same path the
+> sshpiper gateway uses in production" below is not yet independently
+> confirmed working end-to-end on the Helm-chart path** — the recording
+> above validates the box's own reachability and correctness under
+> `runsc`, using a workaround for the gateway hop specifically.
+
+**Practical consequence:** never reach a gVisor box by port-forwarding
+straight to its pod — go through the sshpiper gateway (a NodePort/
+LoadBalancer, or a port-forward to `svc/sshpiper` itself, which is not
+gVisor-scheduled) the same way production traffic
 does. See [`KIND-QUICKSTART.md`](KIND-QUICKSTART.md) and
 [`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) for the
 gateway-based access path.
