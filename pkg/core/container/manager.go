@@ -133,6 +133,17 @@ func resolveGPUDevices(b incus.Backend, inputs []string) ([]incus.GPUDevice, err
 	return devices, nil
 }
 
+// createJumpServerAccountFn and addAuthorizedKeyFn are the host-side
+// account operations Create runs in its jump-account goroutine.
+//
+// vars, not direct calls, so tests can stub the host side (useradd et
+// al.) and exercise the concurrency contract; production keeps the
+// real functions. Same idiom as waitNetPollMin in pkg/core/incus.
+var (
+	createJumpServerAccountFn = CreateJumpServerAccount
+	addAuthorizedKeyFn        = AddAuthorizedKey
+)
+
 // Create creates a new container with full setup
 func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	createStart := time.Now()
@@ -297,36 +308,46 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 
 	// --- Linux container provisioning (steps 3-7) ---
 
-	// Step 3: Create jump server account (proxy-only, no shell access)
+	// Step 3: Create jump server account (proxy-only, no shell access).
+	//
+	// Runs CONCURRENTLY with the guest-side stages below (network wait,
+	// package install, user seeding): it is purely host-side — useradd +
+	// authorized_keys on the daemon host — and nothing in the create path
+	// reads its result before the join at the end. Overlapping it with the
+	// multi-second guest stages takes its ~100-300ms off the critical path.
+	// The join happens before GetContainer, so the error semantics are
+	// unchanged: a failed jump account still fails the create and cleans up
+	// the container.
 	if opts.Verbose {
 		fmt.Println("  [3/7] Creating jump server account (proxy-only)...")
 	}
 
+	var jumpAccountDone chan error
 	if len(opts.SSHKeys) > 0 {
-		if err := m.timed(StageJumpAccount, func() error {
-			// Seed the jump-server account with the first key.
-			if err := CreateJumpServerAccount(opts.Username, opts.SSHKeys[0], opts.Verbose); err != nil {
-				return fmt.Errorf("failed to create jump server account: %w", err)
-			}
-			// Then authorize the REST of the keys host-side. CreateJumpServerAccount
-			// only seeds the host /home/<user>/.ssh/authorized_keys with SSHKeys[0];
-			// without this loop the remaining keys land in the CONTAINER's
-			// authorized_keys (addSSHKeys, step 7) but NOT in the host jump-user
-			// file that ServeAuthorizedKeys exposes and the sentinel syncs into
-			// sshpiper. A client using any key other than SSHKeys[0] is then
-			// rejected at the sentinel (publickey) even though the box would accept
-			// it — e.g. an automation/runner key that sorts after a registered key.
-			// Mirrors the seed-then-authorize-the-rest pattern in collaborator.go.
-			for _, key := range opts.SSHKeys[1:] {
-				if err := AddAuthorizedKey(opts.Username, key); err != nil {
-					return fmt.Errorf("failed to authorize additional jump-server ssh key: %w", err)
+		jumpAccountDone = make(chan error, 1)
+		go func() {
+			jumpAccountDone <- m.timed(StageJumpAccount, func() error {
+				// Seed the jump-server account with the first key.
+				if err := createJumpServerAccountFn(opts.Username, opts.SSHKeys[0], opts.Verbose); err != nil {
+					return fmt.Errorf("failed to create jump server account: %w", err)
 				}
-			}
-			return nil
-		}); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, err
-		}
+				// Then authorize the REST of the keys host-side. CreateJumpServerAccount
+				// only seeds the host /home/<user>/.ssh/authorized_keys with SSHKeys[0];
+				// without this loop the remaining keys land in the CONTAINER's
+				// authorized_keys (addSSHKeys, step 7) but NOT in the host jump-user
+				// file that ServeAuthorizedKeys exposes and the sentinel syncs into
+				// sshpiper. A client using any key other than SSHKeys[0] is then
+				// rejected at the sentinel (publickey) even though the box would accept
+				// it — e.g. an automation/runner key that sorts after a registered key.
+				// Mirrors the seed-then-authorize-the-rest pattern in collaborator.go.
+				for _, key := range opts.SSHKeys[1:] {
+					if err := addAuthorizedKeyFn(opts.Username, key); err != nil {
+						return fmt.Errorf("failed to authorize additional jump-server ssh key: %w", err)
+					}
+				}
+				return nil
+			})
+		}()
 	} else {
 		if opts.Verbose {
 			fmt.Println("       Warning: No SSH keys provided, skipping jump server account creation")
@@ -462,6 +483,17 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		}); err != nil {
 			_ = m.cleanup(containerName)
 			return nil, fmt.Errorf("failed to provision git source: %w", err)
+		}
+	}
+
+	// Join the jump-account goroutine (step 3). An early error return
+	// above skips this join deliberately: the goroutine's send is buffered
+	// so it never leaks, and a host account created for a failed create
+	// dangles exactly as it did when the account was created up front.
+	if jumpAccountDone != nil {
+		if err := <-jumpAccountDone; err != nil {
+			_ = m.cleanup(containerName)
+			return nil, err
 		}
 	}
 
@@ -788,23 +820,26 @@ chown -R "$1:$1" "$home/.config"`
 	}
 }
 
-// createUser creates a user in the container with sudo access
+// createUser creates a user in the container with sudo access.
+//
+// The three account commands run as ONE `sh -c` exec, not three: each
+// in-guest Exec is a websocket-upgrading Incus operation at ~50-150ms
+// apiece, and this path is on every create (Finding 2 in
+// docs/architecture/two-digit-ms-sandbox-spawn.md). Every argv is
+// rendered through shellJoin, so nothing in it — username included —
+// is ever interpreted by the shell.
 func (m *Manager) createUser(containerName, username string, family ostype.OSFamily) error {
 	pkgMgr := ospkg.ForFamily(family)
 
-	// Create user (OS-aware: adduser on Debian, useradd on RHEL)
-	if err := m.incus.Exec(containerName, pkgMgr.CreateUserCmd(username, "")); err != nil {
+	script := shellJoin(pkgMgr.CreateUserCmd(username, "")) + // OS-aware: adduser on Debian, useradd on RHEL
+		" && " + shellJoin([]string{"usermod", "-aG", pkgMgr.SudoGroup(), username}) + // "sudo" on Debian, "wheel" on RHEL
+		// Podman typically runs rootless; group membership is best-effort
+		// (ignored when the group doesn't exist), as it always was.
+		" && { " + shellJoin([]string{"usermod", "-aG", "podman", username}) + " || true; }"
+
+	if err := m.incus.Exec(containerName, []string{"/bin/sh", "-c", script}); err != nil {
 		return fmt.Errorf("failed to create user: %w", err)
 	}
-
-	// Add to sudo group (OS-aware: "sudo" on Debian, "wheel" on RHEL)
-	if err := m.incus.Exec(containerName, []string{"usermod", "-aG", pkgMgr.SudoGroup(), username}); err != nil {
-		return fmt.Errorf("failed to add user to sudo: %w", err)
-	}
-
-	// Note: Podman typically runs rootless and doesn't require a group
-	// But we can optionally add user to 'podman' group if it exists
-	_ = m.incus.Exec(containerName, []string{"usermod", "-aG", "podman", username})
 
 	// Allow passwordless sudo
 	// SECURITY FIX: Use Incus file push API instead of shell echo
@@ -828,21 +863,27 @@ func (m *Manager) SetAuthorizedKeys(username string, sshKeys []string) error {
 	return m.addSSHKeys(username+"-container", username, sshKeys)
 }
 
-// addSSHKeys adds SSH public keys to a user's authorized_keys
+// addSSHKeysStagingPath is where addSSHKeys stages the authorized_keys
+// content (via the file push API, root-owned 0600) before the placement
+// exec installs it into the user's home. Suffixed per-user so concurrent
+// seeding of different accounts can't collide.
+func addSSHKeysStagingPath(username string) string {
+	return "/run/containarium.authorized_keys." + username
+}
+
+// addSSHKeys sets the SSH public keys in a user's authorized_keys.
 // SECURITY: Uses Incus file push API to avoid shell injection vulnerabilities
+//
+// One WriteFile + one exec, not three execs around a write: the content
+// is staged via the file API (so key material still never passes through
+// a shell), then a single script creates the directory and installs the
+// file with the right mode and owner. Each in-guest Exec is a
+// websocket-upgrading Incus operation at ~50-150ms apiece (Finding 2 in
+// docs/architecture/two-digit-ms-sandbox-spawn.md). The username reaches
+// the script only as a positional parameter, never spliced into the
+// script text — same idiom as enablePodmanRestartDurability.
 func (m *Manager) addSSHKeys(containerName, username string, sshKeys []string) error {
 	sshDir := fmt.Sprintf("/home/%s/.ssh", username)
-	authorizedKeysPath := fmt.Sprintf("%s/authorized_keys", sshDir)
-
-	// Create .ssh directory
-	if err := m.incus.Exec(containerName, []string{"mkdir", "-p", sshDir}); err != nil {
-		return fmt.Errorf("failed to create .ssh directory: %w", err)
-	}
-
-	// Set permissions on .ssh directory
-	if err := m.incus.Exec(containerName, []string{"chmod", "700", sshDir}); err != nil {
-		return fmt.Errorf("failed to set .ssh permissions: %w", err)
-	}
 
 	// Build authorized_keys content safely (no shell involved).
 	// Validate each key to prevent placeholder/template strings (e.g., "YOUR_KEY")
@@ -860,16 +901,18 @@ func (m *Manager) addSSHKeys(containerName, username string, sshKeys []string) e
 		keysContent.WriteString("\n")
 	}
 
-	// SECURITY FIX: Use Incus file push API instead of shell echo
-	// This prevents shell injection attacks via malicious SSH key content
-	if err := m.incus.WriteFile(containerName, authorizedKeysPath, []byte(keysContent.String()), "0600"); err != nil {
+	staging := addSSHKeysStagingPath(username)
+	if err := m.incus.WriteFile(containerName, staging, []byte(keysContent.String()), "0600"); err != nil {
 		return fmt.Errorf("failed to write authorized_keys: %w", err)
 	}
 
-	// Set ownership
-	chownTarget := fmt.Sprintf("%s:%s", username, username)
-	if err := m.incus.Exec(containerName, []string{"chown", "-R", chownTarget, sshDir}); err != nil {
-		return fmt.Errorf("failed to set .ssh ownership: %w", err)
+	// $1 = .ssh dir, $2 = username, $3 = staged content.
+	const placeKeys = `set -e
+install -d -m 700 -o "$2" -g "$2" "$1"
+install -m 600 -o "$2" -g "$2" "$3" "$1/authorized_keys"
+rm -f "$3"`
+	if err := m.incus.Exec(containerName, []string{"/bin/sh", "-c", placeKeys, "sh", sshDir, username, staging}); err != nil {
+		return fmt.Errorf("failed to install authorized_keys: %w", err)
 	}
 
 	return nil

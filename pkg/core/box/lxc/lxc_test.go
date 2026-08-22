@@ -3,6 +3,7 @@ package lxc
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/pkg/core/box"
@@ -252,17 +253,27 @@ func TestMetricsDelegation(t *testing.T) {
 func TestSetAuthorizedKeysDelegation(t *testing.T) {
 	mock := incustest.NewMockBackend()
 	var wrotePath string
+	var execArgv []string
 	mock.WriteFileFunc = func(_, path string, _ []byte, _ string) error {
 		wrotePath = path
 		return nil
 	}
+	mock.ExecFunc = func(_ string, command []string) error {
+		execArgv = command
+		return nil
+	}
 	b := newTestBackend(mock)
-	// Empty key set exercises the delegation path (mkdir/chmod/write/chown)
-	// without depending on SSH key validation.
+	// Empty key set exercises the delegation path (stage via file push,
+	// then one placement exec) without depending on SSH key validation.
 	if err := b.SetAuthorizedKeys(context.Background(), box.BoxRef{Tenant: "alice"}, nil); err != nil {
 		t.Fatalf("SetAuthorizedKeys: %v", err)
 	}
-	if wrotePath != "/home/alice/.ssh/authorized_keys" {
-		t.Errorf("authorized_keys written to %q", wrotePath)
+	// Content is staged via the file API, and the placement exec receives
+	// the user's .ssh dir as a positional parameter.
+	if !strings.HasSuffix(wrotePath, "authorized_keys.alice") {
+		t.Errorf("staged authorized_keys written to %q", wrotePath)
+	}
+	if len(execArgv) < 5 || execArgv[4] != "/home/alice/.ssh" {
+		t.Errorf("placement exec argv = %v, want /home/alice/.ssh as $1", execArgv)
 	}
 }
