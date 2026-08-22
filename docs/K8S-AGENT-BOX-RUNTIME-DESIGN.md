@@ -819,12 +819,19 @@ writing). Tracked here as #1489.
 > `runsc`, using a workaround for the gateway hop specifically.
 
 **Practical consequence:** never reach a gVisor box by port-forwarding
-straight to its pod — go through the sshpiper gateway (a NodePort/
-LoadBalancer, or a port-forward to `svc/sshpiper` itself, which is not
-gVisor-scheduled) the same way production traffic
-does. See [`KIND-QUICKSTART.md`](KIND-QUICKSTART.md) and
-[`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) for the
-gateway-based access path.
+straight to its pod. The intended alternative is the sshpiper gateway (a
+NodePort/LoadBalancer, or a port-forward to `svc/sshpiper` itself, which is
+not gVisor-scheduled) — but as the correction above states, that path is
+**currently blocked on the Helm-chart deployment** by #1492 and, even once
+that's fixed, by #1493. Until both close, verify a gVisor box's own
+correctness the way the recording above did (real pod-to-pod networking,
+not the gateway, not port-forward), and don't advertise the gateway path as
+working end-to-end on that deployment method. See
+[`KIND-QUICKSTART.md`](KIND-QUICKSTART.md) and
+[`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) — the
+standalone (non-Helm) sshpiper manifests there use the label convention
+#1492 shows the chart drifted from, so that path is not known to share this
+bug, but has not been independently re-verified in this pass either.
 
 ### Tenant secret delivery (#1190)
 
