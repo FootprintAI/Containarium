@@ -24,6 +24,9 @@ type Manager struct {
 	// injected into each podman-enabled box's registries.conf.d. Empty = boxes
 	// pull from upstream registries as before. See registry_mirror.go.
 	mirrors []RegistryMirror
+	// observeStage, when non-nil, receives per-stage create latency.
+	// See create_stages.go.
+	observeStage StageObserver
 }
 
 // CreateOptions holds options for creating a container
@@ -132,6 +135,7 @@ func resolveGPUDevices(b incus.Backend, inputs []string) ([]incus.GPUDevice, err
 
 // Create creates a new container with full setup
 func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
+	createStart := time.Now()
 	containerName := opts.Username + "-container"
 
 	if opts.Verbose {
@@ -252,7 +256,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		config.GPUs = gpus
 	}
 
-	if err := m.incus.CreateContainer(config); err != nil {
+	if err := m.timed(StageCreateInstance, func() error {
+		return m.incus.CreateContainer(config)
+	}); err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
 
@@ -261,7 +267,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		fmt.Println("  [2/6] Starting container...")
 	}
 
-	if err := m.incus.StartContainer(containerName); err != nil {
+	if err := m.timed(StageStartInstance, func() error {
+		return m.incus.StartContainer(containerName)
+	}); err != nil {
 		// Clean up on failure
 		_ = m.incus.DeleteContainer(containerName)
 		return nil, fmt.Errorf("failed to start container: %w", err)
@@ -275,7 +283,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if opts.Verbose {
 		fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
 	}
-	if err := m.incus.SetLabels(containerName, opts.Labels); err != nil {
+	if err := m.timed(StageSetLabels, func() error {
+		return m.incus.SetLabels(containerName, opts.Labels)
+	}); err != nil {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to set labels: %w", err)
 	}
@@ -293,25 +303,29 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}
 
 	if len(opts.SSHKeys) > 0 {
-		// Seed the jump-server account with the first key.
-		if err := CreateJumpServerAccount(opts.Username, opts.SSHKeys[0], opts.Verbose); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, fmt.Errorf("failed to create jump server account: %w", err)
-		}
-		// Then authorize the REST of the keys host-side. CreateJumpServerAccount
-		// only seeds the host /home/<user>/.ssh/authorized_keys with SSHKeys[0];
-		// without this loop the remaining keys land in the CONTAINER's
-		// authorized_keys (addSSHKeys, step 7) but NOT in the host jump-user
-		// file that ServeAuthorizedKeys exposes and the sentinel syncs into
-		// sshpiper. A client using any key other than SSHKeys[0] is then
-		// rejected at the sentinel (publickey) even though the box would accept
-		// it — e.g. an automation/runner key that sorts after a registered key.
-		// Mirrors the seed-then-authorize-the-rest pattern in collaborator.go.
-		for _, key := range opts.SSHKeys[1:] {
-			if err := AddAuthorizedKey(opts.Username, key); err != nil {
-				_ = m.cleanup(containerName)
-				return nil, fmt.Errorf("failed to authorize additional jump-server ssh key: %w", err)
+		if err := m.timed(StageJumpAccount, func() error {
+			// Seed the jump-server account with the first key.
+			if err := CreateJumpServerAccount(opts.Username, opts.SSHKeys[0], opts.Verbose); err != nil {
+				return fmt.Errorf("failed to create jump server account: %w", err)
 			}
+			// Then authorize the REST of the keys host-side. CreateJumpServerAccount
+			// only seeds the host /home/<user>/.ssh/authorized_keys with SSHKeys[0];
+			// without this loop the remaining keys land in the CONTAINER's
+			// authorized_keys (addSSHKeys, step 7) but NOT in the host jump-user
+			// file that ServeAuthorizedKeys exposes and the sentinel syncs into
+			// sshpiper. A client using any key other than SSHKeys[0] is then
+			// rejected at the sentinel (publickey) even though the box would accept
+			// it — e.g. an automation/runner key that sorts after a registered key.
+			// Mirrors the seed-then-authorize-the-rest pattern in collaborator.go.
+			for _, key := range opts.SSHKeys[1:] {
+				if err := AddAuthorizedKey(opts.Username, key); err != nil {
+					return fmt.Errorf("failed to authorize additional jump-server ssh key: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			_ = m.cleanup(containerName)
+			return nil, err
 		}
 	} else {
 		if opts.Verbose {
@@ -324,8 +338,12 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		fmt.Println("  [4/7] Waiting for network...")
 	}
 
-	ipAddr, err := m.incus.WaitForNetwork(containerName, 30*time.Second)
-	if err != nil {
+	var ipAddr string
+	if err := m.timed(StageWaitNetwork, func() error {
+		var err error
+		ipAddr, err = m.incus.WaitForNetwork(containerName, 30*time.Second)
+		return err
+	}); err != nil {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to get container IP: %w", err)
 	}
@@ -368,7 +386,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		if opts.Verbose {
 			fmt.Println("  [5/7] Package install pre-baked into the base image — skipping")
 		}
-	} else if err := m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.StackParameters, opts.Username, family); err != nil {
+	} else if err := m.timed(StageInstallPackages, func() error {
+		return m.installPackages(containerName, opts.EnablePodman, opts.Stack, opts.StackParameters, opts.Username, family)
+	}); err != nil {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to install packages: %w", err)
 	}
@@ -386,7 +406,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		fmt.Printf("  [6/7] Creating user: %s...\n", opts.Username)
 	}
 
-	if err := m.createUser(containerName, opts.Username, family); err != nil {
+	if err := m.timed(StageCreateUser, func() error {
+		return m.createUser(containerName, opts.Username, family)
+	}); err != nil {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
@@ -415,7 +437,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 			fmt.Printf("       Adding %d SSH key(s)...\n", len(allKeys))
 		}
 
-		if err := m.addSSHKeys(containerName, opts.Username, allKeys); err != nil {
+		if err := m.timed(StageAddSSHKeys, func() error {
+			return m.addSSHKeys(containerName, opts.Username, allKeys)
+		}); err != nil {
 			_ = m.cleanup(containerName)
 			return nil, fmt.Errorf("failed to add SSH keys: %w", err)
 		}
@@ -433,18 +457,27 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		if opts.Verbose {
 			fmt.Printf("  [8/8] Fetching git source %s into %s...\n", opts.GitSource, gitWorkspacePath(opts.WorkspacePath))
 		}
-		if err := m.provisionGitSource(containerName, opts); err != nil {
+		if err := m.timed(StageGitSource, func() error {
+			return m.provisionGitSource(containerName, opts)
+		}); err != nil {
 			_ = m.cleanup(containerName)
 			return nil, fmt.Errorf("failed to provision git source: %w", err)
 		}
 	}
 
 	// Get container info
-	info, err := m.incus.GetContainer(containerName)
-	if err != nil {
+	var info *incus.ContainerInfo
+	if err := m.timed(StageGetInfo, func() error {
+		var err error
+		info, err = m.incus.GetContainer(containerName)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("failed to get container info: %w", err)
 	}
 
+	if m.observeStage != nil {
+		m.observeStage(StageTotal, time.Since(createStart))
+	}
 	return info, nil
 }
 

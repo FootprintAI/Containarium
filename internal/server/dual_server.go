@@ -1303,6 +1303,14 @@ skipAppHosting:
 			} else {
 				metricsCollector = mc
 				log.Printf("OTel metrics collector configured (target: %s)", config.VictoriaMetricsURL)
+
+				// Per-stage create latency (Phase 0 of
+				// docs/architecture/two-digit-ms-sandbox-spawn.md).
+				if obs, err := metrics.NewCreateStageObserver(mc.MeterProvider()); err != nil {
+					log.Printf("Warning: create-stage latency instrumentation disabled: %v", err)
+				} else {
+					containerServer.GetManager().SetStageObserver(obs)
+				}
 			}
 		}
 	}
