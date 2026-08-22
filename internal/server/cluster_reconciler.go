@@ -170,12 +170,34 @@ func desiredFrom(c *clusterstore.Cluster) clustercore.Desired {
 var cpSize = clustercore.DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}
 
 func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstore.Cluster) error {
-	desired := desiredFrom(c)
-	iso := coreIsolation(c.NodeIsolation)
 	observed, err := r.mgr.Observe(c.Owner, c.Name)
 	if err != nil {
 		return fmt.Errorf("observe: %w", err)
 	}
+	// Desired is read AFTER the observation, never before.
+	//
+	// ReconcileOnce lists every cluster once, so the record reaching
+	// this function can be arbitrarily old — as old as all the
+	// preceding clusters' work in the same pass, and provisioning
+	// blocks on a multi-minute WaitReady. Deriving Desired from that
+	// snapshot and pairing it with a fresh observation is the #1498
+	// resurrect race in its remaining form: a scale-down landing in
+	// between yields a target that still counts a node the observation
+	// no longer sees, and Decide rebuilds it.
+	//
+	// Reading the record last cannot produce that pairing. The worst
+	// case becomes a target LOWER than the observation, which Decide
+	// leaves alone (it only creates up to Min, never scales down) and
+	// the autoscaler resolves.
+	//
+	// A record that cannot be re-read falls back to the snapshot: that
+	// is the status quo, not a new failure, and refusing to reconcile
+	// on a transient store error would be worse.
+	if fresh, ferr := r.store.Get(ctx, c.Owner, c.Name); ferr == nil && fresh != nil {
+		c = fresh
+	}
+	desired := desiredFrom(c)
+	iso := coreIsolation(c.NodeIsolation)
 	actions := clustercore.Decide(desired, observed)
 
 	groupByName := make(map[string]clustercore.DesiredGroup, len(desired.Groups))

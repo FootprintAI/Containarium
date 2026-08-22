@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -220,26 +221,56 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 	// (it only creates up to Min, never scales down) and which the
 	// autoscaler retries. The reverse — a target higher than reality —
 	// is the one state that resurrects a drained node.
-	target := g.EffectiveTarget() - int32(len(req.Nodes)) //nolint:gosec // batch length is bounded by the group's int32 max_nodes (validated above)
+	// The target is derived from how many nodes the group ACTUALLY has,
+	// not by subtracting the batch from the current target.
+	//
+	// Because the decrement is committed before anything is destroyed,
+	// subtracting from the current target would move it again on every
+	// retry of a delete that keeps failing — the node row survives a
+	// failed delete, so the retry re-validates as legitimate and
+	// subtracts a second time. Three retries walked a 3-node group's
+	// target to MinNodes with all three instances still present.
+	// Counting the rows makes the result idempotent: the same request,
+	// repeated, lands on the same target.
+	inGroupCount := int32(0)
+	for _, n := range rows {
+		if n.Group == g.Name {
+			inGroupCount++
+		}
+	}
+	target := inGroupCount - int32(len(req.Nodes)) //nolint:gosec // batch length is bounded by the group's int32 max_nodes (validated above)
 	if target < g.MinNodes {
 		target = g.MinNodes
 	}
 	if err := s.setTarget(ctx, c, g.Name, target); err != nil {
 		return nil, err
 	}
+	var staleSecrets []string
 	for _, n := range req.Nodes {
 		// CA has already drained the node; removing the VM is safe.
 		// ForgetNode also clears the control plane's node-password
 		// secret, without which a later node of the same name can
 		// never join (#1498).
 		if err := s.mgr.ForgetNode(owner, name, n.GetName()); err != nil {
-			return nil, status.Errorf(codes.Internal, "delete %s: %v", n.GetName(), err)
+			if !errors.Is(err, clustercore.ErrNodePasswordNotCleared) {
+				return nil, status.Errorf(codes.Internal, "delete %s: %v", n.GetName(), err)
+			}
+			// The instance IS gone, so the removal must not be
+			// retried — but the residue is not harmless, and a log
+			// line is not where anyone looks. Record it on the
+			// cluster's own history.
+			staleSecrets = append(staleSecrets, n.GetName())
 		}
 		_ = s.store.DeleteNode(ctx, owner, name, n.GetName())
 	}
+	reason := fmt.Sprintf("autoscaler removed %d drained node(s); target now %d", len(req.Nodes), target)
+	if len(staleSecrets) > 0 {
+		reason += fmt.Sprintf("; WARNING: node-password secret still present for %s — a future node of that name will be refused until it is removed",
+			strings.Join(staleSecrets, ", "))
+	}
 	_ = s.store.AppendEvent(ctx, owner, name, clusterstore.Event{
 		At: time.Now().UTC(), Kind: clusterstore.EventScaleDown, Group: g.Name,
-		Reason: fmt.Sprintf("autoscaler removed %d drained node(s); target now %d", len(req.Nodes), target),
+		Reason: reason,
 	})
 	return &capb.NodeGroupDeleteNodesResponse{}, nil
 }

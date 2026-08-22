@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -136,6 +137,16 @@ func (m *Manager) abandon(name string, cause error) error {
 	return cause
 }
 
+// ErrNodePasswordNotCleared reports that a node's instance was removed
+// but the control plane still holds its node-password secret.
+//
+// It is deliberately distinct from a removal failure: the node IS
+// gone, so the caller must not retry the deletion, but the residue is
+// not harmless — the next node to take that name can never join. A
+// caller that only logs this re-arms #1498 from a single flaky exec,
+// so callers are expected to record it where operators look.
+var ErrNodePasswordNotCleared = errors.New("node-password secret not cleared")
+
 // NodePasswordSecret is the secret k3s stores per node in kube-system
 // and checks on every join. Deleting the Kubernetes Node object does
 // not remove it, so a node name that is released and reused is
@@ -180,6 +191,7 @@ func (m *Manager) ForgetNode(tenant, clusterName, vmName string) error {
 		log.Printf("[cluster] %s deleted, but its node-password secret could not be cleared on %s: %v; "+
 			"a future node named %s will be refused with \"hash does not match\" until it is removed",
 			vmName, cp, err, vmName)
+		return fmt.Errorf("%w on %s: %v", ErrNodePasswordNotCleared, cp, err)
 	}
 	return nil
 }

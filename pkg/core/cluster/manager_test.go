@@ -870,19 +870,46 @@ func TestForgetNodeClearsTheNodePasswordAfterDeletingTheInstance(t *testing.T) {
 }
 
 // A control plane that cannot be reached must not turn a completed
-// removal into a failed one: the instance is already gone, and
-// reporting failure would have the autoscaler retry a delete that
-// cannot succeed. The stale password is a real problem, so it is
-// surfaced — but as the non-fatal thing it is.
-func TestForgetNodeSucceedsWhenTheControlPlaneCannotBeReached(t *testing.T) {
+// removal into a retryable failure: the instance IS gone, and an
+// opaque error would have the autoscaler retry a delete with nothing
+// left to delete.
+//
+// But it is not success either. A stale secret means the next node to
+// take this name can never join — the whole of #1498's second half —
+// so it is reported as a DISTINCT, typed condition that a caller can
+// tell apart from "removal failed" and record where operators look.
+// Returning nil here would re-arm #1498 from a single flaky exec with
+// only a daemon log line as evidence.
+func TestForgetNodeReportsAnUnclearedPasswordDistinctlyFromAFailedRemoval(t *testing.T) {
 	f := newFakeHost()
 	f.execErr = errors.New("control plane unreachable")
 	m := testManager(f)
 
-	if err := m.ForgetNode("alice", "demo", "alice-k8s-demo-small-2"); err != nil {
-		t.Fatalf("ForgetNode must not fail because the control plane is unreachable: %v", err)
+	err := m.ForgetNode("alice", "demo", "alice-k8s-demo-small-2")
+	if err == nil {
+		t.Fatal("an uncleared node-password secret must not be reported as success")
 	}
-	if _, ok := f.deleted["alice-k8s-demo-small-2"]; !ok {
+	if !errors.Is(err, ErrNodePasswordNotCleared) {
+		t.Fatalf("error must be distinguishable from a failed removal, got %v", err)
+	}
+	if !f.deleted["alice-k8s-demo-small-2"] {
 		t.Error("the instance was not deleted")
+	}
+}
+
+// The removal itself failing is the other case, and must NOT be
+// mistaken for the one above: nothing was removed, so the caller has
+// to retry.
+func TestForgetNodeReportsAFailedRemovalAsAFailure(t *testing.T) {
+	f := newFakeHost()
+	f.deleteErr = errors.New("incus: instance is busy")
+	m := testManager(f)
+
+	err := m.ForgetNode("alice", "demo", "alice-k8s-demo-small-2")
+	if err == nil {
+		t.Fatal("a failed removal must not be reported as success")
+	}
+	if errors.Is(err, ErrNodePasswordNotCleared) {
+		t.Fatalf("a failed removal must not look like a cleared-secret problem, got %v", err)
 	}
 }

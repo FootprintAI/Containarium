@@ -8,6 +8,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -350,5 +351,113 @@ func TestCAProvider_TargetIsLoweredBeforeAnyInstanceIsDestroyed(t *testing.T) {
 	}
 	if targetAtDelete != 1 {
 		t.Errorf("target was %d while the instance was being destroyed, want 1 (already lowered)", targetAtDelete)
+	}
+}
+
+// The target must be derived from how many nodes the group ACTUALLY
+// has, not by subtracting the batch length from the current target.
+//
+// Lowering the target before deleting (#1498) means the decrement is
+// committed even when a delete then fails — and because the node row
+// survives a failed delete, the autoscaler's retry is validated as
+// legitimate and subtracts again. Repeated retries walk the target
+// down to MinNodes while every instance is still there, leaving a
+// group whose target is far below its node count. Upstream CA treats
+// target != node count as not-in-steady-state and stops scaling the
+// group, and the reconciler never scales down, so the surplus is never
+// reclaimed.
+func TestCAProvider_TargetDoesNotDriftWhenDeletionKeepsFailing(t *testing.T) {
+	client, srv, rec, host := caRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 2}); err != nil {
+		t.Fatal(err)
+	}
+	rec.ReconcileOnce(ctx) // three small workers, target 3
+
+	// Every delete fails, so no node is ever removed and no row goes.
+	host.deleteErr = errors.New("incus: instance is busy")
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		_, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+			Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-3"}},
+		})
+		if err == nil {
+			t.Fatalf("attempt %d: DeleteNodes succeeded though every delete fails", attempt)
+		}
+		ts, tsErr := client.NodeGroupTargetSize(caCtx("alice", "demo"),
+			&capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
+		if tsErr != nil {
+			t.Fatal(tsErr)
+		}
+		// Three nodes still exist; one was asked to go. The target
+		// reflects that intent and must not move further on retries.
+		if ts.GetTargetSize() != 2 {
+			t.Fatalf("after %d failed attempt(s) target = %d, want 2 (three nodes present, one requested gone)",
+				attempt, ts.GetTargetSize())
+		}
+	}
+
+	nodes, err := client.NodeGroupNodes(caCtx("alice", "demo"), &capb.NodeGroupNodesRequest{Id: "alice/demo/small"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes.GetInstances()) != 3 {
+		t.Fatalf("group reports %d nodes, want 3 — nothing was deleted", len(nodes.GetInstances()))
+	}
+}
+
+// The resurrect race is only closed if the reconciler's DESIRED state
+// is at least as fresh as its OBSERVATION.
+//
+// ReconcileOnce lists every cluster once and reconcileCluster then
+// derived Desired from that snapshot BEFORE calling Observe. A
+// scale-down landing in between produced the stale-high target with a
+// post-deletion observation — the #1498 symptom again, now with the
+// node-password cleared, so the resurrected node rejoins silently as a
+// node nothing asked for. On a multi-cluster host that window is as
+// wide as all the preceding clusters' work in the same pass, and
+// provisioning blocks on a multi-minute WaitReady.
+//
+// The hook lands the delete after the host has been read, which is the
+// window the mid-batch test cannot reach (it re-reads the store fresh).
+func TestReconcilerDoesNotDecideOnAStaleTarget(t *testing.T) {
+	client, srv, rec, host := caRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
+		t.Fatal(err)
+	}
+	rec.ReconcileOnce(ctx) // two small workers
+
+	var fired bool
+	host.onObserve = func() {
+		if fired {
+			return
+		}
+		fired = true
+		host.onObserve = nil
+		if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+			Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-2"}},
+		}); err != nil {
+			t.Errorf("DeleteNodes inside observe: %v", err)
+		}
+	}
+
+	rec.ReconcileOnce(ctx)
+	if !fired {
+		t.Fatal("the delete never landed inside the observation; the test proves nothing")
+	}
+	host.onObserve = nil
+	rec.ReconcileOnce(ctx)
+
+	if _, ok := host.vms["alice-k8s-demo-small-2"]; ok {
+		t.Error("a scale-down landing between Observe and Decide was undone by a stale target")
 	}
 }
