@@ -679,8 +679,8 @@ env-agnostic `pkg/core/box/k8s.Config` — so `pkg/core` reads no environment.
 | `CONTAINARIUM_K8S_GATEWAY_NAMESPACE` | `agent-gateway` | Namespace sshpiper runs in |
 | `CONTAINARIUM_K8S_TENANT_NS_PREFIX` | `tenant-` | Prefix for per-tenant namespaces |
 | `CONTAINARIUM_K8S_STORAGE_CLASS` | _(empty = no PVC)_ | StorageClass for persistent data |
-| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY` | _(empty)_ | Public key sshpiper→box authenticates with |
-| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET` | _(empty)_ | Secret name holding the matching private key |
+| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY` | _(empty)_ | Public key sshpiper→box authenticates with. **Required when `GATEWAY_NAMESPACE` is non-empty** — see below |
+| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET` | _(empty)_ | Secret name holding the matching private key. **Required when `GATEWAY_NAMESPACE` is non-empty** (#1496): with gateway routing enabled and no upstream credential, sshpiper falls back to password auth, which every box refuses — `K8s.Validate()` refuses daemon startup rather than produce that silently-broken Pipe. Clear `GATEWAY_NAMESPACE` to disable gateway routing and drop this requirement |
 | `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY` | `0` | `1` skips box host-key pinning (escape hatch, not recommended) |
 | `CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST` | `256Mi` | Default per-box memory request when the box sets none; invalid → built-in default |
 | `CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT` | `1Gi` | Default per-box memory limit (hard cap, noisy-neighbor guard); invalid → built-in default |

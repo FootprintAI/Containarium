@@ -169,5 +169,16 @@ func (k K8s) Validate() error {
 	default:
 		return fmt.Errorf("%s=%q is not valid (want: mcp | shell)", EnvK8sBoxMode, k.BoxMode)
 	}
+	// #1496: gateway routing (on by default via GatewayNamespace) programs a
+	// Pipe whose upstream credential comes from GatewayUpstreamKeySecret. With
+	// none configured, sshpiper falls back to password auth against a box
+	// that only accepts pubkeys (PasswordAuthentication no) — every
+	// gateway-routed connection then fails with a generic "Permission denied
+	// (publickey)" no matter how correct the client's key is, for every box,
+	// silently. Fail startup instead of producing that Pipe.
+	if k.GatewayNamespace != "" && k.GatewayUpstreamKeySecret == "" {
+		return fmt.Errorf("%s is set (gateway routing enabled) but %s is empty — sshpiper has no upstream credential and will fall back to password auth, which every box refuses; configure an upstream keypair Secret, or clear %s to disable gateway routing",
+			EnvK8sGatewayNamespace, EnvK8sGatewayUpstreamKeySecret, EnvK8sGatewayNamespace)
+	}
 	return nil
 }

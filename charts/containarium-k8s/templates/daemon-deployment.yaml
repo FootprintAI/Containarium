@@ -1,3 +1,6 @@
+{{- if and .Values.gateway.namespace (not .Values.gateway.upstreamKeySecret) }}
+{{ fail "gateway.namespace is set (gateway routing enabled) but gateway.upstreamKeySecret is empty — the daemon will refuse to start (#1496). Generate an upstream keypair and set gateway.upstreamPublicKey/upstreamKeySecret (see values.yaml comments), or clear gateway.namespace to disable gateway routing." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,6 +42,14 @@ spec:
               value: {{ printf "%s-sshpiper.%s.svc.cluster.local" (include "containarium-k8s.fullname" .) .Values.gateway.namespace | quote }}
             - name: CONTAINARIUM_K8S_GATEWAY_SSH_PORT
               value: "22"
+            {{- if .Values.gateway.upstreamPublicKey }}
+            - name: CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY
+              value: {{ .Values.gateway.upstreamPublicKey | quote }}
+            {{- end }}
+            {{- if .Values.gateway.upstreamKeySecret }}
+            - name: CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET
+              value: {{ .Values.gateway.upstreamKeySecret | quote }}
+            {{- end }}
             - name: CONTAINARIUM_K8S_BOX_IMAGE
               value: {{ .Values.agentBox.image | quote }}
             - name: CONTAINARIUM_K8S_BOX_MODE
