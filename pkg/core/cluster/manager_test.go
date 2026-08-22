@@ -71,7 +71,27 @@ func (f *fakeHost) Read(name, path string) ([]byte, error) {
 }
 func (f *fakeHost) Exec(name string, cmd []string) (string, error) {
 	f.record("exec %s:%s", name, strings.Join(cmd, " "))
+	// Keyed on the whole argv first so a test can stub two commands
+	// that share an argv0 (cat /proc/cpuinfo vs cat /proc/meminfo);
+	// argv0 alone remains for the stubs that predate that need.
+	if out, ok := f.execOut[name+":"+strings.Join(cmd, " ")]; ok {
+		return out, nil
+	}
 	return f.execOut[name+":"+cmd[0]], nil
+}
+
+// setNodeProc stubs what a node reports about itself once booted —
+// the vantage point a reservation may be derived from, and the only
+// one that can tell a nested host's lie from a plain host's truth
+// (#1466). Explicit in every test that needs it: a fake that served a
+// plausible default /proc would hide exactly the bug under test.
+func (f *fakeHost) setNodeProc(name string, cpu int, memKB int64) {
+	var b strings.Builder
+	for i := 0; i < cpu; i++ {
+		fmt.Fprintf(&b, "processor\t: %d\nvendor_id\t: GenuineIntel\n\n", i)
+	}
+	f.execOut[name+":cat "+ProcCPUInfoPath] = b.String()
+	f.execOut[name+":cat "+ProcMemInfoPath] = fmt.Sprintf("MemTotal:%15d kB\nMemFree:  1024 kB\n", memKB)
 }
 func (f *fakeHost) ClusterVMs(tenant, clusterName string) (Observed, error) {
 	return Observed{}, nil
@@ -236,6 +256,11 @@ func TestProvisionCarriesIsolationThroughTheSeam(t *testing.T) {
 			// fake CP must have one — its absence is a loud failure by design.
 			f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
 				"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+			// The node must be able to answer what it observes about
+			// itself: the reservation trigger asks it after boot (#1466).
+			// These fixtures are an honest node — it sees its own limits.
+			f.setNodeProc("alice-k8s-demo-cp", 2, 3906244)
+			f.setNodeProc("alice-k8s-demo-small-1", 2, 3906244)
 			m := testManager(f)
 
 			if _, err := m.ProvisionCP("alice", "demo", tc.iso, DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, nil); err != nil {
@@ -345,6 +370,11 @@ func TestProvisionWorkerPushesContainerdTemplateBeforeBootstrap(t *testing.T) {
 	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
 	f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
 		"version = 3\n[plugins.'io.containerd.cri.v1.runtime']\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+	// The node must be able to answer what it observes about itself:
+	// the reservation trigger asks it after boot (#1466). These
+	// fixtures are an honest node — it sees its own limits.
+	f.setNodeProc("alice-k8s-demo-cp", 2, 3906244)
+	f.setNodeProc("alice-k8s-demo-small-1", 2, 3906244)
 
 	if err := testManager(f).ProvisionWorker("alice", "demo", IsolationContainer,
 		DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
@@ -400,6 +430,11 @@ func TestProvisionWiresContainerKubeletArgs(t *testing.T) {
 	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
 	f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
 		"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+	// The node must be able to answer what it observes about itself:
+	// the reservation trigger asks it after boot (#1466). These
+	// fixtures are an honest node — it sees its own limits.
+	f.setNodeProc("alice-k8s-demo-cp", 2, 3906244)
+	f.setNodeProc("alice-k8s-demo-small-1", 2, 3906244)
 	m := testManager(f)
 
 	if _, err := m.ProvisionCP("alice", "demo", IsolationContainer,
@@ -439,11 +474,22 @@ func TestProvisionWiresContainerKubeletArgs(t *testing.T) {
 // and such a reservation exceeds the node's entire capacity — kubelet
 // rejects it and refuses to start, which is worse than an uncorrected
 // allocatable (#1456, observed on the CI runner in run 11).
+//
+// Since #1466 this test also pins the environment it was implicitly
+// assuming: the fixture is a node observing its own limits, and the
+// assertion is that such a node gets no reservation. The complementary
+// case — a node observing the outer host, which must get one — lives in
+// TestContainerNodeReservationFollowsWhatTheNodeObserves.
 func TestProvisionDoesNotReserveFromHostCapacity(t *testing.T) {
 	f := newFakeHost()
 	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
 	f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
 		"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+	// The node must be able to answer what it observes about itself:
+	// the reservation trigger asks it after boot (#1466). These
+	// fixtures are an honest node — it sees its own limits.
+	f.setNodeProc("alice-k8s-demo-cp", 2, 3906244)
+	f.setNodeProc("alice-k8s-demo-small-1", 2, 3906244)
 	m := testManager(f)
 
 	if _, err := m.ProvisionCP("alice", "demo", IsolationContainer,
@@ -523,5 +569,177 @@ func TestDeleteNodeReturnsTheDeleteError(t *testing.T) {
 
 	if err := m.DeleteVM("alice-k8s-demo-small-1"); err == nil {
 		t.Fatal("a failed delete must be reported, not swallowed")
+	}
+}
+
+// #1466: the reservation's trigger. A container node gets a
+// reservation only when it ACTUALLY misreports, established by asking
+// the node itself after boot — never inferred from the daemon host's
+// /proc, which is what #1456 got wrong in the other direction.
+//
+// The two environments are the whole point of the test: on a plain
+// Incus host lxcfs works and the node sees its own limits, so any
+// reservation is harmful (kubelet refuses a reservation exceeding
+// capacity); on a nested host lxcfs masking does not reach the inner
+// instance, the node sees the outer host, and without a reservation
+// the scheduler and the autoscaler's fit simulation both believe a
+// node four times its real size — so scale-up never triggers.
+func TestContainerNodeReservationFollowsWhatTheNodeObserves(t *testing.T) {
+	// The nested-host measurement from the design's Amendment 1 §2.
+	const (
+		nestedCPU   = 8
+		nestedMemKB = 65841348
+	)
+
+	tests := []struct {
+		name        string
+		nodeCPU     int
+		nodeMemKB   int64
+		wantReserve bool
+		wantArgs    []string
+	}{
+		{
+			name:      "plain host: the node sees its own limits, so nothing is reserved",
+			nodeCPU:   2,
+			nodeMemKB: 3906244, // ~4GB, what a 4GB node reports where lxcfs works
+		},
+		{
+			name:        "nested host: the node sees the outer host, so the gap is reserved",
+			nodeCPU:     nestedCPU,
+			nodeMemKB:   nestedMemKB,
+			wantReserve: true,
+			wantArgs: []string{
+				fmt.Sprintf("--kubelet-arg=system-reserved=cpu=%d,memory=%d",
+					nestedCPU-2, nestedMemKB*1024-4_000_000_000),
+				"--kubelet-arg=enforce-node-allocatable=pods",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, role := range []string{"control-plane", "worker"} {
+				t.Run(role, func(t *testing.T) {
+					f := newFakeHost()
+					f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+					f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
+						"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+
+					node := "alice-k8s-demo-cp"
+					if role == "worker" {
+						node = "alice-k8s-demo-small-1"
+						f.setNodeProc("alice-k8s-demo-cp", 2, 3906244)
+					}
+					f.setNodeProc(node, tt.nodeCPU, tt.nodeMemKB)
+					m := testManager(f)
+
+					if _, err := m.ProvisionCP("alice", "demo", IsolationContainer,
+						DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"}); err != nil {
+						t.Fatalf("ProvisionCP: %v", err)
+					}
+					if role == "worker" {
+						if err := m.ProvisionWorker("alice", "demo", IsolationContainer,
+							DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
+							node, "10.0.0.1"); err != nil {
+							t.Fatalf("ProvisionWorker: %v", err)
+						}
+					}
+
+					script := string(f.files[node+":"+bootstrapScriptPath])
+					if !tt.wantReserve {
+						if strings.Contains(script, "system-reserved") {
+							t.Errorf("node observing its own limits was given a reservation:\n%s", script)
+						}
+					}
+					for _, want := range tt.wantArgs {
+						if !strings.Contains(script, want) {
+							t.Errorf("script is missing %q:\n%s", want, script)
+						}
+					}
+					// Whatever the reservation, the gate without which
+					// kubelet's ContainerManager never starts must stay.
+					if !strings.Contains(script, "KubeletInUserNamespace=true") {
+						t.Errorf("%s script lost the user-namespace gate:\n%s", role, script)
+					}
+				})
+			}
+		})
+	}
+}
+
+// A VM node has its own kernel and reports honestly, so it must never
+// be probed for a correction, let alone given one — the probe is an
+// Exec into the node, and running it on the VM path would be both
+// pointless and a behaviour change to the class this issue does not
+// touch.
+func TestVMNodeIsNeverProbedForCapacity(t *testing.T) {
+	f := newFakeHost()
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+	m := testManager(f)
+
+	if _, err := m.ProvisionCP("alice", "demo", IsolationVM,
+		DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"}); err != nil {
+		t.Fatalf("ProvisionCP: %v", err)
+	}
+	for _, c := range f.calls {
+		if strings.Contains(c, ProcCPUInfoPath) || strings.Contains(c, ProcMemInfoPath) {
+			t.Errorf("VM node was probed for observed capacity: %q", c)
+		}
+	}
+	if strings.Contains(string(f.files["alice-k8s-demo-cp:"+bootstrapScriptPath]), "system-reserved") {
+		t.Error("VM node was given a container-only reservation")
+	}
+}
+
+// A node whose /proc cannot be read fails the provision rather than
+// silently proceeding without a reservation. An unreadable /proc means
+// the lie cannot be measured, not that there is no lie — and a node
+// that quietly advertises four times its size is the exact failure
+// (#1466) this trigger exists to prevent, with nothing to say so.
+func TestContainerNodeUnreadableProcFailsClosed(t *testing.T) {
+	f := newFakeHost()
+	f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+	m := testManager(f)
+	// No setNodeProc: the node answers with nothing.
+
+	_, err := m.ProvisionCP("alice", "demo", IsolationContainer,
+		DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"})
+	if err == nil {
+		t.Fatal("provisioning succeeded with an unmeasurable node capacity; it must fail closed")
+	}
+	if !strings.Contains(err.Error(), "observed capacity") {
+		t.Errorf("error should name what could not be established, got: %v", err)
+	}
+}
+
+// The node is asked what it observes AFTER it is up — asking a node
+// that has not booted cannot answer, and asking before create is the
+// daemon-host inference #1456 removed.
+func TestCapacityProbeHappensAfterWaitReady(t *testing.T) {
+	f := newFakeHost()
+	f.setNodeProc("alice-k8s-demo-cp", 8, 65841348)
+	m := testManager(f)
+
+	if _, err := m.ProvisionCP("alice", "demo", IsolationContainer,
+		DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, []string{"203.0.113.10"}); err != nil {
+		t.Fatalf("ProvisionCP: %v", err)
+	}
+	waitAt, probeAt, pushAt := -1, -1, -1
+	for i, c := range f.calls {
+		switch {
+		case c == "wait alice-k8s-demo-cp":
+			waitAt = i
+		case strings.Contains(c, ProcCPUInfoPath):
+			probeAt = i
+		case strings.Contains(c, bootstrapScriptPath) && strings.HasPrefix(c, "push"):
+			pushAt = i
+		}
+	}
+	if waitAt < 0 || probeAt < 0 || pushAt < 0 {
+		t.Fatalf("missing calls: wait=%d probe=%d push=%d in %v", waitAt, probeAt, pushAt, f.calls)
+	}
+	if !(waitAt < probeAt && probeAt < pushAt) {
+		t.Errorf("probe must sit between WaitReady and the bootstrap push; got wait=%d probe=%d push=%d",
+			waitAt, probeAt, pushAt)
 	}
 }

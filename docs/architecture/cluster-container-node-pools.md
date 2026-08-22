@@ -285,18 +285,33 @@ plain host the two differ by enough to make kubelet reject the config.
 What survives is the shape of the answer, not its trigger. A
 reservation is correct **only when the node actually misreports**, and
 that can only be established from the node itself after boot — never
-inferred from the daemon host. `ReservedResources`,
-`KubeletReservedArgs` and `HostCapacity` remain in
-`pkg/core/cluster/capacity.go` and remain correct as functions; nothing
-currently calls them, by design, until the *when* is settled.
+inferred from the daemon host.
 
-**Still true, and still unsolved:** on a nested host a node claiming
-four times its real CPU and twenty times its real memory means pods are
-scheduled where they cannot run and **scale-up is never triggered** —
-the autoscaling story this feature exists for, silently disabled.
-Deferred, tracked in #1466. The consequence of the deferral is that
-container node pools on a nested Incus host are usable but must not be
-trusted to autoscale.
+> **Settled 2026-08-22 (#1466).** The *when* now has an answer, and it
+> is the only one that distinguishes the two environments: after
+> `WaitReady` and before the bootstrap script is pushed, the daemon
+> reads `/proc/cpuinfo` and `/proc/meminfo` **inside the node** and
+> compares them with the size that node was asked for. Excess is
+> reserved; no excess reserves nothing. A node whose `/proc` cannot be
+> read fails the provision rather than proceeding uncorrected — an
+> unmeasurable node is not a node known to be honest, and proceeding
+> silently is the failure this whole section is about.
+>
+> One thing the implementation had to get right that the reasoning
+> above misses: an honest node reports **slightly less** than its
+> configured size, because the kernel's `MemTotal` excludes
+> firmware-reserved and unavailable memory (a 4GB node reports about
+> 3,999,993,856 bytes). `ReservedResources` treats observed-below-
+> requested as an error, which is correct for the create-time sizing
+> question it serves and wrong here — it would refuse every honest
+> container node, i.e. #1456 with the sign flipped. The post-boot
+> trigger is therefore a separate function, `NodeReservation`, with a
+> one-way comparison: reserve the excess a node claims over its own
+> size, per dimension, and nothing when it claims none.
+>
+> `ReservedResources` and `HostCapacity` keep their create-time role
+> (`CheckNodeCapacity` — can this host fit a node of this size); they
+> are no longer uncalled.
 
 ### Consequences for the stories as merged
 

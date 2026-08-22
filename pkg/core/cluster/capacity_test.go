@@ -442,3 +442,145 @@ func TestBothScriptsCarryUserNamespaceGate(t *testing.T) {
 		t.Error("VM server script carries a container-only kubelet gate")
 	}
 }
+
+// The post-boot trigger's rule, and the trap it exists to avoid. An
+// honest node reports slightly LESS than its configured size — the
+// kernel's MemTotal excludes firmware-reserved and unavailable memory
+// — so a rule that treats observed < requested as a fault refuses
+// every correctly-behaving container node. That is #1456's mistake
+// with the sign flipped, and it is why NodeReservation is a separate
+// function from ReservedResources rather than a reuse of it (#1466).
+func TestNodeReservation(t *testing.T) {
+	spec := NodeSpec{Name: "n", CPU: "2", Memory: "4GB", Disk: "40GB"}
+
+	tests := []struct {
+		name        string
+		observedCPU int
+		observedMem int64
+		want        Reserved
+	}{
+		{
+			// 4GB limit, what /proc/meminfo actually reports.
+			name:        "honest node reporting just under its size reserves nothing",
+			observedCPU: 2,
+			observedMem: 3_999_993_856,
+			want:        Reserved{},
+		},
+		{
+			name:        "honest node reporting exactly its size reserves nothing",
+			observedCPU: 2,
+			observedMem: 4_000_000_000,
+			want:        Reserved{},
+		},
+		{
+			name:        "nested node seeing the outer host reserves the excess",
+			observedCPU: 8,
+			observedMem: 65841348 * 1024,
+			want:        Reserved{CPU: 6, MemoryBytes: 65841348*1024 - 4_000_000_000},
+		},
+		{
+			// Each dimension decided on its own: lxcfs can mask one
+			// and not the other, and a node is not obliged to lie
+			// consistently.
+			name:        "only memory misreports",
+			observedCPU: 2,
+			observedMem: 65841348 * 1024,
+			want:        Reserved{CPU: 0, MemoryBytes: 65841348*1024 - 4_000_000_000},
+		},
+		{
+			name:        "only cpu misreports",
+			observedCPU: 8,
+			observedMem: 3_999_993_856,
+			want:        Reserved{CPU: 6},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NodeReservation(tt.observedCPU, tt.observedMem, spec)
+			if err != nil {
+				t.Fatalf("NodeReservation: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+			if tt.want.Zero() && len(KubeletReservedArgs(got)) != 0 {
+				t.Errorf("a zero reservation must render no kubelet args, got %v", KubeletReservedArgs(got))
+			}
+		})
+	}
+}
+
+// The parser cadvisor's view is reconstructed from. Split out of
+// HostCapacity so the same reading can be applied to a NODE's /proc
+// (read back over Exec after boot), which is the only vantage point
+// that can tell a misreporting node from an honest one (#1466).
+func TestParseProcCapacity(t *testing.T) {
+	const meminfo4GB = "MemTotal:        3906244 kB\nMemFree:  100 kB\n"
+
+	tests := []struct {
+		name    string
+		cpuinfo string
+		meminfo string
+		wantCPU int
+		wantMem int64
+		wantErr string
+	}{
+		{
+			name:    "a node that sees its own limits",
+			cpuinfo: "processor\t: 0\nvendor_id\t: X\n\nprocessor\t: 1\nvendor_id\t: X\n",
+			meminfo: meminfo4GB,
+			wantCPU: 2,
+			wantMem: 3906244 * 1024,
+		},
+		{
+			name: "a nested node that sees the outer host",
+			cpuinfo: "processor\t: 0\nprocessor\t: 1\nprocessor\t: 2\nprocessor\t: 3\n" +
+				"processor\t: 4\nprocessor\t: 5\nprocessor\t: 6\nprocessor\t: 7\n",
+			meminfo: "MemTotal:       65841348 kB\n",
+			wantCPU: 8,
+			wantMem: 65841348 * 1024,
+		},
+		{
+			// Zero would compute a reservation that starves the node,
+			// so an unreadable shape is an error, never a zero.
+			name:    "no processor lines",
+			cpuinfo: "vendor_id\t: X\n",
+			meminfo: meminfo4GB,
+			wantErr: "no processor lines",
+		},
+		{
+			name:    "no MemTotal",
+			cpuinfo: "processor\t: 0\n",
+			meminfo: "MemFree: 100 kB\n",
+			wantErr: "no MemTotal",
+		},
+		{
+			name:    "MemTotal is not a number",
+			cpuinfo: "processor\t: 0\n",
+			meminfo: "MemTotal:  plenty kB\n",
+			wantErr: "MemTotal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cpu, mem, err := ParseProcCapacity(tt.cpuinfo, tt.meminfo)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("want error containing %q, got cpu=%d mem=%d", tt.wantErr, cpu, mem)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseProcCapacity: %v", err)
+			}
+			if cpu != tt.wantCPU || mem != tt.wantMem {
+				t.Errorf("got cpu=%d mem=%d, want cpu=%d mem=%d", cpu, mem, tt.wantCPU, tt.wantMem)
+			}
+		})
+	}
+}

@@ -110,6 +110,43 @@ func ReservedResources(observedCPU int, observedMemBytes int64, spec NodeSpec) (
 	}, nil
 }
 
+// NodeReservation decides the reservation from what a BOOTED node
+// reports about itself (#1466). It is the post-boot counterpart of
+// ReservedResources, and it differs in exactly one way that matters.
+//
+// ReservedResources treats observed-smaller-than-requested as an
+// error, which is right for the create-time sizing question it serves
+// (CheckNodeCapacity): a host that cannot fit the node should refuse.
+// It is wrong here, because an honest node ALWAYS reports slightly
+// less than its configured size — the kernel's MemTotal excludes
+// firmware-reserved and unavailable memory, so a node limited to 4GB
+// (4_000_000_000) reports about 3_999_993_856. Treating that as a
+// failure would refuse every correctly-behaving container node, which
+// is the #1456 mistake with the sign flipped.
+//
+// So the rule is a one-way comparison: reserve only the excess a node
+// claims over its own size, per dimension, and nothing when it claims
+// no excess. A node under its size is a node telling the truth; a node
+// over it is the nested-host lie this exists to correct.
+func NodeReservation(observedCPU int, observedMemBytes int64, spec NodeSpec) (Reserved, error) {
+	wantCPU, err := strconv.Atoi(spec.CPU)
+	if err != nil {
+		return Reserved{}, fmt.Errorf("node cpu %q: %w", spec.CPU, err)
+	}
+	wantMem, err := ParseSizeBytes(spec.Memory)
+	if err != nil {
+		return Reserved{}, fmt.Errorf("node memory %q: %w", spec.Memory, err)
+	}
+	var r Reserved
+	if observedCPU > wantCPU {
+		r.CPU = observedCPU - wantCPU
+	}
+	if observedMemBytes > wantMem {
+		r.MemoryBytes = observedMemBytes - wantMem
+	}
+	return r, nil
+}
+
 // KubeletReservedArgs renders a reservation as k3s --kubelet-arg
 // flags. A zero reservation renders nothing: a node whose observed
 // capacity already equals its size needs no correction, and passing
@@ -154,33 +191,35 @@ func ParseSizeBytes(s string) (int64, error) {
 	}
 }
 
-// HostCapacity reads what a container node on this host will observe as
-// its own capacity: the host's /proc, because cadvisor inside the node
-// reads exactly these files and lxcfs masking does not reach a nested
-// Incus's own instances (design Amendment 1).
+// ProcCPUInfoPath and ProcMemInfoPath are the two files cadvisor
+// derives node capacity from. Named constants because they are read
+// from two vantage points — the daemon host's filesystem (create-time
+// sizing) and a booted node's own /proc over Exec (#1466) — and the
+// second is the only one that can tell a misreporting node from an
+// honest one.
+const (
+	ProcCPUInfoPath = "/proc/cpuinfo"
+	ProcMemInfoPath = "/proc/meminfo"
+)
+
+// ParseProcCapacity reconstructs the capacity cadvisor would report
+// from the contents of /proc/cpuinfo and /proc/meminfo.
 //
-// sysRoot is the filesystem root ("/" in production, a fixture in
-// tests). A /proc it cannot read is an error, never a zero capacity —
+// Pure, so it can be applied to whichever /proc is relevant: the
+// daemon host's (HostCapacity) or a booted node's own, read back over
+// Exec. A shape it cannot read is an error, never a zero capacity —
 // zero would compute a reservation that silently starves the node.
-func HostCapacity(sysRoot string) (cpu int, memBytes int64, err error) {
-	cpuinfo, err := os.ReadFile(filepath.Join(sysRoot, "proc/cpuinfo"))
-	if err != nil {
-		return 0, 0, fmt.Errorf("read cpuinfo: %w", err)
-	}
-	for _, line := range strings.Split(string(cpuinfo), "\n") {
+func ParseProcCapacity(cpuinfo, meminfo string) (cpu int, memBytes int64, err error) {
+	for _, line := range strings.Split(cpuinfo, "\n") {
 		if strings.HasPrefix(line, "processor") {
 			cpu++
 		}
 	}
 	if cpu == 0 {
-		return 0, 0, fmt.Errorf("no processor lines in %s/proc/cpuinfo", sysRoot)
+		return 0, 0, fmt.Errorf("no processor lines in %s", ProcCPUInfoPath)
 	}
 
-	meminfo, err := os.ReadFile(filepath.Join(sysRoot, "proc/meminfo"))
-	if err != nil {
-		return 0, 0, fmt.Errorf("read meminfo: %w", err)
-	}
-	for _, line := range strings.Split(string(meminfo), "\n") {
+	for _, line := range strings.Split(meminfo, "\n") {
 		if !strings.HasPrefix(line, "MemTotal:") {
 			continue
 		}
@@ -194,7 +233,29 @@ func HostCapacity(sysRoot string) (cpu int, memBytes int64, err error) {
 		}
 		return cpu, kb * 1024, nil
 	}
-	return 0, 0, fmt.Errorf("no MemTotal in %s/proc/meminfo", sysRoot)
+	return 0, 0, fmt.Errorf("no MemTotal in %s", ProcMemInfoPath)
+}
+
+// HostCapacity reads the DAEMON HOST's /proc.
+//
+// This is the create-time sizing question — "can this host host a node
+// of the size asked for" — and nothing else. It is deliberately NOT
+// the reservation trigger: the daemon host's capacity is not the
+// node's, and inferring one from the other is what #1456 removed. What
+// a node observes is established from the node itself (#1466).
+//
+// sysRoot is the filesystem root ("/" in production, a fixture in
+// tests). A /proc it cannot read is an error, never a zero capacity.
+func HostCapacity(sysRoot string) (cpu int, memBytes int64, err error) {
+	cpuinfo, err := os.ReadFile(filepath.Join(sysRoot, "proc/cpuinfo"))
+	if err != nil {
+		return 0, 0, fmt.Errorf("read cpuinfo: %w", err)
+	}
+	meminfo, err := os.ReadFile(filepath.Join(sysRoot, "proc/meminfo"))
+	if err != nil {
+		return 0, 0, fmt.Errorf("read meminfo: %w", err)
+	}
+	return ParseProcCapacity(string(cpuinfo), string(meminfo))
 }
 
 // CheckNodeCapacity is the create-time half of the capability probe:
