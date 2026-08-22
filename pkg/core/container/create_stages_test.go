@@ -3,6 +3,7 @@ package container
 import (
 	"errors"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 type stagesBackend struct {
 	incus.Backend
 	waitNetworkErr error
+	onWaitNetwork  func() // called on entry to WaitForNetwork, when set
+	deleteCalls    int    // DeleteContainer invocations (cleanup evidence)
 }
 
 func (b *stagesBackend) GetImageAliasProperties(string) (map[string]string, bool, error) {
@@ -30,7 +33,7 @@ func (b *stagesBackend) GetImageAliasProperties(string) (map[string]string, bool
 func (b *stagesBackend) CreateContainer(incus.ContainerConfig) error { return nil }
 func (b *stagesBackend) StartContainer(string) error                 { return nil }
 func (b *stagesBackend) StopContainer(string, bool) error            { return nil }
-func (b *stagesBackend) DeleteContainer(string) error                { return nil }
+func (b *stagesBackend) DeleteContainer(string) error                { b.deleteCalls++; return nil }
 func (b *stagesBackend) SetLabels(string, map[string]string) error   { return nil }
 func (b *stagesBackend) Exec(string, []string) error                 { return nil }
 func (b *stagesBackend) WriteFile(string, string, []byte, string) error {
@@ -38,6 +41,9 @@ func (b *stagesBackend) WriteFile(string, string, []byte, string) error {
 }
 
 func (b *stagesBackend) WaitForNetwork(string, time.Duration) (string, error) {
+	if b.onWaitNetwork != nil {
+		b.onWaitNetwork()
+	}
 	if b.waitNetworkErr != nil {
 		return "", b.waitNetworkErr
 	}
@@ -48,8 +54,10 @@ func (b *stagesBackend) GetContainer(name string) (*incus.ContainerInfo, error) 
 	return &incus.ContainerInfo{Name: name}, nil
 }
 
-// stageLog records every observation in order.
+// stageLog records every observation in order. Mutex-guarded because the
+// jump-account stage reports from its own goroutine.
 type stageLog struct {
+	mu        sync.Mutex
 	stages    []CreateStage
 	durations map[CreateStage]time.Duration
 }
@@ -60,6 +68,8 @@ func newStageLog() *stageLog {
 
 func (l *stageLog) observer() StageObserver {
 	return func(s CreateStage, d time.Duration) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
 		l.stages = append(l.stages, s)
 		l.durations[s] = d
 	}

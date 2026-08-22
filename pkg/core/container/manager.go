@@ -133,6 +133,17 @@ func resolveGPUDevices(b incus.Backend, inputs []string) ([]incus.GPUDevice, err
 	return devices, nil
 }
 
+// createJumpServerAccountFn and addAuthorizedKeyFn are the host-side
+// account operations Create runs in its jump-account goroutine.
+//
+// vars, not direct calls, so tests can stub the host side (useradd et
+// al.) and exercise the concurrency contract; production keeps the
+// real functions. Same idiom as waitNetPollMin in pkg/core/incus.
+var (
+	createJumpServerAccountFn = CreateJumpServerAccount
+	addAuthorizedKeyFn        = AddAuthorizedKey
+)
+
 // Create creates a new container with full setup
 func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	createStart := time.Now()
@@ -297,36 +308,46 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 
 	// --- Linux container provisioning (steps 3-7) ---
 
-	// Step 3: Create jump server account (proxy-only, no shell access)
+	// Step 3: Create jump server account (proxy-only, no shell access).
+	//
+	// Runs CONCURRENTLY with the guest-side stages below (network wait,
+	// package install, user seeding): it is purely host-side — useradd +
+	// authorized_keys on the daemon host — and nothing in the create path
+	// reads its result before the join at the end. Overlapping it with the
+	// multi-second guest stages takes its ~100-300ms off the critical path.
+	// The join happens before GetContainer, so the error semantics are
+	// unchanged: a failed jump account still fails the create and cleans up
+	// the container.
 	if opts.Verbose {
 		fmt.Println("  [3/7] Creating jump server account (proxy-only)...")
 	}
 
+	var jumpAccountDone chan error
 	if len(opts.SSHKeys) > 0 {
-		if err := m.timed(StageJumpAccount, func() error {
-			// Seed the jump-server account with the first key.
-			if err := CreateJumpServerAccount(opts.Username, opts.SSHKeys[0], opts.Verbose); err != nil {
-				return fmt.Errorf("failed to create jump server account: %w", err)
-			}
-			// Then authorize the REST of the keys host-side. CreateJumpServerAccount
-			// only seeds the host /home/<user>/.ssh/authorized_keys with SSHKeys[0];
-			// without this loop the remaining keys land in the CONTAINER's
-			// authorized_keys (addSSHKeys, step 7) but NOT in the host jump-user
-			// file that ServeAuthorizedKeys exposes and the sentinel syncs into
-			// sshpiper. A client using any key other than SSHKeys[0] is then
-			// rejected at the sentinel (publickey) even though the box would accept
-			// it — e.g. an automation/runner key that sorts after a registered key.
-			// Mirrors the seed-then-authorize-the-rest pattern in collaborator.go.
-			for _, key := range opts.SSHKeys[1:] {
-				if err := AddAuthorizedKey(opts.Username, key); err != nil {
-					return fmt.Errorf("failed to authorize additional jump-server ssh key: %w", err)
+		jumpAccountDone = make(chan error, 1)
+		go func() {
+			jumpAccountDone <- m.timed(StageJumpAccount, func() error {
+				// Seed the jump-server account with the first key.
+				if err := createJumpServerAccountFn(opts.Username, opts.SSHKeys[0], opts.Verbose); err != nil {
+					return fmt.Errorf("failed to create jump server account: %w", err)
 				}
-			}
-			return nil
-		}); err != nil {
-			_ = m.cleanup(containerName)
-			return nil, err
-		}
+				// Then authorize the REST of the keys host-side. CreateJumpServerAccount
+				// only seeds the host /home/<user>/.ssh/authorized_keys with SSHKeys[0];
+				// without this loop the remaining keys land in the CONTAINER's
+				// authorized_keys (addSSHKeys, step 7) but NOT in the host jump-user
+				// file that ServeAuthorizedKeys exposes and the sentinel syncs into
+				// sshpiper. A client using any key other than SSHKeys[0] is then
+				// rejected at the sentinel (publickey) even though the box would accept
+				// it — e.g. an automation/runner key that sorts after a registered key.
+				// Mirrors the seed-then-authorize-the-rest pattern in collaborator.go.
+				for _, key := range opts.SSHKeys[1:] {
+					if err := addAuthorizedKeyFn(opts.Username, key); err != nil {
+						return fmt.Errorf("failed to authorize additional jump-server ssh key: %w", err)
+					}
+				}
+				return nil
+			})
+		}()
 	} else {
 		if opts.Verbose {
 			fmt.Println("       Warning: No SSH keys provided, skipping jump server account creation")
@@ -462,6 +483,17 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		}); err != nil {
 			_ = m.cleanup(containerName)
 			return nil, fmt.Errorf("failed to provision git source: %w", err)
+		}
+	}
+
+	// Join the jump-account goroutine (step 3). An early error return
+	// above skips this join deliberately: the goroutine's send is buffered
+	// so it never leaks, and a host account created for a failed create
+	// dangles exactly as it did when the account was created up front.
+	if jumpAccountDone != nil {
+		if err := <-jumpAccountDone; err != nil {
+			_ = m.cleanup(containerName)
+			return nil, err
 		}
 	}
 
