@@ -14,7 +14,10 @@ metadata:
 spec:
   type: {{ .Values.gateway.service.type }}
   selector:
-    app.kubernetes.io/name: {{ include "containarium-k8s.name" . }}-sshpiper
+    # Must match the Deployment's pod template label exactly — see the
+    # comment there (#1492) for why this is the literal "sshpiper", not
+    # the chart-name-prefixed variant.
+    app.kubernetes.io/name: sshpiper
     app.kubernetes.io/instance: {{ .Release.Name }}
   ports:
     - name: ssh
