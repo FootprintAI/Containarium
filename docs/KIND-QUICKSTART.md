@@ -36,13 +36,21 @@ kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/downl
 kubectl -n agent-sandbox-system wait --for=condition=available \
   deployment/agent-sandbox-controller --timeout=180s
 
-# 3. Generate sshpiper's upstream keypair (sshpiper -> box hop) and its
-#    Secret. REQUIRED before installing the chart: gateway routing is on
-#    by default, and the daemon refuses to start without this configured
-#    (#1496) — with no upstream credential, sshpiper falls back to
-#    password auth, which every box refuses, so every gateway connection
-#    would fail silently otherwise.
+# 3. Generate sshpiper's TWO keypairs and their Secrets — both are required
+#    before installing the chart, for different reasons:
+#    - server key: sshpiper's identity to CLIENTS. The chart never creates
+#      this Secret for you; skip it and the sshpiper pod sits in
+#      ContainerCreating forever on a FailedMount event for
+#      "sshpiper-server-key" — no daemon error, no helm install failure,
+#      just a silently stuck pod. Easy to miss.
+#    - upstream key: sshpiper's identity to each BOX (sshpiper -> box hop).
+#      REQUIRED or the daemon refuses to start (#1496) — with no upstream
+#      credential, sshpiper falls back to password auth, which every box
+#      refuses, so every gateway connection would fail silently otherwise.
 kubectl create namespace agent-gateway
+ssh-keygen -t ed25519 -N '' -f ./sshpiper_server -C sshpiper-server
+kubectl -n agent-gateway create secret generic sshpiper-server-key \
+  --from-file=server_key=./sshpiper_server
 ssh-keygen -t ed25519 -N '' -f ./sshpiper_upstream -C sshpiper-upstream
 kubectl -n agent-gateway create secret generic sshpiper-upstream-key \
   --from-file=ssh-privatekey=./sshpiper_upstream
@@ -327,6 +335,7 @@ kind delete cluster --name containarium
 | Pod never appears for a created box | Controller not running | `kubectl get pods -n agent-sandbox-system` |
 | `k8s config: ... gateway routing enabled ... upstream credential ...` at daemon startup | Gateway routing on (default) with no upstream keypair configured (#1496) | Generate one and set `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET`/`_PUBLIC_KEY` (step 4), or clear `CONTAINARIUM_K8S_GATEWAY_NAMESPACE` to disable gateway routing |
 | SSH through the gateway always fails `Permission denied (publickey)` even with the right key | Same #1496 root cause, but caught at connection time instead of daemon startup — usually means the upstream keypair Secret exists but wasn't actually wired to the daemon's env | Confirm `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET`/`_PUBLIC_KEY` are set on the *running* daemon, not just created as a Secret |
+| sshpiper pod stuck `ContainerCreating` forever, `kubectl describe` shows `FailedMount ... secret "sshpiper-server-key" not found` | The chart's sshpiper Deployment mounts `gateway.sshpiper.serverKeySecret` (default `sshpiper-server-key`) but never creates it — no daemon error, no `helm install` failure, just a silently stuck pod | Create it before `helm install` (step 3): `ssh-keygen -t ed25519 -N '' -f ./sshpiper_server -C sshpiper-server` then `kubectl -n agent-gateway create secret generic sshpiper-server-key --from-file=server_key=./sshpiper_server` |
 | `create` succeeds but the box still runs the OLD `--image` after a fix | A prior partial `create` (e.g. failed at the Pipe step) already created the Sandbox; re-running `create` treats an existing Sandbox as success and does **not** update its spec (image included) | Delete first, then re-create: `./containarium delete mybox --server "$CTN_URL" --http --token "$CTN_JWT"`, or pass `--force` to `create` to delete+recreate in one step |
 
 ## CI / automated testing

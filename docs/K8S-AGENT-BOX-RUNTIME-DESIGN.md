@@ -818,20 +818,47 @@ writing). Tracked here as #1489.
 > above validates the box's own reachability and correctness under
 > `runsc`, using a workaround for the gateway hop specifically.
 
+> **Update (2026-08-22, later the same day):** #1492 and #1493's root
+> cause (#1496 — the Helm chart's default has no upstream keypair
+> configured, so sshpiper falls back to password auth) are both fixed and
+> merged (PR #1495). The gateway path was then re-verified for real: a
+> fresh cluster, `main` at the tip (including #1495), deployed via
+> `helm install` exactly as `KIND-QUICKSTART.md`'s Helm quickstart now
+> documents — no workarounds, no stand-in pods.
+>
+> ![A terminal recording: kubectl port-forward failing against the gVisor-scheduled box, then a real client connecting through the sshpiper gateway's NodePort and completing an MCP session against the same box](images/gvisor-gateway-showcase.gif)
+>
+> *Recorded 2026-08-22 on a fresh kind+gVisor cluster, `main` @ commit
+> including #1495. sshpiper's own log for this session:
+> `ssh connection pipe created ... (username [mybox]) -> ... (username
+> [agent])` — a real pipe, authenticated with the configured upstream
+> keypair (`auth [privatekey]`), not the password fallback #1496 was
+> about. The client then completes a full MCP `initialize` +
+> `shell_exec(cat /proc/version)` round trip through that pipe, returning
+> `Linux version 4.19.0-gvisor` — proving the box, the gateway, and gVisor
+> all work together, for real, end to end.*
+>
+> **"The same path the sshpiper gateway uses in production" is now
+> independently confirmed working end-to-end on the Helm-chart deployment.**
+> The correction above is left in place rather than deleted — it was
+> accurate when written, and the gap it named is exactly what #1495 closed.
+>
+> One more gap found in the process, unrelated to gVisor or #1492/#1496:
+> the Helm quickstart never told operators to create sshpiper's *server*
+> key Secret (`sshpiper-server-key`) — only the upstream one. Missing it
+> doesn't fail loudly like #1496 did; the sshpiper pod just sits in
+> `ContainerCreating` forever on a `FailedMount` event, easy to miss.
+> Fixed in `KIND-QUICKSTART.md` alongside this recording.
+
 **Practical consequence:** never reach a gVisor box by port-forwarding
-straight to its pod. The intended alternative is the sshpiper gateway (a
-NodePort/LoadBalancer, or a port-forward to `svc/sshpiper` itself, which is
-not gVisor-scheduled) — but as the correction above states, that path is
-**currently blocked on the Helm-chart deployment** by #1492 and, even once
-that's fixed, by #1493. Until both close, verify a gVisor box's own
-correctness the way the recording above did (real pod-to-pod networking,
-not the gateway, not port-forward), and don't advertise the gateway path as
-working end-to-end on that deployment method. See
-[`KIND-QUICKSTART.md`](KIND-QUICKSTART.md) and
-[`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) — the
-standalone (non-Helm) sshpiper manifests there use the label convention
-#1492 shows the chart drifted from, so that path is not known to share this
-bug, but has not been independently re-verified in this pass either.
+straight to its pod — that upstream gVisor/kubelet gap (#1489) is
+unaffected by anything above and still applies. Go through the sshpiper
+gateway instead (a NodePort/LoadBalancer, or a port-forward to
+`svc/sshpiper` itself, which is not gVisor-scheduled) — confirmed working
+end-to-end as of the update above, on the documented Helm-chart deployment
+path. See [`KIND-QUICKSTART.md`](KIND-QUICKSTART.md) and
+[`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) for
+the gateway-based access path.
 
 ### Tenant secret delivery (#1190)
 
