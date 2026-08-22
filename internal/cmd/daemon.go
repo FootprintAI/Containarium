@@ -673,7 +673,7 @@ func recoverJumpServerAccounts() {
 		log.Printf("[account-sync] skipped (cannot connect to Incus): %v", err)
 		return
 	}
-	res, err := mgr.SyncOwnerAccounts(false /*force*/, false /*dryRun*/, false /*verbose*/)
+	res, err := mgr.SyncOwnerAccounts(container.OwnerSyncOptions{})
 	if err != nil {
 		log.Printf("[account-sync] skipped (list containers failed): %v", err)
 		return

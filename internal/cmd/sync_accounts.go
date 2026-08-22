@@ -16,6 +16,8 @@ var (
 	syncForce  bool
 )
 
+var syncOnlyUser string
+
 var syncAccountsCmd = &cobra.Command{
 	Use:   "sync-accounts",
 	Short: "Sync jump server accounts from persisted containers",
@@ -46,6 +48,7 @@ func init() {
 
 	syncAccountsCmd.Flags().BoolVar(&syncDryRun, "dry-run", false, "Show what would be done without making changes")
 	syncAccountsCmd.Flags().BoolVar(&syncForce, "force", false, "Force recreation of accounts even if they exist")
+	syncAccountsCmd.Flags().StringVar(&syncOnlyUser, "user", "", "Restore only this container's account. Default (empty) sweeps EVERY container on the host.")
 }
 
 func runSyncAccounts(cmd *cobra.Command, args []string) error {
@@ -63,16 +66,39 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 	// container. The shared helper classifies "no extractable key" (benign —
 	// infra/CP/workspace boxes) separately from real create failures, so the
 	// command no longer fails-closed on the former. See #1010.
-	res, err := mgr.SyncOwnerAccounts(syncForce, syncDryRun, verbose)
+	res, err := mgr.SyncOwnerAccounts(container.OwnerSyncOptions{
+		Force:    syncForce,
+		DryRun:   syncDryRun,
+		Verbose:  verbose,
+		OnlyUser: syncOnlyUser,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to sync owner accounts: %w", err)
 	}
-	for _, u := range res.Restored {
-		if syncDryRun {
-			fmt.Printf("  [DRY RUN] Would create jump server account for %s\n", u)
-		} else {
-			fmt.Printf("  ✓ Jump server account restored for %s\n", u)
+
+	// --user naming a container that does not exist must not look like success.
+	// The sweep would report "0 restored, N skipped" and exit 0, which reads as
+	// "nothing needed doing" when it actually means "you typo'd the box name".
+	if syncOnlyUser != "" && len(res.Restored) == 0 && len(res.NoKey) == 0 && len(res.Failed) == 0 {
+		if !container.UserExists(syncOnlyUser) {
+			return fmt.Errorf("no container found for --user %q (expected an incus container named %q)",
+				syncOnlyUser, syncOnlyUser+"-container")
 		}
+		fmt.Printf("  Account for %s already exists and is up to date (use --force to recreate)\n", syncOnlyUser)
+	}
+	for _, u := range res.Restored {
+		// Always print the key COUNT. A box whose container holds three keys
+		// coming back with one is the #1477 truncation, and without this line
+		// it stays invisible until somebody's login is refused.
+		keys := res.KeysRestored[u]
+		if syncDryRun {
+			fmt.Printf("  [DRY RUN] Would create jump server account for %s (%s)\n", u, pluralKeys(keys))
+		} else {
+			fmt.Printf("  ✓ Jump server account restored for %s (%s)\n", u, pluralKeys(keys))
+		}
+	}
+	for _, u := range res.Partial {
+		fmt.Printf("  ! Partial restore for %s — the account works, but at least one additional key could not be authorized\n", u)
 	}
 	for _, u := range res.NoKey {
 		fmt.Printf("  – No SSH key in container %s-container (infra/CP/workspace box?) — skipped\n", u)
@@ -96,6 +122,9 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Restored:      %d accounts\n", len(res.Restored))
 	}
 	fmt.Printf("  Skipped:       %d accounts\n", res.Skipped)
+	if len(res.Partial) > 0 {
+		fmt.Printf("  Partial:       %d accounts (created, but not every key authorized)\n", len(res.Partial))
+	}
 	fmt.Printf("  No key (ok):   %d accounts\n", len(res.NoKey))
 	fmt.Printf("  Failed:        %d accounts\n", len(res.Failed))
 	fmt.Println()
@@ -118,6 +147,14 @@ func runSyncAccounts(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// pluralKeys renders the installed-key count for the per-account line.
+func pluralKeys(n int) string {
+	if n == 1 {
+		return "1 key"
+	}
+	return fmt.Sprintf("%d keys", n)
 }
 
 // syncCollaboratorAccounts syncs collaborator jump server accounts from PostgreSQL

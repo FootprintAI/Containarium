@@ -333,13 +333,19 @@ func UserExists(username string) bool {
 	return userExists(username)
 }
 
-// ExtractSSHKey extracts the SSH public key from inside a container.
-// The key is read from /home/{username}/.ssh/authorized_keys inside the container.
-func (m *Manager) ExtractSSHKey(containerName, username string, verbose bool) (string, error) {
+// ExtractSSHKeys extracts EVERY SSH public key authorized inside a container,
+// read from /home/{username}/.ssh/authorized_keys (falling back to root's).
+//
+// Returns all of them, in file order, because authorized_keys is a list: a box
+// can legitimately be reachable by an operator key, a runner key and one key
+// per collaborator machine. Returning only the first made recovery silently
+// revoke everyone else, and which key survived was decided by file order
+// (#1477).
+func (m *Manager) ExtractSSHKeys(containerName, username string, verbose bool) ([]string, error) {
 	// Check if container is running
 	info, err := m.incus.GetContainer(containerName)
 	if err != nil {
-		return "", fmt.Errorf("container not found: %w", err)
+		return nil, fmt.Errorf("container not found: %w", err)
 	}
 
 	// If container is stopped, try to start it temporarily
@@ -349,7 +355,7 @@ func (m *Manager) ExtractSSHKey(containerName, username string, verbose bool) (s
 			fmt.Printf("       Starting container %s to extract SSH key...\n", containerName)
 		}
 		if err := m.incus.StartContainer(containerName); err != nil {
-			return "", fmt.Errorf("failed to start container: %w", err)
+			return nil, fmt.Errorf("failed to start container: %w", err)
 		}
 		wasStarted = true
 		// Wait for container to be ready
@@ -375,7 +381,7 @@ func (m *Manager) ExtractSSHKey(containerName, username string, verbose bool) (s
 			if wasStarted {
 				_ = m.incus.StopContainer(containerName, false)
 			}
-			return "", fmt.Errorf("could not read SSH key from container: %w", err)
+			return nil, fmt.Errorf("could not read SSH key from container: %w", err)
 		}
 	}
 
@@ -387,25 +393,67 @@ func (m *Manager) ExtractSSHKey(containerName, username string, verbose bool) (s
 		_ = m.incus.StopContainer(containerName, false)
 	}
 
-	// Parse the authorized_keys file - get the first valid SSH key
-	lines := strings.Split(string(keyContent), "\n")
-	for _, line := range lines {
+	keys := parseAuthorizedKeys(string(keyContent))
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no valid SSH key found in authorized_keys")
+	}
+	return keys, nil
+}
+
+// ExtractSSHKey returns just the first authorized key, for callers that only
+// need one. Prefer ExtractSSHKeys: anything that (re)provisions host access
+// must carry the whole set, or it silently drops every key but one (#1477).
+func (m *Manager) ExtractSSHKey(containerName, username string, verbose bool) (string, error) {
+	keys, err := m.ExtractSSHKeys(containerName, username, verbose)
+	if err != nil {
+		return "", err
+	}
+	return keys[0], nil
+}
+
+// sshKeyPrefixes are the key types an authorized_keys line may start with.
+var sshKeyPrefixes = []string{
+	"ssh-rsa ",
+	"ssh-ed25519 ",
+	"ssh-ecdsa ",
+	"ecdsa-sha2-",
+	"ssh-dss ",
+}
+
+// parseAuthorizedKeys pulls every valid key line out of an authorized_keys
+// file, preserving order and dropping exact duplicates.
+//
+// Pure and separate from the incus round-trip so the parsing rules are
+// testable without a running container — the behaviour #1477 got wrong lived
+// entirely in here.
+//
+// Comparison for de-duplication is on the WHOLE line, so the same key material
+// carrying two different comments is kept twice. That is deliberate: this
+// function cannot tell an intentional duplicate-with-different-comment from an
+// accident, and keeping a key too many costs nothing, while dropping one
+// removes somebody's access.
+func parseAuthorizedKeys(content string) []string {
+	var keys []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
-		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Validate it looks like an SSH key
-		if strings.HasPrefix(line, "ssh-rsa ") ||
-			strings.HasPrefix(line, "ssh-ed25519 ") ||
-			strings.HasPrefix(line, "ssh-ecdsa ") ||
-			strings.HasPrefix(line, "ecdsa-sha2-") ||
-			strings.HasPrefix(line, "ssh-dss ") {
-			return line, nil
+		valid := false
+		for _, p := range sshKeyPrefixes {
+			if strings.HasPrefix(line, p) {
+				valid = true
+				break
+			}
 		}
+		if !valid || seen[line] {
+			continue
+		}
+		seen[line] = true
+		keys = append(keys, line)
 	}
-
-	return "", fmt.Errorf("no valid SSH key found in authorized_keys")
+	return keys
 }
 
 // setupUserSSHKey sets up SSH key for a user

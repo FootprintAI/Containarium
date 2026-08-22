@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-08-21
+
 ### Added
 
 - **`connect` uses a short-lived SSH certificate when the server can sign one.**
@@ -30,6 +32,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control-plane fault and never mention it.
 
 ### Fixed
+
+- **`sync-accounts` restores every key from a container, not just the first**
+  (#1477). Recovery read a container's `authorized_keys` and returned on the
+  first valid line, so a box reachable by several keys — an operator key, a
+  runner key, one per collaborator machine — came back authorizing exactly one,
+  chosen by file order. Nothing reported the loss: the account existed, keysync
+  exported it, sshpiper built a pipe, `containarium debug` reported a clean
+  path, and whoever held one of the dropped keys was simply refused.
+
+  Extraction now returns all keys in file order (de-duplicated), and the sync
+  seeds the account with the first then authorizes the rest — the same
+  seed-then-authorize-the-rest shape the create and collaborator paths already
+  used. `containarium recover` had the identical truncation and is fixed with
+  it. Per-account output now prints the key count, so a three-key box coming
+  back with one is visible at the point of repair rather than at someone's next
+  login; an account created whose extra keys could not all be authorized is
+  reported as a distinct `Partial` outcome rather than being hidden in
+  `Restored` or escalated to `Failed`.
+
+- **`containarium debug` no longer recommends a flag that does not exist**
+  (#1478). Its missing-host-user remediation printed
+  `sync-accounts --user <name>`, but `sync-accounts` registered only
+  `--dry-run` and `--force`, so the suggested command failed with
+  `unknown flag: --user` — read by someone already locked out, following it
+  literally, and inviting the conclusion that the diagnosis was wrong when only
+  the remedy was mistyped.
+
+  `--user` now exists and scopes the sweep to one container; without it the
+  command still sweeps every container on the host, which the flag help now
+  says out loud. `--user` naming a container that does not exist is an error
+  rather than a silent "0 restored". The remediation list is also reordered to
+  put the non-destructive repair first — it previously led with
+  `delete && create`, i.e. destroy the box, for a fault where the container and
+  its data are intact — and the destructive option is now labelled as such. A
+  test asserts every command `debug` prints resolves and parses against the
+  real cobra command tree, since these strings live in a different package from
+  the flags they name. **That test immediately found two more
+  broken hints of the same kind**, both of which would have failed the same way
+  in front of a locked-out operator:
+
+  - `containarium create <user> --ssh-keys <pubkey>` — the flag is `--ssh-key`
+    and takes a path, not inline key material. Printed in two places.
+  - `containarium start <user>` — no such top-level command; `start` is
+    app-scoped (`containarium app start <app>`). The container verb is `wake`.
 
 - **Sentinel `MemoryHigh` no longer sits below `MemoryMax` by default** (#1454,
   correcting #1350). A soft cap under the hard cap only helps if reclaim can
