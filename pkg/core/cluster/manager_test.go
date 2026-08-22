@@ -738,7 +738,7 @@ func TestCapacityProbeHappensAfterWaitReady(t *testing.T) {
 	if waitAt < 0 || probeAt < 0 || pushAt < 0 {
 		t.Fatalf("missing calls: wait=%d probe=%d push=%d in %v", waitAt, probeAt, pushAt, f.calls)
 	}
-	if !(waitAt < probeAt && probeAt < pushAt) {
+	if waitAt >= probeAt || probeAt >= pushAt {
 		t.Errorf("probe must sit between WaitReady and the bootstrap push; got wait=%d probe=%d push=%d",
 			waitAt, probeAt, pushAt)
 	}
