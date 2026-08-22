@@ -848,7 +848,7 @@ func TestForgetNodeClearsTheNodePasswordAfterDeletingTheInstance(t *testing.T) {
 	if forgetAt < 0 {
 		t.Fatalf("the control plane was never told to forget the node password: %v", f.calls)
 	}
-	if !(stopAt < deleteAt && deleteAt < forgetAt) {
+	if stopAt >= deleteAt || deleteAt >= forgetAt {
 		t.Errorf("want stop -> delete -> forget, got stop=%d delete=%d forget=%d in %v",
 			stopAt, deleteAt, forgetAt, f.calls)
 	}

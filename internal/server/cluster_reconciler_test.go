@@ -40,10 +40,6 @@ type stateHost struct {
 	// drained node in production (#1498) and cannot be reproduced by
 	// calling the two in sequence.
 	onDelete func(name string)
-	// execCalls records every Exec argv, so a test can assert on what
-	// the control plane was actually told to do rather than on the
-	// code that was supposed to tell it.
-	execCalls []string
 }
 
 type stateVM struct {
@@ -193,7 +189,6 @@ func (h *stateHost) Exec(name string, cmd []string) (string, error) {
 			return fmt.Sprintf("MemTotal:%15d kB\n", (bytes-6_144)/1024), nil
 		}
 	}
-	h.execCalls = append(h.execCalls, name+": "+strings.Join(cmd, " "))
 	// Only `kubectl get nodes` lists nodes. Answering the node list to
 	// every kubectl subcommand would make a `delete secret` look like
 	// a success no matter what it was handed.
@@ -205,13 +200,6 @@ func (h *stateHost) Exec(name string, cmd []string) (string, error) {
 		return b.String(), nil
 	}
 	return "", nil
-}
-
-// execs returns a copy of the recorded Exec argv list.
-func (h *stateHost) execs() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]string(nil), h.execCalls...)
 }
 
 func (h *stateHost) ClusterVMs(tenant, clusterName string) (clustercore.Observed, error) {
