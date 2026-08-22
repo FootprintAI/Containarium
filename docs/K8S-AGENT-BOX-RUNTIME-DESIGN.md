@@ -496,6 +496,17 @@ handing it `kubectl` or a kube-apiserver token.*
   same scoped-JWT model, the same CLI (`containarium box create`) whether the
   box lands on LXC or K8s. Teams standardize the agent interface once and pick
   the substrate per environment.
+- **The access path survives hard isolation.** The standard way most
+  agent-sandbox tooling reaches a pod — `kubectl exec` / `kubectl
+  port-forward` — does not work against a gVisor (`runsc`)-scheduled pod
+  ([kubernetes-sigs/agent-sandbox#158](https://github.com/kubernetes-sigs/agent-sandbox/issues/158),
+  "planned to be supported later," no committed timeline). An operator who
+  wants gVisor's kernel boundary *and* a working access path is stuck
+  choosing one. Containarium's box access was never built on that
+  mechanism — it's SSH through the sshpiper gateway over real pod
+  networking (see "Hard isolation via RuntimeClass" below) — so turning on
+  `runsc` costs nothing on the access side; #1489 tracks the one gap
+  (direct port-forward to the box pod, which nothing here depends on).
 
 In one line: **the safest blast-radius for an autonomous agent in your cluster —
 SSH-native, RBAC-minimal, default-deny — with zero new control plane.**
