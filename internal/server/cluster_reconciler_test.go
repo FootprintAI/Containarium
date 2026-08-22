@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,12 @@ type stateHost struct {
 type stateVM struct {
 	labels  map[string]string
 	running bool
+	// cpu/mem are the size the node was created with. The fake serves
+	// them back through /proc so a container-class provision can read
+	// its own capacity the way the real probe does (#1466) — an
+	// HONEST node, seeing exactly its own limits.
+	cpu string
+	mem string
 }
 
 func newStateHost() *stateHost {
@@ -55,12 +62,19 @@ func (h *stateHost) CreateNode(spec clustercore.NodeSpec, isolation clustercore.
 	if _, ok := h.vms[spec.Name]; ok {
 		return fmt.Errorf("vm %s already exists", spec.Name)
 	}
-	h.vms[spec.Name] = &stateVM{labels: spec.Labels, running: true}
+	h.vms[spec.Name] = &stateVM{labels: spec.Labels, running: true, cpu: spec.CPU, mem: spec.Memory}
 	h.isolations[spec.Name] = isolation
 	// A booted CP "writes" its own kubeconfig and join token.
 	if spec.Labels[clustercore.LabelClusterRole] == clustercore.RoleControlPlane {
 		h.files[spec.Name+":"+clustercore.KubeconfigPath] = []byte("clusters:\n- cluster:\n    server: https://127.0.0.1:6443\n")
 		h.files[spec.Name+":"+clustercore.NodeTokenPath] = []byte("K10::join-token")
+		// k3s writes its generated containerd config on start, and a
+		// container-class worker derives its template from the CP's
+		// copy (#1448) — without it no container worker can be
+		// provisioned here at all.
+		h.files[spec.Name+":"+clustercore.ContainerdGeneratedConfigPath] = []byte(
+			"version = 3\n[plugins.'io.containerd.cri.v1.runtime']\n" +
+				"  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
 	}
 	return nil
 }
@@ -128,6 +142,36 @@ func (h *stateHost) Read(name, path string) ([]byte, error) {
 func (h *stateHost) Exec(name string, cmd []string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// The container-class capacity probe reads the node's own /proc
+	// (#1466). Without this the probe fails, the provision aborts, and
+	// a test that only checks "the instance exists" still passes —
+	// because CreateNode ran before the abort.
+	if len(cmd) == 2 && cmd[0] == "cat" {
+		vm, ok := h.vms[name]
+		if !ok {
+			return "", fmt.Errorf("no vm %s", name)
+		}
+		switch cmd[1] {
+		case clustercore.ProcCPUInfoPath:
+			n, err := strconv.Atoi(vm.cpu)
+			if err != nil {
+				return "", err
+			}
+			var b strings.Builder
+			for i := 0; i < n; i++ {
+				fmt.Fprintf(&b, "processor\t: %d\n", i)
+			}
+			return b.String(), nil
+		case clustercore.ProcMemInfoPath:
+			bytes, err := clustercore.ParseSizeBytes(vm.mem)
+			if err != nil {
+				return "", err
+			}
+			// Report just under the configured size, as a real kernel
+			// does — MemTotal excludes firmware-reserved memory.
+			return fmt.Sprintf("MemTotal:%15d kB\n", (bytes-6_144)/1024), nil
+		}
+	}
 	if len(cmd) >= 2 && cmd[1] == "kubectl" {
 		var b strings.Builder
 		for vm := range h.vms {
@@ -392,6 +436,15 @@ func TestReconciler_ProvisionIsolationMatchesCluster(t *testing.T) {
 			for name := range host.vms {
 				if got := host.isolations[name]; got != tc.want {
 					t.Fatalf("node %s created with isolation %q, want %q", name, got, tc.want)
+				}
+				// Existence is not provisioning. CreateNode runs before
+				// anything that can fail later in the sequence, so a
+				// provision that aborted after it still leaves an
+				// instance here — which is how a broken container path
+				// passed this test unnoticed (#1466 review). Assert the
+				// node was actually bootstrapped.
+				if _, ok := host.files[name+":/root/containarium-bootstrap.sh"]; !ok {
+					t.Fatalf("node %s exists but was never bootstrapped; provisioning aborted after CreateNode", name)
 				}
 			}
 		})

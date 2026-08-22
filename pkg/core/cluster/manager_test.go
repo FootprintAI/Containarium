@@ -25,10 +25,13 @@ type fakeHost struct {
 	isolations map[string]Isolation
 	stopErr    error
 	deleteErr  error
+	// deleted records every instance Delete removed.
+	deleted map[string]bool
 }
 
 func newFakeHost() *fakeHost {
-	return &fakeHost{files: map[string][]byte{}, execOut: map[string]string{}, isolations: map[string]Isolation{}}
+	return &fakeHost{files: map[string][]byte{}, execOut: map[string]string{}, isolations: map[string]Isolation{},
+		deleted: map[string]bool{}}
 }
 
 func (f *fakeHost) record(format string, a ...any) {
@@ -48,6 +51,9 @@ func (f *fakeHost) Start(name string) error { f.record("start %s", name); return
 func (f *fakeHost) Stop(name string) error  { f.record("stop %s", name); return f.stopErr }
 func (f *fakeHost) Delete(name string) error {
 	f.record("delete %s", name)
+	if f.deleteErr == nil {
+		f.deleted[name] = true
+	}
 	return f.deleteErr
 }
 func (f *fakeHost) WaitReady(name string, _ time.Duration) (string, error) {
@@ -741,5 +747,53 @@ func TestCapacityProbeHappensAfterWaitReady(t *testing.T) {
 	if waitAt >= probeAt || probeAt >= pushAt {
 		t.Errorf("probe must sit between WaitReady and the bootstrap push; got wait=%d probe=%d push=%d",
 			waitAt, probeAt, pushAt)
+	}
+}
+
+// A provision that fails AFTER the instance exists must not leave that
+// instance behind. Decide() re-emits ActionCreateCP/ActionCreateWorker
+// only when the instance is missing, so an orphan created-but-never-
+// bootstrapped node is never retried and never replaced: the cluster
+// stays in error with a running instance consuming its full size, and
+// on the worker path the store never learns about it either, so it is
+// invisible to `cluster status` and to the autoscaler.
+//
+// The capacity probe (#1466) is the first step that can fail there, so
+// this is asserted through it.
+func TestFailedProvisionLeavesNoOrphanInstance(t *testing.T) {
+	for _, role := range []string{"control-plane", "worker"} {
+		t.Run(role, func(t *testing.T) {
+			f := newFakeHost()
+			f.files["alice-k8s-demo-cp:"+NodeTokenPath] = []byte("K10hash::server:secret\n")
+			f.files["alice-k8s-demo-cp:"+ContainerdGeneratedConfigPath] = []byte(
+				"version = 3\n  enable_unprivileged_ports = true\n  enable_unprivileged_icmp = true\n")
+			m := testManager(f)
+
+			node := "alice-k8s-demo-cp"
+			var err error
+			if role == "worker" {
+				node = "alice-k8s-demo-small-1"
+				f.setNodeProc("alice-k8s-demo-cp", 2, 3906244)
+				if _, cpErr := m.ProvisionCP("alice", "demo", IsolationContainer,
+					DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, nil); cpErr != nil {
+					t.Fatalf("ProvisionCP: %v", cpErr)
+				}
+				// The worker answers nothing for /proc: probe fails.
+				err = m.ProvisionWorker("alice", "demo", IsolationContainer,
+					DesiredGroup{Name: "small", CPU: "2", Memory: "4GB", Disk: "40GB"},
+					node, "10.0.0.1")
+			} else {
+				_, err = m.ProvisionCP("alice", "demo", IsolationContainer,
+					DesiredGroup{CPU: "2", Memory: "4GB", Disk: "40GB"}, nil)
+			}
+			if err == nil {
+				t.Fatal("provision succeeded with an unmeasurable node; it must fail closed")
+			}
+			if !f.deleted[node] {
+				t.Errorf("%s was created and left behind after a failed provision; "+
+					"Decide only recreates a MISSING instance, so this node is never retried. calls=%v",
+					node, f.calls)
+			}
+		})
 	}
 }

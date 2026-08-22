@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,28 @@ func (m *Manager) DeleteVM(name string) error {
 	return m.host.Delete(name)
 }
 
+// abandon removes an instance whose provisioning failed after it was
+// created, and returns the original error.
+//
+// Decide() re-emits ActionCreateCP / ActionCreateWorker only when an
+// instance is MISSING, so anything left behind here is never retried
+// and never replaced: the cluster stays in error with a running
+// instance consuming its full size, and on the worker path the store
+// never learns about it either — invisible to `cluster status` and to
+// the autoscaler, exactly the shape of #1498's leaked node.
+//
+// The removal is best-effort by design: the provisioning failure is
+// what the caller needs to see, and a delete that also fails only adds
+// a second symptom of the same broken host. It is logged so the orphan
+// is not silent.
+func (m *Manager) abandon(name string, cause error) error {
+	if err := m.DeleteVM(name); err != nil {
+		log.Printf("[cluster] %s failed to provision (%v) and could not be removed (%v); "+
+			"it will not be retried while the instance exists", name, cause, err)
+	}
+	return cause
+}
+
 const bootstrapScriptPath = "/root/containarium-bootstrap.sh"
 
 // pushFile writes a file into a node, creating its parent directory
@@ -221,18 +244,18 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, iso Isolation, cpSize 
 	}
 	ip, err := m.host.WaitReady(name, m.waitReadyTimeout)
 	if err != nil {
-		return "", fmt.Errorf("control-plane VM %s not ready: %w", name, err)
+		return "", m.abandon(name, fmt.Errorf("control-plane VM %s not ready: %w", name, err))
 	}
 	bin, err := m.k3sBinary()
 	if err != nil {
-		return "", err
+		return "", m.abandon(name, err)
 	}
 	if err := m.pushFile(name, K3sBinaryPath, bin, "0755"); err != nil {
-		return "", fmt.Errorf("push k3s binary: %w", err)
+		return "", m.abandon(name, fmt.Errorf("push k3s binary: %w", err))
 	}
 	kubeletArgs, err := m.containerKubeletArgs(iso, spec)
 	if err != nil {
-		return "", fmt.Errorf("control-plane kubelet args: %w", err)
+		return "", m.abandon(name, fmt.Errorf("control-plane kubelet args: %w", err))
 	}
 	script := RenderServerScript(ServerBootstrap{
 		TLSSANs:     append([]string{ip}, tlsSANs...),
@@ -240,10 +263,10 @@ func (m *Manager) ProvisionCP(tenant, clusterName string, iso Isolation, cpSize 
 		KubeletArgs: kubeletArgs,
 	})
 	if err := m.pushFile(name, bootstrapScriptPath, []byte(script), "0755"); err != nil {
-		return "", fmt.Errorf("push bootstrap script: %w", err)
+		return "", m.abandon(name, fmt.Errorf("push bootstrap script: %w", err))
 	}
 	if _, err := m.host.Exec(name, []string{"sh", bootstrapScriptPath}); err != nil {
-		return "", fmt.Errorf("control-plane bootstrap: %w", err)
+		return "", m.abandon(name, fmt.Errorf("control-plane bootstrap: %w", err))
 	}
 	return ip, nil
 }
@@ -276,17 +299,17 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g D
 		return fmt.Errorf("create worker node: %w", err)
 	}
 	if _, err := m.host.WaitReady(vmName, m.waitReadyTimeout); err != nil {
-		return fmt.Errorf("worker VM %s not ready: %w", vmName, err)
+		return m.abandon(vmName, fmt.Errorf("worker VM %s not ready: %w", vmName, err))
 	}
 	bin, err := m.k3sBinary()
 	if err != nil {
 		return err
 	}
 	if err := m.pushFile(vmName, K3sBinaryPath, bin, "0755"); err != nil {
-		return fmt.Errorf("push k3s binary: %w", err)
+		return m.abandon(vmName, fmt.Errorf("push k3s binary: %w", err))
 	}
 	if err := m.pushFile(vmName, AgentTokenPath, token, "0600"); err != nil {
-		return fmt.Errorf("push join token: %w", err)
+		return m.abandon(vmName, fmt.Errorf("push join token: %w", err))
 	}
 	// A container-class worker cannot derive its own containerd
 	// template: k3s agent writes config.toml only after retrieving
@@ -297,19 +320,19 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g D
 	if iso == IsolationContainer {
 		generated, err := m.host.Read(cp, ContainerdGeneratedConfigPath)
 		if err != nil {
-			return fmt.Errorf("read containerd config from %s: %w", cp, err)
+			return m.abandon(vmName, fmt.Errorf("read containerd config from %s: %w", cp, err))
 		}
 		tmpl, err := DeriveContainerdTemplate(generated)
 		if err != nil {
-			return fmt.Errorf("derive containerd template: %w", err)
+			return m.abandon(vmName, fmt.Errorf("derive containerd template: %w", err))
 		}
 		if err := m.pushFile(vmName, ContainerdConfigTemplatePath, tmpl, "0644"); err != nil {
-			return fmt.Errorf("push containerd template: %w", err)
+			return m.abandon(vmName, fmt.Errorf("push containerd template: %w", err))
 		}
 	}
 	kubeletArgs, err := m.containerKubeletArgs(iso, spec)
 	if err != nil {
-		return fmt.Errorf("worker kubelet args: %w", err)
+		return m.abandon(vmName, fmt.Errorf("worker kubelet args: %w", err))
 	}
 	script := RenderAgentScript(AgentBootstrap{
 		ServerURL:   "https://" + cpIP + ":6443",
@@ -317,10 +340,10 @@ func (m *Manager) ProvisionWorker(tenant, clusterName string, iso Isolation, g D
 		KubeletArgs: kubeletArgs,
 	})
 	if err := m.pushFile(vmName, bootstrapScriptPath, []byte(script), "0755"); err != nil {
-		return fmt.Errorf("push bootstrap script: %w", err)
+		return m.abandon(vmName, fmt.Errorf("push bootstrap script: %w", err))
 	}
 	if _, err := m.host.Exec(vmName, []string{"sh", bootstrapScriptPath}); err != nil {
-		return fmt.Errorf("worker bootstrap: %w", err)
+		return m.abandon(vmName, fmt.Errorf("worker bootstrap: %w", err))
 	}
 	return nil
 }
