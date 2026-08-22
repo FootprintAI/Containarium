@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 )
 
 // stagesBackend fakes exactly what Create touches on the baked-image path.
@@ -14,7 +15,9 @@ import (
 // anything unimplemented panics and names the gap.
 type stagesBackend struct {
 	incus.Backend
-	waitNetworkErr error
+	waitNetworkErr  error
+	createdConfig   incus.ContainerConfig
+	setLabelsCalled bool
 }
 
 func (b *stagesBackend) GetImageAliasProperties(string) (map[string]string, bool, error) {
@@ -27,12 +30,18 @@ func (b *stagesBackend) GetImageAliasProperties(string) (map[string]string, bool
 	}, true, nil
 }
 
-func (b *stagesBackend) CreateContainer(incus.ContainerConfig) error { return nil }
-func (b *stagesBackend) StartContainer(string) error                 { return nil }
-func (b *stagesBackend) StopContainer(string, bool) error            { return nil }
-func (b *stagesBackend) DeleteContainer(string) error                { return nil }
-func (b *stagesBackend) SetLabels(string, map[string]string) error   { return nil }
-func (b *stagesBackend) Exec(string, []string) error                 { return nil }
+func (b *stagesBackend) CreateContainer(c incus.ContainerConfig) error {
+	b.createdConfig = c
+	return nil
+}
+func (b *stagesBackend) StartContainer(string) error      { return nil }
+func (b *stagesBackend) StopContainer(string, bool) error { return nil }
+func (b *stagesBackend) DeleteContainer(string) error     { return nil }
+func (b *stagesBackend) SetLabels(string, map[string]string) error {
+	b.setLabelsCalled = true
+	return nil
+}
+func (b *stagesBackend) Exec(string, []string) error { return nil }
 func (b *stagesBackend) WriteFile(string, string, []byte, string) error {
 	return nil
 }
@@ -97,7 +106,6 @@ func TestCreate_ObservesStagesInOrder(t *testing.T) {
 	want := []CreateStage{
 		StageCreateInstance,
 		StageStartInstance,
-		StageSetLabels,
 		StageWaitNetwork,
 		StageCreateUser,
 		StageGetInfo,
@@ -152,6 +160,35 @@ func TestCreate_FailedStageIsStillObserved(t *testing.T) {
 	}
 	if _, ok := log.durations[StageTotal]; ok {
 		t.Errorf("total must not be observed on a failed create (observed: %v)", log.stages)
+	}
+}
+
+// TestCreate_LabelsRideInTheCreateRequest pins the fold: labels (including
+// the OS-type label) arrive in CreateContainer's own ExtraConfig, and
+// SetLabels is never called from Create — there is no longer a separate
+// GetInstance+UpdateInstance round-trip pair on the create path.
+func TestCreate_LabelsRideInTheCreateRequest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	backend := &stagesBackend{}
+	m := NewWithBackend(backend)
+	opts := stagesOpts()
+	opts.Labels = map[string]string{"team": "infra"}
+
+	if _, err := m.Create(opts); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if backend.setLabelsCalled {
+		t.Error("SetLabels was called; labels should ride in CreateContainer's ExtraConfig instead")
+	}
+
+	got := backend.createdConfig.ExtraConfig
+	if got[incus.LabelPrefix+"team"] != "infra" {
+		t.Errorf("ExtraConfig[%q] = %q, want %q", incus.LabelPrefix+"team", got[incus.LabelPrefix+"team"], "infra")
+	}
+	if _, ok := got[incus.LabelPrefix+ostype.OSTypeLabelKey]; !ok {
+		t.Errorf("ExtraConfig missing the OS-type label (key %q): %v", incus.LabelPrefix+ostype.OSTypeLabelKey, got)
 	}
 }
 

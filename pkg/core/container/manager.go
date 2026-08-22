@@ -175,6 +175,23 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		}
 	}
 
+	// Labels (including OS type) ride in the create request itself via
+	// ExtraConfig, rather than a separate post-create SetLabels call.
+	// SetLabels is GetInstance + UpdateInstance — two more API round-trips
+	// on every create for a fresh instance that has no prior labels to
+	// merge against. Folding them in removes that pair entirely.
+	if opts.Labels == nil {
+		opts.Labels = make(map[string]string)
+	}
+	opts.Labels[ostype.OSTypeLabelKey] = ostype.LabelValue(opts.OSType)
+	if opts.Verbose {
+		fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
+	}
+	labelConfig := make(map[string]string, len(opts.Labels))
+	for k, v := range opts.Labels {
+		labelConfig[incus.LabelPrefix+k] = v
+	}
+
 	config := incus.ContainerConfig{
 		Name:                   containerName,
 		Image:                  image,
@@ -184,6 +201,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		EnablePodmanPrivileged: opts.EnablePodmanPrivileged,
 		AutoStart:              opts.AutoStart,
 		Env:                    otelEnvVars(opts, containerName),
+		ExtraConfig:            labelConfig,
 	}
 
 	// Windows VMs: set instance type and enforce minimum resources
@@ -273,21 +291,6 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		// Clean up on failure
 		_ = m.incus.DeleteContainer(containerName)
 		return nil, fmt.Errorf("failed to start container: %w", err)
-	}
-
-	// Set labels (including OS type)
-	if opts.Labels == nil {
-		opts.Labels = make(map[string]string)
-	}
-	opts.Labels[ostype.OSTypeLabelKey] = ostype.LabelValue(opts.OSType)
-	if opts.Verbose {
-		fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
-	}
-	if err := m.timed(StageSetLabels, func() error {
-		return m.incus.SetLabels(containerName, opts.Labels)
-	}); err != nil {
-		_ = m.cleanup(containerName)
-		return nil, fmt.Errorf("failed to set labels: %w", err)
 	}
 
 	// Windows VM: separate provisioning flow
