@@ -25,7 +25,10 @@ type fakeHost struct {
 	isolations map[string]Isolation
 	stopErr    error
 	deleteErr  error
-	// deleted records every instance Delete removed.
+	execErr    error
+	// deleted records every instance Delete removed, so a test can
+	// assert the removal happened without reading it back out of the
+	// call log.
 	deleted map[string]bool
 }
 
@@ -77,6 +80,9 @@ func (f *fakeHost) Read(name, path string) ([]byte, error) {
 }
 func (f *fakeHost) Exec(name string, cmd []string) (string, error) {
 	f.record("exec %s:%s", name, strings.Join(cmd, " "))
+	if f.execErr != nil {
+		return "", f.execErr
+	}
 	// Keyed on the whole argv first so a test can stub two commands
 	// that share an argv0 (cat /proc/cpuinfo vs cat /proc/meminfo);
 	// argv0 alone remains for the stubs that predate that need.
@@ -795,5 +801,88 @@ func TestFailedProvisionLeavesNoOrphanInstance(t *testing.T) {
 					node, f.calls)
 			}
 		})
+	}
+}
+
+// #1498, second half: a node name that is released and later reused
+// can never rejoin unless the control plane forgets it.
+//
+// k3s stores a per-node secret `<node>.node-password.k3s` in
+// kube-system and checks it on every join. Deleting the Kubernetes
+// Node object does not delete that secret — cluster-autoscaler deletes
+// the Node, we delete the instance, and the secret survives both. A
+// later node created under the same name generates a fresh password,
+// the stored hash does not match, and the control plane answers 403
+// forever:
+//
+//	unable to verify password for node <name>: hash does not match
+//
+// In run 21 that node retried every ~8s for 19 minutes: invisible to
+// kubectl, absent from `cluster status`, and consuming its full size.
+//
+// Order matters. The secret must be cleared AFTER the instance is
+// gone: a running agent re-creates the secret on its next request, so
+// clearing first would leave the stale password behind again.
+func TestForgetNodeClearsTheNodePasswordAfterDeletingTheInstance(t *testing.T) {
+	f := newFakeHost()
+	m := testManager(f)
+
+	if err := m.ForgetNode("alice", "demo", "alice-k8s-demo-small-2"); err != nil {
+		t.Fatalf("ForgetNode: %v", err)
+	}
+
+	stopAt, deleteAt, forgetAt := -1, -1, -1
+	for i, c := range f.calls {
+		switch {
+		case c == "stop alice-k8s-demo-small-2":
+			stopAt = i
+		case c == "delete alice-k8s-demo-small-2":
+			deleteAt = i
+		case strings.Contains(c, "node-password"):
+			forgetAt = i
+		}
+	}
+	if stopAt < 0 || deleteAt < 0 {
+		t.Fatalf("node was not stopped and deleted: %v", f.calls)
+	}
+	if forgetAt < 0 {
+		t.Fatalf("the control plane was never told to forget the node password: %v", f.calls)
+	}
+	if !(stopAt < deleteAt && deleteAt < forgetAt) {
+		t.Errorf("want stop -> delete -> forget, got stop=%d delete=%d forget=%d in %v",
+			stopAt, deleteAt, forgetAt, f.calls)
+	}
+
+	// The command must name THIS node's secret, run against the
+	// control plane, and tolerate the secret's absence — a node that
+	// never joined has none, and that is not a failure.
+	forget := f.calls[forgetAt]
+	for _, want := range []string{
+		"alice-k8s-demo-cp:",
+		"alice-k8s-demo-small-2.node-password.k3s",
+		"kube-system",
+		"--ignore-not-found",
+	} {
+		if !strings.Contains(forget, want) {
+			t.Errorf("forget command %q is missing %q", forget, want)
+		}
+	}
+}
+
+// A control plane that cannot be reached must not turn a completed
+// removal into a failed one: the instance is already gone, and
+// reporting failure would have the autoscaler retry a delete that
+// cannot succeed. The stale password is a real problem, so it is
+// surfaced — but as the non-fatal thing it is.
+func TestForgetNodeSucceedsWhenTheControlPlaneCannotBeReached(t *testing.T) {
+	f := newFakeHost()
+	f.execErr = errors.New("control plane unreachable")
+	m := testManager(f)
+
+	if err := m.ForgetNode("alice", "demo", "alice-k8s-demo-small-2"); err != nil {
+		t.Fatalf("ForgetNode must not fail because the control plane is unreachable: %v", err)
+	}
+	if _, ok := f.deleted["alice-k8s-demo-small-2"]; !ok {
+		t.Error("the instance was not deleted")
 	}
 }

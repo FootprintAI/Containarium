@@ -34,6 +34,16 @@ type stateHost struct {
 	capacityErr     error
 	// isolations records the class each node was created with (#1429).
 	isolations map[string]clustercore.Isolation
+	// onDelete fires inside Delete, before the instance is removed.
+	// It exists so a test can drive a reconciler pass into the middle
+	// of a DeleteNodes batch — the interleaving that recreated a
+	// drained node in production (#1498) and cannot be reproduced by
+	// calling the two in sequence.
+	onDelete func(name string)
+	// execCalls records every Exec argv, so a test can assert on what
+	// the control plane was actually told to do rather than on the
+	// code that was supposed to tell it.
+	execCalls []string
 }
 
 type stateVM struct {
@@ -106,11 +116,22 @@ func (h *stateHost) Stop(name string) error {
 
 func (h *stateHost) Delete(name string) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if _, ok := h.vms[name]; !ok {
+		h.mu.Unlock()
 		return fmt.Errorf("no vm %s", name)
 	}
 	delete(h.vms, name)
+	hook := h.onDelete
+	h.mu.Unlock()
+
+	// Fired with the instance already gone and the caller not yet
+	// returned — the production window, where a reconciler tick sees
+	// a group short of a target that has not been lowered yet
+	// (#1498). Outside the lock, because the hook re-enters this fake
+	// through the reconciler exactly as a real tick would.
+	if hook != nil {
+		hook(name)
+	}
 	return nil
 }
 
@@ -172,7 +193,11 @@ func (h *stateHost) Exec(name string, cmd []string) (string, error) {
 			return fmt.Sprintf("MemTotal:%15d kB\n", (bytes-6_144)/1024), nil
 		}
 	}
-	if len(cmd) >= 2 && cmd[1] == "kubectl" {
+	h.execCalls = append(h.execCalls, name+": "+strings.Join(cmd, " "))
+	// Only `kubectl get nodes` lists nodes. Answering the node list to
+	// every kubectl subcommand would make a `delete secret` look like
+	// a success no matter what it was handed.
+	if len(cmd) >= 3 && cmd[1] == "kubectl" && cmd[2] == "get" {
 		var b strings.Builder
 		for vm := range h.vms {
 			fmt.Fprintf(&b, "%s   Ready   <none>   1m   v-test\n", vm)
@@ -180,6 +205,13 @@ func (h *stateHost) Exec(name string, cmd []string) (string, error) {
 		return b.String(), nil
 	}
 	return "", nil
+}
+
+// execs returns a copy of the recorded Exec argv list.
+func (h *stateHost) execs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.execCalls...)
 }
 
 func (h *stateHost) ClusterVMs(tenant, clusterName string) (clustercore.Observed, error) {

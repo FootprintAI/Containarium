@@ -136,6 +136,54 @@ func (m *Manager) abandon(name string, cause error) error {
 	return cause
 }
 
+// NodePasswordSecret is the secret k3s stores per node in kube-system
+// and checks on every join. Deleting the Kubernetes Node object does
+// not remove it, so a node name that is released and reused is
+// refused forever unless it is cleared (#1498).
+func NodePasswordSecret(node string) string { return node + ".node-password.k3s" }
+
+// ForgetNode removes a worker node AND the control plane's memory of
+// it: the instance, then the k3s node-password secret that would
+// otherwise refuse any future node of the same name.
+//
+// Why the secret matters. k3s writes `<node>.node-password.k3s` into
+// kube-system on first join and compares it on every subsequent one.
+// cluster-autoscaler deletes the Kubernetes Node; we delete the
+// instance; neither touches that secret. Node names are derived from
+// the group and an index, so a released name comes back — and when it
+// does the new agent generates a fresh password, the stored hash does
+// not match, and the control plane answers 403 indefinitely:
+//
+//	unable to verify password for node <name>: hash does not match
+//
+// The node never registers, so it is invisible to kubectl and absent
+// from `cluster status` while consuming its full size (#1498, run 21:
+// 19 minutes of retries at ~8s intervals).
+//
+// Order is deliberate: the instance goes FIRST. A running agent
+// re-creates the secret on its next request, so clearing it while the
+// node still runs would simply leave a fresh stale password behind.
+//
+// A control plane that cannot be reached does NOT fail the removal.
+// The instance is already gone; returning an error would have the
+// autoscaler retry a deletion that has nothing left to delete. The
+// stale secret is real, so it is logged rather than swallowed.
+func (m *Manager) ForgetNode(tenant, clusterName, vmName string) error {
+	if err := m.DeleteVM(vmName); err != nil {
+		return err
+	}
+	cp := CPName(tenant, clusterName)
+	if _, err := m.host.Exec(cp, []string{
+		K3sBinaryPath, "kubectl", "delete", "secret",
+		NodePasswordSecret(vmName), "-n", "kube-system", "--ignore-not-found",
+	}); err != nil {
+		log.Printf("[cluster] %s deleted, but its node-password secret could not be cleared on %s: %v; "+
+			"a future node named %s will be refused with \"hash does not match\" until it is removed",
+			vmName, cp, err, vmName)
+	}
+	return nil
+}
+
 const bootstrapScriptPath = "/root/containarium-bootstrap.sh"
 
 // pushFile writes a file into a node, creating its parent directory

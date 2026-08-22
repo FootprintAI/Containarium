@@ -204,19 +204,38 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 			return nil, status.Errorf(codes.NotFound, "node %q is not in group %q", n.GetName(), g.Name)
 		}
 	}
-	for _, n := range req.Nodes {
-		// CA has already drained the node; removing the VM is safe.
-		if err := s.mgr.DeleteVM(n.GetName()); err != nil {
-			return nil, status.Errorf(codes.Internal, "delete %s: %v", n.GetName(), err)
-		}
-		_ = s.store.DeleteNode(ctx, owner, name, n.GetName())
-	}
+	// The target is lowered BEFORE anything is destroyed (#1498).
+	//
+	// The reconciler ticks independently and derives each group's
+	// desired minimum from EffectiveTarget(), so any pass that lands
+	// while the store still counts a node we have already destroyed
+	// will faithfully rebuild it — and the rebuilt node reuses the
+	// released name, which k3s refuses forever (see ForgetNode). Doing
+	// this last left a window one DeleteVM wide, seconds against a 15s
+	// tick, and run 21 landed in it.
+	//
+	// Ordering it this way makes the failure modes converge downward:
+	// if a delete below fails, the group is left with a target lower
+	// than its node count, which the reconciler will not act on
+	// (it only creates up to Min, never scales down) and which the
+	// autoscaler retries. The reverse — a target higher than reality —
+	// is the one state that resurrects a drained node.
 	target := g.EffectiveTarget() - int32(len(req.Nodes)) //nolint:gosec // batch length is bounded by the group's int32 max_nodes (validated above)
 	if target < g.MinNodes {
 		target = g.MinNodes
 	}
 	if err := s.setTarget(ctx, c, g.Name, target); err != nil {
 		return nil, err
+	}
+	for _, n := range req.Nodes {
+		// CA has already drained the node; removing the VM is safe.
+		// ForgetNode also clears the control plane's node-password
+		// secret, without which a later node of the same name can
+		// never join (#1498).
+		if err := s.mgr.ForgetNode(owner, name, n.GetName()); err != nil {
+			return nil, status.Errorf(codes.Internal, "delete %s: %v", n.GetName(), err)
+		}
+		_ = s.store.DeleteNode(ctx, owner, name, n.GetName())
 	}
 	_ = s.store.AppendEvent(ctx, owner, name, clusterstore.Event{
 		At: time.Now().UTC(), Kind: clusterstore.EventScaleDown, Group: g.Name,

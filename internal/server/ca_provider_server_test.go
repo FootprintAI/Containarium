@@ -246,3 +246,109 @@ func TestCAProvider_TemplateAndNodeMapping(t *testing.T) {
 		t.Fatalf("provider id = %q", nodes.Instances[0].Id)
 	}
 }
+
+// #1498: scale-down must survive a reconciler pass landing INSIDE the
+// DeleteNodes batch.
+//
+// TestCAProvider_DeleteNodesAndDecrease already runs a reconciler pass
+// after DeleteNodes returns and asserts the node is not resurrected —
+// and it passed throughout, because by then the target has been
+// lowered. Production interleaved differently: the loop ticks every
+// 15s and DeleteVM (stop, then delete) takes seconds, so a pass landed
+// between the instance being destroyed and the target being lowered.
+// It saw target=1 with zero workers, and created the node the
+// autoscaler had just drained. The replacement then reused the node
+// name, which k3s refuses forever (see the manager-side test), so the
+// cluster carried an instance it did not know about until the run
+// timed out.
+//
+// The hook is the point of the test: the pass has to happen mid-batch,
+// and calling the two in sequence cannot express that.
+func TestCAProvider_DeleteNodesIsNotUndoneByAConcurrentReconcilerPass(t *testing.T) {
+	client, srv, rec, host := caRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
+		t.Fatal(err)
+	}
+	rec.ReconcileOnce(ctx) // two small workers
+	if _, ok := host.vms["alice-k8s-demo-small-2"]; !ok {
+		t.Fatalf("setup did not produce a second worker: %v", vmNames(host))
+	}
+
+	// A reconciler tick lands while the instance is being destroyed.
+	var passes int
+	host.onDelete = func(string) {
+		passes++
+		rec.ReconcileOnce(ctx)
+	}
+
+	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-2"}},
+	}); err != nil {
+		t.Fatalf("DeleteNodes: %v", err)
+	}
+	if passes == 0 {
+		t.Fatal("the mid-batch reconciler pass never ran; the test proves nothing")
+	}
+
+	host.onDelete = nil
+	rec.ReconcileOnce(ctx) // let anything queued settle
+
+	if _, ok := host.vms["alice-k8s-demo-small-2"]; ok {
+		t.Error("a reconciler pass inside the batch recreated the drained node (#1498)")
+	}
+	workers := 0
+	for name := range host.vms {
+		if strings.HasPrefix(name, "alice-k8s-demo-small-") {
+			workers++
+		}
+	}
+	if workers != 1 {
+		t.Errorf("small group has %d instances, want 1: %v", workers, vmNames(host))
+	}
+}
+
+// The mechanism behind the test above, asserted directly: no instance
+// may be destroyed while the store still advertises a target that
+// counts it. Any reconciler pass in that window is entitled to rebuild
+// the node, so the ordering — not the width of the window — is the
+// fix.
+func TestCAProvider_TargetIsLoweredBeforeAnyInstanceIsDestroyed(t *testing.T) {
+	client, srv, rec, host := caRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
+		t.Fatal(err)
+	}
+	rec.ReconcileOnce(ctx)
+
+	var targetAtDelete int32 = -1
+	host.onDelete = func(string) {
+		c, err := srv.Store().Get(ctx, "alice", "demo")
+		if err != nil {
+			t.Errorf("store.Get inside delete: %v", err)
+			return
+		}
+		for _, g := range c.NodeGroups {
+			if g.Name == "small" {
+				targetAtDelete = g.EffectiveTarget()
+			}
+		}
+	}
+
+	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-2"}},
+	}); err != nil {
+		t.Fatalf("DeleteNodes: %v", err)
+	}
+	if targetAtDelete != 1 {
+		t.Errorf("target was %d while the instance was being destroyed, want 1 (already lowered)", targetAtDelete)
+	}
+}
