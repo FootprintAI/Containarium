@@ -14,12 +14,19 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "containarium-k8s.name" . }}-sshpiper
+      # Literal "sshpiper", NOT the chart-name-prefixed variant other
+      # resources use: the daemon's default-deny NetworkPolicy hardcodes
+      # this exact label to admit gateway->box traffic (pkg/core/box/k8s/
+      # objects.go, sshpiperNameLabel) and the standalone deploy/k8s/
+      # sshpiper/*.yaml manifests use the same convention. Changing it here
+      # silently breaks that ingress rule on every NetworkPolicy-enforcing
+      # CNI (#1492).
+      app.kubernetes.io/name: sshpiper
       app.kubernetes.io/instance: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "containarium-k8s.name" . }}-sshpiper
+        app.kubernetes.io/name: sshpiper
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ include "containarium-k8s.sshpiperServiceAccountName" . }}

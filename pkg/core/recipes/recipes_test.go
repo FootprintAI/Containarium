@@ -163,7 +163,6 @@ func TestRisingWaveRecipe(t *testing.T) {
 		"--listen-addr 0.0.0.0:4566", // a loopback bind makes the published port unreachable
 		"-p 4566:4566",               // published on the box for SSH local-forward
 		"--restart=always",           // survives box reboot and SSH logout
-		"--user root",                // root-owned named volume must be writable
 		"/dev/tcp/127.0.0.1/4566",    // readiness gate: boot failure surfaces at deploy time
 	} {
 		if !strings.Contains(joined, want) {
@@ -265,5 +264,118 @@ func TestResolveParametersDefaultsAndRequired(t *testing.T) {
 func TestParamEnvName(t *testing.T) {
 	if got := ParamEnvName("hf_repo"); got != "CONTAINARIUM_PARAM_HF_REPO" {
 		t.Errorf("ParamEnvName: got %q", got)
+	}
+}
+
+// TestMem0Recipe locks the invariants that make the mem0 box safe to expose:
+// the memory store never comes up without a Postgres password, telemetry is
+// off, and the managed model-gateway (not a key in the box) drives extraction
+// and embedding when the daemon brokers models.
+func TestMem0Recipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("mem0")
+	if err != nil {
+		t.Fatalf("expected built-in recipe mem0: %v", err)
+	}
+	if r.RequiresGpu {
+		t.Error("mem0 should not require a GPU")
+	}
+	// API on 8000, dashboard on 3000 — the dashboard is optional at deploy but
+	// its route is always declared, so enabling it needs no catalog change.
+	if len(r.Ports) != 2 || r.Ports[0].ContainerPort != 8000 || r.Ports[1].ContainerPort != 3000 {
+		t.Errorf("mem0 should expose 8000 (api) + 3000 (dashboard); got %+v", r.Ports)
+	}
+	// Memories outlive the container: pgdata and the history log sit on the
+	// box volume, not in the image or a podman-managed volume.
+	if len(r.Volumes) != 1 || r.Volumes[0].Path != "/var/lib/mem0" {
+		t.Errorf("mem0 should persist under /var/lib/mem0; got %+v", r.Volumes)
+	}
+	// The gateway keeps the real provider key out of the box and meters mem0's
+	// own LLM/embedding calls per tenant.
+	if r.ModelGatewayProvider != "openai" {
+		t.Errorf("mem0 model_gateway_provider: got %q want openai", r.ModelGatewayProvider)
+	}
+	// postgres_password is the one required parameter — a memory store must
+	// never come up with a default credential.
+	var pw *pb.RecipeParam
+	for _, p := range r.Parameters {
+		if p.Name == "postgres_password" {
+			pw = p
+		}
+	}
+	if pw == nil || !pw.Required || pw.Default != "" {
+		t.Errorf("postgres_password must be required with no default; got %+v", pw)
+	}
+	if pw != nil && pw.Type != "password" {
+		t.Errorf("postgres_password type: got %q want password", pw.Type)
+	}
+	if _, err := ResolveParameters(r, map[string]string{}); err == nil {
+		t.Error("resolving without postgres_password should fail (required)")
+	}
+	// Every secret-bearing parameter must render masked in a UI.
+	for _, name := range []string{"admin_password", "jwt_secret", "openai_api_key"} {
+		for _, p := range r.Parameters {
+			if p.Name == name && p.Type != "password" {
+				t.Errorf("parameter %q type: got %q want password", name, p.Type)
+			}
+		}
+	}
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"--restart=always", // survives box reboot and SSH logout
+		"--env-file",       // literal env semantics, never bash-sourced
+		"MEM0_TELEMETRY=false",
+		"AUTH_DISABLED=false",        // the API is publicly routed; auth stays on
+		"listen_addresses=127.0.0.1", // Postgres never reaches the box's routable iface
+		"alembic upgrade head",       // the image runs no migrations on its own
+		"CONTAINARIUM_MODEL_GATEWAY_URL",
+		"CONTAINARIUM_GATEWAY_TOKEN",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("mem0 post_start missing %q", want)
+		}
+	}
+	// Upstream's CMD is a dev server (uvicorn --reload over a bind-mounted
+	// source tree). The recipe must override it, never inherit it.
+	if strings.Contains(joined, "--reload") {
+		t.Error("mem0 post_start must not run uvicorn --reload (upstream's dev CMD)")
+	}
+	// The arm64-only published image would silently fail to run on an amd64
+	// host; the recipe builds from source instead.
+	if strings.Contains(joined, "mem0/mem0-api-server") {
+		t.Error("mem0 must build from source, not pull the arm64-only published image")
+	}
+	// Regression: upstream's init-db.sh creates mem0_app with psql's \gexec,
+	// which is a META-command — honoured only on stdin (their heredoc). Passed
+	// through `psql -c` it is sent as literal SQL and fails with a syntax
+	// error, which a live deploy caught. Keep the check-then-create form.
+	if strings.Contains(joined, "gexec") {
+		t.Error("mem0 post_start must not use psql \\gexec (a meta-command; invalid via psql -c)")
+	}
+	// Regression: upstream pins the pure-Python `psycopg` but builds on
+	// python:3.12-slim, which has no libpq — the image builds clean and then
+	// crash-loops on "no pq wrapper available". A live deploy caught this.
+	if !strings.Contains(joined, "psycopg[binary]") {
+		t.Error("mem0 build must add psycopg[binary]; upstream's slim base ships no libpq")
+	}
+	// Regression: mem0 validates admin_email with pydantic's EmailStr, which
+	// rejects RFC 6761 special-use domains outright. A default in one of them
+	// 422s at the seeding step and fails the whole deploy.
+	var email *pb.RecipeParam
+	for _, p := range r.Parameters {
+		if p.Name == "admin_email" {
+			email = p
+		}
+	}
+	if email == nil {
+		t.Fatal("mem0 must declare admin_email")
+	}
+	for _, reserved := range []string{".local", ".localhost", ".invalid", ".test", ".example"} {
+		if strings.HasSuffix(email.Default, reserved) {
+			t.Errorf("admin_email default %q uses reserved domain %q; EmailStr rejects it with 422", email.Default, reserved)
+		}
 	}
 }

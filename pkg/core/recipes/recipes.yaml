@@ -848,16 +848,16 @@ recipes:
       - podman volume create risingwave-data
       - 'podman pull "docker.io/risingwavelabs/risingwave:${CONTAINARIUM_PARAM_VERSION}" >/dev/null'
       - podman rm -f risingwave >/dev/null 2>&1 || true
-      # --user root: named Podman volumes are created root-owned and the
-      # image's own user cannot write to the mount. The box is already an
-      # unprivileged LXC, so root in the inner container crosses no new
-      # boundary.
+      # No --user override: the image sets no User, so it already runs as root
+      # and writes the root-owned named volume fine (verified on a live box,
+      # v3.0.0). An explicit --user root would be a no-op that reads like a
+      # deliberate privilege choice.
       #
       # --listen-addr is passed explicitly even though 0.0.0.0:4566 is the
       # frontend default: a loopback bind would silently make the published
       # port unreachable, and that failure looks like a hung psql.
       - |
-        podman run -d --name risingwave --restart=always --user root \
+        podman run -d --name risingwave --restart=always \
           -p 4566:4566 -p 5691:5691 -p 4560:4560 \
           -v risingwave-data:/var/lib/risingwave \
           -e RUST_BACKTRACE=1 \
@@ -881,6 +881,262 @@ recipes:
         echo "risingwave: :4566 did not open in 180s -- check 'podman logs risingwave'" >&2
         exit 1
 
+  # mem0 is the AGENT MEMORY service: a long-lived box running the mem0
+  # OSS REST server (FastAPI) over pgvector, so agents get durable
+  # add/search memory scoped by user_id / agent_id / run_id instead of
+  # starting every run blank.
+  #
+  # Built from source on purpose. The only published mem0 API image
+  # (docker.io/mem0/mem0-api-server) is arm64-only and a single stale
+  # tag, so an amd64 host cannot run it; server/Dockerfile is a plain
+  # python:3.12-slim build that pulls mem0ai from PyPI and builds on
+  # both arches. Upstream's own docker-compose is explicitly a DEV
+  # stack (uvicorn --reload, source bind-mounted over the image) — this
+  # recipe deliberately does not reuse it.
+  - id: mem0
+    name: Mem0
+    description: Agent memory server — mem0's REST API on :8000 backed by pgvector Postgres, with optional dashboard. Memories scoped by user_id/agent_id/run_id and persisted on a box volume.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 8GB
+      disk: 40GB
+    ports:
+      - container_port: 8000
+        subdomain: api
+      - container_port: 3000
+        subdomain: dashboard
+    volumes:
+      - name: mem0-data
+        path: /var/lib/mem0
+    # Route mem0's own LLM + embedding calls through the managed model-gateway.
+    # mem0 honours OPENAI_BASE_URL for both its LLM and its embedder, so the box
+    # never holds a real provider key and every extraction/embedding call is
+    # metered per tenant. Inert when the daemon holds no OpenAI key — the box
+    # then falls back to the openai_api_key parameter (self-hosted default).
+    model_gateway_provider: openai
+    parameters:
+      - name: version
+        label: Mem0 version
+        description: Git tag of mem0ai/mem0 to build the API server from.
+        type: string
+        default: v2.0.18
+      - name: postgres_password
+        label: Postgres password
+        description: Password for the bundled pgvector Postgres. Never leaves the box — Postgres binds 127.0.0.1 only.
+        type: password
+        required: true
+      - name: admin_email
+        label: Admin email
+        description: >-
+          Email for the first (admin) mem0 account, created at deploy. Must be a
+          real, non-reserved domain: mem0 validates it with pydantic's EmailStr,
+          which rejects special-use domains (.local, .localhost, .invalid, .test)
+          with a 422 that would fail the deploy at the seeding step.
+        type: string
+        default: admin@example.com
+      - name: admin_password
+        label: Admin password
+        description: Password for the admin account. Empty generates one and writes it to /var/lib/mem0/credentials in the box.
+        type: password
+        default: ""
+      - name: jwt_secret
+        label: JWT secret
+        description: Signing secret for mem0's own dashboard sessions. Empty generates one.
+        type: password
+        default: ""
+      - name: openai_api_key
+        label: OpenAI API key
+        description: >-
+          Provider key, used ONLY when the daemon seeds no managed
+          model-gateway. Leave empty on a platform that brokers models — the
+          gateway token is injected instead and no real key enters the box.
+          REQUIRED when there is no gateway: mem0 constructs its embedder at
+          import, so a keyless box never finishes starting.
+        type: password
+        default: ""
+      - name: llm_model
+        label: LLM model
+        description: Model mem0 uses to extract facts from conversations.
+        type: string
+        default: gpt-5-mini
+      - name: embedder_model
+        label: Embedding model
+        description: Model mem0 uses to embed memories for semantic search.
+        type: string
+        default: text-embedding-3-small
+      - name: dashboard_url
+        label: Public API URL for the dashboard
+        description: >-
+          Public https URL this box's API port will be reachable at (the
+          `api` subdomain route). The dashboard is a browser app, so it needs
+          the URL the BROWSER can reach, which the box cannot know itself.
+          Empty skips the dashboard and runs API-only.
+        type: string
+        default: ""
+    post_start:
+      - mkdir -p /var/lib/mem0/pgdata /var/lib/mem0/history
+      - command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl git openssl python3 >/dev/null; }
+      # pgvector is pinned to a multi-arch tag (amd64 + arm64). Bound to
+      # 127.0.0.1: the box shares one netns with its podman containers, and
+      # only ports named in `ports:` are routed publicly — binding loopback
+      # keeps Postgres off the box's routable interface regardless.
+      - 'podman pull docker.io/pgvector/pgvector:0.8.6-pg17 >/dev/null'
+      - podman rm -f mem0-pg >/dev/null 2>&1 || true
+      - |
+        podman run -d --name mem0-pg --restart=always --network host \
+          --shm-size 128m \
+          -e POSTGRES_USER=postgres \
+          -e "POSTGRES_PASSWORD=${CONTAINARIUM_PARAM_POSTGRES_PASSWORD}" \
+          -v /var/lib/mem0/pgdata:/var/lib/postgresql/data \
+          docker.io/pgvector/pgvector:0.8.6-pg17 \
+          -c listen_addresses=127.0.0.1 >/dev/null
+      - |
+        for _ in $(seq 1 60); do
+          if podman exec mem0-pg pg_isready -q -U postgres 2>/dev/null; then break; fi
+          sleep 2
+        done
+        podman exec mem0-pg pg_isready -q -U postgres || {
+          echo "mem0: Postgres did not become ready in 120s -- check 'podman logs mem0-pg'" >&2; exit 1; }
+      # Two databases, mirroring upstream's init-db.sh: `postgres` holds the
+      # vector memories, `mem0_app` holds users/api-keys/audit. Both idempotent
+      # so a re-run is safe.
+      # Postgres has no CREATE DATABASE IF NOT EXISTS, so this is a
+        # check-then-create. Upstream's init-db.sh uses psql's \gexec, which is
+        # a META-command: it works only on stdin (their heredoc), and is sent as
+        # literal SQL — a syntax error — when passed through `psql -c`.
+      - |
+        podman exec -u postgres mem0-pg psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'mem0_app'" | grep -q 1 \
+          || podman exec -u postgres mem0-pg createdb mem0_app
+        podman exec -u postgres mem0-pg psql -v ON_ERROR_STOP=1 -d postgres \
+          -c "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null
+      # stdout is silenced, stderr deliberately is NOT: a bad tag or a network
+        # failure otherwise surfaces as a bare "exit 128" with no reason. The
+        # guard makes a re-run a no-op instead of a clone-into-non-empty-dir
+        # failure.
+      - |
+        if [ ! -d /var/lib/mem0/src/.git ]; then
+          rm -rf /var/lib/mem0/src
+          git -c advice.detachedHead=false clone --depth 1 --branch "${CONTAINARIUM_PARAM_VERSION}" \
+            https://github.com/mem0ai/mem0 /var/lib/mem0/src >/dev/null
+        fi
+      # Upstream's server/requirements.txt asks for plain `psycopg`, the
+        # pure-Python distribution, while server/Dockerfile builds on
+        # python:3.12-slim — which ships no libpq. The image builds clean and
+        # then cannot reach Postgres at all ("no pq wrapper available") on
+        # every startup. psycopg[binary] is a manylinux wheel with libpq
+        # bundled, so this needs no apt layer. Drop when upstream fixes it.
+      - |
+        grep -q 'psycopg\[binary\]' /var/lib/mem0/src/server/requirements.txt \
+          || printf '\npsycopg[binary]>=3.2.8\n' >> /var/lib/mem0/src/server/requirements.txt
+      # Build context is server/ — its Dockerfile is self-contained (installs
+      # mem0ai from PyPI), unlike dev.Dockerfile which needs the repo root.
+      - 'podman build -t "localhost/mem0-api-server:${CONTAINARIUM_PARAM_VERSION}" /var/lib/mem0/src/server >/dev/null'
+      # env-file semantics keep values literal (base64 secrets contain '=' and
+      # '/'; nothing here is shell-expanded) — never bash-source this file.
+      - |
+        JWT="${CONTAINARIUM_PARAM_JWT_SECRET}"
+        [ -n "$JWT" ] || JWT="$(openssl rand -base64 48 | tr -d '\n')"
+        # Managed gateway wins over any user-supplied key. The OpenAI SDK
+        # appends /chat/completions and /embeddings to its base URL, and the
+        # gateway strips the /v1/model/<provider> prefix before forwarding —
+        # so the base must carry the upstream's own /v1.
+        if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
+          KEY="$CONTAINARIUM_GATEWAY_TOKEN"
+          BASE="${CONTAINARIUM_MODEL_GATEWAY_URL}/v1"
+        else
+          KEY="${CONTAINARIUM_PARAM_OPENAI_API_KEY}"
+          BASE="https://api.openai.com/v1"
+          # mem0's server builds its embedder at IMPORT time (main.py's
+          # module-level initialize_state), so an absent key is not a degraded
+          # box that fails on add/search -- uvicorn dies before it binds and
+          # --restart=always turns that into a silent crash loop. Fail the
+          # deploy here, where the reason is still visible.
+          if [ -z "$KEY" ]; then
+            echo "mem0: no managed model-gateway is seeded, so the openai_api_key parameter is required -- redeploy with it set" >&2
+            exit 1
+          fi
+        fi
+        umask 077
+        {
+          echo "POSTGRES_HOST=127.0.0.1"
+          echo "POSTGRES_PORT=5432"
+          echo "POSTGRES_DB=postgres"
+          echo "POSTGRES_USER=postgres"
+          echo "POSTGRES_PASSWORD=${CONTAINARIUM_PARAM_POSTGRES_PASSWORD}"
+          echo "POSTGRES_COLLECTION_NAME=memories"
+          echo "APP_DB_NAME=mem0_app"
+          echo "JWT_SECRET=$JWT"
+          echo "AUTH_DISABLED=false"
+          echo "MEM0_TELEMETRY=false"
+          echo "MEM0_DEFAULT_LLM_MODEL=${CONTAINARIUM_PARAM_LLM_MODEL}"
+          echo "MEM0_DEFAULT_EMBEDDER_MODEL=${CONTAINARIUM_PARAM_EMBEDDER_MODEL}"
+          echo "OPENAI_API_KEY=$KEY"
+          echo "OPENAI_BASE_URL=$BASE"
+          echo "DASHBOARD_URL=${CONTAINARIUM_PARAM_DASHBOARD_URL}"
+          echo "PYTHONUNBUFFERED=1"
+        } > /var/lib/mem0/env
+      # The image's own CMD carries uvicorn --reload (upstream ships one
+      # Dockerfile for dev and prod) and nothing runs migrations. Override with
+      # an explicit alembic-then-serve: alembic is idempotent, so --restart
+      # replays it harmlessly.
+      - podman rm -f mem0-api >/dev/null 2>&1 || true
+      - |
+        podman run -d --name mem0-api --restart=always --network host \
+          --env-file /var/lib/mem0/env \
+          -v /var/lib/mem0/history:/app/history \
+          "localhost/mem0-api-server:${CONTAINARIUM_PARAM_VERSION}" \
+          sh -c "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000" >/dev/null
+      - |
+        for _ in $(seq 1 90); do
+          if curl -fsS http://127.0.0.1:8000/auth/setup-status >/dev/null 2>&1; then break; fi
+          sleep 2
+        done
+        curl -fsS http://127.0.0.1:8000/auth/setup-status >/dev/null || {
+          echo "mem0: API did not come up in 180s -- check 'podman logs mem0-api'" >&2; exit 1; }
+      # Headless equivalent of upstream's scripts/seed.sh: register the first
+      # admin, log in, mint an API key. Done here rather than left to the
+      # dashboard wizard so the box is usable from the CLI the moment it is up,
+      # and so a dashboard-less (API-only) deploy is still complete.
+      - |
+        umask 077
+        ADMIN_PW="${CONTAINARIUM_PARAM_ADMIN_PASSWORD}"
+        [ -n "$ADMIN_PW" ] || ADMIN_PW="$(openssl rand -base64 18 | tr -d '\n')"
+        NEEDS="$(curl -fsS http://127.0.0.1:8000/auth/setup-status | python3 -c 'import sys,json; print(json.load(sys.stdin).get("needsSetup", True))')"
+        if [ "$NEEDS" = "True" ]; then
+          EMAIL="${CONTAINARIUM_PARAM_ADMIN_EMAIL}" PW="$ADMIN_PW" python3 -c 'import json,os; print(json.dumps({"name":"Admin","email":os.environ["EMAIL"],"password":os.environ["PW"]}))' > /var/lib/mem0/.register.json
+          curl -fsS -X POST http://127.0.0.1:8000/auth/register -H 'Content-Type: application/json' -d @/var/lib/mem0/.register.json >/dev/null
+          rm -f /var/lib/mem0/.register.json
+        fi
+        EMAIL="${CONTAINARIUM_PARAM_ADMIN_EMAIL}" PW="$ADMIN_PW" python3 -c 'import json,os; print(json.dumps({"email":os.environ["EMAIL"],"password":os.environ["PW"]}))' > /var/lib/mem0/.login.json
+        TOKEN="$(curl -fsS -X POST http://127.0.0.1:8000/auth/login -H 'Content-Type: application/json' -d @/var/lib/mem0/.login.json | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')"
+        rm -f /var/lib/mem0/.login.json
+        API_KEY="$(curl -fsS -X POST http://127.0.0.1:8000/api-keys -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"label": "recipe-deploy"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["key"])')"
+        {
+          echo "email=${CONTAINARIUM_PARAM_ADMIN_EMAIL}"
+          echo "password=$ADMIN_PW"
+          echo "api_key=$API_KEY"
+        } > /var/lib/mem0/credentials
+        echo "mem0: admin=${CONTAINARIUM_PARAM_ADMIN_EMAIL} api_key=$API_KEY (also at /var/lib/mem0/credentials, mode 0600)"
+      # Dashboard is optional and needs the PUBLIC api URL, because it runs in
+      # the operator's browser, not in the box. Its image substitutes
+      # NEXT_PUBLIC_* at container start (entrypoint.sh), so one build serves
+      # any hostname.
+      - |
+        if [ -n "${CONTAINARIUM_PARAM_DASHBOARD_URL}" ]; then
+          podman build -t "localhost/mem0-dashboard:${CONTAINARIUM_PARAM_VERSION}" /var/lib/mem0/src/server/dashboard >/dev/null
+          podman rm -f mem0-dashboard >/dev/null 2>&1 || true
+          podman run -d --name mem0-dashboard --restart=always --network host \
+            -e "NEXT_PUBLIC_API_URL=${CONTAINARIUM_PARAM_DASHBOARD_URL}" \
+            -e API_INTERNAL_URL=http://127.0.0.1:8000 \
+            -e NEXT_PUBLIC_INSTANCE_NAME=Containarium \
+            "localhost/mem0-dashboard:${CONTAINARIUM_PARAM_VERSION}" >/dev/null
+          echo "mem0: dashboard on :3000 (API ${CONTAINARIUM_PARAM_DASHBOARD_URL})"
+        else
+          echo "mem0: dashboard skipped (dashboard_url empty) -- API-only deploy"
+        fi
+      - 'echo "mem0: REST API up on :8000 -- POST /memories, POST /search, header X-API-Key"'
   # oci-service is the GENERIC single-container service mechanism: run ANY
   # caller-specified OCI image as an always-on service in an isolated box.
   # It is deliberately application-agnostic (open-core line: OSS ships the
@@ -1002,7 +1258,11 @@ recipes:
       - 'curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh'
       # awscli is how the interceptor Lambda gets deployed and how the gateway
       # is wired; the agentcore CLI does not cover those verbs.
-      - 'curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install --update && rm -rf /tmp/awscli.zip /tmp/aws'
+      # `uname -m` yields exactly the suffixes AWS publishes (x86_64 /
+      # aarch64), so this is a 1:1 map — hardcoding x86_64 failed
+      # provisioning outright on an arm64 host, since this step is not
+      # best-effort.
+      - 'curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscli.zip && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install --update && rm -rf /tmp/awscli.zip /tmp/aws'
       - mkdir -p /opt/agentcore
       # Point the SDK at the secrets mount rather than copying anything to
       # disk. Conditional, so a box provisioned before the secret exists still
