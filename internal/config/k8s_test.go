@@ -118,6 +118,26 @@ func TestK8sValidate(t *testing.T) {
 	}
 }
 
+// TestK8sValidateRequiresUpstreamKeyWhenGatewayEnabled covers #1496: a Pipe
+// programmed with no upstream credential makes sshpiper fall back to
+// password auth against a box that only accepts pubkeys, so every
+// gateway-routed connection fails no matter how correct the client's key is.
+// Gateway routing is enabled by a non-empty GatewayNamespace (the documented
+// default, "agent-gateway") — so that combination without an upstream key
+// secret configured must fail startup instead of producing a Pipe that can
+// never authenticate.
+func TestK8sValidateRequiresUpstreamKeyWhenGatewayEnabled(t *testing.T) {
+	if err := (K8s{GatewaySSHPort: 22, GatewayNamespace: "agent-gateway"}).Validate(); err == nil {
+		t.Error("gateway enabled with no GatewayUpstreamKeySecret should be invalid (#1496)")
+	}
+	if err := (K8s{GatewaySSHPort: 22, GatewayNamespace: "agent-gateway", GatewayUpstreamKeySecret: "sshpiper-upstream-key"}).Validate(); err != nil {
+		t.Errorf("gateway enabled with an upstream key secret configured should be valid: %v", err)
+	}
+	if err := (K8s{GatewaySSHPort: 22, GatewayNamespace: ""}).Validate(); err != nil {
+		t.Errorf("gateway disabled (empty namespace) should not require an upstream key: %v", err)
+	}
+}
+
 // TestGetBoolTruthyValues verifies the accepted truthy spellings (superset of
 // the historical "1").
 func TestGetBoolTruthyValues(t *testing.T) {

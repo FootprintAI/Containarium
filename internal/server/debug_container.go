@@ -70,11 +70,11 @@ func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugConta
 	resp.RecentSshdRejections = recentSshdLines(req.Username, 8)
 
 	// Advertised SSH entrypoint (sentinel host), or empty for direct/in-network
-	// mode. Populated before diagnose() so the remediation hints can drop the
+	// mode. Populated before Diagnose() so the remediation hints can drop the
 	// sentinel boilerplate when there is no sentinel to check (#1011).
 	resp.SshIngressHost = s.sshHost
 
-	resp.LikelyCause, resp.NextActions = diagnose(req.Username, resp)
+	resp.LikelyCause, resp.NextActions = Diagnose(req.Username, resp)
 
 	resp.SourceRepo = SourceRepo
 	resp.DaemonVersion = version.GetVersion()
@@ -198,21 +198,29 @@ func recentSshdLines(username string, limit int) []string {
 	return matches
 }
 
-// diagnose looks at the collected facts and produces a one-line likely_cause
+// Diagnose looks at the collected facts and produces a one-line likely_cause
 // plus an ordered list of next_actions for the caller. The ordering encodes
-// what to try first.
-func diagnose(username string, r *pb.DebugContainerResponse) (string, []string) {
+// what to try first — least destructive first.
+//
+// Exported (and pure) so the CLI package can assert that every containarium
+// command this prints actually parses against the real command tree. It once
+// recommended a flag that did not exist, which fails at the worst possible
+// moment: read by someone already locked out, following it literally (#1478).
+func Diagnose(username string, r *pb.DebugContainerResponse) (string, []string) {
 	switch r.ContainerState {
 	case "missing":
 		return "container does not exist on this backend",
 			[]string{
-				fmt.Sprintf("create the container: containarium create %s --ssh-keys <pubkey>", username),
+				fmt.Sprintf("create the container: containarium create %s --ssh-key <path-to-pubkey>", username),
 				"check that you're connecting to the right backend (the daemon may be on a different host)",
 			}
 	case "stopped":
 		return "container exists but is stopped",
 			[]string{
-				fmt.Sprintf("start the container: containarium start %s", username),
+				// `wake`, not `start` — `start` is app-scoped
+				// (`containarium app start <app>`) and does not exist at the
+				// top level, so the old hint died with "unknown command".
+				fmt.Sprintf("start the container: containarium wake %s", username),
 				"if start fails, inspect with: containarium info " + username,
 			}
 	case "running":
@@ -227,10 +235,15 @@ func diagnose(username string, r *pb.DebugContainerResponse) (string, []string) 
 	}
 
 	if !r.HostUserExists {
+		// Non-destructive repair FIRST. This list is read by someone who is
+		// locked out and working down it in order; leading with delete+recreate
+		// puts "destroy the box" ahead of "restore the account it lost", for a
+		// fault where the container and its data are perfectly intact.
 		return "host-level Linux user is missing — the daemon never created the account or it was deleted",
 			[]string{
-				fmt.Sprintf("recreate the container: containarium delete %s && containarium create %s --ssh-keys <pubkey>", username, username),
+				fmt.Sprintf("preview the repair: containarium sync-accounts --user %s --dry-run", username),
 				fmt.Sprintf("sync host accounts from incus: containarium sync-accounts --user %s", username),
+				fmt.Sprintf("DESTRUCTIVE, last resort — this deletes the box and its data: containarium delete %s && containarium create %s --ssh-key <path-to-pubkey>", username, username),
 			}
 	}
 

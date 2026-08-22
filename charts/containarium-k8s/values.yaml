@@ -53,6 +53,23 @@ gateway:
     #   kubectl -n <gateway ns> create secret generic sshpiper-server-key --from-file=server_key=host_key
     serverKeySecret: sshpiper-server-key
     resources: {}
+  # -- Upstream credential: how sshpiper authenticates itself to each box
+  # (the sshpiper -> box hop, distinct from the server key above, which is
+  # sshpiper's identity to clients). REQUIRED whenever gateway routing is
+  # enabled (`namespace` non-empty, the default) — the daemon refuses to
+  # start without it (#1496): with no upstream credential, sshpiper falls
+  # back to password auth, which every box refuses (PasswordAuthentication
+  # no), so every gateway-routed connection fails no matter how correct the
+  # client's key is. Generate a DEDICATED keypair, never reuse a tenant's own
+  # key:
+  #   ssh-keygen -t ed25519 -N '' -f ./sshpiper_upstream
+  #   kubectl -n <gateway ns> create secret generic sshpiper-upstream-key \
+  #     --from-file=ssh-privatekey=./sshpiper_upstream
+  # Then set upstreamPublicKey to the contents of ./sshpiper_upstream.pub and
+  # upstreamKeySecret to the Secret name above. Leave both empty only if you
+  # have also cleared `namespace` to disable gateway routing entirely.
+  upstreamPublicKey: ""
+  upstreamKeySecret: ""
 
 # -- Box CRD operator (issue #995): run the Box controller so
 # `kubectl apply -f box.yaml` (and GitOps) create boxes declaratively, alongside
@@ -73,6 +90,13 @@ storageClass: ""
 # kernel. Set to "runsc" to run boxes inside a gVisor sandbox instead; that
 # requires a RuntimeClass named "runsc" in the cluster AND gVisor installed on
 # every node the daemon schedules onto, or box pods will not start.
+#
+# Caveat: `kubectl port-forward`/`kubectl exec` directly against a `runsc`-
+# scheduled box pod does not work (a gVisor networking characteristic, not a
+# Containarium bug — see kubernetes-sigs/agent-sandbox#158, and this repo's
+# own #1489). Real pod-to-pod networking is unaffected, so reach a gVisor box
+# through the sshpiper gateway (`gateway.service`, below) — never by
+# port-forwarding straight to the box pod.
 runtimeClass: ""
 
 # -- Annotations to add to all resources

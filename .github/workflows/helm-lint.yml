@@ -37,4 +37,11 @@ jobs:
         run: helm lint charts/containarium-k8s
 
       - name: Template render (smoke test)
-        run: helm template containarium charts/containarium-k8s > /dev/null
+        # gateway.upstreamKeySecret must be set or the chart's own #1496 guard
+        # (daemon-deployment.yaml) intentionally refuses to render at all —
+        # unrelated to what this smoke test checks (template syntax/rendering
+        # errors in general), so satisfy it with a placeholder value.
+        run: |
+          helm template containarium charts/containarium-k8s \
+            --set gateway.upstreamKeySecret=smoke-test-placeholder \
+            > /dev/null

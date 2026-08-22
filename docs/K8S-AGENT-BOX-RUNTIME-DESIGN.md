@@ -43,8 +43,11 @@ its known_hosts pin, and its scoped key are identical to the LXC path.
 | SSH ingress | **In-cluster `sshpiper` Deployment** | Reuse the sentinel reverse-proxy pattern; per-user fan-out behind one IP. |
 | Isolation | **Namespace-per-tenant + default-deny NetworkPolicy** | Soft multi-tenancy; the K8s expression of eBPF deny-by-default + egress allowlist. |
 
-Hard isolation (gVisor/Kata `RuntimeClass`) and ephemeral/pooled lifecycles
-are explicitly **out of scope for v1** — see "Deferred".
+Ephemeral/pooled lifecycles are explicitly **out of scope for v1** — see
+"Deferred". Hard isolation via `RuntimeClass` shipped after v1 (#1122, see
+"Shipped features" below) — gVisor (`runsc`) works for a box's real,
+designed traffic (SSH/MCP over pod networking), with one known upstream
+gap on local debugging access; Kata remains unevaluated.
 
 ## Topology
 
@@ -493,6 +496,17 @@ handing it `kubectl` or a kube-apiserver token.*
   same scoped-JWT model, the same CLI (`containarium box create`) whether the
   box lands on LXC or K8s. Teams standardize the agent interface once and pick
   the substrate per environment.
+- **The access path survives hard isolation.** The standard way most
+  agent-sandbox tooling reaches a pod — `kubectl exec` / `kubectl
+  port-forward` — does not work against a gVisor (`runsc`)-scheduled pod
+  ([kubernetes-sigs/agent-sandbox#158](https://github.com/kubernetes-sigs/agent-sandbox/issues/158),
+  "planned to be supported later," no committed timeline). An operator who
+  wants gVisor's kernel boundary *and* a working access path is stuck
+  choosing one. Containarium's box access was never built on that
+  mechanism — it's SSH through the sshpiper gateway over real pod
+  networking (see "Hard isolation via RuntimeClass" below) — so turning on
+  `runsc` costs nothing on the access side; #1489 tracks the one gap
+  (direct port-forward to the box pod, which nothing here depends on).
 
 In one line: **the safest blast-radius for an autonomous agent in your cluster —
 SSH-native, RBAC-minimal, default-deny — with zero new control plane.**
@@ -665,8 +679,8 @@ env-agnostic `pkg/core/box/k8s.Config` — so `pkg/core` reads no environment.
 | `CONTAINARIUM_K8S_GATEWAY_NAMESPACE` | `agent-gateway` | Namespace sshpiper runs in |
 | `CONTAINARIUM_K8S_TENANT_NS_PREFIX` | `tenant-` | Prefix for per-tenant namespaces |
 | `CONTAINARIUM_K8S_STORAGE_CLASS` | _(empty = no PVC)_ | StorageClass for persistent data |
-| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY` | _(empty)_ | Public key sshpiper→box authenticates with |
-| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET` | _(empty)_ | Secret name holding the matching private key |
+| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY` | _(empty)_ | Public key sshpiper→box authenticates with. **Required when `GATEWAY_NAMESPACE` is non-empty** — see below |
+| `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET` | _(empty)_ | Secret name holding the matching private key. **Required when `GATEWAY_NAMESPACE` is non-empty** (#1496): with gateway routing enabled and no upstream credential, sshpiper falls back to password auth, which every box refuses — `K8s.Validate()` refuses daemon startup rather than produce that silently-broken Pipe. Clear `GATEWAY_NAMESPACE` to disable gateway routing and drop this requirement |
 | `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY` | `0` | `1` skips box host-key pinning (escape hatch, not recommended) |
 | `CONTAINARIUM_K8S_DEFAULT_MEMORY_REQUEST` | `256Mi` | Default per-box memory request when the box sets none; invalid → built-in default |
 | `CONTAINARIUM_K8S_DEFAULT_MEMORY_LIMIT` | `1Gi` | Default per-box memory limit (hard cap, noisy-neighbor guard); invalid → built-in default |
@@ -740,6 +754,111 @@ The GPU *type* (L4, A100, etc.) is expressed via node affinity, driven by a
 `gpu-spec` label on the box when set — otherwise K8s schedules to any GPU
 node. This is deliberately different from the LXC/GCE path, where the daemon
 selects the exact machine type; on K8s, the scheduler owns that decision.
+
+### Hard isolation via RuntimeClass (#1122)
+
+`Config.RuntimeClass` (`CONTAINARIUM_K8S_RUNTIME_CLASS` / chart
+`runtimeClass`) sets `RuntimeClassName` on every box pod. Empty (default)
+leaves it unset — pods run on `runc`, sharing the host kernel, byte-identical
+to pre-#1122 behavior. Set to `runsc` to schedule boxes behind a gVisor
+sandbox instead, on a node pool where gVisor is installed and a `RuntimeClass`
+named `runsc` exists. Daemon-wide, not per-box: the runtime is a property of
+the node pool the daemon schedules onto.
+
+**Verified working** (live kind cluster with `runsc` installed as a
+containerd runtime handler, manual QA 2026-08-22, following up on this PR):
+pod genuinely runs on the gVisor kernel; SSH/dropbear handshake and the
+`ForceCommand` pin; a full MCP `initialize` round-trip; `shell_exec`
+(fork/pipe/exec); `write_file`; PVC-backed storage permissions (identical to
+`runc`); and default-deny `NetworkPolicy` enforcement (both directions) —
+all pass over the box's real, designed traffic path (SSH/MCP over pod
+networking, the same path the sshpiper gateway uses in production).
+
+![A terminal recording: kubectl port-forward to a gVisor-scheduled box fails, then a real SSH/MCP session against the same box succeeds over pod networking, running shell_exec to show the gVisor kernel string](images/gvisor-showcase.gif)
+
+*Recorded 2026-08-22 on a local kind+gVisor test cluster. Shows `kubectl
+port-forward` failing against the `runsc` box, then a real SSH session
+completing an MCP `initialize` and a `shell_exec(cat /proc/version)` call
+against the box's actual K8s Service DNS name — real pod-to-pod traffic,
+not a port-forward or a `kubectl exec`. The recording does not include the
+sshpiper gateway hop itself: that hop hit a separate, still-unresolved
+authentication failure during this same verification pass (#1493), so this
+clip demonstrates the box's reachability and function under `runsc`, not a
+fully gateway-through-to-box round trip.*
+
+**Known gap:** `kubectl port-forward` dialed directly against a
+`runsc`-scheduled box pod does not work — `connection refused`, even
+though the same port is fully reachable over real pod-to-pod networking
+(demonstrated above). This is an upstream gVisor/kubelet characteristic,
+not a Containarium defect: the exact same failure is documented
+independently at
+[kubernetes-sigs/agent-sandbox#158](https://github.com/kubernetes-sigs/agent-sandbox/issues/158)
+("planned to be supported later" — no committed timeline as of this
+writing). Tracked here as #1489.
+
+> **Correction (2026-08-22):** the line originally here also claimed
+> `kubectl exec` does not work against a `runsc` box. Re-verified directly
+> against a live `runsc` box and that claim is **wrong** — `kubectl exec`
+> (spawning a fresh process: `id`, `uname -a`, `ls`, an interactive `-it`
+> shell) works normally under gVisor every time it was tried. Only
+> `kubectl port-forward` — dialing an *existing listening socket* from
+> outside the sandbox — fails. The distinction matters: `exec` doesn't
+> touch the sandboxed network stack at all, so it was never actually
+> exposed to the same limitation.
+>
+> Separately, this same verification pass found the Helm-chart-deployed
+> gateway path has two more issues, neither specific to gVisor: the
+> chart's default-deny `NetworkPolicy` can't actually match the chart's
+> own sshpiper pod (#1492, label mismatch — blocks real traffic
+> regardless of runtime class), and even after fixing that, sshpiper's own
+> pubkey check rejected a client key that byte-for-byte matched what was
+> registered (#1493, root cause not yet isolated). **So "the same path the
+> sshpiper gateway uses in production" below is not yet independently
+> confirmed working end-to-end on the Helm-chart path** — the recording
+> above validates the box's own reachability and correctness under
+> `runsc`, using a workaround for the gateway hop specifically.
+
+> **Update (2026-08-22, later the same day):** #1492 and #1493's root
+> cause (#1496 — the Helm chart's default has no upstream keypair
+> configured, so sshpiper falls back to password auth) are both fixed and
+> merged (PR #1495). The gateway path was then re-verified for real: a
+> fresh cluster, `main` at the tip (including #1495), deployed via
+> `helm install` exactly as `KIND-QUICKSTART.md`'s Helm quickstart now
+> documents — no workarounds, no stand-in pods.
+>
+> ![A terminal recording: kubectl port-forward failing against the gVisor-scheduled box, then a real client connecting through the sshpiper gateway's NodePort and completing an MCP session against the same box](images/gvisor-gateway-showcase.gif)
+>
+> *Recorded 2026-08-22 on a fresh kind+gVisor cluster, `main` @ commit
+> including #1495. sshpiper's own log for this session:
+> `ssh connection pipe created ... (username [mybox]) -> ... (username
+> [agent])` — a real pipe, authenticated with the configured upstream
+> keypair (`auth [privatekey]`), not the password fallback #1496 was
+> about. The client then completes a full MCP `initialize` +
+> `shell_exec(cat /proc/version)` round trip through that pipe, returning
+> `Linux version 4.19.0-gvisor` — proving the box, the gateway, and gVisor
+> all work together, for real, end to end.*
+>
+> **"The same path the sshpiper gateway uses in production" is now
+> independently confirmed working end-to-end on the Helm-chart deployment.**
+> The correction above is left in place rather than deleted — it was
+> accurate when written, and the gap it named is exactly what #1495 closed.
+>
+> One more gap found in the process, unrelated to gVisor or #1492/#1496:
+> the Helm quickstart never told operators to create sshpiper's *server*
+> key Secret (`sshpiper-server-key`) — only the upstream one. Missing it
+> doesn't fail loudly like #1496 did; the sshpiper pod just sits in
+> `ContainerCreating` forever on a `FailedMount` event, easy to miss.
+> Fixed in `KIND-QUICKSTART.md` alongside this recording.
+
+**Practical consequence:** never reach a gVisor box by port-forwarding
+straight to its pod — that upstream gVisor/kubelet gap (#1489) is
+unaffected by anything above and still applies. Go through the sshpiper
+gateway instead (a NodePort/LoadBalancer, or a port-forward to
+`svc/sshpiper` itself, which is not gVisor-scheduled) — confirmed working
+end-to-end as of the update above, on the documented Helm-chart deployment
+path. See [`KIND-QUICKSTART.md`](KIND-QUICKSTART.md) and
+[`deploy/k8s/sshpiper/README.md`](../deploy/k8s/sshpiper/README.md) for
+the gateway-based access path.
 
 ### Tenant secret delivery (#1190)
 
@@ -871,8 +990,9 @@ release so the post-upgrade cleanup in step 1 works, then it gets dropped.
 
 ## Deferred (not in v1)
 
-- **Hard isolation** (gVisor/Kata `RuntimeClass`) — for tenants needing a
-  VM/syscall boundary closer to the LXC trust boundary.
+- **Kata `RuntimeClass`** — gVisor shipped instead (#1122, see "Shipped
+  features"); Kata (a VM-per-pod boundary rather than gVisor's userspace
+  kernel) remains unevaluated.
 - **Ephemeral / pooled lifecycles** — spin-up-on-connect or warm-pool leasing.
   agent-sandbox ships SandboxTemplate/SandboxWarmPool/SandboxClaim for this,
   but claim adoption is same-namespace-only (`ErrCrossNamespaceAdoption`), so
