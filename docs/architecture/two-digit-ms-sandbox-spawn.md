@@ -27,7 +27,7 @@ Derived from the code, not from a profiler — **no per-stage instrumentation ex
 | 3 | `incus.StartContainer` + `op.Wait()` — **full systemd boot** | ~1–3s | `pkg/core/incus/client.go:864` |
 | 4 | `SetLabels` | ~20–50ms | `manager.go:277` |
 | 5 | `CreateJumpServerAccount` — host `useradd` | ~100–300ms | `manager.go:301` |
-| 6 | `WaitForNetwork` — DHCP wait (~~quantized to 1s~~ fixed) | ~300–800ms | `pkg/core/incus/client.go:1289` |
+| 6 | `WaitForNetwork` — DHCP wait (~~quantized to 1s~~ fixed) | ~300–800ms | `pkg/core/incus/client.go:1305` |
 | 7 | `installPackages` | 60–600s (0 if baked) | `manager.go:371` |
 | 8 | `createUser` — 4 `Exec` + 1 `WriteFile` | ~250–750ms | `manager.go:763–810` |
 | 9 | `addSSHKeys` — 3 `Exec` + 1 `WriteFile` | ~200–600ms | `manager.go:805–838` |
@@ -35,9 +35,9 @@ Derived from the code, not from a profiler — **no per-stage instrumentation ex
 
 Three findings drive the whole design:
 
-**Finding 1 — ~1s of every create was pure quantization waste. ✅ Fixed 2026-08-21.** `WaitForNetwork` polled, then `time.Sleep(1 * time.Second)`. A container whose DHCP lease landed at 300ms returned at ~1010ms. Not a substrate cost — a two-line bug with a ~700ms average payoff on *every* create, persistent boxes included. Now polls from 25ms backing off to a 500ms cap, with the sleep clamped so a budget is never overshot by a full interval. See `pkg/core/incus/client.go:1289` and `pkg/core/incus/wait_network_test.go`.
+**Finding 1 — ~1s of every create was pure quantization waste. ✅ Fixed 2026-08-21.** `WaitForNetwork` polled, then `time.Sleep(1 * time.Second)`. A container whose DHCP lease landed at 300ms returned at ~1010ms. Not a substrate cost — a two-line bug with a ~700ms average payoff on *every* create, persistent boxes included. Now polls from 25ms backing off to a 500ms cap, with the sleep clamped so a budget is never overshot by a full interval. See `pkg/core/incus/client.go:1305` and `pkg/core/incus/wait_network_test.go`.
 
-**Finding 2 — identity seeding costs ~10 Incus exec round-trips.** Steps 8 and 9 each do a websocket-upgrading `ExecInstance` with `WaitForWS: true` per command (`pkg/core/incus/client.go:1271`). At ~50–150ms apiece that is 0.5–1.5s, and it is the same liblxc command-socket path implicated in the #755 wedge. Any design that seeds a Linux user and SSH keys at claim time cannot reach two-digit ms.
+**Finding 2 — identity seeding costs ~10 Incus exec round-trips.** Steps 8 and 9 each do a websocket-upgrading `ExecInstance` with `WaitForWS: true` per command (`pkg/core/incus/client.go:1274`). At ~50–150ms apiece that is 0.5–1.5s, and it is the same liblxc command-socket path implicated in the #755 wedge. Any design that seeds a Linux user and SSH keys at claim time cannot reach two-digit ms.
 
 **Finding 3 — the transport is already good.** `pkg/core/incus/client.go:674` uses `ConnectIncusUnix` — the native Go client over a unix socket, not CLI shell-out. There is no process-spawn tax to remove. The remaining overhead is per-operation (`op.Wait()`), not per-connection.
 
@@ -92,6 +92,8 @@ This is the right choice for three reasons:
 - **It survives the guest's network being deliberately hostile.** Network isolation policy (eBPF, `NETWORK-ISOLATION-DESIGN.md`) can lock the sandbox's netns down to nothing without severing the control channel.
 - **vsock is not available.** Incus offers vsock for VMs, not for LXC containers — the natural microVM analogue doesn't exist here, and the bind-mounted socket is the closest equivalent.
 
+One implementation caveat to burn down early in Phase 2: the mount crosses the idmap boundary. Pool members are unprivileged containers with shifted UIDs, so a host-owned `/run/containarium/pool/<member-id>/` arrives in the guest owned by an unmapped UID unless the `disk` device sets `shift=true` (idmapped mount) or the directory/socket modes are arranged so the guest's generic user can create and the host can connect. Whichever mechanism is chosen, the integration test in `internal/sandbox/dialer` must run against a real unprivileged container, not just a temp-dir socket — permissions are exactly what a same-namespace test cannot catch.
+
 ### Isolation: whole containers, claimed once, destroyed after
 
 Two-digit ms must not be bought by weakening isolation. It would be trivial and wrong to fork the task into a long-lived shared container — that is option 1 in the prior note ("a malicious snippet has alice's files").
@@ -99,6 +101,8 @@ Two-digit ms must not be bought by weakening isolation. It would be trivial and 
 Instead: **a pool member is an entire container, dedicated to exactly one task, destroyed on release and never reused.** Isolation is container-level, identical to today. The pool buys latency by moving boot earlier in time, not by sharing a boundary.
 
 This changes one decision from the prior note. That note chose **per-tenant** pools; this design uses a **single shared pool** per host. The prior reasoning assumed reuse. With destroy-on-release, no tenant ever touches a container another tenant has touched — a member is booted from a pristine image, claimed once, and destroyed. A shared pool is therefore exactly as isolating as per-tenant pools and dramatically denser: a 10-tenant host with `min_warm=3` pre-allocates 3 members, not 30.
+
+**"Shared" means shared across tenants, not across templates.** A member is provisioned at warm time — before any claim names a template — so the ready ring is keyed by `SandboxTemplate`: one ring per template the host is configured to serve, all tenant-shared. The density argument above therefore scales as `templates × min_warm`, not `tenants × min_warm`; a host serving `base` and `python` at `min_warm=3` pre-allocates 6 members regardless of tenant count. v1 ships with the `base` template only, and a claim for an unwarmed template is pool exhaustion (`RESOURCE_EXHAUSTED`, or the cold path with `allow_cold_start=true`) — not a silent substitution of a different template. Claim-time specialization ("warm a generic member, install the template on claim") is rejected for the same reason identity seeding was: it puts provisioning back on the request path.
 
 What does *not* improve: shared-kernel side channels, unchanged in either model, and unchanged from today.
 
