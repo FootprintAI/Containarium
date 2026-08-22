@@ -15,12 +15,13 @@ type CreateStage string
 
 const (
 	// StageCreateInstance is incus.CreateContainer — image/ZFS clone plus the
-	// instance record.
+	// instance record. Labels (including OS type) ride along in this same
+	// call via ExtraConfig; there used to be a separate set_labels stage
+	// (GetInstance + UpdateInstance, ~20-50ms) after StartContainer, folded
+	// away because a fresh instance has no prior labels to merge against.
 	StageCreateInstance CreateStage = "create_instance"
 	// StageStartInstance is incus.StartContainer — the full guest boot.
 	StageStartInstance CreateStage = "start_instance"
-	// StageSetLabels is the SetLabels API round-trip.
-	StageSetLabels CreateStage = "set_labels"
 	// StageJumpAccount is the host-side jump-server account creation,
 	// including authorizing any additional keys. Skipped when the create has
 	// no SSH keys.
