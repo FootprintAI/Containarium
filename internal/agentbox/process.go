@@ -90,6 +90,33 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	name, _ := args["name"].(string)
 	cwd, _ := args["cwd"].(string)
 
+	mp, err := spawnBackgroundProcess(name, command, cwd)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("process_start: %v", err)), nil
+	}
+
+	body := fmt.Sprintf(
+		"name: %s\npid: %d\ncommand: %s\nlog_path: %s\nstarted_at: %s\n",
+		mp.Name, mp.PID, mp.Command, mp.LogPath, mp.StartedAt.UTC().Format(time.RFC3339),
+	)
+	return mcp.NewToolResultText(body), nil
+}
+
+// spawnBackgroundProcess starts command under /bin/sh -c, detached via
+// Setsid, capturing combined stdout+stderr to a log file under
+// processLogDir, and registers it in processRegistry under name (auto-
+// generated if empty). Reaped asynchronously — a goroutine calls
+// cmd.Wait() — so it never zombies.
+//
+// Shared core between the process_start MCP tool (handleProcessStart) and
+// SpawnService.Spawn (gRPC, #1488 Phase 2): one implementation, two
+// transports, so a caller reaching agent-box over the fast local socket
+// gets identical spawn/reap semantics to one reaching it over MCP/SSH.
+func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) {
+	if command == "" {
+		return nil, fmt.Errorf("'command' is required")
+	}
+
 	processRegistryMu.Lock()
 	defer processRegistryMu.Unlock()
 
@@ -97,13 +124,11 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		name = fmt.Sprintf("proc-%d", time.Now().UnixNano())
 	}
 	if _, exists := processRegistry[name]; exists {
-		return mcp.NewToolResultError(fmt.Sprintf(
-				"process_start: a process named %q is already running; kill it first or pick a different name", name)),
-			nil
+		return nil, fmt.Errorf("a process named %q is already running; kill it first or pick a different name", name)
 	}
 
 	if err := os.MkdirAll(processLogDir, 0o750); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("process_start: mkdir %s: %v", processLogDir, err)), nil
+		return nil, fmt.Errorf("mkdir %s: %w", processLogDir, err)
 	}
 	logPath := filepath.Join(processLogDir, sanitizeName(name)+".log")
 	// #nosec G304 -- sanitizeName strips every char outside [A-Za-z0-9_.-],
@@ -111,11 +136,11 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	// not reachable from this construction.
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("process_start: open log %s: %v", logPath, err)), nil
+		return nil, fmt.Errorf("open log %s: %w", logPath, err)
 	}
 
-	// #nosec G204 -- process_start's contract is to spawn agent-supplied
-	// commands; arbitrary command execution is the entire feature.
+	// #nosec G204 -- spawning agent-supplied commands is the entire
+	// feature, on both transports this function serves.
 	cmd := exec.Command("/bin/sh", "-c", command)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -128,7 +153,7 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		return mcp.NewToolResultError(fmt.Sprintf("process_start: spawn: %v", err)), nil
+		return nil, fmt.Errorf("spawn: %w", err)
 	}
 
 	mp := &managedProcess{
@@ -149,11 +174,7 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		_ = logFile.Close()
 	}()
 
-	body := fmt.Sprintf(
-		"name: %s\npid: %d\ncommand: %s\nlog_path: %s\nstarted_at: %s\n",
-		mp.Name, mp.PID, mp.Command, mp.LogPath, mp.StartedAt.UTC().Format(time.RFC3339),
-	)
-	return mcp.NewToolResultText(body), nil
+	return mp, nil
 }
 
 // ----- process_list ----------------------------------------------------
