@@ -73,6 +73,10 @@
       "description": "PentestService provides automated penetration testing and vulnerability scanning"
     },
     {
+      "name": "SandboxService",
+      "description": "SandboxService is the two-digit-ms spawn path\n(docs/architecture/two-digit-ms-sandbox-spawn.md): an isolated Linux\nprocess for an agent inner loop, claimed against a pool rather than\ncreated fresh per request.\n\nA sandbox is NOT a persistent box. It has no per-tenant Linux account and\nno SSH — access is exclusively these RPCs, over a connection the daemon\nalready holds open. That is the scope cut that makes the latency target\nreachable (see the design note's \"What's in it\" section); a caller that\nneeds `ssh \u003cuser\u003e@box` wants ContainerService instead.\n\nPhase 1 (this contract's first implementation) is the cold path only —\nevery SpawnSandbox call creates a fresh container, same floor as\nContainerService.CreateContainer minus identity seeding. served_from is\nalways COLD until Phase 3 adds the warm pool; the field exists now so\nthat Phase 3 is not a breaking proto change."
+    },
+    {
       "name": "SecurityService",
       "description": "SecurityService provides container security scanning and reporting"
     },
@@ -4802,6 +4806,185 @@
         ]
       }
     },
+    "/v1/sandboxes": {
+      "post": {
+        "summary": "Spawn a sandbox",
+        "description": "Creates an ephemeral, unauthenticated-shell-free sandbox. Phase 1: always the cold path (served_from = COLD); Phase 3+: a pool claim when a warm member is ready, else RESOURCE_EXHAUSTED unless allow_cold_start is set.",
+        "operationId": "SandboxService_SpawnSandbox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SpawnSandboxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SpawnSandboxRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Sandboxes"
+        ]
+      }
+    },
+    "/v1/sandboxes/{sandboxId}": {
+      "delete": {
+        "summary": "Delete a sandbox",
+        "operationId": "SandboxService_DeleteSandbox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteSandboxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sandboxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Sandboxes"
+        ]
+      }
+    },
+    "/v1/sandboxes/{sandboxId}/exec": {
+      "post": {
+        "summary": "Execute a command in a sandbox",
+        "operationId": "SandboxService_ExecInSandbox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ExecInSandboxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sandboxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ExecInSandboxBody"
+            }
+          }
+        ],
+        "tags": [
+          "Sandboxes"
+        ]
+      }
+    },
+    "/v1/sandboxes/{sandboxId}/files": {
+      "get": {
+        "summary": "Read a file from a sandbox",
+        "description": "path is passed as a query parameter, e.g. ?path=/workspace/out.txt.",
+        "operationId": "SandboxService_ReadFileInSandbox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ReadFileInSandboxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sandboxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Sandboxes"
+        ]
+      },
+      "put": {
+        "summary": "Write a file into a sandbox",
+        "operationId": "SandboxService_WriteFileInSandbox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/WriteFileInSandboxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sandboxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/WriteFileInSandboxBody"
+            }
+          }
+        ],
+        "tags": [
+          "Sandboxes"
+        ]
+      }
+    },
     "/v1/secrets": {
       "post": {
         "summary": "Create or update a tenant secret",
@@ -8739,6 +8922,14 @@
         }
       }
     },
+    "DeleteSandboxResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "DeleteSecretResponse": {
       "type": "object",
       "properties": {
@@ -9183,6 +9374,37 @@
       "default": "EVENT_TYPE_UNSPECIFIED",
       "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update",
       "title": "EventType represents the type of resource change event"
+    },
+    "ExecInSandboxBody": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "0 = daemon default."
+        }
+      }
+    },
+    "ExecInSandboxResponse": {
+      "type": "object",
+      "properties": {
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
     },
     "GPUInfo": {
       "type": "object",
@@ -11400,6 +11622,15 @@
         }
       }
     },
+    "ReadFileInSandboxResponse": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
     "Recipe": {
       "type": "object",
       "properties": {
@@ -12054,6 +12285,54 @@
         }
       }
     },
+    "Sandbox": {
+      "type": "object",
+      "properties": {
+        "sandboxId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SandboxState"
+        },
+        "template": {
+          "$ref": "#/definitions/SandboxTemplate"
+        },
+        "servedFrom": {
+          "$ref": "#/definitions/ServedFrom"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Idle-TTL reap horizon. Unset (zero) means no TTL was requested."
+        }
+      },
+      "description": "Sandbox describes one sandbox's identity and lifecycle state."
+    },
+    "SandboxState": {
+      "type": "string",
+      "enum": [
+        "SANDBOX_STATE_UNSPECIFIED",
+        "SANDBOX_STATE_PENDING",
+        "SANDBOX_STATE_RUNNING",
+        "SANDBOX_STATE_EXITED",
+        "SANDBOX_STATE_ERROR"
+      ],
+      "default": "SANDBOX_STATE_UNSPECIFIED",
+      "description": "SandboxState is the lifecycle state of a sandbox. Deliberately smaller\nthan ContainerState (container.proto) — no Frozen, no Provisioning — a\nsandbox has no pause/resume story and Phase 1 has no baked-image install\nstep to be \"provisioning\" through.\n\n - SANDBOX_STATE_PENDING: Accepted, not yet ready for ExecInSandbox.\n - SANDBOX_STATE_RUNNING: Ready for ExecInSandbox.\n - SANDBOX_STATE_EXITED: Destroyed (via DeleteSandbox or the idle-TTL sweeper).\n - SANDBOX_STATE_ERROR: Spawn or a subsequent operation failed unrecoverably."
+    },
+    "SandboxTemplate": {
+      "type": "string",
+      "enum": [
+        "SANDBOX_TEMPLATE_UNSPECIFIED",
+        "SANDBOX_TEMPLATE_BASE"
+      ],
+      "default": "SANDBOX_TEMPLATE_UNSPECIFIED",
+      "description": "SandboxTemplate selects the guest image + provisioning a sandbox starts\nfrom. v1 ships SANDBOX_TEMPLATE_BASE only — no python/node template is\ndeclared here until one is actually implemented; a proto that advertises\nunsupported values invites callers to depend on them."
+    },
     "ScaleEvent": {
       "type": "object",
       "properties": {
@@ -12269,6 +12548,16 @@
       },
       "description": "SendAgentTaskResponse returns the peer's artifact."
     },
+    "ServedFrom": {
+      "type": "string",
+      "enum": [
+        "SERVED_FROM_UNSPECIFIED",
+        "SERVED_FROM_COLD",
+        "SERVED_FROM_POOL"
+      ],
+      "default": "SERVED_FROM_UNSPECIFIED",
+      "description": "ServedFrom names which path actually served a SpawnSandbox call, so a\ncaller measuring the two-digit-ms SLO can tell a fast sample from a slow\none instead of an opaque latency number. See the design note's \"Latency\nbudget\" section: a latency SLO whose slow path is invisible isn't one.\n\n - SERVED_FROM_COLD: Fresh container, no warm pool involved. Always this value in Phase 1.\n - SERVED_FROM_POOL: Claimed from an already-booted, already-provisioned pool member.\nPhase 3+ only."
+    },
     "SetContainerAttributionBody": {
       "type": "object",
       "properties": {
@@ -12456,6 +12745,31 @@
         "secret": {
           "$ref": "#/definitions/SecretMetadata",
           "description": "Resulting metadata after the write."
+        }
+      }
+    },
+    "SpawnSandboxRequest": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "$ref": "#/definitions/SandboxTemplate"
+        },
+        "idleTtlSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Idle TTL in seconds before the sweeper reaps an unclaimed sandbox.\n0 = daemon default."
+        },
+        "allowColdStart": {
+          "type": "boolean",
+          "description": "When set, a pool-exhausted claim falls back to the cold path instead\nof returning RESOURCE_EXHAUSTED. No effect in Phase 1 (there is no\npool to be exhausted, and the field starts wired so Phase 3 needs no\nclient-visible contract change)."
+        }
+      }
+    },
+    "SpawnSandboxResponse": {
+      "type": "object",
+      "properties": {
+        "sandbox": {
+          "$ref": "#/definitions/Sandbox"
         }
       }
     },
@@ -13586,6 +13900,30 @@
         }
       },
       "description": "WithdrawCapacityResponse confirms the backend is no longer advertising."
+    },
+    "WriteFileInSandboxBody": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string",
+          "format": "byte"
+        },
+        "mode": {
+          "type": "string",
+          "description": "e.g. \"0644\". Empty = daemon default."
+        }
+      }
+    },
+    "WriteFileInSandboxResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
     },
     "ZapAlert": {
       "type": "object",
