@@ -1,9 +1,10 @@
 #!/bin/bash
 #
 # Provision the experiment-group VM: the same shared base cluster as the
-# control group (k8s-common.sh), plus gVisor + a "runsc" RuntimeClass, plus
-# the Containarium daemon (Helm chart) configured to schedule every box pod
-# under it — pod -> gVisor -> containarium.
+# control group, INCLUDING gVisor (k8s-common.sh — gVisor is identical on
+# both sides, see README.md "What's actually under test"), plus the
+# Containarium daemon (Helm chart) configured to schedule every box pod
+# under the same runsc RuntimeClass — pod -> gVisor -> containarium.
 #
 # Gateway (SSH) routing is deliberately disabled (gateway.namespace="",
 # gateway.enabled=false): this benchmark only needs to know whether a box
@@ -46,38 +47,12 @@ done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
 load_config
-require_vars K8S_MAX_PODS AGENT_SANDBOX_VERSION CONTAINARIUM_VERSION GVISOR_RUNTIME_CLASS REMOTE_SSH_USER
+require_vars K8S_MAX_PODS AGENT_SANDBOX_VERSION CONTAINARIUM_VERSION GVISOR_RUNTIME_CLASS REMOTE_SSH_USER BENCH_SSH_KEY_FILE
+resolve_remote "$VM_NAME"
 
 log "provisioning Containarium (pod -> gVisor -> containarium) on '${VM_NAME}'"
 provision_base_k8s
-
-log "installing gVisor (${GVISOR_RUNTIME_CLASS})"
-ssh_or_local "sudo bash -s" <<REMOTE
-set -euo pipefail
-ARCH=\$(uname -m)
-URL="https://storage.googleapis.com/gvisor/releases/release/latest/\${ARCH}"
-cd /tmp
-curl -fsSLO "\${URL}/runsc" -O "\${URL}/runsc.sha512" \
-	-O "\${URL}/containerd-shim-runsc-v1" -O "\${URL}/containerd-shim-runsc-v1.sha512"
-sha512sum -c runsc.sha512 -c containerd-shim-runsc-v1.sha512
-chmod a+rx runsc containerd-shim-runsc-v1
-mv runsc containerd-shim-runsc-v1 /usr/local/bin/
-
-cat <<TOML >>/etc/containerd/config.toml
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.${GVISOR_RUNTIME_CLASS}]
-  runtime_type = "io.containerd.${GVISOR_RUNTIME_CLASS}.v1"
-TOML
-systemctl restart containerd
-
-cat <<EOF | kubectl apply -f -
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: ${GVISOR_RUNTIME_CLASS}
-handler: ${GVISOR_RUNTIME_CLASS}
-EOF
-REMOTE
+install_gvisor
 
 log "installing Helm"
 ssh_or_local "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sudo bash"

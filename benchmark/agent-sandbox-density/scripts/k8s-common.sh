@@ -1,13 +1,18 @@
 #!/bin/bash
 #
-# Shared kubeadm + CNI + agent-sandbox-controller provisioning. Both sides
-# of this benchmark run on Kubernetes now — the control group creates
-# `Sandbox` CRs directly, the experiment group creates them indirectly via
-# the Containarium daemon (see README.md "Experiment group") — so both
-# need the identical base cluster. This is that shared base: any drift
-# between the two sides here would confound the comparison (see README.md
-# "Fairness notes"). Sourced by 01-provision-k8s-control.sh and
-# 03-provision-containarium.sh, not executed directly.
+# Shared kubeadm + CNI + gVisor + agent-sandbox-controller provisioning.
+# Both sides of this benchmark run on Kubernetes, with gVisor installed and
+# every Sandbox pod scheduled under it — the control group creates `Sandbox`
+# CRs directly (kubectl), the experiment group creates them indirectly via
+# the Containarium daemon (see README.md "What's actually under test").
+# gVisor being present on BOTH sides is deliberate: it removes gVisor
+# itself as a variable, so what the benchmark actually isolates is
+# Containarium's own orchestration cost (the extra daemon hop, and the
+# request==limit CLI behavior — see README.md "Fairness notes"), not
+# "does gVisor cost density" mixed in with it. Any drift between the two
+# sides in this shared setup would confound that. Sourced by
+# 01-provision-k8s-control.sh and 03-provision-containarium.sh, not
+# executed directly.
 
 set -euo pipefail
 
@@ -87,4 +92,38 @@ REMOTE
 	log "installing agent-sandbox controller ${AGENT_SANDBOX_VERSION}"
 	ssh_or_local "kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
 	ssh_or_local "kubectl -n agent-sandbox-system wait --for=condition=available deployment/agent-sandbox-controller --timeout=180s"
+}
+
+# install_gvisor installs runsc + the containerd shim, registers it as a
+# containerd runtime handler, and creates the matching k8s RuntimeClass.
+# Called on BOTH sides (see the file header) so gVisor itself isn't a
+# variable between the two runs — only who's doing the scheduling is.
+install_gvisor() {
+	log "installing gVisor (${GVISOR_RUNTIME_CLASS})"
+	ssh_or_local "sudo bash -s" <<REMOTE
+set -euo pipefail
+ARCH=\$(uname -m)
+URL="https://storage.googleapis.com/gvisor/releases/release/latest/\${ARCH}"
+cd /tmp
+curl -fsSLO "\${URL}/runsc" -O "\${URL}/runsc.sha512" \
+	-O "\${URL}/containerd-shim-runsc-v1" -O "\${URL}/containerd-shim-runsc-v1.sha512"
+sha512sum -c runsc.sha512 -c containerd-shim-runsc-v1.sha512
+chmod a+rx runsc containerd-shim-runsc-v1
+mv runsc containerd-shim-runsc-v1 /usr/local/bin/
+
+cat <<TOML >>/etc/containerd/config.toml
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.${GVISOR_RUNTIME_CLASS}]
+  runtime_type = "io.containerd.${GVISOR_RUNTIME_CLASS}.v1"
+TOML
+systemctl restart containerd
+
+cat <<EOF | kubectl apply -f -
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: ${GVISOR_RUNTIME_CLASS}
+handler: ${GVISOR_RUNTIME_CLASS}
+EOF
+REMOTE
 }

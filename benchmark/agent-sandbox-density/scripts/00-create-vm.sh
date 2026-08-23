@@ -1,24 +1,21 @@
 #!/bin/bash
 #
-# Create a VirtualBox VM with a hard CPU/memory/disk cap for the
-# sandbox-density benchmark. VirtualBox enforces --cpus/--memory as a true
-# ceiling on the guest (not a soft/advisory limit), which is the point —
-# see README.md "Hard resource caps".
+# Create an Incus VM with a hard CPU/memory/disk cap for the
+# sandbox-density benchmark. Incus VMs are KVM-backed — limits.cpu /
+# limits.memory are a true hardware-partitioned ceiling on the guest, the
+# same guarantee a VirtualBox VM would give (see README.md "Hard resource
+# caps"). Uses Incus rather than VirtualBox deliberately: running a second
+# hypervisor's kernel module (vboxdrv) alongside an already-live KVM/Incus
+# host is an avoidable stability risk, and Incus already provides the same
+# hard-cap guarantee on a stack that's already proven on this class of
+# host.
 #
-# Two supported base-image paths, controlled by VM_BASE_ISO in config.env:
-#   - a .vdi/.vmdk disk image  -> cloned per run (fast, repeatable — the
-#     recommended path: prepare one base Ubuntu Server 24.04 image once,
-#     out of band, then run this script fresh for every benchmark run)
-#   - a .iso installer image   -> attached for a manual/interactive install;
-#     this script starts the VM and returns, it does not automate the
-#     installer
+# Boots a stock cloud image (images:ubuntu/24.04) with a generated SSH
+# keypair injected via cloud-init — no manual OS install step needed.
 #
-# Runs locally on whatever machine has VirtualBox installed. For a remote
-# host, SSH in yourself and run this script there — it deliberately does
-# not embed a remote host name (see CLAUDE.md's anonymization convention);
-# config.env's REMOTE_HOST is used by the *provisioning* scripts (01/03),
-# which SSH into the guest, not by this one, which needs to run where
-# VBoxManage actually is.
+# Runs locally on whatever machine has Incus installed. For a remote host,
+# SSH in yourself and run this script there — it deliberately does not
+# embed a remote host name (see CLAUDE.md's anonymization convention).
 #
 # Usage:
 #   scripts/00-create-vm.sh --name <vm-name>
@@ -47,52 +44,41 @@ done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
 load_config
-require_vars VM_CPUS VM_MEM_MB VM_DISK_GB VM_BASE_ISO
+require_vars VM_CPUS VM_MEM_MB VM_DISK_GB INCUS_IMAGE BENCH_SSH_PUBKEY_FILE
 
-command -v VBoxManage >/dev/null 2>&1 || die "VBoxManage not found — install VirtualBox on this machine first"
+command -v incus >/dev/null 2>&1 || die "incus not found — this must run on the hypervisor host"
+[[ -f "$BENCH_SSH_PUBKEY_FILE" ]] || die "BENCH_SSH_PUBKEY_FILE ($BENCH_SSH_PUBKEY_FILE) not found — generate a host->guest keypair first: ssh-keygen -t ed25519 -N '' -f <path>"
 
-if VBoxManage list vms | grep -q "\"${VM_NAME}\""; then
+if sudo incus list --format csv -c n | grep -qx "$VM_NAME"; then
 	die "a VM named '${VM_NAME}' already exists — run 99-teardown-vm.sh first, or pick a different --name"
 fi
 
-log "creating VM '${VM_NAME}' (cpus=${VM_CPUS} mem=${VM_MEM_MB}MB disk=${VM_DISK_GB}GB)"
-VBoxManage createvm --name "$VM_NAME" --ostype Ubuntu_64 --register
+PUBKEY=$(cat "$BENCH_SSH_PUBKEY_FILE")
 
-VBoxManage modifyvm "$VM_NAME" \
-	--cpus "$VM_CPUS" \
-	--memory "$VM_MEM_MB" \
-	--nic1 nat \
-	--natpf1 "ssh,tcp,,2222,,22" \
-	--audio none \
-	--usb off
+log "creating Incus VM '${VM_NAME}' (cpus=${VM_CPUS} mem=${VM_MEM_MB}MiB disk=${VM_DISK_GB}GB, image=${INCUS_IMAGE})"
+sudo incus launch "$INCUS_IMAGE" "$VM_NAME" --vm \
+	-c limits.cpu="$VM_CPUS" \
+	-c limits.memory="${VM_MEM_MB}MiB" \
+	-d root,size="${VM_DISK_GB}GB" \
+	-c cloud-init.user-data="#cloud-config
+ssh_authorized_keys:
+  - ${PUBKEY}
+package_update: true
+"
 
-VBoxManage storagectl "$VM_NAME" --name SATA --add sata --controller IntelAHCI
+log "waiting for the VM to get an IP and become SSH-reachable"
+IP=""
+for _ in $(seq 1 60); do
+	IP=$(sudo incus list "$VM_NAME" -c 4 --format csv 2>/dev/null | grep -oE '^[0-9.]+' || true)
+	[[ -n "$IP" ]] && break
+	sleep 3
+done
+[[ -n "$IP" ]] || die "VM '${VM_NAME}' never got an IP — check 'incus console ${VM_NAME}'"
 
-DISK_PATH="$HOME/VirtualBox VMs/${VM_NAME}/${VM_NAME}.vdi"
+for _ in $(seq 1 30); do
+	nc -z -w2 "$IP" 22 2>/dev/null && break
+	sleep 3
+done
 
-case "$VM_BASE_ISO" in
-*.vdi | *.vmdk)
-	log "cloning base image ${VM_BASE_ISO} -> ${DISK_PATH}"
-	VBoxManage clonemedium disk "$VM_BASE_ISO" "$DISK_PATH" --format VDI
-	VBoxManage modifymedium disk "$DISK_PATH" --resize $((VM_DISK_GB * 1024))
-	VBoxManage storageattach "$VM_NAME" --storagectl SATA --port 0 --device 0 --type hdd --medium "$DISK_PATH"
-	VBoxManage startvm "$VM_NAME" --type headless
-	log "VM '${VM_NAME}' started from cloned base image. SSH: ssh -p 2222 <user>@127.0.0.1"
-	;;
-*.iso)
-	log "creating a fresh ${VM_DISK_GB}GB disk and attaching installer ISO ${VM_BASE_ISO}"
-	VBoxManage createmedium disk --filename "$DISK_PATH" --size $((VM_DISK_GB * 1024)) --format VDI
-	VBoxManage storageattach "$VM_NAME" --storagectl SATA --port 0 --device 0 --type hdd --medium "$DISK_PATH"
-	VBoxManage storagectl "$VM_NAME" --name IDE --add ide
-	VBoxManage storageattach "$VM_NAME" --storagectl IDE --port 0 --device 0 --type dvddrive --medium "$VM_BASE_ISO"
-	VBoxManage startvm "$VM_NAME" --type headless
-	log "VM '${VM_NAME}' started with the installer ISO attached — complete the OS install manually" \
-		"(VBoxManage startvm ${VM_NAME} --type gui to see the console), then re-run without --type headless" \
-		"disabled, or just rerun the density scripts once SSH on port 2222 is reachable."
-	;;
-*)
-	die "VM_BASE_ISO must end in .vdi, .vmdk, or .iso — got '${VM_BASE_ISO}'"
-	;;
-esac
-
-log "done. Verify with: VBoxManage showvminfo '${VM_NAME}' | grep -E 'Memory size|Number of CPUs'"
+log "VM '${VM_NAME}' is up at ${IP}. Point config.env's REMOTE_HOST at it, or pass --name to the other scripts (they auto-resolve it)."
+log "Verify: sudo incus config show ${VM_NAME} | grep -E 'limits.cpu|limits.memory'"

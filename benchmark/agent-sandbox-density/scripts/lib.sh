@@ -47,15 +47,36 @@ require_vars() {
 	fi
 }
 
+# resolve_remote looks up the live IP of an Incus VM by name and points
+# REMOTE_HOST/REMOTE_SSH_PORT/REMOTE_SSH_USER at it, overriding whatever
+# static values config.env has. Incus VMs get a DHCP-assigned bridge IP,
+# not a fixed NAT-forwarded port, so there's nothing meaningful to put in
+# config.env ahead of time — the provisioning/density scripts all take
+# --name and call this instead. REMOTE_SSH_USER/BENCH_SSH_KEY_FILE still
+# come from config.env (the cloud-init user and the matching private key).
+resolve_remote() {
+	local vm_name="$1"
+	local ip
+	ip=$(sudo incus list "$vm_name" -c 4 --format csv 2>/dev/null | grep -oE '^[0-9.]+' || true)
+	[[ -n "$ip" ]] || die "couldn't resolve an IP for Incus VM '${vm_name}' — is it running? (incus list)"
+	REMOTE_HOST="$ip"
+	REMOTE_SSH_PORT="22"
+	log "resolved ${vm_name} -> ${REMOTE_HOST}"
+}
+
 # ssh_or_local runs a command inside the guest under test — over SSH to
-# REMOTE_HOST:REMOTE_SSH_PORT (defaults in config.env.example match the VM
-# NAT port-forward 00-create-vm.sh sets up: 127.0.0.1:2222), or directly via
-# bash if REMOTE_HOST is left empty (e.g. running these scripts from inside
-# the guest itself). Every provisioning/density script goes through this so
-# there's exactly one place that knows how to reach the guest.
+# REMOTE_HOST:REMOTE_SSH_PORT, using BENCH_SSH_KEY_FILE (the private half
+# of the keypair 00-create-vm.sh injects via cloud-init; see config.env's
+# BENCH_SSH_PUBKEY_FILE). REMOTE_HOST/REMOTE_SSH_PORT are set per-VM by
+# resolve_remote, not config.env — Incus VMs get a DHCP-assigned IP, not a
+# fixed port. Empty REMOTE_HOST runs directly via bash instead (e.g.
+# running these scripts from inside the guest itself). Every provisioning/
+# density script goes through this so there's exactly one place that knows
+# how to reach the guest.
 ssh_or_local() {
 	if [[ -n "${REMOTE_HOST:-}" ]]; then
 		ssh -p "${REMOTE_SSH_PORT:-22}" -o StrictHostKeyChecking=accept-new \
+			${BENCH_SSH_KEY_FILE:+-i "$BENCH_SSH_KEY_FILE"} \
 			"${REMOTE_SSH_USER:+$REMOTE_SSH_USER@}${REMOTE_HOST}" "$@"
 	else
 		bash -c "$*"

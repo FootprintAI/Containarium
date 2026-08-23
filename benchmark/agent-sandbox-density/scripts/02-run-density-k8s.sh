@@ -40,7 +40,8 @@ done
 
 load_config
 require_vars SANDBOX_CPU_REQUEST SANDBOX_CPU_LIMIT SANDBOX_MEM_REQUEST SANDBOX_MEM_LIMIT \
-	FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS
+	GVISOR_RUNTIME_CLASS FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BENCH_SSH_KEY_FILE
+resolve_remote "$VM_NAME"
 
 NAMESPACE="sandbox-density-bench"
 RESULTS_DIR="${BENCH_ROOT}/results"
@@ -55,6 +56,7 @@ create_sandbox() {
 		-e "s/__SANDBOX_CPU_LIMIT__/${SANDBOX_CPU_LIMIT}/g" \
 		-e "s/__SANDBOX_MEM_REQUEST__/${SANDBOX_MEM_REQUEST}/g" \
 		-e "s/__SANDBOX_MEM_LIMIT__/${SANDBOX_MEM_LIMIT}/g" \
+		-e "s/__GVISOR_RUNTIME_CLASS__/${GVISOR_RUNTIME_CLASS}/g" \
 		"${BENCH_ROOT}/manifests/sandbox-template.yaml" |
 		ssh_or_local "kubectl apply -f -" >/dev/null 2>&1
 }
@@ -73,7 +75,7 @@ cleanup_sandbox() {
 
 resource_snapshot "before" "$RESULTS_FILE"
 {
-	echo "profile: cpu ${SANDBOX_CPU_REQUEST}/${SANDBOX_CPU_LIMIT}, mem ${SANDBOX_MEM_REQUEST}/${SANDBOX_MEM_LIMIT}"
+	echo "profile: cpu ${SANDBOX_CPU_REQUEST}/${SANDBOX_CPU_LIMIT}, mem ${SANDBOX_MEM_REQUEST}/${SANDBOX_MEM_LIMIT}, runtimeClass=${GVISOR_RUNTIME_CLASS}"
 	echo
 } >>"$RESULTS_FILE"
 
@@ -84,6 +86,10 @@ resource_snapshot "after (${DENSITY_RESULT_COUNT} ready)" "$RESULTS_FILE"
 	echo "kubectl top nodes (if metrics-server installed):"
 	echo '```'
 	ssh_or_local "kubectl top nodes 2>&1" || true
+	echo '```'
+	echo "pods by RuntimeClass (sanity check that sandboxes really landed on gVisor):"
+	echo '```'
+	ssh_or_local "kubectl get pods -n ${NAMESPACE} -o custom-columns=NAME:.metadata.name,RUNTIMECLASS:.spec.runtimeClassName 2>&1" || true
 	echo '```'
 } >>"$RESULTS_FILE"
 

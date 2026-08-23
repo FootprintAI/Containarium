@@ -6,32 +6,61 @@ before it runs out of room?
 
 - **Control group** — a VM running vanilla Kubernetes
   ([kubeadm](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/))
-  with the upstream
+  with gVisor installed and the upstream
   [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-  controller installed, creating one `Sandbox` custom resource per unit
-  directly via `kubectl` — plain `runc`, no extra sandboxing layer.
-- **Experiment group** — the *same* base Kubernetes cluster setup, plus
-  gVisor and a `runsc` `RuntimeClass`, running the Containarium daemon
+  controller running, creating one `Sandbox` custom resource per unit
+  directly via `kubectl`, its pod scheduled under a `runsc` `RuntimeClass`.
+- **Experiment group** — the *identical* base cluster (same kubeadm, same
+  gVisor install, same `RuntimeClass`), running the Containarium daemon
   (Helm chart, `--runtime=k8s`) configured to schedule every box pod under
-  it: **pod → gVisor → containarium**. Each unit is created via
-  `containarium create`, which the daemon turns into the *same* kind of
-  `Sandbox` CR the control group creates directly — the daemon uses the
-  identical upstream controller underneath (see
-  [`docs/KIND-QUICKSTART.md`](../../docs/KIND-QUICKSTART.md)). The
-  difference under test isn't "k8s vs. no k8s" — both sides run k8s — it's
-  *raw agent-sandbox pods* vs. *Containarium-orchestrated pods with an
-  added gVisor kernel boundary*.
+  that same `RuntimeClass`: **pod → gVisor → containarium**. Each unit is
+  created via `containarium create`, which the daemon turns into the
+  *same* kind of `Sandbox` CR the control group creates directly — the
+  daemon uses the identical upstream controller underneath (see
+  [`docs/KIND-QUICKSTART.md`](../../docs/KIND-QUICKSTART.md)).
 
-Both VMs get **identical hard resource caps** (CPU count, memory, disk) via
-VirtualBox, and both sandboxes get the **same sandbox resource profile**
-(see [Sandbox resource profile](#sandbox-resource-profile) below, and
+**gVisor runs on both sides on purpose** — see
+[What's actually under test](#whats-actually-under-test). Both VMs get
+**identical hard resource caps** (CPU count, memory, disk) via a KVM-backed
+Incus VM,
+and both sandboxes get the **same sandbox resource profile** (see
+[Sandbox resource profile](#sandbox-resource-profile) below, and
 [Fairness notes](#fairness-notes) for one documented asymmetry in how that
-profile is applied). The only thing that differs between the two runs is
-the orchestration layer and gVisor.
+profile is applied).
 
 This lives in-repo (rather than as a one-off gist) so the methodology is
 reviewable, the numbers are reproducible, and the scripts can be re-run
 whenever a release changes either side's footprint.
+
+## What's actually under test
+
+The obvious version of this benchmark would be "k8s vs. k8s+gVisor" — but
+that mixes two different questions into one number: *does gVisor cost
+density*, and *does Containarium's orchestration cost density*. Running
+gVisor on **both** sides removes the first question as a variable, so
+what's left to measure is narrower and more useful: given the identical
+kernel isolation boundary, what does routing sandbox creation through
+Containarium — an extra daemon hop, plus whatever resource accounting
+choices its CLI makes — actually cost, if anything, versus creating the
+same `Sandbox` CR directly?
+
+Concretely, the two things that can still differ once gVisor is held
+constant are:
+
+1. **The daemon hop.** `containarium create` → Containarium daemon →
+   `Sandbox` CR, versus `kubectl apply` → `Sandbox` CR directly. The daemon
+   itself is one extra pod's worth of fixed overhead, not a per-sandbox
+   cost — see [Fairness notes](#fairness-notes).
+2. **Request == limit.** `containarium create --cpu/--memory` sets both to
+   the same value; the control group's pods get a lower separate request.
+   Since Kubernetes admission packs on requests, this is a real,
+   per-sandbox cost multiplier — see [Fairness notes](#fairness-notes) for
+   why it should bias the result *against* Containarium, not for it.
+
+If the numbers come back close, that says Containarium's orchestration is
+close to free on top of gVisor. If they don't, the gap is attributable to
+one of the two items above, not to gVisor itself — and (2) is a fixable
+CLI gap, not an architectural one.
 
 ## Why this matters
 
@@ -50,7 +79,7 @@ If Containarium loses on density, that's a real, reportable result.
 
 ## Methodology
 
-1. Provision two VirtualBox VMs on the same physical host, one at a time
+1. Provision two Incus VMs on the same physical host, one at a time
    (see [Why sequential, not parallel](#why-sequential-not-parallel)), each
    given the **same** hard CPU/memory/disk cap.
 2. **Both VMs** get the identical base cluster (`scripts/k8s-common.sh`):
@@ -98,7 +127,7 @@ different profile, please note the profile used alongside the result in
 
 ## Hard resource caps
 
-Both VMs get the same VirtualBox-enforced hard cap, set in `config.env`:
+Both VMs get the same hard cap, set in `config.env`:
 
 ```
 VM_CPUS=<N>
@@ -106,17 +135,28 @@ VM_MEM_MB=<N>
 VM_DISK_GB=<N>
 ```
 
-`scripts/00-create-vm.sh` sets these via `VBoxManage modifyvm --cpus` /
-`--memory`, which VirtualBox enforces as a true ceiling on the guest (the
-guest OS only ever sees that much CPU/RAM — it isn't a soft cgroup limit
-inside a shared host that the guest could exceed under pressure). Pick
-values that fit comfortably within whatever's actually free on the host
-you're running on — check with `free -h` (`available`, not `free`) before
-picking a number, since some of what looks "used" may be reclaimable page
-cache. This repo intentionally does **not** hardcode a host name, IP, or
-specific machine's specs — see CLAUDE.md's anonymization convention. Fill
-in your own target host by pointing `scripts/00-create-vm.sh` at it (see
-its `--help`); it runs locally on whatever machine has VirtualBox
+`scripts/00-create-vm.sh` provisions an **Incus VM** (KVM-backed) with
+`limits.cpu`/`limits.memory` set to these — a true hardware-partitioned
+ceiling on the guest (the guest OS only ever sees that much CPU/RAM — it
+isn't a soft cgroup limit inside a shared host that the guest could exceed
+under pressure), the same guarantee a VirtualBox VM would give.
+
+**Why Incus rather than VirtualBox**, if the host already runs one: a
+second hypervisor means a second kernel module (VirtualBox's `vboxdrv`)
+loaded alongside whatever's already there. On a host already running live
+workloads under an existing KVM-based hypervisor (Incus, libvirt, etc.),
+that's an avoidable stability variable — reuse whatever hypervisor is
+already proven running on that host instead. If your host has neither, any
+KVM-backed option works the same way; the scripts just need `incus`
+(or an equivalent adapted the same way) on the host doing the provisioning.
+
+Pick values that fit comfortably within whatever's actually free on the
+host you're running on — check with `free -h` (`available`, not `free`)
+before picking a number, since some of what looks "used" may be reclaimable
+page cache. This repo intentionally does **not** hardcode a host name, IP,
+or specific machine's specs — see CLAUDE.md's anonymization convention.
+Fill in your own target host by pointing `scripts/00-create-vm.sh` at it
+(see its `--help`); it runs locally on whatever machine has Incus
 installed, so for a remote host, SSH in first and run these scripts there.
 
 ## Why sequential, not parallel
@@ -224,7 +264,7 @@ benchmark/agent-sandbox-density/
 └── scripts/
     ├── lib.sh                       — shared logging / resource-snapshot / stop-on-N-failures helpers
     ├── k8s-common.sh                — shared kubeadm+CNI+agent-sandbox-controller base, used by both 01 and 03
-    ├── 00-create-vm.sh              — VBoxManage: create a VM with a hard CPU/mem/disk cap
+    ├── 00-create-vm.sh              — Incus: create a KVM-backed VM with a hard CPU/mem/disk cap
     ├── 01-provision-k8s-control.sh  — the shared k8s base, nothing more (control group)
     ├── 02-run-density-k8s.sh        — create Sandbox CRs until the stopping rule triggers
     ├── 03-provision-containarium.sh — shared k8s base + gVisor/runsc RuntimeClass + Helm-installed Containarium daemon

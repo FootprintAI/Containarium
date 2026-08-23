@@ -42,7 +42,8 @@ done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
 load_config
-require_vars SANDBOX_CPU_LIMIT SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS
+require_vars SANDBOX_CPU_LIMIT SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BENCH_SSH_KEY_FILE
+resolve_remote "$VM_NAME"
 
 log "sandbox profile on the Containarium side: cpu=${SANDBOX_CPU_LIMIT} memory=${SANDBOX_MEM_LIMIT} (k8s-native quantities, request==limit)"
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Stop and delete a benchmark VM (including its disk image), freeing the
+# Stop and delete a benchmark Incus VM (including its disk), freeing the
 # host's resources for the other side's run — see README.md "Why
 # sequential, not parallel".
 #
@@ -30,18 +30,14 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
-command -v VBoxManage >/dev/null 2>&1 || die "VBoxManage not found"
+command -v incus >/dev/null 2>&1 || die "incus not found — this must run on the hypervisor host"
 
-if ! VBoxManage list vms | grep -q "\"${VM_NAME}\""; then
+if ! sudo incus list --format csv -c n | grep -qx "$VM_NAME"; then
 	log "no VM named '${VM_NAME}' — nothing to do"
 	exit 0
 fi
 
-log "stopping '${VM_NAME}' (if running)"
-VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
-sleep 2
-
-log "deleting '${VM_NAME}' and its disk(s)"
-VBoxManage unregistervm "$VM_NAME" --delete
+log "deleting Incus VM '${VM_NAME}' (force stop + delete, including its disk)"
+sudo incus delete "$VM_NAME" --force
 
 log "done"
