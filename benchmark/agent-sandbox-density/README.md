@@ -214,6 +214,18 @@ only the kubelet-mediated exec/port-forward path is.
   room per unit than the control group's pods do for the same actual usage
   ceiling. This should bias the result *against* Containarium's density,
   not for it — worth keeping in mind reading the numbers.
+- **Different container images, and it's not a knob to equalize.** The
+  control group's `Sandbox` pods run a minimal `busybox:1.36`. Found live
+  that a Containarium box can't: `create`'s default image
+  (`images:ubuntu/24.04`, an LXC-style reference) isn't a valid OCI image
+  and breaks the pod outright (`InvalidImageName`) on the k8s backend, and
+  a bare `busybox` in its place crash-loops — Containarium's box runtime
+  expects its own `containarium-agent-box` image (podman-in-pod, sshd,
+  MCP server). So the experiment side runs that real, heavier image
+  instead. This is a genuine, structural difference in what each side
+  actually deploys, not a methodology gap to correct away — a Containarium
+  box IS that runtime, by product design. It gets reported (image name in
+  each run's results file), not normalized.
 - The CNI, kube-proxy, and other cluster-system pods consume some of the
   node's capacity before a single sandbox is created — real overhead a k8s
   deployment actually pays on *both* sides now, not an artifact to be
