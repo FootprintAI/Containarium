@@ -124,11 +124,3 @@ func mustDuration(t *testing.T, env map[string]string, key string) time.Duration
 	}
 	return d
 }
-
-func keys(wf workflowFile) []string {
-	out := make([]string, 0, len(wf.Jobs))
-	for k := range wf.Jobs {
-		out = append(out, k)
-	}
-	return out
-}
