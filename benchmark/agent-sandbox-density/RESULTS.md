@@ -66,6 +66,54 @@ Notes / anomalies:
   a re-run with a much higher `VM_CPUS` (see README.md's estimation
   discussion) would more directly isolate gVisor's own per-pod cost from
   the CPU-admission ceiling, since CPU is the bottleneck at this VM size.
+  **Done below — see the 2026-08-24 run.**
+
+### 2026-08-24 — same host, memory-bound re-run (isolating gVisor's own cost)
+
+Hard cap per VM: **20** vCPU (up from 8 — near this host's physical 12c/24t
+ceiling) / 48GiB RAM / 200GB disk (Incus KVM VM)
+Sandbox profile: cpu **25m/50m** (down from 100m/200m — see rationale
+below), mem 128Mi/256Mi unchanged
+Containarium version: v0.66.0    Agent-sandbox version: v0.5.1    K8s version: v1.30.14 (kubeadm)
+Both groups again ran under the same `runsc` (gVisor) RuntimeClass.
+
+**Why the sandbox CPU profile changed, not just `VM_CPUS`:** the prior run's
+own numbers proved `VM_CPUS` alone can't flip the bottleneck on this host —
+reaching each side's *memory*-request ceiling needs ~37 cores of headroom
+(see the estimation discussion this PR's README added), and this host only
+has 12 physical cores. Shrinking the per-sandbox CPU request instead
+(100m/200m → 25m/50m, keeping the memory profile fixed) achieves the same
+goal — memory becomes binding — without needing a bigger host.
+
+| | k8s + agent-sandbox (control) | Containarium (experiment) |
+|---|---|---|
+| Sandboxes reached Ready/RUNNING | **373** | **186** |
+| Attempted (incl. failures) | 376 | 189 |
+| Node memory requests at stop | 47984Mi / 48GiB (**99%**) | 47856Mi / 48GiB (**99%**) |
+| Node CPU requests at stop | 10425m / 20000m (52%) | 10400m / 20000m (52%) |
+| Wall-clock for the density loop | ~15 min | ~15 min |
+
+**Memory is now genuinely the bottleneck on both sides** (99%/99% memory
+vs. 52%/52% CPU at the stopping point) — the flip the re-scoped profile was
+designed to produce.
+
+**The ratio holds: 373 vs. 186 is almost exactly 2:1**, same as run 1's 69
+vs. 34 — because both runs are ultimately gated by the same underlying
+asymmetry (control's pods request `128Mi`; Containarium's boxes request
+`256Mi`, exactly 2x, since `create` sets request==limit). **This is the
+clean isolation the re-run set out to get:** with CPU pressure removed,
+the density gap is *still* explained by the request-size asymmetry, not by
+gVisor's per-pod memory overhead — 373 × 128Mi ≈ 46.6GiB and 186 × 256Mi ≈
+46.5GiB, i.e. both sides used essentially the *same total memory budget*,
+just divided into differently-sized chunks. gVisor's own per-pod cost, if
+any, is too small to see against a 128–256Mi request granularity — a
+future run using `top`/cgroup memory accounting instead of request-based
+admission would be needed to measure it directly.
+
+Notes / anomalies:
+- Same fixes from run 1 applied cleanly with no new manual intervention —
+  provisioning both VMs was fully automated this time end-to-end.
+- `containarium-agent-box` image and gateway workaround unchanged from run 1.
 
 ## Template
 
