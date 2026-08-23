@@ -234,7 +234,7 @@ func TestSelfCheck_DisabledWithoutConnMux(t *testing.T) {
 // It must report a timeout error, not hang or silently succeed.
 func TestSelfCheckProxyPath_TimeoutIsAFailure(t *testing.T) {
 	ln := newWedgedListener(t)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	m := &Manager{config: Config{HTTPSPort: ln.port}}
 	err := m.selfCheckProxyPath(500 * time.Millisecond)
@@ -248,7 +248,7 @@ func TestSelfCheckProxyPath_TimeoutIsAFailure(t *testing.T) {
 // proving a reacting-but-closing pipeline is NOT treated as a wedge.
 func TestSelfCheckProxyPath_EOFCountsAsAlive(t *testing.T) {
 	ln := newEchoCloseListener(t)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	m := &Manager{config: Config{HTTPSPort: ln.port}}
 	if err := m.selfCheckProxyPath(2 * time.Second); err != nil {
