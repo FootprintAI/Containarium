@@ -169,12 +169,28 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	}
 	rec.ReconcileOnce(ctx) // 2 workers now
 
-	// Unknown node refused, nothing deleted.
-	_, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	// A node that exists NOWHERE — not in the store, not on the host —
+	// is already gone, and asking for it to go is satisfied. This
+	// assertion previously expected NotFound; #1505 changed it,
+	// because the all-or-nothing rejection wedged every retry of a
+	// partially-completed batch. The refusal it was protecting —
+	// naming a node that is absent from this group but STILL RUNNING
+	// — is unchanged and covered by
+	// TestCAProvider_DeleteNodesStillRefusesANodeThatExistsOutsideTheGroup.
+	before := len(host.vms)
+	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-9"}},
-	})
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("unknown node delete = %v, want NotFound", err)
+	}); err != nil {
+		t.Fatalf("deleting a node that exists nowhere = %v, want success (already gone)", err)
+	}
+	if len(host.vms) != before {
+		t.Fatalf("a no-op delete removed something: %v", vmNames(host))
+	}
+	if ts, tsErr := client.NodeGroupTargetSize(caCtx("alice", "demo"),
+		&capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"}); tsErr != nil {
+		t.Fatal(tsErr)
+	} else if ts.GetTargetSize() != 2 {
+		t.Fatalf("a no-op delete moved the target to %d, want 2", ts.GetTargetSize())
 	}
 
 	// CA drains and removes one node: VM gone, row gone, target back to 1.
@@ -197,7 +213,7 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	}
 
 	// DecreaseTargetSize may not go below the existing node count.
-	_, err = client.NodeGroupDecreaseTargetSize(caCtx("alice", "demo"), &capb.NodeGroupDecreaseTargetSizeRequest{Id: "alice/demo/small", Delta: -1})
+	_, err := client.NodeGroupDecreaseTargetSize(caCtx("alice", "demo"), &capb.NodeGroupDecreaseTargetSizeRequest{Id: "alice/demo/small", Delta: -1})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("decrease below existing = %v, want InvalidArgument", err)
 	}
@@ -459,5 +475,93 @@ func TestReconcilerDoesNotDecideOnAStaleTarget(t *testing.T) {
 
 	if _, ok := host.vms["alice-k8s-demo-small-2"]; ok {
 		t.Error("a scale-down landing between Observe and Decide was undone by a stale target")
+	}
+}
+
+// #1505: a delete batch must be able to make progress on a retry.
+//
+// The batch was validated all-or-nothing — any named node missing from
+// the store rejected the whole request — while the delete loop aborts
+// on the first error after having already removed earlier nodes and
+// their rows. So for [A, B] where A succeeds and B fails, every retry
+// that still names A was refused outright, and B could never be
+// removed. A retry naming A is the likely case: nothing here deletes
+// A's Kubernetes Node object, and upstream cluster-autoscaler derives
+// its retry set from Node objects.
+//
+// A node that is absent from the store AND absent from the host is
+// simply already gone — skipping it is the honest answer, because the
+// end state the caller asked for already holds.
+func TestCAProvider_DeleteNodesMakesProgressWhenPartOfTheBatchIsAlreadyGone(t *testing.T) {
+	client, srv, rec, host := caRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 2}); err != nil {
+		t.Fatal(err)
+	}
+	rec.ReconcileOnce(ctx) // three small workers
+
+	// First attempt removes small-2 and then fails on small-3.
+	host.deleteErrFor = map[string]error{"alice-k8s-demo-small-3": errors.New("incus: instance is busy")}
+	_, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{
+			{Name: "alice-k8s-demo-small-2"}, {Name: "alice-k8s-demo-small-3"},
+		},
+	})
+	if err == nil {
+		t.Fatal("first attempt should have failed on small-3")
+	}
+	if _, ok := host.vms["alice-k8s-demo-small-2"]; ok {
+		t.Fatal("small-2 should already be gone after the first attempt")
+	}
+
+	// The retry still names small-2, exactly as cluster-autoscaler
+	// would: its Kubernetes Node object was never deleted by us.
+	host.deleteErrFor = nil
+	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{
+			{Name: "alice-k8s-demo-small-2"}, {Name: "alice-k8s-demo-small-3"},
+		},
+	}); err != nil {
+		t.Fatalf("retry naming an already-removed node was refused, so small-3 can never go: %v", err)
+	}
+	if _, ok := host.vms["alice-k8s-demo-small-3"]; ok {
+		t.Error("small-3 survived the retry")
+	}
+}
+
+// Idempotence must not become blindness. A node that is absent from
+// this group's rows but STILL PRESENT on the host is not "already
+// gone" — it is a caller naming the wrong group, or store drift — and
+// silently reporting success would leave a running instance nobody
+// accounts for. That is what the original all-or-nothing check was
+// actually worth, and it is kept.
+func TestCAProvider_DeleteNodesStillRefusesANodeThatExistsOutsideTheGroup(t *testing.T) {
+	client, srv, rec, host := caRig(t)
+	ctx := context.Background()
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	rec.ReconcileOnce(ctx)
+	rec.ReconcileOnce(ctx)
+	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/medium", Delta: 1}); err != nil {
+		t.Fatal(err)
+	}
+	rec.ReconcileOnce(ctx)
+	if _, ok := host.vms["alice-k8s-demo-medium-1"]; !ok {
+		t.Fatalf("setup did not produce a medium worker: %v", vmNames(host))
+	}
+
+	// A medium node named in the small group's batch.
+	_, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-medium-1"}},
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("naming a node from another group = %v, want NotFound", err)
+	}
+	if _, ok := host.vms["alice-k8s-demo-medium-1"]; !ok {
+		t.Error("the refused node was deleted anyway")
 	}
 }
