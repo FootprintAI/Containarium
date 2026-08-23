@@ -6,14 +6,24 @@
 # Containarium daemon (Helm chart) configured to schedule every box pod
 # under the same runsc RuntimeClass — pod -> gVisor -> containarium.
 #
-# Gateway (SSH) routing is deliberately disabled (gateway.namespace="",
-# gateway.enabled=false): this benchmark only needs to know whether a box
-# reached RUNNING, not to SSH into it, so there's no need to stand up
-# sshpiper here. If you DO want to reach the boxes afterward, note that
-# `kubectl exec`/`port-forward` straight to a gVisor-scheduled box pod does
-# not work (kubernetes-sigs/agent-sandbox#158, this repo's #1489) — see
+# Gateway (SSH) routing: sshpiper itself is disabled (gateway.enabled=
+# false) — this benchmark only needs to know whether a box reached
+# RUNNING, not to SSH into it. gateway.namespace is left at its chart
+# default ("agent-gateway") rather than cleared, though — found live that
+# charts/containarium-k8s/templates/namespace.yaml unconditionally creates
+# a Namespace resource from gateway.namespace with no enabled-guard, so an
+# empty value breaks `helm install` outright ("resource name may not be
+# empty"). The values.yaml comment's documented way to fully disable
+# gateway routing (clear `namespace`, leave the two upstream-key values
+# empty) doesn't actually work end-to-end as shipped — this works around
+# it by keeping the namespace non-empty and supplying a throwaway upstream
+# keypair instead, the same shape KIND-QUICKSTART.md documents for "Pipe
+# objects get programmed, nothing is actually watching them yet". If you
+# DO want to reach the boxes afterward, note that `kubectl exec`/
+# `port-forward` straight to a gVisor-scheduled box pod does not work
+# (kubernetes-sigs/agent-sandbox#158, this repo's #1489) — see
 # docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md "Hard isolation via RuntimeClass"
-# and re-enable the gateway per docs/KIND-QUICKSTART.md if needed.
+# and stand up a real sshpiper per docs/KIND-QUICKSTART.md if needed.
 #
 # Usage:
 #   scripts/03-provision-containarium.sh --name <vm-name>
@@ -66,7 +76,7 @@ set -euo pipefail
 # the curl|jq pipe, which then makes curl itself fail with "Failure
 # writing output to destination" — a confusing secondary symptom of the
 # real, primary cause).
-apt-get install -y -qq jq >/dev/null
+apt-get install -y -qq jq git >/dev/null
 
 TAG="${CONTAINARIUM_VERSION}"
 if [[ "\$TAG" == "latest" ]]; then
@@ -88,15 +98,34 @@ rm -rf /opt/containarium-src
 git clone --depth 1 --branch "\$TAG" https://github.com/FootprintAI/Containarium.git /opt/containarium-src
 REMOTE
 
-log "helm installing the Containarium daemon (runtimeClass=${GVISOR_RUNTIME_CLASS}, gateway disabled)"
+log "helm installing the Containarium daemon (runtimeClass=${GVISOR_RUNTIME_CLASS}, sshpiper disabled)"
 ssh_or_local "sudo bash -s" <<REMOTE
 set -euo pipefail
+# Throwaway upstream keypair — see this file's header comment for why
+# gateway.namespace stays at its default instead of being cleared. Nothing
+# ever authenticates with it since sshpiper itself isn't deployed
+# (gateway.enabled=false); it exists only so the daemon's own fail-fast
+# check (#1496: refuses to start with a non-empty gateway.namespace and no
+# upstream key configured) is satisfied.
+ssh-keygen -t ed25519 -N "" -f /tmp/sshpiper_upstream -C sshpiper-upstream <<<y >/dev/null 2>&1 || true
+PUBKEY=\$(cat /tmp/sshpiper_upstream.pub)
+
 helm install containarium /opt/containarium-src/charts/containarium-k8s \
 	--set daemon.jwtSecret="\$(openssl rand -hex 32)" \
 	--set runtimeClass=${GVISOR_RUNTIME_CLASS} \
 	--set gateway.enabled=false \
-	--set gateway.namespace="" \
+	--set gateway.upstreamKeySecret=sshpiper-upstream-key \
+	--set gateway.upstreamPublicKey="\$PUBKEY" \
 	--wait --timeout 5m
+
+# The Secret the env var above names is read lazily (only when a box is
+# actually created, not at daemon-pod startup), so it can be created
+# after helm install — which is required here, since the "agent-gateway"
+# namespace it lives in doesn't exist until this same helm install
+# creates it (namespace.yaml, unconditional on gateway.namespace).
+kubectl -n agent-gateway create secret generic sshpiper-upstream-key \
+	--from-file=ssh-privatekey=/tmp/sshpiper_upstream \
+	--dry-run=client -o yaml | kubectl apply -f -
 
 kubectl get deployment -l app.kubernetes.io/instance=containarium
 REMOTE
