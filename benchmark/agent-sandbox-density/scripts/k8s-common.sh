@@ -87,6 +87,12 @@ REMOTE
 
 	log "installing Calico CNI"
 	ssh_or_local "kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml"
+	# `kubectl wait` on a label selector errors immediately with "no
+	# matching resources found" if zero pods currently match — it does not
+	# wait for the DaemonSet controller to create them. Hit this live: the
+	# calico-node DaemonSet object exists right after apply, but its pods
+	# take a few seconds to appear. Poll for at least one to exist first.
+	ssh_or_local "until [ \"\$(kubectl get pods -l k8s-app=calico-node -n kube-system --no-headers 2>/dev/null | wc -l)\" -gt 0 ]; do sleep 2; done"
 	ssh_or_local "kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout=180s"
 
 	log "installing agent-sandbox controller ${AGENT_SANDBOX_VERSION}"
