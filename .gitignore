@@ -98,3 +98,9 @@ internal/netbpf/*.bpf.o
 # separate checkouts living under the repo root; never commit them as embedded
 # repos (a stray `git add -A` would otherwise sweep them in).
 .worktrees/
+
+# Benchmark host-specific config (real hostnames/IPs — see
+# benchmark/*/README.md and CLAUDE.md's anonymization convention) and raw
+# per-run logs. Reviewed summaries go in benchmark/*/RESULTS.md instead.
+benchmark/*/config.env
+benchmark/*/results/
