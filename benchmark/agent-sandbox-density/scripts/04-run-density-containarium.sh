@@ -1,14 +1,19 @@
 #!/bin/bash
 #
 # Density loop for the experiment group: create Containarium boxes one at a
-# time via `containarium create` until the shared stopping rule in lib.sh's
+# time (each scheduled under gVisor via the runtimeClass set in
+# 03-provision-containarium.sh) until the shared stopping rule in lib.sh's
 # run_density_loop triggers.
 #
-# LXC boxes have one enforced resource ceiling per resource, not a
-# request+limit pair — this uses SANDBOX_CPU_LIMIT / SANDBOX_MEM_LIMIT
-# (converted from k8s quantities to Containarium's core-count / decimal-MB
-# units below) as the single --cpu / --memory value, and a deliberately
-# small fixed SANDBOX_DISK_LIMIT so disk is never what stops the run.
+# The k8s backend parses --cpu/--memory with Kubernetes' native quantity
+# parser (resource.ParseQuantity) and sets BOTH request and limit to that
+# same value — see pkg/core/box/k8s/objects.go. So this passes
+# SANDBOX_CPU_LIMIT/SANDBOX_MEM_LIMIT straight through, no unit conversion
+# needed (unlike the old LXC-backend version of this script). Worth noting
+# as a fairness asymmetry, not hidden: the control group's Sandbox pods
+# request the lower REQUEST value (k8s admission packs on requests, not
+# limits), while Containarium's boxes request the full LIMIT value — see
+# README.md "Fairness notes".
 #
 # Usage:
 #   scripts/04-run-density-containarium.sh --name <vm-name>
@@ -37,69 +42,47 @@ done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
 load_config
-require_vars SANDBOX_CPU_LIMIT SANDBOX_MEM_LIMIT SANDBOX_DISK_LIMIT \
-	FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS
+require_vars SANDBOX_CPU_LIMIT SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS
 
-# k8s CPU quantity ("100m" = 0.1 core, "1" = 1 core) -> Containarium's
-# core-count string.
-k8s_cpu_to_cores() {
-	local q="$1"
-	if [[ "$q" == *m ]]; then
-		awk -v m="${q%m}" 'BEGIN { printf "%.3f", m / 1000 }'
-	else
-		echo "$q"
-	fi
-}
-
-# k8s memory quantity (Mi/Gi, binary) -> Containarium's MB/GB (decimal)
-# string. Approximate is fine for a density benchmark; note the ~5% Mi->MB
-# gap if you're eyeballing the two sides' raw numbers against each other.
-k8s_mem_to_containarium() {
-	local q="$1"
-	if [[ "$q" == *Mi ]]; then
-		awk -v mi="${q%Mi}" 'BEGIN { printf "%dMB", mi * 1.048576 }'
-	elif [[ "$q" == *Gi ]]; then
-		awk -v gi="${q%Gi}" 'BEGIN { printf "%dGB", gi * 1.073741824 }'
-	else
-		echo "$q"
-	fi
-}
-
-CTN_CPU="$(k8s_cpu_to_cores "$SANDBOX_CPU_LIMIT")"
-CTN_MEM="$(k8s_mem_to_containarium "$SANDBOX_MEM_LIMIT")"
-CTN_DISK="$SANDBOX_DISK_LIMIT"
-
-log "sandbox profile on the Containarium side: cpu=${CTN_CPU} memory=${CTN_MEM} disk=${CTN_DISK}"
+log "sandbox profile on the Containarium side: cpu=${SANDBOX_CPU_LIMIT} memory=${SANDBOX_MEM_LIMIT} (k8s-native quantities, request==limit)"
 
 RESULTS_DIR="${BENCH_ROOT}/results"
 mkdir -p "$RESULTS_DIR"
 RESULTS_FILE="${RESULTS_DIR}/containarium-$(date -u +%Y%m%dT%H%M%SZ).md"
 
-log "minting an admin token"
-CTN_TOKEN=$(ssh_or_local "sudo containarium token generate --username bench-admin --roles admin --expiry 6h --secret-file /etc/containarium/jwt.secret --raw")
-[[ -n "$CTN_TOKEN" ]] || die "failed to mint a token — check the daemon is running (systemctl status containarium)"
+log "starting kubectl port-forward to the daemon and minting an admin token"
+ssh_or_local "pkill -f 'port-forward svc/containarium' 2>/dev/null; setsid nohup kubectl port-forward svc/containarium-containarium-k8s-daemon 8080:8080 >/tmp/port-forward.log 2>&1 < /dev/null &"
+sleep 3
+
+JWT_SECRET=$(ssh_or_local "kubectl get secret containarium-containarium-k8s-daemon -o jsonpath='{.data.jwt-secret}' | base64 -d")
+[[ -n "$JWT_SECRET" ]] || die "failed to read the daemon's jwt-secret — check helm install succeeded (03-provision-containarium.sh)"
+CTN_TOKEN=$(ssh_or_local "containarium token generate --username bench-admin --roles admin --expiry 6h --secret '${JWT_SECRET}' --raw")
+[[ -n "$CTN_TOKEN" ]] || die "failed to mint a token"
+
+CTN_SERVER="http://127.0.0.1:8080"
 
 create_box() {
 	local name="$1"
-	ssh_or_local "containarium create ${name} --no-ssh-key --cpu ${CTN_CPU} --memory ${CTN_MEM} --disk ${CTN_DISK} --server http://127.0.0.1:8080 --http --token ${CTN_TOKEN}" >/dev/null 2>&1
+	ssh_or_local "containarium create ${name} --no-ssh-key --cpu ${SANDBOX_CPU_LIMIT} --memory ${SANDBOX_MEM_LIMIT} --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1
 }
 
 box_ready() {
 	local name="$1"
 	local state
-	state=$(ssh_or_local "containarium list --format json --server http://127.0.0.1:8080 --http --token ${CTN_TOKEN} 2>/dev/null" |
+	state=$(ssh_or_local "containarium list --format json --server ${CTN_SERVER} --http --token ${CTN_TOKEN} 2>/dev/null" |
 		jq -r --arg n "$name" '.[] | select(.username==$n) | .state' 2>/dev/null || true)
 	[[ "$state" == "RUNNING" ]]
 }
 
 cleanup_box() {
 	local name="$1"
-	ssh_or_local "containarium delete ${name} --force --server http://127.0.0.1:8080 --http --token ${CTN_TOKEN}" >/dev/null 2>&1 || true
+	ssh_or_local "containarium delete ${name} --force --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1 || true
 }
 
 resource_snapshot "before" "$RESULTS_FILE"
 {
-	echo "profile: cpu ${CTN_CPU} cores, mem ${CTN_MEM}, disk ${CTN_DISK} (converted from cpu ${SANDBOX_CPU_LIMIT}, mem ${SANDBOX_MEM_LIMIT})"
+	echo "profile: cpu ${SANDBOX_CPU_LIMIT}, mem ${SANDBOX_MEM_LIMIT} (k8s-native, request==limit)"
+	echo "runtimeClass: see 03-provision-containarium.sh GVISOR_RUNTIME_CLASS"
 	echo
 } >>"$RESULTS_FILE"
 
@@ -107,11 +90,15 @@ run_density_loop "sbdens" create_box box_ready cleanup_box "$RESULTS_FILE"
 
 resource_snapshot "after (${DENSITY_RESULT_COUNT} ready)" "$RESULTS_FILE"
 {
-	echo "containarium list totals:"
+	echo "kubectl top nodes (if metrics-server installed):"
 	echo '```'
-	ssh_or_local "containarium list --server http://127.0.0.1:8080 --http --token ${CTN_TOKEN} 2>&1" || true
+	ssh_or_local "kubectl top nodes 2>&1" || true
+	echo '```'
+	echo "pods by RuntimeClass (sanity check that boxes really landed on gVisor):"
+	echo '```'
+	ssh_or_local "kubectl get pods -A -o custom-columns=NAME:.metadata.name,RUNTIMECLASS:.spec.runtimeClassName 2>&1" || true
 	echo '```'
 } >>"$RESULTS_FILE"
 
-log "Containarium workhorse result: ${DENSITY_RESULT_COUNT} boxes reached RUNNING"
+log "Containarium (gVisor) experiment group result: ${DENSITY_RESULT_COUNT} boxes reached RUNNING"
 log "full log: ${RESULTS_FILE}"

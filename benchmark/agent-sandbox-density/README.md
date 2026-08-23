@@ -8,15 +8,26 @@ before it runs out of room?
   ([kubeadm](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/))
   with the upstream
   [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-  controller installed, creating one `Sandbox` custom resource per unit.
-- **Experiment group** — a VM running the Containarium daemon as a plain
-  LXC/Incus "workhorse" (no Kubernetes at all), creating one box per unit via
-  `containarium create`.
+  controller installed, creating one `Sandbox` custom resource per unit
+  directly via `kubectl` — plain `runc`, no extra sandboxing layer.
+- **Experiment group** — the *same* base Kubernetes cluster setup, plus
+  gVisor and a `runsc` `RuntimeClass`, running the Containarium daemon
+  (Helm chart, `--runtime=k8s`) configured to schedule every box pod under
+  it: **pod → gVisor → containarium**. Each unit is created via
+  `containarium create`, which the daemon turns into the *same* kind of
+  `Sandbox` CR the control group creates directly — the daemon uses the
+  identical upstream controller underneath (see
+  [`docs/KIND-QUICKSTART.md`](../../docs/KIND-QUICKSTART.md)). The
+  difference under test isn't "k8s vs. no k8s" — both sides run k8s — it's
+  *raw agent-sandbox pods* vs. *Containarium-orchestrated pods with an
+  added gVisor kernel boundary*.
 
 Both VMs get **identical hard resource caps** (CPU count, memory, disk) via
-VirtualBox, and both sandboxes get **identical CPU/memory request+limit
-values** (see [Sandbox resource profile](#sandbox-resource-profile) below).
-The only thing that differs between the two runs is the orchestration layer.
+VirtualBox, and both sandboxes get the **same sandbox resource profile**
+(see [Sandbox resource profile](#sandbox-resource-profile) below, and
+[Fairness notes](#fairness-notes) for one documented asymmetry in how that
+profile is applied). The only thing that differs between the two runs is
+the orchestration layer and gVisor.
 
 This lives in-repo (rather than as a one-off gist) so the methodology is
 reviewable, the numbers are reproducible, and the scripts can be re-run
@@ -42,14 +53,16 @@ If Containarium loses on density, that's a real, reportable result.
 1. Provision two VirtualBox VMs on the same physical host, one at a time
    (see [Why sequential, not parallel](#why-sequential-not-parallel)), each
    given the **same** hard CPU/memory/disk cap.
-2. **Control VM:** install `kubeadm` + a CNI, raise the kubelet
-   `--max-pods` ceiling (the stock default of 110 would cap density before
-   any real resource limit does — see
-   [Kubelet max-pods](#kubelet-max-pods)), then install the upstream
-   agent-sandbox controller and CRDs.
-3. **Experiment VM:** install the Containarium daemon in its default
-   LXC/Incus "workhorse" mode (no `--runtime=k8s` — that backend targets
-   *existing* clusters, it isn't what we're measuring here).
+2. **Both VMs** get the identical base cluster (`scripts/k8s-common.sh`):
+   `kubeadm` + Calico, kubelet `--max-pods` raised (the stock default of
+   110 would cap density before any real resource limit does — see
+   [Kubelet max-pods](#kubelet-max-pods)), and the upstream agent-sandbox
+   controller + CRDs. Any drift between the two sides here would confound
+   the comparison, so this step is one shared script, not two similar ones.
+3. **Experiment VM only, on top of that base:** install gVisor
+   (`runsc` + the containerd shim), register a `runsc` `RuntimeClass`, then
+   Helm-install the Containarium daemon with `runtimeClass: runsc` so
+   every box it creates is scheduled under it.
 4. Run the matching density-loop script against each VM: create sandboxes
    one at a time with the fixed resource profile below, wait for each to
    reach a ready state, and keep going until creation starts failing for a
@@ -129,20 +142,47 @@ flag is never the thing that actually stops the run — if it is, the result
 says "kubelet's --max-pods", not "resource exhaustion", and should be
 re-run with a higher value.
 
+## gVisor access path (not needed for this benchmark)
+
+`kubectl exec`/`port-forward` straight to a `runsc`-scheduled box pod
+doesn't work — a gVisor networking characteristic, not a Containarium bug
+(kubernetes-sigs/agent-sandbox#158, this repo's #1489; see
+[`docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md`](../../docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md)
+"Hard isolation via RuntimeClass"). This benchmark only needs to know
+whether a box reached `RUNNING` — via the k8s API, which works fine
+either way — not to actually SSH into it, so `03-provision-containarium.sh`
+deliberately disables the sshpiper gateway (`gateway.namespace=""`) rather
+than standing one up for no reason. If you want to poke at a box
+afterward, re-enable the gateway per
+[`docs/KIND-QUICKSTART.md`](../../docs/KIND-QUICKSTART.md) — real
+pod-to-pod networking (which the gateway uses) is unaffected by gVisor,
+only the kubelet-mediated exec/port-forward path is.
+
 ## Fairness notes
 
-- Same physical host, same hard resource cap, same sandbox resource
-  profile, same stopping rule (`FAILURE_STREAK_TO_STOP` consecutive
-  resource-reason failures) on both sides.
-- The control group's CNI, kube-proxy, and other cluster-system pods
-  consume some of the node's capacity before a single `Sandbox` is
-  created — this is real overhead a k8s deployment actually pays, not an
-  artifact to be corrected away. It gets reported as part of the resource
-  snapshot, not subtracted from the result.
-- Containarium's own core service containers (Postgres, Caddy, the
-  otel collector, etc. — see `internal/server/core_services.go`) are the
-  equivalent fixed overhead on the experiment side, and are likewise left
-  in place and reported, not subtracted.
+- Same physical host, same hard resource cap, same base cluster setup
+  (`scripts/k8s-common.sh` — literally one script, not two hand-kept-in-sync
+  copies), same sandbox resource profile, same stopping rule
+  (`FAILURE_STREAK_TO_STOP` consecutive resource-reason failures) on both
+  sides.
+- **Documented asymmetry, not hidden:** the control group's `Sandbox`
+  pods get separate request/limit values (see the profile table below);
+  Containarium's `create --cpu/--memory` sets **both** request and limit to
+  the same (LIMIT) value — there's no separate request knob on the CLI
+  (`pkg/core/box/k8s/objects.go`). Since Kubernetes admission packs on
+  *requests*, not limits, Containarium's boxes ask the scheduler for more
+  room per unit than the control group's pods do for the same actual usage
+  ceiling. This should bias the result *against* Containarium's density,
+  not for it — worth keeping in mind reading the numbers.
+- The CNI, kube-proxy, and other cluster-system pods consume some of the
+  node's capacity before a single sandbox is created — real overhead a k8s
+  deployment actually pays on *both* sides now, not an artifact to be
+  corrected away. It gets reported as part of the resource snapshot, not
+  subtracted from the result.
+- The Containarium daemon's own pod (plus, on the experiment side only,
+  gVisor's per-pod `runsc` sandbox process overhead) is the equivalent
+  fixed cost on that side, and is likewise left in place and reported, not
+  subtracted.
 - Both density loops use the identical stopping rule and snapshot logic in
   `scripts/lib.sh`, so a methodology change (e.g. a different
   `FAILURE_STREAK_TO_STOP`) only has to be made once and applies to both
@@ -183,10 +223,11 @@ benchmark/agent-sandbox-density/
 │   └── sandbox-template.yaml    — Sandbox CR (agents.x-k8s.io/v1beta1) with the resource profile above
 └── scripts/
     ├── lib.sh                       — shared logging / resource-snapshot / stop-on-N-failures helpers
+    ├── k8s-common.sh                — shared kubeadm+CNI+agent-sandbox-controller base, used by both 01 and 03
     ├── 00-create-vm.sh              — VBoxManage: create a VM with a hard CPU/mem/disk cap
-    ├── 01-provision-k8s-control.sh  — kubeadm + CNI + raised max-pods + agent-sandbox controller
+    ├── 01-provision-k8s-control.sh  — the shared k8s base, nothing more (control group)
     ├── 02-run-density-k8s.sh        — create Sandbox CRs until the stopping rule triggers
-    ├── 03-provision-containarium.sh — containarium daemon in workhorse (LXC/Incus) mode
-    ├── 04-run-density-containarium.sh — `containarium create` until the stopping rule triggers
+    ├── 03-provision-containarium.sh — shared k8s base + gVisor/runsc RuntimeClass + Helm-installed Containarium daemon
+    ├── 04-run-density-containarium.sh — `containarium create` (pod -> gVisor -> containarium) until the stopping rule triggers
     └── 99-teardown-vm.sh            — stop + delete the VM
 ```

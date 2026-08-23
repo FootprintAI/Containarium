@@ -1,12 +1,18 @@
 #!/bin/bash
 #
-# Provision the experiment-group VM: Incus + the Containarium daemon
-# running as a plain LXC "workhorse" — the daemon's default mode, no
-# --runtime=k8s (that backend targets pods on an *existing* cluster; it
-# isn't what "workhorse" means here) and no --standalone (core service
-# containers — Postgres, Caddy, the otel collector — stay in, matching a
-# real deployment's fixed overhead, same principle as leaving the k8s
-# side's kube-system pods in place; see README.md "Fairness notes").
+# Provision the experiment-group VM: the same shared base cluster as the
+# control group (k8s-common.sh), plus gVisor + a "runsc" RuntimeClass, plus
+# the Containarium daemon (Helm chart) configured to schedule every box pod
+# under it — pod -> gVisor -> containarium.
+#
+# Gateway (SSH) routing is deliberately disabled (gateway.namespace="",
+# gateway.enabled=false): this benchmark only needs to know whether a box
+# reached RUNNING, not to SSH into it, so there's no need to stand up
+# sshpiper here. If you DO want to reach the boxes afterward, note that
+# `kubectl exec`/`port-forward` straight to a gVisor-scheduled box pod does
+# not work (kubernetes-sigs/agent-sandbox#158, this repo's #1489) — see
+# docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md "Hard isolation via RuntimeClass"
+# and re-enable the gateway per docs/KIND-QUICKSTART.md if needed.
 #
 # Usage:
 #   scripts/03-provision-containarium.sh --name <vm-name>
@@ -18,6 +24,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck source=lib.sh
 source ./lib.sh
+# shellcheck source=k8s-common.sh
+source ./k8s-common.sh
 
 VM_NAME=""
 while [[ $# -gt 0 ]]; do
@@ -38,24 +46,43 @@ done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
 load_config
-require_vars CONTAINARIUM_VERSION REMOTE_SSH_USER
+require_vars K8S_MAX_PODS AGENT_SANDBOX_VERSION CONTAINARIUM_VERSION GVISOR_RUNTIME_CLASS REMOTE_SSH_USER
 
-log "provisioning Containarium workhorse on '${VM_NAME}' (version=${CONTAINARIUM_VERSION})"
+log "provisioning Containarium (pod -> gVisor -> containarium) on '${VM_NAME}'"
+provision_base_k8s
 
-log "installing Incus"
-ssh_or_local "sudo bash -s" <<'REMOTE'
+log "installing gVisor (${GVISOR_RUNTIME_CLASS})"
+ssh_or_local "sudo bash -s" <<REMOTE
 set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
+ARCH=\$(uname -m)
+URL="https://storage.googleapis.com/gvisor/releases/release/latest/\${ARCH}"
+cd /tmp
+curl -fsSLO "\${URL}/runsc" -O "\${URL}/runsc.sha512" \
+	-O "\${URL}/containerd-shim-runsc-v1" -O "\${URL}/containerd-shim-runsc-v1.sha512"
+sha512sum -c runsc.sha512 -c containerd-shim-runsc-v1.sha512
+chmod a+rx runsc containerd-shim-runsc-v1
+mv runsc containerd-shim-runsc-v1 /usr/local/bin/
 
-apt-get update -qq
-apt-get install -y -qq curl jq
-curl -fsSL https://pkgs.zabbly.com/get/incus-stable | sudo sh
+cat <<TOML >>/etc/containerd/config.toml
 
-usermod -aG incus-admin "$(logname 2>/dev/null || echo root)" || true
-incus admin init --auto
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.${GVISOR_RUNTIME_CLASS}]
+  runtime_type = "io.containerd.${GVISOR_RUNTIME_CLASS}.v1"
+TOML
+systemctl restart containerd
+
+cat <<EOF | kubectl apply -f -
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: ${GVISOR_RUNTIME_CLASS}
+handler: ${GVISOR_RUNTIME_CLASS}
+EOF
 REMOTE
 
-log "downloading containarium ${CONTAINARIUM_VERSION}"
+log "installing Helm"
+ssh_or_local "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sudo bash"
+
+log "resolving Containarium ${CONTAINARIUM_VERSION} and fetching the chart + CLI"
 ssh_or_local "sudo bash -s" <<REMOTE
 set -euo pipefail
 TAG="${CONTAINARIUM_VERSION}"
@@ -63,49 +90,33 @@ if [[ "\$TAG" == "latest" ]]; then
 	TAG=\$(curl -fsSL https://api.github.com/repos/FootprintAI/Containarium/releases/latest | jq -r .tag_name)
 fi
 echo "resolved tag: \$TAG"
+echo "\$TAG" >/tmp/containarium-resolved-tag
 
 BASE_URL="https://github.com/FootprintAI/Containarium/releases/download/\${TAG}"
 curl -fsSL -o /tmp/containarium "\${BASE_URL}/containarium-linux-amd64"
 curl -fsSL -o /tmp/SHA256SUMS.txt "\${BASE_URL}/SHA256SUMS.txt"
-
 EXPECTED=\$(grep 'containarium-linux-amd64\$' /tmp/SHA256SUMS.txt | awk '{print \$1}')
 ACTUAL=\$(sha256sum /tmp/containarium | awk '{print \$1}')
-[[ "\$EXPECTED" == "\$ACTUAL" ]] || {
-	echo "SHA256 mismatch: expected \$EXPECTED, got \$ACTUAL" >&2
-	exit 1
-}
-
+[[ "\$EXPECTED" == "\$ACTUAL" ]] || { echo "SHA256 mismatch: expected \$EXPECTED, got \$ACTUAL" >&2; exit 1; }
 install -m 0755 /tmp/containarium /usr/local/bin/containarium
 containarium version
+
+rm -rf /opt/containarium-src
+git clone --depth 1 --branch "\$TAG" https://github.com/FootprintAI/Containarium.git /opt/containarium-src
+apt-get install -y -qq jq >/dev/null
 REMOTE
 
-log "starting the daemon (standard mode: core services on, LXC backend)"
-ssh_or_local "sudo bash -s" <<'REMOTE'
+log "helm installing the Containarium daemon (runtimeClass=${GVISOR_RUNTIME_CLASS}, gateway disabled)"
+ssh_or_local "sudo bash -s" <<REMOTE
 set -euo pipefail
-mkdir -p /etc/containarium
-[[ -f /etc/containarium/jwt.secret ]] || openssl rand -hex 32 >/etc/containarium/jwt.secret
-chmod 0400 /etc/containarium/jwt.secret
+helm install containarium /opt/containarium-src/charts/containarium-k8s \
+	--set daemon.jwtSecret="\$(openssl rand -hex 32)" \
+	--set runtimeClass=${GVISOR_RUNTIME_CLASS} \
+	--set gateway.enabled=false \
+	--set gateway.namespace="" \
+	--wait --timeout 5m
 
-cat <<'UNIT' >/etc/systemd/system/containarium.service
-[Unit]
-Description=Containarium daemon (density benchmark workhorse)
-After=network-online.target incus.service
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-systemctl daemon-reload
-systemctl enable --now containarium
-sleep 5
-systemctl is-active containarium
-curl -fsS http://127.0.0.1:8080/healthz || echo "warning: /healthz not yet ready, check systemctl status containarium"
+kubectl get deployment -l app.kubernetes.io/instance=containarium
 REMOTE
 
-log "provisioning complete. Verify: ssh (see config.env) 'containarium list'"
+log "provisioning complete. Verify: ssh (see config.env) 'kubectl get pods -A; kubectl get runtimeclass'"
